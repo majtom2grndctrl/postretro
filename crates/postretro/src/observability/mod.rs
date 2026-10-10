@@ -62,6 +62,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Touchable,
     ComponentKind::Projectile,
     ComponentKind::HitVolume,
+    ComponentKind::MapOrdinal,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -96,6 +97,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Touchable => "touchable",
         ComponentKind::Projectile => "projectile",
         ComponentKind::HitVolume => "hit_volume",
+        ComponentKind::MapOrdinal => "map_ordinal",
     }
 }
 
@@ -430,6 +432,9 @@ mod tests {
                     mode: postretro_foundation::data_descriptors::TouchMode::Auto,
                     radius: 40.0,
                 },
+            ),
+            ComponentKind::MapOrdinal => ComponentValue::MapOrdinal(
+                postretro_entities::components::map_ordinal::MapOrdinal(0),
             ),
             ComponentKind::HitVolume => ComponentValue::HitVolume(
                 postretro_entities::components::hit_volume::HitVolumeComponent {

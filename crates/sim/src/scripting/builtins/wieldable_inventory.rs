@@ -159,6 +159,7 @@ fn compose_wieldable_inventory_slots<'a>(
             continue;
         };
         let weapon_entity = MapEntity {
+            map_ordinal: None,
             classname: canonical_name.to_string(),
             origin: placement.origin,
             angles: placement.angles,
@@ -401,6 +402,7 @@ mod tests {
 
     fn placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::ZERO,
             angles: glam::Vec3::ZERO,

@@ -3590,6 +3590,7 @@ mod tests {
             zone_multipliers: std::collections::HashMap::new(),
         });
         let spawn_points = [MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::ZERO,
             angles: glam::Vec3::ZERO,

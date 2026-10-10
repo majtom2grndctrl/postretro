@@ -111,7 +111,7 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | complete |
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | complete |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | complete |
-| P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | in progress |
+| P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | complete |
 | P10 | Extract replication encoder/state (T1) | bounded worker | P6 | complete |
 | P11 | Budget/order/flights/ack repair + byte telemetry (T6) | bounded net worker | P10 | complete |
 | P12 | Fire origin, ordered recipients, all drains, tick occupants and positioned sound (T8) | integrator | P6,P9 | pending |
@@ -147,6 +147,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P8 complete: client mover binding map and lookup/validation helpers extracted to client/bindings.rs, preserving helper bodies and prepare_mover_apply after normalized module-path comparison. Prediction, phase, pose and history stay in client.rs. Netcode client::tests passed (56), including mover mismatch, unknown mover, binding, phase and reset regressions.
 
 - P11 complete: 16 KiB pending-baseline budget beyond the exempt first record, own-pawn/unbound/bound stable ordering, tombstone/delta/held-refresh priority, in-flight windows and qualifying snapshot-ack repair. Valid additive older baseline coverage supports a delta after flight loss; no coverage re-pends latest full. Host logs actual encoded snapshot bytes and deferred count. Net replication::tests passed (52, including nine new budget/flight/convergence cases); the old per-client independence test now proves no premature resend and loss repair rather than the retired resend policy. Netcode client tests compiled the host telemetry seam and passed (56).
+
+- P9 complete: original map-entity list ordinals survive player-start partitioning, client suppression and failed placement spawns. MapOrdinal23 is engine-owned only. Authored light prefix and fixed fog roster expose immutable origins; runtime/reclaimed lights cannot claim authored identity. Shared resolver prefers map-entity identity and checks generation liveness. App focused tests passed: presentation_identity (3), presentation_binding (2), light_bridge (66), fog_volume_bridge (23), authored_map_ordinals (1). Sim map_ordinal tests passed (2); netcode exhaustive component discriminant drift guard passed (1). The first installer fixture used an unregistered builtin; corrected to the actual registered descriptor light before the successful rerun.
 
 ### P1 and P2 boundaries
 

@@ -156,6 +156,12 @@ pub fn apply_classname_dispatch(
                 // write.)
                 if let Some(entity_id) = handler(entity, registry) {
                     let _ = registry.set_map_kvps(entity_id, entity.key_values.clone());
+                    if let Some(ordinal) = entity.map_ordinal {
+                        let _ = registry.set_component(
+                            entity_id,
+                            postretro_entities::components::map_ordinal::MapOrdinal(ordinal),
+                        );
+                    }
                 }
             }
             None => {
@@ -174,6 +180,29 @@ mod tests {
     use super::*;
     use glam::Vec3;
     use postretro_entities::registry::ComponentKind;
+
+    #[test]
+    fn authored_map_ordinals_do_not_shift_after_failed_placement_spawn() {
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+        let mut registry = EntityRegistry::new();
+        let mut dispatch = ClassnameDispatch::new();
+        register_builtins(&mut dispatch);
+        let mut placements = vec![
+            data_archetype_test_fixtures::placement("billboard_emitter", &[]),
+            data_archetype_test_fixtures::placement("billboard_emitter", &[]),
+        ];
+        placements[0].map_ordinal = Some(4);
+        placements[1].map_ordinal = Some(9);
+        registry.set_test_capacity_limit(0);
+        apply_classname_dispatch(&placements[..1], &dispatch, &mut registry);
+        registry.set_test_capacity_limit(1);
+        apply_classname_dispatch(&placements[1..], &dispatch, &mut registry);
+        let ordinals: Vec<_> = registry
+            .iter_with_kind(ComponentKind::MapOrdinal)
+            .map(|(id, _)| registry.get_component::<MapOrdinal>(id).unwrap().0)
+            .collect();
+        assert_eq!(ordinals, [9]);
+    }
 
     #[test]
     fn register_builtins_registers_billboard_emitter() {
@@ -213,6 +242,7 @@ mod tests {
         let mut kv = HashMap::new();
         kv.insert("rate".to_string(), "9.5".to_string());
         let entities = vec![MapEntity {
+            map_ordinal: None,
             classname: "billboard_emitter".to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
             key_values: kv,
@@ -254,6 +284,7 @@ mod tests {
         register_builtins(&mut dispatch);
 
         let entities = vec![MapEntity {
+            map_ordinal: None,
             classname: "never_registered".to_string(),
             origin: Vec3::ZERO,
             key_values: HashMap::new(),

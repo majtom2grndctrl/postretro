@@ -915,6 +915,7 @@ mod tests {
         // High rate guarantees at least one spawn within a 0.5 s tick window.
         kv.insert("rate".to_string(), "60".to_string());
         let entities = vec![MapEntity {
+            map_ordinal: None,
             classname: "billboard_emitter".to_string(),
             origin: Vec3::new(10.0, 20.0, 30.0),
             angles: Vec3::ZERO,

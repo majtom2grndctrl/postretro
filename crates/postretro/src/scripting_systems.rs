@@ -25,3 +25,6 @@ pub(crate) mod mesh_render;
 pub(crate) mod particle_render;
 #[path = "scripting/frame_systems/presentation_cells.rs"]
 pub(crate) mod presentation_cells;
+
+#[path = "scripting/frame_systems/presentation_bindings.rs"]
+pub(crate) mod presentation_bindings;

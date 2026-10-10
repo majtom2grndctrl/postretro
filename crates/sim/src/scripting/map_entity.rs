@@ -14,6 +14,8 @@ use postretro_level_format::map_entity::MapEntityRecord;
 /// serialization — handlers and scripts never see Quake angles.
 #[derive(Debug, Clone)]
 pub struct MapEntity {
+    /// PRL list ordinal; synthetic/runtime placements have no authored identity.
+    pub map_ordinal: Option<u32>,
     pub classname: String,
     pub origin: Vec3,
     /// Engine-convention Euler angles (radians): x=pitch, y=yaw, z=roll (YXZ
@@ -62,6 +64,7 @@ impl From<MapEntityRecord> for MapEntity {
             kv.insert(k, v);
         }
         Self {
+            map_ordinal: None,
             classname: record.classname,
             origin: Vec3::from(record.origin),
             angles: Vec3::from(record.angles),
@@ -96,6 +99,7 @@ mod tests {
         let roll = roll_deg.to_radians();
 
         let entity = MapEntity {
+            map_ordinal: None,
             classname: "_test".to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::new(pitch, yaw, roll),

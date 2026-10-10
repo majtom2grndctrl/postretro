@@ -119,8 +119,18 @@ pub(crate) fn install_world_cpu(
     // Classname dispatch: partition player-start placements out (retained for the
     // caller), dispatch the remainder through built-in handlers. The handled set
     // feeds the data-archetype sweep below.
-    let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
-        world.map_entities.iter().cloned().map(Into::into).collect();
+    let all_entities: Vec<crate::scripting::map_entity::MapEntity> = world
+        .map_entities
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, record)| {
+            let mut entity = crate::scripting::map_entity::MapEntity::from(record);
+            entity.map_ordinal =
+                Some(u32::try_from(index).expect("PRL map-entity ordinal fits u32"));
+            entity
+        })
+        .collect();
     let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);

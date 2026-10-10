@@ -430,6 +430,7 @@ fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 /// A `MapEntity` placement of `classname` (the connected-client install filter input).
 fn placement(classname: &str) -> crate::scripting::map_entity::MapEntity {
     crate::scripting::map_entity::MapEntity {
+        map_ordinal: None,
         classname: classname.to_string(),
         origin: Vec3::ZERO,
         angles: Vec3::ZERO,

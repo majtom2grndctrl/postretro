@@ -47,6 +47,7 @@ fn player_movement_pawn_count(registry: &EntityRegistry) -> usize {
 /// `spawn_from_player_starts` (default `entity_class` → `"player"`).
 fn player_start() -> MapEntity {
     MapEntity {
+        map_ordinal: None,
         classname: "player_spawn".to_string(),
         origin: Vec3::new(0.0, 1.21, 0.0),
         angles: Vec3::ZERO,

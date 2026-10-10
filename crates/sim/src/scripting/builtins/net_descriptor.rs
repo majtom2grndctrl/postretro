@@ -216,6 +216,7 @@ pub fn materialize_net_local_wieldable_inventory_from_tuning(
     );
     if !has_inventory {
         let placement = MapEntity {
+            map_ordinal: None,
             classname: entity_class.to_string(),
             origin: registry
                 .get_component::<Transform>(id)
@@ -323,6 +324,7 @@ fn materialize_net_local_wieldable_at_slot(
         return false;
     };
     let weapon_entity = MapEntity {
+        map_ordinal: None,
         classname: canonical_name.to_string(),
         origin: registry
             .get_component::<Transform>(pawn)
@@ -1331,6 +1333,7 @@ mod tests {
             kv.insert((*k).to_string(), (*v).to_string());
         }
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::ZERO,

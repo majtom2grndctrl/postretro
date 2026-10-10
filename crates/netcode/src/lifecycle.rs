@@ -635,6 +635,7 @@ mod tests {
     /// tests). Default `entity_class` resolves to the `"player"` descriptor.
     fn synthetic_placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::new(2.0, 1.0, -3.0),
             angles: glam::Vec3::ZERO,

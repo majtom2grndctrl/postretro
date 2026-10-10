@@ -258,9 +258,25 @@ impl LightBridge {
         self.entity_ids.len()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
-        self.entity_ids.get(map_index).copied()
+        self.entity_ids
+            .get(..self.authored_light_count)?
+            .get(map_index)
+            .copied()
+    }
+
+    pub(crate) fn map_index_for_entity(&self, entity: EntityId) -> Option<usize> {
+        self.entity_ids
+            .get(..self.authored_light_count)?
+            .iter()
+            .position(|id| *id == entity)
+    }
+
+    pub(crate) fn map_origin_for_entity(&self, entity: EntityId) -> Option<glam::Vec3> {
+        let index = self.map_index_for_entity(entity)?;
+        Some(glam::Vec3::from_array(
+            self.cached_origins_f64[index].map(|value| value as f32),
+        ))
     }
 
     /// Set the section-45 roster used by animated shadow-promotion gating.
@@ -1913,6 +1929,71 @@ mod tests {
     }
 
     #[test]
+    fn presentation_identity_excludes_runtime_reclaimed_slots_and_keeps_authored_origin() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let authored = sample_point_light();
+        bridge.populate_from_level(std::slice::from_ref(&authored), &mut registry, 0);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.origin = [90.0; 3];
+        registry.set_component(id, component).unwrap();
+        assert_eq!(bridge.map_index_for_entity(id), Some(0));
+        assert!(
+            bridge
+                .map_origin_for_entity(id)
+                .unwrap()
+                .distance(glam::Vec3::from_array(authored.origin.map(|v| v as f32)))
+                < 1e-5
+        );
+        let runtime = spawn_runtime_light(&mut registry, runtime_component([4.0; 3], 2.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.entity_for_map_index(usize::MAX), None);
+        assert_eq!(bridge.map_index_for_entity(runtime), None);
+        assert_eq!(bridge.map_origin_for_entity(runtime), None);
+        registry.despawn(runtime).unwrap();
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+        let replacement =
+            spawn_runtime_light(&mut registry, runtime_component([7.0; 3], 2.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(bridge.entity_ids[1], replacement);
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.map_index_for_entity(replacement), None);
+        assert_eq!(bridge.map_origin_for_entity(replacement), None);
+        assert_eq!(bridge.entity_for_map_index(0), Some(id));
+        bridge.clear();
+        assert_eq!(bridge.entity_for_map_index(0), None);
+        assert_eq!(bridge.map_origin_for_entity(id), None);
+    }
+
+    #[test]
+    fn presentation_identity_spawn_failure_keeps_exact_authored_prefix() {
+        let mut registry = EntityRegistry::new();
+        registry.set_test_capacity_limit(1);
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(
+            &[sample_point_light(), sample_spot_light()],
+            &mut registry,
+            0,
+        );
+        let id = bridge.entity_for_map_index(0).unwrap();
+        assert_eq!(bridge.map_index_for_entity(id), Some(0));
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.light_count(), 1);
+        registry.despawn(id).unwrap();
+        let replacement =
+            spawn_runtime_light(&mut registry, runtime_component([8.0; 3], 2.0, None));
+        bridge.absorb_dynamic_lights(&registry);
+        assert_eq!(bridge.entity_for_map_index(0), Some(id));
+        assert_eq!(bridge.map_index_for_entity(replacement), None);
+        assert_eq!(bridge.entity_for_map_index(1), None);
+    }
+
+    #[test]
     fn populate_from_level_sets_tag_on_registry_entity() {
         let mut registry = EntityRegistry::new();
         let mut bridge = LightBridge::new();
@@ -3340,7 +3421,9 @@ mod tests {
             2,
             "absorb must enroll the new dynamic light",
         );
-        assert_eq!(bridge.entity_for_map_index(1), Some(new_id));
+        assert_eq!(bridge.entity_ids.get(1).copied(), Some(new_id));
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.map_index_for_entity(new_id), None);
 
         // Idempotent: a second pass with no new lights must not double-enroll.
         let scans_after_enrollment = bridge.enrollment_scan_count;
@@ -4034,7 +4117,7 @@ mod tests {
         );
         assert_eq!(reused.compose_descriptor_writes, authored_compose);
         assert_eq!(
-            bridge.entity_for_map_index(bridge.authored_light_count),
+            bridge.entity_ids.get(bridge.authored_light_count).copied(),
             Some(second)
         );
     }
@@ -4160,7 +4243,10 @@ mod tests {
         assert_eq!(warnings, 1, "reserve exhaustion has one actionable warning");
         assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
         assert_eq!(
-            bridge.entity_for_map_index(RUNTIME_DYNAMIC_LIGHT_RESERVE - 1),
+            bridge
+                .entity_ids
+                .get(RUNTIME_DYNAMIC_LIGHT_RESERVE - 1)
+                .copied(),
             Some(ids[RUNTIME_DYNAMIC_LIGHT_RESERVE - 1]),
             "the last admitted light retains its stable slot"
         );

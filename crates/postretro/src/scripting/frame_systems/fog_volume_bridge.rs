@@ -99,6 +99,19 @@ impl FogVolumeBridge {
         }
     }
 
+    pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
+        self.entity_ids.get(map_index).copied()
+    }
+
+    pub(crate) fn map_index_for_entity(&self, entity: EntityId) -> Option<usize> {
+        self.entity_ids.iter().position(|id| *id == entity)
+    }
+
+    pub(crate) fn map_origin_for_entity(&self, entity: EntityId) -> Option<Vec3> {
+        self.map_index_for_entity(entity)?;
+        Some(self.aabbs.get(&entity)?.center)
+    }
+
     /// Populate the entity registry with one entity per fog-volume record.
     /// Called once at level load. Stores the AABB and shape parameters in the
     /// side-table; the four runtime-settable parameters (`density`, `glow`,
@@ -673,6 +686,43 @@ mod tests {
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
+    }
+
+    #[test]
+    fn presentation_identity_uses_authored_center_and_keeps_spawn_failure_prefix() {
+        let mut registry = EntityRegistry::new();
+        registry.set_test_capacity_limit(1);
+        let mut bridge = FogVolumeBridge::new();
+        let record = sample_record();
+        bridge.populate_from_level(&mut registry, &[record.clone(), record.clone()]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        assert_eq!(bridge.map_index_for_entity(id), Some(0));
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.entity_for_map_index(usize::MAX), None);
+        registry
+            .set_component(
+                id,
+                Transform {
+                    position: Vec3::splat(99.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            bridge
+                .map_origin_for_entity(id)
+                .unwrap()
+                .distance(Vec3::from_array(record.center))
+                < 1e-5
+        );
+        registry.despawn(id).unwrap();
+        let replacement = registry.spawn(Transform::default());
+        assert_eq!(bridge.map_index_for_entity(replacement), None);
+        assert_eq!(bridge.map_origin_for_entity(replacement), None);
+        assert_eq!(bridge.entity_for_map_index(0), Some(id));
+        bridge.clear();
+        assert_eq!(bridge.entity_for_map_index(0), None);
+        assert_eq!(bridge.map_origin_for_entity(id), None);
     }
 
     #[test]

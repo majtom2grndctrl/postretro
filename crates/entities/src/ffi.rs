@@ -181,6 +181,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Touchable => "touchable",
         ComponentKind::Projectile => "projectile",
         ComponentKind::HitVolume => "hit_volume",
+        ComponentKind::MapOrdinal => "map_ordinal",
     }
 }
 
@@ -386,6 +387,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Projectile component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::MapOrdinal(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "MapOrdinal component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -556,6 +561,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Projectile(_) => Err(mlua::Error::RuntimeError(
                 "Projectile component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::MapOrdinal(_) => Err(mlua::Error::RuntimeError(
+                "MapOrdinal component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),

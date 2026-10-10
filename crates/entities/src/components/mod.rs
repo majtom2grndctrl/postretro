@@ -26,3 +26,5 @@ pub mod trigger_volume;
 pub mod weapon;
 pub mod weapon_resource;
 pub mod wieldable_state;
+
+pub mod map_ordinal;

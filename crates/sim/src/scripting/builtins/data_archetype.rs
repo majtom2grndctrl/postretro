@@ -704,6 +704,12 @@ pub(super) fn spawn_descriptor_instance(
     };
 
     let id = registry.try_spawn(transform, &entity.tags)?;
+    if let Some(ordinal) = entity.map_ordinal {
+        let _ = registry.set_component(
+            id,
+            postretro_entities::components::map_ordinal::MapOrdinal(ordinal),
+        );
+    }
 
     attach_descriptor_components(
         registry,
@@ -1222,10 +1228,11 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_spawn_creates_entity_with_light_component() {
+    fn descriptor_light_spawn_preserves_authored_map_ordinal() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![light_descriptor("torch", true)];
-        let placements = vec![placement("torch", &[])];
+        let mut placements = vec![placement("torch", &[])];
+        placements[0].map_ordinal = Some(17);
         let handled = apply_data_archetype_dispatch(
             &placements,
             &descriptors,
@@ -1240,6 +1247,13 @@ mod tests {
             .next()
             .expect("light spawned");
         let light = reg.get_component::<LightComponent>(id).unwrap();
+        assert_eq!(
+            reg.get_component::<postretro_entities::components::map_ordinal::MapOrdinal>(id)
+                .unwrap()
+                .0,
+            17,
+            "descriptor spawn retains authored list identity"
+        );
         assert!(light.is_dynamic);
         assert_eq!(light.falloff_range, 8.0);
         assert_eq!(light.origin, [1.0, 2.0, 3.0]);

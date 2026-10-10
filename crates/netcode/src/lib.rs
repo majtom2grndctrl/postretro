@@ -627,6 +627,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Touchable => 20,
         ComponentKind::Projectile => 21,
         ComponentKind::HitVolume => 22,
+        ComponentKind::MapOrdinal => 23,
     }
 }
 
@@ -6547,7 +6548,8 @@ mod tests {
                 ComponentKind::Inventory => Some(ComponentKind::Touchable),
                 ComponentKind::Touchable => Some(ComponentKind::Projectile),
                 ComponentKind::Projectile => Some(ComponentKind::HitVolume),
-                ComponentKind::HitVolume => None,
+                ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
+                ComponentKind::MapOrdinal => None,
             }
         }
 
@@ -6914,6 +6916,7 @@ mod tests {
 
     fn host_player_spawn_placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::new(5.0, 1.0, -2.0),
             angles: glam::Vec3::ZERO,

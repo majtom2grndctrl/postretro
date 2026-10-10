@@ -22,6 +22,7 @@ use crate::components::hit_volume::HitVolumeComponent;
 use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
+use crate::components::map_ordinal::MapOrdinal;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
@@ -149,6 +150,7 @@ pub enum ComponentKind {
     Projectile = 21,
     /// Query-only display-copy geometry, never authoritative Health.
     HitVolume = 22,
+    MapOrdinal = 23,
 }
 
 impl ComponentKind {
@@ -181,6 +183,7 @@ impl ComponentKind {
             ComponentKind::Touchable,
             ComponentKind::Projectile,
             ComponentKind::HitVolume,
+            ComponentKind::MapOrdinal,
         ];
         VARIANTS.len()
     };
@@ -253,6 +256,7 @@ pub enum ComponentValue {
     Touchable(TouchableComponent),
     Projectile(ProjectileComponent),
     HitVolume(HitVolumeComponent),
+    MapOrdinal(MapOrdinal),
 }
 
 impl ComponentValue {
@@ -281,6 +285,7 @@ impl ComponentValue {
             ComponentValue::Touchable(_) => ComponentKind::Touchable,
             ComponentValue::Projectile(_) => ComponentKind::Projectile,
             ComponentValue::HitVolume(_) => ComponentKind::HitVolume,
+            ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
         }
     }
 }
@@ -680,6 +685,19 @@ impl Component for ProjectileComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Projectile(self)
+    }
+}
+
+impl Component for MapOrdinal {
+    const KIND: ComponentKind = ComponentKind::MapOrdinal;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::MapOrdinal(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::MapOrdinal(self)
     }
 }
 

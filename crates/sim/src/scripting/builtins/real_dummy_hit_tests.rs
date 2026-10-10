@@ -48,6 +48,7 @@ fn map_placement(classname: &str, tag: &str, raw_origin: &str, yaw: f32) -> MapE
     // The actual compiler adapter: parse.rs::quake_to_engine, then unit scale.
     let origin = Vec3::new(-raw[1], raw[2], -raw[0]) * scale;
     MapEntity {
+        map_ordinal: None,
         classname: classname.into(),
         origin,
         angles: Vec3::new(0.0, -yaw.to_radians(), 0.0),

@@ -331,6 +331,7 @@ fn spawn_resolved_spawners(
                 return;
             };
             let synthetic_map_entity = MapEntity {
+                map_ordinal: None,
                 classname: spawner.archetype_name.clone(),
                 origin: feet_position,
                 angles: Vec3::ZERO,

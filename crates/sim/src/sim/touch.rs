@@ -2152,6 +2152,7 @@ mod tests {
         let descriptors = [descriptor];
         crate::scripting::builtins::apply_data_archetype_dispatch(
             &[crate::scripting::builtins::MapEntity {
+                map_ordinal: None,
                 classname: "ion".into(),
                 origin: Vec3::ZERO,
                 angles: Vec3::ZERO,
@@ -2306,6 +2307,7 @@ mod tests {
         let mut next_level = EntityRegistry::new();
         let next_pawn = next_level.spawn(Transform::default());
         let placement = MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::ZERO,

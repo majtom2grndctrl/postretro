@@ -1557,6 +1557,7 @@ pub(crate) mod tests {
 
         let mut registry = postretro_entities::EntityRegistry::new();
         let map_entity = |archetype: &str| MapEntity {
+            map_ordinal: None,
             classname: entity_spawner::CLASSNAME.to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::ZERO,
@@ -2509,6 +2510,66 @@ pub(crate) mod tests {
             registry,
             upload_models,
             hit_zone_store: std::mem::take(&mut app.session.as_mut().unwrap().hit_zone_store),
+        }
+    }
+
+    #[test]
+    fn authored_map_ordinals_survive_player_partition_and_client_suppression() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+        use postretro_entities::{ComponentKind, ComponentValue};
+        use postretro_level_format::map_entity::MapEntityRecord;
+        let mut prop = mesh_descriptor("network_prop", false);
+        prop.mesh.as_mut().unwrap().model =
+            "models/decraniated_low_poly_retro_pixel/scene.gltf".to_string();
+        let mut local_light = prop.clone();
+        local_light.canonical_name = Some("local_light".into());
+        local_light.mesh = None;
+        local_light.light = Some(postretro_entities::LightDescriptor {
+            color: [1.0; 3],
+            intensity: 1.0,
+            range: 8.0,
+            is_dynamic: true,
+        });
+        for connected in [false, true] {
+            let mut world = level_world("ordinal_install", 1);
+            world.map_entities = ["player_spawn", "network_prop", "local_light"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, classname)| MapEntityRecord {
+                    classname: classname.to_string(),
+                    origin: [index as f32 * 3.0, 0.0, 0.0],
+                    tags: vec![classname.to_string()],
+                    ..Default::default()
+                })
+                .collect();
+            let installed = install_descriptor_world(
+                world,
+                TriggerPoolSeedPolicy::ArmAll,
+                &[],
+                Vec::new(),
+                connected,
+                vec![prop.clone(), local_light.clone()],
+            );
+            let ordinals: Vec<_> = installed
+                .registry
+                .iter_with_kind(ComponentKind::MapOrdinal)
+                .filter_map(|(id, value)| match value {
+                    ComponentValue::MapOrdinal(MapOrdinal(index)) if *index > 0 => {
+                        Some((id, *index))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                ordinals.iter().any(|(_, ordinal)| *ordinal == 2),
+                "client-local descriptor retains PRL ordinal after partition and filtering"
+            );
+            assert_eq!(
+                ordinals.iter().any(|(_, ordinal)| *ordinal == 1),
+                !connected,
+                "networked descriptor has its original ordinal only on the host"
+            );
         }
     }
 

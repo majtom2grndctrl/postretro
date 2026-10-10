@@ -110,10 +110,10 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | complete |
 | P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | complete |
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | complete |
-| P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
-| P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | pending |
+| P8 | Extract client mover bindings (T1) | bounded worker | P7 | complete |
+| P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | in progress |
 | P10 | Extract replication encoder/state (T1) | bounded worker | P6 | complete |
-| P11 | Budget/order/flights/ack repair + byte telemetry (T6) | bounded net worker | P10 | pending |
+| P11 | Budget/order/flights/ack repair + byte telemetry (T6) | bounded net worker | P10 | in progress |
 | P12 | Fire origin, ordered recipients, all drains, tick occupants and positioned sound (T8) | integrator | P6,P9 | pending |
 | P13 | TS/Luau audience SDK/types/compiler/install/source gates and UI warning (T9) | bounded SDK worker; integrator shared validation seams | P12 | pending |
 | P14 | Host immutable capture/registration and held overrides (T10), then client binding/clock apply/seeding (T11) | integrator | P2,P9,P11,P12 | pending |
@@ -143,6 +143,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P10 complete: extracted per-client state, encoder body and recipient authority helper to `replication/encode.rs`; internal `pub(super)` visibility permits parent access. Static comparison against P6 preserved encoder/helper bodies and state field order; `EntitySnapshot`/`EntityState` unchanged. `cargo test -p postretro-net --lib replication::tests`: 43 passed, 0 failed. No budget/flight behavior changed in this split.
 
 - P7 complete: descriptor-only builder independently attaches Mesh, Light, Emitter and query-only HitVolume22; known empty sets complete, unknown/stale sets retry, and state survives repair. Identity-scoped completion cache clears on mapping removal/remap/unload/demotion. Actual meshless client ray becomes a host HIT, damage/credit and next-snapshot despawn; Health remains absent on display copies. Focused tests passed: sim descriptor_display_ (3), hit_zones (53), placement initial light KVPs (6); AI display-volume exclusion (1); netcode client (56), remote materialization (9), enemy/descriptor harness (18), meshless host HIT (1). App dev-tools check and formatting passed.
+
+- P8 complete: client mover binding map and lookup/validation helpers extracted to client/bindings.rs, preserving helper bodies and prepare_mover_apply after normalized module-path comparison. Prediction, phase, pose and history stay in client.rs. Netcode client::tests passed (56), including mover mismatch, unknown mover, binding, phase and reset regressions.
 
 ### P1 and P2 boundaries
 

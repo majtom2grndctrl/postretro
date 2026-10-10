@@ -28,9 +28,8 @@
 //     tombstone.
 //   - Old/duplicate snapshot sequence: the whole snapshot is ignored.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-
 use glam::Vec3;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use postretro_net::wire::{
     AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
@@ -51,6 +50,9 @@ use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSampl
 use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
+
+mod bindings;
+use bindings::ClientBindings;
 
 const MOVER_HISTORY_LIMIT: usize = 128;
 #[cfg(test)]
@@ -244,10 +246,8 @@ pub struct ClientReplication {
     /// can arrive after that record, so the independent Control drain retains this
     /// half of the materialization key for an immediate movement rebuild.
     local_pawn_entity_class: Option<String>,
-    /// Network ids bound to PRL-loaded local kinematic movers, with their stable
-    /// compile-time mover id. These entities are predicted/reconciled in place and
-    /// must never be remote-interpolated or materialized from a baseline.
-    mover_network_ids: HashMap<NetworkId, u32>,
+    /// Local identity bindings used by snapshot apply.
+    bindings: ClientBindings,
     /// Authoritative mover samples from host snapshots, keyed by stable PRL
     /// `mover_id`. This is distinct from the live per-tick side-table; replay can
     /// read it through the `MoverPoseSource` seam.
@@ -534,7 +534,7 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
-        self.mover_network_ids.clear();
+        self.bindings.mover_network_ids.clear();
         self.mover_history.clear();
 
         let mut requests = Vec::with_capacity(known.len());
@@ -577,7 +577,7 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
-        self.mover_network_ids.clear();
+        self.bindings.mover_network_ids.clear();
         self.mover_history.clear();
     }
 
@@ -931,7 +931,9 @@ impl ClientReplication {
             // without one is invalid and does not spawn.
             None => {
                 if let Some(mover_state) = first_mover_state(components) {
-                    let Some(id) = find_loaded_mover_entity(registry, mover_state.mover_id) else {
+                    let Some(id) =
+                        bindings::find_loaded_mover_entity(registry, mover_state.mover_id)
+                    else {
                         log::warn!(
                             "[Net] full baseline for {network_id:?} names unknown mover_id {}; not binding",
                             mover_state.mover_id
@@ -945,7 +947,8 @@ impl ClientReplication {
                     self.insert_mapping(network_id, id);
                     self.baselines.insert(network_id, baseline_id);
                     self.pending_repairs.remove(&network_id);
-                    self.mover_network_ids
+                    self.bindings
+                        .mover_network_ids
                         .insert(network_id, mover_state.mover_id);
                     self.interp.forget(network_id);
                     if !self.apply_components_to(
@@ -960,7 +963,7 @@ impl ClientReplication {
                     ) {
                         self.remove_mapping(network_id);
                         self.baselines.remove(&network_id);
-                        self.mover_network_ids.remove(&network_id);
+                        self.bindings.mover_network_ids.remove(&network_id);
                         return false;
                     }
                     return true;
@@ -1248,7 +1251,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
-        self.mover_network_ids.remove(&network_id);
+        self.bindings.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
             entity_id,
@@ -1355,7 +1358,7 @@ impl ClientReplication {
         self.active_weapon_archetypes.remove(&network_id);
         self.remote_entity_classes.remove(&network_id);
         self.projectile_presentations.remove(&network_id);
-        self.mover_network_ids.remove(&network_id);
+        self.bindings.mover_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
             self.local_pawn_entity_class = None;
@@ -1435,7 +1438,7 @@ impl ClientReplication {
         // after this): it may seed the spawn/baseline pose here, and then `forget`
         // drops the one interpolation sample.
         let is_local = self.local_pawn == Some(network_id);
-        let bound_mover_id = self.mover_network_ids.get(&network_id).copied();
+        let bound_mover_id = self.bindings.mover_network_ids.get(&network_id).copied();
         if let Some(mover_id) = unknown_ground_mover_id(registry, components) {
             outcome.ignored.push(IgnoredPayload::UnknownGroundMover {
                 network_id: network_id.0,
@@ -1488,7 +1491,9 @@ impl ClientReplication {
             }
             let _ = registry.set_component(id, plan.phase.clone());
             let _ = registry.set_component(id, plan.transform);
-            self.mover_network_ids.insert(network_id, plan.mover_id);
+            self.bindings
+                .mover_network_ids
+                .insert(network_id, plan.mover_id);
             self.interp.forget(network_id);
             for sample in &plan.history_samples {
                 self.mover_history.record(plan.mover_id, sample.clone());
@@ -1585,7 +1590,7 @@ impl ClientReplication {
                 }
                 ComponentPayload::KinematicMoverState(wire) => {
                     if mover_apply.is_none() {
-                        let _ = validate_kinematic_mover_state_binding(
+                        let _ = bindings::validate_kinematic_mover_state_binding(
                             registry,
                             id,
                             network_id,
@@ -1707,7 +1712,7 @@ impl ClientReplication {
             if self.local_pawn == Some(network_id) {
                 continue;
             }
-            if self.mover_network_ids.contains_key(&network_id) {
+            if self.bindings.mover_network_ids.contains_key(&network_id) {
                 continue;
             }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
@@ -1788,7 +1793,7 @@ impl ClientReplication {
         for (&network_id, &entity_id) in &self.map {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.mover_network_ids.contains_key(&network_id)
+                || self.bindings.mover_network_ids.contains_key(&network_id)
             {
                 continue;
             }
@@ -1816,7 +1821,7 @@ impl ClientReplication {
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.mover_network_ids.contains_key(&network_id)
+                || self.bindings.mover_network_ids.contains_key(&network_id)
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
                 continue;
@@ -2197,7 +2202,7 @@ fn unknown_ground_mover_id(
         let WireGroundRef::Mover(mover_id) = wire.ground else {
             continue;
         };
-        if find_loaded_mover_entity(registry, mover_id).is_none() {
+        if bindings::find_loaded_mover_entity(registry, mover_id).is_none() {
             return Some(mover_id);
         }
     }
@@ -2209,17 +2214,6 @@ fn first_mesh_animation_state(components: &[ComponentPayload]) -> Option<String>
         ComponentPayload::MeshAnimationState(wire) => Some(wire.current_state.clone()),
         _ => None,
     })
-}
-
-fn find_loaded_mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .find_map(|(id, value)| {
-            let ComponentValue::KinematicMover(mover) = value else {
-                return None;
-            };
-            (mover.mover_id == mover_id).then_some(id)
-        })
 }
 
 #[derive(Debug, Clone)]
@@ -2243,8 +2237,13 @@ fn prepare_mover_apply(
     anchor_transform: Transform,
     tick_dt: f32,
 ) -> Option<MoverApplyPlan> {
-    let mut phase =
-        validate_kinematic_mover_state_binding(registry, id, network_id, bound_mover_id, &wire)?;
+    let mut phase = bindings::validate_kinematic_mover_state_binding(
+        registry,
+        id,
+        network_id,
+        bound_mover_id,
+        &wire,
+    )?;
     seed_kinematic_mover_phase(&mut phase, &wire)?;
 
     let phase_pose = mover_pose_for_current_phase(anchor_transform, &phase, tick_dt);
@@ -2291,44 +2290,6 @@ fn prepare_mover_apply(
         pose: predicted_pose,
         history_samples,
     })
-}
-
-fn validate_kinematic_mover_state_binding(
-    registry: &EntityRegistry,
-    id: EntityId,
-    network_id: NetworkId,
-    bound_mover_id: Option<u32>,
-    wire: &WireKinematicMoverState,
-) -> Option<KinematicMoverComponent> {
-    let Ok(mover) = registry
-        .get_component::<KinematicMoverComponent>(id)
-        .cloned()
-    else {
-        log::warn!(
-            "[Net] KinematicMoverState for mover_id {} applied to entity without KinematicMover",
-            wire.mover_id
-        );
-        return None;
-    };
-    if let Some(bound) = bound_mover_id
-        && bound != wire.mover_id
-    {
-        log::warn!(
-            "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
-            wire.mover_id,
-            bound
-        );
-        return None;
-    }
-    if mover.mover_id != wire.mover_id {
-        log::warn!(
-            "[Net] KinematicMoverState mover_id {} does not match local mover_id {}; dropping phase",
-            wire.mover_id,
-            mover.mover_id
-        );
-        return None;
-    }
-    Some(mover)
 }
 
 fn seed_kinematic_mover_phase(
@@ -3011,7 +2972,10 @@ mod tests {
 
         assert!(out.ack.unwrap().entity_baselines.is_empty());
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
-        assert_eq!(client.mover_network_ids.get(&NetworkId(7)), Some(&42));
+        assert_eq!(
+            client.bindings.mover_network_ids.get(&NetworkId(7)),
+            Some(&42)
+        );
         assert_eq!(client.mover_history_sample_count(99), 0);
         assert_eq!(client.mover_history_sample_count(42), 1);
         assert!(

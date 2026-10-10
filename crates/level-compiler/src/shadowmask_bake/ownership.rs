@@ -95,12 +95,6 @@ impl FaceChannels {
         }
     }
 
-    /// Fix an owner into `channel` without ranking: a cut face's owners come
-    /// from its estimate before the walk.
-    pub(crate) fn fix(&mut self, channel: usize, owner: Candidate) {
-        self.channels[channel] = Some(owner);
-    }
-
     /// Release a channel whose owner baked nothing.
     pub(crate) fn clear(&mut self, channel: usize) {
         self.channels[channel] = None;
@@ -116,16 +110,8 @@ impl FaceChannels {
         self.channels[channel]
     }
 
-    pub(crate) fn note_candidates(&mut self, count: u32) {
-        self.candidates += count;
-    }
-
     pub(crate) fn candidates(&self) -> u32 {
         self.candidates
-    }
-
-    pub(crate) fn has_owner(&self) -> bool {
-        self.channels.iter().any(Option::is_some)
     }
 
     /// The owner entry in ascending spec index, empties trailing, and for each

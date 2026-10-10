@@ -147,6 +147,22 @@ pub(crate) fn planned_chart_area(charts: &[Chart], cuts: &[FaceCut]) -> u64 {
 #[derive(Debug)]
 pub(crate) struct CutFaces {
     pub face_remap: Vec<Range<usize>>,
+    pub cut_parents: Vec<CutParent>,
+}
+
+/// One cut face as mask ownership sees it: all its sub-faces share one owner
+/// set. A sub-face's own segment is its piece between cut lines, without the
+/// overlap past them, so each parent-grid texel belongs to exactly one
+/// emitted sub-face.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutParent {
+    /// The face's index before the cut: how the drop report names it.
+    pub parent: u32,
+    /// The new face indices of its emitted sub-faces, contiguous.
+    pub faces: Range<usize>,
+    /// Per emitted sub-face, parallel to `faces`: its own `[u, v]` segment in
+    /// parent-grid texels.
+    pub own: Vec<[Range<u32>; 2]>,
 }
 
 /// Replace each cut face in `geometry` and `charts` with its sub-faces, at
@@ -161,6 +177,7 @@ pub(crate) fn apply_face_cuts(
     if cuts.is_empty() {
         return CutFaces {
             face_remap: (0..face_count).map(|face| face..face + 1).collect(),
+            cut_parents: Vec::new(),
         };
     }
     let section = &geometry.geometry;
@@ -170,6 +187,7 @@ pub(crate) fn apply_face_cuts(
     let mut ranges = Vec::with_capacity(face_count + cuts.len());
     let mut new_charts = Vec::with_capacity(charts.len() + cuts.len());
     let mut face_remap = Vec::with_capacity(face_count);
+    let mut cut_parents = Vec::with_capacity(cuts.len());
     let mut cuts = cuts.iter().peekable();
     debug_assert_eq!(charts.len(), face_count);
 
@@ -210,11 +228,16 @@ pub(crate) fn apply_face_cuts(
             Some(cut) => {
                 let parent = chart;
                 let polygon = fan_polygon(face_indices, &section.vertices);
+                let mut own = Vec::new();
                 for (window, piece) in cut.windows() {
                     let clipped = clip_to_piece(&polygon, parent, cut, piece);
                     if clipped.len() < 3 {
                         continue;
                     }
+                    own.push([
+                        cut.u_lines[piece[0]]..cut.u_lines[piece[0] + 1],
+                        cut.v_lines[piece[1]]..cut.v_lines[piece[1] + 1],
+                    ]);
                     let base = vertices.len() as u32;
                     let index_offset = indices.len() as u32;
                     vertices.extend(clipped.iter().cloned());
@@ -228,6 +251,13 @@ pub(crate) fn apply_face_cuts(
                     });
                     new_charts.push(sub_chart(parent, &window));
                 }
+                if !own.is_empty() {
+                    cut_parents.push(CutParent {
+                        parent: face as u32,
+                        faces: first_new..faces.len(),
+                        own,
+                    });
+                }
             }
         }
         face_remap.push(first_new..faces.len());
@@ -239,7 +269,10 @@ pub(crate) fn apply_face_cuts(
     geometry.geometry.faces = faces;
     geometry.face_index_ranges = ranges;
     *charts = new_charts;
-    CutFaces { face_remap }
+    CutFaces {
+        face_remap,
+        cut_parents,
+    }
 }
 
 /// A fan-triangulated face's polygon: `(0, 1, 2), (0, 2, 3), …` back to its

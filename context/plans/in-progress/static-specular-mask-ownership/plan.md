@@ -132,6 +132,34 @@ packing, and runtime.
   10 s timeout once, while the runtime worker's cold build loaded the machine. It passes alone
   and in two further full runs (about 6 s each).
 
+- **Cut-face estimate as built.** `apply_face_cuts` now records a `CutParent` per cut face:
+  the pre-cut index, the emitted sub-face range, and each sub-face's own segment of the parent
+  grid. These reach `PreparedAtlas.cut_parents`.
+  - The estimate samples the parent-grid lattice `g ≡ 2 (mod 4)` on both axes. Each sample goes
+    through the emitted sub-face whose own segment holds it, so samples never sit in padding or
+    in a piece the polygon missed.
+  - A light is traced only where its unshadowed term reaches the sample, after a parent-box
+    reach cull.
+  - Ranking reads `lit_samples × 16` and `contribution × 16`.
+  - The walk counts each cut face's exact lit texels per light, each parent-grid texel once by
+    its own segment. Those counts drive the post-walk clear (P15), the drop report, and the
+    peak demand.
+  - The memo key folds the stride, the mode tag and the cut map.
+- **AC 9 (P17), clarification of the same meaning.** The Decision ranks a cut face on the
+  estimate scaled to area, so one lit sample reads as 16 texels. A promoted light the lattice
+  happens to sample therefore ranks in the upper tier however few texels it really lights. The
+  row's "never" holds wherever the estimate is right, and no sparse estimate can promise more.
+  - The test uses a promoted light that lights five texels between lattice points.
+  - The row's clause "one sub-face alone would put it above the floor" cannot arise. A sub-face's
+    texels are a subset of its parent's, so a sub-face count never exceeds the parent count.
+  - Flagged for the owner at landing.
+- **AC 7 (P14) proof is split.** A real light that lights 16+ texels while missing every
+  lattice point needs slit geometry aligned to the lattice. Instead, two parts:
+  - the lattice itself (`the_estimate_traces_only_cut_faces_and_lights_that_reach_them`: 576
+    samples on the 24 m floor);
+  - a fill test whose fixed owners leave the missed light out, which then takes no channel and
+    is warned once, by its parent, with its de-duplicated count.
+
 ## Delegated answers
 
 - **Lit-texel floor: 16 interior texels.** The census cleared every stress-map overflow
@@ -263,8 +291,8 @@ Each task commits with its plan update.
 | 3 | `level-format` `SMB7`: `SHADOWMASK_OWNER_EMPTY = 0xFFFF`, a face-count header, the owner table, and load rejects (AC 44). Rework the prefix helpers for streaming. `SMB6` becomes a named re-bake. Readers compile against it | integrating executor | 2 | done: SMB7 codec with `ShadowmaskOwnerBounds` and `validate_face_owners`; 18 codec tests cover every AC 44 reject and the SMB5/SMB6 re-bake messages. Consumers moved to `shadowmask_atlas_smb6`. Workspace and `capture,dev-tools` targets check clean; level-format 604, compiler shadowmask and lightmap 110, loader 51, renderer lightmap and shadowmask 82, lighting 65 tests pass |
 | 4 | Compiler eligibility and presence: eligible set and `source_index` → spec index map. Owner-index cap error before any lightmap work (AC 48). Decouple id-42 presence from ids 40 and 41 in prepare, pack plan, memo validator and residency dry run (AC 45, 47) | integrating executor | 3 | done with 5: `shadowmask_bake/eligibility.rs`. `check_owner_index_capacity` runs first in `bake_fused_windowed`. Id 42 is decoupled from ids 40/41 in prepare, the pack plan, the memo and the dry run. Tests: `eligibility_skips_dynamic_sdf_bake_only_and_animated_lights`, `the_owner_index_cap_is_the_u16_range_less_the_empty_sentinel`, `too_many_static_spec_lights_fail_before_any_lightmap_work`, `fused_stage_progress_is_exact_and_a_cleared_selection_keeps_the_shadowmask`, `pack_write_emits_shadowmask_whatever_the_entity_shadow_sections_hold`, `an_occluded_light_takes_no_channel_and_one_lit_texel_takes_one` |
 | 5 | In-walk ownership for uncut faces. Per-layer texel → face map. Per-face shadowed sums with an `is_finite` gate. Floor tier, then id-40 tier, then contribution, then index. Eviction zeros the padded rect; an owner's first write zeros unwritten texels. Before encode, sort owners ascending and permute the channel planes. Drop report and `--verbose` peak from `finish()`. Retire the graph and assignment (AC 20–32, 34–37, 14, 24) | integrating executor | 4 | done for uncut faces. `ownership.rs` (`Candidate::rank_cmp`, `FaceChannels`, `OwnerReport`) and `fill.rs` (`OwnershipFill`). The analytic graph, assignment, standalone reference and section modules are deleted, and the compiler no longer imports SMB6. 22 unit tests in `shadowmask_bake::tests` plus stage tests `occluded_lights_and_suns_own_only_the_faces_they_reach`, `the_drop_report_names_light_and_face_and_repeats_on_a_warm_memo_hit` and `fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes`. Compiler: lib 186, bin 1441, integration 8 pass. Cut faces still rank per sub-face until task 6 |
-| 6 | Cut-face estimate. Plumb `FaceCut` and `face_remap` to the walk. Sample emitted sub-chart interiors on the floor stride with deduplication. Trace only lights whose analytic term reaches. Rank and fix owners before the walk; clear zero-bake owners after it. Exact parent lit-texel count. Report a cut face once, by parent (AC 3–9, 33, 42) | integrating executor | 5 | |
-| 7 | Cache. The id-42 memo key covers every eligible light's layer hashes, compact spec indices, id-40 membership, floor, estimate density and mode, and the cut map; bump the stage version. The memo stores the drop report and peak demand. The reuse path reads every eligible partition. Trace and fill counters (AC 23, 38–41, 43) | integrating executor | 6 | partly done with 5: the key covers eligible spec indices, id-40 membership, layer hashes, face count and floor (stage version 7). The entry carries the drop report, and the reuse path reads every eligible partition (AC 23, 38, 39, 40 proven). The estimate's parameters and cut map join the key in task 6 (AC 41–43) |
+| 6 | Cut-face estimate. Plumb `FaceCut` and `face_remap` to the walk. Sample emitted sub-chart interiors on the floor stride with deduplication. Trace only lights whose analytic term reaches. Rank and fix owners before the walk; clear zero-bake owners after it. Exact parent lit-texel count. Report a cut face once, by parent (AC 3–9, 33, 42) | integrating executor | 5 | done: `shadowmask_bake/estimate.rs`, plus cut support in `fill.rs`. Unit tests: `a_light_the_estimate_missed_takes_no_channel_and_is_reported_once_by_its_parent`, `an_estimated_owner_that_bakes_nothing_is_cleared_after_the_walk`, `a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other`, `estimate_parameters_carry_stride_mode_and_cut_map`. Stage tests, on a 24 m floor cut 2×2 across four bake layers: `cut_sub_faces_share_one_owner_set_ranked_over_the_whole_face`, `cut_face_owners_are_identical_across_workers_windows_and_cache_paths`, `cut_face_admission_needs_a_lit_interior_texel`, `a_small_promoted_light_on_a_cut_face_never_displaces_an_above_floor_light`, `the_estimate_traces_only_cut_faces_and_lights_that_reach_them`. Compiler: bin 1450, lib 186, integration 8 |
+| 7 | Cache. The id-42 memo key covers every eligible light's layer hashes, compact spec indices, id-40 membership, floor, estimate density and mode, and the cut map; bump the stage version. The memo stores the drop report and peak demand. The reuse path reads every eligible partition. Trace and fill counters (AC 23, 38–41, 43) | integrating executor | 6 | partly done with 5: the key covers eligible spec indices, id-40 membership, layer hashes, face count and floor (stage version 7). The entry carries the drop report, and the reuse path reads every eligible partition (AC 23, 38, 39, 40 proven). The estimate's parameters and cut map joined the key in task 6. AC 41: a memo hit logs no estimate. AC 42: no cut face means no estimate; only reaching lights are traced. AC 43: params carry stride, mode and cut map, and the key changes with them. Done |
 | 8 | Runtime load and delivery. Parse and validate id 42 against the static spec count and the id-17 face count. Retire the id-40 reconcile. Rebuild face ranges from BVH leaves and build the owner stream into `LevelGeometry`, with the mask-present bit (AC 13, 44, 46) | worker in own worktree, after 3 lands; integrated by executor | 1, 3 | |
 | 9 | Renderer and shader. Second vertex buffer at both build sites (dummy when absent) and `@location(9)` flat owners. The owner function replaces the chunk-list specular; union subtraction by ownership. Retire `cone_cos.z`, the channel tables and the metadata channel field. Directional `L = −aim`. Mask-present gate (AC 1, 2, 10–19, 49) | same worker as 8; integrated by executor | 1, 8 | |
 | 10 | Engine-level proofs: rewrite `capture_shadowmask_groups` for owner swap, the streaming capture identity (AC 15, 16), and end-to-end compile-and-render fixtures for AC 1 and 17 | integrating executor | 7, 9 | |

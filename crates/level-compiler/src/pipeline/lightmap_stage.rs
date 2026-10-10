@@ -200,10 +200,28 @@ pub(crate) fn bake_fused_windowed(
         static_spec_light_count,
         prepared.layer_count,
         &shared,
+        &shadowmask_bake::EstimateScene {
+            cut_parents: &prepared.cut_parents,
+            bvh,
+            primitives,
+            geometry,
+            area_sample_count: args.soft_shadow_samples,
+        },
         stage_cache,
         shadowmask_control,
     )?;
-    let log_report = |report: &shadowmask_bake::OwnerReport| {
+    let log_report = |report: &shadowmask_bake::OwnerReport,
+                      estimate: &shadowmask_bake::EstimateStats| {
+        if args.verbose && estimate.cut_faces > 0 {
+            log::info!(
+                "[ShadowmaskAtlas] cut-face estimate: {} cut face(s), {} sample(s), {} light \
+                 trace(s) in {:.1} ms",
+                estimate.cut_faces,
+                estimate.samples,
+                estimate.traces,
+                estimate.elapsed.as_secs_f64() * 1000.0,
+            );
+        }
         shadowmask_bake::log_owner_report(
             report,
             |spec_index| {
@@ -221,9 +239,10 @@ pub(crate) fn bake_fused_windowed(
         let shadowmask_bake::FusedShadowmaskOutput {
             section: shadowmask,
             report: shadowmask_report,
+            estimate: shadowmask_estimate,
             elapsed: shadowmask_elapsed,
         } = shadowmask.finish(&shared);
-        log_report(&shadowmask_report);
+        log_report(&shadowmask_report, &shadowmask_estimate);
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
                 section: postretro_level_format::lightmap::LightmapSection::empty(
@@ -459,9 +478,10 @@ pub(crate) fn bake_fused_windowed(
     let shadowmask_bake::FusedShadowmaskOutput {
         section: shadowmask,
         report: shadowmask_report,
+        estimate: shadowmask_estimate,
         elapsed: shadowmask_elapsed,
     } = shadowmask.finish(&shared);
-    log_report(&shadowmask_report);
+    log_report(&shadowmask_report, &shadowmask_estimate);
     Ok(FusedLightingOutput {
         lightmap: LightmapBakeOutput {
             section,

@@ -9,7 +9,7 @@ use postretro_level_format::shadowmask_atlas::{NO_FACE_OWNERS, SHADOWMASK_OWNER_
 use super::*;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::lightmap_bake::{BlockLayout, CellBlock, Chart};
+use crate::lightmap_bake::{BlockLayout, CellBlock, Chart, CutParent};
 use crate::lightmap_layer::LayerTexel;
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 use ownership::{DropSite, LIT_TEXEL_FLOOR, OwnerDrop};
@@ -156,6 +156,41 @@ fn eligible(light: &MapLight, spec_index: u16, promoted: bool) -> EligibleLight<
     }
 }
 
+/// Trace inputs for a level with no cut face: the estimate never reads them.
+struct NoCutScene {
+    bvh: bvh::bvh::Bvh<f32, 3>,
+    geometry: crate::geometry::GeometryResult,
+}
+
+impl NoCutScene {
+    fn new() -> Self {
+        Self {
+            bvh: bvh::bvh::Bvh { nodes: Vec::new() },
+            geometry: crate::geometry::GeometryResult {
+                geometry: postretro_level_format::geometry::GeometrySection {
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    faces: Vec::new(),
+                },
+                texture_names: postretro_level_format::texture_names::TextureNamesSection {
+                    names: Vec::new(),
+                },
+                face_index_ranges: Vec::new(),
+            },
+        }
+    }
+
+    fn scene(&self) -> EstimateScene<'_> {
+        EstimateScene {
+            cut_parents: &[],
+            bvh: &self.bvh,
+            primitives: &[],
+            geometry: &self.geometry,
+            area_sample_count: 4,
+        }
+    }
+}
+
 struct Fill {
     section: Option<ShadowmaskAtlasSection>,
     report: OwnerReport,
@@ -178,7 +213,7 @@ impl Fill {
 /// Consume `arrivals` in order through one owner fill.
 fn run(atlas: &Atlas, arrivals: &[(&EligibleLight<'_>, LightmapLayer)]) -> Fill {
     let shared = atlas.shared();
-    let mut fill = OwnershipFill::new(&shared, 1, None);
+    let mut fill = OwnershipFill::new(&shared, 1, &[], Vec::new(), None);
     for (light, partition) in arrivals {
         fill.consume(light, partition, &shared);
     }
@@ -786,6 +821,7 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     let cache = StageCache::new(&dir).expect("residency test cache");
     let control = crate::bake_control::BakeControl::unrestricted();
     let raw_layer = atlas.width as usize * CHART as usize * 4;
+    let no_cut_scene = NoCutScene::new();
 
     reset_shadowmask_output_allocation_count();
     reset_shadowmask_streamed_cache_write_count();
@@ -797,6 +833,7 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
         1,
         1,
         &shared,
+        &no_cut_scene.scene(),
         Some(&cache),
         &control,
     )
@@ -825,6 +862,7 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
         1,
         1,
         &shared,
+        &no_cut_scene.scene(),
         Some(&cache),
         &control,
     )
@@ -836,4 +874,245 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     assert_eq!(shadowmask_output_allocation_count(), 0);
     drop(cache);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One cut face, pre-cut index 9: a 12 × 4 parent grid cut at u = 6 into two
+/// sub-faces whose 8 × 4 windows overlap by two texels each side of the cut
+/// (`[0, 8)` and `[4, 12)`), plus one ordinary face after them.
+struct CutAtlas {
+    atlas: Atlas,
+    cut: CutParent,
+}
+
+const SUB_W: u32 = 8;
+const SUB_CHART: u32 = SUB_W + 2 * PAD;
+
+impl CutAtlas {
+    fn new() -> Self {
+        let mut atlas = Atlas::new(3);
+        // Re-lay the first two charts as 8 × 4 sub-charts of the 12 × 4 parent.
+        let width = 2 * SUB_CHART + CHART;
+        for (k, origin) in [0u32, 4].into_iter().enumerate() {
+            let chart = &mut atlas.charts[k];
+            chart.width_texels = SUB_CHART;
+            chart.uv_extent = [SUB_W as f32, INTERIOR as f32];
+            chart.uv_min = [origin as f32, 0.0];
+            chart.window = Some(crate::lightmap_bake::ChartWindow {
+                grid_uv_min: [0.0, 0.0],
+                grid_uv_extent: [12.0, INTERIOR as f32],
+                grid_interior: [12, INTERIOR],
+                origin: [origin, 0],
+            });
+            atlas.placements[k].x = k as u32 * SUB_CHART;
+        }
+        atlas.placements[2].x = 2 * SUB_CHART;
+        atlas.width = width;
+        atlas.layout.blocks[0].width = width;
+        Self {
+            atlas,
+            cut: CutParent {
+                parent: 9,
+                faces: 0..2,
+                own: vec![[0..6, 0..INTERIOR], [6..12, 0..INTERIOR]],
+            },
+        }
+    }
+
+    /// Bake-layer index of parent-grid texel `(gx, gy)` in sub-face `k`.
+    fn idx(&self, k: usize, gx: u32, gy: u32) -> u32 {
+        let origin = [0u32, 4][k];
+        (PAD + gy) * self.atlas.width + k as u32 * SUB_CHART + PAD + gx - origin
+    }
+
+    /// Every sub-face texel that shows parent-grid texel `(gx, gy)`.
+    fn both(&self, gx: u32, gy: u32, visibility: f32) -> Vec<(u32, f32)> {
+        let mut texels = Vec::new();
+        if gx < 8 {
+            texels.push((self.idx(0, gx, gy), visibility));
+        }
+        if gx >= 4 {
+            texels.push((self.idx(1, gx, gy), visibility));
+        }
+        texels
+    }
+
+    /// Parent-grid columns `cols` across every row, through both sub-faces.
+    fn columns(&self, cols: std::ops::Range<u32>, visibility: f32) -> Vec<(u32, f32)> {
+        cols.flat_map(|gx| (0..INTERIOR).map(move |gy| (gx, gy)))
+            .flat_map(|(gx, gy)| self.both(gx, gy, visibility))
+            .collect()
+    }
+
+    fn sub_padded(&self, k: usize) -> Vec<u32> {
+        (0..CHART)
+            .flat_map(|y| (0..SUB_CHART).map(move |x| (y, x)))
+            .map(|(y, x)| y * self.atlas.width + k as u32 * SUB_CHART + x)
+            .collect()
+    }
+
+    /// Fill with `fixed` as the estimate's owners for the cut face.
+    fn run(
+        &self,
+        fixed: &[EligibleLight<'_>],
+        arrivals: &[(&EligibleLight<'_>, LightmapLayer)],
+    ) -> Fill {
+        let shared = self.atlas.shared();
+        let mut channels = ownership::FaceChannels::default();
+        for light in fixed {
+            channels.offer(ownership::Candidate {
+                spec_index: light.spec_index,
+                lit_texels: LIT_TEXEL_FLOOR,
+                contribution: 1.0,
+                promoted: light.promoted,
+            });
+        }
+        let mut fill = OwnershipFill::new(
+            &shared,
+            1,
+            std::slice::from_ref(&self.cut),
+            vec![channels],
+            None,
+        );
+        for (light, partition) in arrivals {
+            fill.consume(light, partition, &shared);
+        }
+        let (section, report) = fill.finish(&shared);
+        let raw = if section.is_some() {
+            take_last_raw_fill()
+        } else {
+            Vec::new()
+        };
+        Fill {
+            section,
+            report,
+            raw,
+        }
+    }
+}
+
+fn cut_partition(cut: &CutAtlas, texels: Vec<(u32, f32)>) -> LightmapLayer {
+    partition(&cut.atlas, texels)
+}
+
+const CUT_SITE: DropSite = DropSite::CutFace {
+    parent: 9,
+    first_face: 0,
+    last_face: 1,
+};
+
+// AC 7 (P14), fill half: a light the estimate missed takes no channel in any
+// sub-face, even a free one, and the drop warning names it once, by its parent,
+// counting each parent-grid texel once.
+#[test]
+fn a_light_the_estimate_missed_takes_no_channel_and_is_reported_once_by_its_parent() {
+    let cut = CutAtlas::new();
+    let owner = light_over(0, 1.0);
+    let missed = light_over(0, 9.0);
+    let owner_e = eligible(&owner, 0, false);
+    let missed_e = eligible(&missed, 1, false);
+    // Columns 2..8 cross the overlap (4..8 sit in both sub-faces): 24 parent
+    // texels, 40 sub-face texels.
+    let arrivals = [
+        (&owner_e, cut_partition(&cut, cut.columns(0..12, 1.0))),
+        (&missed_e, cut_partition(&cut, cut.columns(2..8, 1.0))),
+    ];
+    let fill = cut.run(&[owner_e], &arrivals);
+    assert_eq!(fill.owners(0), [0, E, E, E]);
+    assert_eq!(
+        fill.owners(1),
+        [0, E, E, E],
+        "sub-faces share one owner set"
+    );
+    assert_eq!(fill.owners(2), NO_FACE_OWNERS);
+    assert_eq!(
+        fill.report.drops,
+        vec![OwnerDrop {
+            site: CUT_SITE,
+            spec_index: 1,
+            lit_texels: 24
+        }]
+    );
+    assert_eq!(fill.report.peak_face_demand, 2, "a cut face counts once");
+    for k in 0..2 {
+        for idx in cut.sub_padded(k) {
+            for channel in 1..4 {
+                assert_eq!(fill.channel(idx, channel), 0, "free channel {channel}");
+            }
+        }
+    }
+}
+
+// AC 8 (P15): an estimated owner whose partitions bake no lit texel on any
+// sub-face holds no channel in the final owner table; an above-floor light it
+// displaced is warned.
+#[test]
+fn an_estimated_owner_that_bakes_nothing_is_cleared_after_the_walk() {
+    let cut = CutAtlas::new();
+    let lit = light_over(0, 1.0);
+    let dark = light_over(0, 1.0);
+    let displaced = light_over(0, 1.0);
+    let lit_e = eligible(&lit, 0, false);
+    let dark_e = eligible(&dark, 1, false);
+    let displaced_e = eligible(&displaced, 2, false);
+    let arrivals = [
+        (&lit_e, cut_partition(&cut, cut.columns(0..12, 1.0))),
+        (&dark_e, cut_partition(&cut, cut.columns(0..12, 0.0))),
+        (&displaced_e, cut_partition(&cut, cut.columns(6..12, 1.0))),
+    ];
+    let fill = cut.run(&[lit_e, dark_e], &arrivals);
+    assert_eq!(fill.owners(0), [0, E, E, E]);
+    assert_eq!(fill.owners(1), [0, E, E, E]);
+    assert_eq!(
+        fill.report.drops,
+        vec![OwnerDrop {
+            site: CUT_SITE,
+            spec_index: 2,
+            lit_texels: 24
+        }]
+    );
+}
+
+// AC 5 (P16): a cut face's owner that lights only one of its sub-faces reads
+// zero across the other, padding included; no sub-face keeps an unwritten value
+// in an owned channel.
+#[test]
+fn a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other() {
+    let cut = CutAtlas::new();
+    let left = light_over(0, 1.0);
+    let both = light_over(0, 1.0);
+    let left_e = eligible(&left, 0, false);
+    let both_e = eligible(&both, 1, false);
+    let arrivals = [
+        // Columns 0..4 belong to sub-face 0 alone.
+        (&left_e, cut_partition(&cut, cut.columns(0..4, 1.0))),
+        (&both_e, cut_partition(&cut, cut.columns(0..12, 0.5))),
+    ];
+    let fill = cut.run(&[left_e, both_e], &arrivals);
+    assert_eq!(fill.owners(0), [0, 1, E, E]);
+    assert_eq!(fill.owners(1), [0, 1, E, E]);
+    for idx in cut.sub_padded(1) {
+        assert_eq!(fill.channel(idx, 0), 0, "texel {idx} of the unlit sub-face");
+    }
+    assert_eq!(fill.channel(cut.idx(0, 1, 1), 0), 255);
+    // Each owner's values sit in its own channel in both sub-faces.
+    assert_eq!(fill.channel(cut.idx(0, 5, 2), 1), 128);
+    assert_eq!(fill.channel(cut.idx(1, 5, 2), 1), 128);
+    assert_eq!(fill.channel(cut.idx(1, 11, 2), 1), 128);
+}
+
+// AC 43 and P23: the estimate's stride, sampling mode and cut map all reach the
+// memo key; a level with no cut face adds nothing.
+#[test]
+fn estimate_parameters_carry_stride_mode_and_cut_map() {
+    let cut = CutAtlas::new().cut;
+    assert!(estimate::estimate_params(&[]).is_empty());
+    let params = estimate::estimate_params(std::slice::from_ref(&cut));
+    assert_eq!(&params[..4], &estimate::ESTIMATE_STRIDE.to_le_bytes());
+    assert_eq!(
+        estimate::ESTIMATE_STRIDE * estimate::ESTIMATE_STRIDE,
+        LIT_TEXEL_FLOOR
+    );
+    let mut moved = cut.clone();
+    moved.own[0][0] = 0..5;
+    assert_ne!(params, estimate::estimate_params(&[moved]));
 }

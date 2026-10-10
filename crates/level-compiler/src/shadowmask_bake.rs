@@ -11,12 +11,15 @@ use postretro_level_format::shadowmask_atlas::{
 };
 
 use crate::bake_control::BakeControl;
+use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
-use crate::lightmap_bake;
+use crate::geometry::GeometryResult;
+use crate::lightmap_bake::{self, CutParent};
 use crate::lightmap_layer::{self, LightmapLayer, SharedAtlas};
 
 mod eligibility;
 mod encode;
+mod estimate;
 mod fill;
 mod memo;
 mod ownership;
@@ -28,6 +31,16 @@ use fill::*;
 pub(crate) use memo::shadowmask_atlas_input_hash;
 use memo::{cache_shadowmask_section, read_shadowmask_memo};
 pub(crate) use ownership::{OwnerReport, log_owner_report};
+
+/// What the cut-face estimate traced on a miss; zero on a memo hit or with no
+/// cut face.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EstimateStats {
+    pub(crate) cut_faces: usize,
+    pub(crate) samples: usize,
+    pub(crate) traces: usize,
+    pub(crate) elapsed: Duration,
+}
 
 pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
@@ -96,6 +109,7 @@ pub(crate) struct FusedShadowmaskPlan<'a> {
     eligible_by_source: HashMap<usize, EligibleLight<'a>>,
     cache_write: Option<(&'a StageCache, CacheKey)>,
     control: &'a BakeControl,
+    estimate: EstimateStats,
     work_elapsed: Duration,
 }
 
@@ -140,6 +154,7 @@ impl FusedShadowmaskPlan<'_> {
         FusedShadowmaskOutput {
             section,
             report,
+            estimate: self.estimate,
             elapsed: self.work_elapsed,
         }
     }
@@ -148,11 +163,23 @@ impl FusedShadowmaskPlan<'_> {
 pub(crate) struct FusedShadowmaskOutput {
     pub(crate) section: Option<ShadowmaskAtlasSection>,
     pub(crate) report: OwnerReport,
+    pub(crate) estimate: EstimateStats,
     pub(crate) elapsed: Duration,
 }
 
-/// Probe the whole shadowmask memo and, on a miss, set up the empty owner fill
-/// the fused walk ranks partitions into. No visibility ray is traced here.
+/// What the cut-face estimate traces against: the walk's BVH, geometry and
+/// area-sample count.
+pub(crate) struct EstimateScene<'a> {
+    pub(crate) cut_parents: &'a [CutParent],
+    pub(crate) bvh: &'a bvh::bvh::Bvh<f32, 3>,
+    pub(crate) primitives: &'a [BvhPrimitive],
+    pub(crate) geometry: &'a GeometryResult,
+    pub(crate) area_sample_count: u32,
+}
+
+/// Probe the whole shadowmask memo and, on a miss, set up the owner fill the
+/// fused walk ranks partitions into. A miss traces the cut-face estimate here,
+/// after the memo probe and before the walk; nothing else is traced.
 ///
 /// `eligible_layer_hashes` holds each eligible light's `layer_count` layer
 /// hashes in ascending layer order, light-major, and is empty without a cache.
@@ -162,6 +189,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     static_spec_light_count: usize,
     layer_count: u32,
     shared: &SharedAtlas<'_>,
+    scene: &EstimateScene<'_>,
     cache: Option<&'a StageCache>,
     control: &'a BakeControl,
 ) -> Result<FusedShadowmaskPlan<'a>, ShadowmaskBakeError> {
@@ -172,6 +200,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         eligible_by_source,
         cache_write: None,
         control,
+        estimate: EstimateStats::default(),
         work_elapsed: started.elapsed(),
     };
     // No eligible light, or no placed chart, means nothing to own. The empty-
@@ -197,7 +226,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             shared.atlas_width,
             shared.atlas_height,
             layer_count,
-            &[],
+            &estimate::estimate_params(scene.cut_parents),
         );
         CacheKey::new(
             SHADOWMASK_ATLAS_STAGE_ID,
@@ -235,12 +264,36 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
         log::info!("[cache] shadowmask_atlas miss");
     }
 
+    let estimate_started = Instant::now();
+    let cut_estimate = estimate::estimate_cut_owners(
+        scene.cut_parents,
+        &eligible,
+        shared,
+        scene.bvh,
+        scene.primitives,
+        scene.geometry,
+        scene.area_sample_count,
+        control,
+    );
+    let estimate_stats = EstimateStats {
+        cut_faces: scene.cut_parents.len(),
+        samples: cut_estimate.samples,
+        traces: cut_estimate.traces,
+        elapsed: estimate_started.elapsed(),
+    };
     Ok(FusedShadowmaskPlan {
         outcome: None,
-        fill: Some(OwnershipFill::new(shared, layer_count, Some(control))),
+        fill: Some(OwnershipFill::new(
+            shared,
+            layer_count,
+            scene.cut_parents,
+            cut_estimate.owners,
+            Some(control),
+        )),
         eligible_by_source,
         cache_write: cache.zip(section_key),
         control,
+        estimate: estimate_stats,
         work_elapsed: started.elapsed(),
     })
 }
@@ -275,8 +328,17 @@ fn record_raw_fill(raw: &[u8]) {
     LAST_RAW_FILL.with(|last| *last.borrow_mut() = Some(raw.to_vec()));
 }
 
+/// The last raw fill finished on this thread, or empty when a memo hit or an
+/// unowned level encoded none.
 #[cfg(test)]
-fn take_last_raw_fill() -> Vec<u8> {
+pub(crate) fn take_last_raw_fill_if_any() -> Vec<u8> {
+    LAST_RAW_FILL
+        .with(|last| last.borrow_mut().take())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) fn take_last_raw_fill() -> Vec<u8> {
     LAST_RAW_FILL
         .with(|last| last.borrow_mut().take())
         .expect("a shadowmask fill must have finished on this thread")

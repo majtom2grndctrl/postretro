@@ -10,7 +10,7 @@ use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks_within};
 use super::charts::{Chart, plan_charts};
-use super::face_cut::{FaceCut, apply_face_cuts, plan_face_cuts, planned_chart_area};
+use super::face_cut::{CutParent, FaceCut, apply_face_cuts, plan_face_cuts, planned_chart_area};
 use super::{CompositedAtlas, LightmapBakeError, MAX_ATLAS_LAYERS};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
@@ -35,6 +35,9 @@ pub struct PreparedAtlas {
     pub layer_count: u32,
     /// Cell blocks in block-id order and each chart's block.
     pub layout: BlockLayout,
+    /// Every face cut past one pool layer, with its sub-faces: one mask owner
+    /// set each.
+    pub cut_parents: Vec<CutParent>,
 }
 
 /// [`prepare_atlas_ordered`] with blocks in cell-id order at the default
@@ -94,14 +97,17 @@ pub(crate) fn prepare_atlas_within(
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     let cut = plan_cut_charts(geom, static_lights, texel_density, scale_regions, pool_edge)?;
-    pack_cut_charts(
+    let cut_parents = cut.cut_parents;
+    let mut prepared = pack_cut_charts(
         geom,
         static_lights,
         cut.charts,
         ordering,
         pool_edge,
         control,
-    )
+    )?;
+    prepared.cut_parents = cut_parents;
+    Ok(prepared)
 }
 
 /// Atlas preparation's first phase: the charts after any oversize-face cut.
@@ -113,6 +119,8 @@ pub struct CutCharts {
     /// `Some` when a face was cut: the geometry as it stood before the cut,
     /// faces sharing no vertices and no lightmap attributes written.
     pub pre_cut: Option<GeometryResult>,
+    /// Every cut face and its emitted sub-faces; empty without a cut.
+    pub cut_parents: Vec<CutParent>,
 }
 
 /// Plan charts on the uncut geometry and cut every face whose chart exceeds
@@ -131,6 +139,7 @@ pub fn plan_cut_charts(
         charts,
         face_remap: None,
         pre_cut: None,
+        cut_parents: Vec::new(),
     };
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(uncut(Vec::new()));
@@ -167,6 +176,7 @@ pub fn plan_cut_charts(
         charts,
         face_remap: Some(cut.face_remap),
         pre_cut: Some(pre_cut),
+        cut_parents: cut.cut_parents,
     })
 }
 
@@ -213,6 +223,7 @@ pub fn pack_cut_charts(
         atlas_height: 1,
         layer_count: 1,
         layout: empty_layout(ordering),
+        cut_parents: Vec::new(),
     };
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(unplaced(charts));
@@ -235,6 +246,7 @@ pub fn pack_cut_charts(
                     atlas_height: pack.layer_dim,
                     layer_count: pack.layer_count,
                     layout: pack.layout,
+                    cut_parents: Vec::new(),
                 },
                 Err(_) => unplaced(charts),
             },
@@ -253,6 +265,7 @@ pub fn pack_cut_charts(
         atlas_height: pack.layer_dim,
         layer_count: pack.layer_count,
         layout: pack.layout,
+        cut_parents: Vec::new(),
     })
 }
 

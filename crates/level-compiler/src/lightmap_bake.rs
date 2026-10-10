@@ -43,6 +43,7 @@ pub(crate) use cell_blocks::{
 };
 pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
+pub use face_cut::CutParent;
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
 
@@ -634,6 +635,7 @@ pub(crate) fn contribution_covers_shadowmask(contribution_squared: f32) -> bool 
     contribution_squared > LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED
 }
 
+#[cfg(test)]
 /// Whether a light geometrically covers a texel before any visibility ray.
 pub(crate) fn light_texel_is_covered(
     light: &MapLight,

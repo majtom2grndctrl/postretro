@@ -100,7 +100,7 @@ pub(super) fn prepare_atlas_stage(
         bvh: rebuilt.as_ref().map_or(bvh_section, |r| &r.bvh_section),
     })?;
 
-    let prepared = lightmap_bake::pack_cut_charts(
+    let mut prepared = lightmap_bake::pack_cut_charts(
         geometry,
         inputs.static_lights,
         cut.charts,
@@ -112,6 +112,7 @@ pub(super) fn prepare_atlas_stage(
         inputs.control,
     )
     .map_err(prepare_error)?;
+    prepared.cut_parents = cut.cut_parents;
     // Without placements the animated passes emit nothing, so there is no
     // block to bound.
     if !prepared.placements.is_empty() {

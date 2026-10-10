@@ -1109,4 +1109,418 @@ fn too_many_static_spec_lights_fail_before_any_lightmap_work() {
     assert_eq!(progress.completed(), 0);
 }
 
+/// Pool edge for cut fixtures: a 24 m floor at 0.25 m/texel (96 interior
+/// texels) cuts 2 × 2 into 56-texel blocks, and a bake layer (64 at least)
+/// holds one of them, so the sub-faces span four bake layers.
+const CUT_POOL_EDGE: u32 = 64;
+
+/// Horizontal quads `(x, z, size, y)`; the first is the floor, face 0.
+fn horizontal_quads(quads: &[(f32, f32, f32, f32)]) -> GeometryResult {
+    let mut geometry = quad_geometry();
+    geometry.geometry.vertices.clear();
+    geometry.geometry.indices.clear();
+    geometry.geometry.faces.clear();
+    geometry.face_index_ranges.clear();
+    for &(x, z, size, y) in quads {
+        push_quad(&mut geometry, x, z, size, y, 0);
+    }
+    geometry
+}
+
+const FLOOR: (f32, f32, f32, f32) = (0.0, 0.0, 24.0, 0.0);
+
+struct CutBake {
+    owners: Vec<[u16; 4]>,
+    section: Vec<u8>,
+    raw: Vec<u8>,
+    cut: crate::lightmap_bake::CutParent,
+    charts: Vec<crate::lightmap_bake::Chart>,
+    placements: Vec<crate::chart_raster::ChartPlacement>,
+    atlas_width: u32,
+    atlas_height: u32,
+    layer_count: u32,
+}
+
+impl CutBake {
+    /// Raw-fill channel `channel` over sub-face `face`'s padded chart.
+    fn channel(&self, face: usize, channel: usize) -> Vec<u8> {
+        let (chart, placement) = (&self.charts[face], self.placements[face]);
+        let plane = (self.atlas_width * self.atlas_height) as usize;
+        (0..chart.height_texels)
+            .flat_map(|row| (0..chart.width_texels).map(move |col| (row, col)))
+            .map(|(row, col)| {
+                let idx = (placement.y + row) * self.atlas_width + placement.x + col;
+                self.raw[(placement.layer as usize * plane + idx as usize) * 4 + channel]
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CutRun<'a> {
+    workers: usize,
+    window: usize,
+    cache: Option<&'a StageCache>,
+    selection: Option<&'a EntityShadowLightsSection>,
+}
+
+impl Default for CutRun<'_> {
+    fn default() -> Self {
+        Self {
+            workers: 1,
+            window: LIGHTMAP_PARTITION_WINDOW,
+            cache: None,
+            selection: None,
+        }
+    }
+}
+
+fn bake_cut(quads: &[(f32, f32, f32, f32)], lights: &[MapLight], run: CutRun<'_>) -> CutBake {
+    let args = test_args();
+    let config = config(false);
+    let mut geometry = horizontal_quads(quads);
+    let static_lights = StaticBakedLights::from_lights(lights);
+    let alpha_lights = AlphaLightsNs::from_lights(lights);
+    let progress = StageProgress::indeterminate();
+    let control = BakeControl::new(Arc::new(Governor::new(run.workers, false)), &progress);
+    let mut bake = || {
+        let prepared = lightmap_bake::prepare_atlas_within(
+            &mut geometry,
+            &static_lights,
+            config.lightmap_density,
+            &[],
+            lightmap_bake::BlockOrdering::by_cell_id(config.direction_texel_scale),
+            CUT_POOL_EDGE,
+            &control,
+        )
+        .expect("cut fixture prepares");
+        let cut = prepared
+            .cut_parents
+            .iter()
+            .find(|cut| cut.parent == 0)
+            .expect("the floor, face 0, is cut")
+            .clone();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("cut fixture BVH");
+        let window = PartitionWindow {
+            size: run.window,
+            ..PartitionWindow::default()
+        };
+        let output = bake_fused_windowed(
+            &args,
+            run.cache,
+            &control,
+            &BakeControl::unrestricted(),
+            &mut geometry,
+            &static_lights,
+            &alpha_lights,
+            run.selection,
+            &[],
+            &bvh,
+            &primitives,
+            &config,
+            prepared,
+            &window,
+        )
+        .expect("cut fixture bakes");
+        let section = output.shadowmask.expect("the cut floor is lit");
+        let raw = crate::shadowmask_bake::take_last_raw_fill_if_any();
+        CutBake {
+            owners: section.owners.clone(),
+            section: section.to_bytes(),
+            raw,
+            cut,
+            charts: output.lightmap.charts,
+            placements: output.lightmap.placements,
+            atlas_width: output.lightmap.atlas_width,
+            atlas_height: output.lightmap.atlas_height,
+            layer_count: output.lightmap.layer_count,
+        }
+    };
+    // One worker bakes on the test thread, where log capture reaches.
+    if run.workers == 1 {
+        return bake();
+    }
+    ThreadPoolBuilder::new()
+        .num_threads(run.workers)
+        .build()
+        .expect("cut fixture pool")
+        .install(bake)
+}
+
+fn over(origin: [f64; 3], range: f32, intensity: f32) -> MapLight {
+    let mut light = point_light(DVec3::from_array(origin), [1.0; 3]);
+    light.falloff_range = range;
+    light.intensity = intensity;
+    light
+}
+
+/// Four broad lights over the whole floor, dimmest first, then a bright light
+/// close over one corner that lights only the first sub-face.
+fn broad_and_corner() -> Vec<MapLight> {
+    vec![
+        over([12.0, 8.0, 12.0], 40.0, 2.0),
+        over([11.0, 8.0, 13.0], 40.0, 3.0),
+        over([13.0, 8.0, 11.0], 40.0, 4.0),
+        over([12.0, 9.0, 12.0], 40.0, 5.0),
+        over([1.5, 1.0, 1.5], 2.5, 60.0),
+    ]
+}
+
+// AC 3 (P1): the sub-faces of one cut face carry identical owner sets, even
+// where they sit in different bake layers and one sub-face alone would have
+// ranked a different fourth light; each owner's mask holds its own baked
+// values in every sub-face.
+#[test]
+fn cut_sub_faces_share_one_owner_set_ranked_over_the_whole_face() {
+    const E: u16 = SHADOWMASK_OWNER_EMPTY;
+    let lights = broad_and_corner();
+    let bake = bake_cut(&[FLOOR], &lights, CutRun::default());
+    assert!(bake.layer_count > 1, "the sub-faces span bake layers");
+    let layers: std::collections::BTreeSet<u32> = bake
+        .cut
+        .faces
+        .clone()
+        .map(|face| bake.placements[face].layer)
+        .collect();
+    assert!(layers.len() > 1, "sub-faces on {layers:?}");
+    for face in bake.cut.faces.clone() {
+        assert_eq!(bake.owners[face], [0, 1, 2, 3], "sub-face {face}");
+    }
+
+    // Ranked alone, the corner quadrant would keep the corner light.
+    let quadrants = [
+        (0.0, 0.0, 12.0, 0.0),
+        (12.0, 0.0, 12.0, 0.0),
+        (0.0, 12.0, 12.0, 0.0),
+        (12.0, 12.0, 12.0, 0.0),
+    ];
+    let uncut = run_fused_with_geometry(
+        &test_args(),
+        None,
+        &lights,
+        None,
+        &config(false),
+        &BakeControl::unrestricted(),
+        &BakeControl::unrestricted(),
+        horizontal_quads(&quadrants),
+    );
+    let corner = owners_of(&uncut)[0];
+    assert!(
+        corner.contains(&4),
+        "a lone quadrant ranks the corner light: {corner:?}"
+    );
+    assert_ne!(corner[3], E);
+
+    // Each owner alone writes the values it writes beside the others.
+    for owner in 0..4 {
+        let alone = bake_cut(&[FLOOR], &lights[owner..=owner], CutRun::default());
+        for face in bake.cut.faces.clone() {
+            assert_eq!(
+                bake.channel(face, owner),
+                alone.channel(face, 0),
+                "owner {owner} in sub-face {face}"
+            );
+        }
+    }
+}
+
+// AC 33 (P18): with a cut face whose sub-faces span bake layers, id 42 and the
+// drop report are identical across worker counts, window sizes, and cold, warm
+// and lightmap-reuse builds; two lights tied on the estimate resolve to the
+// lower index.
+#[test]
+fn cut_face_owners_are_identical_across_workers_windows_and_cache_paths() {
+    let lights = broad_and_corner();
+    let cold = bake_cut(&[FLOOR], &lights, CutRun::default());
+    for (workers, window) in [(4, LIGHTMAP_PARTITION_WINDOW), (1, 1), (4, 2)] {
+        let other = bake_cut(
+            &[FLOOR],
+            &lights,
+            CutRun {
+                workers,
+                window,
+                ..CutRun::default()
+            },
+        );
+        assert_eq!(
+            other.section, cold.section,
+            "workers {workers}, window {window}"
+        );
+    }
+    let dir = fresh_cache_dir("cut_face_paths");
+    let cache = StageCache::new(&dir).expect("cut cache");
+    let cached = CutRun {
+        cache: Some(&cache),
+        ..CutRun::default()
+    };
+    let logs = LogCapture::start();
+    assert_eq!(bake_cut(&[FLOOR], &lights, cached).section, cold.section);
+    logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
+    logs.assert_logged(
+        Level::Info,
+        "[ShadowmaskAtlas] cut-face estimate: 1 cut face(s)",
+    );
+    logs.assert_logged_once(Level::Warn, "on cut face 0 (faces 0..=3)");
+    drop(logs);
+    let logs = LogCapture::start();
+    assert_eq!(bake_cut(&[FLOOR], &lights, cached).section, cold.section);
+    logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas hit");
+    // P20: a memo hit traces no estimate sample.
+    logs.assert_not_logged(Level::Info, "cut-face estimate");
+    logs.assert_logged_once(Level::Warn, "on cut face 0 (faces 0..=3)");
+    drop(logs);
+    // Membership alone: the lightmap memo hits and id 42 rebuilds from cache.
+    let selection = EntityShadowLightsSection {
+        light_indices: vec![4],
+    };
+    let promoted_cold = bake_cut(
+        &[FLOOR],
+        &lights,
+        CutRun {
+            selection: Some(&selection),
+            ..CutRun::default()
+        },
+    );
+    let logs = LogCapture::start();
+    let reuse = bake_cut(
+        &[FLOOR],
+        &lights,
+        CutRun {
+            selection: Some(&selection),
+            ..cached
+        },
+    );
+    logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
+    logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
+    assert_eq!(reuse.section, promoted_cold.section);
+    drop(logs);
+    drop(cache);
+    let _ = std::fs::remove_dir_all(dir);
+
+    // Five identical lights tie on the estimate: the lower four indices own.
+    let tied: Vec<MapLight> = (0..5).map(|_| over([12.0, 8.0, 12.0], 40.0, 3.0)).collect();
+    let tie = bake_cut(&[FLOOR], &tied, CutRun::default());
+    for face in tie.cut.faces.clone() {
+        assert_eq!(tie.owners[face], [0, 1, 2, 3]);
+    }
+}
+
+// AC 4 and AC 6 (P22): on a cut face, a light walled off from the whole face
+// takes no channel even in range, a light lighting part of it does, and a light
+// that reaches only past the face's edge takes none.
+#[test]
+fn cut_face_admission_needs_a_lit_interior_texel() {
+    const E: u16 = SHADOWMASK_OWNER_EMPTY;
+    let roof = (-4.0, -4.0, 32.0, 2.0);
+    let lights = vec![
+        // Above the roof, in range of the whole floor.
+        over([12.0, 4.0, 12.0], 20.0, 4.0),
+        // Under the roof, over one corner.
+        over([3.0, 1.0, 3.0], 2.5, 2.0),
+        // Just past the floor's edge, reaching only its padding.
+        over([-0.2, 0.05, 12.0], 0.3, 50.0),
+    ];
+    let bake = bake_cut(&[FLOOR, roof], &lights, CutRun::default());
+    for face in bake.cut.faces.clone() {
+        assert_eq!(bake.owners[face], [1, E, E, E], "sub-face {face}");
+    }
+    // AC 5 (P16) on real geometry: the corner light lights one sub-face, and
+    // its channel reads zero across the others, padding included.
+    let lit: Vec<usize> = bake
+        .cut
+        .faces
+        .clone()
+        .filter(|&face| bake.channel(face, 0).iter().any(|&v| v != 0))
+        .collect();
+    assert_eq!(
+        lit.len(),
+        1,
+        "the corner light lights one sub-face: {lit:?}"
+    );
+}
+
+// AC 9 (P17): on a cut face, a promoted light lighting fewer texels than the
+// floor takes no channel from an above-floor specular-only light, and is not
+// warned.
+#[test]
+fn a_small_promoted_light_on_a_cut_face_never_displaces_an_above_floor_light() {
+    let mut lights: Vec<MapLight> = (0..4)
+        .map(|n| over([12.0, 8.0, 12.0], 40.0, 2.0 + n as f32))
+        .collect();
+    // A tiny bright light 5 cm above the floor at a parent-grid texel whose
+    // coordinates are multiples of the estimate stride: it lights that texel
+    // and its four neighbours, and no estimate sample.
+    let probe = bake_cut(&[FLOOR], &lights, CutRun::default());
+    let face = probe.cut.faces.start;
+    let chart = &probe.charts[face];
+    let window = chart.window.expect("sub-chart");
+    let (gx, gy) = (8u32, 8u32);
+    let at = crate::chart_raster::chart_texel_world_position(
+        chart,
+        (gx - window.origin[0]) as i32,
+        (gy - window.origin[1]) as i32,
+    );
+    lights.push(over([f64::from(at.x), 0.05, f64::from(at.z)], 0.3, 500.0));
+    let selection = EntityShadowLightsSection {
+        light_indices: vec![4],
+    };
+    let logs = LogCapture::start();
+    let bake = bake_cut(
+        &[FLOOR],
+        &lights,
+        CutRun {
+            selection: Some(&selection),
+            ..CutRun::default()
+        },
+    );
+    for face in bake.cut.faces.clone() {
+        assert_eq!(bake.owners[face], [0, 1, 2, 3], "sub-face {face}");
+    }
+    logs.assert_not_logged(Level::Warn, "lost its specular mask channel");
+}
+
+// AC 41 and AC 42: a level with no cut face traces no estimate sample, and on a
+// cut face the estimate traces only lights whose unshadowed term reaches it.
+#[test]
+fn the_estimate_traces_only_cut_faces_and_lights_that_reach_them() {
+    let near = over([12.0, 8.0, 12.0], 40.0, 2.0);
+    let far = over([200.0, 8.0, 200.0], 5.0, 2.0);
+    let logs = LogCapture::start();
+    let _uncut = run_fused_with_geometry(
+        &test_args(),
+        None,
+        &[near.clone(), far.clone()],
+        None,
+        &config(false),
+        &BakeControl::unrestricted(),
+        &BakeControl::unrestricted(),
+        horizontal_quads(&[(0.0, 0.0, 6.0, 0.0)]),
+    );
+    logs.assert_not_logged(Level::Info, "cut-face estimate");
+    drop(logs);
+
+    let logs = LogCapture::start();
+    let _cut = bake_cut(&[FLOOR], &[near, far], CutRun::default());
+    let line = logs
+        .records()
+        .into_iter()
+        .map(|record| record.message)
+        .find(|message| message.contains("cut-face estimate"))
+        .expect("the estimate reports");
+    let number = |label: &str| -> usize {
+        let before = line.split(label).next().expect(label);
+        before
+            .rsplit(' ')
+            .find(|word| !word.is_empty())
+            .and_then(|word| word.trim_end_matches(',').parse().ok())
+            .unwrap_or_else(|| panic!("no count before {label} in {line}"))
+    };
+    let samples = number(" sample(s)");
+    let traces = number(" light trace(s)");
+    assert!(samples > 100, "{line}");
+    // The 24 m floor sampled every 4 texels of 0.25 m: 24 × 24 samples.
+    assert_eq!(samples, 576, "{line}");
+    assert_eq!(traces, samples, "only the near light is traced: {line}");
+}
+
 mod window_tests;

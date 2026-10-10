@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use postretro_level_format::shadowmask_atlas::{
     FaceOwners, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS, ShadowmaskAtlasSection,
@@ -10,13 +11,15 @@ use postretro_level_format::shadowmask_atlas::{
 
 use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
-use crate::lightmap_bake::{CellBlock, light_contribution_and_direction};
+use crate::lightmap_bake::{CellBlock, CutParent, light_contribution_and_direction};
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas, for_each_light_layer_chart_texel};
 
 use super::SHADOWMASK_FILL_CHECKPOINT_TEXELS;
 use super::eligibility::EligibleLight;
 use super::encode::encode_blocks_bc5;
-use super::ownership::{Admission, Candidate, DropSite, FaceChannels, OwnerDrop, OwnerReport};
+use super::ownership::{
+    Admission, Candidate, DropSite, FaceChannels, LIT_TEXEL_FLOOR, OwnerDrop, OwnerReport,
+};
 
 /// Raw visibility quantized as the mask stores it, or `None` for a non-finite
 /// value, which neither admits a light nor adds to its contribution.
@@ -60,6 +63,17 @@ impl LayerFaceMap {
     }
 }
 
+/// One cut face: owners fixed by its estimate before the walk, and the exact
+/// lit-texel count of every light the walk saw on it, each parent-grid texel
+/// counted once.
+struct CutOwners {
+    parent: u32,
+    faces: Range<usize>,
+    own: Vec<[Range<u32>; 2]>,
+    channels: FaceChannels,
+    exact: BTreeMap<u16, u32>,
+}
+
 pub(super) struct OwnershipFill<'a> {
     width: u32,
     height: u32,
@@ -70,19 +84,45 @@ pub(super) struct OwnershipFill<'a> {
     /// Layer-major, four channels per texel, 0 = occluded. An owned channel
     /// therefore reads occluded wherever its owner wrote nothing.
     data: RawFillBuffer,
-    /// One per chart: the id-17 face order.
+    /// One per chart: the id-17 face order. A cut face's sub-faces use
+    /// `cuts` instead.
     faces: Vec<FaceChannels>,
+    cuts: Vec<CutOwners>,
+    /// Per face, the cut it belongs to.
+    cut_of: Vec<Option<usize>>,
     drops: Vec<OwnerDrop>,
     face_map: LayerFaceMap,
     control: Option<&'a BakeControl>,
 }
 
 impl<'a> OwnershipFill<'a> {
+    /// `cut_owners` holds each of `cut_parents`' estimated owners, in order.
     pub(super) fn new(
         shared: &SharedAtlas<'_>,
         layer_count: u32,
+        cut_parents: &[CutParent],
+        cut_owners: Vec<FaceChannels>,
         control: Option<&'a BakeControl>,
     ) -> Self {
+        debug_assert_eq!(cut_parents.len(), cut_owners.len());
+        let mut cut_of = vec![None; shared.charts.len()];
+        let cuts = cut_parents
+            .iter()
+            .zip(cut_owners)
+            .enumerate()
+            .map(|(c, (cut, channels))| {
+                for face in cut.faces.clone() {
+                    cut_of[face] = Some(c);
+                }
+                CutOwners {
+                    parent: cut.parent,
+                    faces: cut.faces.clone(),
+                    own: cut.own.clone(),
+                    channels,
+                    exact: BTreeMap::new(),
+                }
+            })
+            .collect();
         let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
         let data_len = plane
             .checked_mul(layer_count as usize)
@@ -96,6 +136,8 @@ impl<'a> OwnershipFill<'a> {
             blocks: shared.layout.blocks.clone(),
             data: super::allocate_shadowmask_raw_fill(data_len),
             faces: vec![FaceChannels::default(); shared.charts.len()],
+            cuts,
+            cut_of,
             drops: Vec::new(),
             face_map: LayerFaceMap {
                 layer: None,
@@ -126,6 +168,12 @@ impl<'a> OwnershipFill<'a> {
                     continue;
                 };
                 if visibility == 0 {
+                    continue;
+                }
+                if let Some(c) = self.cut_of[face] {
+                    if self.in_own_segment(c, face, texel.idx, shared) {
+                        *self.cuts[c].exact.entry(light.spec_index).or_default() += 1;
+                    }
                     continue;
                 }
                 let chart = &shared.charts[face];
@@ -159,7 +207,11 @@ impl<'a> OwnershipFill<'a> {
                 Admission::Rejected => self.note_drop(face, candidate),
             }
         }
-        if held.is_empty() {
+        let owns_a_cut = self
+            .cuts
+            .iter()
+            .any(|cut| cut.channels.channel_of(light.spec_index).is_some());
+        if held.is_empty() && !owns_a_cut {
             return;
         }
         let layer_offset = (partition.target_layer as usize)
@@ -171,7 +223,11 @@ impl<'a> OwnershipFill<'a> {
                 let Some(face) = self.face_map.face(texel.idx) else {
                     continue;
                 };
-                let Some(&channel) = held.get(&face) else {
+                let channel = match self.cut_of[face] {
+                    Some(c) => self.cuts[c].channels.channel_of(light.spec_index),
+                    None => held.get(&face).copied(),
+                };
+                let Some(channel) = channel else {
                     continue;
                 };
                 let Some(visibility) = quantize_visibility(texel.raw_visibility) else {
@@ -190,15 +246,46 @@ impl<'a> OwnershipFill<'a> {
         mut self,
         shared: &SharedAtlas<'_>,
     ) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
-        let mut owners: Vec<FaceOwners> = Vec::with_capacity(self.faces.len());
+        let mut owners: Vec<FaceOwners> = vec![NO_FACE_OWNERS; self.faces.len()];
         let mut any_owner = false;
         for face in 0..self.faces.len() {
+            if self.cut_of[face].is_some() {
+                continue;
+            }
             let (entry, source) = self.faces[face].ascending_order();
             if entry != NO_FACE_OWNERS {
                 any_owner = true;
                 self.reorder_channels(face, source, shared);
             }
-            owners.push(entry);
+            owners[face] = entry;
+        }
+        let mut peak_cut_demand = 0;
+        for c in 0..self.cuts.len() {
+            self.release_owners_that_baked_nothing(c, shared);
+            let cut = &self.cuts[c];
+            let (entry, source) = cut.channels.ascending_order();
+            peak_cut_demand = peak_cut_demand.max(cut.exact.len() as u32);
+            let site = DropSite::CutFace {
+                parent: cut.parent,
+                first_face: cut.faces.start as u32,
+                last_face: cut.faces.end as u32 - 1,
+            };
+            for (&spec_index, &lit_texels) in &cut.exact {
+                if lit_texels >= LIT_TEXEL_FLOOR && cut.channels.channel_of(spec_index).is_none() {
+                    self.drops.push(OwnerDrop {
+                        site,
+                        spec_index,
+                        lit_texels,
+                    });
+                }
+            }
+            if entry != NO_FACE_OWNERS {
+                any_owner = true;
+                for face in self.cuts[c].faces.clone() {
+                    self.reorder_channels(face, source, shared);
+                    owners[face] = entry;
+                }
+            }
         }
         let mut drops = std::mem::take(&mut self.drops);
         drops.sort_unstable();
@@ -208,7 +295,8 @@ impl<'a> OwnershipFill<'a> {
                 .iter()
                 .map(FaceChannels::candidates)
                 .max()
-                .unwrap_or(0),
+                .unwrap_or(0)
+                .max(peak_cut_demand),
             drops,
         };
         let Self {
@@ -231,6 +319,43 @@ impl<'a> OwnershipFill<'a> {
         let blocks = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
         drop(raw);
         (Some(ShadowmaskAtlasSection { owners, blocks }), report)
+    }
+
+    /// Whether bake-layer texel `idx` of sub-face `face` lies in that sub-face's
+    /// own segment of its parent's grid. Overlap texels belong to the
+    /// neighbour, so the parent counts each texel once.
+    fn in_own_segment(&self, c: usize, face: usize, idx: u32, shared: &SharedAtlas<'_>) -> bool {
+        let cut = &self.cuts[c];
+        let [u, v] = &cut.own[face - cut.faces.start];
+        let placement = &shared.placements[face];
+        let window = shared.charts[face]
+            .window
+            .expect("a cut sub-face's chart windows its parent");
+        let tx = idx % shared.atlas_width - placement.x - CHART_PADDING_TEXELS;
+        let ty = idx / shared.atlas_width - placement.y - CHART_PADDING_TEXELS;
+        u.contains(&(window.origin[0] + tx)) && v.contains(&(window.origin[1] + ty))
+    }
+
+    /// An estimated owner whose partitions lit no texel of its cut face holds
+    /// no channel in the final table.
+    fn release_owners_that_baked_nothing(&mut self, c: usize, shared: &SharedAtlas<'_>) {
+        for channel in 0..SHADOWMASK_OWNER_CHANNELS {
+            let Some(owner) = self.cuts[c].channels.owner(channel) else {
+                continue;
+            };
+            if self.cuts[c]
+                .exact
+                .get(&owner.spec_index)
+                .copied()
+                .unwrap_or(0)
+                == 0
+            {
+                self.cuts[c].channels.clear(channel);
+                for face in self.cuts[c].faces.clone() {
+                    self.zero_channel(face, channel, shared);
+                }
+            }
+        }
     }
 
     fn note_drop(&mut self, face: usize, candidate: Candidate) {

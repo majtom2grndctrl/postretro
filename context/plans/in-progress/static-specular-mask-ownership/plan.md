@@ -11,6 +11,14 @@ buried lights from every light namespace. Every symbol that Decisions and Path c
 re-read at 75ac7e12f in three read-only passes: compiler mask bake, face cuts with light
 packing, and runtime.
 
+## Owner amendments
+
+- **Performance matrix before and after (owner, 2026-10-10).** Run this on several maps,
+  because each stresses a different part of the renderer. The change must add little
+  overhead. A gain is acceptable: recent wins came from cutting how far light travels, and
+  this change cuts world specular from the chunk list (up to 17 lights) to at most four
+  owners plus the SDF selection. Row M8 holds the protocol, and it subsumes M6.
+
 ## Corrections
 
 - **Path: "a forward-only second vertex buffer, filled at load from per-face data through
@@ -162,8 +170,50 @@ rows are `prl-build` bin tests (`--bin prl-build`).
 | M3 animated light's world highlight gone, nothing else changes, diffuse animation unchanged | executor captures + owner read | manual |
 | M4 campaign-test highlights continuous across 8 m chunk planes | owner, in-engine | manual |
 | M5 kinematic-platform floor and movement-feel: drop report read, highlight loss assessed | executor reports drop report; owner assesses visuals | manual |
-| M6 1660 dense pose forward GPU ms before/after (`capture,dev-tools`) | executor on the 1660 | manual |
+| M6 1660 dense pose forward GPU ms before/after (`capture,dev-tools`) | subsumed by M8 (hallway arena and sheen poses) | manual |
 | M7 hallway cold `--release` before/after: shadowmask + lightmap stage time incl. estimate, peak RSS | owner launches in terminal if over ~2 h; executor otherwise | manual |
+| M8 (owner amendment) runtime perf matrix before/after on five maps: no forward or frame-GPU regression past run-to-run spread at any pose; gains reported | executor on the 1660; protocol below | manual |
+
+### M8 protocol
+
+- **Arms.**
+  - *Before:* the 75ac7e12f engine, built `--release --features capture,dev-tools` in a
+    throwaway target. Copy the binary out and delete the target at once.
+  - *After:* the branch head, same profile and features.
+  - Each arm loads PRLs compiled by its own compiler from the same `.map` sources (`SMB6`
+    for before, `SMB7` for after). Record each source map's SHA-256 prefix.
+- **Maps and poses.** Each map stresses something different:
+
+  | Map | Pose | Stresses |
+  |---|---|---|
+  | `stress-warren-hallway-inspection` | arena `21.13,2.44,30.48,0,0`; sheen `-17,21,86` | dense static lights, chunk lists up to 17: the specular loop this replaces |
+  | `campaign-test` | spawn; leak pose p1 | representative content, promoted lights, union subtraction, streaming |
+  | `kinematic-platform` | station `-6.5,1.22,-27.94,0,0` | movers (separate pipeline, a control) and a large overflow floor |
+  | `movement-feel` | spawn | heaviest owner overflow (17 candidates per face), open sightlines |
+  | `sdf-shadow-test` | spawn | SDF selection, whose specular half now loops `sdf_sel` |
+
+- **Metrics per pose.**
+  - `forward` and total frame GPU ms (`POSTRETRO_GPU_TIMING=1`).
+  - Work CPU and `render_record` (`POSTRETRO_CPU_TIMING=1`).
+  - All from complete post-warmup 120-sample capture windows.
+  - Per map, also the level-load time (startup log line C, which now includes building the
+    owner stream) and the owner buffer's bytes.
+- **Method.**
+  - GTX 1660 Super on the High performance power plan. Balanced downclocks under light load
+    (`balanced-plan-vsync-downclock-hitch`).
+  - A capture resolution that saturates the GPU (4K).
+  - Before and after runs interleaved in one session, at least three per arm per pose.
+  - Report each arm's median and spread.
+  - Close the engine after each run.
+- **Budget.**
+  - At every pose, after's `forward` and frame-GPU medians may not exceed before's by more
+    than the larger arm's spread.
+  - Load time may not grow past the spread of log line C.
+  - A gain passes.
+  - A regression past budget goes to the owner before landing, with the
+    `light_term_mask` 0x40 delta isolating the specular block's share.
+- **Not covered.** The owner's 5300M Mac is CPU-bound at the hallway, and this change adds
+  no per-frame CPU work, so a Mac run is an optional owner cross-check.
 
 ## Tasks
 
@@ -181,5 +231,5 @@ Each task commits with its plan update.
 | 8 | Runtime load and delivery. Parse and validate id 42 against the static spec count and the id-17 face count. Retire the id-40 reconcile. Rebuild face ranges from BVH leaves and build the owner stream into `LevelGeometry`, with the mask-present bit (AC 13, 44, 46) | worker in own worktree, after 3 lands; integrated by executor | 1, 3 | |
 | 9 | Renderer and shader. Second vertex buffer at both build sites (dummy when absent) and `@location(9)` flat owners. The owner function replaces the chunk-list specular; union subtraction by ownership. Retire `cone_cos.z`, the channel tables and the metadata channel field. Directional `L = −aim`. Mask-present gate (AC 1, 2, 10–19, 49) | same worker as 8; integrated by executor | 1, 8 | |
 | 10 | Engine-level proofs: rewrite `capture_shadowmask_groups` for owner swap, the streaming capture identity (AC 15, 16), and end-to-end compile-and-render fixtures for AC 1 and 17 | integrating executor | 7, 9 | |
-| 11 | Manual captures and measurements M1–M7, before/after (pre-change binary from 75ac7e12f) | integrating executor + owner | 10 | |
+| 11 | Manual captures and measurements M1–M8 before and after. Build the pre-change binary from 75ac7e12f in a throwaway target and compile both PRL sets. M8 runs interleaved in one session | integrating executor + owner | 10 | |
 | 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |

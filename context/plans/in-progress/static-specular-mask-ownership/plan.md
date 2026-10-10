@@ -91,7 +91,10 @@ packing, and runtime.
   (`forward.wgsl:441,1233,774`), contradicting the `spec_buffer.rs` comment.
   - Kept as is, so union subtraction still matches pre-change output (AC 18). Proposed
     as a follow-up.
-  - The directional branch takes `L = −aim` and keeps today's non-spot cone factor.
+  - The directional branch takes `L = −aim`. With the aim packed, `cone_attenuation_cos` reads
+    `dot(−L, aim) = 1`, so a directional highlight gets a cone factor of 1.0. That is the correct
+    value; the halved factor stays on points only, for the follow-up to fix. Directional world
+    specular is new behaviour either way: before, it aimed at the entity origin.
   - Billboard loops read `cone_dir_and_type.xyz` (`billboard.wgsl:367,738`). Packing the
     sun's aim must leave billboard output unchanged.
 
@@ -221,7 +224,7 @@ Each task commits with its plan update.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **First slice: owner delivery.** Extract the world specular loop from `fs_main` into a callable function. Add the owner-based static half (4 owners, `0xFFFF` stop, channel = position) and the `sdf_sel` SDF half. Build a GPU-required harness that renders owner-only specular from a hand-built per-vertex owner stream through a flat varying. Also check face-range reconstruction from BVH leaves on shipped PRLs (campaign-test, hallway, kinematic-platform, movement-feel): leaf count = face count, contiguous ranges. Riskiest premises: the flat-varying owner path, and face recovery without changing id 17 | integrating executor | — | |
+| 1 | **First slice: owner delivery.** Extract the world specular loop from `fs_main` into a callable function. Add the owner-based static half (4 owners, `0xFFFF` stop, channel = position) and the `sdf_sel` SDF half. Build a GPU-required harness that renders owner-only specular from a hand-built per-vertex owner stream through a flat varying. Also check face-range reconstruction from BVH leaves on shipped PRLs (campaign-test, hallway, kinematic-platform, movement-feel): leaf count = face count, contiguous ranges. Riskiest premises: the flat-varying owner path, and face recovery without changing id 17 | integrating executor | — | done: `world_static_specular` and `world_static_light_specular` in `forward.wgsl`; the old chunk loop calls the per-light helper until task 9. `world_specular_test` runs 6 GPU tests with `POSTRETRO_REQUIRE_GPU=1` on the 1660 (43 passed with the shader and mask-sampling suites). Owners ride a second `Uint16x4` vertex buffer as a flat varying. Face recovery (scratch reader over ids 17/19): campaign-test 774 faces = 774 leaves; kinematic-platform 87; movement-feel 279; sdf-shadow-test 24; hallway 8437; stress-warren-mini 1271; combat-demo 91. All contiguous, covering every index, with disjoint per-face vertex ranges |
 | 2 | Split `pipeline/lightmap_stage.rs` and `shadowmask_bake.rs` along their responsibilities, with no behavior change. Move the analytic graph and standalone reference paths out of the root | integrating executor | — | |
 | 3 | `level-format` `SMB7`: `SHADOWMASK_OWNER_EMPTY = 0xFFFF`, a face-count header, the owner table, and load rejects (AC 44). Rework the prefix helpers for streaming. `SMB6` becomes a named re-bake. Readers compile against it | integrating executor | 2 | |
 | 4 | Compiler eligibility and presence: eligible set and `source_index` → spec index map. Owner-index cap error before any lightmap work (AC 48). Decouple id-42 presence from ids 40 and 41 in prepare, pack plan, memo validator and residency dry run (AC 45, 47) | integrating executor | 3 | |

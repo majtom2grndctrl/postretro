@@ -748,6 +748,99 @@ fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>, block_mi
     return shadowmask_channel_value(mask, u32(spec_channel));
 }
 
+// An empty channel in a face's owner entry (`SHADOWMASK_OWNER_EMPTY` in
+// `level-format`). Owners ascend and empties trail, so the first empty ends
+// the entry.
+const SPEC_OWNER_EMPTY: u32 = 0xFFFFu;
+const SPEC_OWNER_CHANNELS: u32 = 4u;
+const SPEC_LIGHT_TYPE_DIRECTIONAL: u32 = 2u;
+
+// One static light's world Blinn-Phong highlight before visibility. A
+// directional light shines along its packed aim, as its bake does, wherever its
+// entity origin sits; a zero aim falls back to the bake's default straight down.
+fn world_static_light_specular(
+    sl: SpecLight,
+    world_pos: vec3<f32>,
+    N: vec3<f32>,
+    V: vec3<f32>,
+    spec_exp: f32,
+    spec_int: f32,
+) -> vec3<f32> {
+    let range = sl.position_and_range.w;
+    var L: vec3<f32>;
+    var dist = 0.0;
+    if u32(round(sl.cone_dir_and_type.w)) == SPEC_LIGHT_TYPE_DIRECTIONAL {
+        let aim = sl.cone_dir_and_type.xyz;
+        L = select(vec3<f32>(0.0, 1.0, 0.0), -normalize(aim), dot(aim, aim) > 1.0e-12);
+    } else {
+        let to_light = sl.position_and_range.xyz - world_pos;
+        dist = length(to_light);
+        // Range is the tight per-light cutoff.
+        if range > 0.0 && dist > range {
+            return vec3<f32>(0.0);
+        }
+        L = to_light / max(dist, 0.0001);
+    }
+    if dot(N, L) <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
+    let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+    return blinn_phong(L, V, N, sl.color_and_pad.xyz, spec_exp, spec_int) * (atten * cone);
+}
+
+// World static specular: the face's mask owners, each shadowed by the channel
+// its position names, plus the fragment's SDF selection at its SDF visibility.
+// No other static light adds world specular, so a light the bake found
+// occluded can never shine through a wall (rendering_pipeline.md §4, Static
+// specular ownership). `owners_readable` is false on a block miss and when no
+// usable mask is bound; owners then add nothing.
+fn world_static_specular(
+    world_pos: vec3<f32>,
+    N: vec3<f32>,
+    V: vec3<f32>,
+    spec_exp: f32,
+    spec_int: f32,
+    owners: vec4<u32>,
+    mask: vec4<f32>,
+    owners_readable: bool,
+    sdf_sel: SdfLightSelection,
+    sdf_factor: vec4<f32>,
+    sdf_force_lit: bool,
+) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    if owners_readable {
+        let spec_len = arrayLength(&spec_lights);
+        for (var s: u32 = 0u; s < SPEC_OWNER_CHANNELS; s = s + 1u) {
+            let owner = owners[s];
+            if owner == SPEC_OWNER_EMPTY {
+                break;
+            }
+            let visibility = select(
+                shadowmask_channel_value(mask, s),
+                1.0,
+                uniforms.spec_shadowmask_force_one != 0u,
+            );
+            if owner >= spec_len || visibility <= 0.0 {
+                continue;
+            }
+            sum = sum + world_static_light_specular(spec_lights[owner], world_pos, N, V, spec_exp, spec_int) * visibility;
+        }
+    }
+    for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {
+        let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
+        sum = sum + world_static_light_specular(
+            spec_lights[sdf_sel.indices[s]],
+            world_pos,
+            N,
+            V,
+            spec_exp,
+            spec_int,
+        ) * visibility;
+    }
+    return sum;
+}
+
 fn shadowmask_direct(
     sl: SpecLight,
     world_pos: vec3<f32>,
@@ -1216,21 +1309,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 light_idx = chunk_indices[chunk_offset + j];
             }
             let sl = spec_lights[light_idx];
-            let to_light = sl.position_and_range.xyz - in.world_position;
-            let dist = length(to_light);
-            let range = sl.position_and_range.w;
-            // The chunk list is a conservative spatial index; range is the tight
-            // per-light cutoff.
-            if range > 0.0 && dist > range {
-                continue;
-            }
-            let L = to_light / max(dist, 0.0001);
-            let NdotL = dot(N_shade, L);
-            if NdotL <= 0.0 {
-                continue;
-            }
-            let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
-            let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
             // Exactly one technique applies: SDF lights retain the per-light
             // visibility slice shared with their diffuse term; other static
             // lights use the baked shadowmask recorded on the SpecLight.
@@ -1243,10 +1321,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             } else {
                 visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask, static_block_missing);
             }
-            let contribution = blinn_phong(
-                L, V, N_shade, sl.color_and_pad.xyz, spec_exp, spec_int
-            ) * (atten * cone * visibility);
-            specular_sum = specular_sum + contribution;
+            specular_sum = specular_sum + world_static_light_specular(
+                sl, in.world_position, N_shade, V, spec_exp, spec_int
+            ) * visibility;
         }
     }
     total_light = total_light + specular_sum;

@@ -34,63 +34,63 @@ read at: ecc6adcc5
 ## AC-to-proof
 Rows follow the brief's Acceptance order. Proposed test names are binding on intent, not spelling.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 guarded XP milestone fires once per crossing player; `addSlot` credits only them | `sim` `player_events` tests: `guarded_milestone_fires_once_per_player_and_credits_only_that_seat` | achievable as stated |
-| 2 same-tick crossers fire in group order, stable across runs | `same_tick_fires_follow_group_resolution_order_and_repeat_identically` | achievable as stated |
-| 3 snapshot: second fire not suppressed by first's consequence; seen next tick | `same_tick_conditions_evaluate_before_any_fire_applies` | achievable as stated |
-| 4 `becomes` false→true only, `ceases` true→false only | `becomes_and_ceases_fire_on_their_edge_only` | achievable as stated |
-| 5 in-tick trigger write seen same tick; frame-end drain write next tick | `frame_loop`-order test over the seam helpers: `condition_sees_in_tick_trigger_write_same_tick_and_drain_write_next_tick` | achievable as stated |
-| 6 non-Bool condition rejected naming the event; Bool sibling installs | descriptor bind test + log capture | achievable as stated |
-| 7 health condition sees host and remote-authorized hits on the tick; accumulator per P5 (tick N) | seam test over `host_flush_pending_hit_declarations` path (netcode `ingest_hit_harness_test` pattern) + accumulator ordering test | achievable as stated |
-| 8 two-tick frame: `becomes` then `ceases` drained in tick order; intra-tick flicker fires nothing | `two_tick_frame_drains_becomes_then_ceases_in_tick_order` | achievable as stated |
-| 9 trigger and player-event batches drain in pinned order; swap fails | `player_event_residuals_drain_after_trigger_residuals` | achievable as stated |
-| 10 no pawn: nothing fires, nothing logged above debug | log-capture test (negative) | achievable as stated |
-| 11 `levels`-scoped mod event fires only in matching levels; level events only in their level | `DataRegistry` composition test + recompose | achievable as stated |
-| 12 mod-global + level same triple fires once, one warning naming both; distinct entries mod-global first | composition dedupe test + log capture | achievable as stated |
-| 13 descriptor built but not returned registers nothing | TS + Luau script test through `run_data_script` | achievable as stated |
-| 14 condition true at install fires `becomes` first tick; false never fires `ceases` | `first_sight_at_install_fires_becomes_only` | achievable as stated |
-| 15 remote join while holding fires `becomes` at first observed tick; false nothing | seat-bind test over the evaluator | achievable as stated |
-| 16 disconnect hold fires nothing; reclaim while holding fires `becomes` again | `SeatTable` hold/reclaim + evaluator test | achievable as stated |
-| 17 seat release drops edge memory; one entry per live player per event; new seat fires once | `seat_release_drops_edge_memory_and_new_seat_fires_once` (asserts memory size) | achievable as stated |
-| 18 guarded milestone no re-fire across level transition or reclaim; unguarded re-fires | evaluator test over install + reclaim | achievable as stated |
-| 19 bound remote pawn with no input observed from first bound tick | test with a seat-bound pawn absent from `remote_pawn_commands` | achievable as stated |
-| 20 zero-HP player stays observed; `becomes` once at death; post-sweep fire damage reports death next tick once | evaluator + `run_death_sweep` test | achievable as stated |
-| 21 hot reload keeping condition and edge fires nothing; changed condition starts unobserved | recompose carry-over test | achievable as stated |
-| 22 mixed address dropped whole naming address, reaction and rule; still fires under a crossing | install validation test + log capture | achievable as stated |
-| 23 level entry with `levels` warns naming the script and doesn't install; siblings do | JS + Luau parser tests + log capture | achievable as stated |
-| 24 no value for a read slot → unobserved; regaining while holding fires `becomes` once | `missing_weapon_value_is_unobserved_and_regain_fires_once` | achievable as stated |
-| 25 two players at different health: fires for the crosser; `byPlayer(on.player)` reads theirs | evaluator + `setState` IR test | achievable as stated |
-| 26 every catalog owner-private slot, derived from the catalog, reads per-pawn values on host and in snapshots; unmapped slot fails; existing snapshot tests unchanged | `player_slots` catalog-driven test with exhaustive mapping + existing `netcode::state_slots` tests | achievable as stated |
-| 27 plain engine read still local in HUD bind, `bindState`, local crossing, impact policy | regression tests in `ui_proxy`, `state_crossings`, `impact_policy` | achievable as stated |
-| 28 plain per-player read in fired reaction rejected naming slot and `byPlayer(on.player)`; same read in condition binds to evaluated player | install validation test + log capture | achievable as stated |
-| 29 shared reaction with plain read loses only its player-event subscription; still fires under crossing reading local player | install validation + crossing dispatch test | achievable as stated |
-| 30 TS and Luau `updateState` with `read(byPlayer(on.player))` writes event player's value; literal unchanged | script-driven tests in both runtimes | achievable as stated |
-| 31 `byPlayer(impact.source)` on engine player slot reads source player's value | `impact_policy` test | achievable as stated |
-| 32 `on.player`/`byPlayer` reaction under `levelLoad`, crossing or trigger rejected for that source naming both; installs under `players().on` | install validation tests per source | achievable as stated |
-| 33 `on.player` pawn gone before the apply step warn-skips that command; siblings apply | apply-stage test removing the pawn between evaluate and apply (Correction: on.player resolution point) | achievable as stated |
-| 34 `byPlayer(on.player)` read at the fire tick (P17); pawn gone → warn-skip, not default; presentation still reaches player | apply-stage test + routing test | achievable as stated |
-| 35 `on.player` step after `wait` dropped reaction-wide (V4a); before `wait` lands on event's player | `reaction_validation` V4a test + apply test | achievable as stated |
-| 36 connected client neither registers nor evaluates nor fires | role-gated install test + client frame path structural test | achievable as stated |
-| 37 crossing on mod per-owner slot still rejected on every role; local `player.health` crossing fires per machine | existing `threshold_crossing_rejects_per_owner_slot_at_registration` + role variants | achievable as stated |
-| 38 loopback host + two clients: A's `flashScreen` reaches only A's frame drain; host's own player presents on host; single player local | netcode loopback harness (host + two `NetClient`s, pattern of `trigger_state_channel_harness_test.rs`) asserting A's system-command queue only, plus routing unit tests for host-local and single player | achievable as stated |
-| 39 each presentation command round-trips; dropped message presents nothing | `net` wire round-trip per arm + harness drop test | achievable as stated |
-| 40 *(restated, owner ruling)* existing presentation payloads encode to the same bytes; a peer on the previous application protocol is refused at the version gate before any decode; the application protocol is exactly one above main's (`PRLB`) and `WIRE_VERSION` is unchanged | before/after layout guard (`handshake.rs:239` pattern), pre-PRLB refusal test, `assert_eq!(PROTOCOL_ID, 0x5052_4C42)` and `assert_eq!(WIRE_VERSION, 26)` | achievable as restated |
-| 41 non-finite forwarded command dropped with warning; finite siblings present | `ingest_client_presentation_messages` test + log capture | achievable as stated |
-| 42 forwarded command while held, demoted or between levels presents nothing; last-tick fire lands nothing in next level | transport participation gate test + level-transition discard test (P9, P13) | achievable as stated |
-| 43 co-op trigger presentation still host-only; same reactions under `players().on` present on event player | routing test over both sources | achievable as stated |
-| 44 forwarded flash, vignette, shake leave screen-effect state identical to local fire | `postretro` test comparing dispatch of an intake-produced command against a locally enqueued one | achievable as stated |
-| 45 `playSound` `at: on.emitter` warn-skips; without `at` plays | system reaction dispatch test + log capture | achievable as stated |
-| 46 `showDialog` or `updateState` on a non-replicated slot rejected naming it; shared-slot `updateState` installs and lands on host | install validation test | achievable as stated |
-| 47 one exhaustive classification over every system reaction kind; new kind fails to build; machine-local kind rejected naming it | exhaustive `match` (no `_`) on the kind enum that system primitive registration goes through + install test | achievable as stated |
-| 48 consequence plus two presentation reactions: credit in-tick, sound and flash on event player only, listed order per path | combined apply + routing test | achievable as stated |
-| 49 `fire`/`onComplete` route at any depth reaching presentation, machine-local or plain read rejected naming both; same presentation listed directly installs | transitive walk tests | achievable as stated |
-| 50 `fire` reaching a clean reaction installs and runs | walk + dispatch test | achievable as stated |
-| 51 Scripting surface example runs as `content/dev` script; TS/Luau twins byte-identical | new twin pair + parity test (`closet_reveal_surface_tests.rs` pattern) | achievable as stated |
-| 52 grep gate: no seat identifier in typedefs or scripting surface; state tree has no methods | typedef test over `Seat`/`SeatId`/`seatId`/`seat:` identifiers (not the English word) + runtime tree walk (`game_state_refs.rs`) | achievable as stated |
-| 53 networking.md §Presentation and §Channel model updated as stated | doc review at preflight | achievable as stated |
-| M1 two-client co-op playtest: level-up and scald on affected machine only; vignette local, no delay | owner, in-engine | manual |
-| M2 flash limiter and reduce motion apply to forwarded flash and shake | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 guarded XP milestone fires once per crossing player; `addSlot` credits only them | `sim` `player_events` tests: `guarded_milestone_fires_once_per_player_and_credits_only_that_seat` | achievable as stated | pass |
+| 2 same-tick crossers fire in group order, stable across runs | `same_tick_fires_follow_group_resolution_order_and_repeat_identically` | achievable as stated | pass |
+| 3 snapshot: second fire not suppressed by first's consequence; seen next tick | `same_tick_conditions_evaluate_before_any_fire_applies` | achievable as stated | pass |
+| 4 `becomes` false→true only, `ceases` true→false only | `becomes_and_ceases_fire_on_their_edge_only` | achievable as stated | pass |
+| 5 in-tick trigger write seen same tick; frame-end drain write next tick | `frame_loop`-order test over the seam helpers: `condition_sees_in_tick_trigger_write_same_tick_and_drain_write_next_tick` | achievable as stated | pass, partly by code review: the seam position in `frame_loop` is checked by review; `semantics_tests::condition_sees_a_write_before_the_seam_this_tick_and_a_later_write_next_tick` passes |
+| 6 non-Bool condition rejected naming the event; Bool sibling installs | descriptor bind test + log capture | achievable as stated | pass |
+| 7 health condition sees host and remote-authorized hits on the tick; accumulator per P5 (tick N) | seam test over `host_flush_pending_hit_declarations` path (netcode `ingest_hit_harness_test` pattern) + accumulator ordering test | achievable as stated | pass, partly by code review: `ingest_hit_harness_test::a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick` composes the production post-sim path; that `frame_loop` calls it in this order is checked by review |
+| 8 two-tick frame: `becomes` then `ceases` drained in tick order; intra-tick flicker fires nothing | `two_tick_frame_drains_becomes_then_ceases_in_tick_order` | achievable as stated | pass |
+| 9 trigger and player-event batches drain in pinned order; swap fails | `player_event_residuals_drain_after_trigger_residuals` | achievable as stated | pass |
+| 10 no pawn: nothing fires, nothing logged above debug | log-capture test (negative) | achievable as stated | pass |
+| 11 `levels`-scoped mod event fires only in matching levels; level events only in their level | `DataRegistry` composition test + recompose | achievable as stated | pass |
+| 12 mod-global + level same triple fires once, one warning naming both; distinct entries mod-global first | composition dedupe test + log capture | achievable as stated | pass |
+| 13 descriptor built but not returned registers nothing | TS + Luau script test through `run_data_script` | achievable as stated | pass: `player_event_sdk_tests::an_unreturned_players_on_descriptor_registers_nothing_in_both_runtimes` |
+| 14 condition true at install fires `becomes` first tick; false never fires `ceases` | `first_sight_at_install_fires_becomes_only` | achievable as stated | pass |
+| 15 remote join while holding fires `becomes` at first observed tick; false nothing | seat-bind test over the evaluator | achievable as stated | pass |
+| 16 disconnect hold fires nothing; reclaim while holding fires `becomes` again | `SeatTable` hold/reclaim + evaluator test | achievable as stated | pass |
+| 17 seat release drops edge memory; one entry per live player per event; new seat fires once | `seat_release_drops_edge_memory_and_new_seat_fires_once` (asserts memory size) | achievable as stated | pass |
+| 18 guarded milestone no re-fire across level transition or reclaim; unguarded re-fires | evaluator test over install + reclaim | achievable as stated | pass |
+| 19 bound remote pawn with no input observed from first bound tick | test with a seat-bound pawn absent from `remote_pawn_commands` | achievable as stated | pass |
+| 20 zero-HP player stays observed; `becomes` once at death; post-sweep fire damage reports death next tick once | evaluator + `run_death_sweep` test | achievable as stated | pass |
+| 21 hot reload keeping condition and edge fires nothing; changed condition starts unobserved | recompose carry-over test | achievable as stated | pass |
+| 22 mixed address dropped whole naming address, reaction and rule; still fires under a crossing | install validation test + log capture | achievable as stated | pass |
+| 23 level entry with `levels` warns naming the script and doesn't install; siblings do | JS + Luau parser tests + log capture | achievable as stated | pass |
+| 24 no value for a read slot → unobserved; regaining while holding fires `becomes` once | `missing_weapon_value_is_unobserved_and_regain_fires_once` | achievable as stated | pass |
+| 25 two players at different health: fires for the crosser; `byPlayer(on.player)` reads theirs | evaluator + `setState` IR test | achievable as stated | pass |
+| 26 every catalog owner-private slot, derived from the catalog, reads per-pawn values on host and in snapshots; unmapped slot fails; existing snapshot tests unchanged | `player_slots` catalog-driven test with exhaustive mapping + existing `netcode::state_slots` tests | achievable as stated | pass: `player_slot_lookup_test` (3) + all netcode owner-private snapshot tests unchanged |
+| 27 plain engine read still local in HUD bind, `bindState`, local crossing, impact policy | regression tests in `ui_proxy`, `state_crossings`, `impact_policy` | achievable as stated | pass |
+| 28 plain per-player read in fired reaction rejected naming slot and `byPlayer(on.player)`; same read in condition binds to evaluated player | install validation test + log capture | achievable as stated | pass |
+| 29 shared reaction with plain read loses only its player-event subscription; still fires under crossing reading local player | install validation + crossing dispatch test | achievable as stated | pass |
+| 30 TS and Luau `updateState` with `read(byPlayer(on.player))` writes event player's value; literal unchanged | script-driven tests in both runtimes | achievable as stated | pass: `player_event_sdk_tests::update_state_reading_by_player_on_player_writes_the_event_players_value_in_both_runtimes`, `…update_state_reads_an_engine_slot_by_player_and_writes_literals_unchanged_in_both_runtimes` |
+| 31 `byPlayer(impact.source)` on engine player slot reads source player's value | `impact_policy` test | achievable as stated | pass |
+| 32 `on.player`/`byPlayer` reaction under `levelLoad`, crossing or trigger rejected for that source naming both; installs under `players().on` | install validation tests per source | achievable as stated | pass |
+| 33 `on.player` pawn gone before the apply step warn-skips that command; siblings apply | apply-stage test removing the pawn between evaluate and apply (Correction: on.player resolution point) | achievable as stated | pass |
+| 34 `byPlayer(on.player)` read at the fire tick (P17); pawn gone → warn-skip, not default; presentation still reaches player | apply-stage test + routing test | achievable as stated | pass |
+| 35 `on.player` step after `wait` dropped reaction-wide (V4a); before `wait` lands on event's player | `reaction_validation` V4a test + apply test | achievable as stated | pass |
+| 36 connected client neither registers nor evaluates nor fires | role-gated install test + client frame path structural test | achievable as stated | pass |
+| 37 crossing on mod per-owner slot still rejected on every role; local `player.health` crossing fires per machine | existing `threshold_crossing_rejects_per_owner_slot_at_registration` + role variants | achievable as stated | pass |
+| 38 loopback host + two clients: A's `flashScreen` reaches only A's frame drain; host's own player presents on host; single player local | netcode loopback harness (host + two `NetClient`s, pattern of `trigger_state_channel_harness_test.rs`) asserting A's system-command queue only, plus routing unit tests for host-local and single player | achievable as stated | pass at the queue level: `presentation_commands::tests::a_player_events_flash_reaches_only_its_players_machine` relays a real host and two clients and asserts each client's system-command queue; the GPU flash itself is manual (M1) |
+| 39 each presentation command round-trips; dropped message presents nothing | `net` wire round-trip per arm + harness drop test | achievable as stated | pass |
+| 40 *(restated, owner ruling)* existing presentation payloads encode to the same bytes; a peer on the previous application protocol is refused at the version gate before any decode; the application protocol is exactly one above main's (`PRLB`) and `WIRE_VERSION` is unchanged | before/after layout guard (`handshake.rs:239` pattern), pre-PRLB refusal test, `assert_eq!(PROTOCOL_ID, 0x5052_4C42)` and `assert_eq!(WIRE_VERSION, 26)` | achievable as restated | pass (restated): `handshake::appending_presentation_commands_keeps_existing_payload_bytes`, `…presentation_commands_refuse_the_previous_protocol_id` |
+| 41 non-finite forwarded command dropped with warning; finite siblings present | `ingest_client_presentation_messages` test + log capture | achievable as stated | pass |
+| 42 forwarded command while held, demoted or between levels presents nothing; last-tick fire lands nothing in next level | transport participation gate test + level-transition discard test (P9, P13) | achievable as stated | pass |
+| 43 co-op trigger presentation still host-only; same reactions under `players().on` present on event player | routing test over both sources | achievable as stated | pass |
+| 44 forwarded flash, vignette, shake leave screen-effect state identical to local fire | `postretro` test comparing dispatch of an intake-produced command against a locally enqueued one | achievable as stated | pass: `presentation_commands::tests::a_forwarded_command_is_the_same_local_command_a_local_reaction_enqueues` (an identical command means identical screen-effect state; the limiter itself is M2) |
+| 45 `playSound` `at: on.emitter` warn-skips; without `at` plays | system reaction dispatch test + log capture | achievable as stated | pass |
+| 46 `showDialog` or `updateState` on a non-replicated slot rejected naming it; shared-slot `updateState` installs and lands on host | install validation test | achievable as stated | pass |
+| 47 one exhaustive classification over every system reaction kind; new kind fails to build; machine-local kind rejected naming it | exhaustive `match` (no `_`) on the kind enum that system primitive registration goes through + install test | achievable as stated | pass |
+| 48 consequence plus two presentation reactions: credit in-tick, sound and flash on event player only, listed order per path | combined apply + routing test | achievable as stated | pass |
+| 49 `fire`/`onComplete` route at any depth reaching presentation, machine-local or plain read rejected naming both; same presentation listed directly installs | transitive walk tests | achievable as stated | pass |
+| 50 `fire` reaching a clean reaction installs and runs | walk + dispatch test | achievable as stated | pass |
+| 51 Scripting surface example runs as `content/dev` script; TS/Luau twins byte-identical | new twin pair + parity test (`closet_reveal_surface_tests.rs` pattern) | achievable as stated | pass: `startup::player_events_surface_tests::player_events_twins_emit_byte_identical_wire_data` |
+| 52 grep gate: no seat identifier in typedefs or scripting surface; state tree has no methods | typedef test over `Seat`/`SeatId`/`seatId`/`seat:` identifiers (not the English word) + runtime tree walk (`game_state_refs.rs`) | achievable as stated | pass: `player_surface::seat_identifiers_stay_off_the_sdk_surface_and_the_player_state_tree_has_no_methods` |
+| 53 networking.md §Presentation and §Channel model updated as stated | doc review at preflight | achievable as stated | pass: networking.md §Channel model, §Presentation events and §Version gates updated (doc review) |
+| M1 two-client co-op playtest: level-up and scald on affected machine only; vignette local, no delay | owner, in-engine | manual | outstanding: owner, two-client playtest |
+| M2 flash limiter and reduce motion apply to forwarded flash and shake | owner, in-engine | manual | outstanding: owner, flash limiter and reduce motion on a client |
 
 ## Tasks
 
@@ -109,3 +109,8 @@ Rows follow the brief's Acceptance order. Proposed test names are binding on int
 | 11 | **Preflight and review loop.** `/preflight`, `/review-panel`, `/fix-review-findings` until no new concrete findings; full gate including `--features postretro/dev-tools`. | integrating executor | 10 | |
 
 Hot paths: the evaluator runs every authoritative tick on the host. It allocates nothing per tick in steady state: edge memory and the player scratch list are reused, bound programs are bound at install, and pawn and seat resolution is one registry walk per tick shared by every event. Its cost is O(events × players) IR evals, measured under `POSTRETRO_CPU_TIMING` against a new `SimStage`-style scope.
+
+## Review loop
+- Round 1 (10 reviewers): no 🔴 code findings; 2 🔴 comment drifts, 11 🟡 and a batch of 🟢 nits, fixed in `712c9a0cd`. Skipped: `WeaponComponent::reload_status`/`owner_reload_status` stay `pub`, because test callers in other crates would break under `#[cfg(test)]`.
+- Round 2 (2 reviewers, fix diff only): one 🟡 (an invalid evaluation re-armed `becomes`) plus doc nits, fixed in the next commit. Left as nits: the duplicated spawn-drain block in `frame_loop`, the literal `Seat(0)` in routing, a mixed `@activators`+`@player` levelLoad losing the legacy warning, and the Luau `__playerTarget` brand typing a field the opaque runtime target raises on.
+- Final gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets --features postretro/dev-tools -D warnings`, full `cargo test`, `cargo check --release` and `crate-graph --check`: all pass.

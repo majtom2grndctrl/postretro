@@ -3,7 +3,7 @@
 //! See: context/lib/scripting.md §12 (Player events)
 
 use postretro_entities::{EntityId, EntityRegistry, SlotTable};
-use postretro_foundation::{IrValue, eval_value};
+use postretro_foundation::{IrValue, eval_value_checked};
 use postretro_scripting_core::data_descriptors::PlayerEventEdge;
 use postretro_scripting_core::group_resolution::extend_with_player_pawns;
 
@@ -66,7 +66,13 @@ impl PlayerEventTable {
                 if !scope.observes(&event.inputs) {
                     continue;
                 }
-                let holds = matches!(eval_value(&event.program, scope), IrValue::Bool(true));
+                // A non-finite or divide-by-zero result is not an observation:
+                // the totalizing value (0) would read as a real `false` and
+                // could fire a `ceases` edge. Leave the player unobserved.
+                let Ok(value) = eval_value_checked(&event.program, scope) else {
+                    continue;
+                };
+                let holds = matches!(value, IrValue::Bool(true));
                 scratch.values[event_index * player_count + player_index] = Some(holds);
             }
         }
@@ -90,7 +96,7 @@ impl PlayerEventTable {
                     PlayerEventEdge::Ceases => held && !holds,
                 };
                 if fires {
-                    scratch.fires.push(super::evaluate::Fire {
+                    scratch.fires.push(Fire {
                         event: event_index,
                         player: key,
                         pawn,

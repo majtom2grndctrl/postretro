@@ -4,6 +4,7 @@
 
 use postretro_entities::SystemReactionCommand;
 use postretro_entities::reactions::system_commands::SystemCommandQueue;
+use postretro_foundation::Seat;
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
     PresentationCommand, ServerPresentationMessage, ServerPresentationPayload,
@@ -54,7 +55,21 @@ pub fn presentation_command_to_wire(
             duration_ms: *duration_ms,
             frequency: *frequency,
         },
-        _ => return None,
+        // Listed in full so a new command variant fails to build until it is
+        // mapped here or deliberately kept off the wire.
+        SystemReactionCommand::PushTree { .. }
+        | SystemReactionCommand::LoadLevel { .. }
+        | SystemReactionCommand::RestartLevel
+        | SystemReactionCommand::ReturnToFrontend
+        | SystemReactionCommand::PopTree
+        | SystemReactionCommand::SetState { .. }
+        | SystemReactionCommand::SetSentiment { .. }
+        | SystemReactionCommand::AdjustSentiment { .. }
+        | SystemReactionCommand::AddOwnerSlot { .. }
+        | SystemReactionCommand::CellWrite { .. }
+        | SystemReactionCommand::AppendText { .. }
+        | SystemReactionCommand::BackspaceText { .. }
+        | SystemReactionCommand::ClearText { .. } => return None,
     })
 }
 
@@ -132,8 +147,9 @@ pub fn presentation_command_from_wire(
 
 /// Present every command player events routed this frame. A seat bound to a
 /// remote client receives one unreliable packet; any other seat — the host's
-/// own player, single player — presents locally through `queue`. A failed send
-/// is a dropped cosmetic, never retained work.
+/// own player (`Seat(0)`) and single player — presents locally through `queue`.
+/// A remote seat with no client bound (held, disconnected) presents nothing.
+/// A failed send is a dropped cosmetic, never retained work.
 pub fn route_player_presentation(
     queue: &SystemCommandQueue,
     server: Option<&mut NetServer>,
@@ -146,19 +162,30 @@ pub fn route_player_presentation(
     let mut server = server;
     for (seat, command) in routed {
         let client = seats.and_then(|seats| seats.client_for_seat(seat));
-        match (client, server.as_deref_mut()) {
-            (Some(client_id), Some(server)) => {
-                let Some(command) = presentation_command_to_wire(&command) else {
-                    continue;
-                };
-                let _ = server.send_presentation(
-                    client_id,
-                    ServerPresentationMessage {
-                        payload: ServerPresentationPayload::Command(command),
-                    },
-                );
-            }
-            _ => queue.push(command),
+        if let (Some(client_id), Some(server)) = (client, server.as_deref_mut()) {
+            let Some(command) = presentation_command_to_wire(&command) else {
+                continue;
+            };
+            let _ = server.send_presentation(
+                client_id,
+                ServerPresentationMessage {
+                    payload: ServerPresentationPayload::Command(command),
+                },
+            );
+        } else if seats.is_none() || server.is_none() || seat == Seat(0) {
+            // Single player / no net, or the host's own seat: present here.
+            // The fire context's `presentation_seat` is already restored to
+            // `None` by the time the app drain routes, so this push lands in
+            // the local queue instead of being re-held as routed.
+            queue.push(command);
+        } else {
+            // A remote seat with no client bound (held, disconnected): the
+            // cosmetic belongs to that player's machine alone, so it must not
+            // fall back to the host's screen.
+            log::debug!(
+                "[Netcode] dropped a presentation command for seat {} with no bound client",
+                seat.0
+            );
         }
     }
 }

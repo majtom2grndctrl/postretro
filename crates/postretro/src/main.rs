@@ -3556,9 +3556,12 @@ impl App {
                         match outcome {
                             SystemReactionIrDispatch::Evaluated
                             | SystemReactionIrDispatch::Rejected => {
-                                // Rejected IR was already diagnosed during install. It must
-                                // never fall through to the literal write path, but repeated
-                                // fires are a safe no-op rather than a per-dispatch warning.
+                                // Rejected IR was already diagnosed: during install, or by
+                                // `dispatch` itself, which warns once per binding for a
+                                // `byPlayer(on.player)` value reached outside a player
+                                // event. It must never fall through to the literal write
+                                // path, and repeated fires are a safe no-op rather than a
+                                // per-dispatch warning.
                             }
                             SystemReactionIrDispatch::Unknown => {
                                 // This command is not from the current install table (for

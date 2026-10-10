@@ -1002,6 +1002,29 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.player_events
                     .run_tick(&script_ctx, &mut pending_player_event_residuals);
             }
+            // A `spawnFromSpawner` in a player event's fire list runs at the
+            // seam above, after the drains earlier in this tick. Repeat them
+            // so its spawn resolves its mesh clips and enrolls its dynamic
+            // lights this tick, as trigger spawns do, not a tick late. Both
+            // are no-ops when nothing new was spawned.
+            {
+                let session = app.session.as_mut().expect("running session installed");
+                let spawned_meshes = session
+                    .scripting
+                    .spawn_context
+                    .take_pending_mesh_clip_resolves();
+                if !spawned_meshes.is_empty() {
+                    resolve_mesh_entity_bindings_for_entities(
+                        &mut script_ctx.registry.borrow_mut(),
+                        &session.mesh_clip_tables,
+                        &session.hit_zone_store,
+                        spawned_meshes,
+                    );
+                }
+                session
+                    .light_bridge
+                    .absorb_dynamic_lights(&script_ctx.registry.borrow());
+            }
             app.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
             pending_movement_events.extend(tick_events.movement);
             pending_movement_edges.extend(tick_events.movement_edges.into_iter().map(|edge| {

@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::health::{IMPACT_DISPATCH_INPUTS, IMPACT_SOURCE_TOKEN, ImpactDispatch};
 use crate::ctx::ScriptCtx;
+use crate::group_resolution::is_player_pawn;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
 use crate::player_event_scope::EVENT_PLAYER_TOKEN;
@@ -446,9 +447,19 @@ pub struct EntityScope {
     /// re-borrowing that registry while fixed-tick damage holds it mutably.
     owner_seat: Option<Seat>,
     /// The impact source's engine per-player values, refreshed with
-    /// `owner_seat`. A pawnless source has none.
+    /// `owner_seat`. A source that is not a player pawn (an NPC damager, a
+    /// pawnless hazard) has none.
     owner_engine: [Option<IrValue>; PlayerSlot::ALL.len()],
+    /// Engine owner reads already warned about, one bit per
+    /// `PlayerSlot::index()`: an absent value warns once per scope, not once
+    /// per hit.
+    warned_owned_engine: std::cell::Cell<u16>,
+    /// Per-owner store reads already warned about for a seatless source.
+    warned_owned_store: RefCell<Vec<String>>,
 }
+
+// `warned_owned_engine` holds one bit per engine per-player slot.
+const _: () = assert!(PlayerSlot::ALL.len() <= u16::BITS as usize);
 
 impl EntityScope {
     /// Construct the host-authoritative impact-policy composite scope.
@@ -467,6 +478,8 @@ impl EntityScope {
             store_snapshot: RefCell::new(Vec::new()),
             owner_seat: None,
             owner_engine: [None; PlayerSlot::ALL.len()],
+            warned_owned_engine: std::cell::Cell::new(0),
+            warned_owned_store: RefCell::new(Vec::new()),
         }
     }
 
@@ -537,8 +550,11 @@ impl EntityScope {
         source: Option<EntityId>,
     ) {
         self.owner_seat = source.and_then(|source| registry.seat_for_pawn(source));
+        // `byPlayer(impact.source)` names a player: an NPC damager's own
+        // components are never "the source player's" value.
+        let player_source = source.filter(|source| is_player_pawn(registry, *source));
         for slot in PlayerSlot::ALL {
-            self.owner_engine[slot.index()] = source.and_then(|source| {
+            self.owner_engine[slot.index()] = player_source.and_then(|source| {
                 StoreScope::project_slot_value(
                     slot.ir_type(),
                     player_slot_value(registry, *slot, source).as_ref(),
@@ -549,10 +565,15 @@ impl EntityScope {
 
     fn read_owned_engine(&self, slot: PlayerSlot) -> IrValue {
         self.owner_engine[slot.index()].unwrap_or_else(|| {
-            log::warn!(
-                "[Impact] owner read for slot `{}` found no value on the impact source; using zero",
-                slot.name()
-            );
+            let bit = 1u16 << slot.index();
+            let warned = self.warned_owned_engine.get();
+            if warned & bit == 0 {
+                self.warned_owned_engine.set(warned | bit);
+                log::warn!(
+                    "[Impact] owner read for slot `{}`: the impact source is not a player or has no value; using zero",
+                    slot.name()
+                );
+            }
             slot.ir_type().zero()
         })
     }
@@ -589,10 +610,14 @@ impl EntityScope {
             return handle.ir_type.zero();
         };
         let Some(seat) = self.owner_seat else {
-            log::warn!(
-                "[Impact] owner read for slot `{}` resolved no seat; using declared default",
-                handle.name
-            );
+            let mut warned = self.warned_owned_store.borrow_mut();
+            if !warned.contains(&handle.name) {
+                warned.push(handle.name.clone());
+                log::warn!(
+                    "[Impact] owner read for slot `{}` resolved no seat; using declared default",
+                    handle.name
+                );
+            }
             return StoreScope::project_value(handle.ir_type, record.schema.default.as_ref());
         };
         StoreScope::project_value(handle.ir_type, record.per_seat_value(seat))

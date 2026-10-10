@@ -41,6 +41,11 @@ pub struct PlayerEventDescriptor {
     pub condition: IrNode,
     pub fire: Vec<String>,
     pub levels: Vec<String>,
+    /// The entry's position in its authored `playerEvents` array, counted
+    /// from 0 in both runtimes. Diagnostics only — not part of the entry's
+    /// content: a skipped sibling leaves later survivors at their authored
+    /// positions, and edge memory and dedupe key on `condition` and `edge`.
+    pub authored_index: usize,
 }
 
 /// Where a composed player event was declared, for diagnostics that name it.

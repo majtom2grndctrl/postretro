@@ -407,6 +407,9 @@ end
 --- writable; unknown or nonprojectable inputs and readonly targets reject the
 --- IR before it can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
+  if type(ref) == "table" and ref.owner ~= nil then
+    error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot")
+  end
   return {
     primitive = "setState",
     args = { slot = stateSlot(ref, "updateState"), value = loweredValue(value) },

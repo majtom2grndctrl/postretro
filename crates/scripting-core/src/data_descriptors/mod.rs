@@ -93,7 +93,7 @@ mod lua {
 pub(crate) use audio_profile::*;
 pub use error::*;
 pub(crate) use movement_sounds::*;
-pub use player_events::{drain_player_events_js, drain_player_events_lua};
+pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_events_lua};
 pub use runtime_manifest::*;
 pub use validate::*;
 pub use vm_adapters::*;

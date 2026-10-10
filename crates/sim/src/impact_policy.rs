@@ -3268,6 +3268,72 @@ mod tests {
     }
 
     #[test]
+    fn by_player_impact_source_on_an_npc_source_reads_the_fallback_and_warns_once() {
+        let ctx = ScriptCtx::new();
+        {
+            let mut table = ctx.slot_table.borrow_mut();
+            table
+                .insert("currency.xp".into(), per_owner_number_slot(5.0))
+                .expect("new per-owner slot");
+            table
+                .insert("tally.hp".into(), number_slot(55.0))
+                .expect("new global slot");
+            table
+                .insert("tally.xp".into(), number_slot(55.0))
+                .expect("new global slot");
+        }
+        let target = target(&ctx, &["crate"]);
+        // An NPC damager: it has health, but no seat and no local marker.
+        let npc = source(&ctx, true, false);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(npc)
+                .expect("npc has health")
+                .clone();
+            health.current = 37.0;
+            registry.set_component(npc, health).expect("npc is live");
+        }
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "npc-source-reads",
+            "crate",
+            vec![
+                slot_set("tally.hp", owned_input("player.health")),
+                slot_set("tally.xp", owned_input("currency.xp")),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            for _ in 0..2 {
+                hit_from(&ctx, target, Some(npc), DamageProducer::InTick);
+                evaluate_pending(&ctx, &mut runtime);
+            }
+        });
+
+        assert_number_approx_eq(store(&ctx, "tally.hp"), 0.0);
+        assert_number_approx_eq(store(&ctx, "tally.xp"), 5.0);
+        let warnings = |needle: &str| {
+            captured
+                .iter()
+                .filter(|(level, message)| *level == log::Level::Warn && message.contains(needle))
+                .count()
+        };
+        assert_eq!(
+            warnings(
+                "owner read for slot `player.health`: the impact source is not a player or has no value; using zero"
+            ),
+            1,
+            "an absent engine owner value warns once across hits: {captured:?}"
+        );
+        assert_eq!(
+            warnings("owner read for slot `currency.xp` resolved no seat; using declared default"),
+            1,
+            "a seatless store owner read warns once across hits: {captured:?}"
+        );
+    }
+
+    #[test]
     fn owner_slot_write_without_a_source_seat_warns_and_keeps_siblings_running() {
         let ctx = ScriptCtx::new();
         ctx.slot_table

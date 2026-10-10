@@ -127,7 +127,7 @@ pub(super) fn bind_sequence_step(
     )
 }
 
-/// Bind a trigger command.
+/// Test shorthand for [`bind_command_at`] at [`BindSite::Trigger`].
 #[cfg(test)]
 pub(super) fn bind_command(
     primitive: &str,
@@ -146,6 +146,8 @@ pub(super) fn bind_command(
     )
 }
 
+/// Bind one consequential command for `site`'s in-tick source; the site picks
+/// the dispatch scope a runtime `setState` value binds against.
 pub(super) fn bind_command_at(
     site: BindSite,
     primitive: &str,

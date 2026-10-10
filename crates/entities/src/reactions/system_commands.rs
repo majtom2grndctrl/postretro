@@ -1,5 +1,5 @@
-// System-reaction command queue: deferred typed commands drained by the app.
-// See: context/lib/scripting.md §10.4
+// System-reaction commands: app-drained queue, reaction classes, player-routed presentation.
+// See: context/lib/scripting.md §10.4, §12 (Player events)
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -158,6 +158,8 @@ impl SystemCommandQueue {
         self.fire_context.borrow().clone()
     }
 
+    /// Drain the local commands. Presentation routed to a player leaves through
+    /// [`Self::take_routed`].
     pub fn take(&self) -> Vec<SystemReactionCommand> {
         std::mem::take(&mut self.commands.borrow_mut())
     }
@@ -177,6 +179,7 @@ impl std::fmt::Debug for SystemCommandQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SystemCommandQueue")
             .field("len", &self.commands.borrow().len())
+            .field("routed", &self.routed.borrow().len())
             .finish()
     }
 }
@@ -224,6 +227,9 @@ pub enum SystemReactionKind {
 }
 
 impl SystemReactionKind {
+    /// Every kind. No compiler exhaustiveness check covers this list; the sim
+    /// test `registers_exactly_the_classified_system_reaction_kinds` keeps it
+    /// in step with the registered system primitives.
     pub const ALL: &'static [SystemReactionKind] = &[
         Self::PlaySound,
         Self::Rumble,

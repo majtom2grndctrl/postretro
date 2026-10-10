@@ -198,6 +198,7 @@ pub(crate) fn player_event(
         condition,
         fire: fire.iter().map(|name| name.to_string()).collect(),
         levels: Vec::new(),
+        authored_index: 0,
     }
 }
 
@@ -297,6 +298,33 @@ fn a_non_bool_condition_is_rejected_naming_the_event_and_its_bool_sibling_instal
 }
 
 #[test]
+fn a_rejection_names_the_authored_position_after_a_skipped_sibling() {
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(1)), 10.0);
+    let capture = LogCapture::start();
+    // Authored entries 1 and 3 were skipped at parse; the survivors keep
+    // their authored positions, so the non-Bool one is entry 2, not 1.
+    world.install(
+        vec![on_player("scald", "applyDamage", json!({ "amount": 1.0 }))],
+        vec![
+            player_event(
+                PlayerEventEdge::Becomes,
+                lt(input("player.health"), number(50.0)),
+                &["scald"],
+            ),
+            PlayerEventDescriptor {
+                authored_index: 2,
+                ..player_event(PlayerEventEdge::Becomes, input("player.health"), &["scald"])
+            },
+        ],
+    );
+    capture.assert_logged(
+        log::Level::Error,
+        "player event setupLevel().playerEvents[2]: condition must produce Bool",
+    );
+}
+
+#[test]
 fn one_condition_edge_and_reaction_bind_once_and_distinct_entries_fire_mod_global_first() {
     let mut world = World::new();
     world.spawn_player(Some(Seat(1)), 10.0);
@@ -310,7 +338,10 @@ fn one_condition_edge_and_reaction_bind_once_and_distinct_entries_fire_mod_globa
         vec![player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])],
         vec![
             player_event(PlayerEventEdge::Becomes, low(), &["hiss"]),
-            player_event(PlayerEventEdge::Becomes, low(), &["fanfare"]),
+            PlayerEventDescriptor {
+                authored_index: 1,
+                ..player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])
+            },
         ],
         &[],
     );

@@ -456,7 +456,7 @@ pub fn ingest_client_presentation_messages(
             // Commands present through the system command queue
             // (`presentation_commands`), split out before this intake.
             ServerPresentationPayload::Command(_) => {
-                log::debug!("[Netcode] presentation command reached the passive intake; skipped");
+                log::warn!("[Netcode] presentation command reached the passive intake; skipped");
             }
             ServerPresentationPayload::Spawn {
                 template_id,

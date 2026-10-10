@@ -979,6 +979,7 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
             },
             fire: vec!["hurt".to_string()],
             levels: Vec::new(),
+            authored_index: 0,
         }]);
         data.recompose(&[]);
     }

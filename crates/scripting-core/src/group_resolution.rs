@@ -66,7 +66,10 @@ pub fn extend_with_player_pawns(
     );
 }
 
-fn is_player_pawn(registry: &EntityRegistry, id: EntityId) -> bool {
+/// Whether `id` is a player pawn: bound to a seat, or the marked local pawn.
+/// The `player` group's membership rule, shared with every owner read that
+/// must name a player (`byPlayer(impact.source)`).
+pub fn is_player_pawn(registry: &EntityRegistry, id: EntityId) -> bool {
     registry.seat_for_pawn(id).is_some() || Some(id) == registry.local_player_pawn()
 }
 

@@ -6,8 +6,10 @@
 use std::cell::RefCell;
 
 use postretro_entities::ScriptCtx;
-use postretro_foundation::{BakedIr, CURRENT_IR_VERSION, IrType, bind};
-use postretro_scripting_core::data_descriptors::{ComposedPlayerEvent, NamedReaction};
+use postretro_foundation::{BakedIr, CURRENT_IR_VERSION, IrNode, IrType, bind};
+use postretro_scripting_core::data_descriptors::{
+    ComposedPlayerEvent, NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource,
+};
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::group_resolution::group_commands_apply_here;
 use postretro_scripting_core::ir_player_scope::PlayerConditionScope;
@@ -113,12 +115,17 @@ impl PlayerEventTable {
         let mut steps = Vec::new();
         for address in &descriptor.fire {
             if let Some(first) = bound.first_binding(descriptor, address) {
-                log::warn!(
-                    "[Scripting] player event: reaction `{address}` is bound by both {first} and {source} on one condition and edge; it binds once"
-                );
+                if first == source {
+                    log::warn!(
+                        "[Scripting] player event {source}: fire list names reaction `{address}` twice; it binds once"
+                    );
+                } else {
+                    log::warn!(
+                        "[Scripting] player event: reaction `{address}` is bound by both {first} and {source} on one condition and edge; it binds once"
+                    );
+                }
                 continue;
             }
-            bound.record(descriptor, address, source);
             let matched: Vec<&NamedReaction> = data_registry
                 .reactions
                 .iter()
@@ -141,6 +148,9 @@ impl PlayerEventTable {
                 );
                 continue;
             }
+            // Recorded only once the address binds: a skipped or dropped
+            // address must not make an identical later entry claim it did.
+            bound.record(descriptor, address, source);
             for (body_ordinal, reaction) in matched.into_iter().enumerate() {
                 partition_direct_reaction(
                     reaction,
@@ -187,20 +197,15 @@ impl PlayerEventTable {
 /// double its effects. Conditions match structurally.
 #[derive(Default)]
 struct BoundAddresses {
-    entries: Vec<(
-        postretro_foundation::IrNode,
-        postretro_scripting_core::data_descriptors::PlayerEventEdge,
-        String,
-        postretro_scripting_core::data_descriptors::PlayerEventSource,
-    )>,
+    entries: Vec<(IrNode, PlayerEventEdge, String, PlayerEventSource)>,
 }
 
 impl BoundAddresses {
     fn first_binding(
         &self,
-        descriptor: &postretro_scripting_core::data_descriptors::PlayerEventDescriptor,
+        descriptor: &PlayerEventDescriptor,
         address: &str,
-    ) -> Option<&postretro_scripting_core::data_descriptors::PlayerEventSource> {
+    ) -> Option<&PlayerEventSource> {
         self.entries
             .iter()
             .find(|(condition, edge, bound, _)| {
@@ -211,9 +216,9 @@ impl BoundAddresses {
 
     fn record(
         &mut self,
-        descriptor: &postretro_scripting_core::data_descriptors::PlayerEventDescriptor,
+        descriptor: &PlayerEventDescriptor,
         address: &str,
-        source: &postretro_scripting_core::data_descriptors::PlayerEventSource,
+        source: &PlayerEventSource,
     ) {
         self.entries.push((
             descriptor.condition.clone(),

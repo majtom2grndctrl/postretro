@@ -1421,7 +1421,7 @@ declare module "postretro" {
     crossings?: ReadonlyArray<CrossingDescriptor>;
     /** Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
-    /** Mod-global player events, each built with `players().on(becomes(cond) | ceases(cond), fire, { levels? })`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once. */
+    /** Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once. */
     playerEvents?: ReadonlyArray<PlayerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
@@ -2090,7 +2090,7 @@ declare module "postretro" {
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
-    /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is rejected here with a warning. */
+    /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
@@ -2385,7 +2385,7 @@ declare module "postretro" {
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;

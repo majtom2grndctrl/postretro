@@ -56,7 +56,8 @@ pub enum PresentationFact {
     Bool(bool),
 }
 
-/// One host-to-client passive presentation event.
+/// One host-to-client presentation message: a passive presentation event, or a
+/// presentation command a player event addressed to this client's player.
 ///
 /// This family rides the dedicated unreliable `Channel::Presentation`; it is
 /// intentionally separate from [`ServerMessage`], whose envelope belongs to
@@ -68,9 +69,10 @@ pub struct ServerPresentationMessage {
 
 /// Payloads carried by [`ServerPresentationMessage`].
 ///
-/// New variants must be appended. bitcode encodes enum tags positionally, and
-/// both current variants are defined together so the later overlay surface does
-/// not need a second wire-version bump.
+/// New variants must be appended. bitcode encodes enum tags positionally. The
+/// first two variants (`Spawn`, `OverlayFact`) were defined together so the
+/// later overlay surface needed no second wire-version bump; `Command` was
+/// appended after them.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerPresentationPayload {
     /// A one-shot transient authored from a presentation template. `value` is

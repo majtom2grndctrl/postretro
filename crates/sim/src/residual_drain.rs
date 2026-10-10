@@ -25,9 +25,9 @@ pub struct ResidualRegistries<'a> {
 }
 
 /// Run every residual one frame's ticks left, appending follow-up addresses
-/// to `follow_ups`. Trigger residuals drain first, then player-event residuals:
-/// within each tick a player event evaluates after the triggers have fired, so
-/// the drain keeps that order source by source.
+/// to `follow_ups`. Trigger residuals drain first, then player-event residuals;
+/// each source keeps tick order and authored order. A player event evaluates
+/// after the tick's triggers fire, so its batch follows theirs.
 #[allow(clippy::too_many_arguments)]
 pub fn drain_frame_residuals(
     trigger_residuals: &[(TriggerResidualHandle, EntityId, PlayerId)],
@@ -74,7 +74,11 @@ pub fn drain_frame_residuals(
         };
         // A `wait` reached here keys its instance to the event player's pawn,
         // so two players' tails never cancel or restart each other. There is
-        // no paired exit to cancel an interruptible wait.
+        // no paired exit to cancel an interruptible wait. The instance key is
+        // the reaction and the event player, so one parked tail runs per
+        // (reaction, player) across every player event: a second event firing
+        // the same reaction for that player while its tail is parked does not
+        // park another (the scheduler's non-interruptible re-fire rule).
         let _origin = scheduler.begin_origin(residual.pawn, PlayerId::Local(residual.pawn), false);
         // Presentation in this fire list plays on the event player's machine;
         // the app routes it. The marked local pawn with no seat presents here.
@@ -88,6 +92,8 @@ pub fn drain_frame_residuals(
                 },
                 ..SystemCommandFireContext::default()
             });
+        // Player-event residuals share the in-tick-bound contract (their
+        // consequential work already ran in the tick), so they use `TriggerBinding`.
         follow_ups.extend(fire_prepartitioned_reactions_with_sequences(
             steps,
             registries.sequence,

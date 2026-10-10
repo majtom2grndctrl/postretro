@@ -68,6 +68,8 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.lu
 /// temporary [`DATA_SCRIPT_PARTS_GLOBAL`] bridge carries them (and the shared
 /// subject tokens and dispatch params) across chunks and is cleared once the
 /// main module returns. `(bridge key, source, sdk/lib-relative path)`.
+/// `player_events` comes first because `commands.luau` reads
+/// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
     (
         "playerEvents",

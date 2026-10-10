@@ -131,6 +131,12 @@ struct SystemSetStateBinding {
     value: serde_json::Value,
     program: Option<BoundProgram<DispatchScope>>,
     required_dispatch_inputs: Vec<String>,
+    /// The value reads `byPlayer(on.player)`. Only a player event publishes
+    /// the event player, and it binds the value in-tick; an app-drain
+    /// dispatch came from a source no install check covers (a UI action, a
+    /// progress target, an `onComplete` chain), so it warns once and skips.
+    reads_event_player: bool,
+    event_player_warned: std::cell::Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -148,6 +154,8 @@ impl SystemSetStateBinding {
 /// Outcome of looking up an object-shaped `setState` value at the app drain.
 /// Rejected entries deliberately remain in the table after their install-time
 /// diagnostic, so a validly queued command does not warn again on every fire.
+/// A `byPlayer(on.player)` value has no install-time diagnostic for the
+/// sources that reach it here; its first dispatch warns instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionIrDispatch {
     Evaluated,
@@ -201,6 +209,8 @@ impl SystemReactionIrBindings {
                         value: args.value,
                         program: None,
                         required_dispatch_inputs: Vec::new(),
+                        reads_event_player: false,
+                        event_player_warned: std::cell::Cell::new(false),
                     });
                 } else {
                     self.rejected_literals.push(SystemSetStateLiteralRejection {
@@ -223,6 +233,8 @@ impl SystemReactionIrBindings {
                 value: args.value,
                 program: None,
                 required_dispatch_inputs: Vec::new(),
+                reads_event_player: false,
+                event_player_warned: std::cell::Cell::new(false),
             };
 
             let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
@@ -243,13 +255,13 @@ impl SystemReactionIrBindings {
             };
             binding.required_dispatch_inputs = baked.root.dispatch_input_names();
             // A `byPlayer(on.player)` value binds in-tick under its player
-            // event; no app-drain source publishes the event player, and
-            // install rejects every other source that subscribes it.
+            // event; no app-drain source publishes the event player. Install
+            // rejects the subscriptions it can see (triggers, crossings,
+            // `levelLoad`), but a UI action, a progress target or an
+            // `onComplete` chain can still queue it here, so `dispatch` warns
+            // once for this binding and skips.
             if postretro_scripting_core::player_event_scope::reads_event_player(&binding.value) {
-                log::debug!(
-                    "[Scripting] setState reaction `{}` reads the event player; it binds only under a player event",
-                    reaction.name
-                );
+                binding.reads_event_player = true;
                 self.bindings.push(binding);
                 continue;
             }
@@ -291,6 +303,15 @@ impl SystemReactionIrBindings {
         else {
             return SystemReactionIrDispatch::Unknown;
         };
+        if binding.reads_event_player {
+            if !binding.event_player_warned.replace(true) {
+                log::warn!(
+                    "[Scripting] setState reaction `{}` reads `byPlayer(on.player)`, which only a player event publishes; skipped",
+                    binding.name
+                );
+            }
+            return SystemReactionIrDispatch::Rejected;
+        }
         let Some(program) = &binding.program else {
             return SystemReactionIrDispatch::Rejected;
         };
@@ -1052,6 +1073,39 @@ mod tests {
             number_value(&ctx, "currency.team"),
             3.0,
             "a rejected per-owner reaction does not block a global sibling",
+        );
+    }
+
+    #[test]
+    fn an_app_side_event_player_set_state_warns_once_and_skips() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "leveling.lastHp", 7.0, 100.0, false);
+        let value =
+            serde_json::json!({ "op": "input", "name": "player.health", "owner": "@player" });
+        let data = active_reactions(vec![set_state_reaction(
+            "recordHp",
+            "leveling.lastHp",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        let capture = LogCapture::start();
+        for _ in 0..2 {
+            assert_eq!(
+                bindings.dispatch("leveling.lastHp", &value, "ui:levelUp", &[], &ctx),
+                SystemReactionIrDispatch::Rejected,
+                "no app-drain source publishes the event player",
+            );
+        }
+        capture.assert_logged_once(
+            Level::Warn,
+            "setState reaction `recordHp` reads `byPlayer(on.player)`, which only a player event publishes; skipped",
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "leveling.lastHp"),
+            7.0,
+            "the skipped write leaves the slot unchanged",
         );
     }
 

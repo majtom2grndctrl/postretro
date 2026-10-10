@@ -1,6 +1,7 @@
 // `playerEvents` wire form and where its `levels` scope belongs. Each VM
-// converts the array to JSON and both parse it here, so the two runtimes
-// accept and reject exactly the same entries with the same diagnostics.
+// converts one entry at a time to JSON and both parse it here, so the two
+// runtimes accept and reject exactly the same entries with the same
+// diagnostics, and one unconvertible entry costs only itself.
 // See: context/lib/scripting.md §12 (Player events)
 
 use super::*;
@@ -8,45 +9,64 @@ use postretro_entities::data_descriptors::{PlayerEventDescriptor, PlayerEventEdg
 
 /// The manifest a `playerEvents` array arrived in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlayerEventSite {
+pub enum PlayerEventSite {
     /// `setupLevel()`: entries belong to that level, so `levels` is rejected.
     Level,
     /// `ModManifest`: `levels` scopes each entry.
     Mod,
 }
 
-/// Parse a converted `playerEvents` array. A malformed entry, or a level
-/// entry carrying `levels`, warns naming its index and is skipped; its
-/// siblings install.
-pub(crate) fn player_events_from_json(
-    raw: serde_json::Value,
+/// Collect one `playerEvents` entry at authored `index`, given its JSON
+/// conversion. A malformed entry — including one its VM could not convert —
+/// warns naming its index and is skipped; its siblings install.
+fn push_player_event(
+    out: &mut Vec<PlayerEventDescriptor>,
+    converted: Result<serde_json::Value, DescriptorError>,
     site: PlayerEventSite,
+    index: usize,
     scope: &str,
-) -> Result<Vec<PlayerEventDescriptor>, DescriptorError> {
-    let entries = match raw {
-        serde_json::Value::Null => return Ok(Vec::new()),
-        // An empty Luau table converts to an empty object.
-        serde_json::Value::Object(map) if map.is_empty() => return Ok(Vec::new()),
-        serde_json::Value::Array(entries) => entries,
-        _ => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("{scope}: `playerEvents` must be an array"),
-            });
-        }
-    };
-    let mut out = Vec::with_capacity(entries.len());
-    for (index, entry) in entries.into_iter().enumerate() {
-        match player_event_from_json(entry, site, index, scope) {
-            Ok(Some(descriptor)) => out.push(descriptor),
-            Ok(None) => {}
-            Err(error) => log::warn!(
-                "[Scripting] {scope}: playerEvents[{index}] is malformed and was skipped: {error}"
-            ),
-        }
+) {
+    match converted.and_then(|entry| player_event_from_json(entry, site, index, scope)) {
+        Ok(Some(descriptor)) => out.push(descriptor),
+        Ok(None) => {}
+        Err(error) => log::warn!(
+            "[Scripting] {scope}: playerEvents[{index}] is malformed and was skipped: {error}"
+        ),
     }
-    Ok(out)
 }
 
+/// A QuickJS conversion failure as the bridge's own reason, without the VM's
+/// wrapper text, so both runtimes log one diagnostic for one authored value.
+fn js_conversion_error(error: rquickjs::Error) -> DescriptorError {
+    match error {
+        rquickjs::Error::FromJs {
+            message: Some(reason),
+            ..
+        } => DescriptorError::InvalidShape { reason },
+        other => js_err(other),
+    }
+}
+
+/// Luau twin of [`js_conversion_error`].
+fn lua_conversion_error(error: mlua::Error) -> DescriptorError {
+    match error {
+        mlua::Error::FromLuaConversionError {
+            message: Some(reason),
+            ..
+        }
+        | mlua::Error::RuntimeError(reason) => DescriptorError::InvalidShape { reason },
+        other => lua_err(other),
+    }
+}
+
+fn not_an_array(scope: &str) -> DescriptorError {
+    DescriptorError::InvalidShape {
+        reason: format!("{scope}: `playerEvents` must be an array"),
+    }
+}
+
+/// Parse one converted entry. `Ok(None)` means a level entry carrying
+/// `levels`, already logged.
 fn player_event_from_json(
     entry: serde_json::Value,
     site: PlayerEventSite,
@@ -87,6 +107,7 @@ fn player_event_from_json(
         condition,
         fire,
         levels: levels.unwrap_or_default(),
+        authored_index: index,
     }))
 }
 
@@ -118,11 +139,12 @@ fn string_list(
         .map(Some)
 }
 
-/// Drain `playerEvents` from a QuickJS manifest object.
+/// Drain `playerEvents` from a QuickJS manifest object. Each entry converts
+/// on its own, so an unconvertible one is skipped like any malformed entry.
 pub fn drain_player_events_js<'js>(
     ctx: &Ctx<'js>,
     obj: &Object<'js>,
-    site_is_level: bool,
+    site: PlayerEventSite,
     scope: &str,
 ) -> Result<Vec<PlayerEventDescriptor>, DescriptorError> {
     if !obj.contains_key("playerEvents").map_err(js_err)? {
@@ -132,32 +154,38 @@ pub fn drain_player_events_js<'js>(
     if raw.is_null() || raw.is_undefined() {
         return Ok(Vec::new());
     }
-    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
-    player_events_from_json(json, site(site_is_level), scope)
+    let Some(entries) = raw.as_array() else {
+        return Err(not_an_array(scope));
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for index in 0..entries.len() {
+        let entry: JsValue = entries.get(index).map_err(js_err)?;
+        let converted = conv::js_to_json(ctx, entry).map_err(js_conversion_error);
+        push_player_event(&mut out, converted, site, index, scope);
+    }
+    Ok(out)
 }
 
 /// Drain `playerEvents` from a Luau manifest table. Mirrors
-/// [`drain_player_events_js`].
+/// [`drain_player_events_js`]; an empty table is an empty array.
 pub fn drain_player_events_lua(
     table: &Table,
-    site_is_level: bool,
+    site: PlayerEventSite,
     scope: &str,
 ) -> Result<Vec<PlayerEventDescriptor>, DescriptorError> {
     let raw: LuaValue = table.get("playerEvents").map_err(lua_err)?;
-    if matches!(raw, LuaValue::Nil) {
-        return Ok(Vec::new());
+    let entries = match raw {
+        LuaValue::Nil => return Ok(Vec::new()),
+        LuaValue::Table(entries) => entries,
+        _ => return Err(not_an_array(scope)),
+    };
+    let len = validate_dense_lua_array(&entries, "`playerEvents` field")?;
+    let mut out = Vec::with_capacity(len);
+    for slot in 1..=len {
+        let entry: LuaValue = entries.get(slot).map_err(lua_err)?;
+        let converted = conv::lua_to_json(entry).map_err(lua_conversion_error);
+        // Diagnostics count entries from 0, matching the QuickJS drain.
+        push_player_event(&mut out, converted, site, slot - 1, scope);
     }
-    if let LuaValue::Table(entries) = &raw {
-        validate_dense_lua_array(entries, "`playerEvents` field")?;
-    }
-    let json = conv::lua_to_json(raw).map_err(lua_err)?;
-    player_events_from_json(json, site(site_is_level), scope)
-}
-
-fn site(site_is_level: bool) -> PlayerEventSite {
-    if site_is_level {
-        PlayerEventSite::Level
-    } else {
-        PlayerEventSite::Mod
-    }
+    Ok(out)
 }

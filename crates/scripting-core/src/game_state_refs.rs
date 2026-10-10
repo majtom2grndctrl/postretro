@@ -20,8 +20,10 @@ pub const GET_GAME_STATE_GLOBAL: &str = "getGameState";
 // prelude, so `byPlayer` cannot see the SDK's owner tokens; it recognizes
 // `on.player` and `impact.source` by the wire spelling each carries as
 // `__wire`, and lowers anything else to `@invalid` for the engine to reject.
-// script-compiler's `light_membership.rs` mirrors both installers.
-const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
+// script-compiler's `light_membership.rs` mirrors both installers; the drift
+// guard in `postretro-sim` compares them, so they are public for it alone.
+#[doc(hidden)]
+pub const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
   const slot = leaf.slot;
   const kind = leaf.kind;
   Object.defineProperty(leaf, "byPlayer", {
@@ -38,7 +40,8 @@ const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
 }"#;
 
 // `pcall`: an opaque SDK target raises on any field it does not serve.
-const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
+#[doc(hidden)]
+pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
   local slot = leaf.slot
   local kind = leaf.kind
   local function byPlayer(_self, owner)
@@ -87,7 +90,9 @@ fn host_error(action: &str, error: impl std::fmt::Display) -> ScriptError {
 
 /// SDK-only state-ref value tag. Consumers project refs to their stable wire
 /// identity through `.slot`, so this metadata never reaches descriptors.
-fn state_ref_kind(value_type: EngineStateValueType<'_>) -> &'static str {
+/// Public only for the build-time mirror's drift guard.
+#[doc(hidden)]
+pub fn state_ref_kind(value_type: EngineStateValueType<'_>) -> &'static str {
     match value_type {
         EngineStateValueType::Number => "number",
         EngineStateValueType::Boolean => "boolean",

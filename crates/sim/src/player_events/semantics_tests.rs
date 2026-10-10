@@ -682,6 +682,52 @@ fn a_missing_weapon_value_is_unobserved_and_regaining_it_fires_once() {
 }
 
 #[test]
+fn an_invalid_evaluation_is_unobserved_and_the_next_valid_tick_is_first_sight() {
+    let mut world = World::new();
+    let pawn = world.spawn_player(Some(Seat(1)), 0.0);
+    // 10 / health is a division by zero at zero health.
+    let condition = ge(
+        IrNode::Div {
+            a: Box::new(number(10.0)),
+            b: Box::new(input("player.health")),
+        },
+        number(1.0),
+    );
+    world.install(
+        vec![play_sound("bleed", "bleed"), play_sound("mend", "mend")],
+        vec![
+            player_event(PlayerEventEdge::Becomes, condition.clone(), &["bleed"]),
+            player_event(PlayerEventEdge::Ceases, condition, &["mend"]),
+        ],
+    );
+    world.tick();
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "an invalid evaluation at first sight fires nothing"
+    );
+
+    world.set_health(pawn, 5.0);
+    world.tick();
+    assert_eq!(world.take_residual_reactions(), vec!["bleed".to_string()]);
+
+    // Totalized, the division reads 0 >= 1 = false and would fire `ceases`.
+    world.set_health(pawn, 0.0);
+    world.tick();
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "an invalid evaluation fires no edge"
+    );
+
+    world.set_health(pawn, 5.0);
+    world.tick();
+    assert_eq!(
+        world.take_residual_reactions(),
+        vec!["bleed".to_string()],
+        "the invalid tick dropped the player from memory: first sight again"
+    );
+}
+
+#[test]
 fn a_connected_client_registers_and_fires_nothing() {
     let mut world = World::new();
     world.spawn_player(Some(Seat(1)), 30.0);

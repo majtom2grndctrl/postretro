@@ -474,6 +474,7 @@ export type EmitterParams = { emitter: EmitterTarget }
 --- the owner `byPlayer(on.player)` reads. Legal only before any `wait`, and
 --- only in reactions a player event fires. Call its verbs with `:`.
 export type PlayerTarget = {
+  __playerTarget: true,
   --- Damage this event's player by a finite, non-negative amount.
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this event's player.
@@ -710,7 +711,8 @@ export type LevelManifest = {
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-player events, built with `players():on`. A level's entries belong
-  --- to that level; an entry carrying `levels` is rejected here with a warning.
+  --- to that level; an entry carrying `levels` is skipped with a warning (its
+  --- siblings install).
   playerEvents: {PlayerEventDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -857,7 +859,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest

@@ -5,7 +5,7 @@
 
 import type { RuntimeValue } from "postretro";
 import type { BoolRef, PlayerEventParams, Reaction } from "../data_script";
-import { boolNode } from "../util/expression_refs";
+import { boolNode, loweredValue } from "../util/expression_refs";
 import { triggerEventFireNames } from "./trigger_events";
 
 /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
@@ -38,9 +38,16 @@ type EdgeData = { edge: PlayerEventEdgeWord; condition: RuntimeValue };
 // at author time rather than reaching the engine as a guess.
 const edges = new WeakMap<object, EdgeData>();
 
+// Any fluent value (even a NumberRef that slipped past the types) lowers to IR,
+// so the engine's "condition must produce Bool" check names the event instead
+// of a malformed-descriptor error.
+function lowerCondition(cond: BoolRef): RuntimeValue {
+  return typeof cond === "boolean" ? boolNode(cond) : (loweredValue(cond) as RuntimeValue);
+}
+
 function edgeWord(edge: PlayerEventEdgeWord, cond: BoolRef): PlayerEventEdge {
   const handle = Object.freeze({}) as PlayerEventEdge;
-  edges.set(handle, { edge, condition: boolNode(cond) });
+  edges.set(handle, { edge, condition: lowerCondition(cond) });
   return handle;
 }
 

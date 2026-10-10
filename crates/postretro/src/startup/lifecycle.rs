@@ -228,9 +228,10 @@ impl App {
             .rebuild(&script_ctx.data_registry.borrow(), &script_ctx);
     }
 
-    /// Rebind trigger events after staged mod-init recomposes the active reaction
-    /// set. Tick dispatch holds bound commands, never reaction names, so it must
-    /// be refreshed alongside the other active reaction consumers.
+    /// Rebind trigger events and player events after staged mod-init recomposes
+    /// the active reaction set. Tick dispatch holds bound commands, never
+    /// reaction names, so it must be refreshed alongside the other active
+    /// reaction consumers.
     pub(crate) fn rebuild_active_trigger_bindings(&mut self) {
         let bindings = {
             let Some(session) = self.session.as_ref() else {
@@ -1145,7 +1146,16 @@ fn rebuild_reaction_subscribers(
                 *any |= uses_sentinel;
                 *all &= uses_sentinel;
             }
-            let level_load_has_sentinel = per_address.get("levelLoad").is_some_and(|(any, _)| *any);
+            // The legacy warning is for trigger sentinels other than the event
+            // player: an `@player` levelLoad reaction already gets the
+            // `on.player` error below.
+            let level_load_has_sentinel = data_registry.reactions.iter().any(|reaction| {
+                reaction.name == "levelLoad"
+                    && reaction_uses_trigger_sentinel(reaction)
+                    && !postretro_scripting_core::player_event_scope::reaction_uses_event_player(
+                        &reaction.descriptor,
+                    )
+            });
             // A name is strippable only when every reaction registered there is
             // sentinel-bound (each map key has at least one reaction, so the
             // non-empty requirement holds by construction).
@@ -1159,23 +1169,21 @@ fn rebuild_reaction_subscribers(
         // `on.player` exists only in a player event's fire. Unlike a trigger
         // sentinel, one such reaction costs the crossing its whole address,
         // the rejection unit player events use for the same token.
-        let mut event_player_addresses: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+        let mut event_player_addresses: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for reaction in &data_registry.reactions {
             if postretro_scripting_core::player_event_scope::reaction_uses_event_player(
                 &reaction.descriptor,
             ) {
-                event_player_addresses
-                    .entry(reaction.name.clone())
-                    .or_insert_with(|| reaction.name.clone());
+                event_player_addresses.insert(reaction.name.clone());
             }
         }
         data_registry.crossings.retain_mut(|crossing| {
             let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
             crossing.fire.retain(|address| {
-                if let Some(reaction) = event_player_addresses.get(address) {
+                if event_player_addresses.contains(address) {
                     log::error!(
-                        "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{reaction}` uses `on.player`, which only a player event publishes"
+                        "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses `on.player`, which only a player event publishes"
                     );
                     return false;
                 }
@@ -1194,9 +1202,9 @@ fn rebuild_reaction_subscribers(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
             );
         }
-        if let Some(reaction) = event_player_addresses.get("levelLoad") {
+        if event_player_addresses.contains("levelLoad") {
             log::error!(
-                "[Scripting] levelLoad: reaction `{reaction}` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
+                "[Scripting] levelLoad: reaction `levelLoad` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
             );
         }
     }
@@ -4690,6 +4698,7 @@ pub(crate) mod tests {
             "the client keeps authored enabled_on_spawn=false rather than running the host roll",
         );
     }
+
     // `on.player` exists only in a player event's fire: a crossing loses the
     // address, and a `levelLoad` reaction using it is reported at install.
     #[test]
@@ -4736,6 +4745,17 @@ pub(crate) mod tests {
         assert!(
             ctx.data_registry.borrow().crossings.is_empty(),
             "the crossing kept no other address"
+        );
+        // The `@player`-only levelLoad is covered by the error above; the legacy
+        // trigger-sentinel warning must not double-report it.
+        assert!(
+            !capture.records().iter().any(|record| {
+                record.level == log::Level::Warn
+                    && record
+                        .message
+                        .contains("levelLoad references trigger-sentinel work")
+            }),
+            "legacy sentinel warning fired for an `@player`-only levelLoad"
         );
     }
 }

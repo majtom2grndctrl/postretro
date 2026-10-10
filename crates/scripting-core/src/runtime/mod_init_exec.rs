@@ -7,7 +7,7 @@ use std::path::Path;
 use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value as JsValue};
 
 use crate::data_descriptors::{
-    EntityTypeDescriptor, drain_audio_profile_js, drain_audio_profile_lua,
+    EntityTypeDescriptor, PlayerEventSite, drain_audio_profile_js, drain_audio_profile_lua,
     drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
     drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
@@ -525,7 +525,7 @@ pub(super) fn run_mod_init_quickjs(
             }
         };
 
-        let player_events = match drain_player_events_js(&ctx, &obj, false, "default mod manifest export") {
+        let player_events = match drain_player_events_js(&ctx, &obj, PlayerEventSite::Mod, "default mod manifest export") {
             Ok(v) => v,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument { reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}") });
@@ -886,11 +886,11 @@ pub(super) fn run_mod_init_luau(
         }
     })?;
     let player_events =
-        drain_player_events_lua(&table, false, "returned mod manifest").map_err(|e| {
-            ScriptError::InvalidArgument {
+        drain_player_events_lua(&table, PlayerEventSite::Mod, "returned mod manifest").map_err(
+            |e| ScriptError::InvalidArgument {
                 reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
-            }
-        })?;
+            },
+        )?;
 
     Ok(ModManifestResult {
         name,

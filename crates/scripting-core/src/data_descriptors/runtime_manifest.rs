@@ -469,7 +469,8 @@ pub struct LevelManifest {
     /// to the level that declared them.
     pub trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Level player events (`players().on`) from the `playerEvents` field. An
-    /// entry carrying `levels` is rejected here; it belongs in `ModManifest`.
+    /// entry carrying `levels` is skipped with a warning (its siblings install);
+    /// it belongs in `ModManifest`.
     pub player_events: Vec<PlayerEventDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).

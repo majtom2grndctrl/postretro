@@ -497,6 +497,9 @@ export function updateState<T extends number | boolean | string | ReadonlyArray<
   ref: Ref<T>,
   value: T | RuntimeValue | NumberRef | BoolRef,
 ): import("../data_script").PrimitiveReactionDescriptor {
+  if (typeof ref === "object" && ref !== null && "owner" in ref && (ref as { owner?: unknown }).owner !== undefined) {
+    throw new Error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot");
+  }
   return {
     primitive: "setState",
     args: { slot: stateSlot(ref, "updateState"), value: loweredValue(value) },

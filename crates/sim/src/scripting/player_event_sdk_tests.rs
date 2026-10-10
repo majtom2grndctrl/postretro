@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use postretro_entities::reactions::system_commands::SystemReactionCommand;
 use postretro_entities::{
     ReplicationScope, ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
 };
@@ -12,9 +13,18 @@ use postretro_foundation::Seat;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+use postretro_scripting_core::reaction_registry::{
+    ReactionPrimitiveRegistry, SystemReactionRegistry,
+};
 use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+use postretro_test_log_capture::LogCapture;
 
 use crate::player_events::tests::World;
+use crate::residual_drain::{ResidualRegistries, drain_frame_residuals};
+use crate::scripting::reactions::system_commands::register_system_reaction_primitives;
+use crate::scripting_systems::reaction_scheduler::ReactionScheduler;
+use crate::trigger_system::TriggerSystem;
 
 const XP: &str = "progression.xp";
 const LEVEL: &str = "leveling.level";
@@ -123,7 +133,12 @@ fn set_per_seat(world: &World, name: &str, seat: Seat, value: f32) {
         .set_per_seat_value(seat, SlotValue::Number(value));
 }
 
-/// A world with two seat-bound players and the example's store slots.
+/// A world with two seat-bound players and the example's store slots. The
+/// hand-written declarations mirror the dev mod's stores: `progression.xp`
+/// (`content/dev/scripts/combat-lifecycle.ts`) and `leveling.level` /
+/// `leveling.lastLevelUpXp` (`content/dev/scripts/leveling.ts`). Each slot's
+/// `per_owner` and `network` follow those modules: xp and level are per-owner
+/// `ownerPrivate`, `lastLevelUpXp` is one `shared` value. Keep them in step.
 fn example_world() -> World {
     let world = World::new();
     world.spawn_player(Some(Seat(1)), 100.0);
@@ -159,10 +174,61 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
             "{script}: every player event parses"
         );
         let mut world = example_world();
+        let capture = LogCapture::start();
         world.install(manifest.reactions, manifest.player_events);
+        let noisy: Vec<_> = capture
+            .records()
+            .into_iter()
+            .filter(|record| record.level <= log::Level::Warn)
+            .collect();
+        assert!(
+            noisy.is_empty(),
+            "{script}: installing the shipped example logs no warning or error: {noisy:?}"
+        );
+        drop(capture);
         set_per_seat(&world, XP, Seat(1), 20.0);
         set_per_seat(&world, XP, Seat(2), 140.0);
         world.tick();
+        // The fanfare and gold flash present on the crossing player's machine,
+        // in listed order.
+        let mut system = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system);
+        let sequence = SequencedPrimitiveRegistry::new();
+        let reaction = ReactionPrimitiveRegistry::new();
+        let mut follow_ups = Vec::new();
+        drain_frame_residuals(
+            &[],
+            &Default::default(),
+            &TriggerSystem::default(),
+            &world.residuals,
+            &world.table,
+            &ReactionScheduler::default(),
+            ResidualRegistries {
+                sequence: &sequence,
+                reaction: &reaction,
+                system: &system,
+            },
+            &world.script_ctx,
+            &mut follow_ups,
+        );
+        let routed = world.script_ctx.system_commands.take_routed();
+        assert_eq!(routed.len(), 2, "{script}: fanfare and goldFlash route");
+        assert_eq!(routed[0].0, Seat(2), "{script}: fanfare seat");
+        assert!(
+            matches!(&routed[0].1, SystemReactionCommand::PlaySound { sound, .. } if sound == "sfx/test_tone"),
+            "{script}: fanfare first: {:?}",
+            routed[0].1
+        );
+        assert_eq!(routed[1].0, Seat(2), "{script}: goldFlash seat");
+        assert!(
+            matches!(
+                &routed[1].1,
+                SystemReactionCommand::FlashScreen { color, duration_ms }
+                    if *color == [1.0, 0.9, 0.3, 0.4] && *duration_ms == 300.0
+            ),
+            "{script}: goldFlash second: {:?}",
+            routed[1].1
+        );
         assert_eq!(
             global(&world, LAST_LEVEL_UP_XP),
             140.0,
@@ -304,5 +370,51 @@ end
         world.install(manifest.reactions, manifest.player_events);
         world.tick();
         assert_eq!(world.health(pawn), 10.0, "{file}: nothing fired");
+    }
+}
+
+// AC: writing through a `byPlayer` ref is refused at script evaluation, in both
+// runtimes. The data script fails as a whole: it logs the throw and yields an
+// empty manifest.
+#[test]
+fn update_state_on_a_by_player_ref_throws_in_both_runtimes() {
+    const MESSAGE: &str = "updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot";
+    const TS: &str = r#"
+import { players, becomes, read, defineReaction, defineStore, getGameState } from "postretro";
+import type { PlayerEventParams } from "postretro";
+import { updateState } from "postretro/ui";
+const s = defineStore("leveling", { level: { type: "number", default: 1, perOwner: true, network: "ownerPrivate" } });
+const hp = getGameState().player.health;
+const bad = defineReaction("bad", (on: PlayerEventParams) => updateState(s.level.byPlayer(on.player), 1));
+export function setupLevel() {
+  return {
+    reactions: [bad],
+    playerEvents: [players().on(becomes(read(hp).lt(50)), [bad])],
+  };
+}
+"#;
+    const LUAU: &str = r#"
+local Postretro = require("postretro")
+local UI = require("postretro/ui")
+local s = Postretro.defineStore("leveling", { level = { type = "number", default = 1, perOwner = true, network = "ownerPrivate" } })
+local hp = Postretro.getGameState().player.health
+local bad = Postretro.defineReaction("bad", function(on)
+  return UI.updateState(s.level:byPlayer(on.player), 1)
+end)
+function setupLevel(_ctx)
+  return {
+    reactions = { bad },
+    playerEvents = { Postretro.players():on(Postretro.becomes(Postretro.read(hp):lt(50)), { bad }) },
+  }
+end
+"#;
+    for (file, source) in [("level.ts", TS), ("level.luau", LUAU)] {
+        let capture = LogCapture::start();
+        let manifest = run_inline(file, source);
+        assert!(
+            manifest.player_events.is_empty() && manifest.reactions.is_empty(),
+            "{file}: a throwing script yields an empty manifest"
+        );
+        capture.assert_logged(log::Level::Warn, MESSAGE);
     }
 }

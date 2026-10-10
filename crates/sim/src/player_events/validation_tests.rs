@@ -649,3 +649,166 @@ fn a_plain_engine_read_outside_a_condition_still_means_the_local_player() {
     );
     assert_eq!(eval_value(&program, &condition), IrValue::Number(40.0));
 }
+
+fn record_input(name: &str, input_name: &str) -> NamedReaction {
+    system(
+        name,
+        "setState",
+        json!({ "slot": LAST_HP, "value": { "op": "input", "name": input_name } }),
+    )
+}
+
+#[test]
+fn a_condition_reading_a_local_only_player_slot_is_not_installed() {
+    let mut world = World::new();
+    let pawn = world.spawn_player(Some(Seat(2)), 30.0);
+    let capture = LogCapture::start();
+    world.install(
+        vec![on_player("scald", "applyDamage", json!({ "amount": 5.0 }))],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            lt(input("player.spread"), number(1.0)),
+            &["scald"],
+        )],
+    );
+    capture.assert_logged(
+        log::Level::Error,
+        "player event condition reads `player.spread`, which each machine publishes for its own player",
+    );
+    let errors = errors_containing(&capture, "condition failed to bind");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("setupLevel().playerEvents[0]") && errors[0].contains("`player.spread`"),
+        "the bind error names the event and the slot: {}",
+        errors[0]
+    );
+    world.tick();
+    assert_eq!(
+        world.health(pawn),
+        30.0,
+        "the event never evaluates the host's spread for this player"
+    );
+}
+
+#[test]
+fn a_fired_reaction_reading_a_local_only_player_slot_is_rejected_without_a_by_player_hint() {
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(2)), 30.0);
+    declare(&world, LAST_HP, ReplicationScope::SharedGlobal, false);
+    let capture = LogCapture::start();
+    world.install(
+        vec![
+            record_input("recordSpread", "player.spread"),
+            record_input("recordSwitching", "player.weapon.switching"),
+            // Reached through `fire`, the same read is rejected naming both.
+            sequence("relay", vec![fire_step("recordSpread")]),
+        ],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["recordSpread", "recordSwitching", "relay"],
+        )],
+    );
+    for (address, slot) in [
+        ("recordSpread", "player.spread"),
+        ("recordSwitching", "player.weapon.switching"),
+    ] {
+        let errors = errors_containing(&capture, &format!("drops address `{address}`"));
+        assert_eq!(errors.len(), 1, "`{address}`: {errors:?}");
+        assert!(
+            errors[0].contains(&format!(
+                "reads `{slot}`, which each machine publishes for its own player; a player event cannot read it for the event's player"
+            )) && !errors[0].contains("byPlayer"),
+            "a local-only slot has no `byPlayer` fix to point to: {}",
+            errors[0]
+        );
+    }
+    let errors = errors_containing(&capture, "drops address `relay`");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("reaches reaction `recordSpread`")
+            && errors[0].contains("reads `player.spread`"),
+        "{}",
+        errors[0]
+    );
+    world.tick();
+    assert_eq!(global(&world, LAST_HP), 0.0, "no rejected read runs");
+}
+
+#[test]
+fn a_reaction_reading_on_occupancy_is_rejected_directly_and_through_a_route() {
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(1)), 30.0);
+    declare(&world, LAST_HP, ReplicationScope::SharedGlobal, false);
+    let capture = LogCapture::start();
+    world.install(
+        vec![
+            record_input("count", "@occupancy"),
+            record_input("countLater", "@occupancy"),
+            with_on_complete(
+                system("mark", "setState", json!({ "slot": LAST_HP, "value": 1.0 })),
+                "countLater",
+            ),
+        ],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["count", "mark"],
+        )],
+    );
+    let errors = errors_containing(&capture, "drops address `count`");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0]
+            .contains("reaction `count` uses `on.occupancy`, which only trigger events publish"),
+        "{}",
+        errors[0]
+    );
+    let errors = errors_containing(&capture, "drops address `mark`");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("reaches reaction `countLater`")
+            && errors[0].contains("uses `on.occupancy`"),
+        "{}",
+        errors[0]
+    );
+    world.tick();
+    assert_eq!(
+        global(&world, LAST_HP),
+        0.0,
+        "occupancy never silently reads 0 into the slot"
+    );
+}
+
+#[test]
+fn an_interruptible_wait_is_rejected_and_a_plain_wait_installs() {
+    let wait = |interruptible: bool| SequenceStep {
+        id: SequenceTarget::Wait,
+        primitive: "wait".to_string(),
+        args: json!({ "durationMs": 100.0, "interruptible": interruptible }),
+    };
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(1)), 30.0);
+    let capture = LogCapture::start();
+    world.install(
+        vec![
+            sequence("hold", vec![wait(true)]),
+            sequence("pause", vec![wait(false)]),
+        ],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &["hold", "pause"],
+        )],
+    );
+    let errors = errors_containing(&capture, "drops address `hold`");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains(
+            "reaction `hold` uses an interruptible `wait`, which only a trigger's exit cancels"
+        ),
+        "{}",
+        errors[0]
+    );
+    assert!(errors_containing(&capture, "drops address `pause`").is_empty());
+}

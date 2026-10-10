@@ -187,7 +187,7 @@ export type LevelManifest = {
   /** Level trigger events, keyed by volume: build each with a trigger member's `on`. */
   triggerEvents?: VolumeTriggerEventDescriptor[];
   triggerPools?: TriggerPoolDescriptor[];
-  /** Per-player events, built with `players().on`. A level's entries belong to that level; `levels` is rejected here. */
+  /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
   playerEvents?: PlayerEventDescriptor[];
   /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same
    * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).

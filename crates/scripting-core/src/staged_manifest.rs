@@ -11,22 +11,22 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    drain_audio_profile_js, drain_audio_profile_lua, drain_default_weapon_placement_js,
-    drain_default_weapon_placement_lua, drain_faction_sentiment_decay_js,
-    drain_faction_sentiment_decay_lua, drain_faction_sentiments_js, drain_faction_sentiments_lua,
-    drain_factions_js, drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js,
-    drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
-    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
-    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
-    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
-    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
-    drain_presentation_overlays_lua, drain_presentation_templates_js,
-    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
-    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
-    entity_faction_name_from_lua,
+    PlayerEventSite, drain_audio_profile_js, drain_audio_profile_lua,
+    drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
+    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
+    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
+    drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
+    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
+    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
+    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
+    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
+    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
+    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
+    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -724,10 +724,15 @@ fn manifest_from_js_value<'js>(
                 reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
             }
         })?;
-    let player_events = drain_player_events_js(ctx, &obj, false, "default mod manifest export")
-        .map_err(|e| ScriptError::InvalidArgument {
-            reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
-        })?;
+    let player_events = drain_player_events_js(
+        ctx,
+        &obj,
+        PlayerEventSite::Mod,
+        "default mod manifest export",
+    )
+    .map_err(|e| ScriptError::InvalidArgument {
+        reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -1077,11 +1082,11 @@ fn run_staged_mod_init_luau(
         }
     })?;
     let player_events =
-        drain_player_events_lua(&table, false, "returned mod manifest").map_err(|e| {
-            ScriptError::InvalidArgument {
+        drain_player_events_lua(&table, PlayerEventSite::Mod, "returned mod manifest").map_err(
+            |e| ScriptError::InvalidArgument {
                 reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
-            }
-        })?;
+            },
+        )?;
 
     Ok(ModManifestResult {
         name,

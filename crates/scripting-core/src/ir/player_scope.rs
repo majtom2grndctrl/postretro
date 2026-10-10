@@ -10,7 +10,8 @@
 // Each player's per-player inputs are snapshotted once by `seed_player`, then
 // every condition evaluates against the snapshot. A condition reading an input
 // the player has no value for is unobserved for that player, never evaluated
-// against a default.
+// against a default. A local-only engine `player.*` slot (each machine
+// publishes it from its own pawn) does not bind here at all.
 
 use std::cell::RefCell;
 
@@ -20,6 +21,7 @@ use crate::ctx::ScriptCtx;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
 use crate::ir_scopes::{StoreHandle, StoreScope};
+use crate::player_event_scope::is_local_player_slot;
 use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::registry::{EntityId, EntityRegistry};
 use crate::slot_table::{SlotTable, SlotValue};
@@ -163,6 +165,15 @@ impl BindingScope for PlayerConditionScope {
         // Reserved dispatch names (`@rising`, `@player`) have no meaning in a
         // condition.
         if name.starts_with('@') {
+            return None;
+        }
+        // A local-only player slot holds the host's own value, never the
+        // evaluated player's: refuse it so the condition fails to bind rather
+        // than reading the host for every player.
+        if is_local_player_slot(name) {
+            log::error!(
+                "[Scripting] player event condition reads `{name}`, which each machine publishes for its own player; a player event cannot read it for the evaluated player"
+            );
             return None;
         }
         self.store

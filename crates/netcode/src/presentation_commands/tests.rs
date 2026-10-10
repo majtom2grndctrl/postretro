@@ -171,6 +171,28 @@ fn a_player_events_flash_reaches_only_its_players_machine() {
 }
 
 #[test]
+fn a_remote_seat_with_no_client_bound_presents_nothing() {
+    let mut session = Session::new();
+    let host_queue = SystemCommandQueue::new();
+    // A seat in range of the table but bound to no client.
+    fire_for(&host_queue, Some(Seat(9)), flash());
+    route_player_presentation(&host_queue, Some(&mut session.server), Some(&session.seats));
+    assert!(
+        host_queue.take().is_empty(),
+        "it does not fall back to the host's screen"
+    );
+    assert!(host_queue.take_routed().is_empty());
+    session.relay_to_clients();
+    assert!(
+        session
+            .client_frames()
+            .iter()
+            .all(|(_, commands)| commands.is_empty()),
+        "nothing is sent to any client"
+    );
+}
+
+#[test]
 fn single_player_presents_routed_commands_locally() {
     let queue = SystemCommandQueue::new();
     fire_for(&queue, Some(Seat(0)), flash());

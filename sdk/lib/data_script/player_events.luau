@@ -11,6 +11,17 @@
 local PlayerEventsSdk = {}
 
 local boolNode = __postretroExpressionRefs.boolNode
+local loweredValue = __postretroExpressionRefs.loweredValue
+
+-- Any fluent value (even a NumberRef from untyped code) lowers to IR, so the
+-- engine's "condition must produce Bool" check names the event instead of a
+-- malformed-descriptor error.
+local function lowerCondition(cond: any): any
+  if type(cond) == "boolean" then
+    return boolNode(cond)
+  end
+  return loweredValue(cond)
+end
 
 -- Only edges built here lower; a hand-built `{ edge, condition }` is rejected
 -- at author time rather than reaching the engine as a guess.
@@ -18,7 +29,7 @@ local edges = setmetatable({}, { __mode = "k" })
 
 local function edgeWord(edge: string, cond: BoolRef): PlayerEventEdge
   local handle = table.freeze({})
-  edges[handle] = { edge = edge, condition = boolNode(cond) }
+  edges[handle] = { edge = edge, condition = lowerCondition(cond) }
   return handle
 end
 

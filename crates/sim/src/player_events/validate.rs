@@ -12,8 +12,13 @@ use postretro_scripting_core::data_descriptors::{
 };
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::player_event_scope::{
-    EVENT_PLAYER_TOKEN, plain_per_player_read, reaction_uses_event_player,
+    EVENT_PLAYER_TOKEN, is_local_player_slot, plain_per_player_read, reaction_uses_event_player,
+    reads_dispatch_input,
 };
+
+/// The trigger-fire occupancy input. A player-event fire binds against a scope
+/// that publishes it, seeded zero, so a read would silently see 0.
+const OCCUPANCY_INPUT: &str = "@occupancy";
 
 /// Why `reaction` cannot run under a player event, or `None` when it can.
 pub(super) fn fire_list_violation(
@@ -24,19 +29,48 @@ pub(super) fn fire_list_violation(
     if let Some(rule) = direct_violation(&reaction.descriptor, slot_table) {
         return Some(rule);
     }
+    if holds_interruptible_wait(&reaction.descriptor) {
+        return Some(
+            "uses an interruptible `wait`, which only a trigger's exit cancels".to_string(),
+        );
+    }
     route_violation(reaction, data_registry, slot_table)
+}
+
+/// An interruptible `wait` parks until its paired trigger exit; a player event
+/// has none, so the scheduler would refuse the tail at runtime.
+fn holds_interruptible_wait(descriptor: &ReactionDescriptor) -> bool {
+    let ReactionDescriptor::Sequence(steps) = descriptor else {
+        return false;
+    };
+    steps.iter().any(|step| {
+        matches!(step.id, SequenceTarget::Wait)
+            && step
+                .args
+                .get("interruptible")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+    })
 }
 
 /// What no player-event reaction may do itself. Presentation is allowed: the
 /// fire routes it to the event player's machine.
 fn direct_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> Option<String> {
     if let Some(slot) = plain_per_player_read(descriptor, slot_table) {
+        if is_local_player_slot(&slot) {
+            return Some(format!(
+                "reads `{slot}`, which each machine publishes for its own player; a player event cannot read it for the event's player"
+            ));
+        }
         return Some(format!(
             "reads per-player slot `{slot}` without an owner, which outside the event's condition names no player; read it with `byPlayer(on.player)`"
         ));
     }
     if let Some(token) = trigger_token(descriptor) {
         return Some(format!("uses `{token}`, which only trigger events publish"));
+    }
+    if reads_occupancy(descriptor) {
+        return Some("uses `on.occupancy`, which only trigger events publish".to_string());
     }
     machine_local_effect(descriptor, slot_table)
 }
@@ -64,6 +98,18 @@ fn machine_local_effect(descriptor: &ReactionDescriptor, slot_table: &SlotTable)
             })
         }
         SystemReactionClass::Presentation | SystemReactionClass::HostConsequence => None,
+    }
+}
+
+fn reads_occupancy(descriptor: &ReactionDescriptor) -> bool {
+    match descriptor {
+        ReactionDescriptor::Primitive(primitive) => {
+            reads_dispatch_input(&primitive.args, OCCUPANCY_INPUT)
+        }
+        ReactionDescriptor::Sequence(steps) => steps
+            .iter()
+            .any(|step| reads_dispatch_input(&step.args, OCCUPANCY_INPUT)),
+        ReactionDescriptor::Progress(_) => false,
     }
 }
 

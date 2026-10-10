@@ -62,8 +62,9 @@ export interface PlayerGroup {
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   /**
    * Fire `fire` once per player whenever `edge`'s condition crosses for that
-   * player. Evaluated on the host (and in single player) once per tick; a
-   * connected client registers nothing. Effective only when returned under a
+   * player. Evaluated on the host (and in single player) once per
+   * authoritative tick, after the tick settles; a connected client registers
+   * nothing. Effective only when returned under a
    * manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry.
    */
   on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;

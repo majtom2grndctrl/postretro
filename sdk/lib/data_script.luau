@@ -99,7 +99,7 @@ export type GroupCommand = {
 --- that fired, or the event's player.
 export type SubjectTokenTarget = "@activators" | "@trigger" | "@player"
 
---- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = {
@@ -310,6 +310,7 @@ export type ActivatorsTarget = {
 --- The player a player event fired for (`on.player`): a command target, and
 --- the owner `byPlayer(on.player)` reads. Legal only before any `wait`.
 export type PlayerTarget = {
+  __playerTarget: true,
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,

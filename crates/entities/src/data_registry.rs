@@ -894,22 +894,27 @@ impl DataRegistry {
         // declared them. Their retained `levels` field scopes only mod globals.
         trigger_pools.extend(self.level_trigger_pools.iter().cloned());
 
+        // Sources name the authored position, not the position among the
+        // entries that survived parse.
         let mut player_events: Vec<ComposedPlayerEvent> = self
             .global_player_events
             .iter()
-            .enumerate()
-            .filter(|(_, descriptor)| Self::levels_match(&descriptor.levels, tags))
-            .map(|(index, descriptor)| ComposedPlayerEvent {
+            .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
+            .map(|descriptor| ComposedPlayerEvent {
                 descriptor: descriptor.clone(),
-                source: PlayerEventSource::ModGlobal { index },
+                source: PlayerEventSource::ModGlobal {
+                    index: descriptor.authored_index,
+                },
             })
             .collect();
-        player_events.extend(self.level_player_events.iter().enumerate().map(
-            |(index, descriptor)| ComposedPlayerEvent {
+        player_events.extend(self.level_player_events.iter().map(|descriptor| {
+            ComposedPlayerEvent {
                 descriptor: descriptor.clone(),
-                source: PlayerEventSource::Level { index },
-            },
-        ));
+                source: PlayerEventSource::Level {
+                    index: descriptor.authored_index,
+                },
+            }
+        }));
 
         self.reactions = reactions;
         self.crossings = crossings;
@@ -1011,18 +1016,18 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
-    /// Replace the complete committed faction snapshot and rebase live state.
-    /// Startup accepts any validated declaration order. Staged reload verifies
-    /// that the name-to-index mapping is unchanged before calling this, while
-    /// still allowing authored relationship overrides to refresh. Live values
-    /// remain intact unless they now equal the refreshed baseline, in which case
-    /// they are no longer sparse overrides.
     /// Replace the durable mod-global player events. The active set changes
     /// at the next recompose.
     pub fn replace_global_player_events(&mut self, player_events: Vec<PlayerEventDescriptor>) {
         self.global_player_events = player_events;
     }
 
+    /// Replace the complete committed faction snapshot and rebase live state.
+    /// Startup accepts any validated declaration order. Staged reload verifies
+    /// that the name-to-index mapping is unchanged before calling this, while
+    /// still allowing authored relationship overrides to refresh. Live values
+    /// remain intact unless they now equal the refreshed baseline, in which case
+    /// they are no longer sparse overrides.
     pub fn replace_factions(
         &mut self,
         factions: FactionRegistry,
@@ -1315,6 +1320,46 @@ mod tests {
         let mut registry = DataRegistry::new();
         registry.level_trigger_pools.push(trigger_pool);
         assert!(!registry.is_empty());
+    }
+
+    fn player_event_at(authored_index: usize, levels: &[&str]) -> PlayerEventDescriptor {
+        PlayerEventDescriptor {
+            edge: crate::data_descriptors::PlayerEventEdge::Becomes,
+            condition: postretro_foundation::ir::IrNode::Const {
+                value: postretro_foundation::ir::IrValue::Bool(true),
+            },
+            fire: Vec::new(),
+            levels: levels.iter().map(|level| level.to_string()).collect(),
+            authored_index,
+        }
+    }
+
+    #[test]
+    fn composed_player_events_name_their_authored_positions_after_skips() {
+        let mut registry = DataRegistry::new();
+        // Parse skipped mod entries 0 and 2 and level entry 1; the survivors
+        // carry their authored positions. The levels filter also drops one.
+        registry.replace_global_player_events(vec![
+            player_event_at(1, &["deathmatch"]),
+            player_event_at(3, &[]),
+        ]);
+        registry.set_level_player_events(vec![player_event_at(0, &[]), player_event_at(2, &[])]);
+        registry.recompose(&tags(&["campaign"]));
+
+        let sources: Vec<String> = registry
+            .player_events
+            .iter()
+            .map(|composed| composed.source.to_string())
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                "ModManifest.playerEvents[3]",
+                "setupLevel().playerEvents[0]",
+                "setupLevel().playerEvents[2]",
+            ],
+            "sources name authored positions, not positions among survivors",
+        );
     }
 
     #[test]

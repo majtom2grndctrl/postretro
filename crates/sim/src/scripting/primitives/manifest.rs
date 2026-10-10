@@ -248,7 +248,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "playerEvents?",
             "Vec<PlayerEventDescriptor>",
-            "Mod-global player events, each built with `players().on(becomes(cond) | ceases(cond), fire, { levels? })`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.",
+            "Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.",
         )
         .field(
             "triggerPools?",

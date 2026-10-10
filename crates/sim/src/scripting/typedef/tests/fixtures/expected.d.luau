@@ -1420,7 +1420,7 @@ export type ModManifest = {
   crossings: {CrossingDescriptor}?,
   --- Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here.
   triggerEvents: {TriggerEventDescriptor}?,
-  --- Mod-global player events, each built with `players().on(becomes(cond) | ceases(cond), fire, { levels? })`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.
+  --- Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.
   playerEvents: {PlayerEventDescriptor}?,
   --- Trigger-volume arming pools. Optional; compose by level tags.
   triggerPools: {TriggerPoolDescriptor}?,
@@ -2096,6 +2096,7 @@ export type EmitterParams = { emitter: EmitterTarget }
 --- the owner `byPlayer(on.player)` reads. Legal only before any `wait`, and
 --- only in reactions a player event fires. Call its verbs with `:`.
 export type PlayerTarget = {
+  __playerTarget: true,
   --- Damage this event's player by a finite, non-negative amount.
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this event's player.
@@ -2332,7 +2333,8 @@ export type LevelManifest = {
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-player events, built with `players():on`. A level's entries belong
-  --- to that level; an entry carrying `levels` is rejected here with a warning.
+  --- to that level; an entry carrying `levels` is skipped with a warning (its
+  --- siblings install).
   playerEvents: {PlayerEventDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
@@ -2479,7 +2481,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest

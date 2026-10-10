@@ -203,6 +203,7 @@ Orchestrator additions in r1 (from the despawn brief's findings): `prop_mesh` bo
 | r3 delta | delta pass | 0 | 6 | 7 | all 13 | — | 0 |
 | r4 | broad, anchor, temporal | 1 | 10 | 4 | all but A2 (superseded by B2) and A3's mark-clear block (merged with B8) | A2 | 1 (T1: r3's deferral rule left release ordering unpinned) |
 | r4 delta | closing delta pass | 0 | 9 | 8 | all 17 blocks | — | 0 |
+| implementability | one reviewer (tasks, AC realism, AC relevance) | 1 | 22 | 9 | all, as determinate completions; none touched a locked decision | — | — |
 
 Tooling note: `apply_findings.py` applied only the first `FIX` block of a finding that carried several (D3–D8 second blocks were dropped while it reported success). The self-review re-applied them; verify full REPLACE text after any multi-block apply. It also drops later pairs under a single `FIX:` label, so the trigger is several pairs per finding, not the repeated label.
 

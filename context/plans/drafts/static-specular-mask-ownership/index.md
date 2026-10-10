@@ -13,10 +13,11 @@ The owner saw partial, hard-edged specular patches on floors and walls throughou
 Cause: world specular evaluates every static light in the fragment's 8 m chunk list,
 and treats a light with no mask slot as fully visible. A slotless light's highlight
 passes through walls and stops only at a chunk plane.
-- The diagnosed instance is a light sealed inside a wall. The `buried-lights` build
-  (merged) now excludes such lights.
-- The mechanism follows from source for lights that are not buried, but has not been
-  seen on one. A capture gates the build (Open questions).
+- The first diagnosed instance was a light sealed inside a wall. The `buried-lights`
+  build (merged) now excludes such lights.
+- With that fix in, `campaign-test` still leaks. A plain light outside id 40 sits in open
+  air above a pillar, and puts specular on the floor and walls the pillar shadows. The
+  highlight stops at 8 m chunk planes (`research.md` §Pre-build leak capture).
 
 Slots are scarce:
 - Each light holds one channel map-wide, and competes for it everywhere it could reach
@@ -261,8 +262,9 @@ Compiler:
 ### Manual
 - [ ] `stress-warren-hallway-inspection` at pose (-17, 21, 86): no sheen. Toggling
       `light_term_mask` bit 0x40 shows no specular patch.
-- [ ] The pose from the pre-build leak capture (Open questions) shows no leak after the
-      change.
+- [ ] At the pre-build leak-capture poses (`research.md` §Pre-build leak capture), the
+      pillar-shadowed floor and walls of `campaign-test` show no specular from the
+      leaking light after the change. The highlight on surfaces it does light remains.
 - [ ] An animated light's world highlight is gone, and nothing else at that pose
       changes. Its diffuse animation is unchanged.
 - [ ] `campaign-test`: highlights in lit rooms read continuous across 8 m chunk planes.
@@ -321,10 +323,6 @@ Compiler:
 
 ## Open questions
 
-- Before build, a pre-change capture must show a leak from a light the `buried-lights`
-  build does not explain: a dropped non-buried light, or an unselected `campaign-test`
-  light. If none is found, the Problem reduces to coverage and the owner revisits scope.
-  — owner: executor, reported to the project owner — **blocks build**
 - Lit-texel floor value. The census cleared every stress-map overflow at 16 texels. —
   **delegated**: report the value and its drop report in the plan of record.
 - Cut-face estimate sampling: hard ray or area samples, at a spacing that follows the

@@ -226,3 +226,40 @@ it extracted into a callable function first.
 - No light loses every face under either ranking.
 - Promoted-first was not in the census; its cost is that a promoted light can hold a
   channel over a brighter specular-only light.
+
+## Pre-build leak capture
+
+Taken at 1bcce4aec, with `buried-lights` merged, on the release engine with
+`capture,dev-tools`. `campaign-test` was compiled with the worktree compiler, and every
+capture ran with `POSTRETRO_SH_STREAMING=sync-proof` at 1920×1080.
+
+- **Leaking light:** alpha 14 (spec index 4), a plain point `light`.
+  - Origin (−65.43, 11.18, −31.70) m; intensity 150; linear falloff; range 15.24 m.
+  - It is in open air 4.3 m above a pillar's top slab, and is not buried: the compiler
+    logged no inside-solid warning.
+  - It is outside id 40 (the selection is alpha 3, 13, 18, 31), so it has no slot and
+    its specular visibility is 1.0.
+- **Occluder:** a pillar (x −69.09..−62.59, z −36.58..−30.07, 0–6.5 m) under a slab.
+- **Receivers:** the floor around the pillar base (`default_dirt_014`, shininess 32),
+  and the north and west walls below their shadow lines (`concrete_stone_033`).
+- **Attribution at p1:** found by casting the capture rays against PRL geometry, with
+  light 14's specular isolated as (0x40 only) minus the same with entity 30 removed.
+  - 95% lands on pixels the light cannot see that are in its chunk list.
+  - 5% lands on pixels it can see.
+  - Exactly 0 lands on occluded pixels outside its chunk list.
+- **Chunk-plane cut-off:** the patch ends at x = −68.339 (cell ix 0|1, mid-face on the
+  south floor) and z = −29.837 (iz 4|5). At p4, the 331k occluded pixels past the
+  x-plane get exactly 0. Chunk origin (−76.34, −9.28, −69.84), 8 m cells.
+- **Brightness:** dim, with a peak of about 23–40/255 tonemapped. It is clearest on the
+  concrete wall at p3.
+- **Other leaks:** alpha 15 and 16, both outside id 40 and not animated, leak onto the
+  upper room's walls with chunk-plane cut-offs. They were not captured.
+
+| Pose | Position (m) | Yaw | Pitch | FOV | Shows |
+|---|---|---|---|---|---|
+| p1 | (−62.0, 1.7, −28.4) | 90 | −20 | 100 | Shadowed trench: floor, north wall, end wall |
+| p2 | (−57.5, 4.0, −27.5) | 49.399 | −40.949 | 90 | Floor edge at z = −29.837 |
+| p3 | (−68.5, 1.7, −27.6) | 64.885 | 4.046 | 90 | West wall close-up; most visible |
+| p4 | (−71.2, 2.5, −43.5) | −148.325 | −24.355 | 90 | South floor; patch ends at x = −68.339 mid-face |
+
+Capture each pose three ways: all terms on; mask 0x13F (specular off); and 0x40 only.

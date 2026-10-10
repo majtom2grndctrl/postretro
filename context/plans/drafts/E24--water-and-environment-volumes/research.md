@@ -216,6 +216,17 @@ Evidence read at 16b90e4b2.
 - **Tuning-payload resend.** Resending on change is in effect a one-value replication lane, which partly answers E15's deferred gravity replication. Runtime-mutable volumes still need the general lane.
 - **Breadth.** The reviewer noted the brief is broad and that the slot slice could wait without blocking gravity and push. Not adopted as a split; the slot slice is the part that waits.
 
+## Prerequisite re-pointed (2026-10-09)
+
+Read at ed33f260c, after merging main.
+- **The per-seat spec arrived as `E16--player-events`** (now `ready/`), drafted from the fourth review's ruling, in a different shape than this brief assumed:
+  - a host-only sibling source, `players().on(becomes|ceases(cond), fire)`, with `on.player` as command target and read owner;
+  - owner-private engine player slots become per-player, through one host-side pawn-to-value lookup shared by replication, condition reads and `byPlayer`;
+  - crossings are unchanged: no per-seat `previous`, no owner-carrying crossing input; own-state feedback (its example: a swim splash) stays a local `onStateCrossing`.
+- It names E24's swim slots as a first consumer (its `research.md`: per-player engine slots on the lookup seam, conditions via `becomes`/`ceases`) and lists the slots themselves as its non-goal. E24 now builds three catalog entries on that seam; the crossing-tells-the-player row becomes a `players().on` row.
+- Its first-sight rule fires `becomes` for a player first observed already swimming; crossings' arm-only rule would not. Pinned by an Acceptance row.
+- **Particle rows wait on the pool.** `drafts/perf-particle-sim-cost` (owner landing order, step 5) writes E24's particle rows against its per-particle step; this brief's Path now says so. Before, only the perf brief recorded the dependency.
+
 ## Ordering pins
 
 Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 records the owner's ruling on fluid-jump re-entry.

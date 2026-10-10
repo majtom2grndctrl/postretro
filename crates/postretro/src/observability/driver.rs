@@ -104,6 +104,10 @@ fn run_headless_inner(
         .ok_or_else(|| anyhow!("map path is not valid UTF-8: `{}`", runspec.map))?;
     let world = postretro_level_loader::load_prl(map_path_str)
         .with_context(|| format!("failed to load `{}`", runspec.map))?;
+    crate::startup::data_script_staleness::report_stale_data_script(
+        &map_path,
+        world.data_script.as_ref(),
+    );
 
     // 3. Build the reduced headless session (scripting core + classname dispatch;
     //    no audio/input/UI/net/window). This checks the `scripts-build` sidecar

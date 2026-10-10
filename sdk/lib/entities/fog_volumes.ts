@@ -20,7 +20,7 @@ import type { SequenceStep } from "../data_script";
  * Authors animate fog by registering sequenced reactions —
  * `defineReaction("levelLoad", { sequence: fog.pulse({ ... }) })` —
  * rather than mutating the handle. Static one-shot tweaks still go
- * through the `setFogDensity` / `setFogScatter` / `setFogEdgeSoftness` /
+ * through the `setFogDensity` / `setFogGlow` / `setFogEdgeSoftness` /
  * `setFogFalloff` / `setFogParams` step descriptors.
  *
  * Fog ambient color is derived from the SH irradiance volume and is not

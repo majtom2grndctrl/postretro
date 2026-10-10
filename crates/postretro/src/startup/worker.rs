@@ -66,6 +66,10 @@ fn run_worker(
     let level = match postretro_level_loader::load_prl_with_progress(&path_str, progress) {
         Ok(world) => {
             log::info!("[Loader] PRL loaded successfully from {path_str}");
+            super::data_script_staleness::report_stale_data_script(
+                map_path,
+                world.data_script.as_ref(),
+            );
             Some(world)
         }
         Err(postretro_level_loader::PrlLoadError::FileNotFound(p)) => {

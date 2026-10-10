@@ -9,6 +9,7 @@ pub(crate) mod app_dirs;
 pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
+pub(crate) mod data_script_staleness;
 pub(crate) mod first_launch_hold;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;

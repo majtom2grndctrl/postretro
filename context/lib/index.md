@@ -45,6 +45,7 @@
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
 - **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
+- **World static specular / which lights draw specular / shadowmask owners per face / unowned-means-no-specular** → `rendering_pipeline.md` §4 (Static specular ownership) · bake and format: `build_pipeline.md` §PRL (ShadowmaskAtlas ownership)
 - **Animated lightmap compact atlas / block table / section 25 paging / lightmap-family memory meter** → `rendering_pipeline.md` §7.1 (Animated lightmap compose), §7.8 (Lightmap-family byte meter) · format: `build_pipeline.md` §PRL section IDs
 - **Photosensitivity / flash limiter / strobe safety** → `rendering_pipeline.md` §7.8 (Photosensitivity limiter)
 - **Screen reader / assistive technology / accessibility snapshot / hidden-window adapter boot** → `ui.md` §4.2 · `boot_sequence.md` §Window visibility

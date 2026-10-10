@@ -1324,7 +1324,7 @@ mod tests {
                         alive_players: &alive,
                         bound_edges: table.bound_edges(),
                     },
-                    |event, _occupancy, registry| {
+                    |event, _occupancy, _occupants, registry| {
                         dispatched.push((event.fire.trigger, event.edge));
                         let execution = table.execute(
                             event.fire.trigger,
@@ -1498,7 +1498,7 @@ mod tests {
     fn drain_trigger_residual(
         ctx: &ScriptCtx,
         steps: &[PrepartitionedReactionStep],
-    ) -> (Vec<String>, usize) {
+    ) -> (Vec<(String, postretro_entities::FireOrigin)>, usize) {
         let scheduler = ReactionScheduler::default();
         scheduler.set_enabled(true);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();

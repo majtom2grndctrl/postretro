@@ -1256,6 +1256,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             pending_movement_events
                 .iter()
                 .map(|emission| (emission.address, Some(emission.emitter.clone()))),
+            postretro_entities::FireOrigin::EveryMachine,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1269,6 +1270,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     .as_deref()
                     .map(|address| (address, Some(emission.emitter.clone())))
             }),
+            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1290,6 +1292,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         )
                         .map(move |address| (address, Some(emission.emitter.clone())))
                 }),
+            postretro_entities::FireOrigin::EveryMachine,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1306,6 +1309,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     .chain(cue.alias.as_deref())
                     .map(move |address| (address, Some(cue.emitter.clone())))
             }),
+            postretro_entities::FireOrigin::EveryMachine,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1317,6 +1321,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 sound_events::weapon_emission_addresses(emission)
                     .map(move |address| (address, Some(emission.emitter.clone())))
             }),
+            postretro_entities::FireOrigin::EveryMachine,
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1325,6 +1330,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         ));
         pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
             pending_mover_event_names,
+            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1333,6 +1339,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         ));
         pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
             pending_death_events.iter().map(|name| (name, None)),
+            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
@@ -1353,6 +1360,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             },
             &script_ctx,
             &mut pending_trigger_follow_ups,
+            |player, registry| match player {
+                trigger_system::PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                trigger_system::PlayerId::Remote(client_id) => session
+                    .seat_table
+                    .as_ref()
+                    .and_then(|seats| seats.seat_for_client(client_id)),
+            },
         );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and

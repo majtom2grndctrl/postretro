@@ -210,20 +210,29 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
             },
             &world.script_ctx,
             &mut follow_ups,
+            |_, _| None,
         );
         let routed = world.script_ctx.system_commands.take_routed();
         assert_eq!(routed.len(), 2, "{script}: fanfare and goldFlash route");
-        assert_eq!(routed[0].0, Seat(2), "{script}: fanfare seat");
+        assert_eq!(
+            routed[0].0,
+            postretro_entities::Recipients::Seats(vec![Seat(2)]),
+            "{script}: fanfare seat"
+        );
         assert!(
             matches!(&routed[0].1, SystemReactionCommand::PlaySound { sound, .. } if sound == "sfx/test_tone"),
             "{script}: fanfare first: {:?}",
             routed[0].1
         );
-        assert_eq!(routed[1].0, Seat(2), "{script}: goldFlash seat");
+        assert_eq!(
+            routed[1].0,
+            postretro_entities::Recipients::Seats(vec![Seat(2)]),
+            "{script}: goldFlash seat"
+        );
         assert!(
             matches!(
                 &routed[1].1,
-                SystemReactionCommand::FlashScreen { color, duration_ms }
+                SystemReactionCommand::FlashScreen { color, duration_ms, .. }
                     if *color == [1.0, 0.9, 0.3, 0.4] && *duration_ms == 300.0
             ),
             "{script}: goldFlash second: {:?}",

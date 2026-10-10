@@ -1228,7 +1228,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
             alive_players: &alive_players,
             bound_edges: &bound_edges,
         },
-        |event, occupancy, registry| {
+        |event, occupancy, _occupants, registry| {
             bindings.execute_with_script_ctx(
                 event.fire.trigger,
                 event.edge,

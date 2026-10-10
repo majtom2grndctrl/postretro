@@ -506,7 +506,8 @@ impl TimedAlarmHarness {
             1,
             "one Enter-bound residual fires"
         );
-        let (handle, trigger, player) = host_events.trigger_residuals[0];
+        let (handle, trigger, player, _) = &host_events.trigger_residuals[0];
+        let (handle, trigger, player) = (*handle, *trigger, *player);
 
         {
             // Scoped exactly like `main.rs`'s residual loop: the origin guard

@@ -1101,7 +1101,12 @@ fn progress_tracker_still_fires_its_target_at_threshold() {
     assert_eq!(fired, vec!["release".to_string()]);
 
     dispatch_deferred_named_events_with_sequences(
-        fired,
+        fired.into_iter().map(|name| {
+            (
+                name,
+                FireOrigin::HostOnly(postretro_entities::FireSubject::None),
+            )
+        }),
         &data,
         &sequence_registry,
         &reaction_registry,
@@ -1153,7 +1158,7 @@ fn deferred_named_events_are_breadth_first_and_batch_hop_bounded() {
     let sequence_registry = SequencedPrimitiveRegistry::new();
     let reaction_registry = ReactionPrimitiveRegistry::new();
     let dispatched = dispatch_deferred_named_events_with_sequences_up_to(
-        ["first".to_string(), "second".to_string()],
+        ["first".to_string(), "second".to_string()].map(|name| (name, FireOrigin::EveryMachine)),
         &data,
         &sequence_registry,
         &reaction_registry,
@@ -1230,6 +1235,7 @@ fn system_reaction_fired_by_named_event_enqueues_command() {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
         queue.push(SystemReactionCommand::PlaySound {
+            audience: None,
             sound,
             bus,
             at: None,
@@ -1251,6 +1257,7 @@ fn system_reaction_fired_by_named_event_enqueues_command() {
     assert_eq!(
         script_ctx.system_commands.take(),
         vec![SystemReactionCommand::PlaySound {
+            audience: None,
             sound: "alarm".to_string(),
             bus: Some("sfx".to_string()),
             at: None,
@@ -1291,7 +1298,7 @@ fn resumed_tail_with_consequential_step_does_not_trip_residual_guard() {
     );
     assert_eq!(
         follow_ups,
-        vec!["release".to_string()],
+        vec![("release".to_string(), FireOrigin::EveryMachine)],
         "the tail's fire name is collected and the consequential step does not panic",
     );
 }
@@ -1477,6 +1484,7 @@ fn named_dispatch_skips_sentinel_target_primitive_but_runs_sentinel_free_command
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
         queue.push(SystemReactionCommand::PlaySound {
+            audience: None,
             sound,
             bus,
             at: None,
@@ -1497,6 +1505,7 @@ fn named_dispatch_skips_sentinel_target_primitive_but_runs_sentinel_free_command
     assert_eq!(
         script_ctx.system_commands.take(),
         vec![SystemReactionCommand::PlaySound {
+            audience: None,
             sound: "beep".to_string(),
             bus: Some("sfx".to_string()),
             at: None,
@@ -1931,7 +1940,11 @@ fn name_fired_body_runs_only_up_to_its_wait_across_a_deferred_hop() {
         &script_ctx,
         None,
     );
-    assert_eq!(chained, vec!["R".to_string()], "the fire step collects R");
+    assert_eq!(
+        chained,
+        vec![("R".to_string(), FireOrigin::EveryMachine)],
+        "the fire step collects R"
+    );
     dispatch_deferred_named_events_with_sequences(
         chained,
         &data,
@@ -1951,4 +1964,87 @@ fn name_fired_body_runs_only_up_to_its_wait_across_a_deferred_hop() {
         Some(1),
         "the enrolled tail is exactly [moverStart]"
     );
+}
+
+#[test]
+fn deferred_named_followups_keep_origin_clear_subject_and_restore_ambient_context() {
+    use postretro_entities::{
+        FireSubject, Recipients, SystemCommandFireContext, SystemReactionCommand,
+    };
+    for origin in [
+        FireOrigin::EveryMachine,
+        FireOrigin::HostOnly(FireSubject::Trigger {
+            player: Some(Seat(2)),
+            trigger: EntityId::from_raw(7),
+            occupants: vec![Seat(0), Seat(2)],
+        }),
+        FireOrigin::HostOnly(FireSubject::PlayerEvent {
+            player: Some(Seat(2)),
+        }),
+    ] {
+        let ctx = ScriptCtx::new();
+        let ambient = SystemCommandFireContext {
+            source: "ambient".into(),
+            ..Default::default()
+        };
+        ctx.system_commands.replace_fire_context(ambient.clone());
+        let mut data = DataRegistry::new();
+        let named = |name: &str, next: Option<&str>| NamedReaction {
+            name: name.into(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "playSound".into(),
+                target: None,
+                kind: None,
+                tag: None,
+                on_complete: next.map(str::to_string),
+                args: serde_json::json!({}),
+            }),
+        };
+        data.populate_level(
+            vec![named("first", Some("next")), named("next", None)],
+            Vec::new(),
+            &[],
+        );
+        let mut system = SystemReactionRegistry::new();
+        system.register("playSound", |_, queue| {
+            queue.push(SystemReactionCommand::PlaySound {
+                audience: None,
+                sound: "beep".into(),
+                bus: None,
+                at: None,
+            });
+            Ok(())
+        });
+        let sequences = SequencedPrimitiveRegistry::new();
+        let reactions = ReactionPrimitiveRegistry::new();
+        let chained = fire_named_event_with_sequences(
+            "first",
+            &data,
+            &sequences,
+            &reactions,
+            &system,
+            &ctx,
+            Some(NamedEventDispatchContext {
+                origin: origin.clone(),
+                source: "first".into(),
+                values: &[],
+                emitter: None,
+            }),
+        );
+        assert_eq!(chained, [("next".into(), origin.follow_up())]);
+        assert_eq!(ctx.system_commands.fire_context(), ambient);
+        ctx.system_commands.discard_all();
+        dispatch_deferred_named_events_with_sequences(
+            chained, &data, &sequences, &reactions, &system, &ctx,
+        );
+        let expected = if matches!(origin, FireOrigin::EveryMachine) {
+            Recipients::Local
+        } else {
+            Recipients::Everyone
+        };
+        let queued = ctx.system_commands.take_ordered();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, expected);
+        assert_eq!(ctx.system_commands.fire_context(), ambient);
+    }
 }

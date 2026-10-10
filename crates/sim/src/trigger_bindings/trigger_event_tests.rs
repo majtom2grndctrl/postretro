@@ -199,7 +199,7 @@ impl World {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, occupancy, registry| {
+            |event, occupancy, _occupants, registry| {
                 let execution = bindings.execute_with_script_ctx(
                     event.fire.trigger,
                     event.edge,

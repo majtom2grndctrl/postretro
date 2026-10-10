@@ -758,7 +758,10 @@ fn delayed_fire_of_a_system_reaction_dispatches_host_only_through_the_resumed_ta
     );
     assert_eq!(
         follow_ups,
-        vec!["raiseAlarm".to_string()],
+        vec![(
+            "raiseAlarm".to_string(),
+            postretro_entities::FireOrigin::EveryMachine
+        )],
         "the tail's `fire` step names its target for the next dispatch hop"
     );
     // `setState` on a system reaction enqueues onto `ScriptCtx::system_commands`
@@ -1178,5 +1181,94 @@ fn crossing_fired_on_complete_chain_now_runs() {
         ],
         "the fired reaction ran AND its on_complete chain reactivated — both would be \
          silently dropped if this call site still discarded the return value"
+    );
+}
+
+#[test]
+fn landing_origins_are_host_only_for_sourceless_trigger_and_player_waits() {
+    use postretro_entities::{FireOrigin, FireSubject, SystemCommandFireContext};
+    let mut fx = Fixture::new();
+    let target = fx.spawn_entity();
+    let origins = Rc::new(RefCell::new(Vec::new()));
+    let queue = fx.ctx.system_commands.clone();
+    let observed = origins.clone();
+    fx.sequence_registry.register("observeOrigin", move |_, _| {
+        observed.borrow_mut().push(queue.fire_context().origin);
+        Ok(())
+    });
+    let observed = origins.clone();
+    fx.system_registry
+        .register("observeOrigin", move |_, queue| {
+            observed.borrow_mut().push(queue.fire_context().origin);
+            Ok(())
+        });
+    fx.install(vec![NamedReaction {
+        name: "after".to_string(),
+        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: "observeOrigin".to_string(),
+            target: None,
+            kind: None,
+            tag: None,
+            on_complete: None,
+            args: serde_json::json!({}),
+        }),
+    }]);
+    let ambient = SystemCommandFireContext {
+        source: "outer-crossing".to_string(),
+        values: vec![(
+            "@rising".to_string(),
+            postretro_foundation::IrValue::Bool(true),
+        )],
+        ..Default::default()
+    };
+    fx.ctx.system_commands.replace_fire_context(ambient.clone());
+    let trigger = fx.spawn_entity();
+    let player = fx.spawn_entity();
+    for (address, origin) in [
+        ("levelLoad", None),
+        ("trigger", Some((trigger, PlayerId::Remote(2)))),
+        ("playerEvent", Some((player, PlayerId::Local(player)))),
+    ] {
+        fx.enroll(
+            address,
+            0,
+            origin,
+            vec![
+                SequenceStep {
+                    id: SequenceTarget::Entity(target),
+                    primitive: "observeOrigin".to_string(),
+                    args: serde_json::json!({}),
+                },
+                fx.fire_step("after"),
+            ],
+            1,
+            false,
+        );
+    }
+    fx.tick_and_frame();
+    fx.drain();
+    assert_eq!(
+        *origins.borrow(),
+        vec![FireOrigin::HostOnly(FireSubject::None); 6],
+        "each tail and its deferred follow-up lose the subject and run host-only"
+    );
+    assert_eq!(
+        fx.ctx.system_commands.fire_context(),
+        ambient,
+        "landing dispatch restores the full prior context before later frame stages"
+    );
+    fire_named_event_with_sequences(
+        "after",
+        &fx.data,
+        &fx.sequence_registry,
+        &fx.reaction_registry,
+        &fx.system_registry,
+        &fx.ctx,
+        None,
+    );
+    assert_eq!(
+        origins.borrow().last(),
+        Some(&FireOrigin::EveryMachine),
+        "the following every-machine fire must not inherit a landing's origin"
     );
 }

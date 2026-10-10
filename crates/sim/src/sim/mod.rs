@@ -362,7 +362,7 @@ pub struct TickEvents {
     /// alongside the opaque handle so the frame-end drain can key an enrolled
     /// timed-reaction instance to its activator — two players entering one plate
     /// push the same handle twice and must not collapse into one instance (O59).
-    pub trigger_residuals: Vec<(TriggerResidualHandle, EntityId, PlayerId)>,
+    pub trigger_residuals: Vec<(TriggerResidualHandle, EntityId, PlayerId, Vec<PlayerId>)>,
     /// This tick's paired-trigger Exit fires, as `(trigger, player)`. Production
     /// reads them in the `RedrawRequested` arm to cancel matching interruptible
     /// timed-reaction instances before their countdown advances (O4). Derived from
@@ -631,7 +631,7 @@ where
                     tick_dt,
                 },
                 dispatch_inputs,
-                |event, occupancy, registry| {
+                |event, occupancy, occupants, registry| {
                     let fire_context =
                         trigger_fire_context(event, occupancy, &canonical_player_pawns);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
@@ -654,7 +654,12 @@ where
                         // frame-end drain keys each enrolled instance to its
                         // activator; one handle fired by two players yields two
                         // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                        trigger_residuals.push((
+                            handle,
+                            event.fire.trigger,
+                            event.fire.player,
+                            occupants.to_vec(),
+                        ));
                     }
                     if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
                         trigger_exit_fires.push((event.fire.trigger, event.fire.player));
@@ -676,7 +681,7 @@ where
                     tick_dt,
                 },
                 dispatch_inputs,
-                |event, _occupancy, registry| {
+                |event, _occupancy, occupants, registry| {
                     let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(
                         event.fire.trigger,
@@ -698,7 +703,12 @@ where
                         // frame-end drain keys each enrolled instance to its
                         // activator; one handle fired by two players yields two
                         // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                        trigger_residuals.push((
+                            handle,
+                            event.fire.trigger,
+                            event.fire.player,
+                            occupants.to_vec(),
+                        ));
                     }
                     if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
                         trigger_exit_fires.push((event.fire.trigger, event.fire.player));

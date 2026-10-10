@@ -416,12 +416,13 @@ fn rebuild_blocked_portals(
 /// event without one (deaths, follow-ups) publishes none.
 fn drain_named_events_with_sequences<I, S>(
     events: I,
+    origin: postretro_entities::FireOrigin,
     data_registry: &postretro_entities::DataRegistry,
     sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
     system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
     script_ctx: &postretro_entities::ScriptCtx,
-) -> Vec<String>
+) -> Vec<(String, postretro_entities::FireOrigin)>
 where
     I: IntoIterator<Item = (S, Option<postretro_entities::Emitter>)>,
     S: AsRef<str>,
@@ -429,13 +430,14 @@ where
     let mut chained = Vec::new();
     for (event_name, emitter) in events {
         let event_name = event_name.as_ref();
-        let context = emitter.map(|emitter| {
+        let context = Some(
             postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
                 source: format!("named:{event_name}"),
                 values: &[],
-                emitter: Some(emitter),
-            }
-        });
+                emitter,
+                origin: origin.clone(),
+            },
+        );
         chained.extend(fire_named_event_with_sequences(
             event_name,
             data_registry,
@@ -3402,7 +3404,7 @@ impl App {
         }
         for command in script_ctx.system_commands.take() {
             match command {
-                SystemReactionCommand::PlaySound { sound, bus, at } => {
+                SystemReactionCommand::PlaySound { sound, bus, at, .. } => {
                     // Place an `at: on.emitter` anchor now, at fire time, so an
                     // emitter removed before the audio step still has a position.
                     // Name the listener's pawn with it: own-pawn treatment is
@@ -3450,6 +3452,7 @@ impl App {
                     strong,
                     weak,
                     duration_ms,
+                    ..
                 } => {
                     if let Some(gp) = self
                         .session
@@ -3460,7 +3463,9 @@ impl App {
                     }
                     // No gamepad subsystem ⇒ nothing to vibrate.
                 }
-                SystemReactionCommand::FlashScreen { color, duration_ms } => {
+                SystemReactionCommand::FlashScreen {
+                    color, duration_ms, ..
+                } => {
                     if let Some(session) = self.session.as_mut() {
                         session.scripting.flash_decay.start(color, duration_ms);
                     }
@@ -3469,6 +3474,7 @@ impl App {
                     color,
                     strength,
                     duration_ms,
+                    ..
                 } => {
                     // Absent color ⇒ black: a pure strength-only edge-darken. The
                     // single `durationMs` splits into a short rise (so the vignette
@@ -3488,6 +3494,7 @@ impl App {
                     amplitude,
                     duration_ms,
                     frequency,
+                    ..
                 } => {
                     // Pass the optional frequency straight through: the driver
                     // applies its 18 Hz default when it is `None`.
@@ -8301,6 +8308,7 @@ mod tests {
 
         drain_named_events_with_sequences(
             event_names.iter().map(|name| (name, None)),
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8310,6 +8318,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "door_open".to_string(),
                 bus: Some("sfx".to_string()),
                 at: None,
@@ -8360,6 +8369,7 @@ mod tests {
 
         drain_named_events_with_sequences(
             [("activate", Some(emitter.clone())), ("activate", None)],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8369,6 +8379,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "sfx/shot".to_string(),
                 bus: None,
                 at: Some(emitter),
@@ -8468,6 +8479,7 @@ mod tests {
                     origin: edge.point.unwrap_or_default(),
                 }),
             )],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8480,6 +8492,7 @@ mod tests {
                 sound,
                 bus,
                 at: Some(emitter),
+                ..
             },
         ] = commands.as_slice()
         else {
@@ -8587,6 +8600,7 @@ mod tests {
         register_system_reaction_primitives(&mut system_registry);
         drain_named_events_with_sequences(
             [(emission.address, Some(emission.emitter.clone()))],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8596,6 +8610,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "sfx/brass".to_string(),
                 bus: None,
                 at: None,
@@ -8668,6 +8683,7 @@ mod tests {
 
         let chained = drain_named_events_with_sequences(
             ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8682,9 +8698,18 @@ mod tests {
         assert_eq!(
             chained,
             vec![
-                "postTickTarget".to_string(),
-                "postTickTarget".to_string(),
-                "postTickTarget".to_string(),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
             ],
             "each source contributes its fire target to the shared deferred batch"
         );
@@ -8701,16 +8726,19 @@ mod tests {
             script_ctx.system_commands.take(),
             vec![
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,
                 },
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,
                 },
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,

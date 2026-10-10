@@ -493,7 +493,12 @@ pub(crate) fn install_world_cpu(
     // after `levelLoad` — the install-time counterpart of a recompose's fire.
     if !progress_already_met.is_empty() {
         dispatch_deferred_named_events_with_sequences(
-            progress_already_met,
+            progress_already_met.into_iter().map(|name| {
+                (
+                    name,
+                    postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
+                )
+            }),
             &script_ctx.data_registry.borrow(),
             sequence_registry,
             reaction_registry,

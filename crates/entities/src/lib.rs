@@ -48,7 +48,8 @@ pub use reactions::emitter::{
     WeaponEmission,
 };
 pub use reactions::system_commands::{
-    SystemCommandFireContext, SystemCommandQueue, SystemReactionCommand,
+    Audience, FireOrigin, FireSubject, Recipients, SystemCommandFireContext, SystemCommandQueue,
+    SystemReactionCommand,
 };
 pub use registry::{
     Component, ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,

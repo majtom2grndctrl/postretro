@@ -439,6 +439,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             }
         };
         queue.push(SystemReactionCommand::PlaySound {
+            audience: parsed.audience,
             sound: parsed.sound,
             bus: parsed.bus,
             at,
@@ -451,6 +452,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
                 reason: format!("rumble: failed to deserialize args: {e}"),
             })?;
         queue.push(SystemReactionCommand::Rumble {
+            audience: parsed.audience,
             strong: parsed.strong,
             weak: parsed.weak,
             duration_ms: parsed.duration_ms,
@@ -463,6 +465,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
                 reason: format!("flashScreen: failed to deserialize args: {e}"),
             })?;
         queue.push(SystemReactionCommand::FlashScreen {
+            audience: parsed.audience,
             color: parsed.color,
             duration_ms: parsed.duration_ms,
         });
@@ -490,6 +493,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             });
         }
         queue.push(SystemReactionCommand::Vignette {
+            audience: parsed.audience,
             color: parsed.color,
             strength: parsed.strength,
             duration_ms: parsed.duration_ms,
@@ -548,6 +552,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             }
         }
         queue.push(SystemReactionCommand::ScreenShake {
+            audience: parsed.audience,
             amplitude: parsed.amplitude,
             duration_ms: parsed.duration_ms,
             frequency: parsed.frequency,
@@ -719,6 +724,8 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlaySoundArgs {
+    #[serde(default)]
+    audience: Option<postretro_entities::Audience>,
     sound: String,
     #[serde(default)]
     bus: Option<String>,
@@ -730,6 +737,8 @@ struct PlaySoundArgs {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RumbleArgs {
+    #[serde(default)]
+    audience: Option<postretro_entities::Audience>,
     strong: f32,
     #[serde(default)]
     weak: Option<f32>,
@@ -739,6 +748,8 @@ struct RumbleArgs {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FlashScreenArgs {
+    #[serde(default)]
+    audience: Option<postretro_entities::Audience>,
     color: [f32; 4],
     duration_ms: f32,
 }
@@ -746,6 +757,8 @@ struct FlashScreenArgs {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VignetteArgs {
+    #[serde(default)]
+    audience: Option<postretro_entities::Audience>,
     // Absent ⇒ the drain defaults to black (strength-only edge-darken).
     #[serde(default)]
     color: Option<[f32; 3]>,
@@ -756,6 +769,8 @@ struct VignetteArgs {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScreenShakeArgs {
+    #[serde(default)]
+    audience: Option<postretro_entities::Audience>,
     amplitude: f32,
     duration_ms: f32,
     // Absent ⇒ `None` rides to the driver, which applies its 18 Hz default. The
@@ -1287,6 +1302,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "alarm".to_string(),
                 bus: Some("sfx".to_string()),
                 at: None,
@@ -1305,6 +1321,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "alarm".to_string(),
                 bus: None,
                 at: None,
@@ -1323,6 +1340,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::Rumble {
+                audience: None,
                 strong: 0.8,
                 weak: None,
                 duration_ms: 200.0,
@@ -1342,6 +1360,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::Vignette {
+                audience: None,
                 color: Some([0.1, 0.0, 0.2]),
                 strength: 0.8,
                 duration_ms: 300.0,
@@ -1362,6 +1381,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::Vignette {
+                audience: None,
                 color: None,
                 strength: 0.5,
                 duration_ms: 200.0,
@@ -1380,6 +1400,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::ScreenShake {
+                audience: None,
                 amplitude: 12.0,
                 duration_ms: 250.0,
                 frequency: Some(24.0),
@@ -1400,6 +1421,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::ScreenShake {
+                audience: None,
                 amplitude: 8.0,
                 duration_ms: 150.0,
                 frequency: None,
@@ -1690,7 +1712,7 @@ mod tests {
             source: "crossing:7".to_string(),
             values: vec![("@rising".to_string(), IrValue::Bool(true))],
             emitter: None,
-            presentation_seat: None,
+            origin: postretro_entities::FireOrigin::EveryMachine,
         });
 
         registry
@@ -1751,7 +1773,7 @@ mod tests {
             source: source.to_string(),
             values: Vec::new(),
             emitter,
-            presentation_seat: None,
+            origin: postretro_entities::FireOrigin::EveryMachine,
         }
     }
 
@@ -1773,6 +1795,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "sfx/thud".to_string(),
                 bus: None,
                 at: Some(emitter),
@@ -2026,6 +2049,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::Vignette {
+                audience: None,
                 color: None,
                 strength: 0.7,
                 duration_ms: 400.0,
@@ -2130,6 +2154,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::ScreenShake {
+                audience: None,
                 amplitude: 6.0,
                 duration_ms: 300.0,
                 frequency: Some(20.0),
@@ -2175,6 +2200,7 @@ mod tests {
         assert_eq!(
             queue.take(),
             vec![SystemReactionCommand::ScreenShake {
+                audience: None,
                 amplitude: 0.0,
                 duration_ms: 200.0,
                 frequency: None,

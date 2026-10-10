@@ -4,9 +4,9 @@
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
-use postretro_entities::SystemCommandFireContext;
 use postretro_entities::SystemReactionCommand;
 use postretro_entities::reactions::system_commands::SystemCommandQueue;
+use postretro_entities::{Audience, EntityId, FireOrigin, FireSubject, SystemCommandFireContext};
 use postretro_foundation::Seat;
 use postretro_net::transport::{NetClient, NetServer};
 use postretro_net::wire::PresentationCommand;
@@ -22,6 +22,7 @@ const FINGERPRINT: [u8; 32] = [0x5a; 32];
 
 fn flash() -> SystemReactionCommand {
     SystemReactionCommand::FlashScreen {
+        audience: None,
         color: [1.0, 0.9, 0.3, 0.4],
         duration_ms: 300.0,
     }
@@ -29,6 +30,7 @@ fn flash() -> SystemReactionCommand {
 
 fn sound(name: &str) -> SystemReactionCommand {
     SystemReactionCommand::PlaySound {
+        audience: None,
         sound: name.to_string(),
         bus: None,
         at: None,
@@ -141,7 +143,7 @@ impl Session {
 fn fire_for(queue: &SystemCommandQueue, seat: Option<Seat>, command: SystemReactionCommand) {
     let previous = queue.replace_fire_context(SystemCommandFireContext {
         source: "playerEvent".to_string(),
-        presentation_seat: seat,
+        origin: FireOrigin::HostOnly(FireSubject::PlayerEvent { player: seat }),
         ..SystemCommandFireContext::default()
     });
     queue.push(command);
@@ -198,9 +200,7 @@ fn single_player_presents_routed_commands_locally() {
     fire_for(&queue, Some(Seat(0)), flash());
     fire_for(&queue, None, sound("chime"));
     route_player_presentation(&queue, None, None);
-    // An unseated local pawn's fire presents as it drains; a routed one joins
-    // the same local drain once routing finds no client for its seat.
-    assert_eq!(queue.take(), vec![sound("chime"), flash()]);
+    assert_eq!(queue.take(), vec![flash(), sound("chime")]);
 }
 
 #[test]
@@ -275,6 +275,7 @@ fn a_forwarded_sound_position_becomes_a_world_contact_anchor() {
     let commands = queue.take();
     let [
         SystemReactionCommand::PlaySound {
+            audience: None,
             sound,
             bus,
             at: Some(Emitter::Contacts(contacts)),
@@ -356,26 +357,31 @@ fn a_forwarded_command_is_the_same_local_command_a_local_reaction_enqueues() {
     let local = [
         flash(),
         SystemReactionCommand::Vignette {
+            audience: None,
             color: Some([0.8, 0.0, 0.0]),
             strength: 0.6,
             duration_ms: 800.0,
         },
         SystemReactionCommand::Vignette {
+            audience: None,
             color: None,
             strength: 0.3,
             duration_ms: 200.0,
         },
         SystemReactionCommand::ScreenShake {
+            audience: None,
             amplitude: 0.4,
             duration_ms: 250.0,
             frequency: Some(18.0),
         },
         SystemReactionCommand::Rumble {
+            audience: None,
             strong: 0.75,
             weak: Some(0.25),
             duration_ms: 120.0,
         },
         SystemReactionCommand::PlaySound {
+            audience: None,
             sound: "level_up".to_string(),
             bus: Some("ui".to_string()),
             at: None,
@@ -393,11 +399,446 @@ fn a_forwarded_command_is_the_same_local_command_a_local_reaction_enqueues() {
 }
 
 #[test]
-fn trigger_presentation_stays_local_while_a_player_events_routes() {
+fn every_machine_presentation_stays_local_while_a_player_event_routes() {
     let queue = SystemCommandQueue::new();
-    // A trigger's residual drains with no presentation seat.
+    // Every-machine drains keep their own presentation local.
     queue.push(flash());
     fire_for(&queue, Some(Seat(4)), flash());
     assert_eq!(queue.take(), vec![flash()]);
-    assert_eq!(queue.take_routed(), vec![(Seat(4), flash())]);
+    assert_eq!(
+        queue.take_routed(),
+        vec![(Recipients::Seats(vec![Seat(4)]), flash())]
+    );
+}
+
+fn with_audience(
+    mut command: SystemReactionCommand,
+    value: Option<Audience>,
+) -> SystemReactionCommand {
+    match &mut command {
+        SystemReactionCommand::PlaySound { audience, .. }
+        | SystemReactionCommand::Rumble { audience, .. }
+        | SystemReactionCommand::FlashScreen { audience, .. }
+        | SystemReactionCommand::Vignette { audience, .. }
+        | SystemReactionCommand::ScreenShake { audience, .. } => *audience = value,
+        _ => panic!("presentation fixture"),
+    }
+    command
+}
+
+fn five_commands() -> Vec<SystemReactionCommand> {
+    vec![
+        sound("alarm"),
+        flash(),
+        SystemReactionCommand::Rumble {
+            audience: None,
+            strong: 0.5,
+            weak: None,
+            duration_ms: 120.0,
+        },
+        SystemReactionCommand::ScreenShake {
+            audience: None,
+            amplitude: 4.0,
+            duration_ms: 300.0,
+            frequency: None,
+        },
+        SystemReactionCommand::Vignette {
+            audience: None,
+            color: None,
+            strength: 0.5,
+            duration_ms: 200.0,
+        },
+    ]
+}
+
+fn fire_origin(queue: &SystemCommandQueue, origin: FireOrigin, command: SystemReactionCommand) {
+    let previous = queue.replace_fire_context(SystemCommandFireContext {
+        source: "routing-fixture".to_string(),
+        origin,
+        ..Default::default()
+    });
+    queue.push(command);
+    queue.replace_fire_context(previous);
+}
+
+fn trigger_origin(player: Option<Seat>, occupants: Vec<Seat>) -> FireOrigin {
+    FireOrigin::HostOnly(FireSubject::Trigger {
+        player,
+        trigger: EntityId::from_raw(7),
+        occupants,
+    })
+}
+
+#[test]
+fn every_legal_audience_row_routes_all_five_kinds_over_the_real_relay() {
+    let mut session = Session::new();
+    let a = session.seat(CLIENT_A);
+    let b = session.seat(CLIENT_B);
+    let trigger = trigger_origin(Some(a), vec![Seat(0), b]);
+    let player = FireOrigin::HostOnly(FireSubject::PlayerEvent { player: Some(a) });
+    let no_subject = FireOrigin::HostOnly(FireSubject::None);
+    // Expected machines (host, A, B), separately for sounds and the four effects.
+    let local = [true, false, false];
+    let everyone = [true, true, true];
+    let only_a = [false, true, false];
+    let host_b = [true, false, true];
+    let nowhere = [false; 3];
+    let cases = [
+        (
+            "every-machine default",
+            FireOrigin::EveryMachine,
+            None,
+            local,
+            local,
+        ),
+        (
+            "every-machine everyone",
+            FireOrigin::EveryMachine,
+            Some(Audience::Everyone),
+            local,
+            local,
+        ),
+        ("trigger default", trigger.clone(), None, everyone, only_a),
+        (
+            "trigger activator",
+            trigger.clone(),
+            Some(Audience::Activators),
+            only_a,
+            only_a,
+        ),
+        (
+            "trigger occupants",
+            trigger.clone(),
+            Some(Audience::Trigger),
+            host_b,
+            host_b,
+        ),
+        (
+            "trigger everyone",
+            trigger,
+            Some(Audience::Everyone),
+            everyone,
+            everyone,
+        ),
+        ("player default", player.clone(), None, only_a, only_a),
+        (
+            "player token",
+            player.clone(),
+            Some(Audience::Player),
+            only_a,
+            only_a,
+        ),
+        (
+            "player everyone",
+            player,
+            Some(Audience::Everyone),
+            everyone,
+            everyone,
+        ),
+        (
+            "no subject default",
+            no_subject.clone(),
+            None,
+            everyone,
+            local,
+        ),
+        (
+            "no subject everyone",
+            no_subject,
+            Some(Audience::Everyone),
+            everyone,
+            everyone,
+        ),
+        (
+            "unseated player default",
+            FireOrigin::HostOnly(FireSubject::PlayerEvent { player: None }),
+            None,
+            local,
+            local,
+        ),
+        (
+            "unseated player token",
+            FireOrigin::HostOnly(FireSubject::PlayerEvent { player: None }),
+            Some(Audience::Player),
+            local,
+            local,
+        ),
+        (
+            "unseated trigger default",
+            trigger_origin(None, vec![]),
+            None,
+            everyone,
+            nowhere,
+        ),
+        (
+            "unseated activator",
+            trigger_origin(None, vec![]),
+            Some(Audience::Activators),
+            nowhere,
+            nowhere,
+        ),
+    ];
+    for (name, origin, audience, sounds, effects) in cases {
+        let queue = SystemCommandQueue::new();
+        let commands = five_commands();
+        for command in &commands {
+            fire_origin(
+                &queue,
+                origin.clone(),
+                with_audience(command.clone(), audience),
+            );
+        }
+        route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+        let host = queue.take();
+        assert!(queue.is_empty(), "{name}: no recursively routed work");
+        session.relay_to_clients();
+        let frames = session.client_frames();
+        for (machine, actual) in [host, frames[0].1.clone(), frames[1].1.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let expected: Vec<_> = commands
+                .iter()
+                .enumerate()
+                .filter_map(|(kind, command)| {
+                    (if kind == 0 {
+                        sounds[machine]
+                    } else {
+                        effects[machine]
+                    })
+                    .then_some(command.clone())
+                })
+                .collect();
+            assert_eq!(actual, expected, "{name}: machine {machine}");
+        }
+    }
+}
+
+#[test]
+fn routed_and_local_commands_keep_push_order_and_restore_ambient_fire_context() {
+    let mut session = Session::new();
+    let queue = SystemCommandQueue::new();
+    fire_origin(
+        &queue,
+        FireOrigin::HostOnly(FireSubject::None),
+        sound("first"),
+    );
+    queue.push(SystemReactionCommand::PushTree {
+        tree: "menu".into(),
+        on_commit: None,
+    });
+    queue.push(sound("third"));
+    fire_origin(
+        &queue,
+        trigger_origin(Some(Seat(0)), vec![]),
+        with_audience(sound("fourth"), Some(Audience::Activators)),
+    );
+    fire_for(&queue, Some(session.seat(CLIENT_A)), sound("remote-only"));
+    queue.push(sound("last"));
+    let ambient = SystemCommandFireContext {
+        source: "still-firing".into(),
+        origin: trigger_origin(Some(Seat(0)), vec![]),
+        ..Default::default()
+    };
+    queue.replace_fire_context(ambient.clone());
+    route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+    assert_eq!(queue.fire_context(), ambient);
+    assert_eq!(
+        queue.take(),
+        vec![
+            sound("first"),
+            SystemReactionCommand::PushTree {
+                tree: "menu".into(),
+                on_commit: None
+            },
+            sound("third"),
+            sound("fourth"),
+            sound("last")
+        ]
+    );
+    assert!(queue.is_empty());
+    session.relay_to_clients();
+    assert_eq!(
+        session.client_frames(),
+        vec![
+            (CLIENT_A, vec![sound("first"), sound("remote-only")]),
+            (CLIENT_B, vec![sound("first")])
+        ]
+    );
+}
+
+#[test]
+fn duplicate_occupant_seats_present_once_and_unbound_seats_never_fall_back() {
+    let mut session = Session::new();
+    let queue = SystemCommandQueue::new();
+    let a = session.seat(CLIENT_A);
+    fire_origin(
+        &queue,
+        trigger_origin(None, vec![Seat(0), a, a, Seat(9), Seat(0)]),
+        with_audience(flash(), Some(Audience::Trigger)),
+    );
+    route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+    assert_eq!(queue.take(), vec![flash()]);
+    session.relay_to_clients();
+    assert_eq!(
+        session.client_frames(),
+        vec![(CLIENT_A, vec![flash()]), (CLIENT_B, vec![])]
+    );
+}
+
+#[test]
+fn everyone_and_explicit_seats_skip_a_demoted_client_while_other_clients_present() {
+    let mut session = Session::new();
+    session.clients[1].1.set_level_parity(None);
+    session.relay_to_server();
+    assert!(session.server.is_participating(CLIENT_A));
+    assert!(!session.server.is_participating(CLIENT_B));
+    let queue = SystemCommandQueue::new();
+    fire_origin(
+        &queue,
+        FireOrigin::HostOnly(FireSubject::None),
+        sound("everyone"),
+    );
+    fire_origin(
+        &queue,
+        trigger_origin(None, vec![session.seat(CLIENT_A), session.seat(CLIENT_B)]),
+        with_audience(flash(), Some(Audience::Trigger)),
+    );
+    route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+    assert_eq!(queue.take(), vec![sound("everyone")]);
+    session.relay_to_clients();
+    assert_eq!(
+        session.client_frames(),
+        vec![
+            (CLIENT_A, vec![sound("everyone"), flash()]),
+            (CLIENT_B, vec![])
+        ]
+    );
+}
+
+#[test]
+fn standalone_routed_empty_seats_and_everyone_present_once_in_push_order() {
+    let queue = SystemCommandQueue::new();
+    fire_origin(
+        &queue,
+        trigger_origin(None, vec![]),
+        with_audience(sound("empty"), Some(Audience::Trigger)),
+    );
+    fire_origin(
+        &queue,
+        FireOrigin::HostOnly(FireSubject::None),
+        sound("all"),
+    );
+    queue.push(flash());
+    route_player_presentation(&queue, None, None);
+    assert_eq!(queue.take(), vec![sound("empty"), sound("all"), flash()]);
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn illegal_audience_tokens_skip_with_one_warning_per_source_and_primitive() {
+    let capture = LogCapture::start();
+    let queue = SystemCommandQueue::new();
+    for _ in 0..2 {
+        for command in five_commands() {
+            fire_origin(
+                &queue,
+                FireOrigin::EveryMachine,
+                with_audience(command, Some(Audience::Activators)),
+            );
+        }
+    }
+    route_player_presentation(&queue, None, None);
+    assert!(queue.is_empty());
+    let warnings: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn && record.message.contains("does not publish audience")
+        })
+        .collect();
+    assert_eq!(warnings.len(), 5);
+    for primitive in [
+        "playSound",
+        "rumble",
+        "flashScreen",
+        "screenShake",
+        "vignette",
+    ] {
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|record| record.message.contains(primitive)
+                    && record.message.contains("routing-fixture"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn injected_every_machine_ai_activate_and_observer_origins_present_once_without_broadcast() {
+    let mut session = Session::new();
+    let queue = SystemCommandQueue::new();
+    fire_origin(&queue, FireOrigin::EveryMachine, sound("activate"));
+    route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+    assert_eq!(queue.take(), vec![sound("activate")]);
+    session.relay_to_clients();
+    assert!(
+        session
+            .client_frames()
+            .iter()
+            .all(|(_, commands)| commands.is_empty())
+    );
+    // Observer cue dispatch runs locally on each client under the same origin.
+    for _ in [CLIENT_A, CLIENT_B] {
+        let observer_queue = SystemCommandQueue::new();
+        fire_origin(&observer_queue, FireOrigin::EveryMachine, sound("activate"));
+        route_player_presentation(&observer_queue, None, None);
+        assert_eq!(observer_queue.take(), vec![sound("activate")]);
+    }
+}
+
+#[test]
+fn positioned_entity_sound_keeps_fire_time_origin_through_wire_and_real_relay() {
+    let mut session = Session::new();
+    let queue = SystemCommandQueue::new();
+    let original = SystemReactionCommand::PlaySound {
+        audience: None,
+        sound: "door.open".into(),
+        bus: Some("sfx".into()),
+        at: Some(Emitter::Entity {
+            id: EntityId::from_raw(7),
+            origin: Vec3::new(12.0, -3.0, 7.0),
+        }),
+    };
+    let wire = presentation_command_to_wire(&original).unwrap();
+    assert_eq!(
+        wire,
+        PresentationCommand::PlaySound {
+            sound: "door.open".into(),
+            bus: Some("sfx".into()),
+            at: Some([12.0, -3.0, 7.0])
+        }
+    );
+    let expected_remote = presentation_command_from_wire(wire).unwrap();
+    fire_origin(
+        &queue,
+        FireOrigin::HostOnly(FireSubject::None),
+        original.clone(),
+    );
+    route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
+    assert_eq!(queue.take(), vec![original]);
+    session.relay_to_clients();
+    assert_eq!(
+        session.client_frames(),
+        vec![
+            (CLIENT_A, vec![expected_remote.clone()]),
+            (CLIENT_B, vec![expected_remote.clone()])
+        ]
+    );
+    assert!(
+        presentation_command_to_wire(&expected_remote).is_none(),
+        "received weapon/contact anchors are not a forwarding source"
+    );
 }

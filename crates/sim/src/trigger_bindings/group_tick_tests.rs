@@ -144,7 +144,7 @@ impl Level {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, occupancy, registry| {
+            |event, occupancy, _occupants, registry| {
                 // The session's mapping: the firing player's pawn is the activator.
                 let activator = players
                     .iter()

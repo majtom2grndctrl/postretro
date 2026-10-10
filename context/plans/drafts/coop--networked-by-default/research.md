@@ -185,3 +185,14 @@ Owner kept one spec; adopted the rest.
 - **Exhaustive classifier**: `ReplicationRole` per `DescriptorComponentKind`, no wildcard.
 - **Player-event `audience: "everyone"`** (owner): justified by a host-decided team announcement (a "rampage" callout).
 - Host-only drains with no subject default screen effects and rumble to host-local (status quo; e.g. `playerDied` carries no subject) and sounds to everyone; authors opt into `"everyone"`.
+
+## Review ledger
+
+| Round | Lenses | Blocker | Complicates | Nit | Applied | Rejected / deferred | Blockers from prior round's fixes |
+|---|---|---|---|---|---|---|---|
+| validate-plan | direction | — | — | — | reshape fixes; owner kept one spec | split into two specs (owner) | — |
+| r1 | broad, anchor, temporal | 12 | 22 | 5 | 76 blocks after merges (merge plan in session scratch) | B12 (owner chose to carry position), T1 (landings take no subject), B13/A9/A10 (duplicates), B17 phase formula (superseded by T3) | — (first detail round) |
+| r1 delta | delta pass | 1 | 7 | 3 | all 11, D8 extended with a late-joiner note | — | 1 (D1, from the orchestrator's `prop_mesh` fold-in) |
+
+Owner decisions in r1: positioned host-only sounds carry their position on the wire; host-only despawn of client-local presentation entities deferred to the `coop--bound-presentation-despawn` brief; no presentation follows a `wait`.
+Orchestrator additions in r1 (from the despawn brief's findings): `prop_mesh` bound by `MapEntity` ordinal with captured animation state; Task 10's bound-tombstone rule; fog and emitter primitives have no typed builder.

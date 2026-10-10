@@ -5,7 +5,7 @@ use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, GroupTarget, MoverCommand, ScriptCtx, SlotTable,
     SlotValue,
 };
-use postretro_foundation::{BoundProgram, IrValue, eval_and_write};
+use postretro_foundation::{BindingScope, BoundProgram, IrValue, eval_value};
 use postretro_scripting_core::group_resolution::{group_commands_apply_here, resolve_group};
 use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
@@ -229,7 +229,17 @@ impl BoundTriggerCommand {
                         log::warn!("[Trigger] failed to seed @occupancy: {error:?}");
                         return;
                     }
-                    eval_and_write(program, dispatch_scope);
+                    dispatch_scope.seed_event_player(registry, fire_context.event_player);
+                    let value = eval_value(program, dispatch_scope);
+                    if dispatch_scope.take_missing_event_player_value() {
+                        log::warn!(
+                            "[Scripting] setState for `{slot}` reads a value the event player has no source for; skipping"
+                        );
+                        return;
+                    }
+                    if let Some(output) = &program.output {
+                        dispatch_scope.write(output, value);
+                    }
                 }
             },
             Self::AddOwnerSlot {

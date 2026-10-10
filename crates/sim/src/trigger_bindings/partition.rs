@@ -11,7 +11,7 @@ use postretro_scripting_core::data_descriptors::{
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 
-use super::command_binding::{bind_primitive, bind_sequence_step};
+use super::command_binding::{BindSite, bind_primitive, bind_sequence_step};
 use crate::trigger_commands::BoundTriggerCommand;
 
 const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
@@ -44,9 +44,11 @@ enum PrimitiveClass {
 /// Keep only directly-owned work in the binding. `onComplete` names remain
 /// ordered residual hops, so their graphs resolve when the app drains rather
 /// than flattening recursively at level install.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn partition_direct_reaction(
     reaction: &NamedReaction,
     body_ordinal: usize,
+    site: BindSite,
     data_registry: &DataRegistry,
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
@@ -64,7 +66,7 @@ pub(crate) fn partition_direct_reaction(
         }
         ReactionDescriptor::Primitive(primitive) => {
             if classify(&primitive.primitive) == PrimitiveClass::Consequential {
-                if let Some(command) = bind_primitive(primitive, slot_table, script_ctx) {
+                if let Some(command) = bind_primitive(primitive, site, slot_table, script_ctx) {
                     commands.push(command);
                 }
                 if let Some(on_complete) = &primitive.on_complete {
@@ -124,7 +126,7 @@ pub(crate) fn partition_direct_reaction(
                     continue;
                 }
                 if classify(&step.primitive) == PrimitiveClass::Consequential {
-                    if let Some(command) = bind_sequence_step(step, slot_table, script_ctx) {
+                    if let Some(command) = bind_sequence_step(step, site, slot_table, script_ctx) {
                         commands.push(command);
                     }
                 } else {

@@ -155,3 +155,146 @@ impl std::fmt::Debug for SystemCommandQueue {
             .finish()
     }
 }
+
+/// How a system reaction relates to the machine that drains it. A player
+/// event decides from this which reactions it may fire on the host for one
+/// player (`scripting.md` §12, Player events).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemReactionClass {
+    /// Presents to whoever plays on the draining machine. A player event
+    /// forwards it to its player's machine.
+    Presentation,
+    /// Changes the draining machine's own UI or text state. Nothing forwards
+    /// it, so on the host it would land on the host's screen.
+    MachineLocal,
+    /// A host decision whose effect reaches clients through replication or
+    /// level control.
+    HostConsequence,
+    /// `setState`: a host consequence on a replicated slot, machine-local on
+    /// any other.
+    SlotWrite,
+}
+
+/// Every system reaction primitive, by its registered name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemReactionKind {
+    PlaySound,
+    Rumble,
+    FlashScreen,
+    Vignette,
+    ScreenShake,
+    ShowDialog,
+    OpenMenu,
+    CloseDialog,
+    LoadLevel,
+    RestartLevel,
+    ReturnToFrontend,
+    SetState,
+    SetSentiment,
+    AdjustSentiment,
+    CellWrite,
+    AppendText,
+    BackspaceText,
+    ClearText,
+}
+
+impl SystemReactionKind {
+    pub const ALL: &'static [SystemReactionKind] = &[
+        Self::PlaySound,
+        Self::Rumble,
+        Self::FlashScreen,
+        Self::Vignette,
+        Self::ScreenShake,
+        Self::ShowDialog,
+        Self::OpenMenu,
+        Self::CloseDialog,
+        Self::LoadLevel,
+        Self::RestartLevel,
+        Self::ReturnToFrontend,
+        Self::SetState,
+        Self::SetSentiment,
+        Self::AdjustSentiment,
+        Self::CellWrite,
+        Self::AppendText,
+        Self::BackspaceText,
+        Self::ClearText,
+    ];
+
+    pub const fn primitive_name(self) -> &'static str {
+        match self {
+            Self::PlaySound => "playSound",
+            Self::Rumble => "rumble",
+            Self::FlashScreen => "flashScreen",
+            Self::Vignette => "vignette",
+            Self::ScreenShake => "screenShake",
+            Self::ShowDialog => "showDialog",
+            Self::OpenMenu => "openMenu",
+            Self::CloseDialog => "closeDialog",
+            Self::LoadLevel => "loadLevel",
+            Self::RestartLevel => "restartLevel",
+            Self::ReturnToFrontend => "returnToFrontend",
+            Self::SetState => "setState",
+            Self::SetSentiment => "setSentiment",
+            Self::AdjustSentiment => "adjustSentiment",
+            Self::CellWrite => "cellWrite",
+            Self::AppendText => "appendText",
+            Self::BackspaceText => "backspaceText",
+            Self::ClearText => "clearText",
+        }
+    }
+
+    pub fn from_primitive_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|kind| kind.primitive_name() == name)
+    }
+
+    pub const fn class(self) -> SystemReactionClass {
+        match self {
+            Self::PlaySound | Self::Rumble | Self::FlashScreen | Self::Vignette | Self::ScreenShake => {
+                SystemReactionClass::Presentation
+            }
+            Self::ShowDialog
+            | Self::OpenMenu
+            | Self::CloseDialog
+            | Self::CellWrite
+            | Self::AppendText
+            | Self::BackspaceText
+            | Self::ClearText => SystemReactionClass::MachineLocal,
+            Self::LoadLevel
+            | Self::RestartLevel
+            | Self::ReturnToFrontend
+            | Self::SetSentiment
+            | Self::AdjustSentiment => SystemReactionClass::HostConsequence,
+            Self::SetState => SystemReactionClass::SlotWrite,
+        }
+    }
+}
+
+impl SystemReactionCommand {
+    /// The class of the reaction that enqueued this command. Exhaustive, so a
+    /// new command fails to build until it is classified.
+    pub const fn class(&self) -> SystemReactionClass {
+        match self {
+            Self::PlaySound { .. }
+            | Self::Rumble { .. }
+            | Self::FlashScreen { .. }
+            | Self::Vignette { .. }
+            | Self::ScreenShake { .. } => SystemReactionClass::Presentation,
+            Self::PushTree { .. }
+            | Self::PopTree
+            | Self::CellWrite { .. }
+            | Self::AppendText { .. }
+            | Self::BackspaceText { .. }
+            | Self::ClearText { .. } => SystemReactionClass::MachineLocal,
+            Self::LoadLevel { .. }
+            | Self::RestartLevel
+            | Self::ReturnToFrontend
+            | Self::SetSentiment { .. }
+            | Self::AdjustSentiment { .. }
+            | Self::AddOwnerSlot { .. } => SystemReactionClass::HostConsequence,
+            Self::SetState { .. } => SystemReactionClass::SlotWrite,
+        }
+    }
+}

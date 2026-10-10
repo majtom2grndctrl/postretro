@@ -25,11 +25,11 @@ pub fn validate_consequential_reaction(
     let has_recipients = kind.is_some() || tag.is_some_and(|tag| !tag.is_empty());
     if !matches!(
         (has_recipients, target),
-        (true, None) | (false, Some("@activators"))
+        (true, None) | (false, Some("@activators" | "@player"))
     ) {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
-                "reaction `{reaction}` primitive: `{primitive}` requires exactly one of a group `kind`, a non-empty `tag`, or target `@activators`"
+                "reaction `{reaction}` primitive: `{primitive}` requires exactly one of a group `kind`, a non-empty `tag`, or target `@activators` or `@player`"
             ),
         });
     }

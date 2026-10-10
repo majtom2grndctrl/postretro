@@ -1162,12 +1162,13 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 }
 
 /// Whether `target` is a subject token that carries `primitive`: the fired
-/// volume (`@trigger`) only arms and disarms, and the activators never do.
+/// volume (`@trigger`) only arms and disarms, and the activators and the
+/// event player (`@player`) never do.
 /// Mirrors the runtime parser's `validate_subject_token_primitive`.
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     match target {
-        "@activators" => !arms_a_trigger,
+        "@activators" | "@player" => !arms_a_trigger,
         "@trigger" => arms_a_trigger,
         _ => false,
     }

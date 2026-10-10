@@ -15,6 +15,8 @@ use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
 use crate::registry::{EntityId, EntityRegistry};
 use crate::slot_table::{SlotType, SlotValue};
+use crate::player_event_scope::EVENT_PLAYER_TOKEN;
+use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::store_bridge::write_store_slot;
 use postretro_foundation::Seat;
 
@@ -91,6 +93,16 @@ impl StoreScope {
         }
     }
 
+    /// Project a present value of the declared type; `None` when absent or of
+    /// another type.
+    pub(crate) fn project_slot_value(ir_type: IrType, value: Option<&SlotValue>) -> Option<IrValue> {
+        match (ir_type, value?) {
+            (IrType::Number, SlotValue::Number(value)) => Some(IrValue::Number(*value)),
+            (IrType::Bool, SlotValue::Boolean(value)) => Some(IrValue::Bool(*value)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn project_value(ir_type: IrType, value: Option<&SlotValue>) -> IrValue {
         match (ir_type, value) {
             (IrType::Number, Some(SlotValue::Number(value))) => IrValue::Number(*value),
@@ -136,6 +148,29 @@ impl StoreScope {
 pub enum DispatchInputHandle {
     Dispatch(usize),
     Store(StoreHandle),
+    /// `byPlayer(on.player)`: the event player's value. Self-describing, so a
+    /// program bound against one player-event scope reads correctly through
+    /// another.
+    EventPlayer(EventPlayerHandle),
+}
+
+#[derive(Clone, Debug)]
+pub enum EventPlayerHandle {
+    /// An engine per-player slot, read from the fire's pawn snapshot.
+    Engine(PlayerSlot),
+    /// A mod per-owner slot, read for the fire's seat.
+    Store(StoreHandle),
+}
+
+/// The event player a player-event fire seeds: their engine per-player values,
+/// snapshotted so evaluation never borrows the registry the tick holds, and
+/// their seat.
+#[derive(Debug, Default)]
+struct EventPlayerSnapshot {
+    seat: Option<Seat>,
+    engine: [Option<IrValue>; PlayerSlot::ALL.len()],
+    /// Set when a read found no value; the caller skips the write.
+    missing: std::cell::Cell<bool>,
 }
 
 /// Why an ephemeral dispatch input could not be seeded for an evaluation.
@@ -161,6 +196,9 @@ pub struct DispatchScope {
     store: StoreScope,
     inputs: &'static [(&'static str, IrType)],
     values: Box<[IrValue]>,
+    /// `Some` only for a player-event scope: the one source that publishes
+    /// `@player` as a read owner.
+    event_player: Option<EventPlayerSnapshot>,
 }
 
 impl DispatchScope {
@@ -176,6 +214,70 @@ impl DispatchScope {
         Self::new(StoreScope::script(ctx), inputs)
     }
 
+    /// A script-capability scope for player-event fires: it also resolves
+    /// `byPlayer(on.player)` reads, against the player
+    /// [`Self::seed_event_player`] names.
+    pub fn player_event(ctx: ScriptCtx, inputs: &'static [(&'static str, IrType)]) -> Self {
+        let mut scope = Self::new(StoreScope::script(ctx), inputs);
+        scope.event_player = Some(EventPlayerSnapshot::default());
+        scope
+    }
+
+    /// Name the event player for the next evaluations. `pawn` is read through
+    /// the shared per-pawn lookup now; a missing value stays missing.
+    pub fn seed_event_player(&mut self, registry: &EntityRegistry, pawn: Option<EntityId>) {
+        let Some(snapshot) = self.event_player.as_mut() else {
+            return;
+        };
+        snapshot.seat = pawn.and_then(|pawn| registry.seat_for_pawn(pawn));
+        for slot in PlayerSlot::ALL {
+            snapshot.engine[slot.index()] = pawn.and_then(|pawn| {
+                StoreScope::project_slot_value(
+                    slot.ir_type(),
+                    player_slot_value(registry, *slot, pawn).as_ref(),
+                )
+            });
+        }
+        snapshot.missing.set(false);
+    }
+
+    /// Whether an evaluation since the last seed read an event-player value
+    /// that does not exist, clearing the flag. The caller warn-skips rather
+    /// than writing a value built from a default.
+    pub fn take_missing_event_player_value(&self) -> bool {
+        self.event_player
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.missing.replace(false))
+    }
+
+    fn read_event_player(&self, handle: &EventPlayerHandle) -> IrValue {
+        let (ir_type, value) = match handle {
+            EventPlayerHandle::Engine(slot) => (
+                slot.ir_type(),
+                self.event_player
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.engine[slot.index()]),
+            ),
+            EventPlayerHandle::Store(handle) => {
+                let seat = self.event_player.as_ref().and_then(|snapshot| snapshot.seat);
+                let table = self.store.ctx.slot_table.borrow();
+                let value = seat.and_then(|seat| {
+                    StoreScope::project_slot_value(
+                        handle.ir_type,
+                        table.get(&handle.name)?.per_seat_value(seat),
+                    )
+                });
+                (handle.ir_type, value)
+            }
+        };
+        value.unwrap_or_else(|| {
+            if let Some(snapshot) = self.event_player.as_ref() {
+                snapshot.missing.set(true);
+            }
+            ir_type.zero()
+        })
+    }
+
     fn new(store: StoreScope, inputs: &'static [(&'static str, IrType)]) -> Self {
         let values = inputs
             .iter()
@@ -188,6 +290,7 @@ impl DispatchScope {
             store,
             inputs,
             values,
+            event_player: None,
         }
     }
 
@@ -243,6 +346,30 @@ impl BindingScope for DispatchScope {
             })
     }
 
+    fn resolve_owned_input(
+        &self,
+        name: &str,
+        owner: &str,
+    ) -> Option<ResolvedInput<Self::InputHandle>> {
+        if self.event_player.is_none() || owner != EVENT_PLAYER_TOKEN {
+            return None;
+        }
+        if let Some(slot) = PlayerSlot::from_name(name) {
+            return Some(ResolvedInput {
+                handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Engine(slot)),
+                ir_type: slot.ir_type(),
+            });
+        }
+        self.store
+            .resolve_owner_input(name)
+            .map(|resolved| ResolvedInput {
+                handle: DispatchInputHandle::EventPlayer(EventPlayerHandle::Store(
+                    resolved.handle,
+                )),
+                ir_type: resolved.ir_type,
+            })
+    }
+
     fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
         self.store.resolve_output(name)
     }
@@ -251,6 +378,7 @@ impl BindingScope for DispatchScope {
         match handle {
             DispatchInputHandle::Dispatch(index) => self.values[*index],
             DispatchInputHandle::Store(handle) => self.store.read(handle),
+            DispatchInputHandle::EventPlayer(handle) => self.read_event_player(handle),
         }
     }
 
@@ -275,6 +403,9 @@ pub enum EntityInputHandle {
     /// A per-owner store handle reads its addressed seat's live value rather
     /// than the fire-time scalar store snapshot.
     OwnedStore(StoreHandle),
+    /// An engine per-player slot of the impact source, from the fire's
+    /// snapshot of that pawn.
+    OwnedEngine(PlayerSlot),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -310,6 +441,9 @@ pub struct EntityScope {
     /// per fire from the caller-owned registry so evaluation can read without
     /// re-borrowing that registry while fixed-tick damage holds it mutably.
     owner_seat: Option<Seat>,
+    /// The impact source's engine per-player values, refreshed with
+    /// `owner_seat`. A pawnless source has none.
+    owner_engine: [Option<IrValue>; PlayerSlot::ALL.len()],
 }
 
 impl EntityScope {
@@ -328,6 +462,7 @@ impl EntityScope {
             store_handles: RefCell::new(Vec::new()),
             store_snapshot: RefCell::new(Vec::new()),
             owner_seat: None,
+            owner_engine: [None; PlayerSlot::ALL.len()],
         }
     }
 
@@ -398,6 +533,24 @@ impl EntityScope {
         source: Option<EntityId>,
     ) {
         self.owner_seat = source.and_then(|source| registry.seat_for_pawn(source));
+        for slot in PlayerSlot::ALL {
+            self.owner_engine[slot.index()] = source.and_then(|source| {
+                StoreScope::project_slot_value(
+                    slot.ir_type(),
+                    player_slot_value(registry, *slot, source).as_ref(),
+                )
+            });
+        }
+    }
+
+    fn read_owned_engine(&self, slot: PlayerSlot) -> IrValue {
+        self.owner_engine[slot.index()].unwrap_or_else(|| {
+            log::warn!(
+                "[Impact] owner read for slot `{}` found no value on the impact source; using zero",
+                slot.name()
+            );
+            slot.ir_type().zero()
+        })
     }
 
     fn bind_state_name(&self, name: &str) -> usize {
@@ -509,17 +662,20 @@ impl BindingScope for EntityScope {
             });
         }
 
-        self.dispatch.resolve_input(name).map(|resolved| {
+        self.dispatch.resolve_input(name).and_then(|resolved| {
             let handle = match resolved.handle {
                 DispatchInputHandle::Dispatch(index) => EntityInputHandle::Dispatch(index),
                 DispatchInputHandle::Store(handle) => {
                     EntityInputHandle::Store(self.bind_store_handle(handle))
                 }
+                // The impact scope's dispatch layer is never a player-event
+                // scope, so it resolves no event-player handle.
+                DispatchInputHandle::EventPlayer(_) => return None,
             };
-            ResolvedInput {
+            Some(ResolvedInput {
                 handle,
                 ir_type: resolved.ir_type,
-            }
+            })
         })
     }
 
@@ -530,6 +686,12 @@ impl BindingScope for EntityScope {
     ) -> Option<ResolvedInput<Self::InputHandle>> {
         if owner != IMPACT_SOURCE_TOKEN {
             return None;
+        }
+        if let Some(slot) = PlayerSlot::from_name(name) {
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::OwnedEngine(slot),
+                ir_type: slot.ir_type(),
+            });
         }
         self.dispatch
             .store
@@ -575,6 +737,7 @@ impl BindingScope for EntityScope {
                 .copied()
                 .unwrap_or(IrValue::Number(0.0)),
             EntityInputHandle::OwnedStore(handle) => self.read_owned_store(handle),
+            EntityInputHandle::OwnedEngine(slot) => self.read_owned_engine(*slot),
         }
     }
 

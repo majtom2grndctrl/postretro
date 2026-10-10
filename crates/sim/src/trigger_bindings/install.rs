@@ -8,6 +8,7 @@ use postretro_entities::{
 use postretro_scripting_core::data_descriptors::NamedReaction;
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::ir_scopes::DispatchScope;
+use postretro_scripting_core::player_event_scope::reaction_uses_event_player;
 use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 use std::cell::RefCell;
 
@@ -131,6 +132,18 @@ impl TriggerBindingTable {
             );
             return;
         }
+        // `on.player` and `byPlayer(on.player)` exist only in a player event's
+        // fire; a trigger publishes no event player.
+        if let Some(reaction) = matched
+            .iter()
+            .find(|reaction| reaction_uses_event_player(&reaction.descriptor))
+        {
+            log::error!(
+                "[Trigger] {edge:?} event `{event_name}` on {trigger}: reaction `{}` uses `on.player`, which only a player event publishes; not binding it for this trigger",
+                reaction.name
+            );
+            return;
+        }
 
         let mut commands = Vec::new();
         let mut steps = Vec::new();
@@ -143,6 +156,7 @@ impl TriggerBindingTable {
             partition_direct_reaction(
                 reaction,
                 body_ordinal,
+                super::BindSite::Trigger,
                 data_registry,
                 slot_table,
                 script_ctx,

@@ -39,8 +39,18 @@ struct MoverGoToPathNodeArgs {
     node: String,
 }
 
+/// Which in-tick source a command binds for. It decides the dispatch scope a
+/// runtime `setState` value binds against: only a player event publishes
+/// `byPlayer(on.player)` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindSite {
+    Trigger,
+    PlayerEvent,
+}
+
 pub(super) fn bind_primitive(
     primitive: &PrimitiveDescriptor,
+    site: BindSite,
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
@@ -73,7 +83,8 @@ pub(super) fn bind_primitive(
             .as_deref()
             .map(|tag| BoundTarget::Tag(tag.to_string()))
     };
-    bind_command(
+    bind_command_at(
+        site,
         &primitive.primitive,
         target,
         &primitive.args,
@@ -84,6 +95,7 @@ pub(super) fn bind_primitive(
 
 pub(super) fn bind_sequence_step(
     step: &SequenceStep,
+    site: BindSite,
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
@@ -98,16 +110,37 @@ pub(super) fn bind_sequence_step(
         SequenceTarget::Group(group) => BoundTarget::Group(group.clone()),
         SequenceTarget::Activators => BoundTarget::Activators,
         SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
+        SequenceTarget::EventPlayer => BoundTarget::EventPlayer,
         // Control steps never bind to an in-tick command: `BoundTarget` has no
         // analogue for them. The amended `partition_direct_reaction` (Task 3)
         // routes a `Fire` to a `DeferredEvent` and a `Wait` plus its tail to the
         // residual before reaching here, so this arm is the belt-and-braces guard.
         SequenceTarget::Wait | SequenceTarget::Fire => return None,
     });
-    bind_command(&step.primitive, target, &step.args, slot_table, script_ctx)
+    bind_command_at(
+        site,
+        &step.primitive,
+        target,
+        &step.args,
+        slot_table,
+        script_ctx,
+    )
 }
 
+/// Bind a trigger command.
+#[cfg(test)]
 pub(super) fn bind_command(
+    primitive: &str,
+    target: Option<BoundTarget>,
+    args: &serde_json::Value,
+    slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
+) -> Option<BoundTriggerCommand> {
+    bind_command_at(BindSite::Trigger, primitive, target, args, slot_table, script_ctx)
+}
+
+pub(super) fn bind_command_at(
+    site: BindSite,
     primitive: &str,
     target: Option<BoundTarget>,
     args: &serde_json::Value,
@@ -224,7 +257,7 @@ pub(super) fn bind_command(
         "disarmTrigger" => Some(BoundTriggerCommand::Disarm {
             target: target(primitive)?,
         }),
-        "setState" => bind_store_slot(args, slot_table, script_ctx),
+        "setState" => bind_store_slot(args, site, slot_table, script_ctx),
         "addSlot" => {
             let args: AddSlotArgs = match serde_json::from_value::<AddSlotArgs>(args.clone()) {
                 Ok(args) if args.delta.is_finite() => args,
@@ -336,6 +369,7 @@ pub(super) fn bind_command(
 
 fn bind_store_slot(
     args: &serde_json::Value,
+    site: BindSite,
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
@@ -379,7 +413,12 @@ fn bind_store_slot(
             output: Some(args.slot.clone()),
             root,
         };
-        let scope = DispatchScope::script(script_ctx.clone(), TRIGGER_EVENT_INPUTS);
+        let scope = match site {
+            BindSite::Trigger => DispatchScope::script(script_ctx.clone(), TRIGGER_EVENT_INPUTS),
+            BindSite::PlayerEvent => {
+                DispatchScope::player_event(script_ctx.clone(), TRIGGER_EVENT_INPUTS)
+            }
+        };
         let program = match bind(&baked, &scope) {
             Ok(program) => program,
             Err(error) => {

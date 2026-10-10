@@ -4,10 +4,13 @@
 
 mod evaluate;
 mod install;
+mod validate;
 #[cfg(test)]
 mod semantics_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod validation_tests;
 
 use std::cell::RefCell;
 

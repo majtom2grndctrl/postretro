@@ -22,7 +22,7 @@ use postretro_scripting_core::player_slots::{
 };
 
 #[cfg(test)]
-mod player_slot_tests;
+mod player_slot_lookup_test;
 mod resource_projection;
 use resource_projection::{ResourceSlotProjection, record_resource_sample};
 

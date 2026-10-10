@@ -3228,6 +3228,44 @@ mod tests {
     }
 
     #[test]
+    fn by_player_impact_source_reads_the_source_players_engine_slot() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("currency.xp".into(), per_owner_number_slot(0.0))
+            .expect("new per-owner slot");
+        // The host's own HUD projection of `player.health` is not the source's.
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("player.health")
+            .expect("engine slot")
+            .write_value(Some(SlotValue::Number(99.0)));
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, true, false);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(source)
+                .expect("source has health")
+                .clone();
+            health.current = 37.0;
+            registry.set_component(source, health).expect("source is live");
+            registry.bind_pawn_seat(source, Seat(7));
+        }
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "source-health-reward",
+            "crate",
+            vec![owner_slot_set("currency.xp", owned_input("player.health"))],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_number_approx_eq(owner_store(&ctx, "currency.xp", Seat(7)), 37.0);
+    }
+
+    #[test]
     fn owner_slot_write_without_a_source_seat_warns_and_keeps_siblings_running() {
         let ctx = ScriptCtx::new();
         ctx.slot_table

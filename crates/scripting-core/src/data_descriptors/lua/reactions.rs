@@ -266,6 +266,7 @@ pub fn sequence_steps_from_lua(
                 match value.to_str().map_err(lua_err)?.as_ref() {
                     "@activators" => SequenceTarget::Activators,
                     "@trigger" => SequenceTarget::FiredTrigger,
+                    "@player" => SequenceTarget::EventPlayer,
                     "@wait" => SequenceTarget::Wait,
                     "@fire" => SequenceTarget::Fire,
                     spelling => {

@@ -12,6 +12,7 @@ mod tests;
 #[cfg(test)]
 mod trigger_event_tests;
 
+pub(crate) use command_binding::BindSite;
 pub(crate) use partition::partition_direct_reaction;
 
 pub use manifest_events::{

@@ -242,6 +242,17 @@ impl SystemReactionIrBindings {
                 root,
             };
             binding.required_dispatch_inputs = baked.root.dispatch_input_names();
+            // A `byPlayer(on.player)` value binds in-tick under its player
+            // event; no app-drain source publishes the event player, and
+            // install rejects every other source that subscribes it.
+            if postretro_scripting_core::player_event_scope::reads_event_player(&binding.value) {
+                log::debug!(
+                    "[Scripting] setState reaction `{}` reads the event player; it binds only under a player event",
+                    reaction.name
+                );
+                self.bindings.push(binding);
+                continue;
+            }
             match bind(&baked, &scope) {
                 Ok(program) => {
                     binding.program = Some(program);
@@ -1188,27 +1199,23 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_system_reaction_primitives_under_expected_names() {
+    fn registers_exactly_the_classified_system_reaction_kinds() {
+        use postretro_entities::reactions::system_commands::SystemReactionKind;
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
-        assert!(r.contains("playSound"));
-        assert!(r.contains("rumble"));
-        assert!(r.contains("flashScreen"));
-        assert!(r.contains("vignette"));
-        assert!(r.contains("screenShake"));
-        assert!(r.contains("showDialog"));
-        assert!(r.contains("openMenu"));
-        assert!(r.contains("closeDialog"));
-        assert!(r.contains("loadLevel"));
-        assert!(r.contains("restartLevel"));
-        assert!(r.contains("returnToFrontend"));
-        assert!(r.contains("setState"));
-        assert!(r.contains("setSentiment"));
-        assert!(r.contains("adjustSentiment"));
-        assert!(r.contains("cellWrite"));
-        assert!(r.contains("appendText"));
-        assert!(r.contains("backspaceText"));
-        assert!(r.contains("clearText"));
+        for name in r.names() {
+            assert!(
+                SystemReactionKind::from_primitive_name(name).is_some(),
+                "system reaction `{name}` is registered but not classified"
+            );
+        }
+        for kind in SystemReactionKind::ALL {
+            assert!(
+                r.contains(kind.primitive_name()),
+                "classified system reaction `{}` is not registered",
+                kind.primitive_name()
+            );
+        }
         // Defensive: system reactions are a distinct arm; entity primitives
         // are NOT registered here.
         assert!(!r.contains("setEmitterRate"));

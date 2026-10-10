@@ -84,6 +84,11 @@ impl PlayerSlot {
         }
     }
 
+    /// This slot's position in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|slot| slot.name() == name)
     }

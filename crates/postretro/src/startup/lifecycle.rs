@@ -1156,9 +1156,29 @@ fn rebuild_reaction_subscribers(
                 .collect();
             (fully_sentinel_bound, level_load_has_sentinel)
         };
+        // `on.player` exists only in a player event's fire. Unlike a trigger
+        // sentinel, one such reaction costs the crossing its whole address,
+        // the rejection unit player events use for the same token.
+        let mut event_player_addresses: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for reaction in &data_registry.reactions {
+            if postretro_scripting_core::player_event_scope::reaction_uses_event_player(
+                &reaction.descriptor,
+            ) {
+                event_player_addresses
+                    .entry(reaction.name.clone())
+                    .or_insert_with(|| reaction.name.clone());
+            }
+        }
         data_registry.crossings.retain_mut(|crossing| {
             let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
             crossing.fire.retain(|address| {
+                if let Some(reaction) = event_player_addresses.get(address) {
+                    log::error!(
+                        "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{reaction}` uses `on.player`, which only a player event publishes"
+                    );
+                    return false;
+                }
                 let strip = fully_sentinel_bound.contains(address);
                 if strip {
                     log::warn!(
@@ -1172,6 +1192,11 @@ fn rebuild_reaction_subscribers(
         if level_load_has_sentinel {
             log::warn!(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
+            );
+        }
+        if let Some(reaction) = event_player_addresses.get("levelLoad") {
+            log::error!(
+                "[Scripting] levelLoad: reaction `{reaction}` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
             );
         }
     }
@@ -4663,6 +4688,54 @@ pub(crate) mod tests {
         assert!(
             fixture.armed_by_tag["ambush_trap"].is_empty(),
             "the client keeps authored enabled_on_spawn=false rather than running the host roll",
+        );
+    }
+    // `on.player` exists only in a player event's fire: a crossing loses the
+    // address, and a `levelLoad` reaction using it is reported at install.
+    #[test]
+    fn on_player_reactions_are_rejected_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        let ctx = ScriptCtx::new();
+        let on_player = |name: &str| NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "applyDamage".to_string(),
+                target: Some("@player".to_string()),
+                kind: None,
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "amount": 5.0 }),
+            }),
+        };
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![on_player("scald"), on_player("levelLoad")],
+            vec![CrossingDescriptor {
+                slot: Some("player.health".to_string()),
+                condition: CrossingCondition::Below { threshold: 0.5 },
+                max: 100.0,
+                edge: None,
+                fire: vec!["scald".to_string()],
+            }],
+            &[],
+        );
+        let capture = LogCapture::start();
+        rebuild_reaction_subscribers(
+            &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+            &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+            &ctx,
+            SubscriberRebuild::LevelInstall,
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "crossing on `player.health` drops address `scald`: reaction `scald` uses `on.player`",
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "levelLoad: reaction `levelLoad` uses `on.player`",
+        );
+        assert!(
+            ctx.data_registry.borrow().crossings.is_empty(),
+            "the crossing kept no other address"
         );
     }
 }

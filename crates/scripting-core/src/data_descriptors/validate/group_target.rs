@@ -79,6 +79,8 @@ pub enum SubjectToken {
     Activators,
     /// `on.trigger`: the volume that fired.
     FiredTrigger,
+    /// `on.player`: the player a player event fires for.
+    EventPlayer,
 }
 
 impl SubjectToken {
@@ -88,6 +90,7 @@ impl SubjectToken {
         match spelling {
             "@activators" => Some(Self::Activators),
             "@trigger" => Some(Self::FiredTrigger),
+            "@player" => Some(Self::EventPlayer),
             _ => None,
         }
     }
@@ -96,6 +99,7 @@ impl SubjectToken {
         match self {
             Self::Activators => "@activators",
             Self::FiredTrigger => "@trigger",
+            Self::EventPlayer => "@player",
         }
     }
 
@@ -104,6 +108,7 @@ impl SubjectToken {
         match target {
             SequenceTarget::Activators => Some(Self::Activators),
             SequenceTarget::FiredTrigger => Some(Self::FiredTrigger),
+            SequenceTarget::EventPlayer => Some(Self::EventPlayer),
             _ => None,
         }
     }
@@ -112,6 +117,7 @@ impl SubjectToken {
         match self {
             Self::Activators => SequenceTarget::Activators,
             Self::FiredTrigger => SequenceTarget::FiredTrigger,
+            Self::EventPlayer => SequenceTarget::EventPlayer,
         }
     }
 }
@@ -134,12 +140,12 @@ pub fn validate_authored_subject_token(
         AuthoredText::Absent => return Ok(None),
         AuthoredText::Text(spelling) => SubjectToken::from_wire(&spelling).ok_or_else(|| {
             format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\" or \"@trigger\", got \"{spelling}\""
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\" or \"@player\", got \"{spelling}\""
             )
         })?,
         AuthoredText::NonString(type_name) => {
             return Err(format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\" or \"@trigger\", got a {type_name}"
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\" or \"@player\", got a {type_name}"
             ));
         }
     };
@@ -164,8 +170,9 @@ pub fn validate_subject_token_primitive(
 ) -> Result<(), String> {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     match token {
-        SubjectToken::Activators if arms_a_trigger => Err(format!(
-            "reaction `{reaction}` {site}: `{primitive}` targets a trigger volume, so it takes `@trigger` (`on.trigger`), not `@activators`"
+        SubjectToken::Activators | SubjectToken::EventPlayer if arms_a_trigger => Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` targets a trigger volume, so it takes `@trigger` (`on.trigger`), not `{}`",
+            token.as_wire()
         )),
         SubjectToken::FiredTrigger if !arms_a_trigger => Err(format!(
             "reaction `{reaction}` {site}: `@trigger` (`on.trigger`) carries only `armTrigger` and `disarmTrigger`, not `{primitive}`"

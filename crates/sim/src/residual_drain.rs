@@ -151,7 +151,12 @@ mod tests {
                 chime("plateBeep", "beep", "afterTrigger"),
                 chime("bleed", "bleed", "afterPlayer"),
                 chime("afterTrigger", "noop", "end"),
-                chime("afterPlayer", "noop", "end"),
+                // A player event's follow-up must be context-free: no
+                // presentation, so an empty body.
+                NamedReaction {
+                    name: "afterPlayer".to_string(),
+                    descriptor: ReactionDescriptor::Sequence(Vec::new()),
+                },
                 chime("end", "noop", "end"),
             ],
             vec![player_event(

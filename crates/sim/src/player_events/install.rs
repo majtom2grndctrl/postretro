@@ -13,10 +13,10 @@ use postretro_scripting_core::group_resolution::group_commands_apply_here;
 use postretro_scripting_core::ir_player_scope::PlayerConditionScope;
 use postretro_scripting_core::ir_scopes::DispatchScope;
 
-use super::{BoundPlayerEvent, PlayerEventResidualHandle, PlayerEventTable};
+use super::{BoundPlayerEvent, PlayerEventResidualHandle, PlayerEventTable, validate};
 use crate::mover_commands::MoverCommandDiagnostics;
 use crate::spawner::SpawnContext;
-use crate::trigger_bindings::{TRIGGER_EVENT_INPUTS, partition_direct_reaction};
+use crate::trigger_bindings::{BindSite, TRIGGER_EVENT_INPUTS, partition_direct_reaction};
 
 impl PlayerEventTable {
     /// Bind the active player events in `script_ctx`'s data registry.
@@ -64,13 +64,14 @@ impl PlayerEventTable {
             }
         }
         table.scope = Some(scope);
-        table.dispatch_scope = Some(RefCell::new(DispatchScope::script(
+        table.dispatch_scope = Some(RefCell::new(DispatchScope::player_event(
             script_ctx.clone(),
             TRIGGER_EVENT_INPUTS,
         )));
         table
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bind_event(
         &mut self,
         composed: &ComposedPlayerEvent,
@@ -129,10 +130,22 @@ impl PlayerEventTable {
                 );
                 continue;
             }
+            // One breaking reaction costs the whole address: this source has
+            // no runtime skip for a misrouted effect.
+            if let Some((reaction, rule)) = matched.iter().find_map(|reaction| {
+                validate::fire_list_violation(reaction, data_registry, slot_table)
+                    .map(|rule| (reaction.name.as_str(), rule))
+            }) {
+                log::error!(
+                    "[Scripting] player event {source}: drops address `{address}`: reaction `{reaction}` {rule}. The address still runs under every other source"
+                );
+                continue;
+            }
             for (body_ordinal, reaction) in matched.into_iter().enumerate() {
                 partition_direct_reaction(
                     reaction,
                     body_ordinal,
+                    BindSite::PlayerEvent,
                     data_registry,
                     slot_table,
                     Some(script_ctx),

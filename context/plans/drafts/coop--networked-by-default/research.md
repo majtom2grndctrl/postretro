@@ -196,3 +196,6 @@ Owner kept one spec; adopted the rest.
 
 Owner decisions in r1: positioned host-only sounds carry their position on the wire; host-only despawn of client-local presentation entities deferred to the `coop--bound-presentation-despawn` brief; no presentation follows a `wait`.
 Orchestrator additions in r1 (from the despawn brief's findings): `prop_mesh` bound by `MapEntity` ordinal with captured animation state; Task 10's bound-tombstone rule; fog and emitter primitives have no typed builder.
+| r1 follow-up | orchestrator self-review | — | — | — | Task 8 split into Task 8 (fire origin and recipients) and Task 9 (audience authoring and install checks); later tasks renumbered 10–12 | — | — |
+
+Tooling note: `apply_findings.py` applied only the first `FIX` block of a finding that carried several (D3–D8 second blocks were dropped while it reported success). The self-review re-applied them; verify full REPLACE text after any multi-block apply.

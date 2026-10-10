@@ -42,7 +42,7 @@ Removal path convention: `entity_model.md` §Destruction routes scripted removal
 - `ServerReplication::ingest_tick` (`net/replication.rs`) makes a tombstone only for a `NetworkId` that was in the previous tick's tracked set and vanished. An entity never registered before its despawn produces nothing.
 - `register_client` pre-acks every active tombstone for a joiner ("it never had mappings for those despawned entities"), and `prune_acked_tombstones` drops a tombstone once every current client acks. A late joiner therefore never sees a removal tombstone, and its own map install spawned the entity.
 - Host serialize walks the live replicable set and borrows the registry (`networking.md` §Data path). A despawned entity has no components to serialize, so a persistent removal fact must come from a host-side table keyed by binding, not from a registry walk.
-- Parent Task 10 rule ("a despawn tombstone for a bound `NetworkId` removes the mapping only; the local entity stays") is unreachable today: parent registrations hold until level change, and no surface despawns a bound entity on the host.
+- Parent Task 11 rule ("a despawn tombstone for a bound `NetworkId` removes the mapping only; the local entity stays") is unreachable today: parent registrations hold until level change, and no surface despawns a bound entity on the host.
 
 ## Strongest rival
 

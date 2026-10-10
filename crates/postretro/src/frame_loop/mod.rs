@@ -997,8 +997,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // The tick has settled: every hit this tick authorized, its death
             // sweep and the accumulators have landed. Player events read that
             // snapshot, then apply their in-tick commands.
-            app.player_events
-                .run_tick(&script_ctx, &mut pending_player_event_residuals);
+            {
+                let _scope =
+                    sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
+                app.player_events
+                    .run_tick(&script_ctx, &mut pending_player_event_residuals);
+            }
             app.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
             pending_movement_events.extend(tick_events.movement);
             pending_movement_edges.extend(tick_events.movement_edges.into_iter().map(|edge| {

@@ -34,6 +34,9 @@ pub enum SimStage {
     SteerPose,
     /// Inside `Steering`: auto-close timers and the mover blocking pass.
     SteerMovers,
+    /// Player-event evaluation and in-tick fires, after the tick settles.
+    /// Runs outside `Tick`, so it reports beside it.
+    PlayerEvents,
 }
 
 impl StageSet for SimStage {
@@ -49,6 +52,7 @@ impl StageSet for SimStage {
         Self::SteerAgents,
         Self::SteerPose,
         Self::SteerMovers,
+        Self::PlayerEvents,
     ];
 
     fn index(self) -> usize {
@@ -68,12 +72,13 @@ impl StageSet for SimStage {
             Self::SteerAgents => "sim_steer_agents",
             Self::SteerPose => "sim_steer_pose",
             Self::SteerMovers => "sim_steer_movers",
+            Self::PlayerEvents => "sim_player_events",
         }
     }
 
     fn parent(self) -> Option<Self> {
         match self {
-            Self::Tick => None,
+            Self::Tick | Self::PlayerEvents => None,
             Self::SteerAgents | Self::SteerPose | Self::SteerMovers => Some(Self::Steering),
             _ => Some(Self::Tick),
         }

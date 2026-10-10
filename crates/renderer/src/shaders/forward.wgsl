@@ -59,9 +59,11 @@ struct Uniforms {
     // AnimatedBakedLights tail count for receiver-only runtime records.
     has_direct: u32,
     total_light_count: u32,
-    // Dev toggle: force static-light shadowmask visibility to 1.0 for the
-    // manual pre-change A/B. It affects only the static world specular path.
-    spec_shadowmask_force_one: u32,
+    // Static world specular's mask word (`SPEC_SHADOWMASK_FLAG_*`). Bit 0: dev
+    // toggle forcing every owner's mask visibility to 1.0. Bit 1: load-fixed,
+    // set only when id 42's mask pool is really bound; owners and the union
+    // subtraction read no mask without it.
+    spec_shadowmask_flags: u32,
 };
 
 // Four vec4<f32> slots — see postretro/src/lighting/mod.rs for field semantics.
@@ -151,8 +153,8 @@ struct MaterialUniform {
 struct SpecLight {
     position_and_range: vec4<f32>, // xyz = position, w = falloff_range
     color_and_pad:      vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
-    cone_dir_and_type:  vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = baked shadowmask channel (0..3) or 4.0 (none), w = falloff model (0 Linear, 1 InverseDistance, 2 InverseSquared); non-spot carries 1/-1 (full bright)
+    cone_dir_and_type:  vec4<f32>, // xyz = normalized aim (spot cone, or a directional light's direction; zero for points), w = light type (0 point, 1 spot, 2 directional)
+    cone_cos:           vec4<f32>, // x = cos(inner), y = cos(outer), z = unused, w = falloff model (0 Linear, 1 InverseDistance, 2 InverseSquared); non-spot carries 1/-1 (full bright)
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
@@ -351,6 +353,9 @@ struct VertexInput {
     // (lightmap block id + 1, animated block id + 1; 0 = none) from one
     // Uint16x2 attribute.
     @location(5) lightmap_block_ids: vec2<u32>,
+    // The vertex's face owners from the second, forward-only vertex buffer
+    // (one Uint16x4): compact static spec-light indices, 0xFFFF = empty.
+    @location(6) spec_owners: vec4<u32>,
 };
 
 struct VertexOutput {
@@ -371,6 +376,9 @@ struct VertexOutput {
     @location(7) @interpolate(flat) animated_block: u32,
     // Pool offset (xy) and block extent (zw), in pool texels.
     @location(8) @interpolate(flat) lightmap_rect: vec4<u32>,
+    // Face owners, whole per face: every vertex of a face carries the same
+    // entry, so flat interpolation never blends two faces' owners.
+    @location(9) @interpolate(flat) spec_owners: vec4<u32>,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -414,6 +422,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.lightmap_layer_flags = block.layer_flags;
     out.lightmap_rect = block.rect;
     out.animated_block = in.lightmap_block_ids.y;
+    out.spec_owners = in.spec_owners;
 
     return out;
 }
@@ -665,33 +674,12 @@ fn slice_for_visibility(factor: vec4<f32>, slot: u32) -> f32 {
     }
 }
 
-// Per-light SDF visibility for an arbitrary spec-light index, resolved through
-// the fragment's K-selection (`sel`). Used by the specular loop, which walks the
-// chunk light list in chunk order rather than selection order: for an `sdf`
-// light it must read the SAME slice its diffuse term used, so it finds the
-// light's slot in the selection (slot i ↔ channel i, by construction the same
-// `sel` the diffuse loop read) and returns that channel. A light that is not
-// `sdf`, or an `sdf` light that ranked beyond K (dropped from the selection,
-// treated lit — matching the diffuse loop), returns 1.0 so the specular term is
-// left unshadowed. `slice_for_visibility` does the slot→channel mapping.
-fn sdf_visibility_for_light(sel: SdfLightSelection, factor: vec4<f32>, light_idx: u32) -> f32 {
-    for (var s: u32 = 0u; s < sel.count; s = s + 1u) {
-        if sel.indices[s] == light_idx {
-            return slice_for_visibility(factor, s);
-        }
-    }
-    return 1.0;
-}
-
 // Static-light entity-shadow receipt on world geometry. Normal mode subtracts
 // this union term from baked static direct; mode 5 visualizes the subtraction
 // magnitude so baked-vs-runtime darker-wins checks are repeatable.
 const SHADOWMASK_VISUALIZE_MODE: u32 = 5u;
 const SHADOWMASK_RAW_POOL_VISIBILITY_MODE: u32 = 6u;
 const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
-const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
-// `shadowmask_union_channel`'s skip sentinel; never a mask slot.
-const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;
 const SHADOWMASK_POOL_SPOT: u32 = 0u;
 const SHADOWMASK_POOL_CUBE: u32 = 1u;
 const SHADOWMASK_POOL_SPOT_VALUE: f32 = 0.0;
@@ -728,32 +716,58 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
 // `sample_shadowmask_atlas` lives in `lightmap_sample.wgsl` (see the group-4
 // bindings above).
 
-// Static non-SDF lights carry their baked shadowmask channel in `cone_cos.z`.
-// A dropped/no-mask channel samples as fully lit, preserving the prior behavior.
-// A missed cell block drops only lights that read a mask channel from it:
-// their shadow lives in the absent block. Lights that never read the block
-// (forced-one or dropped channel) stay lit, so a miss removes exactly the
-// block's terms.
-fn shadowmask_visibility_for_spec_light(sl: SpecLight, mask: vec4<f32>, block_missing: bool) -> f32 {
-    if uniforms.spec_shadowmask_force_one != 0u {
-        return 1.0;
-    }
-    let spec_channel = round(sl.cone_cos.z);
-    if spec_channel >= SHADOWMASK_CHANNEL_DROPPED {
-        return 1.0;
-    }
-    if block_missing {
-        return 0.0;
-    }
-    return shadowmask_channel_value(mask, u32(spec_channel));
-}
-
 // An empty channel in a face's owner entry (`SHADOWMASK_OWNER_EMPTY` in
 // `level-format`). Owners ascend and empties trail, so the first empty ends
 // the entry.
 const SPEC_OWNER_EMPTY: u32 = 0xFFFFu;
 const SPEC_OWNER_CHANNELS: u32 = 4u;
 const SPEC_LIGHT_TYPE_DIRECTIONAL: u32 = 2u;
+// `Uniforms.spec_shadowmask_flags` bits; `SPEC_SHADOWMASK_FLAG_*` in
+// render-cpu's `frame_uniforms.rs`.
+const SPEC_SHADOWMASK_FLAG_FORCE_ONE: u32 = 1u;
+const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 2u;
+
+// Dev toggle: every owner reads its mask channel as fully visible.
+fn spec_shadowmask_forced_one() -> bool {
+    return (uniforms.spec_shadowmask_flags & SPEC_SHADOWMASK_FLAG_FORCE_ONE) != 0u;
+}
+
+// Whether id 42's mask pool is bound. Clear for a level without id 42, a pool
+// the renderer refused, and placeholder mode, whose all-visible placeholder
+// must never read as an owner's mask.
+fn static_spec_mask_present() -> bool {
+    return (uniforms.spec_shadowmask_flags & SPEC_SHADOWMASK_FLAG_MASK_PRESENT) != 0u;
+}
+
+// Whether this fragment's face owners may read their mask channels: a bound
+// mask at a resident block. A miss drops every owner, as it drops every other
+// term the block holds.
+fn static_spec_owners_readable(lightmap_layer_flags: u32) -> bool {
+    return static_spec_mask_present() && !lightmap_block_missing(lightmap_layer_flags);
+}
+
+// The mask channel `spec_idx` reads on this face: its position among the
+// face's owners, or SPEC_OWNER_CHANNELS when it does not own the face.
+fn shadowmask_owner_channel(owners: vec4<u32>, spec_idx: u32) -> u32 {
+    for (var s: u32 = 0u; s < SPEC_OWNER_CHANNELS; s = s + 1u) {
+        let owner = owners[s];
+        if owner == SPEC_OWNER_EMPTY {
+            break;
+        }
+        if owner == spec_idx {
+            return s;
+        }
+    }
+    return SPEC_OWNER_CHANNELS;
+}
+
+// A spec light's aim for loops that place every light at its origin (SDF
+// diffuse). Only world specular follows a directional light's packed aim;
+// these loops keep the zero aim a directional light always carried here.
+fn positional_cone_aim(sl: SpecLight) -> vec3<f32> {
+    let directional = u32(round(sl.cone_dir_and_type.w)) == SPEC_LIGHT_TYPE_DIRECTIONAL;
+    return select(sl.cone_dir_and_type.xyz, vec3<f32>(0.0), directional);
+}
 
 // One static light's world Blinn-Phong highlight before visibility. A
 // directional light shines along its packed aim, as its bake does, wherever its
@@ -819,7 +833,7 @@ fn world_static_specular(
             let visibility = select(
                 shadowmask_channel_value(mask, s),
                 1.0,
-                uniforms.spec_shadowmask_force_one != 0u,
+                spec_shadowmask_forced_one(),
             );
             if owner >= spec_len || visibility <= 0.0 {
                 continue;
@@ -916,19 +930,9 @@ fn shadowmask_attenuation(baked_vis: f32, entity_vis: f32) -> f32 {
     return baked_vis * (1.0 - entity_vis);
 }
 
-// A promoted light's mask slot from its metadata channel float, or
-// SHADOWMASK_UNION_CHANNEL_NONE for a dropped, negative, fractional or
-// out-of-range value. The union skips a light whose slot is NONE, so the u32
-// cast here follows every guard.
-fn shadowmask_union_channel(channel_value: f32) -> u32 {
-    if channel_value < 0.0 ||
-       channel_value >= SHADOWMASK_CHANNEL_DROPPED ||
-       floor(channel_value) != channel_value {
-        return SHADOWMASK_UNION_CHANNEL_NONE;
-    }
-    return u32(channel_value);
-}
-
+// A promoted light subtracts only where it owns the face: its baked
+// visibility is the channel its owner position names. A light that does not
+// own the face has no channel there and subtracts nothing.
 fn shadowmask_union_subtraction(
     world_pos: vec3<f32>,
     lightmap_texel: vec2<f32>,
@@ -936,6 +940,7 @@ fn shadowmask_union_subtraction(
     lightmap_rect: vec4<u32>,
     mesh_n: vec3<f32>,
     bump_n: vec3<f32>,
+    owners: vec4<u32>,
 ) -> ShadowmaskUnion {
     var out: ShadowmaskUnion;
     out.subtraction = vec3<f32>(0.0);
@@ -946,6 +951,10 @@ fn shadowmask_union_subtraction(
         uniforms.total_light_count,
     );
     if uniforms.total_light_count <= promoted_start {
+        return out;
+    }
+    // No mask bound, no channel to read: no light subtracts.
+    if !static_spec_mask_present() {
         return out;
     }
     // Hoisted because every promoted light shares this fragment's lightmap
@@ -980,12 +989,10 @@ fn shadowmask_union_subtraction(
         let weight = clamp(meta0.w, 0.0, 1.0);
         let pool_kind_value = meta1.x;
         let slot_value = meta1.y;
-        let channel = shadowmask_union_channel(meta1.z);
 
         if weight <= 0.0 ||
            spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
-           spec_idx_value >= f32(spec_len) ||
-           channel == SHADOWMASK_UNION_CHANNEL_NONE {
+           spec_idx_value >= f32(spec_len) {
             continue;
         }
         if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
@@ -997,6 +1004,10 @@ fn shadowmask_union_subtraction(
         }
 
         let spec_idx = u32(spec_idx_value);
+        let channel = shadowmask_owner_channel(owners, spec_idx);
+        if channel == SPEC_OWNER_CHANNELS {
+            continue;
+        }
         let pool_kind = u32(pool_kind_value);
         let slot = u32(slot_value);
         let sl = spec_lights[spec_idx];
@@ -1208,8 +1219,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // K-selection of `sdf`-tagged lights for this fragment, computed ONCE and
-    // shared by the per-light diffuse loop (below) and the per-light specular
-    // loop (further down). Both terms of an `sdf` light must read the SAME
+    // shared by the per-light diffuse loop (below) and world static specular
+    // (further down). Both terms of an `sdf` light must read the SAME
     // visibility slice, so they must read it off the SAME selection: a single
     // `select_sdf_lights` call pins slot i → light i → channel i for both.
     //
@@ -1246,7 +1257,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 continue;
             }
             let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
-            let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+            let cone = cone_attenuation_cos(L, positional_cone_aim(sl), sl.cone_cos.x, sl.cone_cos.y);
             let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
             static_direct = static_direct + sl.color_and_pad.xyz * (n_dot_l * atten * cone * visibility);
         }
@@ -1260,6 +1271,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             in.lightmap_rect,
             mesh_n,
             N_shade,
+            in.spec_owners,
         );
         shadowmask_union = shadowmask.subtraction;
         shadowmask_raw_pool_visibility = shadowmask.raw_pool_visibility;
@@ -1277,54 +1289,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // The surface map's R channel; the march read its G channel.
         let spec_int = sample_color(spec_texture, shade_uv, ddx, ddy).r;
         let spec_exp = max(material.shininess, 1.0);
-        // Hoisted because every static specular light shares this fragment's
-        // lightmap block and texel. Undo this if specular gains per-light UVs.
-        let specular_shadowmask = sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect);
-        let static_block_missing = lightmap_block_missing(in.lightmap_layer_flags);
-
-        // Chunk lookup when the offline index is populated; otherwise walk
-        // the full spec buffer.
-        var chunk_offset: u32 = 0u;
-        var chunk_count: u32 = arrayLength(&spec_lights);
-        if chunk_grid.has_chunk_grid != 0u {
-            let local = in.world_position - chunk_grid.grid_origin;
-            let cell = vec3<i32>(floor(local / chunk_grid.cell_size));
-            let dims = vec3<i32>(chunk_grid.dims);
-            // Fragments outside the authored grid have no static lights by construction.
-            if all(cell >= vec3<i32>(0)) && all(cell < dims) {
-                let ci = u32(cell.z) * chunk_grid.dims.x * chunk_grid.dims.y
-                       + u32(cell.y) * chunk_grid.dims.x
-                       + u32(cell.x);
-                let pair = chunk_offsets[ci];
-                chunk_offset = pair.x;
-                chunk_count = pair.y;
-            } else {
-                chunk_count = 0u;
-            }
+        // World static specular is the face's owners plus the SDF selection,
+        // never the chunk light list. Owners read their channels only from a
+        // bound mask at a resident block: a refused, absent or placeholder
+        // mask, or a block miss, drops every owner while the SDF selection
+        // keeps its own visibility.
+        let owners_readable = static_spec_owners_readable(in.lightmap_layer_flags);
+        // Hoisted because every owner shares this fragment's lightmap block
+        // and texel. Undo this if specular gains per-light UVs. A face with no
+        // owner reads no mask.
+        var specular_shadowmask = vec4<f32>(0.0);
+        if owners_readable && in.spec_owners.x != SPEC_OWNER_EMPTY {
+            specular_shadowmask = sample_shadowmask_atlas(in.lightmap_texel, in.lightmap_layer_flags, in.lightmap_rect);
         }
-
-        for (var j: u32 = 0u; j < chunk_count; j = j + 1u) {
-            var light_idx: u32 = j;
-            if chunk_grid.has_chunk_grid != 0u {
-                light_idx = chunk_indices[chunk_offset + j];
-            }
-            let sl = spec_lights[light_idx];
-            // Exactly one technique applies: SDF lights retain the per-light
-            // visibility slice shared with their diffuse term; other static
-            // lights use the baked shadowmask recorded on the SpecLight.
-            var visibility = 1.0;
-            if sdf_select_is_sdf(sl) {
-                visibility = sdf_visibility_for_light(sdf_sel, sdf_factor, light_idx);
-                if sdf_force_lit {
-                    visibility = 1.0;
-                }
-            } else {
-                visibility = shadowmask_visibility_for_spec_light(sl, specular_shadowmask, static_block_missing);
-            }
-            specular_sum = specular_sum + world_static_light_specular(
-                sl, in.world_position, N_shade, V, spec_exp, spec_int
-            ) * visibility;
-        }
+        specular_sum = world_static_specular(
+            in.world_position,
+            N_shade,
+            V,
+            spec_exp,
+            spec_int,
+            in.spec_owners,
+            specular_shadowmask,
+            owners_readable,
+            sdf_sel,
+            sdf_factor,
+            sdf_force_lit,
+        );
     }
     total_light = total_light + specular_sum;
 

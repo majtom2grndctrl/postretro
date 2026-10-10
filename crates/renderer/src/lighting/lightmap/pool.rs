@@ -7,7 +7,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy};
 
 use super::plan::StaticPoolPlan;

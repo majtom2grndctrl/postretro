@@ -2153,6 +2153,7 @@ pub(crate) mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
+            vertex_spec_owners: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -3035,7 +3036,7 @@ pub(crate) mod tests {
             IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockPayload, LightmapMode,
             LightmapSection,
         };
-        use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+        use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
         let mut app = test_app();
         assert!(app.renderer.is_none());
@@ -3055,7 +3056,7 @@ pub(crate) mod tests {
         world.lightmap = Some(lightmap.index());
         world.shadowmask_atlas = Some(
             ShadowmaskAtlasSection {
-                channels: vec![0],
+                owners: Vec::new(),
                 blocks: vec![[vec![3; 16], vec![4; 16]]],
             }
             .index(),

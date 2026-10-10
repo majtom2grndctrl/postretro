@@ -15,7 +15,7 @@ use std::fmt;
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::shadowmask_atlas_smb6::group_plane_len;
+use postretro_level_format::shadowmask_atlas::group_plane_len;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel};
 use wgpu::util::DeviceExt;

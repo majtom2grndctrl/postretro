@@ -43,7 +43,6 @@ pub mod sdf_atlas;
 pub mod sh_reconstruct;
 pub mod sh_volume;
 pub mod shadowmask_atlas;
-pub mod shadowmask_atlas_smb6;
 pub mod sprite_collection;
 pub mod texture_cache_keys;
 pub mod texture_names;

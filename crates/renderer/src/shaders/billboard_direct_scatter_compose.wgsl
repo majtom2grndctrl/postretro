@@ -16,7 +16,7 @@ struct Uniforms {
     has_scatter: u32,
     has_direct: u32,
     total_light_count: u32,
-    spec_shadowmask_force_one: u32,
+    spec_shadowmask_flags: u32,
 };
 
 struct AnimationDescriptor {

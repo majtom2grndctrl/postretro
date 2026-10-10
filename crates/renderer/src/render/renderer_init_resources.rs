@@ -370,10 +370,7 @@ pub(crate) fn build_lighting_bind_group(
     // Specular-only static lights; 1-record dummy avoids zero-size storage binding.
     let spec_lights_data = {
         let packed = geometry
-            .map(|g| {
-                let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(g);
-                pack_spec_lights(g.lights, &shadowmask_channels)
-            })
+            .map(|g| pack_spec_lights(g.lights))
             .unwrap_or_default();
         if packed.is_empty() {
             vec![0u8; SPEC_LIGHT_SIZE]
@@ -648,6 +645,8 @@ pub(crate) fn build_initial_uniform_data(
         has_direct: false,
         animated_baked_light_count: 0,
         spec_shadowmask_force_one: false,
+        // No mask pool before a level installs.
+        static_spec_mask_present: false,
     })
 }
 

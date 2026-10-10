@@ -212,6 +212,18 @@ pub(super) fn build_finalized_section_plan<'a>(
     }
     // Id 42 carries per-face owners, independent of ids 40 and 41.
     if let Some(section) = shadowmask_atlas {
+        // The runtime finds each face's vertices through its one BVH leaf, and
+        // a face with no triangle has none, so every owned level must have a
+        // triangle on every face.
+        if let Some(face) = geo_result
+            .face_index_ranges
+            .iter()
+            .position(|range| range.index_count == 0)
+        {
+            anyhow::bail!(
+                "ShadowmaskAtlas owners need a triangle on every Geometry face, but face {face} has none"
+            );
+        }
         // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
         // count mismatch, so refuse to write one.
         anyhow::ensure!(

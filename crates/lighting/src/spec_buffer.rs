@@ -4,7 +4,6 @@
 // See: context/lib/rendering_pipeline.md
 
 use crate::falloff_model_code;
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
 use postretro_level_loader::{LightType, MapLight, ShadowType};
 
 /// Byte size of one `SpecLight` record. WGSL layout is four packed vec4<f32>
@@ -15,14 +14,14 @@ use postretro_level_loader::{LightType, MapLight, ShadowType};
 ///   12..16  range              (f32) — falloff_range meters, 0 for directional
 ///   16..28  color × intensity  (f32x3)
 ///   28..32  sdf_flag           (f32) — 1.0 if `_shadow_type sdf`, else 0.0
-///   32..44  cone_direction     (f32x3) — normalized aim, (0,0,0) for non-spot
+///   32..44  cone_direction     (f32x3) — normalized aim: a spot's cone axis, or
+///           the direction a directional light shines (its bake's, (0,-1,0)
+///           when unauthored); (0,0,0) for point lights
 ///   44..48  light_type         (f32) — SPEC_LIGHT_TYPE_* discriminant
 ///   48..52  cos(inner_angle)   (f32) — cone full-bright cutoff, 1.0 for non-spot
 ///   52..56  cos(outer_angle)   (f32) — cone zero cutoff, -1.0 for non-spot
-///   56..60  shadowmask_channel (f32) — 0.0..3.0 selects a mask slot in the
-///           forward shader's (g0.r, g0.g, g1.r, g1.g) vector: slot s is BC5
-///           group s/2, channel s%2 of the side-by-side ShadowmaskAtlas.
-///           4.0 (SPEC_LIGHT_SHADOWMASK_NONE) means no mask.
+///   56..60  unused             (f32) — 0.0. Face owners, not the light, name
+///           the mask channel world specular reads (id 42).
 ///   60..64  falloff_model      (f32) — 0 Linear, 1 InverseDistance, 2 InverseSquared
 ///
 /// Cone direction/angles are packed here (rather than recomputed in-shader) so
@@ -31,8 +30,9 @@ use postretro_level_loader::{LightType, MapLight, ShadowType};
 pub const SPEC_LIGHT_SIZE: usize = 64;
 
 /// `cone_dir_and_type.w` discriminant. Point and directional lights are
-/// cone-less (full-bright `cos_inner`/`cos_outer` sentinels), so the shader only
-/// needs to distinguish "apply cone" (spot) from "skip cone" (everything else).
+/// cone-less (full-bright `cos_inner`/`cos_outer` sentinels). World specular
+/// reads a directional light's aim as its light direction; every other loop
+/// treats a directional light as cone-less at its origin.
 pub const SPEC_LIGHT_TYPE_POINT: f32 = 0.0;
 pub const SPEC_LIGHT_TYPE_SPOT: f32 = 1.0;
 pub const SPEC_LIGHT_TYPE_DIRECTIONAL: f32 = 2.0;
@@ -45,10 +45,6 @@ pub const SPEC_LIGHT_TYPE_DIRECTIONAL: f32 = 2.0;
 /// entirely via `is_dynamic`).
 pub const SPEC_LIGHT_SDF_FLAG: f32 = 1.0;
 
-/// `cone_cos.z` sentinel meaning this static light has no baked shadowmask
-/// visibility and must therefore be treated as fully lit by the forward pass.
-pub const SPEC_LIGHT_SHADOWMASK_NONE: f32 = 4.0;
-
 /// Pack the static subset of `lights` into the shader-facing `SpecLight`
 /// byte layout. Lights with `is_dynamic == true` are skipped — they are
 /// already driven by the dynamic `GpuLight` loop in `forward.wgsl` and
@@ -58,12 +54,11 @@ pub const SPEC_LIGHT_SHADOWMASK_NONE: f32 = 4.0;
 /// knows which static lights get the runtime per-light diffuse + SDF
 /// visibility path (Tasks 2–3); all others carry 0.0.
 ///
-/// `shadowmask_channels` is indexed in the same compacted `!is_dynamic`
-/// order as the emitted records. `SHADOWMASK_CHANNEL_DROPPED` and missing
-/// entries both pack [`SPEC_LIGHT_SHADOWMASK_NONE`] into `cone_cos.z`.
-pub fn pack_spec_lights(lights: &[MapLight], shadowmask_channels: &[u8]) -> Vec<u8> {
+/// A record's position is the light's compact static spec-light index: the
+/// index id-42 face owners and id 23 chunk lists name.
+pub fn pack_spec_lights(lights: &[MapLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len() * SPEC_LIGHT_SIZE);
-    for (spec_light_index, l) in lights.iter().filter(|l| !l.is_dynamic).enumerate() {
+    for l in lights.iter().filter(|l| !l.is_dynamic) {
         let px = l.origin[0] as f32;
         let py = l.origin[1] as f32;
         let pz = l.origin[2] as f32;
@@ -85,24 +80,25 @@ pub fn pack_spec_lights(lights: &[MapLight], shadowmask_channels: &[u8]) -> Vec<
         };
         bytes.extend_from_slice(&sdf_flag.to_le_bytes());
 
-        // Cone direction + type. Non-spot lights carry a zero direction and the
-        // full-bright cone sentinels (cos_inner = 1, cos_outer = -1) so the
-        // shader's cone term resolves to 1.0 across the whole sphere.
-        let is_spot = l.light_type == LightType::Spot;
-        let (dir, light_type, cos_inner, cos_outer) = if is_spot {
-            let d = glam::Vec3::from(l.cone_direction).normalize_or_zero();
-            (
-                [d.x, d.y, d.z],
-                SPEC_LIGHT_TYPE_SPOT,
-                l.cone_angle_inner.cos(),
-                l.cone_angle_outer.cos(),
-            )
-        } else {
-            let light_type = match l.light_type {
-                LightType::Directional => SPEC_LIGHT_TYPE_DIRECTIONAL,
-                _ => SPEC_LIGHT_TYPE_POINT,
-            };
-            ([0.0, 0.0, 0.0], light_type, 1.0, -1.0)
+        // Cone direction + type. Non-spot lights carry the full-bright cone
+        // sentinels (cos_inner = 1, cos_outer = -1). A directional light packs
+        // the direction it shines, as its bake does, defaulting straight down;
+        // a point light packs a zero direction.
+        let (dir, light_type, cos_inner, cos_outer) = match l.light_type {
+            LightType::Spot => {
+                let d = glam::Vec3::from(l.cone_direction).normalize_or_zero();
+                (
+                    [d.x, d.y, d.z],
+                    SPEC_LIGHT_TYPE_SPOT,
+                    l.cone_angle_inner.cos(),
+                    l.cone_angle_outer.cos(),
+                )
+            }
+            LightType::Directional => {
+                let d = glam::Vec3::from(l.cone_direction).normalize_or(glam::Vec3::NEG_Y);
+                ([d.x, d.y, d.z], SPEC_LIGHT_TYPE_DIRECTIONAL, 1.0, -1.0)
+            }
+            LightType::Point => ([0.0, 0.0, 0.0], SPEC_LIGHT_TYPE_POINT, 1.0, -1.0),
         };
         bytes.extend_from_slice(&dir[0].to_le_bytes());
         bytes.extend_from_slice(&dir[1].to_le_bytes());
@@ -111,11 +107,7 @@ pub fn pack_spec_lights(lights: &[MapLight], shadowmask_channels: &[u8]) -> Vec<
 
         bytes.extend_from_slice(&cos_inner.to_le_bytes());
         bytes.extend_from_slice(&cos_outer.to_le_bytes());
-        let shadowmask_channel = match shadowmask_channels.get(spec_light_index).copied() {
-            Some(SHADOWMASK_CHANNEL_DROPPED) | None => SPEC_LIGHT_SHADOWMASK_NONE,
-            Some(channel) => channel as f32,
-        };
-        bytes.extend_from_slice(&shadowmask_channel.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
         bytes.extend_from_slice(&(falloff_model_code(l.falloff_model) as f32).to_le_bytes());
     }
     bytes
@@ -157,12 +149,12 @@ mod tests {
 
     #[test]
     fn empty_input_empty_bytes() {
-        assert!(pack_spec_lights(&[], &[]).is_empty());
+        assert!(pack_spec_lights(&[]).is_empty());
     }
 
     #[test]
     fn encodes_position_range_and_premultiplied_color() {
-        let bytes = pack_spec_lights(&[sample()], &[]);
+        let bytes = pack_spec_lights(&[sample()]);
         assert_eq!(bytes.len(), SPEC_LIGHT_SIZE);
         assert_eq!(read_f32(&bytes, 0), 1.0);
         assert_eq!(read_f32(&bytes, 4), 2.0);
@@ -180,7 +172,7 @@ mod tests {
     /// was dropped from the spec buffer, so spots over-lit off-axis like points.
     #[test]
     fn point_light_packs_full_bright_cone_sentinels() {
-        let bytes = pack_spec_lights(&[sample()], &[]); // LightType::Point
+        let bytes = pack_spec_lights(&[sample()]); // LightType::Point
         assert_eq!(read_f32(&bytes, 32), 0.0); // cone dir x
         assert_eq!(read_f32(&bytes, 36), 0.0); // cone dir y
         assert_eq!(read_f32(&bytes, 40), 0.0); // cone dir z
@@ -198,7 +190,7 @@ mod tests {
         spot.cone_direction = [0.0, -2.0, 0.0]; // non-unit; must normalize
         spot.cone_angle_inner = std::f32::consts::FRAC_PI_6;
         spot.cone_angle_outer = std::f32::consts::FRAC_PI_4;
-        let bytes = pack_spec_lights(&[spot], &[]);
+        let bytes = pack_spec_lights(&[spot]);
 
         assert!((read_f32(&bytes, 32) - 0.0).abs() < 1e-6);
         assert!((read_f32(&bytes, 36) - (-1.0)).abs() < 1e-6); // normalized
@@ -210,7 +202,7 @@ mod tests {
 
     #[test]
     fn packs_multiple_records_contiguously() {
-        let bytes = pack_spec_lights(&[sample(), sample()], &[]);
+        let bytes = pack_spec_lights(&[sample(), sample()]);
         assert_eq!(bytes.len(), 2 * SPEC_LIGHT_SIZE);
     }
 
@@ -218,31 +210,63 @@ mod tests {
     fn skips_dynamic_lights() {
         let mut dyn_light = sample();
         dyn_light.is_dynamic = true;
-        let bytes = pack_spec_lights(&[sample(), dyn_light, sample()], &[]);
+        let bytes = pack_spec_lights(&[sample(), dyn_light, sample()]);
         assert_eq!(bytes.len(), 2 * SPEC_LIGHT_SIZE);
     }
 
+    // Face owners name the mask channel; no record carries a map-wide slot.
     #[test]
-    fn packs_shadowmask_channel_into_cone_cos_z() {
-        let bytes = pack_spec_lights(&[sample()], &[2]);
+    fn cone_cos_z_is_unused_for_every_light_type() {
+        let mut spot = sample();
+        spot.light_type = LightType::Spot;
+        let mut sun = sample();
+        sun.light_type = LightType::Directional;
+        let bytes = pack_spec_lights(&[sample(), spot, sun]);
+        for record in 0..3 {
+            assert_eq!(read_f32(&bytes, record * SPEC_LIGHT_SIZE + 56), 0.0);
+        }
+    }
 
-        let shadowmask_channel = read_f32(&bytes, 56);
-        assert!((shadowmask_channel - 2.0).abs() < f32::EPSILON);
-        assert!((shadowmask_channel - SPEC_LIGHT_SHADOWMASK_NONE).abs() >= f32::EPSILON);
+    /// AC 12: a directional light packs the direction it shines, normalized,
+    /// and no position-derived aim: moving its origin changes only the
+    /// position lanes. An unauthored aim falls back to the bake's straight
+    /// down.
+    #[test]
+    fn directional_light_packs_its_normalized_aim_whatever_its_origin() {
+        let mut sun = sample();
+        sun.light_type = LightType::Directional;
+        sun.cone_direction = [0.0, -3.0, 4.0];
+        let bytes = pack_spec_lights(&[sun.clone()]);
+        assert!((read_f32(&bytes, 32) - 0.0).abs() < 1e-6);
+        assert!((read_f32(&bytes, 36) - (-0.6)).abs() < 1e-6);
+        assert!((read_f32(&bytes, 40) - 0.8).abs() < 1e-6);
+        assert_eq!(read_f32(&bytes, 44), SPEC_LIGHT_TYPE_DIRECTIONAL);
+        assert_eq!(read_f32(&bytes, 48), 1.0);
+        assert_eq!(read_f32(&bytes, 52), -1.0);
+
+        let mut moved = sun.clone();
+        moved.origin = [-40.0, -3.0, 17.0];
+        let moved_bytes = pack_spec_lights(&[moved]);
+        assert_ne!(bytes[0..12], moved_bytes[0..12]);
+        assert_eq!(bytes[12..], moved_bytes[12..], "only the origin lanes move");
+
+        sun.cone_direction = [0.0; 3];
+        let unauthored = pack_spec_lights(&[sun]);
+        assert_eq!(
+            [
+                read_f32(&unauthored, 32),
+                read_f32(&unauthored, 36),
+                read_f32(&unauthored, 40)
+            ],
+            [0.0, -1.0, 0.0]
+        );
     }
 
     #[test]
     fn packs_falloff_model_code_into_cone_cos_w() {
-        let bytes = pack_spec_lights(&[sample()], &[]);
+        let bytes = pack_spec_lights(&[sample()]);
 
         assert_eq!(read_f32(&bytes, 60), 2.0); // InverseSquared
-    }
-
-    #[test]
-    fn dropped_shadowmask_channel_packs_none_sentinel() {
-        let bytes = pack_spec_lights(&[sample()], &[SHADOWMASK_CHANNEL_DROPPED]);
-
-        assert_eq!(read_f32(&bytes, 56), SPEC_LIGHT_SHADOWMASK_NONE);
     }
 
     /// `sdf`-typed lights set the `color_and_pad.w` flag (decoded `w > 0.5`);
@@ -254,10 +278,10 @@ mod tests {
 
         let mut sdf = sample();
         sdf.shadow_type = ShadowType::Sdf;
-        assert!(read_flag(&pack_spec_lights(&[sdf], &[])) > 0.5);
+        assert!(read_flag(&pack_spec_lights(&[sdf])) > 0.5);
 
         let baked = sample(); // ShadowType::StaticLightMap
-        assert_eq!(read_flag(&pack_spec_lights(&[baked], &[])), 0.0);
+        assert_eq!(read_flag(&pack_spec_lights(&[baked])), 0.0);
 
         // Dynamic lights are skipped entirely (is_dynamic), so no record is
         // emitted — verified separately by `skips_dynamic_lights`.

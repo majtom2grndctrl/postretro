@@ -1,10 +1,7 @@
 // Renderer-side CPU packing for static-light shadowmask world receipt.
 // Governing context: context/lib/rendering_pipeline.md
 
-#[cfg(test)]
-use super::renderer_types::LevelGeometryShStorage;
-use super::renderer_types::{LevelGeometry, PromotedBakedLightRecord, PromotedShadowPoolKind};
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
+use super::renderer_types::{PromotedBakedLightRecord, PromotedShadowPoolKind};
 use postretro_level_loader::MapLight;
 
 pub(crate) const FORWARD_SHADOWMASK_META_VEC4S_PER_RECORD: usize = 2;
@@ -14,7 +11,9 @@ pub(crate) const FORWARD_SHADOWMASK_INVALID_INDEX: u32 = u32::MAX;
 // Metadata is appended to `array<vec4<f32>>`, so sentinels must be ordinary
 // numeric floats rather than raw integer bit patterns.
 const FORWARD_SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;
-const FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE: f32 = 4.0;
+/// The second vec4's `.z` lane, unread: a promoted light's mask channel is its
+/// position among the receiving face's owners, found in the shader.
+const FORWARD_SHADOWMASK_RESERVED_VALUE: f32 = -1.0;
 
 pub(crate) fn influence_capacity_with_shadowmask_metadata(
     dynamic_light_count: usize,
@@ -47,45 +46,6 @@ pub(crate) fn build_selection_spec_light_indices(
         .collect()
 }
 
-/// Build the compacted `spec_lights` shadowmask-channel table. Atlas channels
-/// arrive in `entity_shadow_lights` selection order, while `spec_lights`
-/// removes dynamic lights, so this is deliberately a scatter rather than a
-/// direct copy.
-///
-/// Section presence is derived from `LevelGeometry` here instead of from the
-/// renderer resource state: level reload resets that state before spec-light
-/// packing, while a present-but-rejected atlas binds a fully-lit placeholder
-/// and must retain its authored channel.
-pub(crate) fn build_spec_light_shadowmask_channels(geometry: &LevelGeometry<'_>) -> Vec<u8> {
-    let mut spec_channels = vec![
-        SHADOWMASK_CHANNEL_DROPPED;
-        geometry
-            .lights
-            .iter()
-            .filter(|light| !light.is_dynamic)
-            .count()
-    ];
-    let Some(atlas) = geometry.shadowmask_atlas else {
-        return spec_channels;
-    };
-
-    let selection_spec_indices =
-        build_selection_spec_light_indices(geometry.lights, geometry.entity_shadow_lights);
-    for (selection_index, spec_index) in selection_spec_indices.into_iter().enumerate() {
-        if spec_index == FORWARD_SHADOWMASK_INVALID_INDEX {
-            continue;
-        }
-        let Some(channel) = atlas.channels.get(selection_index).copied() else {
-            continue;
-        };
-        if let Some(slot) = spec_channels.get_mut(spec_index as usize) {
-            *slot = channel;
-        }
-    }
-
-    spec_channels
-}
-
 fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -> Option<u32> {
     let light = lights.get(global_index)?;
     if light.is_dynamic {
@@ -99,13 +59,15 @@ fn spec_light_index_for_global_light(lights: &[MapLight], global_index: usize) -
     )
 }
 
+/// The promoted-light metadata tail after the influence records: two vec4s
+/// per record, `(global index, selection index, compact spec index, weight)`
+/// then `(pool kind, slot, reserved, cache layer)`. The union subtraction
+/// reads a light's mask channel from the face's owners by its spec index.
 pub(crate) fn pack_forward_shadowmask_metadata(
     animated_baked_light_count: usize,
     records: &[PromotedBakedLightRecord],
     cache_layers: &[i32],
     selection_spec_light_indices: &[u32],
-    channels: &[u8],
-    shadowmask_present: bool,
     out: &mut Vec<u8>,
 ) {
     out.clear();
@@ -136,7 +98,7 @@ pub(crate) fn pack_forward_shadowmask_metadata(
         push_f32(out, 0.0);
         push_f32(out, -1.0);
         push_f32(out, -1.0);
-        push_f32(out, FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE);
+        push_f32(out, FORWARD_SHADOWMASK_RESERVED_VALUE);
         push_f32(out, cache_layer as f32);
     }
 
@@ -148,14 +110,6 @@ pub(crate) fn pack_forward_shadowmask_metadata(
             .get(selection_index)
             .copied()
             .unwrap_or(FORWARD_SHADOWMASK_INVALID_INDEX);
-        let channel = if shadowmask_present {
-            channels
-                .get(selection_index)
-                .copied()
-                .unwrap_or(SHADOWMASK_CHANNEL_DROPPED)
-        } else {
-            SHADOWMASK_CHANNEL_DROPPED
-        };
         let pool_kind = match record.pool_kind {
             PromotedShadowPoolKind::Spot => 0u32,
             PromotedShadowPoolKind::Cube => 1u32,
@@ -168,7 +122,7 @@ pub(crate) fn pack_forward_shadowmask_metadata(
 
         push_f32(out, pool_kind as f32);
         push_f32(out, record.slot as f32);
-        push_f32(out, metadata_channel_value(channel));
+        push_f32(out, FORWARD_SHADOWMASK_RESERVED_VALUE);
         push_f32(
             out,
             cache_layers.get(record_index).copied().unwrap_or(-1) as f32,
@@ -184,14 +138,6 @@ fn metadata_index_value(index: u32) -> f32 {
     }
 }
 
-pub(crate) fn metadata_channel_value(channel: u8) -> f32 {
-    if channel == SHADOWMASK_CHANNEL_DROPPED {
-        FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
-    } else {
-        channel as f32
-    }
-}
-
 fn push_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_ne_bytes());
 }
@@ -200,12 +146,8 @@ fn push_f32(out: &mut Vec<u8>, value: f32) {
 mod tests {
     use super::super::renderer_types::PromotedBakedLightSource;
     use super::*;
-    use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
     use postretro_level_loader::{FalloffModel, LightType, ShadowType};
-    use postretro_lighting::spec_buffer::{
-        SPEC_LIGHT_SHADOWMASK_NONE, SPEC_LIGHT_SIZE, pack_spec_lights,
-    };
-    use postretro_render_data::geometry::BvhTree;
+    use postretro_lighting::spec_buffer::{SPEC_LIGHT_SIZE, pack_spec_lights};
 
     fn light(is_dynamic: bool) -> MapLight {
         MapLight {
@@ -231,73 +173,20 @@ mod tests {
         f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
 
+    // Regression: frame capture used to pass a prefiltered static list with
+    // selection indices still expressed against `world.lights`. A dynamic
+    // light before a selected static light then made the metadata name the
+    // wrong spec light, so the union looked up the wrong owner.
     #[test]
-    fn dynamic_prefix_selected_static_keeps_shadowmask_alignment_through_spec_packing() {
-        // Regression: frame capture used to pass a prefiltered static list with
-        // selection indices still expressed against `world.lights`. A dynamic
-        // light before this selected static light then made both lookup and
-        // channel placement address the wrong list.
+    fn dynamic_prefix_selected_static_maps_to_its_compact_spec_record() {
         let lights = vec![light(true), light(false)];
-        let entity_shadow_lights = [1];
-        let atlas = ShadowmaskAtlasSection {
-            channels: vec![2],
-            blocks: vec![[vec![255; 16], vec![255; 16]]],
-        };
-        let bvh = BvhTree {
-            nodes: Vec::new(),
-            leaves: Vec::new(),
-            root_node_index: 0,
-        };
-        let atlas_header = atlas.index();
-        let mut geometry = LevelGeometry {
-            vertices: &[],
-            indices: &[],
-            bvh: &bvh,
-            lights: &lights,
-            light_influences: &[],
-            sh_volume: None,
-            sh_storage: LevelGeometryShStorage::Legacy,
-            lightmap: None,
-            lightmap_streaming: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            direct_sh_delta_volumes: None,
-            animated_direct_sh_delta_volumes: None,
-            billboard_direct_scatter_volume: None,
-            animated_billboard_direct_scatter_delta_volumes: None,
-            entity_shadow_lights: &entity_shadow_lights,
-            shadowmask_atlas: Some(&atlas_header),
-            sdf_atlas: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::default(),
-            cell_draw_index: None,
-            kinematic_geometry: None,
-            cells: &[],
-            texture_materials: &[],
-        };
-
-        let selection_spec_indices =
-            build_selection_spec_light_indices(&lights, &entity_shadow_lights);
+        let selection_spec_indices = build_selection_spec_light_indices(&lights, &[1]);
         assert_eq!(selection_spec_indices, vec![0]);
-
-        let channels = build_spec_light_shadowmask_channels(&geometry);
-        assert_eq!(channels, vec![2]);
-
-        let spec_bytes = pack_spec_lights(&lights, &channels);
-        assert_eq!(spec_bytes.len(), SPEC_LIGHT_SIZE);
-        assert_eq!(read_f32(&spec_bytes, 56), 2.0);
-        assert_ne!(read_f32(&spec_bytes, 56), SPEC_LIGHT_SHADOWMASK_NONE);
-
-        geometry.shadowmask_atlas = None;
-        let absent_channels = build_spec_light_shadowmask_channels(&geometry);
-        assert_eq!(absent_channels, vec![SHADOWMASK_CHANNEL_DROPPED]);
-        let absent_spec_bytes = pack_spec_lights(&lights, &absent_channels);
+        let spec_bytes = pack_spec_lights(&lights);
         assert_eq!(
-            read_f32(&absent_spec_bytes, 56),
-            SPEC_LIGHT_SHADOWMASK_NONE,
-            "absent atlas must pack the fully-lit SpecLight sentinel",
+            spec_bytes.len(),
+            SPEC_LIGHT_SIZE,
+            "the selected light is spec record 0, the index face owners use"
         );
     }
 
@@ -314,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_channel_is_uploaded_without_suppressing_promoted_record() {
+    fn promoted_record_uploads_its_spec_index_and_a_reserved_channel_lane() {
         let records = [PromotedBakedLightRecord {
             global_light_index: 7,
             pool_kind: PromotedShadowPoolKind::Spot,
@@ -324,15 +213,7 @@ mod tests {
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(
-            0,
-            &records,
-            &[6],
-            &[2],
-            &[SHADOWMASK_CHANNEL_DROPPED],
-            true,
-            &mut bytes,
-        );
+        pack_forward_shadowmask_metadata(0, &records, &[6], &[2], &mut bytes);
 
         assert_eq!(bytes.len(), FORWARD_SHADOWMASK_METADATA_BYTES_PER_RECORD);
         assert_eq!(read_f32(&bytes, 0), 7.0);
@@ -341,33 +222,8 @@ mod tests {
         assert!((read_f32(&bytes, 12) - 0.5).abs() < 1.0e-6);
         assert_eq!(read_f32(&bytes, 16), 0.0);
         assert_eq!(read_f32(&bytes, 20), 3.0);
-        assert_eq!(
-            read_f32(&bytes, 24),
-            FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
-        );
+        assert_eq!(read_f32(&bytes, 24), FORWARD_SHADOWMASK_RESERVED_VALUE);
         assert_eq!(read_f32(&bytes, 28), 6.0);
-    }
-
-    #[test]
-    fn absent_shadowmask_forces_dropped_channel_only() {
-        let records = [PromotedBakedLightRecord {
-            global_light_index: 2,
-            pool_kind: PromotedShadowPoolKind::Cube,
-            slot: 1,
-            weight: 1.0,
-            source: PromotedBakedLightSource::SelectedStatic { selection_index: 0 },
-        }];
-        let mut bytes = Vec::new();
-
-        pack_forward_shadowmask_metadata(0, &records, &[1], &[0], &[0], false, &mut bytes);
-
-        assert_eq!(read_f32(&bytes, 16), 1.0);
-        assert_eq!(read_f32(&bytes, 20), 1.0);
-        assert_eq!(
-            read_f32(&bytes, 24),
-            FORWARD_SHADOWMASK_DROPPED_CHANNEL_VALUE
-        );
-        assert_eq!(read_f32(&bytes, 28), 1.0);
     }
 
     #[test]
@@ -381,7 +237,7 @@ mod tests {
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(0, &records, &[-1], &[], &[0], true, &mut bytes);
+        pack_forward_shadowmask_metadata(0, &records, &[-1], &[], &mut bytes);
 
         assert_eq!(read_f32(&bytes, 8), FORWARD_SHADOWMASK_INVALID_INDEX_VALUE);
         assert_ne!(
@@ -394,7 +250,7 @@ mod tests {
     #[test]
     fn no_promoted_records_produces_no_metadata() {
         let mut bytes = vec![1, 2, 3];
-        pack_forward_shadowmask_metadata(0, &[], &[], &[], &[], true, &mut bytes);
+        pack_forward_shadowmask_metadata(0, &[], &[], &[], &mut bytes);
         assert!(bytes.is_empty());
     }
 
@@ -411,7 +267,7 @@ mod tests {
         }];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(4, &records, &[7], &[0], &[0], true, &mut bytes);
+        pack_forward_shadowmask_metadata(4, &records, &[7], &[0], &mut bytes);
 
         assert_eq!(
             bytes.len(),
@@ -455,7 +311,7 @@ mod tests {
         ];
         let mut bytes = Vec::new();
 
-        pack_forward_shadowmask_metadata(2, &records, &[7, 9], &[3], &[2], true, &mut bytes);
+        pack_forward_shadowmask_metadata(2, &records, &[7, 9], &[3], &mut bytes);
 
         assert_eq!(
             bytes.len(),
@@ -473,7 +329,10 @@ mod tests {
         assert_eq!(read_f32(&bytes, selected + 12), 0.5);
         assert_eq!(read_f32(&bytes, selected + 16), 1.0);
         assert_eq!(read_f32(&bytes, selected + 20), 1.0);
-        assert_eq!(read_f32(&bytes, selected + 24), 2.0);
+        assert_eq!(
+            read_f32(&bytes, selected + 24),
+            FORWARD_SHADOWMASK_RESERVED_VALUE
+        );
         assert_eq!(read_f32(&bytes, selected + 28), 9.0);
     }
 }

@@ -194,7 +194,7 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 15;
 //   96..100  sdf_shadow_flags  100..104 sdf_shadow_mode
 //   104..108 sdf_force_visibility_one  108..112 dynamic_direct_scale
 //   112..116 has_scatter mode  116..120 has_direct bit 0 + animated-tail count bits 1..31
-//   120..124 total_light_count  124..128 spec_shadowmask_force_one
+//   120..124 total_light_count  124..128 spec_shadowmask_flags
 // `sdf_shadow_flags` gates whether the forward samples the half-res SDF
 // visibility target at all:
 //   bit 0 = a baked SDF atlas is loaded, so the four RGBA channels hold valid
@@ -208,10 +208,10 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 15;
 // old `_sdf_pad1` slot (108..112) for `dynamic_direct_scale`, then a fresh
 // 16-byte row carries load-fixed `has_scatter` mode + `has_direct` bit 0 /
 // animated-tail count bits 1..31 +
-// `total_light_count`; Task 3 repurposes that row's trailing word as
-// `spec_shadowmask_force_one`.
+// `total_light_count`; that row's trailing word is `spec_shadowmask_flags`
+// (bit 0 force-one dev toggle, bit 1 load-fixed mask-present).
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
-// `DynamicDirectParams`); only forward reads `spec_shadowmask_force_one`, and
+// `DynamicDirectParams`); only forward reads `spec_shadowmask_flags`, and
 // all three shaders keep the shared 4-way byte contract (Rust writer +
 // forward.wgsl + billboard.wgsl + wireframe.wgsl).
 

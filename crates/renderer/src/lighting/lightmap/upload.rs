@@ -2,7 +2,7 @@
 // direction and all-visible shadowmask) and the adapter format checks.
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use wgpu::util::DeviceExt;
 
 /// Whether `Rgba16Float` (the uncompressed irradiance pool and animated atlas

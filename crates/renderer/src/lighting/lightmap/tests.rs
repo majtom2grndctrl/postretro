@@ -266,6 +266,89 @@ fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
     assert!(renderer_errors(&logs).is_empty(), "{logs:?}");
 }
 
+// AC 13 (P9): a mask pool the renderer refuses while the lightmap blocks stay
+// usable, all-resident or streamed, logs one `[Renderer]` error and clears the
+// mask-present bit, so the level draws no static non-SDF world specular
+// rather than reading the all-visible placeholder. Refusal never panics.
+#[test]
+fn refused_mask_pool_logs_a_renderer_error_and_clears_mask_present_in_both_modes() {
+    let fixture = fixture(&[(8, 8), (8, 8)]);
+    let mut without_groups = fixture.payloads.clone();
+    without_groups[1].shadowmask = None;
+    let logs = capture_logs(|| {
+        // Two 2048-wide groups need a 4096-wide texture.
+        for (mode, pool) in [
+            ("all-resident", plan_for(&fixture, 2048, 256)),
+            ("streamed", streaming_plan_for(&fixture, 2048, 256)),
+            (
+                "all-resident, block 1 without groups",
+                plan_static_pool(
+                    Some(&fixture.index),
+                    fixture.shadowmask.as_ref(),
+                    &without_groups,
+                    8192,
+                    256,
+                ),
+            ),
+        ] {
+            assert!(
+                pool.static_block_extents().is_some(),
+                "{mode}: the lightmap blocks stay"
+            );
+            assert!(
+                !pool.static_specular_mask_present(),
+                "{mode}: a refused mask pool clears mask-present"
+            );
+        }
+    });
+    let errors = renderer_errors(&logs);
+    assert_eq!(errors.len(), 3, "{logs:?}");
+    for error in errors {
+        assert!(error.contains("ShadowmaskAtlas rejected"), "{error}");
+        assert!(
+            error.contains("this level gets no static non-SDF world specular"),
+            "{error}"
+        );
+        assert!(!error.contains("fully lit"), "{error}");
+    }
+}
+
+// The mask-present bit follows a really bound id-42 pool: set for an
+// all-resident or streamed pool with its groups; clear without id 42 and in
+// every placeholder mode (no id 22, zero blocks, a rejected lightmap pool).
+#[test]
+fn mask_present_is_set_only_for_a_bound_mask_pool() {
+    let fixture = fixture(&[(8, 8)]);
+    assert!(plan_for(&fixture, 8192, 256).static_specular_mask_present());
+    assert!(streaming_plan_for(&fixture, 8192, 256).static_specular_mask_present());
+
+    let without = block_fixture(
+        &[(8, 8)],
+        2,
+        &super::test_fixtures::FixtureTexels {
+            shadowmask: None,
+            ..zero_texels()
+        },
+    );
+    assert!(!plan_for(&without, 8192, 256).static_specular_mask_present());
+    assert!(!streaming_plan_for(&without, 8192, 256).static_specular_mask_present());
+
+    let logs = capture_logs(|| {
+        for placeholder in [
+            StaticPool::Absent,
+            StaticPool::Empty,
+            plan_for(&fixture, 1024, 256),
+            streaming_plan_for(&fixture, 1024, 256),
+        ] {
+            assert!(
+                !placeholder.static_specular_mask_present(),
+                "{placeholder:?}"
+            );
+        }
+    });
+    assert_eq!(renderer_errors(&logs).len(), 2, "{logs:?}");
+}
+
 #[test]
 fn pool_textures_are_edge_square_layers_in_stored_formats_and_copyable() {
     let plan = blocks(plan_for(&fixture(&[(1024, 1024); 5]), 8192, 256));

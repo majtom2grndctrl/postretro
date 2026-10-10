@@ -7,7 +7,7 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_RGBA16F, LightmapBlock, LightmapBlockIndex, LightmapBlockPayload,
     LightmapMode, LightmapSection, f32_to_f16_bits,
 };
-use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, ShadowmaskBlockIndex};
+use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, ShadowmaskBlockIndex};
 
 pub(crate) struct BlockFixture {
     pub(crate) index: LightmapBlockIndex,
@@ -102,8 +102,10 @@ pub(crate) fn block_fixture(
             .collect()
     });
     let shadowmask = groups.as_ref().map(|groups| {
+        // The pool plans on id 42's presence and blocks; owners ride the
+        // vertex stream, so a face-free table serves every pool fixture.
         ShadowmaskAtlasSection {
-            channels: vec![0, 1, 2, 3],
+            owners: Vec::new(),
             blocks: groups.clone(),
         }
         .index()

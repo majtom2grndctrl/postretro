@@ -8,10 +8,10 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockPayload, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskOwnerBounds};
 use postretro_render_data::geometry::WorldVertex;
 
-use crate::prl::{LightmapMode, PrlLoadError};
+use crate::prl::{LightmapMode, MapLight, PrlLoadError};
 use crate::prl_container::PrlContainer;
 use crate::prl_loader::{section_validation, section_validation_from_error};
 
@@ -22,8 +22,8 @@ pub(crate) struct LoadedLightmap {
     pub(crate) blocks: Vec<LightmapBlockPayload>,
 }
 
-/// Id 42 as loaded: the slot table and block records the level keeps, and
-/// each block's group A then group B planes in id-22 block order.
+/// Id 42 as loaded: the per-face owner table and block records the level
+/// keeps, and each block's group A then group B planes in id-22 block order.
 pub(crate) struct LoadedShadowmask {
     pub(crate) index: ShadowmaskBlockIndex,
     pub(crate) groups: Vec<[Vec<u8>; 2]>,
@@ -115,12 +115,29 @@ pub(crate) fn lightmap_mode(lightmap: Option<&LoadedLightmap>) -> LightmapMode {
     mode
 }
 
-/// Id 42 pairs with id 22 block for block, so every fault fails the load:
-/// a malformed section, a block count that differs from id 22's, or a
+/// What id 42's owner table is validated against: id 17's face count and the
+/// static spec-light count (`!is_dynamic` AlphaLights, the `pack_spec_lights`
+/// order an owner indexes). Neither reads id 40: clearing the entity-shadow
+/// selection never touches id 42.
+pub(crate) fn shadowmask_owner_bounds(
+    face_count: usize,
+    lights: &[MapLight],
+) -> ShadowmaskOwnerBounds {
+    let static_spec_lights = lights.iter().filter(|light| !light.is_dynamic).count();
+    ShadowmaskOwnerBounds {
+        face_count: u32::try_from(face_count).unwrap_or(u32::MAX),
+        static_spec_light_count: u32::try_from(static_spec_lights).unwrap_or(u32::MAX),
+    }
+}
+
+/// Id 42 pairs with id 22 block for block and names id 17's faces, so every
+/// fault fails the load: a malformed section, a face count or owner the
+/// level contradicts, a block count that differs from id 22's, or a
 /// shadowmask with no lightmap to pair with.
 pub(crate) fn read_shadowmask_atlas(
     container: &PrlContainer,
     lightmap: Option<&LightmapBlockIndex>,
+    bounds: ShadowmaskOwnerBounds,
 ) -> Result<Option<LoadedShadowmask>, PrlLoadError> {
     let Some(data) = container.read_section(SectionId::ShadowmaskAtlas as u32)? else {
         return Ok(None);
@@ -131,7 +148,7 @@ pub(crate) fn read_shadowmask_atlas(
             "present without a Lightmap section (id 22) to pair its blocks with; recompile with `prl-build`",
         )
     })?;
-    let index = ShadowmaskBlockIndex::from_prefix(&data, data.len() as u64, lightmap)
+    let index = ShadowmaskBlockIndex::from_prefix(&data, data.len() as u64, lightmap, bounds)
         .map_err(|err| section_validation_from_error("ShadowmaskAtlas", err))?;
     let groups: Vec<[Vec<u8>; 2]> = index
         .records
@@ -139,9 +156,9 @@ pub(crate) fn read_shadowmask_atlas(
         .map(|record| [blob(&data, record.group_a), blob(&data, record.group_b)])
         .collect();
     log::info!(
-        "[PRL] ShadowmaskAtlas: {} cell block(s), {} selected channel entr(y/ies), {} payload byte(s)",
+        "[PRL] ShadowmaskAtlas: {} cell block(s), {} face owner entr(y/ies), {} payload byte(s)",
         groups.len(),
-        index.channels.len(),
+        index.owners.len(),
         groups.iter().map(|[a, b]| a.len() + b.len()).sum::<usize>(),
     );
     Ok(Some(LoadedShadowmask { index, groups }))
@@ -224,29 +241,6 @@ pub(crate) fn read_animated_light_weight_maps(
     // Both sections it depends on have decoded: check each animated block
     // against its cell block and cross-check every vertex's block id.
     crate::prl_animated_atlas::check_animated_atlas(animated_light_weight_maps, lightmap, vertices)
-}
-
-/// Drop id 42 when its channel table does not match the usable
-/// EntityShadowLights selection.
-pub(crate) fn reconcile_shadowmask_with_shadow_lights(
-    shadowmask_atlas: &mut Option<LoadedShadowmask>,
-    entity_shadow_lights: &[u32],
-) {
-    if let Some(section) = shadowmask_atlas.as_ref() {
-        if entity_shadow_lights.is_empty() {
-            log::warn!(
-                "[PRL] ShadowmaskAtlas present without usable EntityShadowLights; ignoring section"
-            );
-            *shadowmask_atlas = None;
-        } else if section.index.channels.len() != entity_shadow_lights.len() {
-            log::warn!(
-                "[PRL] ShadowmaskAtlas channel table has {} entr(y/ies), but EntityShadowLights has {}; ignoring section",
-                section.index.channels.len(),
-                entity_shadow_lights.len(),
-            );
-            *shadowmask_atlas = None;
-        }
-    }
 }
 
 /// The all-resident id-22/42 texels, which only the GPU upload reads: one

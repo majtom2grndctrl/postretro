@@ -374,7 +374,9 @@ pub(super) fn forced_active_animation_descriptor(
 
 /// Preserve capture's static-only light input while translating global PRL
 /// selection indices into the same compact static-light index space. Keep one
-/// output selection entry per input entry so shadowmask channels stay aligned.
+/// output selection entry per input entry so promoted records stay aligned.
+/// The static list keeps the `!is_dynamic` order, so id-42 face owners, which
+/// name compact static spec-light indices, still name the same lights.
 pub(super) fn capture_static_lights_and_shadow_selection(
     lights: &[postretro_level_loader::MapLight],
     influences: &[postretro_render_data::influence::LightInfluence],

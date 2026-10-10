@@ -446,6 +446,11 @@ pub struct LevelGeometryLightmapStreaming {
 
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
+    /// One owner entry per vertex: its face's id-42 owners, the forward
+    /// pass's second vertex buffer. Any length other than `vertices.len()`
+    /// (a level without id 42 hands an all-empty stream; hand-built geometry
+    /// may hand none) installs as all-empty: no static non-SDF specular.
+    pub vertex_spec_owners: &'a [postretro_level_format::shadowmask_atlas::FaceOwners],
     pub indices: &'a [u32],
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],
@@ -502,12 +507,12 @@ pub struct LevelGeometry<'a> {
     /// Selection-order list of global level-light indices eligible for runtime
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],
-    /// Optional per-selected-light baked visibility masks for promoted
-    /// static-light entity shadows onto world surfaces, one record per id-22
-    /// cell block. The index only; install hands the groups to
-    /// `install_level_geometry` inside each block's payload.
+    /// Id 42's index: per-face owners and one record per id-22 cell block.
+    /// Its presence alone plans the mask pool; owners reach the forward pass
+    /// through `vertex_spec_owners`. The index only; install hands the groups
+    /// to `install_level_geometry` inside each block's payload.
     pub shadowmask_atlas:
-        Option<&'a postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex>,
+        Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.
     /// An empty-geometry section (zero grid dims) is treated the same way.
     pub sdf_atlas: Option<&'a postretro_level_format::sdf_atlas::SdfAtlasSection>,
@@ -758,6 +763,9 @@ pub(super) struct FullRenderer {
     /// and encoder-level timestamp queries; `None` → no timing writes.
     pub(super) frame_timing: Option<FrameTiming>,
     pub(super) vertex_buffer: wgpu::Buffer,
+    /// The forward pipeline's second vertex buffer: one `Uint16x4` owner entry
+    /// per world vertex, written once at install.
+    pub(super) spec_owner_buffer: wgpu::Buffer,
     pub(super) index_buffer: wgpu::Buffer,
     pub(super) index_count: u32,
     pub(super) uniform_buffer: wgpu::Buffer,
@@ -954,7 +962,9 @@ pub(super) struct FullRenderer {
     pub(super) entity_shadow_light_influences: Vec<LightInfluence>,
     pub(super) entity_shadow_light_source_indices: Vec<usize>,
     pub(super) entity_shadow_spec_light_indices: Vec<u32>,
-    pub(super) shadowmask_channels: Vec<u8>,
+    /// Load-fixed: the level's id-42 mask pool is bound
+    /// (`LightmapResources::shadowmask_present`). Uploaded as the frame
+    /// uniforms' mask-present bit.
     pub(super) shadowmask_present: bool,
     pub(super) forward_shadowmask_metadata_scratch: Vec<u8>,
     /// Candidate set for the spot/cube shadow pools — sourced from the FULL level

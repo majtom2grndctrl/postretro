@@ -84,7 +84,7 @@ struct Case {
     sdf_indices: vec4<u32>,
     sdf_count: u32,
     owners_readable: u32,
-    spec_shadowmask_force_one: u32,
+    spec_shadowmask_flags: u32,
     sdf_force_lit: u32,
 };
 @group(0) @binding(0) var<uniform> uniforms: Case;
@@ -138,12 +138,14 @@ fn fs_main(in: HarnessVaryings) -> @location(0) vec4<f32> {
         wgsl_const_line("SPEC_OWNER_EMPTY"),
         wgsl_const_line("SPEC_OWNER_CHANNELS"),
         wgsl_const_line("SPEC_LIGHT_TYPE_DIRECTIONAL"),
+        wgsl_const_line("SPEC_SHADOWMASK_FLAG_FORCE_ONE"),
     ]
     .join("\n");
     let helpers = [
         wgsl_block(SDF_LIGHT_SELECT_WGSL, "struct SdfLightSelection {"),
         wgsl_function(FORWARD_WGSL, "world_static_specular"),
         wgsl_function(FORWARD_WGSL, "world_static_light_specular"),
+        wgsl_function(FORWARD_WGSL, "spec_shadowmask_forced_one"),
         wgsl_function(FORWARD_WGSL, "shadowmask_channel_value"),
         wgsl_function(FORWARD_WGSL, "slice_for_visibility"),
         wgsl_function(FORWARD_WGSL, "cone_attenuation_cos"),
@@ -256,6 +258,7 @@ impl Case {
             self.sdf_indices[3],
             self.sdf_count,
             u32::from(self.owners_readable),
+            // `SPEC_SHADOWMASK_FLAG_FORCE_ONE`, bit 0.
             u32::from(self.force_one),
             u32::from(self.sdf_force_lit),
         ];
@@ -791,6 +794,42 @@ fn sdf_specular_comes_only_from_the_fragment_selection() {
             "SDF visibility slice",
         );
         assert_eq!(forced[column], full[column], "SDF force-lit");
+    }
+}
+
+// AC 13: missing data — a block miss, a missing or refused mask, placeholder
+// mode — leaves owners unreadable (fs_main's `static_spec_owners_readable`).
+// That drops every owner's specular and leaves the SDF selection's exactly as
+// it was.
+#[test]
+fn unreadable_owners_drop_static_specular_and_keep_sdf_specular_unchanged() {
+    let Some(ctx) =
+        gpu_or_skip("unreadable_owners_drop_static_specular_and_keep_sdf_specular_unchanged")
+    else {
+        return;
+    };
+    let mut sdf_light = Light::point(BLUE);
+    sdf_light.sdf = true;
+    let lights = [Light::point(RED), sdf_light];
+    let face = one_face([0, EMPTY, EMPTY, EMPTY]);
+    let with_sdf = |owners_readable: bool| Case {
+        sdf_indices: [1, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        sdf_factor: [0.5, 1.0, 1.0, 1.0],
+        owners_readable,
+        ..Case::default()
+    };
+    let readable = render(&ctx, &lights, &face, with_sdf(true));
+    let unreadable = render(&ctx, &lights, &face, with_sdf(false));
+    let sdf_only = render(&ctx, &lights, &one_face(NO_OWNERS), with_sdf(true));
+    for column in 0..WIDTH as usize {
+        assert!(readable[column][0] > 0.0, "{:?}", readable[column]);
+        assert_eq!(unreadable[column][0], 0.0, "no static non-SDF specular");
+        assert_eq!(
+            unreadable[column], sdf_only[column],
+            "SDF specular is unchanged"
+        );
+        assert_eq!(unreadable[column][2], readable[column][2]);
     }
 }
 

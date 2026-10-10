@@ -54,7 +54,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
 #[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
@@ -680,12 +680,20 @@ pub struct LevelWorld {
     /// direct-SH deltas are missing/unusable.
     #[cfg(feature = "load-prl")]
     pub entity_shadow_lights: Vec<u32>,
-    /// Per-selected-light world visibility masks for entity→world static-light
-    /// shadows. `channels[i]` aligns with `entity_shadow_lights[i]`; one block
-    /// record per id-22 cell block. The BC5 groups live in
-    /// `gpu_lighting_payloads` until install.
+    /// Id 42's index: each id-17 face's up-to-four owner lights (compact static
+    /// spec-light indices; owner position = mask channel) and one block record
+    /// per id-22 cell block. The BC5 groups live in `gpu_lighting_payloads`
+    /// until install. Independent of `entity_shadow_lights`: clearing that
+    /// selection never drops id 42.
     #[cfg(feature = "load-prl")]
     pub shadowmask_atlas: Option<ShadowmaskBlockIndex>,
+    /// One owner entry per world vertex, stamped from its face's id-42 entry
+    /// through the BVH leaves' face index ranges: the forward pass's owner
+    /// vertex stream. Always `vertices.len()` long; all
+    /// `SHADOWMASK_OWNER_EMPTY` when id 42 is absent or the face ranges cannot
+    /// be recovered, so no face draws static non-SDF world specular.
+    #[cfg(feature = "load-prl")]
+    pub vertex_spec_owners: Vec<FaceOwners>,
     /// Id-22 and id-42 block payloads, held only until install moves them
     /// into the GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
     #[cfg(feature = "load-prl")]
@@ -845,6 +853,8 @@ impl LevelWorld {
             entity_shadow_lights: lighting.entity_shadow_lights,
             #[cfg(feature = "load-prl")]
             shadowmask_atlas: None,
+            #[cfg(feature = "load-prl")]
+            vertex_spec_owners: Vec::new(),
             #[cfg(feature = "load-prl")]
             gpu_lighting_payloads: GpuLightingPayloads::default(),
             #[cfg(feature = "load-prl")]
@@ -1950,6 +1960,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            vertex_spec_owners: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -2052,6 +2063,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            vertex_spec_owners: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -2108,6 +2120,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
+            vertex_spec_owners: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,
@@ -2488,14 +2501,13 @@ mod tests {
         }
     }
 
-    /// An id-42 section pairing [`lightmap_section`] of the same extents.
+    /// An id-42 section pairing [`lightmap_section`] of the same extents, with
+    /// one owner entry per face of the Geometry it loads beside.
     fn shadowmask_section(
         extents: &[(u16, u16)],
-        channels: Vec<u8>,
-    ) -> postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection {
-        use postretro_level_format::shadowmask_atlas_smb6::{
-            ShadowmaskAtlasSection, group_plane_len,
-        };
+        owners: Vec<FaceOwners>,
+    ) -> postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
+        use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
         let blocks = extents
             .iter()
             .enumerate()
@@ -2507,11 +2519,18 @@ mod tests {
                 ]
             })
             .collect();
-        ShadowmaskAtlasSection { channels, blocks }
+        ShadowmaskAtlasSection { owners, blocks }
+    }
+
+    /// [`sample_geometry`]'s two faces, owned by [`sample_alpha_lights`]'s two
+    /// static lights (spec indices 0 and 1; the dynamic spot has none).
+    fn sample_face_owners() -> Vec<FaceOwners> {
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_OWNER_EMPTY as E;
+        vec![[0, 1, E, E], [1, E, E, E]]
     }
 
     fn shadowmask_blob(
-        section: postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection,
+        section: postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
     ) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::ShadowmaskAtlas as u32,
@@ -6526,7 +6545,7 @@ mod tests {
     fn load_prl_joins_shadowmask_groups_into_each_block_payload() {
         let extents = [(4, 4), (8, 4)];
         let lightmap = lightmap_section(&extents);
-        let shadowmask = shadowmask_section(&extents, vec![0]);
+        let shadowmask = shadowmask_section(&extents, sample_face_owners());
         let direct_sh = minimal_direct_sh_volume_section();
         let direct_sh_delta = direct_delta_section_for(
             expected_affinity_dims(direct_sh.grid_dimensions, AFFINITY_FACTOR),
@@ -6568,11 +6587,59 @@ mod tests {
         }
     }
 
+    // The owner table reaches the forward pass as a per-vertex stream: each
+    // face's entry on every vertex its triangles reference, recovered through
+    // the BVH leaves because id 17 keeps no face index ranges.
+    #[test]
+    fn load_prl_stamps_each_faces_owners_onto_its_vertices() {
+        let owners = sample_face_owners();
+        let tmp = write_prl_fixture(
+            selected_light_sections_with(shadowmask_blob(shadowmask_section(
+                &[(4, 4)],
+                owners.clone(),
+            ))),
+            "postretro_test_shadowmask_vertex_owners.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap()).expect("fixture loads");
+        std::fs::remove_file(&tmp).ok();
+
+        assert_eq!(world.vertex_spec_owners.len(), world.vertices.len());
+        // `sample_geometry`: face 0 draws vertices 0..3, face 1 vertices 3..6.
+        assert_eq!(&world.vertex_spec_owners[..3], &[owners[0]; 3]);
+        assert_eq!(&world.vertex_spec_owners[3..], &[owners[1]; 3]);
+    }
+
+    // AC 13 (missing id 42): every vertex carries the empty entry, at full
+    // vertex count, so no face draws static non-SDF world specular.
+    #[test]
+    fn load_prl_without_shadowmask_gives_every_vertex_no_owners() {
+        use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+        let sections: Vec<_> = selected_light_sections_with(default_fog_volumes_blob())
+            .into_iter()
+            .take(9)
+            .collect();
+        assert!(
+            sections
+                .iter()
+                .all(|blob| blob.section_id != SectionId::ShadowmaskAtlas as u32)
+        );
+        let tmp = write_prl_fixture(sections, "postretro_test_shadowmask_absent_owners.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("id 42 is optional");
+        std::fs::remove_file(&tmp).ok();
+
+        assert!(world.shadowmask_atlas.is_none());
+        assert!(!world.vertices.is_empty());
+        assert_eq!(
+            world.vertex_spec_owners,
+            vec![NO_FACE_OWNERS; world.vertices.len()]
+        );
+    }
+
     // Id 42 pairs with id 22 block for block, so a malformed section fails the
     // load rather than degrading to fully lit.
     #[test]
     fn load_prl_rejects_malformed_shadowmask() {
-        let mut malformed = shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0]));
+        let mut malformed = shadowmask_blob(shadowmask_section(&[(4, 4)], sample_face_owners()));
         malformed
             .data
             .pop()
@@ -6592,6 +6659,49 @@ mod tests {
         );
     }
 
+    // AC 44 (loader side): the owner table is checked against the level it
+    // loads beside — id 17's face count and the static spec-light count — and
+    // the retired per-light-slot layout asks for a rebake.
+    #[test]
+    fn load_prl_rejects_owners_the_level_contradicts_and_the_retired_slot_layout() {
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_OWNER_EMPTY as E;
+        let mut smb6 = shadowmask_blob(shadowmask_section(&[(4, 4)], sample_face_owners()));
+        smb6.data[..4].copy_from_slice(b"SMB6");
+        for (label, blob, expected) in [
+            (
+                "face-count",
+                shadowmask_blob(shadowmask_section(&[(4, 4)], vec![[0, E, E, E]])),
+                "shadowmask face count 1 does not match id 17's 2",
+            ),
+            (
+                // Two static lights, so spec index 2 names no spec light: it
+                // is the dynamic spot's global index.
+                "owner-past-static-count",
+                shadowmask_blob(shadowmask_section(
+                    &[(4, 4)],
+                    vec![[0, 2, E, E], [E, E, E, E]],
+                )),
+                "owner 2 is not below the static spec-light count 2",
+            ),
+            ("smb6", smb6, "re-bake the level"),
+        ] {
+            let tmp = write_prl_fixture(
+                selected_light_sections_with(blob),
+                &format!("postretro_test_shadowmask_reject_{label}.prl"),
+            );
+            let error = load_prl(tmp.to_str().unwrap()).expect_err("the load must fail");
+            std::fs::remove_file(&tmp).ok();
+            let message = error.to_string();
+            assert!(
+                message.contains("ShadowmaskAtlas validation error"),
+                "{label}: {message}"
+            );
+            assert!(message.contains(expected), "{label}: {message}");
+        }
+    }
+
+    /// The selected-light fixture, with `shadowmask` last. Nine sections
+    /// precede it.
     fn selected_light_sections_with(
         shadowmask: prl_format::SectionBlob,
     ) -> Vec<prl_format::SectionBlob> {
@@ -6612,9 +6722,9 @@ mod tests {
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
             lightmap_blob(&[(4, 4)]),
-            shadowmask,
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
+            shadowmask,
         ]
     }
 
@@ -6640,11 +6750,11 @@ mod tests {
         }
     }
 
-    // Lifecycle: the loaded world keeps the id-42 slot table and both block
+    // Lifecycle: the loaded world keeps the id-42 owner table and both block
     // indices; the payloads leave in one take and cannot be taken twice.
     #[test]
     fn taking_gpu_lighting_payloads_leaves_indices_and_nothing_to_take_twice() {
-        let section = shadowmask_section(&[(4, 4)], vec![2]);
+        let section = shadowmask_section(&[(4, 4)], sample_face_owners());
         let tmp = write_prl_fixture(
             selected_light_sections_with(shadowmask_blob(section.clone())),
             "postretro_test_take_gpu_lighting_payloads.prl",
@@ -6665,9 +6775,9 @@ mod tests {
         let kept = world.shadowmask_atlas.as_ref().expect("id-42 index stays");
         assert_eq!(kept.records.len(), 1);
         assert_eq!(
-            kept.channels,
-            vec![2],
-            "the slot table stays for spec-light mapping"
+            kept.owners,
+            sample_face_owners(),
+            "the owner table stays with the level"
         );
         assert_eq!(world.lighting().shadowmask_atlas, Some(kept));
         assert_eq!(
@@ -6681,12 +6791,12 @@ mod tests {
     // fails the load; bytes that read as a valid tag must fail too.
     #[test]
     fn load_prl_rejects_a_pre_bc5_shadowmask_layout() {
-        use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_FORMAT_BC5_RG_BLOCKS;
+        use postretro_level_format::shadowmask_atlas::SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS;
         for (label, blob) in [
             ("raw", pre_bc5_shadowmask_blob(4, 4, 2)),
             (
                 "tag-collision",
-                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_BC5_RG_BLOCKS, 0, 2),
+                pre_bc5_shadowmask_blob(SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS, 0, 2),
             ),
         ] {
             let tmp = write_prl_fixture(
@@ -6705,25 +6815,32 @@ mod tests {
         }
     }
 
-    // Pin: all-sentinel. Every selected light dropped still ships a tagged
-    // section, which loads; every slot is the sentinel, so it reads fully lit.
+    // A section whose faces all have no owner is valid: it still carries the
+    // block planes, and every vertex reads the empty entry.
     #[test]
-    fn load_prl_keeps_an_all_sentinel_shadowmask_section() {
-        use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_CHANNEL_DROPPED;
-        let section = shadowmask_section(&[(4, 4)], vec![SHADOWMASK_CHANNEL_DROPPED]);
+    fn load_prl_keeps_a_shadowmask_section_whose_faces_have_no_owners() {
+        use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+        let section = shadowmask_section(&[(4, 4)], vec![NO_FACE_OWNERS; 2]);
         let tmp = write_prl_fixture(
             selected_light_sections_with(shadowmask_blob(section.clone())),
-            "postretro_test_all_sentinel_shadowmask.prl",
+            "postretro_test_ownerless_shadowmask.prl",
         );
-        let world = load_prl(tmp.to_str().unwrap()).expect("all-sentinel id 42 must load");
+        let world = load_prl(tmp.to_str().unwrap()).expect("an ownerless id 42 must load");
         std::fs::remove_file(&tmp).ok();
         assert_eq!(world.shadowmask_atlas, Some(section.index()));
         assert_eq!(
             world.gpu_lighting_payloads.blocks[0].shadowmask,
             Some(section.blocks[0].clone())
         );
+        assert_eq!(
+            world.vertex_spec_owners,
+            vec![NO_FACE_OWNERS; world.vertices.len()]
+        );
     }
 
+    // P10: id 41 disagreeing with id 34 clears the promotion set (ids 40 and
+    // 41), but id 42 belongs to static specular, not promotion: it stays,
+    // owners unchanged.
     #[test]
     fn load_prl_clears_direct_selection_set_when_id41_validity_disagrees_with_id34() {
         let direct_sh = minimal_direct_sh_volume_section();
@@ -6732,10 +6849,11 @@ mod tests {
             vec![0],
         );
         // The section validates its own compact length, but id 34 marks the
-        // fixture probe valid. This must clear 40 + 41 + 42 before renderer
+        // fixture probe valid. This must clear ids 40 and 41 before renderer
         // buffer construction rather than letting the mask misalign later CSR entries.
         direct_sh_delta.valid_probe_masks[0] = 0;
         direct_sh_delta.delta_subblocks.clear();
+        let shadowmask = shadowmask_section(&[(4, 4)], sample_face_owners());
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6748,7 +6866,7 @@ mod tests {
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
             lightmap_blob(&[(4, 4)]),
-            shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0])),
+            shadowmask_blob(shadowmask.clone()),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
@@ -6759,20 +6877,51 @@ mod tests {
         );
         let world = load_prl(tmp.to_str().unwrap())
             .expect("an id-41/id-34 validity mismatch should degrade only promotion");
+        std::fs::remove_file(&tmp).ok();
 
         assert!(world.entity_shadow_lights.is_empty());
         assert!(world.direct_sh_delta_volumes.is_none());
-        assert!(world.shadowmask_atlas.is_none());
-        assert!(
-            world
-                .gpu_lighting_payloads
-                .blocks
-                .iter()
-                .all(|block| block.shadowmask.is_none()),
-            "a dropped id 42 leaves no groups in the payloads"
+        assert_eq!(world.shadowmask_atlas, Some(shadowmask.index()));
+        assert_eq!(
+            world.gpu_lighting_payloads.blocks[0].shadowmask,
+            Some(shadowmask.blocks[0].clone()),
+            "id 42's groups still wait for the GPU upload"
         );
+    }
 
+    // AC 46 (P10): a level whose id 40 is cleared at load because id 41 is
+    // missing keeps id 42 whole. Formerly promoted owners keep their owner
+    // entries, so they keep shadowed specular; with id 40 empty they have no
+    // promoted record, so they subtract nothing.
+    #[test]
+    fn load_prl_keeps_shadowmask_owners_when_missing_direct_deltas_clear_the_selection() {
+        let shadowmask = shadowmask_section(&[(4, 4)], sample_face_owners());
+        let sections: Vec<_> = selected_light_sections_with(shadowmask_blob(shadowmask.clone()))
+            .into_iter()
+            .filter(|blob| blob.section_id != SectionId::DirectShDeltaVolumes as u32)
+            .collect();
+        let tmp = write_prl_fixture(sections, "postretro_test_shadowmask_without_id41.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("missing id 41 degrades promotion only");
         std::fs::remove_file(&tmp).ok();
+
+        assert!(
+            world.entity_shadow_lights.is_empty(),
+            "no id 41 clears id 40"
+        );
+        assert!(world.direct_sh_delta_volumes.is_none());
+        let kept = world
+            .shadowmask_atlas
+            .as_ref()
+            .expect("clearing id 40 never drops id 42");
+        assert_eq!(kept, &shadowmask.index(), "owners and records unchanged");
+        assert_eq!(kept.owners, sample_face_owners());
+        let owners = sample_face_owners();
+        assert_eq!(&world.vertex_spec_owners[..3], &[owners[0]; 3]);
+        assert_eq!(&world.vertex_spec_owners[3..], &[owners[1]; 3]);
+        assert_eq!(
+            world.gpu_lighting_payloads.blocks[0].shadowmask,
+            Some(shadowmask.blocks[0].clone())
+        );
     }
 
     // Id 42 has no frame without id 22's blocks, so the pair is malformed.
@@ -6794,7 +6943,7 @@ mod tests {
             direct_sh_volume_blob(direct_sh),
             entity_shadow_lights_blob(vec![0]),
             direct_sh_delta_blob(direct_sh_delta),
-            shadowmask_blob(shadowmask_section(&[(4, 4)], vec![0])),
+            shadowmask_blob(shadowmask_section(&[(4, 4)], sample_face_owners())),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];

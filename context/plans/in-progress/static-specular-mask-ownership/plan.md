@@ -160,6 +160,35 @@ packing, and runtime.
   - a fill test whose fixed owners leave the missed light out, which then takes no channel and
     is warned once, by its parent, with its de-duplicated count.
 
+- **Runtime as built (worker, integrated by the executor).**
+  - `build_selection_spec_light_indices` stays: the union needs the metadata's compact spec
+    index to find a promoted light among the owners. Only the channel table and the metadata
+    channel field retire; `meta1.z` is a reserved −1.0, and the record stride is unchanged.
+  - The frame uniforms have no padding (all 128 bytes are used). The trailing
+    `spec_shadowmask_force_one` word became a flags word: bit 0 force-one, bit 1 mask present.
+    Its WGSL name is `spec_shadowmask_flags`.
+  - An SDF directional light (`light_sun` with `_shadow_type sdf`) is valid authoring.
+    - Its SDF diffuse keeps today's cone factor through `positional_cone_aim`, so its diffuse
+      output is byte-identical.
+    - Its SDF specular now follows its aim. That is new behavior, in line with the directional
+      Decision.
+  - World specular skips the two mask samples on a face with no owner, or when owners are
+    unreadable. `sample_shadowmask_atlas` uses `textureSampleLevel`, so the branch is
+    uniformity-safe.
+  - `pool_sample_test.rs` called the retired select. It now tests the owners-readable gate
+    against the real pool.
+  - Two `capture_shadowmask_groups.rs` tests cannot be expressed in SMB7, because owners must
+    ascend. They were removed for task 10 to rewrite. The no-shadowmask capture now expects
+    no static specular.
+  - Two P10 tests flipped: id 42 is kept when ids 40/41 clear.
+  - The compiler now refuses to write id 42 when a Geometry face has no triangle, with a named
+    error (`pack_refuses_shadowmask_owners_when_a_face_has_no_triangle`). That closes the
+    loader's one-leaf-per-face seam.
+  - The legacy `shadowmask_atlas_smb6` module is deleted.
+  - `cargo clippy -p postretro --features capture,dev-tools` has 4 errors, in capture files this
+    branch does not touch (`prepared.rs`, `report.rs`, `scene.rs`). They are not introduced
+    here.
+
 ## Delegated answers
 
 - **Lit-texel floor: 16 interior texels.** The census cleared every stress-map overflow
@@ -293,8 +322,8 @@ Each task commits with its plan update.
 | 5 | In-walk ownership for uncut faces. Per-layer texel → face map. Per-face shadowed sums with an `is_finite` gate. Floor tier, then id-40 tier, then contribution, then index. Eviction zeros the padded rect; an owner's first write zeros unwritten texels. Before encode, sort owners ascending and permute the channel planes. Drop report and `--verbose` peak from `finish()`. Retire the graph and assignment (AC 20–32, 34–37, 14, 24) | integrating executor | 4 | done for uncut faces. `ownership.rs` (`Candidate::rank_cmp`, `FaceChannels`, `OwnerReport`) and `fill.rs` (`OwnershipFill`). The analytic graph, assignment, standalone reference and section modules are deleted, and the compiler no longer imports SMB6. 22 unit tests in `shadowmask_bake::tests` plus stage tests `occluded_lights_and_suns_own_only_the_faces_they_reach`, `the_drop_report_names_light_and_face_and_repeats_on_a_warm_memo_hit` and `fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes`. Compiler: lib 186, bin 1441, integration 8 pass. Cut faces still rank per sub-face until task 6 |
 | 6 | Cut-face estimate. Plumb `FaceCut` and `face_remap` to the walk. Sample emitted sub-chart interiors on the floor stride with deduplication. Trace only lights whose analytic term reaches. Rank and fix owners before the walk; clear zero-bake owners after it. Exact parent lit-texel count. Report a cut face once, by parent (AC 3–9, 33, 42) | integrating executor | 5 | done: `shadowmask_bake/estimate.rs`, plus cut support in `fill.rs`. Unit tests: `a_light_the_estimate_missed_takes_no_channel_and_is_reported_once_by_its_parent`, `an_estimated_owner_that_bakes_nothing_is_cleared_after_the_walk`, `a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other`, `estimate_parameters_carry_stride_mode_and_cut_map`. Stage tests, on a 24 m floor cut 2×2 across four bake layers: `cut_sub_faces_share_one_owner_set_ranked_over_the_whole_face`, `cut_face_owners_are_identical_across_workers_windows_and_cache_paths`, `cut_face_admission_needs_a_lit_interior_texel`, `a_small_promoted_light_on_a_cut_face_never_displaces_an_above_floor_light`, `the_estimate_traces_only_cut_faces_and_lights_that_reach_them`. Compiler: bin 1450, lib 186, integration 8 |
 | 7 | Cache. The id-42 memo key covers every eligible light's layer hashes, compact spec indices, id-40 membership, floor, estimate density and mode, and the cut map; bump the stage version. The memo stores the drop report and peak demand. The reuse path reads every eligible partition. Trace and fill counters (AC 23, 38–41, 43) | integrating executor | 6 | partly done with 5: the key covers eligible spec indices, id-40 membership, layer hashes, face count and floor (stage version 7). The entry carries the drop report, and the reuse path reads every eligible partition (AC 23, 38, 39, 40 proven). The estimate's parameters and cut map joined the key in task 6. AC 41: a memo hit logs no estimate. AC 42: no cut face means no estimate; only reaching lights are traced. AC 43: params carry stride, mode and cut map, and the key changes with them. Done |
-| 8 | Runtime load and delivery. Parse and validate id 42 against the static spec count and the id-17 face count. Retire the id-40 reconcile. Rebuild face ranges from BVH leaves and build the owner stream into `LevelGeometry`, with the mask-present bit (AC 13, 44, 46) | worker in own worktree, after 3 lands; integrated by executor | 1, 3 | |
-| 9 | Renderer and shader. Second vertex buffer at both build sites (dummy when absent) and `@location(9)` flat owners. The owner function replaces the chunk-list specular; union subtraction by ownership. Retire `cone_cos.z`, the channel tables and the metadata channel field. Directional `L = −aim`. Mask-present gate (AC 1, 2, 10–19, 49) | same worker as 8; integrated by executor | 1, 8 | |
+| 8 | Runtime load and delivery. Parse and validate id 42 against the static spec count and the id-17 face count. Retire the id-40 reconcile. Rebuild face ranges from BVH leaves and build the owner stream into `LevelGeometry`, with the mask-present bit (AC 13, 44, 46) | worker in own worktree, after 3 lands; integrated by executor | 1, 3 | done: `level-loader/src/prl_spec_owners.rs` with its tests. Bounds-checked SMB7 read in both load modes; the reconcile is retired. Tests: `load_prl_rejects_owners_the_level_contradicts_and_the_retired_slot_layout`, `a_bogus_face_count_is_rejected_without_reading_the_owner_table`, `load_prl_keeps_shadowmask_owners_when_missing_direct_deltas_clear_the_selection`, `load_prl_without_shadowmask_gives_every_vertex_no_owners`, `load_prl_stamps_each_faces_owners_onto_its_vertices` |
+| 9 | Renderer and shader. Second vertex buffer at both build sites (dummy when absent) and `@location(9)` flat owners. The owner function replaces the chunk-list specular; union subtraction by ownership. Retire `cone_cos.z`, the channel tables and the metadata channel field. Directional `L = −aim`. Mask-present gate (AC 1, 2, 10–19, 49) | same worker as 8; integrated by executor | 1, 8 | done. GPU harnesses run with `POSTRETRO_REQUIRE_GPU=1` on the 1660: `world_specular_test` (7), `shadowmask_union_test` (pre-change union copy; non-owner subtracts nothing; no mask), `shadowmask_sample_test`, `pool_sample_test`. Plan tests cover refusal in both modes. The binding-inventory snapshot is unedited. Suites: renderer 878, loader 288, lighting 65, render-cpu 320, level-format 592, postretro 1569; workspace check, `capture,dev-tools` check and workspace clippy are clean |
 | 10 | Engine-level proofs: rewrite `capture_shadowmask_groups` for owner swap, the streaming capture identity (AC 15, 16), and end-to-end compile-and-render fixtures for AC 1 and 17 | integrating executor | 7, 9 | |
 | 11 | Manual captures and measurements M1–M8 before and after. Build the pre-change binary from 75ac7e12f in a throwaway target and compile both PRL sets. M8 runs interleaved in one session | integrating executor + owner | 10 | |
 | 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |

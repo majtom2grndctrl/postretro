@@ -72,6 +72,8 @@ mod sdf_light_select_test;
 #[cfg(test)]
 mod shadowmask_sample_test;
 #[cfg(test)]
+mod shadowmask_union_test;
+#[cfg(test)]
 mod world_specular_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
@@ -218,8 +220,8 @@ pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use renderer_geometry::level_world_to_geometry;
 pub(crate) use renderer_geometry::{
-    build_default_view_projection, build_line_indices_from_triangles, bytemuck_cast_slice_u32,
-    cast_world_vertices_to_bytes,
+    SPEC_OWNER_STRIDE, build_default_view_projection, build_line_indices_from_triangles,
+    bytemuck_cast_slice_u32, cast_spec_owners_to_bytes, cast_world_vertices_to_bytes,
 };
 /// Time the baked-light promotion ramp takes to reach full runtime shadow
 /// contribution. The game-side light bridge uses the same duration as its

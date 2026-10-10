@@ -457,7 +457,7 @@ fn skinned_shader_projects_and_shades_the_same_world_position() {
 }
 
 #[test]
-fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() {
+fn forward_shader_shadowmask_union_uses_promoted_count_safe_metadata_tail_and_owner_channels() {
     let src = include_str!("../../shaders/forward.wgsl");
     let start = src
         .find("fn shadowmask_union_subtraction(")
@@ -495,54 +495,45 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         "promoted metadata lives in a float storage tail and must be read as numeric f32 values, not raw u32 bit patterns"
     );
     assert!(
-        src.contains("const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;")
-            && src.contains("const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;"),
+        src.contains("const SHADOWMASK_INVALID_INDEX_VALUE: f32 = -1.0;"),
         "shadowmask metadata sentinels must be normal numeric floats"
     );
-    // The channel guard and cast live in one named function the GPU harness
-    // (`shadowmask_sample_test.rs`) runs, so the union's real select is proven.
-    let channel_fn = wgsl_function(src, "shadowmask_union_channel");
+    // A promoted light's channel is its position among the face's owners,
+    // found by the named helper the GPU harnesses (`shadowmask_sample_test`,
+    // `shadowmask_union_test`) run. The metadata's map-wide slot is retired.
+    let owner_fn = wgsl_function(src, "shadowmask_owner_channel");
     assert!(
-        channel_fn.contains("channel_value >= SHADOWMASK_CHANNEL_DROPPED"),
-        "dropped channels must use the float-safe 4.0 sentinel and skip the union term before u32 casts"
+        owner_fn.contains("if owner == SPEC_OWNER_EMPTY {\n            break;")
+            && owner_fn.contains("if owner == spec_idx {\n            return s;")
+            && owner_fn.contains("return SPEC_OWNER_CHANNELS;"),
+        "the owner search must stop at the first empty and report not-found past the channels"
     );
-    let channel_cast = channel_fn
-        .find("return u32(channel_value);")
-        .expect("the channel helper must cast the checked numeric channel");
-    for guard in [
-        "channel_value < 0.0",
-        "channel_value >= SHADOWMASK_CHANNEL_DROPPED",
-        "floor(channel_value) != channel_value",
-        "return SHADOWMASK_UNION_CHANNEL_NONE;",
-    ] {
-        let guard_at = channel_fn
-            .find(guard)
-            .unwrap_or_else(|| panic!("the channel helper must check `{guard}`"));
-        assert!(
-            guard_at < channel_cast,
-            "channel metadata must be sentinel/range/integer-guarded (`{guard}`) before casting to u32"
-        );
-    }
     assert!(
-        src.contains("const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;"),
-        "the skip sentinel must lie outside the four mask slots"
+        !helper.contains("meta1.z"),
+        "the union must not read a map-wide mask slot from its metadata"
+    );
+    let mask_gate = helper
+        .find("if !static_spec_mask_present() {\n        return out;")
+        .expect("the union must subtract nothing without a bound mask");
+    let mask_sample = helper
+        .find("let mask = sample_shadowmask_atlas(")
+        .expect("the union samples the hoisted mask");
+    assert!(
+        mask_gate < mask_sample,
+        "the mask-present gate precedes the sample"
     );
     let channel_resolve = helper
-        .find("let channel = shadowmask_union_channel(meta1.z);")
-        .expect("the union must resolve its channel through the named helper");
+        .find("let channel = shadowmask_owner_channel(owners, spec_idx);")
+        .expect("the union must find its channel among the face's owners");
     let channel_skip = helper
-        .find("channel == SHADOWMASK_UNION_CHANNEL_NONE {\n            continue;")
-        .expect("the union must skip a light whose channel is NONE");
+        .find("if channel == SPEC_OWNER_CHANNELS {\n            continue;")
+        .expect("the union must skip a light that does not own the face");
     let channel_select = helper
         .find("let baked_vis = shadowmask_channel_value(mask, channel);")
         .expect("the union must select the resolved channel from the hoisted mask");
     assert!(
         channel_resolve < channel_skip && channel_skip < channel_select,
-        "the union must skip a NONE channel before selecting its mask"
-    );
-    assert!(
-        !helper.contains("u32(channel_value)") && !helper.contains("u32(meta1.z)"),
-        "the union must not cast its channel outside the guarded helper"
+        "the union must skip a non-owner before selecting its mask"
     );
     let spec_guard = helper
         .find("spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE")
@@ -551,13 +542,12 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         .find("let spec_idx = u32(spec_idx_value);")
         .expect("shader must consume the CPU-uploaded compact spec_lights index");
     assert!(
-        spec_guard < spec_cast,
-        "spec index metadata must be bounds-guarded before casting to u32"
+        spec_guard < spec_cast && spec_cast < channel_resolve,
+        "spec index metadata must be bounds-guarded before casting to u32, and cast before the owner search"
     );
     assert!(
         helper.contains("floor(spec_idx_value) != spec_idx_value")
-            && helper.contains("floor(slot_value) != slot_value")
-            && channel_fn.contains("floor(channel_value) != channel_value"),
+            && helper.contains("floor(slot_value) != slot_value"),
         "metadata values must be integer-valued floats before u32 casts"
     );
     assert!(
@@ -620,7 +610,7 @@ fn forward_shader_static_reconstruction_uses_packed_falloff_models() {
     assert_eq!(
         src.matches(packed_falloff).count(),
         3,
-        "shadowmask direct plus both fs_main static-light loops must reconstruct falloff from SpecLight.cone_cos.w"
+        "shadowmask direct, world static specular and the fs_main SDF diffuse loop must reconstruct falloff from SpecLight.cone_cos.w"
     );
     assert!(
         !src.contains("max(1.0 - dist / max(range, 0.001), 0.0)"),
@@ -822,10 +812,55 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         2,
         "the union helper has its definition and exactly one fs_main call",
     );
+    // Missing data reads no owner mask: owners read their channels only from
+    // a bound mask at a resident block, never from the all-visible placeholder.
+    let readable = wgsl_function(src, "static_spec_owners_readable");
     assert!(
-        src.contains("spec_channel >= SHADOWMASK_CHANNEL_DROPPED") && src.contains("return 1.0;"),
-        "absent/dropped atlas channels must retain the fully-lit sentinel path",
+        readable.contains(
+            "static_spec_mask_present() && !lightmap_block_missing(lightmap_layer_flags)"
+        ),
+        "owners need the mask-present bit and a resident block",
     );
+    assert!(
+        src.contains("let owners_readable = static_spec_owners_readable(in.lightmap_layer_flags);"),
+        "fs_main must gate world static specular owners on the readable test",
+    );
+}
+
+// World static specular is the face's owners plus the SDF selection, never
+// the chunk light list (which stays bound for SDF selection and billboards).
+// The owners ride a second vertex buffer at location 6 into a flat varying at
+// location 9, so every fragment of a face reads that face's whole entry.
+#[test]
+fn forward_world_specular_reads_face_owners_not_the_chunk_list() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let code = strip_line_comments(src);
+    assert!(
+        code.contains("@location(6) spec_owners: vec4<u32>,")
+            && code.contains("@location(9) @interpolate(flat) spec_owners: vec4<u32>,")
+            && code.contains("out.spec_owners = in.spec_owners;"),
+        "the owner stream must reach the fragment whole, as a flat varying",
+    );
+    let fs = &code[code.find("fn fs_main(").expect("fs_main")..];
+    assert!(
+        !fs.contains("chunk_indices") && !fs.contains("chunk_offsets"),
+        "fs_main must not walk the chunk light list for world specular",
+    );
+    assert_eq!(fs.matches("world_static_specular(").count(), 1);
+    assert!(
+        fs.contains("in.spec_owners,\n            specular_shadowmask,\n            owners_readable,\n            sdf_sel,\n            sdf_factor,"),
+        "world static specular takes the face's owners and the shared SDF selection",
+    );
+    for retired in [
+        "fn shadowmask_visibility_for_spec_light(",
+        "fn shadowmask_union_channel(",
+        "fn sdf_visibility_for_light(",
+        "SHADOWMASK_CHANNEL_DROPPED",
+        "SHADOWMASK_UNION_CHANNEL_NONE",
+        "cone_cos.z",
+    ] {
+        assert!(!code.contains(retired), "`{retired}` must be retired");
+    }
 }
 
 #[test]
@@ -1114,13 +1149,12 @@ fn forward_shader_composes_sdf_light_selection_and_reads_slices() {
 
 /// Pins Task 5's headline contract (invariant 9): an `sdf`-typed light's
 /// SPECULAR term reads the SAME per-light visibility slice as its diffuse.
-/// The specular loop walks the chunk list in chunk order, so it resolves the
-/// slice through `sdf_visibility_for_light`, which finds the light's slot in
-/// the shared `sdf_sel` selection and maps it via `slice_for_visibility` —
-/// the same selection and slot→channel mapping the diffuse loop uses, so the
-/// two terms read the same slice by construction. Full naga validation plus
-/// structural assertions that the resolver exists, is composed, and is
-/// actually applied to the specular contribution in `fs_main`.
+/// World static specular's SDF half walks the fragment's `sdf_sel` selection
+/// in slot order and reads slot `s` through `slice_for_visibility`, the same
+/// selection and slot→channel mapping the diffuse loop uses, so the two terms
+/// read the same slice by construction. An SDF light outside the selection
+/// adds no specular. Full naga validation plus structural assertions that the
+/// SDF half exists and `fs_main` hands it the shared selection.
 #[test]
 fn forward_shader_specular_reads_sdf_visibility_slice() {
     let src = SHADER_SOURCE;
@@ -1133,26 +1167,24 @@ fn forward_shader_specular_reads_sdf_visibility_slice() {
     .validate(&module)
     .expect("forward + sdf_light_select composed source should validate");
 
-    // The specular slice resolver must exist as a function.
-    let has_resolver = module
-        .functions
-        .iter()
-        .any(|(_h, f)| f.name.as_deref() == Some("sdf_visibility_for_light"));
+    let specular = wgsl_function(src, "world_static_specular");
     assert!(
-        has_resolver,
-        "forward must declare `sdf_visibility_for_light` (specular reads the per-light slice)",
+        specular.contains("for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {")
+            && specular.contains(
+                "let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);"
+            )
+            && specular.contains("spec_lights[sdf_sel.indices[s]],"),
+        "the SDF half must walk the selection and read slot s's slice",
     );
 
     let fs = src
         .find("fn fs_main(")
         .expect("forward.wgsl must declare fs_main");
     let fs_tail = &src[fs..];
-
-    // The specular loop must drive the resolver — else specular is unshadowed
-    // for sdf lights and Task 5's headline contract is unmet.
     assert!(
-        fs_tail.contains("sdf_visibility_for_light("),
-        "fs_main must call sdf_visibility_for_light so sdf specular reads its visibility slice",
+        fs_tail
+            .contains("sdf_sel,\n            sdf_factor,\n            sdf_force_lit,\n        );"),
+        "fs_main must hand world static specular the shared selection, factor and force-lit toggle",
     );
 
     // Diffuse and specular must read off the SAME selection: one shared
@@ -1165,18 +1197,6 @@ fn forward_shader_specular_reads_sdf_visibility_slice() {
         forward_only.matches("select_sdf_lights(").count(),
         1,
         "forward.wgsl must call select_sdf_lights exactly once (diffuse + specular share one selection)",
-    );
-    assert!(
-        fs_tail.contains("sdf_visibility_for_light(sdf_sel,"),
-        "specular must resolve visibility through the shared `sdf_sel` selection",
-    );
-
-    // The specular contribution must actually be multiplied by the resolved
-    // visibility (gated through the sdf tag), proving the slice reaches the
-    // blinn-phong term and is not dead.
-    assert!(
-        fs_tail.contains("sdf_select_is_sdf("),
-        "specular must gate visibility on the sdf tag via sdf_select_is_sdf",
     );
 }
 

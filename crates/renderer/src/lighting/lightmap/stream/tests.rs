@@ -221,6 +221,7 @@ fn assert_samples_own_texels(ctx: &GpuCtx, state: &LightmapStreamState, fixture:
         direction: textures.direction.clone(),
         shadowmask: textures.shadowmask.clone().expect("fixtures keep id 42"),
         table,
+        mask_present: true,
     };
     let mut probes = Vec::new();
     let mut expected = Vec::new();

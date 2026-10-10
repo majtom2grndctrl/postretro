@@ -14,7 +14,7 @@ use postretro_level_format::lightmap::{
     LIGHTMAP_BLOCK_RECORD_BYTES, LIGHTMAP_HEADER_BYTES, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock,
     LightmapMode, LightmapSection,
 };
-use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, group_plane_len};
+use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
 use postretro_test_log_capture::LogCapture;
 
 /// Id-22 cell blocks at these extents (multiples of 4), one per cell, with
@@ -41,10 +41,11 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
     }
 }
 
-/// Id-42 groups pairing [`lightmap_section`] of the same extents.
+/// Id-42 groups pairing [`lightmap_section`] of the same extents, with an
+/// empty owner table for these fixtures' face-free Geometry.
 fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
     ShadowmaskAtlasSection {
-        channels: vec![0],
+        owners: Vec::new(),
         blocks: extents
             .iter()
             .enumerate()
@@ -94,10 +95,10 @@ fn lightmap_record_at(block: usize, field: usize) -> usize {
     LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES + field
 }
 
-/// Byte offset of `field` within id-42 block record 0 of a one-channel
-/// [`shadowmask_section`]: tag, count, one slot padded to 4, block count.
+/// Byte offset of `field` within id-42 block record 0 of a face-free
+/// [`shadowmask_section`]: tag, face count, block count.
 fn shadowmask_record_at(field: usize) -> usize {
-    8 + 4 + 4 + field
+    8 + 4 + field
 }
 
 fn load_error_with_geometry(

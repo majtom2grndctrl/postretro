@@ -1764,10 +1764,31 @@ mod tests {
         direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
         shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
     ) {
+        try_pack_with_geometry(
+            output,
+            &sample_geo_result(),
+            lightmap,
+            direct_sh_volume,
+            entity_shadow_lights,
+            direct_sh_delta_volumes,
+            shadowmask_atlas,
+        )
+        .expect("pack should succeed");
+    }
+
+    fn try_pack_with_geometry(
+        output: &Path,
+        geo_result: &GeometryResult,
+        lightmap: &LightmapSection,
+        direct_sh_volume: Option<&DirectShVolumeSection>,
+        entity_shadow_lights: Option<&EntityShadowLightsSection>,
+        direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    ) -> anyhow::Result<()> {
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         pack_and_write_portals(
             output,
-            &sample_geo_result(),
+            geo_result,
             &texture_cache_keys,
             &sample_leaves(),
             &sample_tree(),
@@ -1803,7 +1824,27 @@ mod tests {
             None,
             None,
         )
-        .expect("pack should succeed");
+    }
+
+    // The runtime reaches a face's vertices through its one BVH leaf, so a
+    // level with id 42 refuses a face with no triangle.
+    #[test]
+    fn pack_refuses_shadowmask_owners_when_a_face_has_no_triangle() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut geo = sample_geo_result();
+        geo.face_index_ranges[0].index_count = 0;
+        let error = try_pack_with_geometry(
+            &dir.join("test_pack_shadowmask_empty_face.prl"),
+            &geo,
+            &lightmap_with_blocks(&[(4, 4)]),
+            None,
+            None,
+            None,
+            Some(&minimal_shadowmask_atlas()),
+        )
+        .expect_err("a face with no triangle must refuse id 42");
+        assert!(error.to_string().contains("but face 0 has none"), "{error}");
     }
 
     #[test]

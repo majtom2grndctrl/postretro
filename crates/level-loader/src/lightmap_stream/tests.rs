@@ -10,7 +10,9 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES, LightmapBlock,
     LightmapBlockPayload, LightmapMode, LightmapSection,
 };
-use postretro_level_format::shadowmask_atlas_smb6::{ShadowmaskAtlasSection, group_plane_len};
+use postretro_level_format::shadowmask_atlas::{
+    ShadowmaskAtlasSection, ShadowmaskOwnerBounds, group_plane_len,
+};
 use postretro_level_format::{SectionBlob, SectionId};
 use postretro_test_log_capture::LogCapture;
 
@@ -26,6 +28,11 @@ const LIGHTMAP: u32 = SectionId::Lightmap as u32;
 const SHADOWMASK: u32 = SectionId::ShadowmaskAtlas as u32;
 /// Cells in both the portal and the portal-free load fixtures.
 const FIXTURE_CELLS: usize = 2;
+/// Both load fixtures carry no faces and no lights.
+const FACE_FREE_BOUNDS: ShadowmaskOwnerBounds = ShadowmaskOwnerBounds {
+    face_count: 0,
+    static_spec_light_count: 0,
+};
 
 // ---- Fixtures ----
 
@@ -52,9 +59,11 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
     }
 }
 
+/// Groups at these extents, with an empty owner table for the fixtures'
+/// face-free Geometry.
 fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
     ShadowmaskAtlasSection {
-        channels: vec![0],
+        owners: Vec::new(),
         blocks: extents
             .iter()
             .enumerate()
@@ -123,8 +132,7 @@ impl Fixture {
     }
 
     /// Ids 22/42 through the production load reads and storage, bypassing
-    /// the rest of the loader, so id 42 survives without the EntityShadowLights
-    /// selection the full load reconciles it against.
+    /// the rest of the loader.
     fn manifest(&self) -> Arc<LightmapStreamManifest> {
         let (file, meta) = read_container_positionally(self.0.to_str().unwrap()).unwrap();
         let container = PrlContainer::from_positional(file, meta, false);
@@ -132,7 +140,7 @@ impl Fixture {
             read_lightmap_for_residency(&container, stream_inputs(), FIXTURE_CELLS).unwrap();
         let lightmap = lightmap.expect("fixture carries id 22").index;
         let shadowmask = read
-            .read_shadowmask(&container, Some(&lightmap))
+            .read_shadowmask(&container, Some(&lightmap), FACE_FREE_BOUNDS)
             .unwrap()
             .map(|loaded| loaded.index);
         match read
@@ -738,7 +746,7 @@ fn both_load_modes_reject_a_cell_whose_blocks_interleave_with_another_cells() {
 
 #[test]
 fn both_load_modes_name_a_shadowmask_with_fewer_blocks_than_the_lightmap() {
-    // Id 42 sized for one block against id 22's two fails the slot-table
+    // Id 42 sized for one block against id 22's two fails the owner-table
     // bound sized from id 22; the error still names the count.
     let lightmap = lightmap_section(&[(8, 4), (4, 4)]);
     let shadowmask = shadowmask_section(&[(8, 4)]);
@@ -756,25 +764,25 @@ fn both_load_modes_name_a_shadowmask_with_fewer_blocks_than_the_lightmap() {
 }
 
 #[test]
-fn a_bogus_selected_light_count_is_rejected_without_reading_the_slot_table() {
+fn a_bogus_face_count_is_rejected_without_reading_the_owner_table() {
     let extents = [(8, 4), (4, 4)];
     let lightmap = lightmap_section(&extents);
     let mut shadowmask = shadowmask_section(&extents).to_bytes();
-    // Fits the section whole, so a bare section-length bound would fetch
-    // nearly all of id 42 before rejecting it.
-    let bogus = (shadowmask.len() - 16) as u32;
+    // An owner table that fits the section whole, so a bare section-length
+    // bound would fetch nearly all of id 42 before rejecting it.
+    let bogus = ((shadowmask.len() - 16) / 8) as u32;
     shadowmask[4..8].copy_from_slice(&bogus.to_le_bytes());
     let mut blobs = lighting_blobs(&lightmap, None, true);
     blobs.push(blob(SectionId::ShadowmaskAtlas, shadowmask));
-    let fixture = Fixture::with_portals("postretro_test_lm_stream_bogus_selected.prl", blobs);
+    let fixture = Fixture::with_portals("postretro_test_lm_stream_bogus_face_count.prl", blobs);
 
     let (file, meta) = read_container_positionally(fixture.0.to_str().unwrap()).unwrap();
     let container = PrlContainer::from_positional(file, meta, false);
     let (loaded, mut read) =
         read_lightmap_for_residency(&container, stream_inputs(), FIXTURE_CELLS).unwrap();
     let index = loaded.expect("fixture carries id 22").index;
-    let message = match read.read_shadowmask(&container, Some(&index)) {
-        Ok(_) => panic!("a slot table larger than the section allows must fail"),
+    let message = match read.read_shadowmask(&container, Some(&index), FACE_FREE_BOUNDS) {
+        Ok(_) => panic!("an owner table larger than the section allows must fail"),
         Err(error) => error.to_string(),
     };
     assert!(
@@ -783,7 +791,7 @@ fn a_bogus_selected_light_count_is_rejected_without_reading_the_slot_table() {
     );
     // The bogus table puts blob bytes where the count would sit, so the
     // error names both causes.
-    assert!(message.contains("slot table"), "{message}");
+    assert!(message.contains("owner table"), "{message}");
     assert!(message.contains("too large"), "{message}");
     let reads = container.read_counters().expect("positional reads count");
     assert_eq!(

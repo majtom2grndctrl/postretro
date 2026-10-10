@@ -109,7 +109,7 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P1 | complete |
 | P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | complete |
 | P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | complete |
-| P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | in progress |
+| P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | complete |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
 | P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | pending |
 | P10 | Extract replication encoder/state (T1) | bounded worker | P6 | complete |
@@ -141,6 +141,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P6 complete: appended light/emitter/fog raw slots and typed state/animation mirrors, shared finite/curve-bound validation, binding metadata and record-shape gates, appended server script clock, positioned sound field/intake, tracker binding forwarding and dirty detection. Host serializes the future bridge sample clock (freeze respected). Wire 27/snapshot18; PRLB unchanged; previous26 refused at both gates and historical fixtures retained. `postretro-net` wire filter: 85 passed; handshake: 18 passed; replication: 43 passed. `postretro-netcode` presentation_commands: 10 passed; host catch-up clock, engine discriminants and live version pins: 1 each; client::tests: 55 passed; enemy replication harness: 17 passed. `cargo check -p postretro-netcode -p postretro --features postretro/dev-tools` passed. State payload apply remains deliberately deferred to P14.
 
 - P10 complete: extracted per-client state, encoder body and recipient authority helper to `replication/encode.rs`; internal `pub(super)` visibility permits parent access. Static comparison against P6 preserved encoder/helper bodies and state field order; `EntitySnapshot`/`EntityState` unchanged. `cargo test -p postretro-net --lib replication::tests`: 43 passed, 0 failed. No budget/flight behavior changed in this split.
+
+- P7 complete: descriptor-only builder independently attaches Mesh, Light, Emitter and query-only HitVolume22; known empty sets complete, unknown/stale sets retry, and state survives repair. Identity-scoped completion cache clears on mapping removal/remap/unload/demotion. Actual meshless client ray becomes a host HIT, damage/credit and next-snapshot despawn; Health remains absent on display copies. Focused tests passed: sim descriptor_display_ (3), hit_zones (53), placement initial light KVPs (6); AI display-volume exclusion (1); netcode client (56), remote materialization (9), enemy/descriptor harness (18), meshless host HIT (1). App dev-tools check and formatting passed.
 
 ### P1 and P2 boundaries
 

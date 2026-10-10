@@ -626,6 +626,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Inventory => 19,
         ComponentKind::Touchable => 20,
         ComponentKind::Projectile => 21,
+        ComponentKind::HitVolume => 22,
     }
 }
 
@@ -6545,7 +6546,8 @@ mod tests {
                 ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
                 ComponentKind::Inventory => Some(ComponentKind::Touchable),
                 ComponentKind::Touchable => Some(ComponentKind::Projectile),
-                ComponentKind::Projectile => None,
+                ComponentKind::Projectile => Some(ComponentKind::HitVolume),
+                ComponentKind::HitVolume => None,
             }
         }
 

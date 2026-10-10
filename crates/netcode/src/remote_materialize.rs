@@ -261,7 +261,7 @@ pub(super) fn materialize_armed_remote_enemy(
     agent_params: Option<NavAgentParams>,
 ) -> bool {
     let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
-    crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+    crate::scripting::builtins::net_descriptor::materialize_net_descriptor_presentation(
         entity_class,
         descriptors,
         registry,
@@ -601,7 +601,7 @@ mod tests {
     }
 
     // The remote-enemy glue resolves the request's class against the shared descriptor
-    // table and attaches ONLY the descriptor's mesh — never authoritative AI state.
+    // table and attaches its display components without authoritative AI state.
     #[test]
     fn materialize_armed_remote_enemy_attaches_mesh_only() {
         let descriptors = vec![enemy_mesh_descriptor("decraniated_mob")];

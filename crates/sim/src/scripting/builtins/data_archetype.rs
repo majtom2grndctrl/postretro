@@ -428,6 +428,29 @@ pub fn touchable_wieldable_world_models(descriptors: &[EntityTypeDescriptor]) ->
     ordered
 }
 
+/// Convert authored light tuning after placement overrides have been applied.
+pub(crate) fn descriptor_light_component(
+    descriptor: &LightDescriptor,
+    origin: Vec3,
+) -> LightComponent {
+    LightComponent {
+        origin: origin.to_array(),
+        light_type: LightKind::Point,
+        intensity: descriptor.intensity,
+        color: descriptor.color,
+        falloff_model: FalloffKind::InverseSquared,
+        falloff_range: descriptor.range,
+        cone_angle_inner: None,
+        cone_angle_outer: None,
+        cone_direction: None,
+        is_dynamic: true,
+        animated_slot: None,
+        follow_transform: false,
+        carrier: None,
+        animation: None,
+    }
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -471,22 +494,7 @@ pub(crate) fn attach_descriptor_components(
             );
         }
 
-        let component = LightComponent {
-            origin: [entity.origin.x, entity.origin.y, entity.origin.z],
-            light_type: LightKind::Point,
-            intensity: light_desc.intensity,
-            color: light_desc.color,
-            falloff_model: FalloffKind::InverseSquared,
-            falloff_range: light_desc.range,
-            cone_angle_inner: None,
-            cone_angle_outer: None,
-            cone_direction: None,
-            is_dynamic: true,
-            animated_slot: None,
-            follow_transform: false,
-            carrier: None,
-            animation: None,
-        };
+        let component = descriptor_light_component(&light_desc, entity.origin);
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Light);
     }

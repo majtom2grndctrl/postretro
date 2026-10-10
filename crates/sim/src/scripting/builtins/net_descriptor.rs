@@ -3,7 +3,8 @@
 
 use super::MapEntity;
 use super::data_archetype::{
-    compose_wieldable_inventory, compose_wieldable_inventory_from_slots, descriptor_mesh_component,
+    ai_capsule_center_from_feet_offset, compose_wieldable_inventory,
+    compose_wieldable_inventory_from_slots, descriptor_light_component, descriptor_mesh_component,
     find_descriptor, spawn_descriptor_instance,
 };
 use super::wieldable_inventory::{acquire_wieldable_at, release_wieldable};
@@ -491,6 +492,62 @@ pub fn materialize_net_mesh_presentation(
     true
 }
 
+/// Attach a descriptor display copy's complete presentation set independently.
+/// Existing components retain applied network state across retries and re-baselines.
+pub fn materialize_net_descriptor_presentation(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    agent_params: Option<NavAgentParams>,
+) -> bool {
+    use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::hit_volume::HitVolumeComponent;
+    use postretro_entities::components::light::LightComponent;
+    use postretro_entities::components::mesh::MeshComponent;
+
+    let Ok(transform) = registry.get_component::<Transform>(id).copied() else {
+        return false;
+    };
+    let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
+        log::warn!(
+            "[Net] remote entity_class `{entity_class}` not registered; presentation incomplete"
+        );
+        return false;
+    };
+    let mut complete = true;
+    if registry.get_component::<MeshComponent>(id).is_err()
+        && let Some(component) = descriptor_mesh_component(descriptor, agent_params)
+    {
+        complete &= registry.set_component(id, component).is_ok();
+    }
+    if registry.get_component::<LightComponent>(id).is_err()
+        && let Some(light) = descriptor.light.as_ref()
+    {
+        complete &= registry
+            .set_component(id, descriptor_light_component(light, transform.position))
+            .is_ok();
+    }
+    if registry
+        .get_component::<BillboardEmitterComponent>(id)
+        .is_err()
+        && let Some(emitter) = descriptor.emitter.as_ref()
+    {
+        complete &= registry.set_component(id, emitter.clone()).is_ok();
+    }
+    if registry.get_component::<HitVolumeComponent>(id).is_err()
+        && let Some(health) = descriptor.health.as_ref()
+        && let Some(mut hitbox) = HealthComponent::from_descriptor(health).hitbox
+    {
+        hitbox.offset -= ai_capsule_center_from_feet_offset(descriptor, agent_params);
+        complete &= registry
+            .set_component(id, HitVolumeComponent { hitbox })
+            .is_ok();
+    }
+    complete
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,6 +636,281 @@ mod tests {
             &[],
         )
         .expect("registry has room for one entity")
+    }
+
+    fn display_descriptor(mesh: bool, hitbox: bool) -> EntityTypeDescriptor {
+        let mut descriptor = enemy_mesh_descriptor("display", true);
+        if !mesh {
+            descriptor.mesh = None;
+        }
+        descriptor.health = Some(
+            postretro_scripting_core::data_descriptors::HealthDescriptor {
+                max: 100.0,
+                hitbox: hitbox.then_some(
+                    postretro_scripting_core::data_descriptors::HitboxDescriptor {
+                        half_extents: [0.5; 3],
+                        offset: Some([0.0, 1.0, 0.0]),
+                    },
+                ),
+                zone_multipliers: Default::default(),
+            },
+        );
+        descriptor
+    }
+
+    #[test]
+    fn descriptor_display_set_attaches_independently_and_preserves_live_state() {
+        use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+        use postretro_entities::components::hit_volume::HitVolumeComponent;
+        use postretro_entities::components::light::LightComponent;
+        let mut descriptor = display_descriptor(true, true);
+        descriptor.light = Some(
+            postretro_scripting_core::data_descriptors::LightDescriptor {
+                color: [0.2, 0.4, 0.6],
+                intensity: 3.0,
+                range: 7.0,
+                is_dynamic: false,
+            },
+        );
+        descriptor.emitter = Some(BillboardEmitterComponent {
+            rate: 2.0,
+            burst: None,
+            spread: 0.5,
+            lifetime: 1.0,
+            velocity: [0.0; 3],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![1.0].into(),
+            opacity_over_lifetime: vec![1.0].into(),
+            color: [1.0; 3],
+            sprite: "spark".into(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        });
+        descriptor.behavior = Some(BehaviorGraphDescriptor {
+            knockback: Default::default(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        sound: None,
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: std::collections::BTreeMap::new(),
+                    },
+                )]),
+                transitions: std::collections::BTreeMap::new(),
+            },
+            candidate_filter: None,
+            retaliation: None,
+            patrol: None,
+            attacks: Default::default(),
+            engagement_radius: None,
+            move_speed: 3.5,
+        });
+        descriptor.weapon = weapon_descriptor("unused").weapon;
+        descriptor.movement = player_with_movement("unused").movement;
+        descriptor.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Press,
+            radius: 1.0,
+        });
+        let mut registry = EntityRegistry::new();
+        let id = spawn_transform_only(&mut registry);
+        let descriptors = [descriptor];
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &descriptors,
+            &mut registry,
+            id,
+            None
+        ));
+        let light = registry.get_component::<LightComponent>(id).unwrap();
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(1.0, 2.0, 3.0)) < 1e-5);
+        assert!(light.is_dynamic);
+        assert!((light.intensity - 3.0).abs() < 1e-5);
+        assert!(
+            registry
+                .get_component::<HitVolumeComponent>(id)
+                .unwrap()
+                .hitbox
+                .offset
+                .distance(Vec3::Y - ai_capsule_center_from_feet_offset(&descriptors[0], None))
+                < 1e-5
+        );
+        for kind in [
+            ComponentKind::Health,
+            ComponentKind::Brain,
+            ComponentKind::Agent,
+            ComponentKind::Weapon,
+            ComponentKind::Touchable,
+            ComponentKind::PlayerMovement,
+            ComponentKind::DescriptorProvenance,
+        ] {
+            assert!(
+                !registry.has_component_kind(id, kind).unwrap(),
+                "unexpected {kind:?}"
+            );
+        }
+        let mut light = light.clone();
+        light.intensity = 8.0;
+        registry.set_component(id, light).unwrap();
+        let mut emitter = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap()
+            .clone();
+        emitter.rate = 0.0;
+        registry.set_component(id, emitter).unwrap();
+        let mut mesh = registry.get_component::<MeshComponent>(id).unwrap().clone();
+        mesh.animation.as_mut().unwrap().current_state = "attack".into();
+        registry.set_component(id, mesh.clone()).unwrap();
+        registry.remove_component::<HitVolumeComponent>(id).unwrap();
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &descriptors,
+            &mut registry,
+            id,
+            None
+        ));
+        assert!(
+            (registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .intensity
+                - 8.0)
+                .abs()
+                < 1e-5
+        );
+        assert!(
+            registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .rate
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(registry.get_component::<MeshComponent>(id).unwrap(), &mesh);
+        assert!(registry.get_component::<HitVolumeComponent>(id).is_ok());
+    }
+
+    #[test]
+    fn descriptor_display_set_completes_empty_and_meshless_but_rejects_unknown_or_stale() {
+        let mut registry = EntityRegistry::new();
+        let id = spawn_transform_only(&mut registry);
+        let mut descriptor = display_descriptor(false, false);
+        descriptor.health = None;
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &[descriptor.clone()],
+            &mut registry,
+            id,
+            None
+        ));
+        assert!(!materialize_net_descriptor_presentation(
+            "unknown",
+            &[descriptor.clone()],
+            &mut registry,
+            id,
+            None
+        ));
+        registry.despawn(id).unwrap();
+        assert!(!materialize_net_descriptor_presentation(
+            "display",
+            &[descriptor],
+            &mut registry,
+            id,
+            None
+        ));
+    }
+
+    #[test]
+    fn descriptor_display_hit_volume_targets_ray_without_damage_splash_or_policy() {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        use crate::sim::splash::entities_in_sphere;
+        use crate::weapon::{ActivationOutcome, DamagePayload, WeaponImpact};
+        use postretro_entities::components::health::{
+            DamageContext, DamageProducer, apply_damage_with_context,
+        };
+        use postretro_entities::components::hit_volume::HitVolumeComponent;
+        for mesh in [false, true] {
+            for authored_hitbox in [false, true] {
+                let mut registry = EntityRegistry::new();
+                let id = registry.spawn(Transform::default());
+                let descriptor = display_descriptor(mesh, authored_hitbox);
+                assert!(materialize_net_descriptor_presentation(
+                    "display",
+                    &[descriptor],
+                    &mut registry,
+                    id,
+                    None
+                ));
+                let store = HitZoneStore::new();
+                let hit = nearest_entity_hit(
+                    &registry,
+                    &store,
+                    0.0,
+                    Vec3::new(0.0, 1.0, -3.0),
+                    Vec3::Z,
+                    10.0,
+                    0.0,
+                );
+                assert_eq!(hit.map(|hit| hit.target), authored_hitbox.then_some(id));
+                assert!(
+                    nearest_entity_hit(
+                        &registry,
+                        &store,
+                        0.0,
+                        Vec3::new(2.0, 1.0, -3.0),
+                        Vec3::Z,
+                        10.0,
+                        0.0
+                    )
+                    .is_none()
+                );
+                assert!(
+                    entities_in_sphere(&registry, &store, Vec3::Y, 5.0, |_| false, None, Vec3::Y)
+                        .is_empty()
+                );
+                let payload = DamagePayload {
+                    amount: 10.0,
+                    impulse: Vec3::ZERO,
+                };
+                assert!(!apply_damage_with_context(
+                    &mut registry,
+                    id,
+                    &payload,
+                    DamageContext::new("test", DamageProducer::InTick)
+                ));
+                let impact = WeaponImpact {
+                    point: Vec3::Y,
+                    normal: -Vec3::Z,
+                    target: Some(id),
+                    zone: None,
+                    outcome: ActivationOutcome::Hit(payload),
+                };
+                crate::sim::weapon_stage::apply_authorized_weapon_impact_damage(
+                    &mut registry,
+                    id,
+                    None,
+                    &impact,
+                    "test".into(),
+                    10.0,
+                );
+                assert!(registry.take_impact_dispatches().is_empty());
+                assert!(registry.get_component::<HealthComponent>(id).is_err());
+                assert!(
+                    registry
+                        .get_component::<postretro_entities::components::brain::BrainComponent>(id)
+                        .is_err()
+                );
+                assert_eq!(
+                    registry.get_component::<HitVolumeComponent>(id).is_ok(),
+                    authored_hitbox
+                );
+            }
+        }
     }
 
     #[test]

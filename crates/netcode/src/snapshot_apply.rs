@@ -26,6 +26,10 @@ pub(super) fn materialize_remote_entities(
         let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class));
+        let descriptor_entity = !matches!(
+            representation,
+            descriptor_class::ReplicatedDescriptorClass::Projectile(_)
+        ) && !matches!(descriptor, Some(descriptor) if descriptor.movement.is_some());
         let materialized = if matches!(
             representation,
             descriptor_class::ReplicatedDescriptorClass::Projectile(_)
@@ -117,6 +121,14 @@ pub(super) fn materialize_remote_entities(
                 agent_params,
             )
         };
+        let complete = if descriptor_entity {
+            materialized
+        } else {
+            registry
+                .has_component_kind(remote.entity_id, postretro_entities::ComponentKind::Mesh)
+                .unwrap_or(false)
+        };
+        replication.cache_remote_presentation_complete(remote.network_id, complete);
         if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
             client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
         }

@@ -2,6 +2,7 @@
 // See: context/plans/in-progress/coop--networked-by-default/index.md
 
 use super::*;
+use crate::scripting_systems::hit_zones::HitZoneStore;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -151,9 +152,21 @@ fn held_default_weapon_retains_health_and_networks_only_after_release() {
 
 #[test]
 fn descriptor_dummy_client_hit_credits_owner_and_despawns() {
+    descriptor_hit_credits_owner_and_despawns(false);
+}
+
+#[test]
+fn meshless_hit_volume_client_declaration_applies_on_host() {
+    descriptor_hit_credits_owner_and_despawns(true);
+}
+
+fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
     let mut h = EnemyReplicationHarness::new(perfect_link());
     let mut descriptor = prop_descriptor("target_dummy");
     descriptor.health = Some(health());
+    if meshless {
+        descriptor.mesh = None;
+    }
     h.descriptors.push(descriptor.clone());
     let mut dummy_placement = placement("target_dummy");
     dummy_placement.origin = Vec3::new(0.0, 0.0, -5.0);
@@ -180,9 +193,15 @@ fn descriptor_dummy_client_hit_credits_owner_and_despawns() {
     let remote = h
         .client_mapped_entity(network_id)
         .expect("dummy display copy");
-    assert!(
+    assert_eq!(
         h.client_registry
             .get_component::<MeshComponent>(remote)
+            .is_ok(),
+        !meshless
+    );
+    assert!(
+        h.client_registry
+            .get_component::<postretro_entities::components::hit_volume::HitVolumeComponent>(remote)
             .is_ok()
     );
     assert!(
@@ -190,16 +209,38 @@ fn descriptor_dummy_client_hit_credits_owner_and_despawns() {
             .get_component::<HealthComponent>(remote)
             .is_err()
     );
-    let records = crate::local_hits_to_wire_records(
-        &[crate::weapon::LocalHitRecord {
-            target: remote,
-            point: Vec3::new(0.0, 0.0, -4.5),
-            normal: Vec3::Z,
-            zone: None,
-        }],
+    let resolution = crate::weapon::resolve_test_client_shot(
+        None,
+        &mut WeaponComponent::from_descriptor(&wieldable_descriptor()),
+        "weapon.test.net",
+        0,
+        crate::weapon::FireButtonState {
+            pressed: true,
+            active: true,
+        },
+        Vec3::ZERO,
+        -Vec3::Z,
+        &Default::default(),
+        None,
+        1,
         &[],
-        |id| h.client_replication.network_id_for_entity(id),
+        &[],
+        &crate::collision::CollisionWorld::new(),
+        &h.client_registry,
+        &HitZoneStore::new(),
+        0.0,
+        1.0 / 60.0,
+    )
+    .expect("client fires");
+    assert_eq!(resolution.hits.len(), 1);
+    assert_eq!(resolution.hits[0].target, remote);
+    assert!(
+        matches!(resolution.impact_contacts()[0].hit, postretro_entities::ContactHit::Entity(id) if id == remote)
     );
+    let records =
+        crate::local_hits_to_wire_records(&resolution.hits, &resolution.world_contacts, |id| {
+            h.client_replication.network_id_for_entity(id)
+        });
     assert_eq!(
         records.len(),
         1,

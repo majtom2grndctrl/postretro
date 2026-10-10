@@ -3,7 +3,7 @@
 // (Brain + Agent + MapPlacement) for replication; its authoritative Transform plus
 // optional mesh-animation state rides the wire — through the dev in-memory
 // `PacketConditioner` under a conditioned link — to a connected client that
-// materializes a remote PRESENTATION entity (descriptor mesh only) and samples its pose
+// materializes a remote PRESENTATION entity (descriptor display components) and samples its pose
 // through the Phase 2 `RemoteInterpolationBuffer`. The host owns
 // AI/steering/damage/death; the client carries NO local
 // `Brain`/`Agent`/`Health`/`Weapon`/`PlayerMovement` for the enemy.
@@ -190,9 +190,11 @@ fn materialize_remote_enemy_presentation(
     remote: &RemoteEntityMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
+    replication: &mut ClientReplication,
 ) {
     let materialized =
         materialize_armed_remote_enemy(remote, descriptors, registry, Some(agent_params()));
+    replication.cache_remote_presentation_complete(remote.network_id, materialized);
     if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
         super::client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
     }
@@ -598,12 +600,13 @@ impl EnemyReplicationHarness {
                 .client_replication
                 .apply_snapshot(&mut self.client_registry, &snapshot);
             // Task 6 seam: materialize the descriptor presentation for each remote
-            // enemy this snapshot first spawned (mesh only — never AI state).
+            // enemy this snapshot first spawned (display components — never AI state).
             for remote in &outcome.remote_entities {
                 materialize_remote_enemy_presentation(
                     remote,
                     &self.descriptors,
                     &mut self.client_registry,
+                    &mut self.client_replication,
                 );
             }
             if let Some(ack) = outcome.ack {
@@ -684,6 +687,7 @@ impl EnemyReplicationHarness {
                 remote,
                 &self.descriptors,
                 &mut self.client_registry,
+                &mut self.client_replication,
             );
         }
         if let Some(ack) = &outcome.ack {
@@ -727,7 +731,7 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     );
 
     // Drive the host→client path: the client maps the enemy and materializes its
-    // remote presentation (mesh only) via the Task 6 seam.
+    // remote presentation (display components) via the Task 6 seam.
     let steps = h.step_until_client_maps(net_id, 16);
     assert!(steps > 0, "the client mapped the remote enemy");
     let remote = h
@@ -1678,7 +1682,12 @@ fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
             };
             let outcome = client_replication.apply_snapshot(&mut client_registry, &snapshot);
             for remote in &outcome.remote_entities {
-                materialize_remote_enemy_presentation(remote, &descriptors, &mut client_registry);
+                materialize_remote_enemy_presentation(
+                    remote,
+                    &descriptors,
+                    &mut client_registry,
+                    &mut client_replication,
+                );
             }
             if let Some(ack) = outcome.ack {
                 acks.push(ack);

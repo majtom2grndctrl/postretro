@@ -11,6 +11,7 @@ use glam::{Mat4, Vec3};
 
 use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
+use postretro_entities::components::hit_volume::HitVolumeComponent;
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_model::ModelHandle;
@@ -713,9 +714,9 @@ pub(crate) struct EntityRayHit {
 ///
 /// Standalone and weapon-agnostic: callable with any `origin` / `direction`
 /// (assumed unit length) / `range`. Targetable = Health-bearing entities OR
-/// Mesh-bearing entities with a skinned model whose hit-zone entry has a
+/// display copies with an authored HitVolume, OR Mesh-bearing entities with a skinned model whose hit-zone entry has a
 /// trustworthy derived bound. Degraded or untrustworthy zone entries use the
-/// authored AABB path when the entity has Health. For each:
+/// authored AABB path when Health or HitVolume supplies one. For each:
 /// - **AABB-only** (Health + hitbox, no zone-bearing model): broad phase is the
 ///   authored AABB; narrow phase is the same AABB via [`ray_aabb_slab`]. Health
 ///   without a hitbox and without a zone-bearing model is not targetable.
@@ -798,7 +799,6 @@ pub(crate) fn nearest_entity_hit_ignoring(
         let Ok(transform) = registry.get_component::<Transform>(id) else {
             return;
         };
-        let health = registry.get_component::<HealthComponent>(id).ok();
 
         // Terminal despawn keeps the id live through presentation and reaps it
         // at frame end, but it must stop intercepting later hit queries.
@@ -809,7 +809,7 @@ pub(crate) fn nearest_entity_hit_ignoring(
             return;
         }
 
-        let hitbox = health.and_then(|health| health.hitbox.as_ref());
+        let hitbox = entity_hitbox(registry, id);
 
         // Prefer the zone-bearing path when the entity's model carries tagged
         // joints; otherwise fall back to the authored AABB. A no-tag model (or a
@@ -893,9 +893,23 @@ pub(crate) fn nearest_entity_hit_ignoring(
     nearest
 }
 
+/// Ray targeting may use a display copy's authored volume without granting health.
+fn entity_hitbox(registry: &EntityRegistry, id: EntityId) -> Option<&Hitbox> {
+    registry
+        .get_component::<HealthComponent>(id)
+        .ok()
+        .and_then(|health| health.hitbox.as_ref())
+        .or_else(|| {
+            registry
+                .get_component::<HitVolumeComponent>(id)
+                .ok()
+                .map(|volume| &volume.hitbox)
+        })
+}
+
 /// Visit the broad candidate set shared by weapon-agnostic entity queries.
 ///
-/// The mesh walk intentionally includes health-less presentation entries; each
+/// Mesh and hit-volume walks include health-less presentation entries; each
 /// caller applies its own liveness/damageability gate before acting on them.
 /// Every inventory slot is excluded before visiting, even with retained Health
 /// or a Mesh component restored by another presentation path.
@@ -911,6 +925,14 @@ pub(crate) fn for_each_hittable_candidate(
     for (id, _) in registry.iter_with_kind(ComponentKind::Mesh) {
         if !registry.is_inventory_owned(id)
             && registry.get_component::<HealthComponent>(id).is_err()
+        {
+            visit(id);
+        }
+    }
+    for (id, _) in registry.iter_with_kind(ComponentKind::HitVolume) {
+        if !registry.is_inventory_owned(id)
+            && registry.get_component::<HealthComponent>(id).is_err()
+            && registry.get_component::<MeshComponent>(id).is_err()
         {
             visit(id);
         }
@@ -2413,20 +2435,34 @@ mod tests {
     }
 
     #[test]
-    fn hittable_candidates_union_health_and_mesh_without_duplicates() {
+    fn hittable_candidates_union_health_mesh_and_hit_volume_without_duplicates() {
         let mut reg = EntityRegistry::new();
         let health_only = spawn_aabb_entity(&mut reg, Vec3::ZERO, Vec3::splat(0.5));
         let mesh_only = spawn_mesh_only_entity(&mut reg, "mob", Vec3::ZERO);
         let both = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
 
+        let volume_only = reg.spawn(Transform::default());
+        for id in [volume_only, health_only, mesh_only, both] {
+            reg.set_component(
+                id,
+                HitVolumeComponent {
+                    hitbox: Hitbox {
+                        half_extents: Vec3::ONE,
+                        offset: Vec3::ZERO,
+                    },
+                },
+            )
+            .unwrap();
+        }
         let mut candidates = Vec::new();
         for_each_hittable_candidate(&reg, |id| candidates.push(id));
 
         assert_eq!(
             candidates.len(),
-            3,
+            4,
             "Health+Mesh entity should be visited once, not once per component kind"
         );
+        assert!(candidates.contains(&volume_only));
         assert!(
             candidates.contains(&health_only),
             "Health-bearing entity is a candidate"
@@ -2442,6 +2478,47 @@ mod tests {
     }
 
     #[test]
+    fn ray_hitbox_prefers_health_then_uses_display_volume_without_damageable_volume() {
+        let mut registry = EntityRegistry::new();
+        let id = spawn_aabb_entity(&mut registry, Vec3::ZERO, Vec3::splat(0.5));
+        registry
+            .set_component(
+                id,
+                HitVolumeComponent {
+                    hitbox: Hitbox {
+                        half_extents: Vec3::ONE,
+                        offset: Vec3::Y,
+                    },
+                },
+            )
+            .unwrap();
+        assert!(
+            entity_hitbox(&registry, id)
+                .unwrap()
+                .half_extents
+                .distance(Vec3::splat(0.5))
+                < 1e-5
+        );
+        let mut health = registry
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .clone();
+        health.hitbox = None;
+        registry.set_component(id, health).unwrap();
+        assert!(
+            entity_hitbox(&registry, id)
+                .unwrap()
+                .offset
+                .distance(Vec3::Y)
+                < 1e-5
+        );
+        assert!(damageable_volume(&registry, &HitZoneStore::new(), id).is_none());
+        registry.remove_component::<HealthComponent>(id).unwrap();
+        assert!(entity_hitbox(&registry, id).is_some());
+        assert!(damageable_volume(&registry, &HitZoneStore::new(), id).is_none());
+    }
+
+    #[test]
     fn held_world_participation_candidates_exclude_retained_health_and_mesh() {
         use postretro_entities::components::inventory::Inventory;
         let mut registry = EntityRegistry::new();
@@ -2450,10 +2527,23 @@ mod tests {
         let mesh_only = spawn_mesh_only_entity(&mut registry, "mob", Vec3::ZERO);
         let both = spawn_zone_entity(&mut registry, "mob", Vec3::ZERO);
         let unheld = spawn_aabb_entity(&mut registry, Vec3::ZERO, Vec3::splat(0.5));
+        let volume_only = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                volume_only,
+                HitVolumeComponent {
+                    hitbox: Hitbox {
+                        half_extents: Vec3::ONE,
+                        offset: Vec3::ZERO,
+                    },
+                },
+            )
+            .unwrap();
         let mut inventory = Inventory::default();
         inventory.wieldables[0] = Some(health_only);
         inventory.wieldables[3] = Some(mesh_only);
         inventory.wieldables[8] = Some(both);
+        inventory.wieldables[9] = Some(volume_only);
         registry.set_component(holder, inventory).unwrap();
         let mut candidates = Vec::new();
         for_each_hittable_candidate(&registry, |id| candidates.push(id));
@@ -2461,8 +2551,8 @@ mod tests {
         registry.remove_component::<Inventory>(holder).unwrap();
         candidates.clear();
         for_each_hittable_candidate(&registry, |id| candidates.push(id));
-        assert_eq!(candidates.len(), 4);
-        for item in [health_only, mesh_only, both, unheld] {
+        assert_eq!(candidates.len(), 5);
+        for item in [health_only, mesh_only, both, unheld, volume_only] {
             assert!(candidates.contains(&item));
         }
     }

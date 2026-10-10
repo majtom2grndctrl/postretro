@@ -11,6 +11,7 @@ pub mod entity_state;
 pub mod fog_volume;
 pub mod grant;
 pub mod health;
+pub mod hit_volume;
 pub mod inventory;
 pub mod kinematic_mover;
 pub mod light;

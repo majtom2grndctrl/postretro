@@ -18,6 +18,7 @@ use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
+use crate::components::hit_volume::HitVolumeComponent;
 use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
@@ -146,6 +147,8 @@ pub enum ComponentKind {
     Touchable = 20,
     /// Engine-owned direct-impact projectile flight state.
     Projectile = 21,
+    /// Query-only display-copy geometry, never authoritative Health.
+    HitVolume = 22,
 }
 
 impl ComponentKind {
@@ -177,6 +180,7 @@ impl ComponentKind {
             ComponentKind::Inventory,
             ComponentKind::Touchable,
             ComponentKind::Projectile,
+            ComponentKind::HitVolume,
         ];
         VARIANTS.len()
     };
@@ -248,6 +252,7 @@ pub enum ComponentValue {
     Inventory(Inventory),
     Touchable(TouchableComponent),
     Projectile(ProjectileComponent),
+    HitVolume(HitVolumeComponent),
 }
 
 impl ComponentValue {
@@ -275,6 +280,7 @@ impl ComponentValue {
             ComponentValue::Inventory(_) => ComponentKind::Inventory,
             ComponentValue::Touchable(_) => ComponentKind::Touchable,
             ComponentValue::Projectile(_) => ComponentKind::Projectile,
+            ComponentValue::HitVolume(_) => ComponentKind::HitVolume,
         }
     }
 }
@@ -674,6 +680,21 @@ impl Component for ProjectileComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::Projectile(self)
+    }
+}
+
+impl Component for HitVolumeComponent {
+    const KIND: ComponentKind = ComponentKind::HitVolume;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::HitVolume(volume) => Some(volume),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::HitVolume(self)
     }
 }
 

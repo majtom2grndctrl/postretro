@@ -28,7 +28,7 @@
 //     tombstone.
 //   - Old/duplicate snapshot sequence: the whole snapshot is ignored.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::Vec3;
 
@@ -222,6 +222,9 @@ pub struct ClientReplication {
     /// beside the interpolation buffers because it is consumed by the same
     /// per-frame client presentation step, but never crosses the wire.
     remote_enemy_walk_playback: HashMap<NetworkId, RemoteEnemyWalkPlayback>,
+    /// Descriptor-aware materialization reports completion independently of Mesh.
+    /// Kept only for live mappings; unknown/incomplete classes remain retryable.
+    remote_presentation_complete: HashSet<NetworkId>,
     /// Descriptor-derived player locomotion references keyed by remote identity.
     /// Presence is also the durable signal that a transform-only remote mesh is a
     /// player avatar rather than an AI presentation.
@@ -526,6 +529,7 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
+        self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
@@ -568,6 +572,7 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
+        self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
@@ -898,7 +903,6 @@ impl ClientReplication {
                     return false;
                 }
                 self.maybe_surface_remote_entity_materialize(
-                    registry,
                     existing,
                     local_player,
                     entity_class,
@@ -1059,7 +1063,6 @@ impl ClientReplication {
             return false;
         }
         self.maybe_surface_remote_entity_materialize(
-            registry,
             id,
             local_player,
             entity_class,
@@ -1076,7 +1079,6 @@ impl ClientReplication {
 
     fn maybe_surface_remote_entity_materialize(
         &self,
-        registry: &EntityRegistry,
         entity_id: EntityId,
         local_player: bool,
         entity_class: Option<&str>,
@@ -1095,10 +1097,7 @@ impl ClientReplication {
         let Some(&network_id) = self.reverse_map.get(&entity_id) else {
             return;
         };
-        if registry
-            .has_component_kind(entity_id, ComponentKind::Mesh)
-            .unwrap_or(false)
-        {
+        if self.remote_presentation_complete.contains(&network_id) {
             return;
         }
         let cached_weapon = self.active_weapon_archetypes.get(&network_id).cloned();
@@ -1368,12 +1367,14 @@ impl ClientReplication {
         if let Some(previous_entity) = self.map.insert(network_id, entity_id) {
             self.reverse_map.remove(&previous_entity);
             if previous_entity != entity_id {
+                self.remote_presentation_complete.remove(&network_id);
                 self.active_weapon_archetypes.remove(&network_id);
             }
         }
         if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id) {
             self.map.remove(&previous_network);
             if previous_network != network_id {
+                self.remote_presentation_complete.remove(&previous_network);
                 self.active_weapon_archetypes.remove(&previous_network);
                 self.remote_entity_classes.remove(&previous_network);
                 self.projectile_presentations.remove(&previous_network);
@@ -1382,6 +1383,7 @@ impl ClientReplication {
     }
 
     fn remove_mapping(&mut self, network_id: NetworkId) -> Option<EntityId> {
+        self.remote_presentation_complete.remove(&network_id);
         let entity_id = self.map.remove(&network_id)?;
         self.reverse_map.remove(&entity_id);
         self.active_weapon_archetypes.remove(&network_id);
@@ -1831,6 +1833,18 @@ impl ClientReplication {
                 0.0,
                 frame_anim_time,
             );
+        }
+    }
+
+    pub(crate) fn cache_remote_presentation_complete(
+        &mut self,
+        network_id: NetworkId,
+        complete: bool,
+    ) {
+        if complete && self.map.contains_key(&network_id) {
+            self.remote_presentation_complete.insert(network_id);
+        } else {
+            self.remote_presentation_complete.remove(&network_id);
         }
     }
 
@@ -5340,6 +5354,7 @@ mod tests {
         registry
             .set_component(id, MeshComponent::stateless("remote_enemy".to_string()))
             .expect("test marks remote as already materialized");
+        client.cache_remote_presentation_complete(NetworkId(7), true);
 
         // A delta for the same (now mapped) id moves it but surfaces nothing.
         let delta_out = client.apply_snapshot(
@@ -5395,6 +5410,77 @@ mod tests {
     // materialization could not attach a mesh, a later re-baseline must retry instead
     // of leaving the mapped entity transform-only forever.
     #[test]
+    fn descriptor_presentation_completion_is_mesh_independent_and_clears_with_identity() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let record = |baseline| {
+            remote_entity_baseline(
+                7,
+                baseline,
+                "invisible_target",
+                vec![transform_payload(0.0)],
+            )
+        };
+        let first = client.apply_snapshot(&mut registry, &snapshot(1, 10, vec![record(1)]));
+        assert_eq!(first.remote_entities.len(), 1);
+        let old = first.remote_entities[0].entity_id;
+        // Even an attached mesh cannot stand in for a complete descriptor set.
+        registry
+            .set_component(old, MeshComponent::stateless("incomplete".into()))
+            .unwrap();
+        client.cache_remote_presentation_complete(NetworkId(7), false);
+        let retry = client.apply_snapshot(&mut registry, &snapshot(2, 11, vec![record(2)]));
+        assert_eq!(retry.remote_entities.len(), 1);
+        registry.remove_component::<MeshComponent>(old).unwrap();
+        client.cache_remote_presentation_complete(NetworkId(7), true);
+        let complete = client.apply_snapshot(&mut registry, &snapshot(3, 12, vec![record(3)]));
+        assert!(
+            complete.remote_entities.is_empty(),
+            "a complete meshless display copy does not reattach"
+        );
+
+        registry.despawn(old).unwrap();
+        let stale = client.apply_snapshot(&mut registry, &snapshot(4, 13, vec![record(4)]));
+        assert_eq!(stale.refresh_requests.len(), 1);
+        assert!(!client.remote_presentation_complete.contains(&NetworkId(7)));
+        let fresh = client.apply_snapshot(&mut registry, &snapshot(5, 14, vec![record(4)]));
+        assert_eq!(fresh.remote_entities.len(), 1);
+        assert_ne!(fresh.remote_entities[0].entity_id, old);
+        client.cache_remote_presentation_complete(NetworkId(7), true);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                6,
+                15,
+                vec![EntityRecord::Despawn {
+                    network_id: 7,
+                    tombstone_id: 1,
+                    reason: 0,
+                }],
+            ),
+        );
+        assert!(client.remote_presentation_complete.is_empty());
+        client.cache_remote_presentation_complete(NetworkId(99), true);
+        assert!(
+            client.remote_presentation_complete.is_empty(),
+            "unmapped identity cannot populate cache"
+        );
+        for demote in [false, true] {
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(7 + u32::from(demote), 16, vec![record(5)]),
+            );
+            client.cache_remote_presentation_complete(NetworkId(7), true);
+            if demote {
+                client.reset_for_demotion();
+            } else {
+                client.reset_for_level_unload();
+            }
+            assert!(client.remote_presentation_complete.is_empty());
+        }
+    }
+
+    #[test]
     fn remote_entity_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
@@ -5444,7 +5530,7 @@ mod tests {
                 active_weapon_archetype: None,
                 weapon_attachment_changed: false,
             }],
-            "mapped descriptor remotes without Mesh retry materialization"
+            "mapped descriptor remotes with incomplete presentation retry materialization"
         );
     }
 

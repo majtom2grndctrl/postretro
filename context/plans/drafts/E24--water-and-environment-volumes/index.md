@@ -33,6 +33,7 @@ The query layer this adds is the first piece of the engine-owned collision subst
   - Winner: highest priority; then the smallest summed brush volume, so a pool inside a room wins without priorities; then earliest map entity order, for exact ties only.
   - Gravity and push reach is the body's position.
   - Fluid reach is the capsule's vertical segment, feet to head. The fluid is the winner among fluid volumes intersecting it. Immersion is the segment's coverage by the union of the winner's brushes, so leaving through any face, bottom included, drops it.
+  - Push resolves like every other field: one winner, never a sum. A `push "0 0 0"` volume carves a calm pocket inside wind, and a shaft that should both lift and drift carries the combined vector. An additive opt-in key on `push_volume` could come later without changing existing maps (`research.md` §Fifth direction review).
   - Eye-dependent presentation keys on the camera eye point, with hysteresis (Presentation).
   - Reverb, when built, becomes a point field under this rule. `audio.md` is amended then, not at this promotion.
 - **Gravity is vertical and defines falling; push is a force in any direction.** Two fields, so authored meaning never changes later.

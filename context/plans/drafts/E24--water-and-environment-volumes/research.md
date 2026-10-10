@@ -239,7 +239,9 @@ Engineering calls, made on precedent and recorded here:
 - **Splash for peers watching another client's shot** is named as a follow-up on the splash fact.
 - **Executor check, not a decision:** the tuning resend skips a participating client with no pawn. A client that gains a pawn after a mid-level `setGravity` must still receive the current value; the join row covers the first pawn.
 
-Closes off: push combines per field, winner takes all, so an overlapping wind and updraft don't add; switching to summing later would change existing maps. Strongest alternative: volumes as map members with replicated live state over a hashed baseline (the mover pattern), better only if runtime-mutable volumes were in scope; it stays additive through the load-time BVH.
+**Owner ruling: push stays winner-takes-all.** Every field shares one overlap rule a mapper can read off the editor; a small `push "0 0 0"` volume carves a calm pocket without priorities, where summing would need an exactly opposite vector that breaks when the wind is retuned; Unreal's `PhysicsVolume` picks one volume by priority and Quake 2's `trigger_push` sets velocity rather than adding. Cost: an updraft inside wind stops the drift unless the shaft carries the combined vector. Either default could gain the other as an opt-in key later without changing maps, so the choice is the default only.
+
+Strongest alternative: volumes as map members with replicated live state over a hashed baseline (the mover pattern), better only if runtime-mutable volumes were in scope; it stays additive through the load-time BVH.
 
 ## Ordering pins
 

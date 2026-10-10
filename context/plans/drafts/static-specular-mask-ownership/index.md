@@ -8,22 +8,26 @@ read at 4e127a7b8
 ## Problem
 
 The owner saw partial, hard-edged specular patches on floors and walls throughout
-`stress-warren-hallway-inspection`. This is an observed defect. Cause: world specular
-evaluates every static light in the fragment's 8 m chunk list and treats a light with
-no mask slot as fully visible. A slotless light's highlight therefore passes through
-walls and stops only at a chunk plane. Slots are scarce:
+`stress-warren-hallway-inspection`. This is an observed defect.
+
+Cause: world specular evaluates every static light in the fragment's 8 m chunk list,
+and treats a light with no mask slot as fully visible. A slotless light's highlight
+therefore passes through walls and stops only at a chunk plane.
+
+The diagnosed instance is a light sealed inside a wall, which the in-flight
+`buried-lights` build excludes. The general mechanism follows from source but has not
+yet been seen on a light that is not buried; a capture gates the build (Open
+questions).
+
+Slots are scarce:
 - Each light holds one channel map-wide, and competes for it everywhere it could reach
   without shadows, occluded or not.
 - Static lights outside the entity-shadow selection never get a slot.
 - SDF lights outside the fragment's top four also render unshadowed.
 
-Separately, an animated light's world highlight ignores its animation: it paints a
-constant full-strength highlight however the light strobes, cycles or is switched off.
-
 When done, a static light contributes world specular only where its baked contribution
-is non-zero. Every highlight it contributes is shadowed and follows the light's current
-brightness and color, and the compiler reports where a light lost a highlight to
-capacity.
+is non-zero. Every highlight it contributes is shadowed, and the compiler reports where
+a light lost a highlight to capacity.
 
 ## Decisions
 
@@ -47,16 +51,17 @@ capacity.
   - A missing highlight is a smaller error than light through a wall.
   - Union subtraction already skips unslotted lights, so it keeps that behavior.
 - **Eligibility: every static lightmap light,** decoupled from entity-shadow selection.
-  - Eligible: non-dynamic, not bake-only, `StaticLightMap` shadow type. Point, spot and
-    directional lights all qualify, animated or not.
+  - Eligible: non-dynamic, non-animated, not bake-only, `StaticLightMap` shadow type.
+    Point, spot and directional lights all qualify.
   - Id 40 stays the promotion set only.
   - A promoted light still subtracts only where it owns a channel.
   - Directional lights are included. This reverses the sun exclusion in
     `plans/done/specular-shadowmask-occlusion`, which existed because a sun cost a
     map-wide slot. Under shadowed per-face admission a sun takes a channel only on faces
     it lights.
-  - Animated-baked lights are included. Bake-only lights stay out, because they have
-    no spec-light record for an owner index to name.
+  - Animated-baked lights are not eligible here, so they lose world specular until
+    the follow-up brief (Non-goals). Today they render it unshadowed and ignoring their
+    animation.
 - **Admission by shadowed contribution.** A light is a candidate in a face only where
   its quantized baked visibility is non-zero on a texel it covers.
   - This supersedes the "coverage is unshadowed" contract in
@@ -65,19 +70,15 @@ capacity.
     value. Ownership removes the hazard, because a non-owner never reads a channel.
   - Ownership is decided during the fused lightmap walk. That reverses the
     `build_pipeline.md` ordering "channel assignment finishes before the walk".
-- **Animated owners use visibility already baked; no new trace.**
-  - The animated weight-map stage (ids 24/25) already traces the same soft visibility
-    on the same charts and texel grid as the walk.
-  - That stage moves ahead of the fused walk; its inputs are final after atlas
-    preparation. Animated candidates join each face's competition from its output.
-  - The shadowmask memo key folds the weight-map inputs.
 - **An owned channel starts at zero across its face.** Eviction and a new owner reset
-  the channel to occluded before writing. The weight maps omit fully occluded texels,
-  and a 255 residue would recreate the through-wall leak.
+  the channel to occluded before writing. The raw fill initializes to 255, and a 255
+  residue would recreate the through-wall leak.
 - **Same walk resource bounds.** The stage retains no per-(light, texel) visibility and
   runs no second visibility trace, cold or warm. The deleted record behind the 16 GiB
   OOM stays deleted. Undo cost is high once this ships, because retained visibility is
-  what the cold-working-set brief removed.
+  what the cold-working-set brief removed. That brief's non-goal said
+  contribution-weighted priority would need the record back; summing per face while
+  the fill is resident does not.
 - **World specular set = face owners ∪ the SDF top-four selection.**
   - World forward specular stops reading the chunk light list.
   - An SDF light outside the fragment's selection contributes no specular.
@@ -89,9 +90,8 @@ capacity.
     of specular-only lights. A lost entity shadow costs more than a lost highlight.
   - Within each group, the four kept are those with the largest shadowed contribution
     summed over the face's interior texels.
-  - An animated light ranks by its animation's peak brightness, matching the lookahead
-    maximum promotion already uses. It is never in id 40, so it ranks in the
-    specular-only tier.
+  - The sub-faces of one compiler-cut face rank once, on their joint contribution, and
+    share one owner set. A highlight never cuts along a compiler cut line.
   - On the census, contribution ranking loses roughly a third of what intensity ranking
     loses, and no light loses every face.
   - Ties break by light index. The result is independent of worker count, cache state
@@ -100,11 +100,6 @@ capacity.
     every overflow on the stress maps.
   - A warning without `--verbose` names each light dropped above the floor.
   - `--verbose` reports peak per-face demand.
-- **Animated highlights follow their animation.** An animated owner's specular uses
-  the light's current curve brightness and color, the same values its animated
-  lightmap composes. This is evaluated for owners only, at most four per fragment.
-  No binding is added: the curve index rides the `SpecLight` field the retired slot
-  frees.
 - **Id 42 exists whenever any face admits an owner,** whether or not id 40 selects a
   light. Clearing id 40 or 41 at load never drops id 42.
 - **Admission reads interior texels only.** Chart padding and ring texels hold copied
@@ -123,6 +118,10 @@ capacity.
   The drop report is their trigger. After the floor, residual overflow is one face in
   `campaign-test` and two in `kinematic-platform`. `movement-feel`'s overflow is
   texel-deep, so cuts cannot cure it (`research.md` §Granularity, §Capacity lever).
+- **Seams between distinct faces are accepted residue.** This diverges from
+  `plans/done/specular-continuity` (neighbouring regions keep the same lights) only
+  where an over-capacity face meets a neighbour that kept a light it dropped. Diffuse
+  stays continuous. The drop report names every such face.
 - **Non-goals:**
   - **Billboard specular shadowing.** Its loops have no mask binding by documented
     design (`rendering_pipeline.md` §4, billboard lighting models). Unchanged.
@@ -131,6 +130,11 @@ capacity.
     This brief must not depend on it, because shadowed admission already gives them no
     channel.
   - **Entity-shadow selection heuristics and chunk-list contents.** Both are unchanged.
+  - **Animated-baked owners and animation-following highlights.** A follow-up brief
+    owns them. Their visibility comes from the weight-map stage (ids 24/25), and holding
+    it through the walk is a memory risk on the map that once ran out of memory. The
+    owner table already names any spec light, so the follow-up needs no second format
+    change (`research.md` §Animated-baked lights).
 
 ## Acceptance
 
@@ -138,9 +142,10 @@ capacity.
 No leak, both sides of ownership:
 - [ ] A static light walled off from a receiver inside its range adds zero specular to
       that receiver. A second light that does reach the receiver keeps its highlight.
-- [ ] A light that owns face R but not adjacent face S lights R and adds nothing to S.
-      Both fragments at the shared edge are asserted, including across a compiler face
-      cut.
+- [ ] A light that owns face R but not adjacent distinct face S lights R and adds
+      nothing to S. Both fragments at the shared edge are asserted.
+- [ ] The sub-faces of one compiler-cut face carry identical owner sets, including when
+      one sub-face alone would have ranked a different fourth light.
 - [ ] Within a face it owns, a light's specular still follows the baked mask: zero on
       an occluded texel, full on a lit one.
 - [ ] An SDF light outside the fragment's selection adds zero specular. One inside it
@@ -154,18 +159,6 @@ Union subtraction:
 - [ ] On a fixture where every promoted light owns its face, subtraction matches the
       pre-change output.
 - [ ] A promoted light that does not own a face subtracts nothing there.
-- [ ] An animated owner never enters the union subtraction.
-
-Animated owners:
-- [ ] An animated owner's world highlight is shadowed: zero on a texel its weight map
-      leaves occluded, including a texel that has no weight-map entry.
-- [ ] Its highlight follows the curve. It is zero while a strobe is off, tracks a
-      color cycle, and matches the animated lightmap's brightness at the same time.
-- [ ] A light the animated lightmap treats as off adds no highlight. A static owner on
-      the same face is unaffected.
-- [ ] After an evicted owner's channel is reused, no texel of that face reads the old
-      owner's value or 255.
-- [ ] Editing only an animated light on a warm build re-bakes id 42.
 
 Compiler:
 - [ ] Five eligible lights lit across one face yield four owners, chosen by largest
@@ -203,9 +196,10 @@ Compiler:
 ### Manual
 - [ ] `stress-warren-hallway-inspection` at pose (-17, 21, 86): no sheen. Toggling
       `light_term_mask` bit 0x40 shows no specular patch.
-- [ ] A pre-change capture shows a leak from a light the `buried-lights` build does
-      not explain: a dropped non-buried light, or an unselected `campaign-test` light.
-      The same pose after the change shows no leak.
+- [ ] The pose from the pre-build leak capture (Open questions) shows no leak after the
+      change.
+- [ ] An animated light's world highlight is gone, and nothing else at that pose
+      changes. Its diffuse animation is unchanged.
 - [ ] `campaign-test`: highlights in lit rooms read continuous across 8 m chunk planes.
       Visual read of what was lost against pre-change.
 - [ ] `kinematic-platform` large floor and `movement-feel`: drop report read, and the
@@ -227,6 +221,17 @@ Compiler:
     nothing retained.
   - Rival: colour after the walk from a warm-cache re-read. It fails cold builds and
     the no-second-trace decision.
+- **Joint ranking across cut faces.** `plan_face_cuts`/`apply_face_cuts` know each
+  sub-face's parent before `rebuild_face_identity`. Carry that parent to the walk, sum
+  contribution per parent, and write the parent's owners to every sub-face entry.
+- **Rejected rival: shadow-free slots read as no specular** (keep global slots; the
+  shader treats unslotted as dark). It closes every leak at no bake cost. It also drops
+  the highlights of every dropped light and every light outside id 40, which is 10 of
+  14 in `campaign-test`. Ownership's job is restoring that coverage.
+- **Rejected rivals ruled out by budget:**
+  - a per-texel light-index texture, since sampled textures are at 16 of 16;
+  - runtime SDF visibility for every light's specular, since SDF selection is capped
+    at four per fragment.
 - **Rejected rival: specular from the directional lightmap** (dominant direction ×
   irradiance).
   - It cannot leak and has no capacity limit.
@@ -234,21 +239,9 @@ Compiler:
     atlas. Overlapping lights blur into one highlight.
   - The leftover overflow after ownership, mostly `movement-feel`, does not justify
     that quality loss everywhere.
-- **Animated candidates.**
-  - Move the AnimatedLightChunks and AnimatedWeightMaps stages ahead of
-    `bake_fused_prepared` in `run_after_parsing` (`pipeline.rs`). Keep id 25 in its
-    identity layout during the walk; culling and compact repack stay after it.
-  - Recover visibility as weight ÷ `contribution_to_weight(light_contribution_and_direction(...))`,
-    from the entries `bake_one_chunk` emits.
-  - Charge the resident id 25 in the stage's predicted peak.
 - **Id 42 presence keyed on id 40 today:** `prepare_fused_shadowmask` (`NoSelection`),
   the lightmap residency dry run (`ShadowmaskState`), and the load-time drop on a
   mismatched channel table.
-- **Animated specular:**
-  - `pack_spec_lights` packs constant `color × intensity` once at install.
-  - The curve helpers already exist in `curve_eval.wgsl`, and the group-3
-    `anim_descriptors`/`anim_samples` bindings are fragment-visible.
-  - The loader supplies the map from spec index to animated descriptor index.
 - **Retiring seams:** `build_analytic_overlap_graph_in_order`,
   `assign_channels_with_drops_controlled` and the analytic-graph half of
   `prepare_fused_shadowmask`. On the runtime side: `build_spec_light_shadowmask_channels`
@@ -275,6 +268,11 @@ Compiler:
   - `build_pipeline.md`: stage ordering and id 42.
 
 ## Open questions
+
+- Before build, a pre-change capture must show a leak from a light the `buried-lights`
+  build does not explain: a dropped non-buried light, or an unselected `campaign-test`
+  light. If none can be found, the Problem reduces to coverage, and the owner revisits
+  scope. — owner: executor, reported to the project owner — **blocks build**
 
 - Lit-area floor value: a minimum lit-texel count, a share of the face's
   contribution, or both. The census cleared every stress-map overflow at 16 texels or

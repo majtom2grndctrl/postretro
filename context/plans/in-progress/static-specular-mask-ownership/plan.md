@@ -337,5 +337,12 @@ Each task commits with its plan update.
   - p1 136 642 → 11 739; p2 47 522 → 2 267; p3 555 236 → 74 837; p4 64 282 → 41 098. Specular-off images are bit-identical at all four poses. At p3 the wall keeps its highlight above the shadow line and loses it below; at p4 the south-floor patch is gone and the lit-wall highlights remain. Owner read pending.
   - M3, style-2 room (`[-53, 3.5, 40]`, yaw −139.8 and 40, pitch −20): the yellow style-2 highlight is gone (animB 274 699 → 0 lit px); the white static spot's highlight remains (animC); specular-off images are bit-identical. Owner read pending.
 - **M1:** a four-yaw sweep at (−17, 21, 86) m, pitch −20, is nearly identical before and after (at most 438 lit px differ). The owner picks the view or supplies the original angles.
+- **M7**, run by the owner with `measure-hallway.ps1 -Cold -SkipBuild`, one run per arm (`--release`, no cache, i5-9400F, 5 jobs). Results, before → after:
+  - Wall: 1248.7 → 1254.3 s. CPU: 4821 → 4719 s.
+  - Peak working set: 4.31 → 4.32 GiB.
+  - Lightmap Bake: 359.4 → 385.5 s. ShadowmaskAtlas: 34.0 → 7.7 s. The two together: 393.3 → 393.1 s.
+  - Ownership fill now runs inside the lightmap walk, so time moves from the shadowmask stage to the lightmap stage. The hallway has no cut face, so it ran no estimate and logged no drops.
+  - Unchanged stages varied by about 2% between runs (SH Bake 621.5 → 608.5 s), with n = 1.
+  - The PRL grew by 67,170 bytes, matching the 8437-face owner table (8 B per face).
 - **M8:** stopped before the first sample, because the power plan was on Balanced and the protocol needs High performance |
 | 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |

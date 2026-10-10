@@ -28,3 +28,7 @@ pub(crate) mod presentation_cells;
 
 #[path = "scripting/frame_systems/presentation_bindings.rs"]
 pub(crate) mod presentation_bindings;
+
+#[cfg(test)]
+#[path = "scripting/frame_systems/presentation_capture_tests.rs"]
+mod presentation_capture_tests;

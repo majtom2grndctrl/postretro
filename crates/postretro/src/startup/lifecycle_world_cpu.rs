@@ -72,6 +72,17 @@ pub(crate) fn install_world_cpu(
         local_carried_loadout,
     } = handles;
 
+    // Install has not reset App's old clock yet. No previous-level baseline
+    // or timing may reach levelLoad or already-met progress reactions.
+    script_ctx.presentation_overrides.borrow_mut().clear();
+    script_ctx.presentation_script_time.set(0.0);
+    script_ctx
+        .presentation_networked_predicate
+        .set(Some(crate::netcode::is_host_replicated_descriptor_entity));
+    script_ctx
+        .presentation_override_validator
+        .set(Some(crate::netcode::validate_presentation_override));
+
     // Fog volumes — one entity per record. Runs after the windowed light-bridge
     // populate so the first fog entity-id lands after the light entities.
     {

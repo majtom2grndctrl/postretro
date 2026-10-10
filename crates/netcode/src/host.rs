@@ -124,6 +124,7 @@ pub fn host_replicate(
     server_script_time: f64,
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
+    presentation_overrides: &postretro_entities::presentation_overrides::PresentationOverrides,
 ) -> Vec<EntityId> {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
@@ -135,6 +136,7 @@ pub fn host_replicate(
         owners,
         command_queues,
         host_aim,
+        presentation_overrides,
     );
     replication.ingest_tick(owned);
 

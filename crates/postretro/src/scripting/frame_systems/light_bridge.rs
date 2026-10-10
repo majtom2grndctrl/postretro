@@ -253,6 +253,41 @@ impl LightBridge {
         }
     }
 
+    /// Cache an applied component before normal bridge sampling. `None` keeps
+    /// an existing local start, or leaves first sight lazy until `update`.
+    pub(crate) fn seed_replicated_state(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        start: Option<f64>,
+    ) -> bool {
+        if start.is_some_and(|value| !value.is_finite() || !(value as f32).is_finite()) {
+            return false;
+        }
+        let Ok(component) = registry.get_component::<LightComponent>(id) else {
+            return false;
+        };
+        let animation_start_time = component.animation.as_ref().and_then(|_| {
+            start.map(|value| value as f32).or_else(|| {
+                self.snapshots
+                    .get(&id)
+                    .and_then(|snapshot| snapshot.animation_start_time)
+            })
+        });
+        self.snapshots.insert(
+            id,
+            LightSnapshot {
+                component: component.clone(),
+                animation_start_time,
+                animation_cycle_index: 0,
+                settled_eligibility_radiance: None,
+            },
+        );
+        self.preserve_baked_descriptors.remove(&id);
+        self.dirty = true;
+        true
+    }
+
     #[allow(dead_code)]
     pub(crate) fn light_count(&self) -> usize {
         self.entity_ids.len()
@@ -715,7 +750,13 @@ impl LightBridge {
             let cycle_changed =
                 snapshot.is_some_and(|snapshot| snapshot.animation_cycle_index != cycle_index);
 
-            if changed || cycle_changed {
+            let lazy_start = snapshot
+                .is_some_and(|snapshot| snapshot.animation_start_time.is_none())
+                && current.animation.as_ref().is_some_and(|animation| {
+                    animation.play_count.is_some_and(|count| count > 0)
+                        && animation.start_active.unwrap_or(true)
+                });
+            if changed || cycle_changed || lazy_start {
                 if changed {
                     self.preserve_baked_descriptors.remove(&id);
                 }
@@ -728,7 +769,7 @@ impl LightBridge {
                 if let Some(anim) = &current.animation
                     && anim.play_count.is_some_and(|count| count > 0)
                     && anim.start_active.unwrap_or(true)
-                    && changed
+                    && (changed || lazy_start)
                 {
                     // Record start time so completion can fire on a future frame.
                     // Any mutation resets the clock ("last call wins").
@@ -4926,5 +4967,95 @@ mod tests {
             });
             assert_eq!(total, [2.0, 0.5, 0.0]);
         }
+    }
+    #[test]
+    fn replicated_seed_survives_enrollment_and_same_frame_sampling() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut component = runtime_component([0.0; 3], 4.0, None);
+        component.animation = Some(LightAnimation {
+            period_ms: 5000.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: Some(true),
+            brightness: Some(vec![0.0, 1.0]),
+            color: None,
+            direction: None,
+            radius: None,
+        });
+        let id = spawn_runtime_light(&mut registry, component);
+        assert!(bridge.seed_replicated_state(&registry, id, Some(8.0)));
+        bridge.absorb_dynamic_lights(&registry);
+        let update = bridge.update(&mut registry, 10.0, 0.0).unwrap();
+        assert!(update.has_dirty_data);
+        assert!(
+            (update.effective_brightness[0] - sample_brightness_at_open(&[0.0, 1.0], 0.4)).abs()
+                < 1e-5
+        );
+        assert_eq!(bridge.snapshots[&id].animation_start_time, Some(8.0));
+        // A scalar-only write must keep the running animation's local start.
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.intensity = 3.0;
+        registry.set_component(id, component).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        let update = bridge.update(&mut registry, 11.0, 0.0).unwrap();
+        assert!(update.has_dirty_data);
+        assert!(
+            (update.effective_brightness[0] - sample_brightness_at_open(&[0.0, 1.0], 0.6)).abs()
+                < 1e-5
+        );
+        assert!(bridge.seed_replicated_state(&registry, id, Some(4.0)));
+        let _ = bridge.update(&mut registry, 11.0, 0.0);
+        assert!(
+            registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none()
+        );
+        bridge.clear();
+        assert!(bridge.snapshots.is_empty());
+    }
+
+    #[test]
+    fn replicated_none_light_seed_keeps_first_start_lazy() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut component = runtime_component([0.0; 3], 4.0, None);
+        let mut animation = sample_animation();
+        animation.play_count = Some(1);
+        component.animation = Some(animation);
+        let id = spawn_runtime_light(&mut registry, component);
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        bridge.absorb_dynamic_lights(&registry);
+        let _ = bridge.update(&mut registry, 20.0, 0.0);
+        assert_eq!(bridge.snapshots[&id].animation_start_time, Some(20.0));
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::NAN)));
+        registry.despawn(id).unwrap();
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(0.0)));
+    }
+    #[test]
+    fn replicated_clear_drops_old_light_start_before_unseeded_replacement() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let mut component = runtime_component([0.0; 3], 4.0, None);
+        let mut animation = sample_animation();
+        animation.play_count = Some(1);
+        component.animation = Some(animation);
+        let id = spawn_runtime_light(&mut registry, component.clone());
+        assert!(bridge.seed_replicated_state(&registry, id, Some(8.0)));
+        bridge.absorb_dynamic_lights(&registry);
+        let mut cleared = component.clone();
+        cleared.animation = None;
+        registry.set_component(id, cleared).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        assert_eq!(bridge.snapshots[&id].animation_start_time, None);
+        registry.set_component(id, component).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        let _ = bridge.update(&mut registry, 20.0, 0.0);
+        assert_eq!(bridge.snapshots[&id].animation_start_time, Some(20.0));
     }
 }

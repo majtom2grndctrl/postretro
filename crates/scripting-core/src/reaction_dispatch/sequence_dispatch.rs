@@ -89,11 +89,24 @@ pub(super) fn dispatch_sequence(
             );
             continue;
         };
+        super::presentation_capture::before_apply(
+            script_ctx,
+            &script_ctx.registry.borrow(),
+            &step.primitive,
+            &[id],
+        );
         if let Err(e) = handler(id, &step.args) {
             log::warn!(
                 "[Scripting] sequence step {i}: primitive '{}' on entity {:?} failed: {e}",
                 step.primitive,
                 id
+            );
+        } else {
+            super::presentation_capture::after_apply(
+                script_ctx,
+                &script_ctx.registry.borrow(),
+                &step.primitive,
+                &[id],
             );
         }
     }

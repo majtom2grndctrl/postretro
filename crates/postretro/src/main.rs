@@ -4328,6 +4328,16 @@ impl App {
                         &self.kinematic_mover_colliders,
                         &self.kinematic_mover_tick_states,
                     );
+                    let mut presentation_bindings =
+                        scripting_systems::presentation_bindings::PresentationBindingsMut {
+                            lights: &mut session.light_bridge,
+                            fog: &mut session.fog_volume_bridge,
+                            emitters: &mut session.emitter_bridge,
+                            map_entities: self
+                                .level
+                                .as_ref()
+                                .map_or(&[], |level| level.map_entities.as_slice()),
+                        };
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
@@ -4351,6 +4361,9 @@ impl App {
                             .and_then(|payload| payload.movement.as_ref()),
                         tuning.as_deref(),
                         *applied_movement_tuning_generation != *tuning_generation,
+                        &mut presentation_bindings,
+                        script_ctx.presentation_script_time.get(),
+                        time_sync.rtt_micros(),
                     )
                 };
                 // This owner projection can arrive on a zero-tick frame. Death
@@ -4711,6 +4724,22 @@ impl App {
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
             let faction_sentiment = script_ctx.faction_sentiment.borrow();
+            let bindings = crate::scripting_systems::presentation_bindings::PresentationBindings {
+                lights: &session.light_bridge,
+                fog: &session.fog_volume_bridge,
+                map_entities: self
+                    .level
+                    .as_ref()
+                    .map_or(&[], |world| world.map_entities.as_slice()),
+            };
+            netcode::host_register_presentation_overrides(
+                &registry,
+                &mut script_ctx.presentation_overrides.borrow_mut(),
+                &bindings,
+                allocator,
+                replicable,
+                replication,
+            );
             let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
@@ -4729,6 +4758,7 @@ impl App {
                 server_script_time,
                 snapshot_due,
                 last_emitted_snapshot_tick,
+                &script_ctx.presentation_overrides.borrow(),
             );
             // Ingesting the current presentation pose establishes which baseline
             // must eventually be acknowledged; it does not imply snapshot delivery.
@@ -5455,6 +5485,7 @@ impl App {
             allocator,
             replicable,
             descriptor_entities,
+            &mut script_ctx.presentation_overrides.borrow_mut(),
         );
     }
 

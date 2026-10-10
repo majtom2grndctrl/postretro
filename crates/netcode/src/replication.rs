@@ -2,9 +2,17 @@
 // Produces owned snapshots for the registry-blind net-crate boundary.
 // See: context/lib/networking.md
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use postretro_net::replication::EntitySnapshot;
+use super::presentation_state::presentation_override_payload;
+use postretro_entities::presentation_binding::PresentationBindingResolver;
+use postretro_entities::presentation_overrides::{
+    PresentationComponent, PresentationOverride, PresentationOverrides,
+};
+use postretro_entities::provenance::DescriptorMapOverride;
+use postretro_net::replication::{EntitySnapshot, ServerReplication};
+use postretro_net::wire::WirePresentationBinding;
 use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
 
 use postretro_entities::components::mesh::MeshComponent;
@@ -33,6 +41,8 @@ use super::{
 #[derive(Debug, Default)]
 pub struct ReplicableSet {
     registered: HashSet<EntityId>,
+    bound_identities: HashMap<EntityId, WirePresentationBinding>,
+    last_valid_payloads: RefCell<HashMap<(EntityId, ComponentKind), ComponentPayload>>,
     projectile_presentations: HashMap<EntityId, postretro_net::wire::WireProjectilePresentation>,
 }
 
@@ -53,6 +63,10 @@ impl ReplicableSet {
     pub(crate) fn unregister(&mut self, id: EntityId) {
         self.registered.remove(&id);
         self.projectile_presentations.remove(&id);
+        self.bound_identities.remove(&id);
+        self.last_valid_payloads
+            .get_mut()
+            .retain(|(entity, _), _| *entity != id);
     }
 
     pub(crate) fn register_projectile_presentation(
@@ -116,7 +130,15 @@ pub(crate) fn produce_owned_snapshots(
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
 ) -> Vec<EntitySnapshot> {
-    produce_owned_snapshots_with_host_aim(registry, set, allocator, owners, command_queues, None)
+    produce_owned_snapshots_with_host_aim(
+        registry,
+        set,
+        allocator,
+        owners,
+        command_queues,
+        None,
+        &PresentationOverrides::default(),
+    )
 }
 
 /// Production listen-host variant. Remote-owned pawn pitch comes from the resolved
@@ -130,6 +152,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
+    overrides: &PresentationOverrides,
 ) -> Vec<EntitySnapshot> {
     let mut snapshots = Vec::new();
     for id in set.iter() {
@@ -147,7 +170,43 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
                 .and_then(|client_id| command_queues.current_aim_pitch(client_id))
                 .unwrap_or(0.0)
         };
-        let components = collect_payloads(registry, id, aim_pitch);
+        let binding = set.bound_identities.get(&id).copied();
+        let mut components = if binding.is_some() {
+            Vec::new()
+        } else {
+            collect_payloads(registry, id, aim_pitch)
+        };
+        for kind in [
+            ComponentKind::Light,
+            ComponentKind::FogVolume,
+            ComponentKind::BillboardEmitter,
+        ] {
+            let key = (id, kind);
+            let Some(record) = overrides.records.get(&key) else {
+                if binding.is_some()
+                    && let Some(payload) = set.last_valid_payloads.borrow().get(&key).cloned()
+                {
+                    components.push(payload);
+                }
+                continue;
+            };
+            let payload = if let Some(payload) = presentation_override_payload(record) {
+                set.last_valid_payloads
+                    .borrow_mut()
+                    .insert(key, payload.clone());
+                Some(payload)
+            } else {
+                set.last_valid_payloads.borrow().get(&key).cloned()
+            };
+            if let Some(payload) = payload {
+                components.push(payload);
+            }
+        }
+        // A first invalid bound write has never entered the tracker. Once valid,
+        // the cached payload keeps it present even if defensive validation fails.
+        if binding.is_some() && components.is_empty() {
+            continue;
+        }
         let network_id = allocator.stamp(id).0;
         // Movement-authority metadata (M15 Phase 3): a pawn owned by a client carries
         // its owner id + resolved command cursor. Unowned entities (the Transform-only
@@ -171,7 +230,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
             entity_class,
             active_weapon_archetype,
             projectile_presentation: set.projectile_presentations.get(&id).copied(),
-            presentation_binding: None,
+            presentation_binding: binding,
         });
     }
     snapshots
@@ -301,6 +360,7 @@ pub fn host_register_descriptor_entities(
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     tracked: &mut HashSet<EntityId>,
+    overrides: &mut PresentationOverrides,
 ) {
     let stale_ids: Vec<EntityId> = tracked
         .iter()
@@ -320,11 +380,113 @@ pub fn host_register_descriptor_entities(
         allocator.stamp(id);
         replicable.register(id);
         if tracked.insert(id) {
+            capture_placement_overrides(registry, id, overrides);
             count += 1;
         }
     }
     if count > 0 {
         log::info!("[Net] host registered {count} descriptor entity/entities for replication");
+    }
+}
+
+/// Capture placement KVPs once, preserving authored snapshots across bridge sampling
+/// and pickup/drop. Other map fields remain descriptor-local presentation.
+fn capture_placement_overrides(
+    registry: &EntityRegistry,
+    id: EntityId,
+    overrides: &mut PresentationOverrides,
+) {
+    let Ok(provenance) = registry.get_component::<DescriptorProvenance>(id) else {
+        return;
+    };
+    for (kind, fields) in [
+        (
+            ComponentKind::Light,
+            [
+                DescriptorMapOverride::LightInitialIntensity,
+                DescriptorMapOverride::LightInitialColor,
+            ],
+        ),
+        (
+            ComponentKind::BillboardEmitter,
+            [
+                DescriptorMapOverride::EmitterInitialRate,
+                DescriptorMapOverride::EmitterInitialSpinRate,
+            ],
+        ),
+    ] {
+        if overrides.records.contains_key(&(id, kind))
+            || !fields
+                .iter()
+                .any(|field| provenance.map_overrides.contains(field))
+        {
+            continue;
+        }
+        let Some(component) = PresentationComponent::snapshot(registry, id, kind) else {
+            continue;
+        };
+        let record = PresentationOverride {
+            component,
+            anim_start: None,
+        };
+        if presentation_override_payload(&record).is_some() {
+            overrides.records.insert((id, kind), record);
+        } else if overrides.warned_writes.insert((id, "placement KVP".into())) {
+            log::warn!("[Net] invalid placement presentation override for entity {id:?}");
+        }
+    }
+}
+
+/// Bind recorded changes to client-local map presentation after gameplay drains.
+/// Sorting fixes NetworkId assignment and therefore baseline budget order.
+pub fn host_register_presentation_overrides(
+    registry: &EntityRegistry,
+    overrides: &mut PresentationOverrides,
+    resolver: &dyn PresentationBindingResolver,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracker: &mut ServerReplication,
+) {
+    let mut ids: Vec<_> = overrides.records.keys().map(|(id, _)| *id).collect();
+    // Include bound registrations defensively even if their records were removed.
+    ids.extend(replicable.bound_identities.keys().copied());
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        if !registry.exists(id) {
+            overrides.remove_entity(id);
+            if replicable.bound_identities.contains_key(&id) {
+                if let Some(network_id) = allocator.network_id_for_entity(id) {
+                    tracker.forget_entity_without_tombstone(network_id.0);
+                }
+                replicable.unregister(id);
+                allocator.forget(id);
+            }
+        } else if is_host_replicated_descriptor_entity(registry, id)
+            || registry.is_inventory_owned(id)
+            || replicable.bound_identities.contains_key(&id)
+        {
+            continue;
+        } else if let Some((key, origin)) = resolver
+            .key_for_entity(registry, id)
+            .filter(|(_, origin)| origin.is_finite())
+        {
+            allocator.stamp(id);
+            replicable.register(id);
+            replicable.bound_identities.insert(
+                id,
+                WirePresentationBinding {
+                    kind: key.kind as u8,
+                    index: key.index,
+                    origin: origin.to_array(),
+                },
+            );
+        } else {
+            overrides.remove_entity(id);
+            if overrides.warned_unresolvable.insert(id) {
+                log::warn!("[Net] cannot bind presentation override for entity {id:?}");
+            }
+        }
     }
 }
 
@@ -529,7 +691,10 @@ mod tests {
 
     /// Spawn a static (non-AI) map-placed descriptor prop: a Transform, a health/mesh
     /// component, and a `MapPlacement` provenance — but NO `Brain`/`Agent`.
-    fn spawn_static_descriptor_prop(registry: &mut EntityRegistry, class: &str) -> EntityId {
+    pub(super) fn spawn_static_descriptor_prop(
+        registry: &mut EntityRegistry,
+        class: &str,
+    ) -> EntityId {
         let id = registry.spawn(Transform {
             position: Vec3::new(7.0, 0.0, 0.0),
             ..Transform::default()
@@ -551,7 +716,7 @@ mod tests {
         id
     }
 
-    fn spawn_world_item(registry: &mut EntityRegistry, class: &str) -> EntityId {
+    pub(super) fn spawn_world_item(registry: &mut EntityRegistry, class: &str) -> EntityId {
         let id = registry.spawn(Transform {
             position: Vec3::new(9.0, 0.0, 0.0),
             ..Transform::default()
@@ -577,7 +742,13 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             set.contains(enemy),
@@ -602,10 +773,22 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let first_network_id = allocator.stamp(enemy);
 
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let second_network_id = allocator.stamp(enemy);
 
         assert_eq!(
@@ -626,7 +809,13 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             set.contains(prop),
@@ -643,7 +832,13 @@ mod tests {
         let mut set = ReplicableSet::new();
         let mut tracked = HashSet::new();
 
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let initial_network_id = allocator.stamp(item);
         assert!(set.contains(item), "a touchable item is registered");
         assert!(tracked.contains(&item), "the host tracks the world item");
@@ -679,7 +874,13 @@ mod tests {
             registry.is_inventory_owned(item),
             "holstered ownership counts"
         );
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         assert!(!set.contains(item), "acquired item is unregistered");
         assert!(
             !tracked.contains(&item),
@@ -696,7 +897,13 @@ mod tests {
                 postretro_entities::components::inventory::Inventory::default(),
             )
             .unwrap();
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let dropped_network_id = allocator.stamp(item);
         assert!(set.contains(item), "dropped item is registered again");
         assert!(
@@ -717,7 +924,13 @@ mod tests {
 
         // Level 1: one enemy registered + tracked.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         assert!(set.contains(level1_enemy));
 
         // Reload: despawn the level-1 enemy and spawn a fresh level-2 enemy (a distinct
@@ -729,7 +942,13 @@ mod tests {
             "the reloaded enemy is a distinct entity"
         );
 
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             !set.contains(level1_enemy),
@@ -755,7 +974,13 @@ mod tests {
 
         // Level 1: one enemy registered, stamped, and mapped in the allocator.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let level1_net_id = allocator.stamp(level1_enemy);
         assert!(
             allocator.maps_entity(level1_enemy),
@@ -765,7 +990,13 @@ mod tests {
         // Reload: despawn the level-1 enemy and spawn a fresh, distinct level-2 enemy.
         registry.despawn(level1_enemy).expect("live enemy despawns");
         let level2_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             !allocator.maps_entity(level1_enemy),
@@ -791,7 +1022,13 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         let snaps = produce_owned_snapshots(
             &registry,
@@ -936,3 +1173,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "replication/presentation_tests.rs"]
+mod presentation_tests;

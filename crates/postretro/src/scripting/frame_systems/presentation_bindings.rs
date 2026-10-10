@@ -81,6 +81,55 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
     }
 }
 
+/// Mutable receive adapter also seeds the presentation bridges before their
+/// same-frame update. Identity still comes from the immutable authored roster.
+pub(crate) struct PresentationBindingsMut<'a> {
+    pub(crate) lights: &'a mut LightBridge,
+    pub(crate) fog: &'a mut FogVolumeBridge,
+    pub(crate) emitters: &'a mut super::emitter_bridge::EmitterBridge,
+    pub(crate) map_entities: &'a [MapEntityRecord],
+}
+impl PresentationBindingResolver for PresentationBindingsMut<'_> {
+    fn resolve(
+        &self,
+        registry: &EntityRegistry,
+        key: PresentationBindingKey,
+    ) -> Option<(EntityId, Vec3)> {
+        PresentationBindings {
+            lights: self.lights,
+            fog: self.fog,
+            map_entities: self.map_entities,
+        }
+        .resolve(registry, key)
+    }
+    fn key_for_entity(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+    ) -> Option<(PresentationBindingKey, Vec3)> {
+        PresentationBindings {
+            lights: self.lights,
+            fog: self.fog,
+            map_entities: self.map_entities,
+        }
+        .key_for_entity(registry, entity)
+    }
+    fn seed_light(&mut self, registry: &EntityRegistry, id: EntityId, start: Option<f64>) -> bool {
+        self.lights.seed_replicated_state(registry, id, start)
+    }
+    fn seed_fog(&mut self, registry: &EntityRegistry, id: EntityId, start: Option<f64>) -> bool {
+        self.fog.seed_replicated_state(registry, id, start)
+    }
+    fn seed_emitter(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        elapsed: Option<f64>,
+    ) -> bool {
+        self.emitters.seed_replicated_state(registry, id, elapsed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

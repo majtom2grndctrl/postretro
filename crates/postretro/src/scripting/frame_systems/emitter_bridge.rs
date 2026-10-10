@@ -33,6 +33,8 @@ struct EmitterBridgeState {
     /// Elapsed time within the active `SpinAnimation` tween, in seconds. Reset
     /// to `0.0` when a new tween starts or the tween completes.
     spin_elapsed: f32,
+    /// A replicated age already includes this frame's elapsed time.
+    skip_next_spin_advance: bool,
     /// Per-emitter LCG state. Seeded once on first-seen from the emitter's
     /// world-space position so two emitters at distinct positions produce
     /// independent spawn streams; advanced via the Park-Miller-style mix in
@@ -60,6 +62,7 @@ impl EmitterBridgeState {
         Self {
             accumulator: 0.0,
             spin_elapsed: 0.0,
+            skip_next_spin_advance: false,
             rand_state: seed,
             step: 0,
             last_warn_time: f32::NEG_INFINITY,
@@ -96,6 +99,41 @@ impl EmitterBridge {
         Self {
             states: HashMap::new(),
         }
+    }
+
+    /// Cache an applied spin tween. A supplied age is sampled without adding
+    /// this frame's delta again; following frames advance normally.
+    pub(crate) fn seed_replicated_state(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        elapsed: Option<f64>,
+    ) -> bool {
+        if elapsed
+            .is_some_and(|value| !value.is_finite() || value < 0.0 || !(value as f32).is_finite())
+        {
+            return false;
+        }
+        let Ok(component) = registry.get_component::<BillboardEmitterComponent>(id) else {
+            return false;
+        };
+        let origin = registry
+            .get_component::<Transform>(id)
+            .map(|transform| transform.position)
+            .unwrap_or(Vec3::ZERO);
+        let state = self
+            .states
+            .entry(id)
+            .or_insert_with(|| EmitterBridgeState::new(emitter_seed(id, origin)));
+        state.last_spin_animation = component.spin_animation.clone();
+        if component.spin_animation.is_none() {
+            state.spin_elapsed = 0.0;
+            state.skip_next_spin_advance = false;
+        } else if let Some(elapsed) = elapsed {
+            state.spin_elapsed = elapsed as f32;
+            state.skip_next_spin_advance = component.spin_animation.is_some();
+        }
+        true
     }
 
     pub(crate) fn clear(&mut self) {
@@ -183,14 +221,10 @@ impl EmitterBridge {
             // First-seen: seed the LCG from emitter position. XOR with
             // entity raw id so two emitters at the same authored origin do
             // not collide.
-            let state = self.states.entry(id).or_insert_with(|| {
-                let seed = origin.x.to_bits()
-                    ^ origin.y.to_bits()
-                    ^ origin.z.to_bits()
-                    ^ id.to_raw()
-                    ^ 0xDEAD_BEEF;
-                EmitterBridgeState::new(seed)
-            });
+            let state = self
+                .states
+                .entry(id)
+                .or_insert_with(|| EmitterBridgeState::new(emitter_seed(id, origin)));
             // XOR step counter into the rand state so a re-tick from the same
             // origin does not reproduce a previous frame's spawn stream.
             state.step = state.step.wrapping_add(1);
@@ -258,10 +292,13 @@ impl EmitterBridge {
             // tween does not leak elapsed time into a later install.
             if state.last_spin_animation != component.spin_animation {
                 state.spin_elapsed = 0.0;
+                state.skip_next_spin_advance = false;
                 state.last_spin_animation = component.spin_animation.clone();
             }
             if let Some(anim) = component.spin_animation.clone() {
-                state.spin_elapsed += delta;
+                if !std::mem::take(&mut state.skip_next_spin_advance) {
+                    state.spin_elapsed += delta;
+                }
                 let duration = anim.duration.max(f32::EPSILON);
                 let t = (state.spin_elapsed / duration).clamp(0.0, 1.0);
                 let new_rate = eval_curve(&anim.rate_curve, t);
@@ -407,6 +444,10 @@ fn rate_limited_warn(
         log::warn!("{args}");
         state.last_warn_time = current_time;
     }
+}
+
+fn emitter_seed(id: EntityId, origin: Vec3) -> u32 {
+    origin.x.to_bits() ^ origin.y.to_bits() ^ origin.z.to_bits() ^ id.to_raw() ^ 0xDEAD_BEEF
 }
 
 #[cfg(test)]
@@ -950,5 +991,116 @@ mod tests {
             found_at_origin,
             "expected at least one particle spawned at the map entity origin",
         );
+    }
+    #[test]
+    fn replicated_spin_seed_samples_same_frame_age_then_advances_locally() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 5.0,
+            rate_curve: vec![0.0, 1.0],
+        });
+        let id = spawn_emitter(&mut registry, component);
+        let mut bridge = EmitterBridge::new();
+        assert!(bridge.seed_replicated_state(&registry, id, Some(2.0)));
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.0);
+        assert!(
+            (registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .spin_rate
+                - 0.4)
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(bridge.states[&id].spin_elapsed, 2.0);
+        let mut component = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap()
+            .clone();
+        component.rate = 0.0;
+        registry.set_component(id, component).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.5);
+        assert_eq!(bridge.states[&id].spin_elapsed, 2.5);
+        assert!(
+            (registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .spin_rate
+                - 0.5)
+                .abs()
+                < 1e-5
+        );
+        assert!(bridge.seed_replicated_state(&registry, id, Some(6.0)));
+        update_bridge(&mut bridge, &mut registry, 0.5, 11.0);
+        let component = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
+        assert!(component.spin_animation.is_none());
+        assert_eq!(component.spin_rate, 1.0);
+        bridge.clear();
+        assert!(bridge.states.is_empty());
+    }
+
+    #[test]
+    fn replicated_spin_seed_does_not_skip_a_replaced_local_animation() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 5.0,
+            rate_curve: vec![0.0, 1.0],
+        });
+        let id = spawn_emitter(&mut registry, component.clone());
+        let mut bridge = EmitterBridge::new();
+        assert!(bridge.seed_replicated_state(&registry, id, Some(2.0)));
+        component.spin_animation.as_mut().unwrap().duration = 10.0;
+        registry.set_component(id, component).unwrap();
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.0);
+        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::NAN)));
+        registry.despawn(id).unwrap();
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(0.0)));
+    }
+    #[test]
+    fn replicated_none_spin_seed_advances_a_new_tween_and_clear_drops_seed() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 5.0,
+            rate_curve: vec![0.0, 1.0],
+        });
+        let id = spawn_emitter(&mut registry, component);
+        let mut bridge = EmitterBridge::new();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.0);
+        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
+        assert!(bridge.seed_replicated_state(&registry, id, Some(2.0)));
+        bridge.clear();
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.5);
+        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
+        assert!(!bridge.states[&id].skip_next_spin_advance);
+    }
+    #[test]
+    fn replicated_clear_drops_spin_age_and_skip_before_unseeded_replacement() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 5.0,
+            rate_curve: vec![0.0, 1.0],
+        });
+        let id = spawn_emitter(&mut registry, component.clone());
+        let mut bridge = EmitterBridge::new();
+        assert!(bridge.seed_replicated_state(&registry, id, Some(2.0)));
+        let mut cleared = component.clone();
+        cleared.spin_animation = None;
+        registry.set_component(id, cleared).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        assert_eq!(bridge.states[&id].spin_elapsed, 0.0);
+        assert!(!bridge.states[&id].skip_next_spin_advance);
+        registry.set_component(id, component).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.0);
+        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
     }
 }

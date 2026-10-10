@@ -142,6 +142,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     let frozen = false;
     let frame_anim_time =
         App::frame_anim_time(app.anim_time, frame_dt as f64, app.anim_time_scale, frozen);
+    // Clear the dispatch baseline before Input can fire a UI reaction. Capture,
+    // serialization and bridge sampling share this advanced, unclamped clock.
+    let frame_script_time = app.script_time + if frozen { 0.0 } else { f64::from(frame_dt) };
+    if let Some(session) = app.session.as_ref() {
+        let ctx = &session.scripting.script_ctx;
+        ctx.presentation_overrides.borrow_mut().begin_frame();
+        ctx.presentation_script_time.set(frame_script_time);
+    }
 
     // Tail of the Input stage: poll the gamepad, BEFORE the
     // `take_ready`/`advance_frame` pair below (see `poll_gamepad`).
@@ -1528,7 +1536,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // this frame. No-op for the client and single-player.
     // Serialization precedes the clock advance; carry the script clock the
     // presentation bridges will sample later in this frame.
-    let frame_script_time = app.script_time + if frozen { 0.0 } else { f64::from(frame_dt) };
     let owner_projected_weapons = app.net_serialize_and_send(host_snapshot_due, frame_script_time);
 
     // Fix B: present connected-client pawns from the delay buffer at a delayed

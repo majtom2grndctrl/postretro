@@ -9,6 +9,7 @@ pub mod data_descriptors;
 pub mod data_registry;
 pub mod engine_state_catalog;
 pub mod presentation_binding;
+pub mod presentation_overrides;
 pub mod provenance;
 pub mod reactions;
 pub mod registry;

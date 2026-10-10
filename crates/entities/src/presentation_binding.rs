@@ -19,6 +19,25 @@ pub struct PresentationBindingKey {
 
 /// App-owned bridges resolve authored indices; netcode never names those bridges.
 pub trait PresentationBindingResolver {
+    fn seed_light(
+        &mut self,
+        _registry: &EntityRegistry,
+        _id: EntityId,
+        _start: Option<f64>,
+    ) -> bool {
+        false
+    }
+    fn seed_fog(&mut self, _registry: &EntityRegistry, _id: EntityId, _start: Option<f64>) -> bool {
+        false
+    }
+    fn seed_emitter(
+        &mut self,
+        _registry: &EntityRegistry,
+        _id: EntityId,
+        _elapsed: Option<f64>,
+    ) -> bool {
+        false
+    }
     fn resolve(
         &self,
         registry: &EntityRegistry,

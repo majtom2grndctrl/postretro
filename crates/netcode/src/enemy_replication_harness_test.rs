@@ -546,6 +546,7 @@ impl EnemyReplicationHarness {
             &mut self.allocator,
             &mut self.replicable,
             &mut self.descriptor_entities,
+            &mut Default::default(),
         );
     }
 
@@ -1614,6 +1615,7 @@ fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
         &mut allocator,
         &mut replicable,
         &mut descriptor_entities,
+        &mut Default::default(),
     );
     let net_a = allocator.stamp(enemy_a);
     let net_b = allocator.stamp(enemy_b);

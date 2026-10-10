@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
 mod group_dispatch;
+pub mod presentation_capture;
 mod primitive_dispatch;
 mod progress;
 mod sequence_dispatch;

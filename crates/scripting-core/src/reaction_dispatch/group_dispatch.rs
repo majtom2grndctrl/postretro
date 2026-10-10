@@ -56,7 +56,8 @@ pub(super) fn dispatch_group(
         targets.len(),
     );
     let mut registry = script_ctx.registry.borrow_mut();
-    if let Err(error) = reaction_registry.dispatch_tagged(
+    super::presentation_capture::before_apply(script_ctx, &registry, primitive, &targets);
+    match reaction_registry.dispatch_tagged(
         primitive,
         &mut registry,
         // Targets are pre-resolved by kind, so handlers must not rescan by
@@ -65,6 +66,12 @@ pub(super) fn dispatch_group(
         &targets,
         args,
     ) {
-        log::warn!("[Scripting] group command '{primitive}' on kind '{kind}' failed: {error:?}");
+        Ok(true) => {
+            super::presentation_capture::after_apply(script_ctx, &registry, primitive, &targets)
+        }
+        Ok(false) => {}
+        Err(error) => {
+            log::warn!("[Scripting] group command '{primitive}' on kind '{kind}' failed: {error:?}")
+        }
     }
 }

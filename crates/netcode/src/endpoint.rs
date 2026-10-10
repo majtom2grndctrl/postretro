@@ -380,6 +380,13 @@ impl ClientTimeSync {
             .then(|| self.estimator.estimated_server_tick(&self.clock))
     }
 
+    /// Smoothed round-trip time, unavailable until a real echo initializes sync.
+    pub fn rtt_micros(&self) -> Option<f64> {
+        self.estimator
+            .is_initialized()
+            .then(|| self.estimator.rtt_micros())
+    }
+
     /// The smoothed jitter estimate in microseconds, for interpolation delay
     /// sizing. `None` until the first echo has been folded in.
     pub(crate) fn jitter_micros(&self) -> Option<f64> {

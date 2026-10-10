@@ -48,10 +48,7 @@ fn projectile_class(name: &str) -> String {
 
 /// Live world-entity classification. Canonical inventory ownership takes precedence
 /// over retained descriptor components; pawn and projectile paths remain separate.
-pub(crate) fn is_host_replicated_descriptor_entity(
-    registry: &EntityRegistry,
-    id: EntityId,
-) -> bool {
+pub fn is_host_replicated_descriptor_entity(registry: &EntityRegistry, id: EntityId) -> bool {
     let Ok(provenance) = registry.get_component::<DescriptorProvenance>(id) else {
         return false;
     };

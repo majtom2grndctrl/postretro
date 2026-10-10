@@ -36,6 +36,9 @@ use std::collections::VecDeque;
 mod client;
 mod command_queue;
 mod descriptor_class;
+pub use descriptor_class::is_host_replicated_descriptor_entity;
+mod presentation_state;
+pub use presentation_state::validate_presentation_override;
 mod endpoint;
 // The ordered frame stages of the replicated-state → presentation path (snapshot apply,
 // then state-crossing detection). Owns the order via a witness value so `App` and the
@@ -164,6 +167,7 @@ pub(crate) use reconcile::reconcile_local_pawn;
 pub(crate) use replication::produce_owned_snapshots;
 pub use replication::{
     ReplicableSet, host_register_descriptor_entities, host_register_loaded_movers,
+    host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -780,8 +784,12 @@ pub fn client_receive_and_apply(
     host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
     host_tuning: Option<&TuningPayload>,
     rebuild_movement_tuning: bool,
+    presentation_bindings: &mut dyn postretro_entities::presentation_binding::PresentationBindingResolver,
+    local_script_time: f64,
+    rtt_micros: Option<f64>,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
+    let mut presentation_payloads = Vec::new();
     for bytes in client.drain_snapshots() {
         let snapshot = match decode_snapshot(&bytes) {
             Ok(snapshot) => snapshot,
@@ -800,12 +808,15 @@ pub fn client_receive_and_apply(
         let target_tick = mover_target_tick
             .unwrap_or(snapshot.server_tick)
             .max(snapshot.server_tick);
-        let mut outcome = replication.apply_snapshot_with_mover_target_tick(
+        let mut outcome = replication.apply_snapshot_with_presentation(
             registry,
             &snapshot,
             target_tick,
             tick_dt,
+            presentation_bindings,
+            local_script_time,
         );
+        presentation_payloads.append(&mut outcome.presentation_payloads);
         for correction in &outcome.mover_corrections {
             if let Some(existing) = frame_outcome
                 .mover_corrections
@@ -940,6 +951,16 @@ pub fn client_receive_and_apply(
             client.send_input(buffer);
         }
     }
+
+    // Apply once after every drained snapshot has materialized, using the newest
+    // accepted header clock. Empty drains still release pre-sync deferred state.
+    replication.apply_presentation_batch(
+        registry,
+        presentation_payloads,
+        local_script_time,
+        rtt_micros,
+        presentation_bindings,
+    );
 
     // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
     // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
@@ -3363,6 +3384,7 @@ mod tests {
             SERVER_SCRIPT_TIME,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3398,6 +3420,7 @@ mod tests {
             0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert!(sampled.is_empty());
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3450,6 +3473,7 @@ mod tests {
             0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);

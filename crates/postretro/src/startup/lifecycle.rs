@@ -1918,7 +1918,7 @@ pub(crate) mod tests {
     /// The scripting core lives on `Session`; this keeps the many test reads of
     /// the shared registries one short call away without a borrow fight against
     /// the non-`Clone` session subsystems.
-    pub(super) fn script_ctx(app: &App) -> ScriptCtx {
+    pub(crate) fn script_ctx(app: &App) -> ScriptCtx {
         app.session
             .as_ref()
             .expect("test app session installed")
@@ -2184,7 +2184,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(super) fn level_world(
+    pub(crate) fn level_world(
         _name: &str,
         triangle_count: usize,
     ) -> postretro_level_loader::LevelWorld {
@@ -2759,6 +2759,51 @@ pub(crate) mod tests {
                 .expect("client trap remains live")
                 .armed,
             "the connected client does not rerun the host pool roll",
+        );
+    }
+
+    /// Production segment-B install for presentation capture tests.
+    pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loader::LevelWorld) {
+        let ctx = script_ctx(app);
+        let content_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+        let session = app.session.as_mut().unwrap();
+        session
+            .light_bridge
+            .populate_from_level(&world.lights, &mut ctx.registry.borrow_mut(), 0);
+        let handles = WorldInstallHandles {
+            world,
+            script_ctx: &ctx,
+            command_diagnostics: Default::default(),
+            mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
+            spawn_context: Default::default(),
+            content_root: &content_root,
+            active_level_tags: &[],
+            nav_graph: None,
+            fog_volume_bridge: &mut session.fog_volume_bridge,
+            trigger_volume_bridge: &mut session.trigger_volume_bridge,
+            classname_dispatch: &session.classname_dispatch,
+            script_runtime: &session.scripting.script_runtime,
+            sequence_registry: &session.scripting.sequence_registry,
+            reaction_registry: &session.scripting.reaction_registry,
+            system_registry: &session.scripting.system_registry,
+            modal_stack: &mut session.modal_stack,
+            progress_tracker: &mut session.progress_tracker,
+            crossing_detector: &mut session.crossing_detector,
+            slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
+            mesh_clip_tables: &mut session.mesh_clip_tables,
+            hit_zone_store: &mut session.hit_zone_store,
+            trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
+            suppress_host_replicated: false,
+            suppress_boot_pawn: true,
+            local_carried_loadout: None,
+        };
+        let _ = install_world_cpu(
+            handles,
+            &mut StartupTimings::new(),
+            |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
+            |_spawns| {},
         );
     }
 

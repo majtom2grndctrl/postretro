@@ -897,6 +897,7 @@ mod tests {
             &owners,
             &command_queues,
             None,
+            &Default::default(),
         );
         let pawn_snapshot = snapshots
             .iter()
@@ -916,6 +917,7 @@ mod tests {
                 &crate::netcode::MovementOwners::new(),
                 &command_queues,
                 Some((pawn, -0.37)),
+                &Default::default(),
             );
         let host_movement = host_pitch_snapshots
             .iter()

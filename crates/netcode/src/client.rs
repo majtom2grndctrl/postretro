@@ -52,7 +52,28 @@ use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
 
 mod bindings;
-use bindings::ClientBindings;
+#[cfg(test)]
+mod presentation_tests;
+use bindings::{ClientBindings, is_presentation_payload};
+#[cfg(test)]
+use postretro_entities::presentation_binding::PresentationBindingKey;
+use postretro_entities::presentation_binding::PresentationBindingResolver;
+
+#[cfg(test)]
+pub(crate) struct NoPresentationBindings;
+#[cfg(test)]
+impl PresentationBindingResolver for NoPresentationBindings {
+    fn resolve(&self, _: &EntityRegistry, _: PresentationBindingKey) -> Option<(EntityId, Vec3)> {
+        None
+    }
+    fn key_for_entity(
+        &self,
+        _: &EntityRegistry,
+        _: EntityId,
+    ) -> Option<(PresentationBindingKey, Vec3)> {
+        None
+    }
+}
 
 const MOVER_HISTORY_LIMIT: usize = 128;
 #[cfg(test)]
@@ -448,6 +469,8 @@ pub(crate) struct ApplyOutcome {
     /// sequence). Carries only the applied baselines and tombstones —
     /// rejected/unknown-baseline records are never acked.
     pub(crate) ack: Option<AckMessage>,
+    /// Written state applies after the entire frame batch has materialized.
+    pub(crate) presentation_payloads: Vec<(NetworkId, ComponentPayload)>,
     /// Refresh requests triggered by this snapshot (unknown-baseline deltas, stale
     /// mappings). Sent immediately; the pending set also resends them on cadence.
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
@@ -535,6 +558,7 @@ impl ClientReplication {
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
         self.bindings.mover_network_ids.clear();
+        self.bindings.clear_presentation();
         self.mover_history.clear();
 
         let mut requests = Vec::with_capacity(known.len());
@@ -578,6 +602,7 @@ impl ClientReplication {
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
         self.bindings.mover_network_ids.clear();
+        self.bindings.clear_presentation();
         self.mover_history.clear();
     }
 
@@ -690,12 +715,51 @@ impl ClientReplication {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_snapshot_with_mover_target_tick(
         &mut self,
         registry: &mut EntityRegistry,
         snapshot: &SnapshotMessage,
         mover_target_tick: u32,
         mover_tick_dt: f32,
+    ) -> ApplyOutcome {
+        self.apply_snapshot_with_presentation(
+            registry,
+            snapshot,
+            mover_target_tick,
+            mover_tick_dt,
+            &mut NoPresentationBindings,
+            0.0,
+        )
+    }
+
+    pub(crate) fn apply_presentation_batch(
+        &mut self,
+        registry: &mut EntityRegistry,
+        collected: Vec<(NetworkId, ComponentPayload)>,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+        resolver: &mut dyn PresentationBindingResolver,
+    ) -> usize {
+        self.bindings.apply_presentation_batch(
+            registry,
+            &self.map,
+            collected,
+            local_script_time,
+            rtt_micros,
+            resolver,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_snapshot_with_presentation(
+        &mut self,
+        registry: &mut EntityRegistry,
+        snapshot: &SnapshotMessage,
+        mover_target_tick: u32,
+        mover_tick_dt: f32,
+        resolver: &mut dyn PresentationBindingResolver,
+        local_script_time: f64,
     ) -> ApplyOutcome {
         // Old or duplicate sequence: ignore the whole snapshot. The unreliable
         // snapshot channel can deliver an older packet after a newer one; applying it
@@ -707,6 +771,8 @@ impl ClientReplication {
         }
         self.latest_sequence = Some(snapshot.sequence);
         self.acked_server_tick = snapshot.server_tick;
+        self.bindings
+            .accept_presentation_clock(snapshot.server_script_time, local_script_time);
 
         let mut outcome = ApplyOutcome::default();
         // Accumulate ackable progress; only applied records ack.
@@ -724,8 +790,37 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
-                    ..
+                    presentation_binding,
                 } => {
+                    let nid = NetworkId(*network_id);
+                    if self.bindings.is_presentation_rejected(nid) {
+                        acked_baselines.push((*network_id, *baseline_id));
+                        continue;
+                    }
+                    if let Some(binding) = presentation_binding {
+                        let resolved = self.bindings.resolve_presentation_baseline(
+                            registry, nid, binding, components, resolver,
+                        );
+                        if let Some(id) = resolved {
+                            if self.map.get(&nid).is_some_and(|existing| *existing != id) {
+                                self.clear_identity_state(nid);
+                                // Identity cleanup clears the just-resolved binding too.
+                                let _ = self.bindings.resolve_presentation_baseline(
+                                    registry, nid, binding, components, resolver,
+                                );
+                            }
+                            self.insert_mapping(nid, id);
+                            self.baselines.insert(nid, *baseline_id);
+                            self.pending_repairs.remove(&nid);
+                            collect_presentation_payloads(&mut outcome, nid, components);
+                        } else {
+                            // Rejection remains remembered until participation resets.
+                            self.clear_identity_state(nid);
+                            self.pending_repairs.remove(&nid);
+                        }
+                        acked_baselines.push((*network_id, *baseline_id));
+                        continue;
+                    }
                     if self.apply_full_baseline(
                         registry,
                         snapshot.sequence,
@@ -739,6 +834,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        collect_presentation_payloads(
+                            &mut outcome,
+                            NetworkId(*network_id),
+                            components,
+                        );
                         self.retain_projectile_presentation(
                             registry,
                             NetworkId(*network_id),
@@ -780,8 +880,44 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
-                    ..
+                    presentation_binding,
                 } => {
+                    let nid = NetworkId(*network_id);
+                    if self.bindings.is_presentation_rejected(nid) {
+                        acked_baselines.push((*network_id, *new_baseline_id));
+                        continue;
+                    }
+                    if self.bindings.is_presentation_bound(nid) {
+                        if let Some(binding) = presentation_binding
+                            && self
+                                .bindings
+                                .resolve_presentation_baseline(
+                                    registry, nid, binding, components, resolver,
+                                )
+                                .is_none()
+                        {
+                            self.clear_identity_state(nid);
+                            self.pending_repairs.remove(&nid);
+                            acked_baselines.push((*network_id, *new_baseline_id));
+                            continue;
+                        }
+                        if self.baselines.get(&nid) == Some(baseline_ref)
+                            && self.map.get(&nid).is_some_and(|id| registry.exists(*id))
+                        {
+                            self.baselines.insert(nid, *new_baseline_id);
+                            collect_presentation_payloads(&mut outcome, nid, components);
+                            acked_baselines.push((*network_id, *new_baseline_id));
+                        } else {
+                            self.queue_repair(
+                                &mut outcome.refresh_requests,
+                                snapshot.sequence,
+                                nid,
+                                *baseline_ref,
+                                REFRESH_REASON_UNKNOWN_BASELINE,
+                            );
+                        }
+                        continue;
+                    }
                     if self.apply_delta(
                         registry,
                         snapshot.sequence,
@@ -796,6 +932,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        collect_presentation_payloads(
+                            &mut outcome,
+                            NetworkId(*network_id),
+                            components,
+                        );
                         self.retain_projectile_presentation(
                             registry,
                             NetworkId(*network_id),
@@ -1332,7 +1473,10 @@ impl ClientReplication {
                 transform,
             })
         });
-        if let Some(id) = self.clear_identity_state(network_id) {
+        let bound = self.bindings.is_presentation_bound(network_id);
+        if let Some(id) = self.clear_identity_state(network_id)
+            && !bound
+        {
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.
             let _ = registry.despawn(id);
@@ -1370,13 +1514,15 @@ impl ClientReplication {
         if let Some(previous_entity) = self.map.insert(network_id, entity_id) {
             self.reverse_map.remove(&previous_entity);
             if previous_entity != entity_id {
+                self.bindings.forget_presentation_identity(network_id);
                 self.remote_presentation_complete.remove(&network_id);
                 self.active_weapon_archetypes.remove(&network_id);
             }
         }
         if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id) {
-            self.map.remove(&previous_network);
             if previous_network != network_id {
+                self.map.remove(&previous_network);
+                self.bindings.forget_presentation_identity(previous_network);
                 self.remote_presentation_complete.remove(&previous_network);
                 self.active_weapon_archetypes.remove(&previous_network);
                 self.remote_entity_classes.remove(&previous_network);
@@ -1386,6 +1532,7 @@ impl ClientReplication {
     }
 
     fn remove_mapping(&mut self, network_id: NetworkId) -> Option<EntityId> {
+        self.bindings.forget_presentation_identity(network_id);
         self.remote_presentation_complete.remove(&network_id);
         let entity_id = self.map.remove(&network_id)?;
         self.reverse_map.remove(&entity_id);
@@ -1712,7 +1859,9 @@ impl ClientReplication {
             if self.local_pawn == Some(network_id) {
                 continue;
             }
-            if self.bindings.mover_network_ids.contains_key(&network_id) {
+            if self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
+            {
                 continue;
             }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
@@ -1794,6 +1943,7 @@ impl ClientReplication {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
                 || self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
             }
@@ -1822,6 +1972,7 @@ impl ClientReplication {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
                 || self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
                 continue;
@@ -5632,4 +5783,18 @@ mod tests {
             "a non-local baseline reports no armed pair (prediction stays inert)"
         );
     }
+}
+
+fn collect_presentation_payloads(
+    outcome: &mut ApplyOutcome,
+    nid: NetworkId,
+    components: &[ComponentPayload],
+) {
+    outcome.presentation_payloads.extend(
+        components
+            .iter()
+            .filter(|payload| is_presentation_payload(payload))
+            .cloned()
+            .map(|payload| (nid, payload)),
+    );
 }

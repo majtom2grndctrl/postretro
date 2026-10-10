@@ -202,6 +202,21 @@ impl ServerReplication {
         self.clients.clear();
     }
 
+    /// Forget a bound map presentation identity while clients retain their own
+    /// authored entity. No tombstone is created, including on the next ingest.
+    pub fn forget_entity_without_tombstone(&mut self, network_id: u32) {
+        self.entities.remove(&network_id);
+        self.tombstones.remove(&network_id);
+        self.pending_despawn_reasons.remove(&network_id);
+        for client in self.clients.values_mut() {
+            client.acked_baselines.remove(&network_id);
+            client.acked_tombstones.remove(&network_id);
+            client.pending_refreshes.retain(|(id, _)| *id != network_id);
+            client.excluded_entities.remove(&network_id);
+            client.in_flight_baselines.remove(&network_id);
+        }
+    }
+
     /// Attach a cause to the next despawn tombstone emitted for `network_id`.
     /// The marker is consumed when the entity vanishes from an ingested tick; if
     /// the entity remains live, a later call may overwrite it.
@@ -697,6 +712,58 @@ mod tests {
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;
+
+    #[test]
+    fn forgetting_bound_entity_clears_all_delivery_state_without_tombstone() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        server.ingest_tick(vec![
+            entity(7, vec![transform(0.0)]),
+            entity(8, vec![transform(1.0)]),
+        ]);
+        let baseline = server.current_baseline_id(7).unwrap();
+        server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.set_next_despawn_reason(7, 1);
+        // Create a tombstone before populating every delivery-state seam.
+        server.ingest_tick(vec![entity(8, vec![transform(1.0)])]);
+        assert!(server.tombstones.contains_key(&7));
+        server.set_next_despawn_reason(7, 1);
+        for state in server.clients.values_mut() {
+            state.acked_baselines.insert(7, baseline);
+            state.acked_tombstones.insert(7, 12);
+            state.pending_refreshes.insert((7, baseline));
+            state.excluded_entities.insert(7);
+            state.in_flight_baselines.insert(
+                7,
+                encode::BaselineFlight {
+                    sent_sequence: 1,
+                    sent_baseline_id: baseline,
+                },
+            );
+        }
+        server.forget_entity_without_tombstone(7);
+        server.ingest_tick(vec![entity(8, vec![transform(1.0)])]);
+        assert!(!server.entities.contains_key(&7));
+        assert!(!server.tombstones.contains_key(&7));
+        assert!(!server.pending_despawn_reasons.contains_key(&7));
+        for state in server.clients.values() {
+            assert!(!state.acked_baselines.contains_key(&7));
+            assert!(!state.acked_tombstones.contains_key(&7));
+            assert!(!state.pending_refreshes.iter().any(|(id, _)| *id == 7));
+            assert!(!state.excluded_entities.contains(&7));
+            assert!(!state.in_flight_baselines.contains_key(&7));
+        }
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 2)
+                .unwrap()
+                .records
+                .iter()
+                .all(|record| record.network_id != 7)
+        );
+        assert!(server.current_baseline_id(8).is_some());
+    }
 
     fn transform(x: f32) -> ComponentPayload {
         ComponentPayload::Transform(WireTransform {

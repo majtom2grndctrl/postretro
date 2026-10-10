@@ -58,8 +58,9 @@ a light lost a highlight to capacity.
   - This supersedes the "coverage is unshadowed" contract in
     `plans/done/lighting-scale--shadowmask-cold-working-set`, which protected slot
     sharing that ownership removes.
-  - Ownership is decided during the fused lightmap walk. That reverses the
-    `build_pipeline.md` ordering "channel assignment finishes before the walk".
+  - Ownership is decided during the fused lightmap walk, except on cut faces, whose
+    owners are fixed just before it. That reverses the `build_pipeline.md` ordering
+    "channel assignment finishes before the walk".
 - **Ranking when more than four candidates reach a face:**
   1. Candidates above a lit-texel floor rank ahead of those below it. The floor is
      measured from the candidate's own baked texels on that face.
@@ -125,6 +126,11 @@ No leak, both sides of ownership:
       sub-face. (P1)
 - [ ] On a cut face, a light walled off from the whole face takes no channel even when
       it is in range. A light lighting part of it does.
+- [ ] A cut face's owner that lights only one of its sub-faces reads zero across the
+      others, including their padding. No sub-face keeps the unwritten fill value in an
+      owned channel. (P16)
+- [ ] On a cut face meeting a wall, a light behind that wall that reaches only the
+      face's edge, and no interior texel, takes no channel. (P22)
 - [ ] Within a face it owns, a light's specular still follows the baked mask: zero on
       an occluded texel, full on a lit one.
 - [ ] An SDF light outside the fragment's selection adds zero specular. One inside it
@@ -171,6 +177,11 @@ Compiler:
       promoted light among them, the smallest contribution drops.
 - [ ] A promoted candidate below the lit-area floor drops silently and never takes a
       channel from an above-floor specular-only light. (P5)
+- [ ] A below-floor promoted light that arrives first and takes a free channel loses it
+      once four above-floor specular-only lights arrive. (P19)
+- [ ] With three above-floor candidates and two below-floor ones on a face, the last
+      channel goes to the brighter below-floor light, even when the dimmer one is
+      promoted.
 - [ ] A directional light takes a channel on a face it lights, and none on a face it
       cannot reach, such as one under a roof.
 - [ ] A fifth candidate below the lit-area floor is dropped without a warning. The same
@@ -180,6 +191,10 @@ Compiler:
       counts. (P7)
 - [ ] Id 42 is byte-identical when the fill receives the same partitions in reversed
       light order, and across partition-window sizes. (P6)
+- [ ] With a cut face whose sub-faces span two bake layers, id 42 and the drop report
+      are identical across worker-thread counts and partition-window sizes, and between
+      cold, warm and lightmap-reuse builds. Two lights tied on the estimate resolve to
+      the lower light index. (P18)
 - [ ] With dynamic, SDF and bake-only lights placed before a static light in the light
       list, each owner entry names the light whose visibility filled its channel. A
       bake-only light takes no channel. (P8)
@@ -196,6 +211,12 @@ Compiler:
 - [ ] A build that reuses the lightmap but rebuilds id 42 reads each eligible light's
       partition at most once per bake layer, holds one raw fill, and traces no
       visibility beyond the cut-face estimate.
+- [ ] A warm build that reuses the cached id 42 traces no visibility, including the
+      cut-face estimate. (P20)
+- [ ] A level with no cut face traces no estimate sample. On a cut face, the estimate
+      traces only for lights whose unshadowed term reaches it.
+- [ ] Changing the cut-face estimate's density or sampling mode rebuilds id 42 on a warm
+      build. (P23)
 - [ ] Load rejects:
       - an owner index at or past the static spec-light count;
       - a duplicate owner within a face;
@@ -210,7 +231,8 @@ Compiler:
       (P10)
 - [ ] A level whose eligible lights light no face interior emits no id 42.
 - [ ] A level with more static lights than the owner index can hold fails the compile
-      with a named error before any lightmap bake work starts. (P11)
+      with a named error before any lightmap bake work starts, including the cut-face
+      estimate. (P11, P21)
 - [ ] The existing forward binding inventory test passes with its snapshot unedited.
 - [ ] The world vertex stride stays 36 bytes and id 17's format version is unchanged.
 
@@ -242,8 +264,9 @@ Compiler:
 - **Cut-face estimate.**
   - `plan_face_cuts`/`apply_face_cuts` know each sub-face's parent before
     `rebuild_face_identity`. Carry that parent forward.
-  - Trace a coarse grid over the parent against the pre-cut BVH, for each light whose
-    analytic term reaches it. Rank once, and fix the owners before the walk writes any
+  - Trace a coarse grid over the parent's chart interior against the rebuilt BVH the
+    walk uses, for each light whose analytic term reaches it. The pre-cut BVH is not
+    kept. Rank once, and fix the owners before the walk writes any
     sub-face.
 - **Sun lobe.** `pack_spec_lights` packs directional lights with a zero direction, and
   the world specular loop derives `L` from position. The bake's direction comes from

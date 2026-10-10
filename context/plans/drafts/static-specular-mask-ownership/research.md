@@ -153,7 +153,7 @@ elsewhere; the proxy is a lower bound.
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
-| P1 | The sub-faces of one cut face sit in different bake layers | The walk runs layer-major. A light's partition for the first layer is consumed and dropped before its partition for the next layer arrives | The parent's owners are fixed before the walk from the cut-face estimate. Every owner's channel holds its own baked values in every sub-face. No light holds a channel in a sub-face whose values it never wrote |
+| P1 | The sub-faces of one cut face sit in different bake layers | The walk runs layer-major. A light's partition for the first layer is consumed and dropped before its partition for the next layer arrives | The parent's owners are fixed before the walk from the cut-face estimate. Every owner's channel holds its own baked values in every sub-face. No owner's channel in any sub-face holds a value its own partition did not write, other than zero |
 | P5 | A promoted candidate below the lit-texel floor arrives after four above-floor specular-only owners | Floor test from the candidate's own partition, then tier, then eviction, all on arrival | A below-floor candidate never evicts an above-floor one |
 | P2 | A warm build reuses the cached id 42 | A memo hit returns the section before the walk. No partition reaches the fill | Drop warnings and the `--verbose` peak per-face demand match the cold build's. Owner data is stored next to the memo entry or rebuilt; it is never silently skipped |
 | P3 | A light outside id 40 is edited, or only id 40 membership changes | The lightmap memo may hit while the id-42 memo must miss. Today both the id-42 key and the reuse path cover only selected lights | Id 42 is rebuilt from every eligible light's partitions and equals the cold build byte for byte |
@@ -166,6 +166,13 @@ elsewhere; the proxy is a lower bound.
 | P11 | The level has more static spec lights than u16 can index | Checked before the walk allocates the fill | Named compile error before any lightmap bake work |
 | P12 | A block arrives after the first draw, is evicted, or repacks to another pool layer | The owner stream is fixed at load. Block-table entries change on each drain | A face's owners never change. While its block is missing the face adds no static non-SDF specular |
 | P13 | A covered texel carries non-finite raw visibility | It quantizes to zero, and the contribution sum runs at admission | The texel neither admits the light nor adds to its contribution. Ranking stays total |
+| P16 | An owner fixed by the estimate lights only some of its parent's sub-faces | Owners are fixed before the walk. Its partition holds no texel for the other sub-faces, and the raw fill starts fully visible | The owner's channel reads zero across every sub-face it does not light, padding included |
+| P18 | A cut parent's estimate runs on several workers, or two candidates tie on the estimate | Per-sample results are summed per (parent, light) in a fixed sample order, then ranked, with ties going to the lower index | Owners and drop report are identical across worker counts, window sizes, and cold, warm and lightmap-reuse builds |
+| P19 | A below-floor promoted candidate arrives first, while channels are free, then four above-floor specular-only lights arrive | It is admitted to a free channel on arrival. The fourth above-floor arrival ranks against it | The promoted incumbent is evicted and its values cleared. No tier protects an incumbent below the floor |
+| P20 | A warm build reuses the cached id 42 on a level with a cut face | The memo probe runs before the estimate | No estimate sample is traced. The drop report comes from the memo entry (P2) |
+| P21 | A level over the owner-index cap has a cut face | The cap check runs before the estimate | The named error comes before any estimate ray |
+| P22 | The estimate's grid reaches the edge of a cut parent that meets a wall | Samples are placed before the walk, from the parent's chart | Samples sit only at chart-interior positions of the parent, as the walk's texels do. A light that reaches only beyond the parent's chart interior takes no channel |
+| P23 | The estimate's density or sampling mode changes between builds while every lightmap partition is unchanged | The lightmap memo hits, then the id-42 memo key is probed | The key misses. Id 42 equals the cold build's |
 
 **Proof caveat.** The WGSL harnesses self-skip without a BC-capable adapter
 (`shadowmask_sample_test.rs`), so shader rows prove nothing unless run with a GPU

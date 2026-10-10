@@ -162,11 +162,12 @@ mod tests {
     use postretro_net::wire::WireTransform;
 
     use crate::scripting::builtins::data_archetype::{
-        apply_data_archetype_dispatch, descriptor_materializes_ai_enemy, find_descriptor,
+        apply_data_archetype_dispatch, find_descriptor,
     };
     use crate::scripting::builtins::data_archetype_test_fixtures::{
         behavior_enemy_descriptor, mesh_descriptor, placement,
     };
+    use crate::scripting::builtins::descriptor_materializes_ai_enemy;
 
     #[test]
     fn classifier_agrees_with_live_predicate_one_source_of_truth() {

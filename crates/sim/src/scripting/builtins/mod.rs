@@ -12,6 +12,7 @@ pub mod data_archetype;
 pub(crate) mod entity_spawner;
 #[cfg(feature = "test-support")]
 pub mod entity_spawner;
+pub mod host_replicated;
 pub mod net_descriptor;
 pub(crate) mod prop_mesh;
 pub(crate) mod wieldable_inventory;
@@ -34,10 +35,12 @@ pub use data_archetype::{
 // pulls in the scripting tree but never installs a level, so the import is unused there.
 #[allow(unused_imports)]
 pub use data_archetype::{
+    movement_descriptor_mesh_models, touchable_wieldable_world_models, weapon_presentation_models,
+};
+#[allow(unused_imports)]
+pub use host_replicated::{
     descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
-    filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
-    suppressed_client_host_replicated_mesh_models, touchable_wieldable_world_models,
-    weapon_presentation_models,
+    filter_out_client_host_replicated_placements, suppressed_client_host_replicated_mesh_models,
 };
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep

@@ -79,7 +79,7 @@ use super::replication::{
     ReplicableSet, host_register_map_enemies, host_register_world_items, produce_owned_snapshots,
 };
 use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
-use crate::scripting::builtins::data_archetype::{
+use crate::scripting::builtins::{
     descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
     filter_out_client_host_replicated_placements,
 };

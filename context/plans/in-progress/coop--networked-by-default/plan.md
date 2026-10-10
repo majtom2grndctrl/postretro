@@ -101,7 +101,7 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | pending |
+| P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | in progress |
 | P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | pending |
 | P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | pending |
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P2 | pending |
@@ -118,6 +118,10 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P15 | Dev fixture/docs/E16 examples, app conditioned end-to-end, 1324-record proof + ignored real-map measurement (T12) | integrator; bounded content/docs worker | P3,P7,P11,P13,P14 | pending |
 | P16 | Review-readiness, review-panel/fix/focused-retest loop, final preflight once; populate every AC result | integrator + skill-directed reviewers/workers | P15 | pending |
 | P17 | External M1–M4 run; record owner evidence and wait for land-the-plane instruction | owner; integrator records | P16 | pending |
+
+### Execution evidence
+
+- P1 prerequisite sim extraction complete. Six production bodies and nine existing test bodies preserved; old capsule-helper path and sibling brain access retained. `cargo test -p postretro-sim --lib scripting::builtins::host_replicated::tests`: 9 passed, 0 failed. Ownership/classification changes remain in progress.
 
 ### P1 and P2 boundaries
 

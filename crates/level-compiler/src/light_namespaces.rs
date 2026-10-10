@@ -4,7 +4,7 @@
 // filter predicates. Each stage takes the slice it needs; no further filtering.
 //
 // Index-space contracts:
-// - `AlphaLightsNs`: on-disk `AlphaLightRecord` order (`!bake_only`).
+// - `AlphaLightsNs`: on-disk `AlphaLightRecord` order (`!bake_only`, not buried).
 //   `LightInfluence` records share this slot space — record `i` aligns across both.
 //   NOTE: `ChunkLightList` light_indices do NOT share this space; emitted in the
 //   compacted `!is_dynamic` spec_lights space (`pack_spec_lights`), dynamic lights
@@ -12,10 +12,17 @@
 // - `AnimatedBakedLights`: `AnimationDescriptor` array order
 //   (`!is_dynamic && animation.is_some()`).
 // - `StaticBakedLights`: internal to lightmap and SH base bakes; no on-disk slot.
+//
+// Buried lights (`buried_lights.rs`) are absent from all three: a baked-tier
+// light whose origin is inside solid takes no bake work, mask channel,
+// chunk-list slot, or runtime record. Source indices
+// still name positions in the full `&[MapLight]`, so dropping one shifts no
+// other light's source identity.
 
 use postretro_level_format::light_influence::InfluenceRecord;
 use postretro_level_format::sh_volume::ANIMATED_SLOT_NONE;
 
+use crate::buried_lights::BuriedLights;
 use crate::map_data::{LightType, MapLight};
 
 /// One slot in the static-baked namespace. `source_index` is the position of
@@ -46,9 +53,10 @@ pub struct AlphaLightEntry<'a> {
 
 /// Lights for the static lightmap bake and SH base bake.
 ///
-/// Filter: `!is_dynamic && animation.is_none()` — position axis only, never
-/// shadow type. SH needs every baked-tier light (both shadow types) for bounce;
-/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
+/// Filter: `!is_dynamic && animation.is_none()` and not buried
+/// (`crate::buried_lights`) — position axis only, never shadow type. SH needs
+/// every unburied baked-tier light (both shadow types) for bounce; filtering on
+/// shadow type here would starve it. The `sdf` exclusion lives at
 /// the direct lightmap consumer, keeping `lm_irr` disjoint from the runtime SDF
 /// set while SH still sees all baked-tier lights. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
@@ -58,10 +66,15 @@ pub struct StaticBakedLights<'a> {
 
 impl<'a> StaticBakedLights<'a> {
     pub fn from_lights(lights: &'a [MapLight]) -> Self {
+        Self::from_lights_excluding(lights, &BuriedLights::none())
+    }
+
+    /// As [`Self::from_lights`], without the lights `buried` marks.
+    pub fn from_lights_excluding(lights: &'a [MapLight], buried: &BuriedLights) -> Self {
         let entries = lights
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.is_dynamic && l.animation.is_none())
+            .filter(|(i, l)| !l.is_dynamic && l.animation.is_none() && !buried.is_buried(*i))
             .map(|(i, l)| StaticBakedEntry {
                 source_index: i,
                 light: l,
@@ -85,11 +98,12 @@ impl<'a> StaticBakedLights<'a> {
 
 /// Lights for the animated weight-map bake, animation descriptors, and SH delta bake.
 ///
-/// Filter: `!is_dynamic && animation.is_some()` — position axis only, never
-/// shadow type. The delta bake needs every animated baked-tier light for bounce;
-/// filtering on shadow type here would starve it. The `sdf` exclusion lives at
-/// the direct weight-map consumer (`lm_anim` stays disjoint from the runtime SDF
-/// set; delta bake still sees all animated baked-tier lights). `bake_only`
+/// Filter: `!is_dynamic && animation.is_some()` and not buried
+/// (`crate::buried_lights`) — position axis only, never shadow type. The delta
+/// bake needs every animated baked-tier light for bounce; filtering on shadow
+/// type here would starve it. The `sdf` exclusion lives at the direct
+/// weight-map consumer (`lm_anim` stays disjoint from the runtime SDF set;
+/// delta bake still sees every animated baked-tier light that is not buried). `bake_only`
 /// animated lights are retained — they participate in weight-map compose at
 /// runtime. Indices match the runtime `AnimationDescriptor` buffer and
 /// `AnimatedLightChunks` light_indices. Iteration order: original `&[MapLight]`.
@@ -100,10 +114,15 @@ pub struct AnimatedBakedLights<'a> {
 
 impl<'a> AnimatedBakedLights<'a> {
     pub fn from_lights(lights: &'a [MapLight]) -> Self {
+        Self::from_lights_excluding(lights, &BuriedLights::none())
+    }
+
+    /// As [`Self::from_lights`], without the lights `buried` marks.
+    pub fn from_lights_excluding(lights: &'a [MapLight], buried: &BuriedLights) -> Self {
         let entries = lights
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.is_dynamic && l.animation.is_some())
+            .filter(|(i, l)| !l.is_dynamic && l.animation.is_some() && !buried.is_buried(*i))
             .map(|(i, l)| AnimatedBakedEntry {
                 source_index: i,
                 light: l,
@@ -174,9 +193,9 @@ impl<'a> AnimatedBakedLights<'a> {
 /// Lights for the AlphaLights pack, LightInfluence pack, LightTags pack, and
 /// chunk light list bake.
 ///
-/// Filter: `!bake_only`. Indices match on-disk `AlphaLightRecord` slot space —
-/// AlphaLights, LightInfluence, and LightTags records all align. Iteration
-/// order: original `&[MapLight]`.
+/// Filter: `!bake_only` and not buried (`crate::buried_lights`). Indices match
+/// on-disk `AlphaLightRecord` slot space — AlphaLights, LightInfluence, and
+/// LightTags records all align. Iteration order: original `&[MapLight]`.
 #[derive(Debug, Clone)]
 pub struct AlphaLightsNs<'a> {
     entries: Vec<AlphaLightEntry<'a>>,
@@ -184,10 +203,17 @@ pub struct AlphaLightsNs<'a> {
 
 impl<'a> AlphaLightsNs<'a> {
     pub fn from_lights(lights: &'a [MapLight]) -> Self {
+        Self::from_lights_excluding(lights, &BuriedLights::none())
+    }
+
+    /// As [`Self::from_lights`], without the lights `buried` marks. A buried
+    /// light leaves the runtime set like a `bake_only` one does, so its
+    /// script entity and `spec_lights` record disappear with it.
+    pub fn from_lights_excluding(lights: &'a [MapLight], buried: &BuriedLights) -> Self {
         let entries = lights
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.bake_only)
+            .filter(|(i, l)| !l.bake_only && !buried.is_buried(*i))
             .map(|(i, l)| AlphaLightEntry {
                 source_index: i,
                 light: l,
@@ -209,7 +235,7 @@ impl<'a> AlphaLightsNs<'a> {
     }
 
     /// Compact a raw-`MapData::lights` table into the runtime AlphaLights
-    /// identity space. Bake-only entries deliberately disappear; every
+    /// identity space. Bake-only and buried entries deliberately disappear; every
     /// surviving value stays paired with the same authored light.
     pub fn compact_source_table<T: Copy>(&self, source: &[T]) -> Vec<T> {
         self.entries

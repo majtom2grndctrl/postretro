@@ -593,6 +593,10 @@ pub struct MapData {
     /// light has no parse-time animation. Script-derived membership uses this
     /// fallback when no levelLoad reaction resolves `startActive`.
     pub light_start_active_defaults: Vec<bool>,
+    /// Diagnostic name for each `lights` entry, written by the source-format
+    /// adapter in its own vocabulary so a mapper can find the light in the
+    /// editor. Shared stages print it verbatim and never parse it.
+    pub light_source_labels: Vec<String>,
     /// Optional path to a data-script source file (`.ts`/`.js`/`.luau`), taken
     /// verbatim from the `data_script` worldspawn KVP. Resolved relative to the
     /// `.map` file's directory by the compile pipeline; the compiled output is

@@ -13,9 +13,9 @@ use postretro_level_format::{SectionId, read_container, read_section_data};
 
 const SUMMARY_LABELS: &[&str] = &[
     "Parsing",
-    "DataScript",
     "TexValidation",
     "Partitioning",
+    "DataScript",
     "Visibility",
     "Geometry",
     "BVH Build",
@@ -30,11 +30,13 @@ const SUMMARY_LABELS: &[&str] = &[
     "Billboard Direct Scatter Bake",
     "ChunkLightList",
     "Atlas Preparation",
+    "Cell Residency Set",
     "Lightmap Bake",
     "ShadowmaskAtlas",
     "AnimLightChunks",
     "AnimWeightMaps",
     "TextureMips",
+    "ClusterDirectory",
     "Packing",
     "Total",
 ];
@@ -519,12 +521,17 @@ fn captured_streams_auto_select_plain_reporter_before_fast_pipeline_failure() {
     assert_plain_bytes("auto stderr", &output.stderr);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Parsing map...") && stderr.contains("Data script compilation..."),
+        stderr.contains("Parsing map..."),
         "captured streams must reach main's Auto TTY seam and select the line-oriented reporter:\n{stderr}",
     );
     assert!(
         stderr.contains("data_script = missing.luau") && stderr.contains("does not exist"),
-        "fixture must fail at the intended cheap post-selection precheck:\n{stderr}",
+        "fixture must fail at the intended cheap post-parse precheck:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("Texture color-space validation...")
+            && !stderr.contains("BSP partitioning..."),
+        "the missing data script must fail before any later stage begins:\n{stderr}",
     );
 }
 
@@ -741,11 +748,11 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
                 panic!("projection must report dense bytes after `{marker}`:\n{diagnostic}")
             })
     };
-    assert_eq!(dense_bytes("DeltaShVolumes (id 27)"), 363_184_128);
-    assert_eq!(dense_bytes("DirectShDeltaVolumes (id 41)"), 1_616_615_424);
+    assert_eq!(dense_bytes("DeltaShVolumes (id 27)"), 272_388_096);
+    assert_eq!(dense_bytes("DirectShDeltaVolumes (id 41)"), 1_214_161_920);
     assert_eq!(
         dense_bytes("AnimatedDirectShDeltaVolumes (id 45)"),
-        202_033_152
+        151_524_864
     );
 
     let refusal_marker = "SH delta working-set gate refused before dense baking: estimated peak ";
@@ -762,7 +769,7 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
         .split_once(" bytes exceeds budget 0 bytes (")
         .and_then(|(peak, tail)| peak.parse::<u64>().ok().map(|peak| (peak, tail)))
         .expect("projection refusal must expose the zero-budget estimated peak");
-    assert_eq!(peak, 6_545_498_112);
+    assert_eq!(peak, 4_914_224_640);
     let (cumulative, copy_chain_factor) = refusal
         .split_once(" cumulative dense bytes × copy-chain factor ")
         .and_then(|(cumulative, factor)| {
@@ -773,7 +780,7 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
             )
         })
         .expect("projection refusal must expose cumulative dense bytes and copy-chain factor");
-    assert_eq!(cumulative, 2_181_832_704);
+    assert_eq!(cumulative, 1_638_074_880);
     assert_eq!(copy_chain_factor, 3);
     assert!(
         !diagnostic.contains("SH volume bake..."),

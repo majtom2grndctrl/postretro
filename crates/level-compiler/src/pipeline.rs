@@ -18,8 +18,8 @@ use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
-    map_needs_sdf_atlas, resolve_content_root, resolve_lightmap_density, resolve_prm_root,
-    resolve_sh_density_fidelity, resolve_texture_root,
+    map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
+    resolve_lightmap_density, resolve_prm_root, resolve_sh_density_fidelity, resolve_texture_root,
 };
 
 mod animated_atlas_stage;
@@ -29,6 +29,7 @@ mod finalized_publication;
 pub(crate) mod lightmap_stage;
 mod sdf_stage;
 mod stage_registry;
+use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_residency_bake,
@@ -638,6 +639,10 @@ fn run_after_parsing(
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
     timings.push((StageId::Parsing.label(), parsing_elapsed));
+    // DataScript runs after Partitioning (buried-light classification needs
+    // the BSP), but a missing or unsupported script path needs no BSP, so it
+    // still fails before any bake work.
+    resolve_data_script_source(&args.input, map_data.data_script.as_deref())?;
     reporter.finish_stage(StageId::Parsing);
     let sh_coarsening_enabled = !map_data.uniform_grid_optout;
     let retain_sh_analyze_dense_deltas =
@@ -648,11 +653,44 @@ fn run_after_parsing(
         );
     }
 
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
+    let texture_root = resolve_texture_root(&args.input);
+    texture_validation::validate_sibling_color_spaces(&texture_root)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureValidation,
+        stage_start,
+        true,
+    );
+
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
+    let result = partition::partition(&map_data.brush_volumes)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Partitioning,
+        stage_start,
+        true,
+    );
+    if args.verbose {
+        partition::log_stats(&result.tree, &result.faces);
+    }
+
+    // Classify buried lights before the data script runs, so the script's
+    // light table already omits lights that will have no runtime entity
+    // (`buried_lights.rs`). Classification reads only fields the membership
+    // manifest never changes, so it holds for the post-manifest lights the
+    // namespaces below are built from.
+    let buried_lights = BuriedLights::classify(&result.tree, &map_data.lights);
+    buried_lights.warn(&map_data.lights, &map_data.light_source_labels);
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
     let compiled_data_script = compile_worldspawn_data_script(
         &args.input,
         map_data.data_script.as_deref(),
         &map_data.lights,
+        &buried_lights,
         crate::script_light_membership::map_members_from_map(
             &map_data.kinematic_movers,
             &map_data.trigger_volumes,
@@ -669,7 +707,7 @@ fn run_after_parsing(
             &map_data.light_start_active_defaults,
             membership_manifest,
         )?;
-        crate::script_light_membership::log_inventory(&inventory, &map_data.lights);
+        crate::script_light_membership::log_inventory(&inventory, &map_data.lights, &buried_lights);
     }
     // Every cached bake stage keys from the post-injection light namespaces or
     // their `MapLight` records, so a manifest membership change produces a
@@ -684,21 +722,18 @@ fn run_after_parsing(
         data_script_section.is_some(),
     );
 
-    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
-    let texture_root = resolve_texture_root(&args.input);
-    texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::TextureValidation,
-        stage_start,
-        true,
+    // Light namespaces form after the manifest applies, from the post-manifest
+    // lights, and leave every buried light out.
+    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights_excluding(
+        &map_data.lights,
+        &buried_lights,
     );
-
-    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
-    let animated_baked_lights =
-        light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
-    let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
+    let animated_baked_lights = light_namespaces::AnimatedBakedLights::from_lights_excluding(
+        &map_data.lights,
+        &buried_lights,
+    );
+    let alpha_lights_ns =
+        light_namespaces::AlphaLightsNs::from_lights_excluding(&map_data.lights, &buried_lights);
     let raw_slot_for_map_light =
         animated_baked_lights.slot_for_source_lights(map_data.lights.len());
     let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
@@ -714,19 +749,6 @@ fn run_after_parsing(
              lightmap placeholder. Add at least one static baked light so world lightmaps render \
              correctly. The build will continue."
         );
-    }
-
-    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
-    let result = partition::partition(&map_data.brush_volumes)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::Partitioning,
-        stage_start,
-        true,
-    );
-    if args.verbose {
-        partition::log_stats(&result.tree, &result.faces);
     }
 
     // Watertightness diagnostic. Surfaces holes in the static world geometry
@@ -945,7 +967,12 @@ fn run_after_parsing(
         navmesh_section.is_some(),
     );
 
-    let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let static_light_count = map_data
+        .lights
+        .iter()
+        .enumerate()
+        .filter(|(index, light)| !light.is_dynamic && !buried_lights.is_buried(*index))
+        .count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
     let lightmap_config = lightmap_bake::LightmapConfig {
@@ -1055,8 +1082,8 @@ fn run_after_parsing(
     };
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
-    // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
-    // once at the PRL boundary.
+    // AlphaLights (`_bake_only` and buried lights omitted), so remap the
+    // lookup table exactly once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
     // Both warm grouped and cold monolithic bakes reach this packaging seam as

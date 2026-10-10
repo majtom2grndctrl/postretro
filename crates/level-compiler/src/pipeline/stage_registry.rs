@@ -7,9 +7,9 @@ use crate::{map_data, map_needs_sdf_atlas};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StageId {
     Parsing,
-    DataScript,
     TextureValidation,
     Partitioning,
+    DataScript,
     Visibility,
     Geometry,
     BvhBuild,
@@ -47,9 +47,9 @@ impl StageId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Parsing => "Parsing",
-            Self::DataScript => "DataScript",
             Self::TextureValidation => "TexValidation",
             Self::Partitioning => "Partitioning",
+            Self::DataScript => "DataScript",
             Self::Visibility => "Visibility",
             Self::Geometry => "Geometry",
             Self::BvhBuild => "BVH Build",
@@ -79,9 +79,9 @@ impl StageId {
     pub const fn progress_label(self) -> &'static str {
         match self {
             Self::Parsing => "Parsing map...",
-            Self::DataScript => "Data script compilation...",
             Self::TextureValidation => "Texture color-space validation...",
             Self::Partitioning => "BSP partitioning...",
+            Self::DataScript => "Data script compilation...",
             Self::Visibility => "Visibility computation...",
             Self::Geometry => "Geometry extraction...",
             Self::BvhBuild => "BVH build...",
@@ -109,11 +109,14 @@ impl StageId {
     }
 }
 
+/// Execution order. Partitioning precedes DataScript because buried-light
+/// classification needs the BSP, and the data script's light table must
+/// already omit buried lights.
 pub(crate) const ORDERED_STAGES: [StageId; 27] = [
     StageId::Parsing,
-    StageId::DataScript,
     StageId::TextureValidation,
     StageId::Partitioning,
+    StageId::DataScript,
     StageId::Visibility,
     StageId::Geometry,
     StageId::BvhBuild,

@@ -73,6 +73,7 @@ pub struct StagedManifest {
     pub events: Vec<ImpactEventDescriptor>,
     pub trigger_events: Vec<super::super::data_descriptors::TriggerEventDescriptor>,
     pub trigger_pools: Vec<TriggerPoolDescriptor>,
+    pub player_events: Vec<super::super::data_descriptors::PlayerEventDescriptor>,
     pub ui_trees: Vec<RegisteredUiTree>,
     pub presentation_templates: Vec<PresentationTemplate>,
     pub presentation_overlays: Vec<PresentationOverlay>,

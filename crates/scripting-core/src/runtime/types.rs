@@ -15,7 +15,7 @@ use super::loading_screen::ModLoading;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
-    PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
+    PlayerEventDescriptor, PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
     TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
 use crate::data_registry::{
@@ -209,6 +209,10 @@ pub struct ModManifestResult {
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub crossings: Vec<ScopedCrossing>,
     pub trigger_events: Vec<TriggerEventDescriptor>,
+    /// Engine-global player events from the mod manifest's `playerEvents`
+    /// field, each scoped by its own `levels`. Drained into `DataRegistry` by
+    /// the boot caller.
+    pub player_events: Vec<PlayerEventDescriptor>,
     /// Engine-global trigger-pool definitions from the mod manifest's
     /// `triggerPools` field. Drained into `DataRegistry` by the boot caller;
     /// staged reload replaces the definition snapshot but never re-arms a

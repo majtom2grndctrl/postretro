@@ -120,6 +120,7 @@ fn staged_manifest_result(
             loading: Default::default(),
             store_declarations: Default::default(),
             dependency_paths: Vec::new(),
+            player_events: Vec::new(),
         })),
         diagnostics: Vec::new(),
     }

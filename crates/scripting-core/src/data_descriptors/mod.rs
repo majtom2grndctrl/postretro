@@ -51,6 +51,7 @@ mod error;
 mod input_block;
 mod loading_manifest;
 mod movement_sounds;
+mod player_events;
 mod runtime_manifest;
 mod trigger_events;
 mod validate;
@@ -91,6 +92,7 @@ mod lua {
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
 pub use error::*;
+pub use player_events::{drain_player_events_js, drain_player_events_lua};
 pub(crate) use movement_sounds::*;
 pub use runtime_manifest::*;
 pub use validate::*;

@@ -544,6 +544,7 @@ mod tests {
             trigger_events: Vec::new(),
             trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
+            player_events: Vec::new(),
         };
         let expected_fields: &[&str] = &[
             "name",

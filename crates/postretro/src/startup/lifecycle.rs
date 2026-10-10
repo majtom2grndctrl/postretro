@@ -3427,6 +3427,7 @@ pub(crate) mod tests {
                 loading: Default::default(),
                 store_declarations: Default::default(),
                 dependency_paths: Vec::new(),
+                player_events: Vec::new(),
             })),
             diagnostics: Vec::new(),
         };

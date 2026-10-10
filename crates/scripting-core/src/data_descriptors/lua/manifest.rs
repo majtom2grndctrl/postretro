@@ -52,6 +52,7 @@ impl LevelManifest {
         let events = drain_impact_events_lua(&table, "setupLevel")?;
         let trigger_events = drain_level_trigger_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
+        let player_events = drain_player_events_lua(&table, true, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
 
@@ -61,6 +62,7 @@ impl LevelManifest {
             crossings,
             trigger_events,
             trigger_pools,
+            player_events,
             ui_trees,
         })
     }

@@ -47,6 +47,7 @@ impl PlayerEventTable {
         let scope = PlayerConditionScope::new(script_ctx.clone());
         {
             let slot_table = script_ctx.slot_table.borrow();
+            let mut bound = BoundAddresses::default();
             for composed in &data_registry.player_events {
                 let Some(event) = table.bind_event(
                     composed,
@@ -55,6 +56,7 @@ impl PlayerEventTable {
                     &slot_table,
                     script_ctx,
                     previous,
+                    &mut bound,
                 ) else {
                     continue;
                 };
@@ -77,6 +79,7 @@ impl PlayerEventTable {
         slot_table: &postretro_entities::SlotTable,
         script_ctx: &ScriptCtx,
         previous: Option<&PlayerEventTable>,
+        bound: &mut BoundAddresses,
     ) -> Option<BoundPlayerEvent> {
         let descriptor = &composed.descriptor;
         let source = &composed.source;
@@ -108,6 +111,13 @@ impl PlayerEventTable {
         let mut commands = Vec::new();
         let mut steps = Vec::new();
         for address in &descriptor.fire {
+            if let Some(first) = bound.first_binding(descriptor, address) {
+                log::warn!(
+                    "[Scripting] player event: reaction `{address}` is bound by both {first} and {source} on one condition and edge; it binds once"
+                );
+                continue;
+            }
+            bound.record(descriptor, address, source);
             let matched: Vec<&NamedReaction> = data_registry
                 .reactions
                 .iter()
@@ -156,5 +166,47 @@ impl PlayerEventTable {
             residual,
             memory,
         })
+    }
+}
+
+/// Every (condition, edge, address) bound so far, in composed order. Two
+/// entries reaching one triple bind it once: running the reaction twice would
+/// double its effects. Conditions match structurally.
+#[derive(Default)]
+struct BoundAddresses {
+    entries: Vec<(
+        postretro_foundation::IrNode,
+        postretro_scripting_core::data_descriptors::PlayerEventEdge,
+        String,
+        postretro_scripting_core::data_descriptors::PlayerEventSource,
+    )>,
+}
+
+impl BoundAddresses {
+    fn first_binding(
+        &self,
+        descriptor: &postretro_scripting_core::data_descriptors::PlayerEventDescriptor,
+        address: &str,
+    ) -> Option<&postretro_scripting_core::data_descriptors::PlayerEventSource> {
+        self.entries
+            .iter()
+            .find(|(condition, edge, bound, _)| {
+                *edge == descriptor.edge && bound == address && *condition == descriptor.condition
+            })
+            .map(|(_, _, _, source)| source)
+    }
+
+    fn record(
+        &mut self,
+        descriptor: &postretro_scripting_core::data_descriptors::PlayerEventDescriptor,
+        address: &str,
+        source: &postretro_scripting_core::data_descriptors::PlayerEventSource,
+    ) {
+        self.entries.push((
+            descriptor.condition.clone(),
+            descriptor.edge,
+            address.to_string(),
+            source.clone(),
+        ));
     }
 }

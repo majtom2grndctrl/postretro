@@ -1017,6 +1017,12 @@ impl DataRegistry {
     /// still allowing authored relationship overrides to refresh. Live values
     /// remain intact unless they now equal the refreshed baseline, in which case
     /// they are no longer sparse overrides.
+    /// Replace the durable mod-global player events. The active set changes
+    /// at the next recompose.
+    pub fn replace_global_player_events(&mut self, player_events: Vec<PlayerEventDescriptor>) {
+        self.global_player_events = player_events;
+    }
+
     pub fn replace_factions(
         &mut self,
         factions: FactionRegistry,

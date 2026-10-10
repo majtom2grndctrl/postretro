@@ -20,6 +20,7 @@ use super::data_descriptors::{
     drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
     drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
     drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_player_events_js, drain_player_events_lua,
     drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
     drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
@@ -349,6 +350,7 @@ fn run_staged_manifest_build(
         events: manifest.events,
         trigger_events: manifest.trigger_events,
         trigger_pools: manifest.trigger_pools,
+        player_events: manifest.player_events,
         ui_trees: manifest.ui_trees,
         presentation_templates: manifest.presentation_templates,
         presentation_overlays: manifest.presentation_overlays,
@@ -722,6 +724,10 @@ fn manifest_from_js_value<'js>(
                 reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
             }
         })?;
+    let player_events = drain_player_events_js(ctx, &obj, false, "default mod manifest export")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -752,6 +758,7 @@ fn manifest_from_js_value<'js>(
         events,
         trigger_events,
         trigger_pools,
+        player_events,
         store_declarations,
     })
 }
@@ -1069,6 +1076,10 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
         }
     })?;
+    let player_events = drain_player_events_lua(&table, false, "returned mod manifest")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` playerEvents invalid: {e}"),
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -1099,6 +1110,7 @@ fn run_staged_mod_init_luau(
         events,
         trigger_events,
         trigger_pools,
+        player_events,
         store_declarations,
     })
 }

@@ -10986,6 +10986,7 @@ mod tests {
                     events: Vec::new(),
                     trigger_events: Vec::new(),
                     trigger_pools: Vec::new(),
+                    player_events: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     presentation_templates: Vec::new(),
                     presentation_overlays: Vec::new(),

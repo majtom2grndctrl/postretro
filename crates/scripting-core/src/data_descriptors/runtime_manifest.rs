@@ -14,8 +14,8 @@ use crate::ui::descriptor::{
 use crate::ui::style_ranges::StyleRanges;
 
 use super::{
-    CrossingDescriptor, ImpactEventDescriptor, NamedReaction, TriggerPoolDescriptor,
-    VolumeTriggerEventDescriptor,
+    CrossingDescriptor, ImpactEventDescriptor, NamedReaction, PlayerEventDescriptor,
+    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
 };
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus its stack
@@ -468,6 +468,9 @@ pub struct LevelManifest {
     /// for the shared descriptor contract, but level-local pools always apply
     /// to the level that declared them.
     pub trigger_pools: Vec<TriggerPoolDescriptor>,
+    /// Level player events (`players().on`) from the `playerEvents` field. An
+    /// entry carrying `levels` is rejected here; it belongs in `ModManifest`.
+    pub player_events: Vec<PlayerEventDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).
     pub ui_trees: Vec<RegisteredUiTree>,

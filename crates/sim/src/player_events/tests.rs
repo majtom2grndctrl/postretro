@@ -15,6 +15,9 @@ use postretro_scripting_core::data_descriptors::{
 };
 use serde_json::json;
 
+use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
+use postretro_test_log_capture::LogCapture;
+
 use super::{PlayerEventResidual, PlayerEventTable};
 use crate::mover_commands::MoverCommandDiagnostics;
 use crate::spawner::SpawnContext;
@@ -103,6 +106,52 @@ impl World {
         );
     }
 
+    /// Commit mod-global and level player events, compose them for `tags`,
+    /// and bind a fresh table.
+    pub(super) fn install_composed(
+        &mut self,
+        reactions: Vec<NamedReaction>,
+        global: Vec<PlayerEventDescriptor>,
+        level: Vec<PlayerEventDescriptor>,
+        tags: &[String],
+    ) {
+        {
+            let mut data = self.script_ctx.data_registry.borrow_mut();
+            data.clear();
+            data.replace_global_player_events(global);
+            data.set_level_reactions(reactions);
+            data.set_level_player_events(level);
+            data.recompose(tags);
+        }
+        self.table = PlayerEventTable::build(
+            &self.script_ctx,
+            MoverCommandDiagnostics::default(),
+            SpawnContext::default(),
+            None,
+        );
+    }
+
+    /// The reaction names this tick's fires left for the frame-end drain, in
+    /// drain order, then clear them.
+    pub(super) fn take_residual_reactions(&mut self) -> Vec<String> {
+        let names = self
+            .residuals
+            .iter()
+            .flat_map(|residual| {
+                self.table
+                    .residual(residual.handle)
+                    .expect("residual handle resolves")
+                    .iter()
+                    .map(|step| match step {
+                        PrepartitionedReactionStep::Descriptor(name, _, _) => name.clone(),
+                        PrepartitionedReactionStep::DeferredEvent(name) => format!("->{name}"),
+                    })
+            })
+            .collect();
+        self.residuals.clear();
+        names
+    }
+
     pub(super) fn tick(&mut self) {
         self.table.run_tick(&self.script_ctx, &mut self.residuals);
     }
@@ -155,6 +204,20 @@ pub(super) fn on_player(name: &str, primitive: &str, args: serde_json::Value) ->
     }
 }
 
+pub(super) fn play_sound(name: &str, sound: &str) -> NamedReaction {
+    NamedReaction {
+        name: name.to_string(),
+        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: "playSound".to_string(),
+            target: None,
+            kind: None,
+            tag: None,
+            on_complete: None,
+            args: json!({ "sound": sound }),
+        }),
+    }
+}
+
 #[test]
 fn becomes_fires_for_the_crossing_player_and_damages_only_their_pawn() {
     let mut world = World::new();
@@ -184,4 +247,88 @@ fn becomes_fires_for_the_crossing_player_and_damages_only_their_pawn() {
         35.0,
         "a held condition does not fire again"
     );
+}
+
+#[test]
+fn a_non_bool_condition_is_rejected_naming_the_event_and_its_bool_sibling_installs() {
+    let mut world = World::new();
+    let pawn = world.spawn_player(Some(Seat(1)), 10.0);
+    let capture = LogCapture::start();
+    world.install(
+        vec![on_player("scald", "applyDamage", json!({ "amount": 1.0 }))],
+        vec![
+            player_event(PlayerEventEdge::Becomes, input("player.health"), &["scald"]),
+            player_event(
+                PlayerEventEdge::Becomes,
+                lt(input("player.health"), number(50.0)),
+                &["scald"],
+            ),
+        ],
+    );
+    capture.assert_logged(
+        log::Level::Error,
+        "player event setupLevel().playerEvents[0]: condition must produce Bool",
+    );
+    world.tick();
+    assert_eq!(world.health(pawn), 9.0, "the Bool sibling installs and fires once");
+}
+
+#[test]
+fn one_condition_edge_and_reaction_bind_once_and_distinct_entries_fire_mod_global_first() {
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(1)), 10.0);
+    let low = || lt(input("player.health"), number(50.0));
+    let capture = LogCapture::start();
+    world.install_composed(
+        vec![play_sound("fanfare", "level_up"), play_sound("hiss", "scald")],
+        vec![player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])],
+        vec![
+            player_event(PlayerEventEdge::Becomes, low(), &["hiss"]),
+            player_event(PlayerEventEdge::Becomes, low(), &["fanfare"]),
+        ],
+        &[],
+    );
+    let warnings: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| record.message.contains("is bound by both"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "one warning for the shared triple: {warnings:?}");
+    assert!(
+        warnings[0].message.contains("ModManifest.playerEvents[0]")
+            && warnings[0].message.contains("setupLevel().playerEvents[1]"),
+        "the warning names both entries: {}",
+        warnings[0].message
+    );
+
+    world.tick();
+    assert_eq!(
+        world.take_residual_reactions(),
+        vec!["fanfare".to_string(), "hiss".to_string()],
+        "the shared triple fires once; mod-global entries fire before the level's"
+    );
+}
+
+#[test]
+fn a_levels_scoped_mod_event_fires_only_in_matching_levels() {
+    let low = || lt(input("player.health"), number(50.0));
+    let scoped = PlayerEventDescriptor {
+        levels: vec!["arena".to_string()],
+        ..player_event(PlayerEventEdge::Becomes, low(), &["fanfare"])
+    };
+    for (tags, expected) in [
+        (vec!["arena".to_string()], vec!["fanfare".to_string(), "hiss".to_string()]),
+        (vec!["campaign".to_string()], vec!["hiss".to_string()]),
+    ] {
+        let mut world = World::new();
+        world.spawn_player(Some(Seat(1)), 10.0);
+        world.install_composed(
+            vec![play_sound("fanfare", "level_up"), play_sound("hiss", "scald")],
+            vec![scoped.clone()],
+            vec![player_event(PlayerEventEdge::Becomes, low(), &["hiss"])],
+            &tags,
+        );
+        world.tick();
+        assert_eq!(world.take_residual_reactions(), expected, "level tags {tags:?}");
+    }
 }

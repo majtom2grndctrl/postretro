@@ -9,7 +9,7 @@ read at: bd94e4e3f (source unchanged from fe1881a35 / research 221fdaf4a)
 - Owner chose resumable mode on 2026-10-10. Claim commit `fe1881a35` is on `origin/main`; branch `codex/coop-networked-by-default`.
 - Source audit found one false Decision premise: held weapons do not carry Weapon only. Block recorded in `bd94e4e3f`; no implementation or tests ran.
 - Owner approved canonical held ownership, shared world-targeting/replication exclusion, retained state and existing weapon resources on 2026-10-10. Applied to Decision 1, AC 2/4, new AC 22, Task 2/2a/10, orderings and M1. No unrelated Decisions changed.
-- Owner approved this plan on 2026-10-10 ("Approved. Carry on!"). Full resumable source verification is complete. All proof below is **planned**, not passed; implementation is authorized.
+- Owner approved this plan on 2026-10-10 ("Approved. Carry on!"). Full resumable source verification is complete; implementation is authorized. Completed proof is recorded under Execution evidence; unresolved AC rows remain planned until final integration.
 - Durable entity/networking contracts record the approved direction as decided, not built. Original Decisions 2–12 remain in force.
 - Use the existing checkout and warm `target/`. Integrator owns plan, shared contracts, commits, Cargo runs and final verification. Workers never commit or edit this file.
 - Free space at planning: 37 GiB. Check after each workflow step/task; apply the build-brief cache-only cleanup rule below 15 GB.
@@ -108,11 +108,11 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | complete |
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P1 | complete |
 | P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | complete |
-| P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | in progress |
-| P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | pending |
+| P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | complete |
+| P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | in progress |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
 | P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | pending |
-| P10 | Extract replication encoder/state (T1) | bounded worker | P6 | pending |
+| P10 | Extract replication encoder/state (T1) | bounded worker | P6 | in progress |
 | P11 | Budget/order/flights/ack repair + byte telemetry (T6) | bounded net worker | P10 | pending |
 | P12 | Fire origin, ordered recipients, all drains, tick occupants and positioned sound (T8) | integrator | P6,P9 | pending |
 | P13 | TS/Luau audience SDK/types/compiler/install/source gates and UI warning (T9) | bounded SDK worker; integrator shared validation seams | P12 | pending |
@@ -137,6 +137,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P5 complete: component constants, mirrors, raw slots and validation moved unchanged to `wire/components.rs`, with explicit existing-path re-exports. Field/variant order and normalized production bodies preserved; private movement-finiteness proof moved with its implementation. `cargo test -p postretro-net --lib wire::`: 77 passed, 0 failed.
 
 - P2 complete: real TouchSystem pickup/drop retains Health 37, magazine 3, recovery 87, every reserve (including explicit zero), ownership and spatial participation transitions. Deferred script removal still applies to held weapons and clears ownership on generation reuse. Client Control/baseline arrival orders, retuning and replacement/removal preserve retained state; current-inventory teardown protects former dropped/reacquired items; demotion/re-promotion rebuilds fresh instances. `held_descriptor_lifecycle` (sim 2 passed), the two touch lifecycle tests (1 each), duplicate/full and auto-touch ordering regressions (1 each), scripting-core `held_descriptor_lifecycle_refresh_preserves_ownership_and_retained_state` (1 passed), client current-inventory despawn and o22/o24 demotion tests (1 each) passed. Resource tests (11 passed) and nine existing inactive cooldown/reload/drop/tuning filters (1 each) passed. Initial AI/physics/spatial consumer checks are recorded above. Integration removed an overly broad queued-projectile guard: accepted endpoint contacts/effects remain, while target damage/policy rechecks ownership; corrected regression passed (1 test).
+
+- P6 complete: appended light/emitter/fog raw slots and typed state/animation mirrors, shared finite/curve-bound validation, binding metadata and record-shape gates, appended server script clock, positioned sound field/intake, tracker binding forwarding and dirty detection. Host serializes the future bridge sample clock (freeze respected). Wire 27/snapshot18; PRLB unchanged; previous26 refused at both gates and historical fixtures retained. `postretro-net` wire filter: 85 passed; handshake: 18 passed; replication: 43 passed. `postretro-netcode` presentation_commands: 10 passed; host catch-up clock, engine discriminants and live version pins: 1 each; client::tests: 55 passed; enemy replication harness: 17 passed. `cargo check -p postretro-netcode -p postretro --features postretro/dev-tools` passed. State payload apply remains deliberately deferred to P14.
 
 ### P1 and P2 boundaries
 

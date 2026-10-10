@@ -1943,10 +1943,12 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),
         faction_sentiment_record: None,
+        server_script_time: 0.0,
     }
 }
 

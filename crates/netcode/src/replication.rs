@@ -171,6 +171,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
             entity_class,
             active_weapon_archetype,
             projectile_presentation: set.projectile_presentations.get(&id).copied(),
+            presentation_binding: None,
         });
     }
     snapshots

@@ -2,8 +2,9 @@
 // to that player's machine, and the client intake that presents it locally.
 // See: context/lib/networking.md §Presentation events vs. replicated state
 
-use postretro_entities::SystemReactionCommand;
+use glam::Vec3;
 use postretro_entities::reactions::system_commands::SystemCommandQueue;
+use postretro_entities::{ContactHit, Emitter, ImpactContact, SystemReactionCommand};
 use postretro_foundation::Seat;
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
@@ -12,8 +13,9 @@ use postretro_net::wire::{
 
 use crate::seat::SeatTable;
 
-/// The wire mirror of a presentation command. `None` for any other command;
-/// a sound's emitter anchor never crosses, since a player event has none.
+/// The wire mirror of a presentation command. `None` for any other command.
+/// Outbound sound anchors remain unpositioned until fire-origin routing captures
+/// the emitter's position.
 pub fn presentation_command_to_wire(
     command: &SystemReactionCommand,
 ) -> Option<PresentationCommand> {
@@ -21,6 +23,7 @@ pub fn presentation_command_to_wire(
         SystemReactionCommand::PlaySound { sound, bus, .. } => PresentationCommand::PlaySound {
             sound: sound.clone(),
             bus: bus.clone(),
+            at: None,
         },
         SystemReactionCommand::Rumble {
             strong,
@@ -81,13 +84,19 @@ pub fn presentation_command_from_wire(
 ) -> Option<SystemReactionCommand> {
     let finite = |values: &[f32]| values.iter().all(|value| value.is_finite());
     let (local, numbers): (SystemReactionCommand, Vec<f32>) = match command {
-        PresentationCommand::PlaySound { sound, bus } => (
+        PresentationCommand::PlaySound { sound, bus, at } => (
             SystemReactionCommand::PlaySound {
                 sound,
                 bus,
-                at: None,
+                at: at.map(|point| {
+                    Emitter::Contacts(vec![ImpactContact {
+                        point: Vec3::from_array(point),
+                        normal: Vec3::ZERO,
+                        hit: ContactHit::World,
+                    }])
+                }),
             },
-            Vec::new(),
+            at.into_iter().flatten().collect(),
         ),
         PresentationCommand::Rumble {
             strong,

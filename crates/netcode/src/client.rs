@@ -719,6 +719,7 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
+                    ..
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -774,6 +775,7 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
+                    ..
                 } => {
                     if self.apply_delta(
                         registry,
@@ -1590,6 +1592,11 @@ impl ClientReplication {
                         );
                     }
                 }
+                // Presentation state applies after materialization, once the
+                // binding and bridge-clock path is installed.
+                ComponentPayload::LightState(_)
+                | ComponentPayload::FogState(_)
+                | ComponentPayload::EmitterState(_) => {}
             }
         }
         if !record_has_transform
@@ -2620,6 +2627,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -2641,6 +2649,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -2653,6 +2662,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         }
     }
 
@@ -3351,6 +3361,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: Some("reference_pistol".to_string()),
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![
                 transform_payload(x),
                 movement_payload_with_velocity_and_pitch([12.0, 0.0, 4.0], aim_pitch),
@@ -4650,6 +4661,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4670,6 +4682,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4829,6 +4842,7 @@ mod tests {
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4849,6 +4863,7 @@ mod tests {
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }

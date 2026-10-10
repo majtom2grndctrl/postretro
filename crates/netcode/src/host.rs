@@ -121,6 +121,7 @@ pub fn host_replicate(
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
     tick: u32,
+    server_script_time: f64,
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
 ) -> Vec<EntityId> {
@@ -178,6 +179,7 @@ pub fn host_replicate(
         replication.register_client(client_id);
         state_slots.register_client(client_id);
         if let Some(mut raw) = replication.encode_in_batch(client_id, tick, sequence) {
+            raw.server_script_time = server_script_time;
             // Splice this client's replicated-state records into the SAME snapshot
             // envelope the entity tracker produced (no new channel, no sibling message).
             // The entity tracker leaves `state_records` empty + an all-zero fingerprint;

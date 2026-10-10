@@ -26,7 +26,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// The tuning-payload epoch remains independent.
 /// Frozen projectile facts and reliable observer cues advance this to 25.
 /// The weapon-switch declaration's client tick advances it to 26.
-pub const WIRE_VERSION: u32 = 26;
+pub const WIRE_VERSION: u32 = 27;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -517,8 +517,8 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 26,
-            "the byte layout of shipped messages is unchanged"
+            WIRE_VERSION, 27,
+            "presentation state extends the shipped layout"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
@@ -619,7 +619,7 @@ mod activation_epoch_tests {
 
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert_eq!(WIRE_VERSION, 26);
+        assert!(WIRE_VERSION >= 26);
         assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
@@ -644,6 +644,22 @@ mod switch_tick_epoch_tests {
     use super::*;
     use bitcode::{Decode, Encode};
 
+    #[test]
+    fn presentation_state_advances_wire_and_snapshot_and_refuses_wire_26() {
+        assert_eq!(WIRE_VERSION, 27);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 18);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 26,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 26);
+    }
+
     /// The switch declaration as shipped at wire 25, before its client tick.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
     struct PreTickSwitchDeclaration {
@@ -664,15 +680,15 @@ mod switch_tick_epoch_tests {
 
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
-        assert_eq!(WIRE_VERSION, 26);
+        assert!(WIRE_VERSION >= 26);
         assert_eq!(
             PROTOCOL_ID, 0x5052_4c42,
             "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
         );
         assert_eq!(
             crate::wire::SNAPSHOT_VERSION,
-            17,
-            "no snapshot record changed"
+            18,
+            "presentation state later extended snapshot records"
         );
         assert!(matches!(
             validate_handshake(

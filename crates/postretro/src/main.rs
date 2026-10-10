@@ -4612,7 +4612,11 @@ impl App {
     /// this redraw completed a 30 Hz cadence tick, sends each accepted client a
     /// per-client delta snapshot over the snapshot channel. No-op for single-player
     /// and the client.
-    fn net_serialize_and_send(&mut self, snapshot_due: bool) -> Vec<postretro_entities::EntityId> {
+    fn net_serialize_and_send(
+        &mut self,
+        snapshot_due: bool,
+        server_script_time: f64,
+    ) -> Vec<postretro_entities::EntityId> {
         let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
@@ -4715,6 +4719,7 @@ impl App {
                 command_queues,
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 tick.wrapping_add(1),
+                server_script_time,
                 snapshot_due,
                 last_emitted_snapshot_tick,
             );

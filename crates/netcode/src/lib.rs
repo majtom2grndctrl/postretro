@@ -669,7 +669,7 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
         && t.scale.iter().all(|c| c.is_finite())
 }
 
-/// A wire `ComponentPayload` is safe to apply: all f32 fields are finite. The
+/// A wire `ComponentPayload` is safe to apply: all numeric fields are finite. The
 /// exhaustive match (no `_` arm) means a new payload variant is a compile error
 /// here until its finite-check is written.
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
@@ -682,6 +682,10 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
         ComponentPayload::MeshAnimationState(_) => true,
         ComponentPayload::KinematicMoverState(m) => kinematic_mover_is_finite(m),
+        // Reuse the presentation producer/receive gate, including curve bounds.
+        ComponentPayload::LightState(state) => state.validate().is_ok(),
+        ComponentPayload::FogState(state) => state.validate().is_ok(),
+        ComponentPayload::EmitterState(state) => state.validate().is_ok(),
     }
 }
 
@@ -3153,6 +3157,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         }
     }
 
@@ -3257,6 +3262,7 @@ mod tests {
     #[test]
     fn host_catch_up_preserves_snapshot_cadence_and_zero_tick_ack_semantics() {
         const CLIENT_ID: u64 = 72;
+        const SERVER_SCRIPT_TIME: f64 = 12.5;
         let server_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("bind relay server");
         let server_addr = server_socket.local_addr().expect("relay server address");
@@ -3352,6 +3358,7 @@ mod tests {
             &command_queues,
             None,
             tick,
+            SERVER_SCRIPT_TIME,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
         );
@@ -3386,6 +3393,7 @@ mod tests {
             &command_queues,
             None,
             tick,
+            0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
         );
@@ -3402,10 +3410,16 @@ mod tests {
         for packet in server.packets_to_send(CLIENT_ID) {
             client.process_packet(&packet);
         }
+        let snapshots = client.drain_snapshots();
         assert_eq!(
-            client.drain_snapshots().len(),
+            snapshots.len(),
             1,
             "one catch-up redraw emits one current snapshot batch"
+        );
+        let snapshot = decode_snapshot(&snapshots[0]).expect("host snapshot validates");
+        assert!(
+            (snapshot.server_script_time - SERVER_SCRIPT_TIME).abs() < f64::EPSILON,
+            "the host stamps the frame's bridge clock into its snapshot"
         );
 
         let next_tick = timing.accumulate(crate::frame_timing::TICK_DURATION);
@@ -3431,6 +3445,7 @@ mod tests {
             &command_queues,
             None,
             tick,
+            0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
         );
@@ -5966,13 +5981,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            26,
-            "the switch declaration's client tick advances the wire version to 26"
+            27,
+            "presentation state, bindings, clock and positioned sounds require wire version 27"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            17,
-            "frozen observer projectile facts require snapshot version 17"
+            18,
+            "presentation state, bindings and clock require snapshot version 18"
         );
     }
 
@@ -6443,6 +6458,7 @@ mod tests {
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
@@ -6453,6 +6469,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
 
@@ -6475,6 +6492,24 @@ mod tests {
             ComponentKind::Transform as u16
         );
         assert_eq!(component_kind_discriminant(ComponentKind::Transform), 0);
+    }
+
+    #[test]
+    fn presentation_payload_discriminants_match_engine_components() {
+        use postretro_net::wire::{
+            COMPONENT_KIND_BILLBOARD_EMITTER, COMPONENT_KIND_FOG_VOLUME, COMPONENT_KIND_LIGHT,
+        };
+        for (kind, wire_kind) in [
+            (ComponentKind::Light, COMPONENT_KIND_LIGHT),
+            (
+                ComponentKind::BillboardEmitter,
+                COMPONENT_KIND_BILLBOARD_EMITTER,
+            ),
+            (ComponentKind::FogVolume, COMPONENT_KIND_FOG_VOLUME),
+        ] {
+            assert_eq!(component_kind_discriminant(kind), wire_kind);
+            assert_eq!(wire_kind, kind as u16);
+        }
     }
 
     #[test]
@@ -6625,6 +6660,7 @@ mod tests {
                     entity_class: None,
                     active_weapon_archetype: None,
                     projectile_presentation: None,
+                    presentation_binding: None,
                     components: vec![ComponentPayload::Transform(WireTransform {
                         position: [4.0, 0.0, 0.0],
                         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -6634,6 +6670,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         let id = *replication
@@ -6724,6 +6761,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![
                 ComponentPayload::Transform(WireTransform {
                     position: [transform_x, 0.0, 0.0],
@@ -6745,6 +6783,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         replication.apply_snapshot(
@@ -6756,6 +6795,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         replication.cache_remote_player_locomotion(
@@ -7078,6 +7118,7 @@ mod tests {
                 state_schema_fingerprint: [0u8; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         let remote = client_outcome
@@ -7295,6 +7336,7 @@ mod tests {
                             entity_class: Some("player".to_string()),
                             active_weapon_archetype: None,
                             projectile_presentation: None,
+                            presentation_binding: None,
                             components: vec![
                                 ComponentPayload::Transform(WireTransform {
                                     position: [3.0, 0.0, 0.0],
@@ -7327,6 +7369,7 @@ mod tests {
                             entity_class: None,
                             active_weapon_archetype: None,
                             projectile_presentation: None,
+                            presentation_binding: None,
                             components: vec![ComponentPayload::Transform(WireTransform {
                                 position: [9.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0, 1.0],
@@ -7337,6 +7380,7 @@ mod tests {
                     state_schema_fingerprint: [0u8; 32],
                     state_records: Vec::new(),
                     faction_sentiment_record: None,
+                    server_script_time: 0.0,
                 },
             );
             replication

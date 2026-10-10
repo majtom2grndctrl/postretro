@@ -8,6 +8,14 @@ use super::ValidationError;
 /// `component_kind` discriminant for a `Transform` payload. Numeric-equal to the
 /// engine `ComponentKind::Transform as u16`.
 pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
+/// Engine `ComponentKind::Light` discriminant.
+pub const COMPONENT_KIND_LIGHT: u16 = 1;
+/// Engine `ComponentKind::BillboardEmitter` discriminant.
+pub const COMPONENT_KIND_BILLBOARD_EMITTER: u16 = 2;
+/// Engine `ComponentKind::FogVolume` discriminant.
+pub const COMPONENT_KIND_FOG_VOLUME: u16 = 5;
+/// Maximum key count in any replicated presentation animation channel.
+pub const MAX_WIRE_CURVE_KEYS: usize = 64;
 /// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
 /// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
 pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
@@ -251,6 +259,233 @@ pub struct WireMeshAnimationState {
     pub current_state: String,
 }
 
+/// Written light state, independent of per-frame bridge samples.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireLightState {
+    pub intensity: f32,
+    pub color: [f32; 3],
+    pub cone_direction: Option<[f32; 3]>,
+    pub animation: Option<WireLightAnimation>,
+    pub anim_start: Option<f64>,
+}
+
+/// Light animation channels supported by the scripting surface. Radius curves
+/// are engine-internal and deliberately have no wire field.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireLightAnimation {
+    pub period_ms: f32,
+    pub phase: Option<f32>,
+    pub play_count: Option<u32>,
+    pub start_active: Option<bool>,
+    pub brightness: Option<Vec<f32>>,
+    pub color: Option<Vec<[f32; 3]>>,
+    pub direction: Option<Vec<[f32; 3]>>,
+}
+
+/// Written fog state, independent of per-frame bridge samples.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireFogState {
+    pub density: f32,
+    pub glow: f32,
+    pub edge_softness: f32,
+    pub falloff: f32,
+    pub tint: [f32; 3],
+    pub saturation: f32,
+    pub min_brightness: f32,
+    pub light_range: f32,
+    pub animation: Option<WireFogAnimation>,
+    pub anim_start: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireFogAnimation {
+    pub period_ms: f32,
+    pub phase: Option<f32>,
+    pub play_count: Option<u32>,
+    pub density: Option<Vec<f32>>,
+    pub saturation: Option<Vec<f32>>,
+    pub min_brightness: Option<Vec<f32>>,
+    pub light_range: Option<Vec<f32>>,
+}
+
+/// Written emitter state; elapsed animation time stays off the wire.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireEmitterState {
+    pub rate: f32,
+    pub spin_rate: f32,
+    pub spin_animation: Option<WireSpinAnimation>,
+    pub anim_start: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireSpinAnimation {
+    pub duration: f32,
+    pub rate_curve: Vec<f32>,
+}
+
+fn curve_is_finite<T>(curve: &Option<Vec<T>>, finite: impl Fn(&T) -> bool) -> bool {
+    curve.as_ref().is_none_or(|keys| keys.iter().all(finite))
+}
+
+fn curve_has_valid_length<T>(curve: &Option<Vec<T>>) -> bool {
+    curve
+        .as_ref()
+        .is_none_or(|keys| (1..=MAX_WIRE_CURVE_KEYS).contains(&keys.len()))
+}
+
+fn vector_is_finite(vector: &[f32; 3]) -> bool {
+    vector.iter().all(|value| value.is_finite())
+}
+
+impl WireLightAnimation {
+    fn all_finite(&self) -> bool {
+        self.period_ms.is_finite()
+            && self.phase.is_none_or(f32::is_finite)
+            && curve_is_finite(&self.brightness, |value| value.is_finite())
+            && curve_is_finite(&self.color, vector_is_finite)
+            && curve_is_finite(&self.direction, vector_is_finite)
+    }
+
+    fn has_valid_bounds(&self) -> bool {
+        self.period_ms > 0.0
+            && curve_has_valid_length(&self.brightness)
+            && curve_has_valid_length(&self.color)
+            && curve_has_valid_length(&self.direction)
+    }
+}
+
+impl WireFogAnimation {
+    fn all_finite(&self) -> bool {
+        self.period_ms.is_finite()
+            && self.phase.is_none_or(f32::is_finite)
+            && [
+                &self.density,
+                &self.saturation,
+                &self.min_brightness,
+                &self.light_range,
+            ]
+            .iter()
+            .all(|curve| curve_is_finite(curve, |value| value.is_finite()))
+    }
+
+    fn has_valid_bounds(&self) -> bool {
+        self.period_ms > 0.0
+            && [
+                &self.density,
+                &self.saturation,
+                &self.min_brightness,
+                &self.light_range,
+            ]
+            .iter()
+            .all(|curve| curve_has_valid_length(curve))
+    }
+}
+
+impl WireSpinAnimation {
+    fn all_finite(&self) -> bool {
+        self.duration.is_finite() && self.rate_curve.iter().all(|value| value.is_finite())
+    }
+
+    fn has_valid_bounds(&self) -> bool {
+        self.duration > 0.0 && (1..=MAX_WIRE_CURVE_KEYS).contains(&self.rate_curve.len())
+    }
+}
+
+impl WireLightState {
+    /// Shared receive and producer/capture gate for presentation state.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !(self.intensity.is_finite()
+            && vector_is_finite(&self.color)
+            && self.cone_direction.as_ref().is_none_or(vector_is_finite)
+            && self.anim_start.is_none_or(f64::is_finite)
+            && self
+                .animation
+                .as_ref()
+                .is_none_or(WireLightAnimation::all_finite))
+        {
+            return Err(ValidationError::NonFinitePresentationState(
+                COMPONENT_KIND_LIGHT,
+            ));
+        }
+        if !self
+            .animation
+            .as_ref()
+            .is_none_or(WireLightAnimation::has_valid_bounds)
+        {
+            return Err(ValidationError::InvalidPresentationState(
+                COMPONENT_KIND_LIGHT,
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl WireFogState {
+    /// Shared receive and producer/capture gate for presentation state.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !([
+            self.density,
+            self.glow,
+            self.edge_softness,
+            self.falloff,
+            self.saturation,
+            self.min_brightness,
+            self.light_range,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+            && vector_is_finite(&self.tint)
+            && self.anim_start.is_none_or(f64::is_finite)
+            && self
+                .animation
+                .as_ref()
+                .is_none_or(WireFogAnimation::all_finite))
+        {
+            return Err(ValidationError::NonFinitePresentationState(
+                COMPONENT_KIND_FOG_VOLUME,
+            ));
+        }
+        if !self
+            .animation
+            .as_ref()
+            .is_none_or(WireFogAnimation::has_valid_bounds)
+        {
+            return Err(ValidationError::InvalidPresentationState(
+                COMPONENT_KIND_FOG_VOLUME,
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl WireEmitterState {
+    /// Shared receive and producer/capture gate for presentation state.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !(self.rate.is_finite()
+            && self.spin_rate.is_finite()
+            && self.anim_start.is_none_or(f64::is_finite)
+            && self
+                .spin_animation
+                .as_ref()
+                .is_none_or(WireSpinAnimation::all_finite))
+        {
+            return Err(ValidationError::NonFinitePresentationState(
+                COMPONENT_KIND_BILLBOARD_EMITTER,
+            ));
+        }
+        if !self
+            .spin_animation
+            .as_ref()
+            .is_none_or(WireSpinAnimation::has_valid_bounds)
+        {
+            return Err(ValidationError::InvalidPresentationState(
+                COMPONENT_KIND_BILLBOARD_EMITTER,
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Raw encoded boundary
 // ---------------------------------------------------------------------------
@@ -272,6 +507,9 @@ pub struct RawComponentPayload {
     pub player_movement: Option<WirePlayerMovementState>,
     pub mesh_animation_state: Option<WireMeshAnimationState>,
     pub kinematic_mover: Option<WireKinematicMoverState>,
+    pub light: Option<WireLightState>,
+    pub emitter: Option<WireEmitterState>,
+    pub fog: Option<WireFogState>,
 }
 
 /// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
@@ -282,6 +520,9 @@ pub enum ComponentPayload {
     PlayerMovementState(WirePlayerMovementState),
     MeshAnimationState(WireMeshAnimationState),
     KinematicMoverState(WireKinematicMoverState),
+    LightState(WireLightState),
+    EmitterState(WireEmitterState),
+    FogState(WireFogState),
 }
 
 impl ComponentPayload {
@@ -295,6 +536,9 @@ impl ComponentPayload {
             ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
             ComponentPayload::KinematicMoverState(_) => COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+            ComponentPayload::LightState(_) => COMPONENT_KIND_LIGHT,
+            ComponentPayload::EmitterState(_) => COMPONENT_KIND_BILLBOARD_EMITTER,
+            ComponentPayload::FogState(_) => COMPONENT_KIND_FOG_VOLUME,
         }
     }
 }
@@ -311,7 +555,10 @@ impl RawComponentPayload {
         let populated = usize::from(self.transform.is_some())
             + usize::from(self.player_movement.is_some())
             + usize::from(self.mesh_animation_state.is_some())
-            + usize::from(self.kinematic_mover.is_some());
+            + usize::from(self.kinematic_mover.is_some())
+            + usize::from(self.light.is_some())
+            + usize::from(self.emitter.is_some())
+            + usize::from(self.fog.is_some());
 
         match self.component_kind {
             COMPONENT_KIND_TRANSFORM => match self.transform {
@@ -372,6 +619,42 @@ impl RawComponentPayload {
                     self.component_kind,
                 )),
             },
+            COMPONENT_KIND_LIGHT => match &self.light {
+                Some(state) if populated == 1 => {
+                    state.validate()?;
+                    Ok(ComponentPayload::LightState(state.clone()))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
+            COMPONENT_KIND_BILLBOARD_EMITTER => match &self.emitter {
+                Some(state) if populated == 1 => {
+                    state.validate()?;
+                    Ok(ComponentPayload::EmitterState(state.clone()))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
+            COMPONENT_KIND_FOG_VOLUME => match &self.fog {
+                Some(state) if populated == 1 => {
+                    state.validate()?;
+                    Ok(ComponentPayload::FogState(state.clone()))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             other => Err(ValidationError::UnknownComponentKind(other)),
         }
     }
@@ -418,6 +701,360 @@ mod tests {
             assert_eq!(
                 float_field_count > 0,
                 !matches!(state, WireMovementState::Normal)
+            );
+        }
+    }
+    fn empty_raw(kind: u16) -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: kind,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        }
+    }
+
+    fn light_state() -> WireLightState {
+        WireLightState {
+            intensity: 2.0,
+            color: [0.2, 0.4, 0.6],
+            cone_direction: Some([0.0, -1.0, 0.0]),
+            animation: Some(WireLightAnimation {
+                period_ms: 800.0,
+                phase: Some(0.25),
+                play_count: Some(2),
+                start_active: Some(true),
+                brightness: Some(vec![1.0; MAX_WIRE_CURVE_KEYS]),
+                color: Some(vec![[0.3, 0.5, 0.7]; MAX_WIRE_CURVE_KEYS]),
+                direction: Some(vec![[0.0, -1.0, 0.0]; MAX_WIRE_CURVE_KEYS]),
+            }),
+            anim_start: Some(4.5),
+        }
+    }
+
+    fn fog_state() -> WireFogState {
+        WireFogState {
+            density: 0.1,
+            glow: 0.2,
+            edge_softness: 0.3,
+            falloff: 0.4,
+            tint: [0.5, 0.6, 0.7],
+            saturation: 1.2,
+            min_brightness: 0.8,
+            light_range: 12.0,
+            animation: Some(WireFogAnimation {
+                period_ms: 1200.0,
+                phase: Some(0.5),
+                play_count: Some(3),
+                density: Some(vec![0.1; MAX_WIRE_CURVE_KEYS]),
+                saturation: Some(vec![1.2; MAX_WIRE_CURVE_KEYS]),
+                min_brightness: Some(vec![0.8; MAX_WIRE_CURVE_KEYS]),
+                light_range: Some(vec![12.0; MAX_WIRE_CURVE_KEYS]),
+            }),
+            anim_start: Some(6.0),
+        }
+    }
+
+    fn emitter_state() -> WireEmitterState {
+        WireEmitterState {
+            rate: 15.0,
+            spin_rate: -1.5,
+            spin_animation: Some(WireSpinAnimation {
+                duration: 2.0,
+                rate_curve: vec![3.0; MAX_WIRE_CURVE_KEYS],
+            }),
+            anim_start: Some(7.0),
+        }
+    }
+
+    fn roundtrip(raw: RawComponentPayload, expected: ComponentPayload) {
+        let bytes = bitcode::encode(&raw);
+        let decoded: RawComponentPayload = bitcode::decode(&bytes).unwrap();
+        assert_eq!(decoded, raw);
+        assert_eq!(decoded.validate(), Ok(expected));
+    }
+
+    #[test]
+    fn light_state_roundtrip_none_and_maximum_curves() {
+        for animated in [false, true] {
+            let mut state = light_state();
+            if !animated {
+                state.animation = None;
+                state.anim_start = None;
+                state.cone_direction = None;
+            }
+            let mut raw = empty_raw(COMPONENT_KIND_LIGHT);
+            raw.light = Some(state.clone());
+            roundtrip(raw, ComponentPayload::LightState(state));
+        }
+    }
+
+    #[test]
+    fn fog_state_roundtrip_none_and_maximum_curves() {
+        for animated in [false, true] {
+            let mut state = fog_state();
+            if !animated {
+                state.animation = None;
+                state.anim_start = None;
+            }
+            let mut raw = empty_raw(COMPONENT_KIND_FOG_VOLUME);
+            raw.fog = Some(state.clone());
+            roundtrip(raw, ComponentPayload::FogState(state));
+        }
+    }
+
+    #[test]
+    fn emitter_state_roundtrip_none_and_maximum_curves() {
+        for animated in [false, true] {
+            let mut state = emitter_state();
+            if !animated {
+                state.spin_animation = None;
+                state.anim_start = None;
+            }
+            let mut raw = empty_raw(COMPONENT_KIND_BILLBOARD_EMITTER);
+            raw.emitter = Some(state.clone());
+            roundtrip(raw, ComponentPayload::EmitterState(state));
+        }
+    }
+
+    #[test]
+    fn light_state_rejects_nonfinite_fields_and_invalid_curve_bounds() {
+        let mutations: &[fn(&mut WireLightState, f32)] = &[
+            |s, v| s.intensity = v,
+            |s, v| s.color[1] = v,
+            |s, v| s.cone_direction.as_mut().unwrap()[2] = v,
+            |s, v| s.anim_start = Some(f64::from(v)),
+            |s, v| s.animation.as_mut().unwrap().period_ms = v,
+            |s, v| s.animation.as_mut().unwrap().phase = Some(v),
+            |s, v| s.animation.as_mut().unwrap().brightness.as_mut().unwrap()[0] = v,
+            |s, v| s.animation.as_mut().unwrap().color.as_mut().unwrap()[0][2] = v,
+            |s, v| s.animation.as_mut().unwrap().direction.as_mut().unwrap()[0][1] = v,
+        ];
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for mutate in mutations {
+                let mut state = light_state();
+                mutate(&mut state, value);
+                let mut raw = empty_raw(COMPONENT_KIND_LIGHT);
+                raw.light = Some(state);
+                assert_eq!(
+                    raw.validate(),
+                    Err(ValidationError::NonFinitePresentationState(
+                        COMPONENT_KIND_LIGHT
+                    ))
+                );
+            }
+        }
+        for period in [0.0, -1.0] {
+            let mut state = light_state();
+            state.animation.as_mut().unwrap().period_ms = period;
+            assert_eq!(
+                state.validate(),
+                Err(ValidationError::InvalidPresentationState(
+                    COMPONENT_KIND_LIGHT
+                ))
+            );
+        }
+        for length in [0, MAX_WIRE_CURVE_KEYS + 1] {
+            for channel in 0..3 {
+                let mut state = light_state();
+                let animation = state.animation.as_mut().unwrap();
+                match channel {
+                    0 => animation.brightness = Some(vec![1.0; length]),
+                    1 => animation.color = Some(vec![[1.0; 3]; length]),
+                    2 => animation.direction = Some(vec![[1.0; 3]; length]),
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    state.validate(),
+                    Err(ValidationError::InvalidPresentationState(
+                        COMPONENT_KIND_LIGHT
+                    ))
+                );
+            }
+        }
+        let mut state = light_state();
+        let animation = state.animation.as_mut().unwrap();
+        animation.brightness = None;
+        animation.color = None;
+        animation.direction = None;
+        assert_eq!(state.validate(), Ok(()), "absent channels carry no curve");
+    }
+
+    #[test]
+    fn fog_state_rejects_nonfinite_fields_and_invalid_curve_bounds() {
+        let mutations: &[fn(&mut WireFogState, f32)] = &[
+            |s, v| s.density = v,
+            |s, v| s.glow = v,
+            |s, v| s.edge_softness = v,
+            |s, v| s.falloff = v,
+            |s, v| s.tint[2] = v,
+            |s, v| s.saturation = v,
+            |s, v| s.min_brightness = v,
+            |s, v| s.light_range = v,
+            |s, v| s.anim_start = Some(f64::from(v)),
+            |s, v| s.animation.as_mut().unwrap().period_ms = v,
+            |s, v| s.animation.as_mut().unwrap().phase = Some(v),
+            |s, v| s.animation.as_mut().unwrap().density.as_mut().unwrap()[0] = v,
+            |s, v| s.animation.as_mut().unwrap().saturation.as_mut().unwrap()[0] = v,
+            |s, v| {
+                s.animation
+                    .as_mut()
+                    .unwrap()
+                    .min_brightness
+                    .as_mut()
+                    .unwrap()[0] = v
+            },
+            |s, v| s.animation.as_mut().unwrap().light_range.as_mut().unwrap()[0] = v,
+        ];
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for mutate in mutations {
+                let mut state = fog_state();
+                mutate(&mut state, value);
+                let mut raw = empty_raw(COMPONENT_KIND_FOG_VOLUME);
+                raw.fog = Some(state);
+                assert_eq!(
+                    raw.validate(),
+                    Err(ValidationError::NonFinitePresentationState(
+                        COMPONENT_KIND_FOG_VOLUME
+                    ))
+                );
+            }
+        }
+        for period in [0.0, -1.0] {
+            let mut state = fog_state();
+            state.animation.as_mut().unwrap().period_ms = period;
+            assert_eq!(
+                state.validate(),
+                Err(ValidationError::InvalidPresentationState(
+                    COMPONENT_KIND_FOG_VOLUME
+                ))
+            );
+        }
+        for length in [0, MAX_WIRE_CURVE_KEYS + 1] {
+            for channel in 0..4 {
+                let mut state = fog_state();
+                let animation = state.animation.as_mut().unwrap();
+                let curves = [
+                    &mut animation.density,
+                    &mut animation.saturation,
+                    &mut animation.min_brightness,
+                    &mut animation.light_range,
+                ];
+                *curves.into_iter().nth(channel).unwrap() = Some(vec![1.0; length]);
+                assert_eq!(
+                    state.validate(),
+                    Err(ValidationError::InvalidPresentationState(
+                        COMPONENT_KIND_FOG_VOLUME
+                    ))
+                );
+            }
+        }
+        let mut state = fog_state();
+        let animation = state.animation.as_mut().unwrap();
+        animation.phase = None;
+        animation.play_count = None;
+        animation.density = None;
+        animation.saturation = None;
+        animation.min_brightness = None;
+        animation.light_range = None;
+        assert_eq!(state.validate(), Ok(()));
+    }
+
+    #[test]
+    fn emitter_state_rejects_nonfinite_fields_and_invalid_curve_bounds() {
+        let mutations: &[fn(&mut WireEmitterState, f32)] = &[
+            |s, v| s.rate = v,
+            |s, v| s.spin_rate = v,
+            |s, v| s.anim_start = Some(f64::from(v)),
+            |s, v| s.spin_animation.as_mut().unwrap().duration = v,
+            |s, v| s.spin_animation.as_mut().unwrap().rate_curve[0] = v,
+        ];
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for mutate in mutations {
+                let mut state = emitter_state();
+                mutate(&mut state, value);
+                let mut raw = empty_raw(COMPONENT_KIND_BILLBOARD_EMITTER);
+                raw.emitter = Some(state);
+                assert_eq!(
+                    raw.validate(),
+                    Err(ValidationError::NonFinitePresentationState(
+                        COMPONENT_KIND_BILLBOARD_EMITTER
+                    ))
+                );
+            }
+        }
+        for duration in [0.0, -1.0] {
+            let mut state = emitter_state();
+            state.spin_animation.as_mut().unwrap().duration = duration;
+            assert_eq!(
+                state.validate(),
+                Err(ValidationError::InvalidPresentationState(
+                    COMPONENT_KIND_BILLBOARD_EMITTER
+                ))
+            );
+        }
+        for length in [0, MAX_WIRE_CURVE_KEYS + 1] {
+            let mut state = emitter_state();
+            state.spin_animation.as_mut().unwrap().rate_curve = vec![1.0; length];
+            assert_eq!(
+                state.validate(),
+                Err(ValidationError::InvalidPresentationState(
+                    COMPONENT_KIND_BILLBOARD_EMITTER
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_state_payload_slots_require_exact_kind_and_single_slot() {
+        for (kind, raw) in [
+            (
+                COMPONENT_KIND_LIGHT,
+                RawComponentPayload {
+                    light: Some(light_state()),
+                    ..empty_raw(COMPONENT_KIND_LIGHT)
+                },
+            ),
+            (
+                COMPONENT_KIND_BILLBOARD_EMITTER,
+                RawComponentPayload {
+                    emitter: Some(emitter_state()),
+                    ..empty_raw(COMPONENT_KIND_BILLBOARD_EMITTER)
+                },
+            ),
+            (
+                COMPONENT_KIND_FOG_VOLUME,
+                RawComponentPayload {
+                    fog: Some(fog_state()),
+                    ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
+                },
+            ),
+        ] {
+            assert_eq!(raw.validate().unwrap().kind(), kind);
+            assert_eq!(
+                empty_raw(kind).validate(),
+                Err(ValidationError::MissingComponentPayload(kind))
+            );
+            let mut duplicate = raw.clone();
+            duplicate.transform = Some(WireTransform {
+                position: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            });
+            assert_eq!(
+                duplicate.validate(),
+                Err(ValidationError::MismatchedComponentPayload(kind))
+            );
+            let mut wrong_kind = raw;
+            wrong_kind.component_kind = COMPONENT_KIND_TRANSFORM;
+            assert_eq!(
+                wrong_kind.validate(),
+                Err(ValidationError::MissingComponentPayload(
+                    COMPONENT_KIND_TRANSFORM
+                ))
             );
         }
     }

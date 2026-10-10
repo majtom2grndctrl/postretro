@@ -243,6 +243,7 @@ fn a_non_finite_forwarded_command_is_dropped_at_intake_and_finite_siblings_prese
             PresentationCommand::PlaySound {
                 sound: "chime".to_string(),
                 bus: None,
+                at: None,
             },
         ],
         &queue,
@@ -257,6 +258,68 @@ fn a_non_finite_forwarded_command_is_dropped_at_intake_and_finite_siblings_prese
             )
             .count(),
         2
+    );
+}
+
+#[test]
+fn a_forwarded_sound_position_becomes_a_world_contact_anchor() {
+    let queue = SystemCommandQueue::new();
+    ingest_presentation_commands(
+        vec![PresentationCommand::PlaySound {
+            sound: "door.open".to_string(),
+            bus: Some("sfx".to_string()),
+            at: Some([12.0, -3.0, 7.0]),
+        }],
+        &queue,
+    );
+    let commands = queue.take();
+    let [
+        SystemReactionCommand::PlaySound {
+            sound,
+            bus,
+            at: Some(Emitter::Contacts(contacts)),
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("the forwarded position must reach the local sound anchor");
+    };
+    assert_eq!(sound, "door.open");
+    assert_eq!(bus.as_deref(), Some("sfx"));
+    let [contact] = contacts.as_slice() else {
+        panic!("one wire point supplies exactly one contact");
+    };
+    assert!((contact.point - Vec3::new(12.0, -3.0, 7.0)).length() < 1e-6);
+    assert_eq!(contact.hit, ContactHit::World);
+}
+
+#[test]
+fn a_non_finite_forwarded_sound_position_presents_nothing() {
+    let capture = LogCapture::start();
+    let queue = SystemCommandQueue::new();
+    for axis in 0..3 {
+        for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut point = [0.0; 3];
+            point[axis] = non_finite;
+            ingest_presentation_commands(
+                vec![PresentationCommand::PlaySound {
+                    sound: "door.open".to_string(),
+                    bus: None,
+                    at: Some(point),
+                }],
+                &queue,
+            );
+        }
+    }
+    assert!(queue.take().is_empty());
+    assert_eq!(
+        capture
+            .records()
+            .iter()
+            .filter(|record| {
+                record.level == log::Level::Warn && record.message.contains("non-finite")
+            })
+            .count(),
+        9
     );
 }
 

@@ -1512,7 +1512,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Host serialize + send after terminal removals, so the
     // authoritative snapshot cannot carry an entity already reaped
     // this frame. No-op for the client and single-player.
-    let owner_projected_weapons = app.net_serialize_and_send(host_snapshot_due);
+    // Serialization precedes the clock advance; carry the script clock the
+    // presentation bridges will sample later in this frame.
+    let frame_script_time = app.script_time + if frozen { 0.0 } else { f64::from(frame_dt) };
+    let owner_projected_weapons = app.net_serialize_and_send(host_snapshot_due, frame_script_time);
 
     // Fix B: present connected-client pawns from the delay buffer at a delayed
     // fractional target, AFTER serialization read the authoritative poses and

@@ -24,7 +24,8 @@ use crate::wire::{
     COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
     RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
-    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireProjectilePresentation,
+    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WirePresentationBinding,
+    WireProjectilePresentation,
 };
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
@@ -74,6 +75,7 @@ pub struct EntitySnapshot {
     /// baseline so recipients observe an equip/unequip within one snapshot interval.
     pub active_weapon_archetype: Option<String>,
     pub projectile_presentation: Option<WireProjectilePresentation>,
+    pub presentation_binding: Option<WirePresentationBinding>,
 }
 
 impl EntitySnapshot {
@@ -90,6 +92,7 @@ impl EntitySnapshot {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 }
@@ -148,6 +151,7 @@ struct EntityState {
     /// authority metadata, a change makes the snapshot dirty and advances its baseline.
     active_weapon_archetype: Option<String>,
     projectile_presentation: Option<WireProjectilePresentation>,
+    presentation_binding: Option<WirePresentationBinding>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -375,7 +379,8 @@ impl ServerReplication {
                 Some(existing)
                     if existing.components == snap.components
                         && existing.active_weapon_archetype == snap.active_weapon_archetype
-                        && existing.projectile_presentation == snap.projectile_presentation =>
+                        && existing.projectile_presentation == snap.projectile_presentation
+                        && existing.presentation_binding == snap.presentation_binding =>
                 {
                     // Unchanged pose/movement mirrors: keep the baseline id so acked
                     // clients are omitted. The authority metadata still refreshes —
@@ -389,6 +394,7 @@ impl ServerReplication {
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
                     existing.projectile_presentation = snap.projectile_presentation;
+                    existing.presentation_binding = snap.presentation_binding;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
@@ -398,6 +404,7 @@ impl ServerReplication {
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
                     existing.projectile_presentation = snap.projectile_presentation;
+                    existing.presentation_binding = snap.presentation_binding;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -413,6 +420,7 @@ impl ServerReplication {
                             entity_class: snap.entity_class,
                             active_weapon_archetype: snap.active_weapon_archetype,
                             projectile_presentation: snap.projectile_presentation,
+                            presentation_binding: snap.presentation_binding,
                         },
                     );
                 }
@@ -647,6 +655,7 @@ impl ServerReplication {
                         has_active_weapon_archetype: authority.has_active_weapon_archetype,
                         active_weapon_archetype: authority.active_weapon_archetype.clone(),
                         projectile_presentation: entity.projectile_presentation,
+                        presentation_binding: entity.presentation_binding,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -666,6 +675,7 @@ impl ServerReplication {
                         has_active_weapon_archetype: authority.has_active_weapon_archetype,
                         active_weapon_archetype: authority.active_weapon_archetype.clone(),
                         projectile_presentation: entity.projectile_presentation,
+                        presentation_binding: entity.presentation_binding,
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -705,11 +715,13 @@ impl ServerReplication {
                 has_active_weapon_archetype: false,
                 active_weapon_archetype: String::new(),
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: Vec::new(),
             });
         }
 
         Some(RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence,
             server_tick,
@@ -776,7 +788,10 @@ impl MovementAuthority {
             ComponentPayload::Transform(t) => t.all_finite(),
             ComponentPayload::PlayerMovementState(_) => false,
             ComponentPayload::MeshAnimationState(_) => false,
-            ComponentPayload::KinematicMoverState(_) => false,
+            ComponentPayload::KinematicMoverState(_)
+            | ComponentPayload::LightState(_)
+            | ComponentPayload::EmitterState(_)
+            | ComponentPayload::FogState(_) => false,
         });
 
         // `entity_class` is valid on any finite-Transform record; movement metadata is
@@ -824,6 +839,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
@@ -831,6 +849,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: Some(*m),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
@@ -838,6 +859,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: Some(m.clone()),
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
@@ -845,6 +869,39 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: Some(*m),
+            light: None,
+            emitter: None,
+            fog: None,
+        },
+        ComponentPayload::LightState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_LIGHT,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: Some(state.clone()),
+            emitter: None,
+            fog: None,
+        },
+        ComponentPayload::EmitterState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_BILLBOARD_EMITTER,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: Some(state.clone()),
+            fog: None,
+        },
+        ComponentPayload::FogState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_FOG_VOLUME,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: Some(state.clone()),
         },
     }
 }
@@ -917,6 +974,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 
@@ -927,6 +985,57 @@ mod tests {
             EntityRecord::Delta { network_id: n, .. } => *n == network_id,
             EntityRecord::Despawn { network_id: n, .. } => *n == network_id,
         })
+    }
+
+    #[test]
+    fn presentation_binding_survives_baseline_delta_and_refresh() {
+        let binding = WirePresentationBinding {
+            kind: 2,
+            index: 8,
+            origin: [1.0, 2.0, 3.0],
+        };
+        let mut current = entity(
+            1,
+            vec![ComponentPayload::EmitterState(
+                crate::wire::WireEmitterState {
+                    rate: 1.0,
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                    anim_start: None,
+                },
+            )],
+        );
+        current.presentation_binding = Some(binding);
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![current.clone()]);
+        let first = server.encode_for_client(CLIENT_A, 1).unwrap();
+        let EntityRecord::FullBaseline {
+            baseline_id,
+            presentation_binding: Some(received),
+            ..
+        } = record_for(&first, 1).unwrap()
+        else {
+            panic!("bound baseline");
+        };
+        assert_eq!(received, binding);
+        server.apply_ack(CLIENT_A, first.sequence, &[(1, baseline_id)], &[]);
+        current.components[0] = ComponentPayload::EmitterState(crate::wire::WireEmitterState {
+            rate: 2.0,
+            spin_rate: 0.0,
+            spin_animation: None,
+            anim_start: None,
+        });
+        server.ingest_tick(vec![current]);
+        let delta = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert!(
+            matches!(record_for(&delta, 1), Some(EntityRecord::Delta { presentation_binding: Some(received), .. }) if received == binding)
+        );
+        server.request_refresh(CLIENT_A, 1, baseline_id);
+        let refresh = server.encode_for_client(CLIENT_A, 3).unwrap();
+        assert!(
+            matches!(record_for(&refresh, 1), Some(EntityRecord::FullBaseline { presentation_binding: Some(received), .. }) if received == binding)
+        );
     }
 
     #[test]
@@ -951,6 +1060,7 @@ mod tests {
         let EntityRecord::FullBaseline {
             baseline_id,
             projectile_presentation: Some(received),
+            presentation_binding: None,
             ..
         } = record_for(&first, 1).unwrap()
         else {
@@ -969,6 +1079,7 @@ mod tests {
         let EntityRecord::Delta {
             new_baseline_id,
             projectile_presentation: Some(received),
+            presentation_binding: None,
             ..
         } = record_for(&changed, 1).unwrap()
         else {
@@ -980,6 +1091,7 @@ mod tests {
         let late = server.encode_for_client(CLIENT_B, 62).unwrap();
         let EntityRecord::FullBaseline {
             projectile_presentation: Some(late),
+            presentation_binding: None,
             ..
         } = record_for(&late, 1).unwrap()
         else {
@@ -993,6 +1105,7 @@ mod tests {
             record_for(&refresh, 1),
             Some(EntityRecord::FullBaseline {
                 projectile_presentation: Some(_),
+                presentation_binding: None,
                 ..
             })
         ));
@@ -1859,6 +1972,7 @@ mod tests {
             entity_class: Some(class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 
@@ -1921,6 +2035,7 @@ mod tests {
             entity_class: Some(String::new()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
@@ -2037,6 +2152,7 @@ mod tests {
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();

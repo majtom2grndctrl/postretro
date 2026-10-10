@@ -387,6 +387,7 @@ mod tests {
 
     fn sample_snapshot() -> RawSnapshotMessage {
         RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 42,
@@ -404,6 +405,7 @@ mod tests {
                 has_active_weapon_archetype: false,
                 active_weapon_archetype: String::new(),
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![RawComponentPayload {
                     component_kind: COMPONENT_KIND_TRANSFORM,
                     transform: Some(WireTransform {
@@ -414,6 +416,9 @@ mod tests {
                     player_movement: None,
                     mesh_animation_state: None,
                     kinematic_mover: None,
+                    light: None,
+                    emitter: None,
+                    fog: None,
                 }],
             }],
             state_schema_fingerprint: [0u8; 32],

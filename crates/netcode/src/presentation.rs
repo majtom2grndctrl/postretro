@@ -1116,6 +1116,7 @@ mod tests {
                 entity_class: Some(entity_class.to_string()),
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![ComponentPayload::Transform(WireTransform {
                     position: position.to_array(),
                     rotation: [0.0, 0.0, 0.0, 1.0],
@@ -1125,6 +1126,7 @@ mod tests {
             state_schema_fingerprint: [0; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         }
     }
 

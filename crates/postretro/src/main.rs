@@ -12024,10 +12024,19 @@ mod tests {
             snapshot.get("loading.levelName"),
             Some(&SlotValue::String(String::new()))
         );
+        // The host-address slots default to "" and false, so both are present.
+        assert_eq!(
+            snapshot.get("session.hostAddress"),
+            Some(&SlotValue::String(String::new()))
+        );
+        assert_eq!(
+            snapshot.get("session.hosting"),
+            Some(&SlotValue::Boolean(false))
+        );
         assert_eq!(
             snapshot.len(),
-            58,
-            "only value-bearing player, screen, input, loading, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
+            60,
+            "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

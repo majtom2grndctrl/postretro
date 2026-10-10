@@ -692,6 +692,7 @@ impl SimHarness {
             fire_tick: 0,
             client_tick: 0,
             aim_pitch: 0.0,
+            start_aim: None,
             command: command.to_sim_command(),
         }];
         let trigger_use_edges = HashMap::new();

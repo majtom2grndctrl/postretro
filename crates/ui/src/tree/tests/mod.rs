@@ -5,6 +5,7 @@
 
 mod common;
 
+mod background;
 mod bar;
 mod binding;
 mod focus;

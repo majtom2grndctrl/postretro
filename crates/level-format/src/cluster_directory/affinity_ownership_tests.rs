@@ -1,6 +1,8 @@
 // Equivalence and scale coverage for the id-49 affinity ownership sweep.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
+use std::collections::BTreeSet;
+
 use proptest::prelude::*;
 
 use super::*;

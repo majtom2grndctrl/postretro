@@ -1008,6 +1008,9 @@ pub(super) struct FullRenderer {
     pub(super) promoted_static_weight_buffer: wgpu::Buffer,
     pub(super) promoted_static_weight_scratch: Vec<u8>,
     pub(super) promoted_baked_last_update_time: Option<f64>,
+    /// The next light-slot update is a level's reveal frame: a light promoted
+    /// on it starts at full weight, since an entry has nothing to fade from.
+    pub(super) promotions_start_whole: bool,
     /// `None` only when a map has neither selected-static nor section-45
     /// animated-baked promotion candidates. Either source can use the same
     /// static world-depth cache, so an animated-only map still allocates it.
@@ -1139,9 +1142,10 @@ pub(super) struct FullRenderer {
     /// index still warns once.
     pub(super) candidate_cull_oor_logged: bool,
     /// Camera-cull diagnostics for the current Spatial tab frame (candidate vs
-    /// tree-walk path, candidate/total/submitted leaves). Refreshed before the
-    /// debug UI reads it, then recomputed during pass recording. Diagnostic only
-    /// — never gates behavior.
+    /// tree-walk path, candidate/total/submitted leaves). With `dev-tools`,
+    /// refreshed before the debug UI reads it, then recomputed during pass
+    /// recording; without it, stays at its default. Diagnostic only — never
+    /// gates behavior.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(super) camera_cull_diagnostics: CameraCullDiagnostics,
     /// Last CPU-side visibility/locator snapshot published by the app after

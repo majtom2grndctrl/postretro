@@ -153,6 +153,14 @@ fn candidate_gate_brightness(
 }
 
 impl Renderer {
+    /// The next light-slot update is a level's reveal frame: lights promoted
+    /// on it start at full weight instead of crossfading in.
+    pub fn start_next_promotions_whole(&mut self) {
+        if let Some(full) = self.full.as_mut() {
+            full.promotions_start_whole = true;
+        }
+    }
+
     // Animated lifecycle, cache validation, and tail packing stay with the
     // shared-pool owner because their same-frame order is load-bearing:
     // assign slot -> advance state -> validate cache -> encode both w arms.
@@ -392,9 +400,10 @@ impl Renderer {
         let frame_dt = {
             let full = self.full_mut();
             let previous = full.promoted_baked_last_update_time.replace(now_seconds);
-            previous
-                .map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32)
-                .unwrap_or(1.0 / 60.0)
+            promotion_frame_dt(
+                previous.map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32),
+                std::mem::take(&mut full.promotions_start_whole),
+            )
         };
         let promotion_candidate_lookup = {
             let full = self.full();
@@ -1775,6 +1784,18 @@ fn step_toward(value: f32, target: f32, step: f32) -> f32 {
     .clamp(0.0, 1.0)
 }
 
+/// The step the promote/demote lifecycle advances by this frame. A reveal
+/// frame steps a whole promotion, so a light promoted on it starts at full
+/// weight; later promotions crossfade over [`PROMOTE_SECONDS`].
+fn promotion_frame_dt(elapsed: Option<f32>, start_whole: bool) -> f32 {
+    let frame_dt = elapsed.unwrap_or(1.0 / 60.0);
+    if start_whole {
+        frame_dt.max(PROMOTE_SECONDS)
+    } else {
+        frame_dt
+    }
+}
+
 /// Advance the sticky promote/demote lifecycle while the candidate
 /// retains its assignment. The wrapper below handles resource loss first.
 fn advance_promoted_baked_state(
@@ -2462,6 +2483,32 @@ mod tests {
             1.0,
             "challenger eviction must atomically restore the complete baked contribution",
         );
+    }
+
+    #[test]
+    fn reveal_frame_promotion_starts_whole_later_promotion_ramps() {
+        let promoted = Some((PromotedShadowPoolKind::Spot, 0, 1.0, true));
+        let mut reveal = PromotedBakedLightState::default();
+        advance_promoted_baked_state(
+            &mut reveal,
+            promoted,
+            promotion_frame_dt(Some(1.0 / 60.0), true),
+        );
+        assert_eq!(reveal.weight, 1.0, "a reveal-frame promotion starts whole");
+
+        let mut later = PromotedBakedLightState::default();
+        let frame = promotion_frame_dt(Some(1.0 / 60.0), false);
+        advance_promoted_baked_state(&mut later, promoted, frame);
+        assert!(
+            later.weight > 0.0 && later.weight < 1.0,
+            "a later promotion ramps"
+        );
+        let mut frames = 1;
+        while later.weight < 1.0 {
+            advance_promoted_baked_state(&mut later, promoted, frame);
+            frames += 1;
+        }
+        assert_eq!(frames, (PROMOTE_SECONDS * 60.0).round() as usize);
     }
 
     #[test]

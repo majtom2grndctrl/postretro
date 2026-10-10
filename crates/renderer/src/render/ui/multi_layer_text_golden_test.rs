@@ -101,6 +101,7 @@ fn text_tree(content: &str, offset: [f32; 2]) -> AnchoredTree {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     }
 }
 

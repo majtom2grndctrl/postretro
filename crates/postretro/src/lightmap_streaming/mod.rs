@@ -30,5 +30,9 @@ pub(crate) enum LightmapResidencyError {
     #[error("lightmap streaming block source failed: {0}")]
     Source(#[source] PrlLoadError),
     #[error("lightmap preload must run before any streaming read or drain")]
+    #[cfg_attr(
+        not(feature = "capture"),
+        allow(dead_code, reason = "capture and tests preload synchronously")
+    )]
     PreloadAfterStart,
 }

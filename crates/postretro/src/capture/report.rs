@@ -497,10 +497,19 @@ struct ShStreamingLifecycleSummaryJson {
     sampleable_clusters: u64,
     failed_clusters: u64,
     misses: u64,
+    /// `misses` by cause: outside reach, trimmed by pressure, read in flight,
+    /// held by the drain budget, awaiting compose, failed.
+    miss_outside_reach: u64,
+    miss_trimmed_by_pressure: u64,
+    miss_read_in_flight: u64,
+    miss_held_by_drain_budget: u64,
+    miss_awaiting_compose: u64,
+    miss_failed: u64,
+    rereads: u64,
     installs: u64,
     evictions: u64,
     retries: u64,
-    warm_clusters: u64,
+    lead_clusters: u64,
     cancelled_requests: u64,
     discarded_reads: u64,
     discarded_read_bytes: u64,
@@ -569,10 +578,17 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             sampleable_clusters: summary.sampleable_clusters,
             failed_clusters: summary.failed_clusters,
             misses: summary.misses,
+            miss_outside_reach: summary.miss_buckets.outside_reach,
+            miss_trimmed_by_pressure: summary.miss_buckets.trimmed_by_pressure,
+            miss_read_in_flight: summary.miss_buckets.read_in_flight,
+            miss_held_by_drain_budget: summary.miss_buckets.held_by_drain_budget,
+            miss_awaiting_compose: summary.miss_buckets.awaiting_compose,
+            miss_failed: summary.miss_buckets.failed,
+            rereads: summary.rereads,
             installs: summary.installs,
             evictions: summary.evictions,
             retries: summary.retries,
-            warm_clusters: summary.warm_clusters,
+            lead_clusters: summary.lead_clusters,
             cancelled_requests: summary.cancelled_requests,
             discarded_reads: summary.discarded_reads,
             discarded_read_bytes: summary.discarded_read_bytes,
@@ -1082,7 +1098,7 @@ mod tests {
             installs: 8,
             evictions: 9,
             retries: 10,
-            warm_clusters: 8,
+            lead_clusters: 8,
             reads_issued: 11,
             coalesced_reads: 3,
             gap_bytes: 12,
@@ -1139,7 +1155,7 @@ mod tests {
         assert_eq!(lifecycle["permits_in_use"], 2);
         assert_eq!(lifecycle["sampleable_clusters"], 5);
         assert_eq!(lifecycle["retries"], 10);
-        assert_eq!(lifecycle["warm_clusters"], 8);
+        assert_eq!(lifecycle["lead_clusters"], 8);
         assert_eq!(lifecycle["reads_issued"], 11);
         assert_eq!(lifecycle["coalesced_reads"], 3);
         assert_eq!(lifecycle["gap_bytes"], 12);

@@ -174,6 +174,8 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().player.weapon.pending` | `player.weapon.pending` |
 | `getGameState().player.weapon.switching` | `player.weapon.switching` |
 | `getGameState().session.openSeats` | `session.openSeats` |
+| `getGameState().session.hostAddress` | `session.hostAddress` |
+| `getGameState().session.hosting` | `session.hosting` |
 | `getGameState().screen.flash` | `screen.flash` |
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |

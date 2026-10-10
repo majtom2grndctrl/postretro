@@ -5,9 +5,13 @@ use crate::wire::{ProtocolVersion, WireError};
 
 pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
-/// Weapon activation lifecycle outcomes extend the reliable Input vocabulary.
-/// This application magic is independent of the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C39; // "PRL9"
+/// The application vocabulary: a new message or channel layout bumps it.
+/// Weapon activation outcomes advanced it to PRL8 and observer cues to PRL9;
+/// the client's revealed-level declaration and the two revealed holding
+/// causes advance it to protocol 10. The id is four ASCII bytes, so the
+/// counter byte continues as a hex digit: protocol 10 is "PRLA". Independent of
+/// the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C41; // "PRLA"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -20,7 +24,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C39; // "PRL9"
 /// Activation input and the four-part shot identity advance it to 24.
 /// The tuning-payload epoch remains independent.
 /// Frozen projectile facts and reliable observer cues advance this to 25.
-pub const WIRE_VERSION: u32 = 25;
+/// The weapon-switch declaration's client tick advances it to 26.
+pub const WIRE_VERSION: u32 = 26;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -90,6 +95,43 @@ mod tests {
         SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
     }
 
+    /// Historical client Control layout before `Revealed` was appended.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreRevealedClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        SwitchDeclaration(crate::wire::ClientSwitchDeclaration),
+        JoinSeed {
+            slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
+        },
+    }
+
+    /// Historical holding causes before the two revealed causes were appended.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreRevealedHoldingCause {
+        ModDigest {
+            expected: [u8; 32],
+            received: [u8; 32],
+        },
+        HostLevelAbsent,
+        LevelAbsent {
+            expected_identity: String,
+        },
+        LevelIdentity {
+            expected: String,
+            received: String,
+        },
+        LevelDigest {
+            identity: String,
+            expected: [u8; 32],
+            received: [u8; 32],
+        },
+    }
+
     #[test]
     fn validate_handshake_accepts_only_matching_protocol_constants() {
         let version = protocol_version();
@@ -117,8 +159,8 @@ mod tests {
     fn knockback_snapshot_layout_refuses_previous_wire_version() {
         const PRE_KNOCKBACK_WIRE_VERSION: u32 = 21;
         assert_eq!(
-            PROTOCOL_ID, 0x_5052_4C39,
-            "presentation vocabulary requires application protocol PRL9"
+            PROTOCOL_ID, 0x_5052_4C41,
+            "revealed vocabulary requires application protocol PRLA (protocol 10)"
         );
         const {
             assert!(
@@ -214,6 +256,7 @@ mod tests {
         let switch = ClientSwitchDeclaration {
             declaration_id: 17,
             slot: 3,
+            client_tick: 17,
         };
         let cases = [
             (
@@ -245,6 +288,149 @@ mod tests {
                 "appending JoinSeed changed a shipped client control encoding; bump WIRE_VERSION"
             );
         }
+    }
+
+    #[test]
+    fn revealed_append_preserves_shipped_client_control_encodings() {
+        use crate::wire::{
+            ClientControlMessage, ClientSwitchDeclaration, JoinSeedValue, ParityDeclaration,
+        };
+        use std::collections::BTreeMap;
+
+        let protocol = ProtocolVersion {
+            app_protocol_id: 0x5052_4c39,
+            wire_version: 25,
+        };
+        let parity = ParityDeclaration {
+            mod_digest: [0x25; 32],
+            level: Some(("campaign-test".to_owned(), [0x26; 32])),
+        };
+        let switch = ClientSwitchDeclaration {
+            declaration_id: 25,
+            slot: 2,
+            client_tick: 26,
+        };
+        let slots = BTreeMap::from([("kplayer0000000001".to_owned(), JoinSeedValue::Number(3.0))]);
+        let cases = [
+            (
+                PreRevealedClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+                ClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+            ),
+            (
+                PreRevealedClientControlMessage::Parity(parity.clone()),
+                ClientControlMessage::Parity(parity),
+            ),
+            (
+                PreRevealedClientControlMessage::SwitchDeclaration(switch),
+                ClientControlMessage::SwitchDeclaration(switch),
+            ),
+            (
+                PreRevealedClientControlMessage::JoinSeed {
+                    slots: slots.clone(),
+                },
+                ClientControlMessage::JoinSeed { slots },
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending Revealed changed a shipped client control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    #[test]
+    fn revealed_causes_append_preserves_shipped_holding_cause_encodings() {
+        let cases = [
+            (
+                PreRevealedHoldingCause::ModDigest {
+                    expected: [1; 32],
+                    received: [2; 32],
+                },
+                HoldingCause::ModDigest {
+                    expected: [1; 32],
+                    received: [2; 32],
+                },
+            ),
+            (
+                PreRevealedHoldingCause::HostLevelAbsent,
+                HoldingCause::HostLevelAbsent,
+            ),
+            (
+                PreRevealedHoldingCause::LevelAbsent {
+                    expected_identity: "e1m1".to_owned(),
+                },
+                HoldingCause::LevelAbsent {
+                    expected_identity: "e1m1".to_owned(),
+                },
+            ),
+            (
+                PreRevealedHoldingCause::LevelIdentity {
+                    expected: "e1m1".to_owned(),
+                    received: "e1m2".to_owned(),
+                },
+                HoldingCause::LevelIdentity {
+                    expected: "e1m1".to_owned(),
+                    received: "e1m2".to_owned(),
+                },
+            ),
+            (
+                PreRevealedHoldingCause::LevelDigest {
+                    identity: "e1m1".to_owned(),
+                    expected: [3; 32],
+                    received: [4; 32],
+                },
+                HoldingCause::LevelDigest {
+                    identity: "e1m1".to_owned(),
+                    expected: [3; 32],
+                    received: [4; 32],
+                },
+            ),
+        ];
+
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending revealed holding causes changed a shipped encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    // A previous-build peer cannot represent the revealed declaration or the
+    // revealed holding causes, so gate 1 must refuse it before any decode.
+    #[test]
+    fn revealed_vocabulary_refuses_previous_protocol_id() {
+        const PRE_REVEALED_PROTOCOL_ID: u32 = 0x_5052_4C39; // "PRL9"
+        const {
+            assert!(
+                PROTOCOL_ID != PRE_REVEALED_PROTOCOL_ID,
+                "the revealed vocabulary bumps the application protocol"
+            );
+        };
+        assert_ne!(
+            transport_protocol_id(),
+            ((PRE_REVEALED_PROTOCOL_ID as u64) << 32) | u64::from(WIRE_VERSION),
+            "gate 1 refuses a peer that predates the revealed vocabulary"
+        );
+        let previous = ProtocolVersion {
+            app_protocol_id: PRE_REVEALED_PROTOCOL_ID,
+            wire_version: WIRE_VERSION,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
     }
 
     #[test]
@@ -331,8 +517,8 @@ mod activation_epoch_tests {
 
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert_eq!(WIRE_VERSION, 25);
-        assert_eq!(PROTOCOL_ID, 0x5052_4c39);
+        assert_eq!(WIRE_VERSION, 26);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c41);
         for received in [
             ProtocolVersion {
                 app_protocol_id: PROTOCOL_ID,
@@ -348,5 +534,73 @@ mod activation_epoch_tests {
                 Err(ClosingCause::Protocol { .. })
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod switch_tick_epoch_tests {
+    use super::*;
+    use bitcode::{Decode, Encode};
+
+    /// The switch declaration as shipped at wire 25, before its client tick.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+    struct PreTickSwitchDeclaration {
+        declaration_id: u32,
+        slot: u8,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    enum PreTickClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        SwitchDeclaration(PreTickSwitchDeclaration),
+    }
+
+    #[test]
+    fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
+        assert_eq!(WIRE_VERSION, 26);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c41, "the vocabulary is unchanged");
+        assert_eq!(
+            crate::wire::SNAPSHOT_VERSION,
+            17,
+            "no snapshot record changed"
+        );
+        assert!(matches!(
+            validate_handshake(
+                protocol_version(),
+                ProtocolVersion {
+                    app_protocol_id: PROTOCOL_ID,
+                    wire_version: 25,
+                },
+            ),
+            Err(ClosingCause::Protocol { .. })
+        ));
+    }
+
+    #[test]
+    fn switch_tick_changes_the_declaration_layout() {
+        use crate::wire::{ClientControlMessage, ClientSwitchDeclaration};
+        let before = bitcode::encode(&PreTickClientControlMessage::SwitchDeclaration(
+            PreTickSwitchDeclaration {
+                declaration_id: 9,
+                slot: 2,
+            },
+        ));
+        let after = crate::wire::encode(&ClientControlMessage::SwitchDeclaration(
+            ClientSwitchDeclaration {
+                declaration_id: 9,
+                slot: 2,
+                client_tick: 0x0102_0304,
+            },
+        ));
+        assert_ne!(before, after, "the added tick changes the layout");
+        assert!(
+            crate::wire::decode::<ClientControlMessage>(&before).is_err(),
+            "a wire-25 declaration never decodes as a tick-stamped one"
+        );
     }
 }

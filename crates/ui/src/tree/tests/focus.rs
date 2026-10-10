@@ -40,6 +40,7 @@ fn focus_export_lists_ids_rects_and_a_linear_group() {
         accessible_name: None,
         role: None,
         restore_on_return: None,
+        background: None,
     };
     let mut ui = UiTree::from_descriptor(&tree, &theme());
     let mut fs = font_system();

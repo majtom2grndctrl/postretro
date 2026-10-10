@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/campaign-test.prl",
+  "camera": {
+    "position": [
+      -3.81,
+      7.62,
+      -53.34
+    ],
+    "yaw_deg": 120,
+    "pitch_deg": -18,
+    "fov_deg": 100
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/campaign-test.png"
+}

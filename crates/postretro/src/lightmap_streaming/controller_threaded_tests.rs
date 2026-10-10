@@ -67,6 +67,7 @@ impl ThreadedRig {
     fn frame(&mut self, camera_cell: u32) -> LightmapDrainBatch {
         let visible = VisibleCells::Culled(Vec::new());
         self.controller.update(DemandFrame {
+            lead: crate::streaming::cell_demand::DEFAULT_LEAD,
             residency_set: &self.set,
             camera_cell,
             path: PORTAL,

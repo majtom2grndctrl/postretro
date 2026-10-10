@@ -43,7 +43,7 @@ pub(super) struct PoolStats {
     pub(super) plan_nanos: Vec<u64>,
     /// Payload bytes each submitted drain uploaded.
     pub(super) drain_install_bytes: Vec<u64>,
-    /// The spawn preload's one drain: pairs uploaded and their bytes.
+    /// The settled-entry preload's one drain: pairs uploaded and their bytes.
     pub(super) preload_uploads: u64,
     pub(super) preload_install_bytes: u64,
 }
@@ -117,7 +117,7 @@ impl PoolMirror {
         u64::from(self.model.layers() + 1) * self.layer_bytes
     }
 
-    /// Moves the spawn preload's drain out of the per-drain figures, so they
+    /// Moves the settled-entry preload's drain out of the per-drain figures, so they
     /// describe in-play drains only. Pool shape and peaks carry over.
     pub(super) fn begin_play(&mut self) {
         let s = &mut self.stats;

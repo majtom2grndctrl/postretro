@@ -439,10 +439,13 @@ impl NetEndpoint {
 
     /// Send a client-local switch declaration over reliable Control. The client
     /// transport refuses to queue it before participation, so an old level cannot
-    /// leak a selection into a newly promoted pawn.
+    /// leak a selection into a newly promoted pawn. `client_tick` is the tick of
+    /// the input command the switch was made on; the host orders the switch
+    /// against that command's neighbours by it.
     pub fn send_client_switch_declaration(
         &mut self,
         slot: u8,
+        client_tick: u32,
         rollback_slot: usize,
         rollback_last_weapon_slot: Option<usize>,
     ) {
@@ -465,6 +468,7 @@ impl NetEndpoint {
             client.send_switch_declaration(ClientSwitchDeclaration {
                 declaration_id,
                 slot,
+                client_tick,
             });
         }
     }
@@ -483,7 +487,8 @@ impl NetEndpoint {
     /// Construct the endpoint for `role`, or `Ok(None)` for single-player.
     ///
     /// The netcode clock origin is `SystemTime::now()` since the unix epoch
-    /// (`NetServer::new`/`NetClient::new` contract). Client user data is carried
+    /// (`NetServer::new`/`NetClient::new` contract); a client's clock then skips
+    /// its first poll's `dt`, so it trails wall time by the boot stall. Client user data is carried
     /// unchanged into the immutable netcode authentication token. Returns the
     /// transport error for the caller to log and fall back to single-player.
     pub fn from_role(
@@ -597,6 +602,17 @@ impl NetEndpoint {
         }
     }
 
+    /// Publish the level identity this peer has revealed, or `None` to retract
+    /// it at unload and suspend. A host records its own reveal; a client
+    /// declares its reveal to the host. A slot participates only once both
+    /// peers have revealed the host's installed level.
+    pub fn set_revealed_level(&mut self, level: Option<String>) {
+        match self {
+            Self::Host { server, .. } => server.set_revealed_level(level),
+            Self::Client { client, .. } => client.set_revealed_level(level),
+        }
+    }
+
     /// Install the client-owned per-owner persistence seed to send with the
     /// next parity declaration. This is intentionally a no-op for hosts.
     pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
@@ -636,8 +652,8 @@ impl NetEndpoint {
             NetEndpoint::Client {
                 client, time_sync, ..
             } => {
-                if let Err(err) = client.update(dt) {
-                    log::error!("[Net] client update failed: {err}");
+                // `NetClient::update` reports the failure once, naming the host.
+                if client.update(dt).is_err() {
                     WorldLessPoll::Failed
                 } else {
                     // A world-less frame can never apply snapshots. Drain current-

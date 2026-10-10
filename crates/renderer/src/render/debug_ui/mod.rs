@@ -295,6 +295,7 @@ pub fn draw_diagnostics_panel(
     blocked_portal_ids: &[u32],
     sh_streaming: Option<&ShStreamingLiveDiagnostics>,
     lightmap_streaming: Option<LightmapStreamingTab<'_>>,
+    streaming_reach: Option<&mut crate::render::StreamingReachLever>,
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -351,9 +352,13 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
             DiagnosticsTab::Doors => draw_doors_tab(ui, door_occluder_rows, blocked_portal_ids),
             DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
-            DiagnosticsTab::Streaming => {
-                streaming_tab::draw_streaming_tab(ui, renderer, sh_streaming, lightmap_streaming)
-            }
+            DiagnosticsTab::Streaming => streaming_tab::draw_streaming_tab(
+                ui,
+                renderer,
+                sh_streaming,
+                lightmap_streaming,
+                streaming_reach,
+            ),
         }
     });
 }

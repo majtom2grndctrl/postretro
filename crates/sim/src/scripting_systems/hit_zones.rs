@@ -129,7 +129,7 @@ pub struct HitZoneStore {
     /// Failed CPU model loads already reported for this level. The renderer owns
     /// graphical-path diagnostics; this set deduplicates renderer-free installs.
     model_load_warnings: HashSet<String>,
-    /// Handles whose independently loaded model carries a presentation pose
+    /// Handles whose loaded model carries a presentation pose
     /// stack. The collector uses this cache-side metadata to opt those models
     /// out of animation time-slicing without carrying the stack per instance.
     /// Shares `models`' sweep lifecycle: populated during the same level-load
@@ -163,22 +163,15 @@ impl HitZoneStore {
         self.foot_probe_candidates.get_mut().clear();
     }
 
-    /// Re-load a model game-side from its glTF and install its hit-zone entry.
+    /// Load a model game-side from its glTF and install its hit-zone entry.
     ///
-    /// Independent ownership: the renderer moves a model's skeleton + clips into
-    /// the GPU layer (returning only tags), so the game side obtains its OWN copy
-    /// by re-loading through [`gltf_loader::load_model`] against the resolved open
-    /// path (`content_root.join(model_rel)`, the same recipe the renderer's
-    /// `resolve_model_open_path_and_handle` uses for its cache key vs. open path).
-    ///
-    /// A failed/invalid load is non-fatal and leaves the handle with no hit-zone
-    /// entry or `pose_modified_models` membership. `warning_owner` prevents the
-    /// CPU reload from duplicating graphical renderer diagnostics while keeping
-    /// renderer-free installs observable.
-    /// Idempotent re-install replaces the entry and refreshes the model's
-    /// `pose_modified_models` membership to match its reloaded pose stack (the
-    /// collector's time-slicing opt-out rides on that store). The derived bound is
-    /// computed once, here, from the loaded skeleton rest pose and clips.
+    /// Parses the file itself, against the resolved open path
+    /// (`content_root.join(model_rel)`, the same recipe the renderer's
+    /// `resolve_model_open_path_and_handle` uses for its cache key vs. open path),
+    /// then installs it through [`insert_loaded`](Self::insert_loaded). The
+    /// level-load model sweep parses each glTF once and hands that result to
+    /// both the renderer and [`insert_loaded`](Self::insert_loaded); this
+    /// parse-it-yourself form remains for callers with no shared parse.
     pub fn insert_from_load(
         &mut self,
         model_rel: &str,
@@ -186,11 +179,37 @@ impl HitZoneStore {
         warning_owner: ModelLoadWarningOwner,
     ) {
         let open_path = content_root.join(model_rel);
+        let loaded = gltf_loader::load_model(&open_path);
+        self.insert_loaded(model_rel, &open_path, loaded, warning_owner);
+    }
+
+    /// Install a model's hit-zone entry from an already-parsed glTF.
+    ///
+    /// Independent ownership: the renderer keeps its own copy of the skeleton and
+    /// clips in the GPU layer, so this store takes ownership of the parse result
+    /// the sweep passes it. `open_path` names the file only for the failure
+    /// warning.
+    ///
+    /// A failed/invalid load is non-fatal and leaves the handle with no hit-zone
+    /// entry or `pose_modified_models` membership. `warning_owner` prevents the
+    /// CPU store from duplicating graphical renderer diagnostics while keeping
+    /// renderer-free installs observable.
+    /// Idempotent re-install replaces the entry and refreshes the model's
+    /// `pose_modified_models` membership to match the loaded pose stack (the
+    /// collector's time-slicing opt-out rides on that store). The derived bound is
+    /// computed once, here, from the loaded skeleton rest pose and clips.
+    pub fn insert_loaded(
+        &mut self,
+        model_rel: &str,
+        open_path: &Path,
+        loaded: Result<gltf_loader::LoadedModel, gltf_loader::ModelLoadError>,
+        warning_owner: ModelLoadWarningOwner,
+    ) {
         let handle = ModelHandle::from(model_rel.to_string());
         self.models.remove(handle.as_str());
         self.pose_modified_models.remove(&handle);
 
-        let model = match gltf_loader::load_model(&open_path) {
+        let model = match loaded {
             Ok(m) => m,
             Err(err) => {
                 if warning_owner == ModelLoadWarningOwner::GameSide
@@ -339,7 +358,7 @@ impl HitZoneStore {
 
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
     /// (the weapon delegation tests) that cannot reach the private `models` map.
-    /// Production installs go through [`insert_from_load`](Self::insert_from_load).
+    /// Production installs go through [`insert_loaded`](Self::insert_loaded).
     #[cfg(any(test, feature = "test-support"))]
     pub fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
         self.models.insert(handle.as_str().to_owned(), model);
@@ -1598,6 +1617,10 @@ pub(crate) fn ray_aabb_slab(
 
     Some((toi, normal))
 }
+
+#[cfg(test)]
+#[path = "hit_zones_load_equivalence_tests.rs"]
+mod load_equivalence_tests;
 
 #[cfg(test)]
 mod tests {

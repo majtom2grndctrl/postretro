@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use postretro_level_format::SectionId;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-};
+#[cfg(test)]
+use postretro_level_format::cluster_directory::ClusterRangeRole;
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
@@ -43,6 +43,10 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
+mod node_map;
+mod node_ownership;
+#[cfg(test)]
+mod node_ownership_tests;
 mod ownership;
 mod patches;
 mod payload;
@@ -60,8 +64,8 @@ mod tests;
 
 use allocator::{FirstFitRanges, PoolRange, SparsePool};
 use compose_plan::{ComposeFramePlan, RowMembership, StreamedComposePlanner};
-pub use diagnostics::ShStreamingLiveDiagnostics;
 use diagnostics::{InstallCpuCounters, PoolGrowthCounters};
+pub use diagnostics::{ShMissBuckets, ShStreamingLiveDiagnostics};
 use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
 pub(crate) use gpu::StagedUploads;
@@ -69,6 +73,8 @@ use gpu::StreamingGpuPools;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
+use node_map::NodeMap;
+use node_ownership::{NodeOwnership, derive_node_ownership, derive_owner_dependencies};
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
 use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
@@ -331,8 +337,8 @@ pub(super) struct ShResidencyState {
     dense_owner: Vec<Option<u32>>,
     dense_node: Vec<Option<StoredNode>>,
     dense_node_local_slot: Vec<Option<u32>>,
-    node_layouts: BTreeMap<StoredNode, StoredNodeLayout>,
-    node_owner: BTreeMap<StoredNode, u32>,
+    node_layouts: NodeMap<StoredNodeLayout>,
+    node_owner: NodeMap<u32>,
     nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
     node_slots: BTreeMap<StoredNode, PoolRange>,
     owner_dependencies: Vec<BTreeSet<u32>>,

@@ -516,6 +516,15 @@ fn client_weapon_outcomes_require_token_host_identity_and_captured_instance() {
         weapon: NetworkId(991),
         recovery_ticks: 3,
     };
+    // A's own countdown outlasts the host's remaining recovery, which may only
+    // shorten it; the 50 ms below therefore shows the outcome reached A.
+    let postretro_entities::ComponentValue::Weapon(component) = registry
+        .get_component_value_mut(weapon, postretro_entities::ComponentKind::Weapon)
+        .expect("weapon A stays live")
+    else {
+        panic!("weapon A holds a weapon component");
+    };
+    component.cooldown_remaining_ms = 400.0;
     let effect = frame
         .records
         .outcome(&mut registry, old_cancel)
@@ -1195,6 +1204,58 @@ fn client_weapon_held_reload_does_not_cancel_later_burst_ordinals() {
     );
 }
 
+// Regression: after a host hitch the host ran a whole burst in its catch-up
+// ticks, so its completion reached the client before the client's own last
+// burst shot. The client cancelled its burst, predicted fewer shots than the
+// host authorized, and restarted inside the host's recovery.
+#[test]
+fn client_weapon_host_completion_ahead_of_prediction_keeps_the_remaining_burst_shots() {
+    use postretro_net::wire::{ActivationOutcome as O, NetworkId, WireActivationToken};
+    let (mut registry, _, id) = fixture(
+        serde_json::json!({"trigger":"press","recoveryMs":130,"steps":[
+            {"kind":"shot"},{"kind":"wait","durationMs":50},
+            {"kind":"shot"},{"kind":"wait","durationMs":50},{"kind":"shot"}]}),
+        false,
+    );
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 1);
+    let token = start
+        .activation
+        .initiation
+        .expect("the press names its start");
+    let wire = WireActivationToken {
+        start_tick: token.start_tick,
+        lane: 0,
+    };
+    for outcome in [
+        O::InitiationAccepted {
+            token: wire,
+            weapon: NetworkId(3),
+        },
+        O::Completed {
+            token: wire,
+            weapon: NetworkId(3),
+            recovery_ticks: 8,
+        },
+    ] {
+        let effect = frame.records.outcome(&mut registry, outcome);
+        assert!(effect.is_none_or(|effect| !effect.rejected));
+    }
+    for tick in 2..9 {
+        predict(&mut frame, &mut registry, &mut command(false, false), tick);
+    }
+    assert_eq!(
+        registry
+            .get_component::<WeaponComponent>(id)
+            .unwrap()
+            .shells_fired,
+        3,
+        "the host fired the whole burst, so the client predicts it too"
+    );
+    assert_eq!(frame.due.len(), 3);
+}
+
 #[test]
 fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
     use postretro_foundation::{
@@ -1341,4 +1402,223 @@ fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
     assert_eq!(component.state.activation_cursor().unwrap().token, token_b);
     assert_eq!(component.cooldown_remaining_ms, before);
     assert_eq!(frame.due.len(), 1, "new B remains queued");
+}
+
+// Own-hitscan impact bursts. The fixture queues three due press-burst shots at
+// the camera's aim, so a one-contact scene yields three predicted contacts.
+mod impact_burst {
+    use super::*;
+    use postretro_entities::ComponentKind;
+
+    const SHOTS: usize = 3;
+
+    fn particles(app: &crate::App) -> usize {
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .registry
+            .borrow()
+            .iter_with_kind(ComponentKind::ParticleState)
+            .count()
+    }
+
+    fn wall_ahead(app: &mut crate::App, distance: f32) {
+        let (eye, forward) = app.camera.aim_ray();
+        let center = eye + forward * distance;
+        let side = forward.cross(Vec3::Y).normalize_or_zero();
+        let up = Vec3::Y;
+        app.collision_world = crate::collision::CollisionWorld::from_triangles_for_test(
+            vec![
+                center - side * 4.0 - up * 4.0,
+                center + side * 4.0 - up * 4.0,
+                center + side * 4.0 + up * 4.0,
+                center - side * 4.0 + up * 4.0,
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+    }
+
+    fn target_ahead(app: &crate::App, distance: f32) {
+        let (eye, forward) = app.camera.aim_ray();
+        let ctx = app.session.as_ref().unwrap().scripting.script_ctx.clone();
+        let mut registry = ctx.registry.borrow_mut();
+        let target = registry.spawn(Transform {
+            position: eye + forward * distance,
+            ..Default::default()
+        });
+        registry
+            .set_component(
+                target,
+                HealthComponent::from_descriptor(
+                    &serde_json::from_value(serde_json::json!({
+                        "max":100.0,"hitbox":{"halfExtents":[0.05,0.05,0.05]}
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+    }
+
+    fn fire_all(app: &mut crate::App) -> Vec<postretro_entities::WeaponEmission> {
+        let aim = app.presented_aim_pose(0.0);
+        let mut emissions = Vec::new();
+        app.run_client_fire_path_post_loop(0.0, 0.0, aim, &mut emissions);
+        assert_eq!(app.client_fire_resolutions.len(), SHOTS);
+        emissions
+    }
+
+    fn impacts(emissions: &[postretro_entities::WeaponEmission]) -> usize {
+        emissions.iter().filter(|e| e.address == "impact").count()
+    }
+
+    #[test]
+    fn client_own_hitscan_fire_bursts_once_per_world_contact() {
+        let mut app = presented_catchup_app(false);
+        wall_ahead(&mut app, 8.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        assert_eq!(impacts(&emissions), SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            SHOTS * weapon::IMPACT_PARTICLE_COUNT,
+            "one burst per predicted world contact"
+        );
+    }
+
+    #[test]
+    fn client_own_hitscan_fire_bursts_once_per_entity_contact() {
+        let mut app = presented_catchup_app(false);
+        target_ahead(&app, 5.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        assert_eq!(impacts(&emissions), SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            SHOTS * weapon::IMPACT_PARTICLE_COUNT,
+            "one burst per predicted entity contact"
+        );
+    }
+
+    #[test]
+    fn client_own_hitscan_burst_count_equals_the_impact_emission_contact_count() {
+        // Whatever the scene resolves, the bursts are exactly the contacts the
+        // `impact` emission carries, so the sound and the sparks stay one-to-one.
+        let mut app = presented_catchup_app(false);
+        target_ahead(&app, 5.0);
+        wall_ahead(&mut app, 8.0);
+        let before = particles(&app);
+        let emissions = fire_all(&mut app);
+        let contacts: usize = emissions
+            .iter()
+            .filter(|e| e.address == "impact")
+            .map(|e| match &e.emitter {
+                postretro_entities::Emitter::Contacts(contacts) => contacts.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(contacts >= SHOTS);
+        assert_eq!(
+            particles(&app) - before,
+            contacts * weapon::IMPACT_PARTICLE_COUNT
+        );
+    }
+
+    fn observed_impact(points: &[Vec3]) -> crate::netcode::weapon_cues::ObserverWeaponCueDelivery {
+        crate::netcode::weapon_cues::ObserverWeaponCueDelivery {
+            shot_id: postretro_foundation::ShotId::from_parts(
+                9,
+                40,
+                postretro_foundation::ActivationLane::Primary,
+                0,
+            ),
+            kind: crate::netcode::weapon_cues::WeaponCueKind::Impact,
+            sound: None,
+            additional_sound: None,
+            alias: None,
+            emitter: postretro_entities::Emitter::Contacts(
+                points
+                    .iter()
+                    .map(|&point| postretro_entities::ImpactContact::new(point, Vec3::Y, None))
+                    .collect(),
+            ),
+        }
+    }
+
+    // The frame's observer step bursts a received cue once per contact, only
+    // in the frame it arrived: the next frame's net poll rebuilds the list
+    // before the step runs again.
+    #[test]
+    fn client_frame_bursts_observed_impact_cues_once_in_their_arrival_frame() {
+        let mut app = presented_catchup_app(false);
+        let registry = app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .registry
+            .clone();
+        app.observer_weapon_cues = vec![observed_impact(&[Vec3::ZERO, Vec3::X])];
+        let before = particles(&app);
+
+        app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+        assert_eq!(particles(&app) - before, 2 * weapon::IMPACT_PARTICLE_COUNT);
+
+        app.net_poll_and_apply(1.0 / 60.0);
+        assert!(app.observer_weapon_cues.is_empty());
+        app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+        assert_eq!(
+            particles(&app) - before,
+            2 * weapon::IMPACT_PARTICLE_COUNT,
+            "a cue never bursts again in a later frame"
+        );
+    }
+
+    // A frame without a client endpoint already burst from its own simulation,
+    // so the observer step adds nothing even if a cue were present.
+    #[test]
+    fn single_player_and_host_frames_take_no_observer_burst_route() {
+        let mut solo = crate::startup::lifecycle::tests::test_app();
+        let mut host = crate::startup::lifecycle::tests::test_app();
+        host.session.as_mut().unwrap().net_endpoint = crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Host { port: 0 },
+            None,
+        )
+        .unwrap();
+        for app in [&mut solo, &mut host] {
+            app.observer_weapon_cues = vec![observed_impact(&[Vec3::ZERO])];
+            let registry = app
+                .session
+                .as_ref()
+                .unwrap()
+                .scripting
+                .script_ctx
+                .registry
+                .clone();
+            let before = particles(app);
+            app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
+            assert_eq!(particles(app), before);
+        }
+    }
+
+    #[test]
+    fn client_dry_and_silent_pulls_spawn_no_burst() {
+        for presentation in [
+            weapon::ClientPullPresentation::DryFire,
+            weapon::ClientPullPresentation::Silent,
+        ] {
+            let mut app = presented_catchup_app(false);
+            wall_ahead(&mut app, 8.0);
+            target_ahead(&app, 5.0);
+            for queued in &mut app.client_weapon.due {
+                queued.presentation = presentation;
+            }
+            let before = particles(&app);
+            let emissions = fire_all(&mut app);
+            assert_eq!(impacts(&emissions), 0, "{presentation:?} raises no impact");
+            assert_eq!(particles(&app), before, "{presentation:?} spawns no burst");
+        }
+    }
 }

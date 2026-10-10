@@ -5,27 +5,42 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use postretro_visibility::VisibleCells;
 
+use crate::streaming::cell_demand::DemandFrame;
+
 use super::*;
+
+/// The one bucket a visible miss lands in; see `ShMissBuckets`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissCause {
+    OutsideReach,
+    TrimmedByPressure,
+    ReadInFlight,
+    HeldByDrainBudget,
+    AwaitingCompose,
+    Failed,
+}
 
 impl ShResidencyController {
     /// Uses monotonic render seconds, not a frame count, so the two-second
     /// retention window is identical at 30, 60, and 144 Hz. The horizon is
-    /// `visible ∪ warm`; the warm set follows `camera_cell` alone, so view
-    /// rotation moves only visible-class targets.
+    /// `visible ∪ reach`. The reach is the cell-demand stage's id-51 set for
+    /// the camera cell, `None` without a usable id 51: it follows the camera
+    /// cell and L alone, so view rotation moves only visible-class targets.
     pub(crate) fn update_targets(
         &mut self,
         visible: &VisibleCells,
-        camera_cell: Option<usize>,
+        reach: Option<DemandFrame<'_>>,
         monotonic_seconds: f64,
     ) -> Result<(), ShResidencyControllerError> {
         self.validate_time(monotonic_seconds)?;
         let visible = self.visible_clusters(visible)?;
-        self.refresh_warm_set(camera_cell)?;
+        self.reach
+            .update(reach, &self.topology.hints.cell_to_cluster)?;
         self.record_visible_misses(&visible)?;
         let horizon: BTreeSet<u32> = visible
             .iter()
             .copied()
-            .chain(self.warm.clusters())
+            .chain(self.reach.clusters().map(|(cluster, _)| cluster))
             .collect();
         let raw_departures: Vec<_> = self.last_horizon.difference(&horizon).copied().collect();
         let horizon_changed = horizon != self.last_horizon;
@@ -101,6 +116,7 @@ impl ShResidencyController {
         }
         self.targets = targets;
         self.last_time = Some(monotonic_seconds);
+        self.demand_updated = true;
         Ok(())
     }
 
@@ -169,13 +185,13 @@ impl ShResidencyController {
                 );
             }
         }
-        for &cluster_id in horizon {
-            let priority = self.authored_priority(cluster_id)?;
-            Self::merge_directive(
-                &mut classes,
-                cluster_id,
-                TargetDirective::new(TargetClass::Prefetch, priority),
-            );
+        for (cluster_id, lead) in self.reach.clusters() {
+            let directive = if self.reach.is_lead(lead) {
+                TargetDirective::new(TargetClass::Lead, 0)
+            } else {
+                TargetDirective::new(TargetClass::Band, self.authored_priority(cluster_id)?)
+            };
+            Self::merge_directive(&mut classes, cluster_id, directive);
         }
         for (cluster_id, state) in self.states.iter().enumerate() {
             let cluster_id = cluster_id as u32;
@@ -200,19 +216,124 @@ impl ShResidencyController {
     /// render frame would turn refresh rate into a diagnostic input and would
     /// hide the useful question: how often did a visible cluster lack a
     /// sampleable resident closure?
+    ///
+    /// Each miss lands in one bucket, read from the cluster's state before
+    /// this frame retargets it. Settling frames present nothing and count
+    /// nothing.
     fn record_visible_misses(
         &mut self,
         visible: &BTreeSet<u32>,
     ) -> Result<(), ShResidencyControllerError> {
+        if self.misses_suspended {
+            return Ok(());
+        }
         self.prior_visible_misses.retain(|id| visible.contains(id));
         for &cluster_id in visible {
             if self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable
                 && self.prior_visible_misses.insert(cluster_id)
             {
                 Self::increment_counter(&mut self.counters.misses, "visible misses")?;
+                let bucket = self.miss_bucket(cluster_id);
+                Self::increment_counter(bucket, "visible miss bucket")?;
             }
         }
         Ok(())
+    }
+
+    fn miss_bucket(&mut self, cluster_id: u32) -> &mut u64 {
+        let cause = self.miss_cause(cluster_id);
+        let buckets = &mut self.counters.miss_buckets;
+        match cause {
+            MissCause::OutsideReach => &mut buckets.outside_reach,
+            MissCause::TrimmedByPressure => &mut buckets.trimmed_by_pressure,
+            MissCause::ReadInFlight => &mut buckets.read_in_flight,
+            MissCause::HeldByDrainBudget => &mut buckets.held_by_drain_budget,
+            MissCause::AwaitingCompose => &mut buckets.awaiting_compose,
+            MissCause::Failed => &mut buckets.failed,
+        }
+    }
+
+    /// A targeted cluster that is not requested (`Absent`) or not installed
+    /// (`Ready`) because of its owner closure takes the owner's cause: a
+    /// dependent is requested and installed only after its owners.
+    fn miss_cause(&self, cluster_id: u32) -> MissCause {
+        let state = &self.states[cluster_id as usize];
+        match state.state {
+            ClusterResidencyState::Failed => MissCause::Failed,
+            ClusterResidencyState::InstalledUncomposed => MissCause::AwaitingCompose,
+            ClusterResidencyState::Queued => MissCause::ReadInFlight,
+            ClusterResidencyState::Ready => self
+                .owner_wait_cause(cluster_id)
+                .unwrap_or(MissCause::HeldByDrainBudget),
+            ClusterResidencyState::Absent | ClusterResidencyState::Sampleable => {
+                if state.suppressed {
+                    MissCause::TrimmedByPressure
+                } else if self.targets.contains(&cluster_id) {
+                    // Targeted and waiting for an owner, a permit or the issuer.
+                    self.owner_wait_cause(cluster_id)
+                        .unwrap_or(MissCause::ReadInFlight)
+                } else {
+                    MissCause::OutsideReach
+                }
+            }
+        }
+    }
+
+    /// `None` when every owner in the closure is Sampleable. A failed owner
+    /// anywhere in the closure wins, since no read gets past it. Otherwise the
+    /// first non-Sampleable owner names the cause, following its own owner
+    /// wait down the chain the way requests and installs do.
+    fn owner_wait_cause(&self, cluster_id: u32) -> Option<MissCause> {
+        let mut pending = VecDeque::from([cluster_id]);
+        let mut seen = BTreeSet::from([cluster_id]);
+        while let Some(current) = pending.pop_front() {
+            for &owner in &self.topology.owners[current as usize] {
+                if self.states[owner as usize].state == ClusterResidencyState::Failed {
+                    return Some(MissCause::Failed);
+                }
+                if seen.insert(owner) {
+                    pending.push_back(owner);
+                }
+            }
+        }
+
+        let mut waiting = None;
+        let mut current = cluster_id;
+        let mut seen = BTreeSet::from([cluster_id]);
+        while let Some((owner, cause)) =
+            self.topology.owners[current as usize]
+                .iter()
+                .find_map(|&owner| {
+                    Self::own_wait_cause(self.states[owner as usize].state)
+                        .map(|cause| (owner, cause))
+                })
+        {
+            // Planner topology rejects owner cycles; stop rather than loop
+            // if a malformed fixture slips through.
+            if !seen.insert(owner) {
+                break;
+            }
+            waiting = Some(cause);
+            match self.states[owner as usize].state {
+                ClusterResidencyState::Absent | ClusterResidencyState::Ready => current = owner,
+                _ => break,
+            }
+        }
+        waiting
+    }
+
+    /// The cause a non-Sampleable owner's own state names; `None` once it is
+    /// Sampleable.
+    const fn own_wait_cause(state: ClusterResidencyState) -> Option<MissCause> {
+        match state {
+            ClusterResidencyState::Sampleable => None,
+            ClusterResidencyState::Absent | ClusterResidencyState::Queued => {
+                Some(MissCause::ReadInFlight)
+            }
+            ClusterResidencyState::Ready => Some(MissCause::HeldByDrainBudget),
+            ClusterResidencyState::InstalledUncomposed => Some(MissCause::AwaitingCompose),
+            ClusterResidencyState::Failed => Some(MissCause::Failed),
+        }
     }
 
     fn validate_time(&self, time: f64) -> Result<(), ShResidencyControllerError> {
@@ -244,16 +365,6 @@ impl ShResidencyController {
                 })
                 .collect(),
         }
-    }
-
-    fn refresh_warm_set(
-        &mut self,
-        camera_cell: Option<usize>,
-    ) -> Result<(), ShResidencyControllerError> {
-        if self.warm.camera_cell() != camera_cell {
-            self.warm = self.warm_source.warm_set(&self.topology, camera_cell)?;
-        }
-        Ok(())
     }
 
     fn close_owner_targets(
@@ -438,17 +549,20 @@ impl ShResidencyController {
             .iter()
             .copied()
             .filter(|&cluster_id| {
-                self.states[cluster_id as usize].state == ClusterResidencyState::Absent
+                let state = &self.states[cluster_id as usize];
+                state.state == ClusterResidencyState::Absent
+                    && (self.permits_in_use < MAX_OPTIONAL_STREAM_PERMITS
+                        || state.class.is_some_and(TargetClass::is_mandatory))
             })
             .collect();
-        // Authored priority outranks warm distance.
+        // Authored priority outranks reach lead.
         candidates.sort_by_key(|&cluster_id| {
             (
                 self.states[cluster_id as usize]
                     .class
                     .unwrap_or(TargetClass::Hysteresis),
                 std::cmp::Reverse(self.states[cluster_id as usize].effective_priority),
-                self.warm_rank(cluster_id),
+                self.reach_lead(cluster_id),
                 cluster_id,
             )
         });

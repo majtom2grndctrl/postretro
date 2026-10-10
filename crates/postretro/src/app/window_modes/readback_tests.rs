@@ -422,16 +422,20 @@ fn empty_choices_project_zero_and_idle_projection_writes_nothing() {
 
 #[test]
 fn every_redraw_reads_once_before_boot_and_loading_services_deadline() {
-    let source = include_str!("../../main.rs");
-    let body = &source[source.find("WindowEvent::RedrawRequested =>").unwrap()..];
-    assert_eq!(body.matches("self.poll_window_mode_readback();").count(), 1);
     assert!(
-        body.find("self.poll_window_mode_readback();").unwrap()
-            < body.find("self.drive_boot_state_for_redraw(").unwrap()
+        include_str!("../../main.rs")
+            .contains("WindowEvent::RedrawRequested => frame_loop::redraw(self,")
     );
-    let early_return = &body[body.find("if !self.drive_boot_state_for_redraw(").unwrap()..];
+    let source = include_str!("../../frame_loop/mod.rs");
+    let body = &source[source.find("fn redraw(").unwrap()..];
+    assert_eq!(body.matches("app.poll_window_mode_readback();").count(), 1);
     assert!(
-        early_return.find("self.service_window_modes();").unwrap()
+        body.find("app.poll_window_mode_readback();").unwrap()
+            < body.find("app.drive_boot_state_for_redraw(").unwrap()
+    );
+    let early_return = &body[body.find("if !app.drive_boot_state_for_redraw(").unwrap()..];
+    assert!(
+        early_return.find("app.service_window_modes();").unwrap()
             < early_return.find("return;").unwrap()
     );
 }

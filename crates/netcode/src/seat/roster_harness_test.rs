@@ -63,6 +63,7 @@ fn admit(
     client: &mut NetClient,
     client_id: u64,
 ) -> Seat {
+    postretro_net::harness::reveal_both(server, client, "roster-test-level");
     client.update_connections(FRAME_DT);
     for packet in client.packets_to_send() {
         server.process_packet_from(&packet, client_id);

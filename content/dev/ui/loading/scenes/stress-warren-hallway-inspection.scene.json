@@ -1,0 +1,18 @@
+{
+  "map": "content/dev/maps/stress-warren-hallway-inspection.prl",
+  "camera": {
+    "position": [
+      32.1056,
+      22.86,
+      53.2384
+    ],
+    "yaw_deg": -135,
+    "pitch_deg": -12,
+    "fov_deg": 100
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "content/dev/ui/loading/stress-warren-hallway-inspection.png"
+}

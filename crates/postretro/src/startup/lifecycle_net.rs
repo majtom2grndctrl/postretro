@@ -151,7 +151,10 @@ impl App {
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
+    /// | level parity, published level identity, this peer's reveal | |
+    /// | settle state and its timer, the active loading screen, undispatched system commands | |
     pub(crate) fn unload_level(&mut self) {
+        let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -228,18 +231,30 @@ impl App {
         self.active_level_source = None;
 
         self.pending_level_log = false;
+        // An unload during Settling abandons the settle: no reveal edge fires,
+        // and the held level's loading screen ends with it.
+        self.settle = None;
+        self.end_loading_screen();
+        self.discard_pending_system_commands();
         self.camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         self.frame_timing
             .push_state(InterpolableState::new(Vec3::ZERO));
         self.script_time = 0.0;
         self.anim_time = 0.0;
         self.boot_state = BootState::Frontend;
+        // Unload runs before `begin_level_load` resets `level_timings`, so
+        // line C never carries it; this line is its only record.
+        log::info!(
+            "[Startup] unload_level={:.1}ms",
+            unload_started.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     /// Forget the installed level on a still-live endpoint. Both unload and
     /// platform suspend reach this helper so neither leaves peers participating
     /// against a torn-down world.
     pub(crate) fn clear_net_level_parity(&mut self) {
+        self.published_level_identity = None;
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -248,6 +263,45 @@ impl App {
         };
         endpoint.set_level_parity(None);
         endpoint.set_relevel_catalog_id(None);
+        // Retract this peer's reveal with its parity: a host's own reveal is
+        // cleared here at unload and at suspend (a resumed install runs no
+        // unload), and a client sends `Revealed(None)`.
+        endpoint.set_revealed_level(None);
         endpoint.reset_level_scoped_host_state();
+    }
+
+    /// Drop system commands the outgoing level queued and never dispatched.
+    /// Install's `levelLoad` commands wait in the queue through Settling for
+    /// the reveal frame; an unload or suspend before reveal abandons them, so
+    /// none plays a sound or changes state in the next level or the frontend.
+    /// A Running level's queue is normally empty here, since the frame loop
+    /// dispatches it every frame. That ordering is not checked: a command
+    /// queued after the last dispatch is dropped with the rest, never replayed
+    /// into the next level.
+    pub(crate) fn discard_pending_system_commands(&mut self) {
+        if let Some(session) = self.session.as_ref() {
+            drop(session.scripting.script_ctx.system_commands.take());
+        }
+    }
+
+    /// The reveal edge's net half: publish that this peer has revealed the
+    /// installed level. A host records its own reveal, which may promote
+    /// revealed, parity-matched clients; the world poll later this frame
+    /// consumes that promotion and spawns their pawns. A client declares
+    /// its reveal to the host. A timed-out reveal publishes the same.
+    pub(crate) fn publish_net_reveal(&mut self) {
+        // The identity install published as parity, so the two match by
+        // construction.
+        let Some(identity) = self.published_level_identity.clone() else {
+            return;
+        };
+        let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        else {
+            return;
+        };
+        endpoint.set_revealed_level(Some(identity));
     }
 }

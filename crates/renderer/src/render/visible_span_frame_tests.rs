@@ -71,6 +71,7 @@ fn frame(
     candidate: bool,
 ) -> Vec<IndirectDrawCommand> {
     let before = renderer.full().compute_cull.as_ref().unwrap().range_builds;
+    let dispatches_before = candidate_dispatches(renderer);
     renderer
         .capture_measurement_frame_indirect(
             CameraCullVisibility {
@@ -140,6 +141,14 @@ fn frame(
         "one material bind per occupied forward bucket"
     );
     assert_eq!(
+        candidate_dispatches(renderer) - dispatches_before,
+        u32::from(candidate),
+        "the expected camera-cull path ran"
+    );
+    // The Spatial diagnostics exist only with dev-tools; there they must name
+    // the path that actually ran.
+    #[cfg(feature = "dev-tools")]
+    assert_eq!(
         matches!(
             renderer.full().camera_cull_diagnostics.path,
             super::CameraCullPath::Candidate { .. }
@@ -147,6 +156,14 @@ fn frame(
         candidate
     );
     forward_draws
+}
+
+fn candidate_dispatches(renderer: &Renderer) -> u32 {
+    renderer
+        .full()
+        .candidate_cull
+        .as_ref()
+        .map_or(0, |candidate| candidate.dispatches)
 }
 
 #[test]

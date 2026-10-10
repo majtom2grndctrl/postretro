@@ -19,6 +19,7 @@ impl Renderer {
         prm_cache_root: &Path,
         texture_materials: &[Material],
     ) {
+        let install_started = std::time::Instant::now();
         let surface_depth_quality = self.surface_depth_quality;
         let Self {
             device,
@@ -37,13 +38,14 @@ impl Renderer {
         // pre-refactor flow where geometry install populated this field.)
         full.stored_texture_materials = texture_materials.to_vec();
 
-        let loaded = load_textures(
+        let (loaded, load_timing) = load_textures(
             device,
             queue,
             texture_names,
             texture_cache_keys,
             prm_cache_root,
         );
+        let bind_groups_started = std::time::Instant::now();
 
         // Sampler pool grows monotonically: every distinct `mip_count` seen in
         // this batch needs a sampler with matching `lod_max_clamp`. The `1`
@@ -97,12 +99,22 @@ impl Renderer {
             full.loaded_textures = vec![placeholder];
             full.gpu_textures = vec![binding.into()];
             log::info!("[Renderer] Textures installed: 1 (placeholder fallback)");
+            log_texture_install_timing(
+                &load_timing,
+                bind_groups_started.elapsed(),
+                install_started.elapsed(),
+            );
             return;
         }
 
         full.loaded_textures = loaded;
         full.gpu_textures = gpu_textures;
         log::info!("[Renderer] Textures installed: {}", full.gpu_textures.len());
+        log_texture_install_timing(
+            &load_timing,
+            bind_groups_started.elapsed(),
+            install_started.elapsed(),
+        );
     }
 
     /// Load one skinned model into the renderer's model cache: parse the glTF,
@@ -138,8 +150,35 @@ impl Renderer {
         content_root: &Path,
         prm_cache_root: &Path,
     ) -> Option<Vec<String>> {
-        let (model_path, handle) = resolve_model_open_path_and_handle(model_rel, content_root);
-        let model = match postretro_model::gltf_loader::load_model(&model_path) {
+        let (model_path, _) = resolve_model_open_path_and_handle(model_rel, content_root);
+        let parsed = postretro_model::gltf_loader::load_model(&model_path);
+        self.upload_parsed_skinned_model(model_rel, &model_path, &parsed, prm_cache_root)
+    }
+
+    /// [`load_skinned_model`](Self::load_skinned_model) for a glTF the caller
+    /// already parsed. The level-load model sweep parses each file once and
+    /// hands the same result to this upload and to the game-side hit-zone store,
+    /// so neither re-reads the file nor re-hashes its source PNGs. `parsed` is
+    /// borrowed: the sweep's other consumer still needs it, so the skeleton,
+    /// clips and pose stack the mesh pass keeps are cloned here.
+    ///
+    /// `model_path` is the path the caller opened (`content_root.join(model_rel)`);
+    /// it names the file in the failure warning. A parse error warns here, and
+    /// the model stays uncached, exactly as when this method parsed it itself.
+    pub fn upload_parsed_skinned_model(
+        &mut self,
+        model_rel: &str,
+        model_path: &Path,
+        parsed: &Result<
+            postretro_model::gltf_loader::LoadedModel,
+            postretro_model::gltf_loader::ModelLoadError,
+        >,
+        prm_cache_root: &Path,
+    ) -> Option<Vec<String>> {
+        // The verbatim cache key, the same value `resolve_model_open_path_and_handle`
+        // pairs with the open path (see `load_skinned_model`'s doc).
+        let handle = postretro_model::ModelHandle::from(model_rel.to_string());
+        let model = match parsed {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
@@ -150,7 +189,7 @@ impl Renderer {
             }
         };
 
-        let submesh_materials = self.resolve_skinned_model_material(&model, prm_cache_root);
+        let submesh_materials = self.resolve_skinned_model_material(model, prm_cache_root);
 
         let postretro_model::gltf_loader::LoadedModel {
             mesh,
@@ -178,9 +217,8 @@ impl Renderer {
             );
         }
 
-        // `handle` (the verbatim cache key) was derived alongside the open path
-        // by `resolve_model_open_path_and_handle` — see this method's doc. The
-        // Full clip set is handed to the cache; per-instance sample parameters
+        // `handle` is the verbatim cache key — see `load_skinned_model`'s doc. The
+        // full clip set is handed to the cache; per-instance sample parameters
         // select clips during palette sampling.
         // `resolve_skinned_model_material` (a `&mut self` helper) already ran
         // above into `submesh_materials`, so destructuring `self` here is safe.
@@ -191,12 +229,12 @@ impl Renderer {
         full.mesh_pass.insert_model(
             device,
             handle,
-            &mesh,
+            mesh,
             submesh_materials,
             ModelAnimationData {
-                skeleton,
-                clips,
-                pose_stack,
+                skeleton: skeleton.clone(),
+                clips: clips.clone(),
+                pose_stack: pose_stack.clone(),
             },
         );
 
@@ -205,7 +243,7 @@ impl Renderer {
             clip_count,
             tags.len(),
         );
-        Some(tags)
+        Some(tags.clone())
     }
 
     /// The clip metadata (name + duration) for a cached skinned model, in glTF
@@ -395,6 +433,33 @@ impl Renderer {
         );
         normalize_kinematic_mover_uvs(&mut world.kinematic_geometry.movers, &texture_dimensions);
     }
+}
+
+/// Log-only phase split of the `texture_upload` stage, in the renderer's own
+/// line because it never sees app-side timing types (same shape as
+/// `[Renderer] Geometry install timing:`). `bind_groups` covers the sampler pool
+/// and one material bind group per texture, after the files are read, parsed
+/// and uploaded; `other` is the remainder of `total`.
+fn log_texture_install_timing(
+    load: &TextureLoadTiming,
+    bind_groups: std::time::Duration,
+    total: std::time::Duration,
+) {
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    let other = total.saturating_sub(load.read + load.parse + load.create_write + bind_groups);
+    log::info!(
+        "[Renderer] Texture install timing: total={:.1}ms, read={:.1}ms, parse={:.1}ms, \
+         create_write={:.1}ms, bind_groups={:.1}ms, other={:.1}ms \
+         ({} sidecar read(s), {:.1} MiB)",
+        ms(total),
+        ms(load.read),
+        ms(load.parse),
+        ms(load.create_write),
+        ms(bind_groups),
+        ms(other),
+        load.files_read,
+        load.bytes_read as f64 / (1024.0 * 1024.0),
+    );
 }
 
 fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32; 2]> {

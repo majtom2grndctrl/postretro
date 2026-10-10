@@ -8,6 +8,7 @@ mod accessibility;
 mod envelope;
 mod focus;
 mod image;
+mod image_refs;
 mod values;
 mod widgets;
 
@@ -17,7 +18,7 @@ pub use accessibility::Role;
 // deferred). Allow unconditionally so the test-target build stays clippy-clean.
 #[allow(unused_imports)]
 pub use accessibility::implicit_role;
-pub use envelope::{AnchoredTree, CaptureMode};
+pub use envelope::{AnchoredTree, CaptureMode, TreeBackground};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
 pub use image::ImageWidget;
 pub use values::{
@@ -525,6 +526,58 @@ mod tests {
         // A container no longer carries the flag.
         let on_container = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"vstack","gap":0.0,"padding":0.0,"align":"start","restoreOnReturn":true,"children":[]}}"#;
         assert!(serde_json::from_str::<AnchoredTree>(on_container).is_err());
+    }
+
+    // --- Tree background envelope field ---
+
+    #[test]
+    fn tree_background_round_trips_byte_identically() {
+        let json = r#"{"anchor":"bottom","offset":[0.0,-40.0],"root":{"kind":"spacer","flexGrow":1.0},"background":{"image":"dev/loading/campaign-test"}}"#;
+        let tree: AnchoredTree = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(
+            tree.background,
+            Some(TreeBackground {
+                image: "dev/loading/campaign-test".to_string()
+            })
+        );
+        assert_eq!(serde_json::to_string(&tree).unwrap(), json);
+    }
+
+    #[test]
+    fn tree_without_background_emits_no_background_key() {
+        let tree = AnchoredTree::passthrough(
+            Anchor::Center,
+            [0.0, 0.0],
+            Widget::Spacer(SpacerWidget {
+                flex_grow: 1.0,
+                id: None,
+                visible_when: None,
+                role: None,
+            }),
+        );
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(!json.contains("background"), "{json}");
+        assert_eq!(
+            json,
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0}}"#
+        );
+    }
+
+    #[test]
+    fn tree_background_rejects_unknown_keys_and_empty_image() {
+        let base = r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"spacer","flexGrow":1.0},"background":"#;
+        for bad in [
+            r#"{"image":"dev/loading/a","fit":"contain"}"#,
+            r#"{"image":""}"#,
+            r#"{}"#,
+            r#""dev/loading/a""#,
+        ] {
+            let json = format!("{base}{bad}}}");
+            assert!(
+                serde_json::from_str::<AnchoredTree>(&json).is_err(),
+                "background {bad} must be rejected"
+            );
+        }
     }
 
     // --- M13 Text-Entry, Task 3: text-entry target envelope field ---

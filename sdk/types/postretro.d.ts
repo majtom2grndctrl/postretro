@@ -1405,7 +1405,7 @@ declare module "postretro" {
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
     fonts?: { readonly [token: string]: string };
-    /** UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name at mod init and after a hot reload, so any tree can show it with `Image({ asset: name })`. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry. */
+    /** UI images: image name → PNG path relative to the mod root. Optional. Each loads into the UI image registry under its name, so any tree can show it with `Image({ asset: name })` or a `Tree` `background`. Most load at mod init and after a hot reload; an image only loading trees draw (a map's `loadingTree`, `loading.tree`, or your `loadingScreen`) loads in the background while its loading screen shows and is released when the load ends, unless a level's own trees draw it too. Names beginning `engine/` are reserved. A reserved name, a non-string value, a path that leaves the mod, a missing file, or an undecodable PNG warns and skips that entry. */
     uiImages?: { readonly [name: string]: string };
     /** Mod-wide loading screen. Optional; omission shows the engine fallback loading screen. */
     loading?: ModLoading;
@@ -1598,6 +1598,8 @@ declare module "postretro" {
       readonly vignette: ComputedRef<ReadonlyArray<number>>;
     };
     readonly session: {
+      readonly hostAddress: ComputedRef<string>;
+      readonly hosting: ComputedRef<boolean>;
       readonly openSeats: ComputedRef<number>;
     };
     readonly ui: {
@@ -2287,6 +2289,8 @@ declare module "postretro" {
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   /** Tree input behavior. */
   export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Tree background: `image` is a UI image key (the `Image({ asset })` namespace), drawn full-window with cover fit beneath the tree's widgets. Decorative; a missing image draws nothing. */
+  export type TreeBackground = { image: string };
   /** Flat `AnchoredTree` manifest envelope stored in UI registries. */
   export type AnchoredTreeDescriptor = {
     anchor: WidgetAnchor;
@@ -2298,6 +2302,7 @@ declare module "postretro" {
     accessibleName?: string;
     role?: WidgetRole;
     restoreOnReturn?: boolean;
+    background?: TreeBackground;
   };
   /** Motion easing used by passive world-anchored presentation templates. */
   export type PresentationEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
@@ -2814,9 +2819,11 @@ declare module "postretro/ui" {
 
   export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
   export type WidgetCaptureMode = "capture" | "passthrough";
-  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. */
-  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
-  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean };
+  /** A tree's background. `image` is a UI image key (the same namespace as `Image({ asset })`). It fills the whole window with cover fit (scaled to fill, cropped to keep its aspect), beneath the tree's widgets, ignoring `anchor` and `offset`. Decorative: no focus or accessibility node. A missing image draws nothing. */
+  export type TreeBackground = { image: string };
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref; `restoreOnReturn` (on by default) returns focus to the control it left when a tree pushed above closes, and `false` lands on `initialFocus` instead. `background` draws one UI image across the whole window beneath the tree. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: Ref<string>; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean; background?: TreeBackground };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole; restoreOnReturn?: boolean; background?: TreeBackground };
   /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
   export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
   /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD; `hideBelow` visually occludes retained lower pushed trees. */

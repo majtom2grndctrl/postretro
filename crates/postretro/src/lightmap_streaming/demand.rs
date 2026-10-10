@@ -3,9 +3,11 @@
 
 use postretro_level_format::cell_residency_set::{CellResidencySetSection, ResidencyEntry};
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
-use postretro_visibility::{VisibilityPath, VisibleCells};
+use postretro_visibility::VisibleCells;
 
 use super::block_map::LevelBlockMap;
+pub(crate) use crate::streaming::cell_demand::DemandFrame;
+use crate::streaming::cell_demand::PathDemand;
 use crate::streaming::drain_budget::{DrainClass, DrainRank};
 
 /// A targeted block's wire class and lead, and its rank on the shared drain
@@ -80,58 +82,6 @@ struct DemandSlot {
     held_epoch: u32,
     /// Queued in `BlockDemand::dirty`.
     dirty: bool,
-}
-
-/// How a visibility path shapes this frame's demand. Only a portal walk adds
-/// drawn cells to demand; every other path demands the camera cell's baked
-/// set alone, and its drawn blocks are only held.
-enum PathDemand {
-    /// Baked set plus visible demand from the drawn cells.
-    PortalWalk,
-    /// Baked set; the frustum-culled drawn cells are held, never demanded.
-    CameraSet,
-    /// Solid or exterior camera cell: as `CameraSet` when the cell has a
-    /// baked set; otherwise keep current demand and request nothing new.
-    CameraSetOrHold,
-    /// Empty world: no residency-set lookup, no change, no requests.
-    Hold,
-}
-
-impl PathDemand {
-    fn of(path: VisibilityPath) -> Self {
-        match path {
-            VisibilityPath::PrlPortal { .. } => Self::PortalWalk,
-            VisibilityPath::PortalStepLimitFallback { .. } | VisibilityPath::NoPortalsFallback => {
-                Self::CameraSet
-            }
-            VisibilityPath::SolidCellFallback | VisibilityPath::ExteriorCellFallback => {
-                Self::CameraSetOrHold
-            }
-            VisibilityPath::EmptyWorldFallback => Self::Hold,
-        }
-    }
-}
-
-/// One frame's visibility, as lightmap demand reads it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DemandFrame<'a> {
-    /// The level's id-51 set; the same level the controller was built for.
-    pub(crate) residency_set: &'a CellResidencySetSection,
-    pub(crate) camera_cell: u32,
-    pub(crate) path: VisibilityPath,
-    pub(crate) visible_cells: &'a VisibleCells,
-}
-
-impl DemandFrame<'_> {
-    pub(crate) fn is_portal_walk(&self) -> bool {
-        matches!(self.path, VisibilityPath::PrlPortal { .. })
-    }
-
-    /// Whether the frame draws cells whose visible misses count: every path
-    /// but the empty world, which draws no cell.
-    pub(crate) fn draws_cells(&self) -> bool {
-        !matches!(self.path, VisibilityPath::EmptyWorldFallback)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -212,14 +162,13 @@ impl BlockDemand {
     /// least visible while its pair is resident or on its way, so the
     /// renderer never frees a block the frame draws, and never reads one for
     /// it.
-    pub(crate) fn update(
-        &mut self,
-        map: &LevelBlockMap,
-        lead: u32,
-        frame: DemandFrame<'_>,
-    ) -> bool {
+    ///
+    /// A change of L takes effect once the camera is in a cell with a baked
+    /// set; a solid or exterior cell keeps the previous split.
+    pub(crate) fn update(&mut self, map: &LevelBlockMap, frame: DemandFrame<'_>) -> bool {
         let camera_cell = frame.camera_cell;
-        match PathDemand::of(frame.path) {
+        let lead = frame.lead;
+        match frame.path_demand() {
             PathDemand::Hold => false,
             PathDemand::CameraSetOrHold => {
                 if self.key != Some((camera_cell, lead)) {
@@ -251,25 +200,20 @@ impl BlockDemand {
         }
     }
 
-    /// Capture's fixed view: the camera cell's baked set, plus every drawn
-    /// cell's blocks as visible whatever the visibility path. An empty world
-    /// looks up no residency set.
-    pub(crate) fn update_capture_view(
-        &mut self,
-        map: &LevelBlockMap,
-        lead: u32,
-        frame: DemandFrame<'_>,
-    ) {
+    /// The camera cell's baked set, plus every drawn cell's blocks as visible
+    /// whatever the visibility path. Capture's fixed view and every Settling
+    /// frame use it. An empty world looks up no residency set.
+    pub(crate) fn update_capture_view(&mut self, map: &LevelBlockMap, frame: DemandFrame<'_>) {
         if frame.draws_cells() {
-            self.recompute_if_changed(map, frame.residency_set, frame.camera_cell, lead);
+            self.recompute_if_changed(map, frame.residency_set, frame.camera_cell, frame.lead);
         }
         self.clear_held();
         self.mark_drawn(map, frame.visible_cells);
     }
 
     /// Demand from `camera_cell`'s baked set and the pins alone, with no drawn
-    /// cells: level install knows the spawn camera cell before any frame has
-    /// walked its portals. An empty range leaves only the pins.
+    /// cells; test-only. An empty range leaves only the pins.
+    #[cfg(test)]
     pub(crate) fn update_camera_set(
         &mut self,
         map: &LevelBlockMap,

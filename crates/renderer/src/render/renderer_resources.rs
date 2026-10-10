@@ -153,6 +153,7 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
 
         // Drop the prior generation at the level boundary. Construction waits
         // until the fresh shared SH resources below exist, because streamed
@@ -320,6 +321,7 @@ impl Renderer {
         full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
         full.promoted_static_weight_scratch.clear();
         full.promoted_baked_last_update_time = None;
+        full.promotions_start_whole = false;
         // Match the init-time policy: selected-static and section-45 animated
         // candidates share the fixed-projection cache. A level with neither
         // source frees it; either source allocates/reuses it and clears every
@@ -562,6 +564,7 @@ impl Renderer {
             promoted_cube_cache,
         );
 
+        install_marks.mark("buffers_and_sh_streaming");
         full.sdf_atlas_resources = SdfAtlasResources::new(device, queue.raw(), geometry.sdf_atlas);
         full.lightmap_mode = geometry.lightmap_mode;
         let compose_sh_volume = geometry
@@ -682,6 +685,7 @@ impl Renderer {
                 geometry.animated_light_weight_maps,
             ),
         );
+        install_marks.mark("sdf_atlas_and_compose");
         full.lightmap_resources = LightmapResources::new(
             device,
             queue.raw(),
@@ -737,6 +741,7 @@ impl Renderer {
             sdf_shadow_sh_grid,
         );
 
+        install_marks.mark("lightmap_and_sdf_shadow");
         // --- BVH + compute cull ---
         full.bvh_leaves = bvh_leaves;
         // Per-cell draw index for the candidate-cull path. Cloned alongside the
@@ -762,6 +767,7 @@ impl Renderer {
             .as_ref()
             .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
 
+        install_marks.mark("bvh_and_cull");
         // Shadow reach follows the installed BVH: the first fill after install
         // walks this level's tree, and no range from the previous level survives.
         full.shadow_world = super::shadow_world_draws::ShadowWorldDraws::install(
@@ -788,6 +794,7 @@ impl Renderer {
             &mut full.mover_occluder_aabbs,
         );
 
+        install_marks.log(has_geometry);
         if has_geometry {
             log::info!(
                 "[Renderer] Geometry installed: {} indices, bvh_leaves={}",

@@ -6,9 +6,7 @@ use std::rc::Rc;
 
 use glam::Vec3;
 use postretro_entities::components::projectile::ProjectileComponent;
-use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform, WorldPointPresentationSpawn,
-};
+use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 use crate::collision::{CollisionWorld, cast_sphere_exact};
 use crate::emission::{Emitter, ImpactContact, WeaponEmission};
@@ -198,14 +196,6 @@ pub fn advance(
                     component.credit_source.clone(),
                     0.0,
                 );
-                // The host has already materialized its local impact burst. Keep
-                // remote observers on their own world-point route: scripted
-                // presentation intake is keyed by a presenter, while this blast
-                // must exclude the predicted projectile owner's client.
-                registry.push_world_point_presentation_spawn(WorldPointPresentationSpawn {
-                    world_anchor: impact.point,
-                    owner_pawn: component.owner_pawn.to_raw(),
-                });
                 crate::sim::splash::emit_splash_damage(
                     registry,
                     hit_zone_store,
@@ -514,6 +504,20 @@ fn advance_matching(
             }
         }
     }
+}
+
+/// Distance along `direction` to the first static-world contact of a projectile
+/// swept at `radius`, within `reach`. The same sweep the projectile's world
+/// contact uses, so a host replay of that ray meets the wall at this distance.
+pub fn projectile_static_contact_distance(
+    collision_world: &CollisionWorld,
+    origin: Vec3,
+    direction: Vec3,
+    radius: f32,
+    reach: f32,
+) -> Option<f32> {
+    cast_sphere_exact(collision_world, origin, radius, direction, reach)
+        .map(|hit| hit.time_of_impact.max(0.0))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1138,7 +1142,6 @@ mod tests {
             min_fraction: 0.0,
             self_damage: true,
         });
-        let owner_pawn = component.owner_pawn.to_raw();
         splash_registry
             .borrow_mut()
             .set_component(projectile, component)
@@ -1167,12 +1170,16 @@ mod tests {
                 < 20.0,
             "a splash projectile damages radial neighbors while the direct branch does not",
         );
-        let queued = splash_registry
-            .borrow_mut()
-            .take_world_point_presentation_spawns();
-        assert_eq!(queued.len(), 1);
-        assert!(queued[0].world_anchor.is_finite());
-        assert_eq!(queued[0].owner_pawn, owner_pawn);
+        // Observers take the splash burst from the impact cue, so the host's own
+        // simulation spawns exactly one and queues no second presentation route.
+        assert_eq!(
+            splash_registry
+                .borrow()
+                .iter_with_kind(ComponentKind::ParticleState)
+                .count(),
+            weapon::IMPACT_PARTICLE_COUNT,
+            "a host-local splash detonation bursts exactly once"
+        );
     }
 
     // Regression: a zero-radius world impact began its splash LoS ray on the
@@ -2016,13 +2023,6 @@ mod tests {
             impact_lights(&registry.borrow()).len(),
             1,
             "the predicted contact still produces its local presentation flash"
-        );
-        assert!(
-            registry
-                .borrow_mut()
-                .take_world_point_presentation_spawns()
-                .is_empty(),
-            "predicted projectile flight never enqueues host-only splash presentation"
         );
     }
 

@@ -16,7 +16,7 @@ use crate::lighting::lightmap::LightmapStreamCounters;
 /// every other count is cumulative since the level's streaming began.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LightmapStreamingLiveDiagnostics {
-    // Levers in force.
+    // Levers and lead in force.
     pub pool_cap_layers: u32,
     pub lead_metres: f32,
     pub max_lead_metres: f32,
@@ -94,16 +94,22 @@ impl LightmapStreamingLiveDiagnostics {
     }
 }
 
-/// The two lightmap residency levers as the dev-tools Streaming tab edits
-/// them. Developer levers, never a player setting
+/// The lightmap residency lever as the dev-tools Streaming tab edits it.
+/// A developer lever, never a player setting
 /// (`context/lib/experimental_spikes.md` §Tuning levers).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightmapStreamingLevers {
     /// Pool cap in layers, `1..=`[`MAX_LIGHTMAP_POOL_CAP_LAYERS`]. Rides the
     /// next drain batch.
     pub pool_cap_layers: u32,
+}
+
+/// The level's lead L as the dev-tools Streaming tab edits it: one reach for
+/// every streamed resource, shown whenever the level has one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamingReachLever {
     /// Lead L in metres, `0..=max_lead_metres`. Takes effect at the next
-    /// demand update.
+    /// frame.
     pub lead_metres: f32,
     /// The level's baked maximum lead; read-only.
     pub max_lead_metres: f32,

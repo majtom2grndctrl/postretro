@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 
-use glam::Vec3;
 use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
@@ -23,7 +22,7 @@ use postretro_level_format::{SectionBlob, SectionId, write_prl};
 use postretro_level_loader::{LevelWorld, LightmapStreamManifest};
 use postretro_render_cpu::lightmap_pool::LightmapPoolModel;
 
-use super::levers::LEAD_UNITS_PER_METRE;
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 
 /// Cells in a row along +x, one metre each, joined by a portal at every
 /// shared face. Cell c owns block c.
@@ -64,11 +63,6 @@ impl StreamedLightmapPrl {
         );
         world
     }
-}
-
-/// An eye point inside `cell`.
-pub(crate) fn eye_in_cell(cell: u32) -> Vec3 {
-    Vec3::new(cell as f32 + 0.5, 0.5, 0.5)
 }
 
 /// The renderer's placement policy over `manifest`'s blocks at the default

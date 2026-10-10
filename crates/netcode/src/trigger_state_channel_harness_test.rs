@@ -331,13 +331,15 @@ fn relay_pair() -> (NetServer, NetClient) {
     )
     .expect("fixture client transport constructs");
 
-    // E15 requires matching admission and parity declarations before participation.
+    // E15 requires matching admission and parity declarations before
+    // participation, and both peers must have revealed the level.
     server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
     server.set_mod_digest(Some(static_fingerprint));
     server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
     client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
     client.set_mod_digest(Some(static_fingerprint));
     client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+    postretro_net::harness::reveal_both(&mut server, &mut client, "test-level");
 
     (server, client)
 }
@@ -534,6 +536,7 @@ impl PersistentAtmosphereHarness {
                 fire_tick: 0,
                 client_tick: 0,
                 aim_pitch: 0.0,
+                start_aim: None,
                 command: idle_command(),
             }],
             &idle_command(),

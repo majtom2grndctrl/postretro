@@ -181,6 +181,7 @@ fn raw_path_load_shows_a_tree_from_the_mod_pool() {
         ModLoading {
             tree: names(&["modLoading"]),
         },
+        Default::default(),
     );
 
     let load = app
@@ -243,10 +244,13 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
     );
 }
 
-/// The install and failure routes both end the loading screen; they need an
-/// event loop to run, so the routes are pinned in source.
+/// Install hands the level to Settling with the loading screen still active;
+/// the reveal and the failure route end it. These need an event loop to run,
+/// so the routes are pinned in source. Every entry (boot map, catalog load,
+/// restart, backdrop, relevel) installs through `finish_level_payload`, so
+/// none reaches Running without Settling.
 #[test]
-fn loading_slots_reset_on_both_the_success_and_failure_routes() {
+fn loading_screen_ends_at_reveal_and_on_failure() {
     let source = include_str!("lifecycle.rs")
         .split("#[cfg(test)]\npub(crate) mod tests")
         .next()
@@ -259,11 +263,27 @@ fn loading_slots_reset_on_both_the_success_and_failure_routes() {
         .next()
         .unwrap();
     let installed = success.find("self.install_level_payload(").unwrap();
-    let ended = success.find("self.end_loading_screen();").unwrap();
-    let running = success
+    let settling = success.find("self.enter_settling(").unwrap();
+    assert!(installed < settling);
+    assert!(
+        !success.contains("self.end_loading_screen();"),
+        "the loading tree stays active through Settling"
+    );
+    assert!(
+        !success.contains("BootState::Running"),
+        "install never enters Running directly"
+    );
+
+    let settling_source = include_str!("settling.rs")
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap();
+    let reveal = settling_source.split("fn reveal_level(").nth(1).unwrap();
+    let ended = reveal.find("self.end_loading_screen();").unwrap();
+    let running = reveal
         .find("self.boot_state = BootState::Running;")
         .unwrap();
-    assert!(installed < ended && ended < running);
+    assert!(ended < running);
 
     let failure = source
         .split("fn finish_level_failure(")
@@ -366,6 +386,7 @@ fn level_tier_trees_are_never_loading_candidates() {
         ModLoading {
             tree: names(&["levelLoading"]),
         },
+        Default::default(),
     );
     app.begin_loading_screen(&entry("Entryway", &["levelLoading"]));
     assert_eq!(active_tree(&app).as_deref(), Some(LOADING_SCREEN_NAME));
@@ -405,6 +426,7 @@ fn staged_loading_fields_commit_only_with_a_committed_generation() {
         ModLoading {
             tree: names(&["committed"]),
         },
+        Default::default(),
     );
     app.begin_loading_screen(&entry("Entryway", &[]));
 
@@ -529,29 +551,45 @@ fn dev_manifest() -> postretro_scripting_core::staged_manifest::StagedManifest {
 }
 
 #[test]
-fn dev_mod_declares_loading_pool_override_and_images() {
+fn dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images() {
     let manifest = dev_manifest();
-    let pool = &manifest.loading.tree;
-    assert!(
-        pool.len() >= 2,
-        "a mod-wide pool of at least two trees: {pool:?}"
-    );
-    let override_pool = manifest
-        .maps
-        .iter()
-        .find(|map| !map.loading_tree.is_empty())
-        .map(|map| map.loading_tree.clone())
-        .expect("one catalog map overrides the pool");
-    let tree_names: HashSet<&str> = manifest
+    let trees: std::collections::HashMap<&str, &AnchoredTree> = manifest
         .ui_trees
         .iter()
-        .map(|tree| tree.name.as_str())
+        .map(|tree| (tree.name.as_str(), &tree.tree))
         .collect();
-    for name in pool.iter().chain(&override_pool) {
-        assert!(
-            tree_names.contains(name.as_str()),
-            "`{name}` is a registered dev tree"
+
+    // Path loads with no catalog entry fall back to one plain tree.
+    let pool = &manifest.loading.tree;
+    assert_eq!(pool, &names(&["dev.loading.plain"]));
+    let plain = trees
+        .get("dev.loading.plain")
+        .expect("the plain pool tree is registered");
+    assert_eq!(plain.background, None, "the plain tree draws no imagery");
+
+    // Every catalog map names its own tree, which draws that map's screenshot.
+    assert!(!manifest.maps.is_empty());
+    for map in &manifest.maps {
+        let expected = format!("dev.loading.{}", map.id);
+        assert_eq!(map.loading_tree, vec![expected.clone()], "{}", map.id);
+        let tree = trees
+            .get(expected.as_str())
+            .unwrap_or_else(|| panic!("`{expected}` is a registered dev tree"));
+        let image = &tree
+            .background
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{expected}` draws a background"))
+            .image;
+        assert_eq!(image, &format!("dev/loading/{}", map.id));
+        assert_eq!(
+            manifest.ui_images.get(image).map(String::as_str),
+            Some(format!("ui/loading/{}.png", map.id).as_str()),
+            "`{image}` maps to the map's screenshot"
         );
+    }
+    // Loading screens draw no world textures.
+    for (key, path) in &manifest.ui_images {
+        assert!(!path.starts_with("textures/"), "{key} -> {path}");
     }
     let decoded = crate::app::ui_images::decode_mod_ui_images(
         &workspace_root().join("content/dev"),
@@ -569,7 +607,7 @@ fn dev_mod_declares_loading_pool_override_and_images() {
 /// windowed UI + resolve passes. Self-skips without a GPU adapter. With
 /// `POSTRETRO_LOADING_CAPTURE_DIR` set, writes the frames there as PNGs.
 #[test]
-fn loading_frames_render_the_tree_over_the_splash_background() {
+fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
     const SIZE: [u32; 2] = [1280, 720];
     let mut renderer = match crate::render::Renderer::new_offscreen(SIZE[0], SIZE[1]) {
         Ok(renderer) => renderer,
@@ -603,19 +641,41 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
             .is_err()
     );
     let manifest = dev_manifest();
-    for image in crate::app::ui_images::decode_mod_ui_images(
-        &workspace_root().join("content/dev"),
-        &manifest.ui_images,
-    ) {
-        renderer
-            .register_ui_image(&image.key, image.rgba, image.width, image.height)
-            .expect("every dev image fits a texture");
-    }
     let dev_tree = manifest
         .maps
         .iter()
         .find_map(|map| map.loading_tree.first().cloned())
         .unwrap();
+    let dev_background = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == dev_tree)
+        .and_then(|tree| tree.tree.background.as_ref())
+        .map(|background| background.image.clone())
+        .expect("the catalog loading tree draws a background");
+    // The screenshot's top-left texels, which a cover fit at the image's own
+    // aspect lands on the frame's corner.
+    let mut background_corner = None;
+    for image in crate::app::ui_images::decode_mod_ui_images(
+        &workspace_root().join("content/dev"),
+        &manifest.ui_images,
+    ) {
+        if image.key == dev_background {
+            assert_eq!(
+                image.width * SIZE[1],
+                image.height * SIZE[0],
+                "the corner check assumes the screenshot matches the frame's aspect"
+            );
+            let scale = image.width as f32 / SIZE[0] as f32;
+            let texel = (4.5 * scale) as u32;
+            let at = ((texel * image.width + texel) * 4) as usize;
+            background_corner = Some([image.rgba[at], image.rgba[at + 1], image.rgba[at + 2]]);
+        }
+        renderer
+            .register_ui_image(&image.key, image.rgba, image.width, image.height)
+            .expect("every dev image fits a texture");
+    }
+    let background_corner = background_corner.expect("the background image decodes");
     // The dev theme, merged as mod init installs it, so tokens resolve as in play.
     renderer.set_ui_theme(
         postretro_ui::theme::UiTheme::engine_default().with_override(
@@ -664,12 +724,18 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
         app.end_loading_screen();
 
         let image = image::RgbaImage::from_raw(SIZE[0], SIZE[1], pixels).unwrap();
-        // The splash background, sRGB 8-bit (28, 33, 39), within rounding.
+        // The engine fallback shows the splash background, sRGB 8-bit
+        // (28, 33, 39), within rounding. The dev tree's full-window background
+        // covers it with the screenshot, within filtering.
         let corner = image.get_pixel(4, 4).0;
-        for (channel, expected) in corner.iter().zip([28u8, 33, 39]) {
+        let (expected, tolerance) = match label {
+            "engine-fallback" => ([28u8, 33, 39], 1),
+            _ => (background_corner, 24),
+        };
+        for (channel, want) in corner.iter().zip(expected) {
             assert!(
-                channel.abs_diff(expected) <= 1,
-                "{label}: corner {corner:?} is the splash background"
+                channel.abs_diff(want) <= tolerance,
+                "{label}: corner {corner:?} is not {expected:?}"
             );
         }
         let drawn = image
@@ -689,4 +755,144 @@ fn loading_frames_render_the_tree_over_the_splash_background() {
                 .unwrap();
         }
     }
+}
+
+/// Every catalog screenshot is named only by its map's loading tree, so mod
+/// init decodes none of the dev mod's `uiImages`; each waits for its load.
+#[test]
+fn dev_mod_defers_every_loading_screenshot_and_loads_no_image_eagerly() {
+    let manifest = dev_manifest();
+    let mut images = crate::app::ui_images::ModUiImages::default();
+    images.commit(
+        manifest.ui_images.clone(),
+        crate::app::ui_images::ManifestImageRefs::from_manifest(
+            &manifest.ui_trees,
+            &manifest.presentation_templates,
+            &manifest.maps,
+            &manifest.loading.tree,
+        ),
+    );
+    assert!(!manifest.ui_images.is_empty());
+    for (key, path) in &manifest.ui_images {
+        assert_eq!(
+            images.deferred_path(key),
+            Some(path.as_str()),
+            "{key} is loading-only"
+        );
+    }
+}
+
+/// Reveal, failure, abandon (unload during Settling, which a network relevel
+/// takes too) and suspend all end the loading screen through the one path
+/// that releases its images. These need an event loop to run, so the routes
+/// are pinned in source.
+#[test]
+fn every_loading_screen_end_path_goes_through_the_releasing_end() {
+    fn body<'a>(source: &'a str, function: &str) -> &'a str {
+        // Production code precedes each file's tests, so the first match is it.
+        let start = source
+            .find(&format!("fn {function}("))
+            .unwrap_or_else(|| panic!("`{function}` exists"));
+        let rest = &source[start + 3..];
+        &rest[..rest
+            .find("\n    fn ")
+            .or(rest.find("\n    pub"))
+            .unwrap_or(rest.len())]
+    }
+    for (file, source, function) in [
+        ("settling.rs", include_str!("settling.rs"), "reveal_level"),
+        (
+            "lifecycle.rs",
+            include_str!("lifecycle.rs"),
+            "finish_level_failure",
+        ),
+        (
+            "lifecycle_net.rs",
+            include_str!("lifecycle_net.rs"),
+            "unload_level",
+        ),
+        (
+            "lifecycle_boot_state.rs",
+            include_str!("lifecycle_boot_state.rs"),
+            "reset_boot_state_after_suspend",
+        ),
+    ] {
+        assert!(
+            body(source, function).contains("self.end_loading_screen();"),
+            "{file}: `{function}` ends the loading screen"
+        );
+    }
+    // A load that replaces one still showing releases it before choosing.
+    let begin = body(include_str!("loading_screen.rs"), "begin_loading_screen");
+    assert!(begin.contains("self.end_active_load();"));
+    let end = body(include_str!("loading_screen.rs"), "end_loading_screen");
+    assert!(end.contains("self.end_active_load()"));
+}
+
+/// The real renderer: a loading-only image is not uploaded at mod init,
+/// arrives from the decode worker while its tree shows, and is gone when the
+/// load ends, by reveal-style end and by suspend. Self-skips without a GPU
+/// adapter.
+#[test]
+fn loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends() {
+    const SHOT: &str = "shots/e1m1";
+    const TREE: &str = "load.e1m1";
+    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            eprintln!("loading-only image upload skipped: {err:#}");
+            return;
+        }
+    };
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("ui")).unwrap();
+    image::RgbaImage::from_pixel(8, 4, image::Rgba([200, 100, 50, 255]))
+        .save(root.path().join("ui/e1m1.png"))
+        .unwrap();
+
+    let mut app = test_app();
+    app.renderer = Some(renderer);
+    app.content_root = root.path().to_path_buf();
+    let tree = crate::app::ui_images::tests::tree(TREE, Some(SHOT), &[]);
+    app.session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .register_script_trees(vec![tree.clone()], ScopeTier::Mod);
+    app.commit_loading_manifest(
+        [(SHOT.to_string(), "ui/e1m1.png".to_string())].into(),
+        ModLoading {
+            tree: names(&[TREE]),
+        },
+        crate::app::ui_images::ManifestImageRefs::from_manifest(&[tree], &[], &[], &[TREE.into()]),
+    );
+    let registered = |app: &App| app.renderer.as_ref().unwrap().has_ui_image(SHOT);
+
+    app.sync_glyph_art();
+    assert!(
+        !registered(&app),
+        "mod init leaves a loading-only image alone"
+    );
+
+    let show_until_uploaded = |app: &mut App| {
+        app.begin_loading_screen(&entry("Entryway", &[]));
+        assert_eq!(active_tree(app).as_deref(), Some(TREE));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !registered(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the image never uploaded"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.poll_loading_images();
+        }
+    };
+
+    show_until_uploaded(&mut app);
+    app.end_loading_screen();
+    assert!(!registered(&app), "the end of the load releases it");
+
+    show_until_uploaded(&mut app);
+    app.reset_boot_state_after_suspend();
+    assert!(!registered(&app), "suspend releases it");
 }

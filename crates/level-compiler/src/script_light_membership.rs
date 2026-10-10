@@ -9,6 +9,7 @@ use postretro_level_format::light_membership::{
     MapMemberKind,
 };
 
+use crate::buried_lights::BuriedLights;
 use crate::map_data::{
     FalloffModel, LightType, MapEntityRecord, MapKinematicMover, MapLight, MapTriggerVolume,
     animated_light_placeholder,
@@ -38,15 +39,18 @@ pub(crate) struct MembershipInventory {
 /// Build the compiler query table from the parsed map lights. The vec position
 /// is intentionally the only identity sent across the sidecar seam. The
 /// script host removes internal routing fields before exposing snapshots.
-pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable> {
+pub(crate) fn light_table_from_lights(
+    lights: &[MapLight],
+    buried: &BuriedLights,
+) -> Result<LightTable> {
     let lights = lights
         .iter()
         .enumerate()
-        // `_bake_only` lights have no runtime entity. Omitting them keeps the
-        // compiler query's result order and membership faithful to the runtime
-        // query while `index` below retains raw MapData identity for the
-        // sidecar's compiler-facing remap.
-        .filter(|(_, light)| !light.bake_only)
+        // `_bake_only` and buried lights have no runtime entity. Omitting them
+        // keeps the compiler query's result order and membership faithful to
+        // the runtime query while `index` below retains raw MapData identity
+        // for the sidecar's compiler-facing remap.
+        .filter(|(index, light)| !light.bake_only && !buried.is_buried(*index))
         .map(|(index, light)| {
             Ok(LightTableLight {
                 index: u32::try_from(index)
@@ -218,14 +222,24 @@ pub(crate) fn apply_manifest(
     Ok(inventory)
 }
 
-pub(crate) fn log_inventory(inventory: &MembershipInventory, lights: &[MapLight]) {
+/// `buried` lights are skipped: their `_animated 1` reserves nothing, because
+/// the light namespaces leave them out, and they are already warned about.
+pub(crate) fn log_inventory(
+    inventory: &MembershipInventory,
+    lights: &[MapLight],
+    buried: &BuriedLights,
+) {
     for &index in &inventory.derived_static_indices {
         log::info!(
             "[prl-build] light membership: derived animated-bake reservation for static light {index} (tags: {})",
             tags_for_log(&lights[index])
         );
     }
-    for &index in &inventory.flag_only_indices {
+    for &index in inventory
+        .flag_only_indices
+        .iter()
+        .filter(|&&index| !buried.is_buried(index))
+    {
         log::info!(
             "[prl-build] light membership: explicit _animated reservation for static light {index} (tags: {})",
             tags_for_log(&lights[index])
@@ -357,7 +371,8 @@ mod tests {
         let mut lights = vec![light(false)];
         lights[0].animation = Some(animated_light_placeholder(false));
 
-        let table = light_table_from_lights(&lights).expect("light table builds");
+        let table =
+            light_table_from_lights(&lights, &BuriedLights::none()).expect("light table builds");
 
         assert!(
             table.lights[0].component.animation.is_none(),
@@ -430,6 +445,38 @@ mod tests {
     }
 
     #[test]
+    fn log_inventory_omits_explicit_animated_reservation_for_buried_lights() {
+        // The light namespaces leave a buried light out, so its `_animated 1`
+        // reserves nothing; logging a reservation for it would be false.
+        let mut buried_light = light(false);
+        buried_light.is_animated = true;
+        buried_light.animation = Some(animated_light_placeholder(true));
+        let mut open_light = light(false);
+        open_light.is_animated = true;
+        open_light.animation = Some(animated_light_placeholder(true));
+        let mut lights = vec![buried_light, open_light];
+        let inventory = apply_manifest(&mut lights, &[true, true], &manifest(vec![]))
+            .expect("manifest applies");
+        assert_eq!(inventory.flag_only_indices, vec![0, 1]);
+
+        let capture = postretro_test_log_capture::LogCapture::start();
+        log_inventory(
+            &inventory,
+            &lights,
+            &BuriedLights::from_flags(vec![true, false]),
+        );
+
+        capture.assert_not_logged(
+            log::Level::Info,
+            "explicit _animated reservation for static light 0",
+        );
+        capture.assert_logged_once(
+            log::Level::Info,
+            "explicit _animated reservation for static light 1",
+        );
+    }
+
+    #[test]
     fn manifest_rejects_stale_versions_and_invalid_indices() {
         let mut stale = manifest(vec![]);
         stale.version = 0;
@@ -475,7 +522,8 @@ mod tests {
 
     #[test]
     fn light_table_uses_map_indices_and_script_facing_snapshots() {
-        let table = light_table_from_lights(&[light(false)]).expect("table builds");
+        let table =
+            light_table_from_lights(&[light(false)], &BuriedLights::none()).expect("table builds");
         assert_eq!(table.version, LightTable::VERSION);
         assert_eq!(table.lights[0].index, 0);
         assert_eq!(table.lights[0].tags, ["wave"]);
@@ -494,11 +542,41 @@ mod tests {
         let mut runtime_light = light(false);
         runtime_light.tags = vec!["runtime".to_string()];
 
-        let table = light_table_from_lights(&[bake_only, runtime_light]).expect("table builds");
+        let table = light_table_from_lights(&[bake_only, runtime_light], &BuriedLights::none())
+            .expect("table builds");
 
         assert_eq!(table.lights.len(), 1);
         assert_eq!(table.lights[0].index, 1);
         assert_eq!(table.lights[0].tags, ["runtime"]);
+    }
+
+    #[test]
+    fn light_table_omits_buried_lights_but_keeps_raw_source_indices() {
+        // A buried light has no runtime entity; listing it would let a
+        // position- or count-based script pick diverge from the runtime query.
+        let mut open_before = light(false);
+        open_before.tags = vec!["before".to_string()];
+        let mut buried_light = light(false);
+        buried_light.tags = vec!["buried".to_string()];
+        let mut open_after = light(false);
+        open_after.tags = vec!["after".to_string()];
+        let buried = BuriedLights::from_flags(vec![false, true, false]);
+
+        let table = light_table_from_lights(&[open_before, buried_light, open_after], &buried)
+            .expect("table builds");
+
+        let rows = table
+            .lights
+            .iter()
+            .map(|light| (light.index, light.tags.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [
+                (0, vec!["before".to_string()]),
+                (2, vec!["after".to_string()])
+            ]
+        );
     }
 
     /// Parse `map_text` through the real `.map` front end.
@@ -659,7 +737,7 @@ mod tests {
         assert_ne!(members[3].position, [0.0; 3]);
 
         let json = serde_json::to_value(
-            light_table_from_lights(&map.lights)
+            light_table_from_lights(&map.lights, &BuriedLights::none())
                 .expect("table builds")
                 .with_map_members(members),
         )
@@ -694,7 +772,7 @@ mod tests {
             &map.map_entities,
         );
         assert!(members.is_empty());
-        let table = light_table_from_lights(&map.lights)
+        let table = light_table_from_lights(&map.lights, &BuriedLights::none())
             .expect("table builds")
             .with_map_members(members);
         assert_eq!(

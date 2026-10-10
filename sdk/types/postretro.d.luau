@@ -1883,7 +1883,7 @@ export type ProgressReactionDescriptor = {
 --- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
 --- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with
 --- only a non-empty `tag` resolves over every entity carrying it — the form for fog,
---- emitter and animation primitives (`setFogScatter`, `setEmitterRate`,
+--- emitter and animation primitives (`setFogGlow`, `setEmitterRate`,
 --- `setAnimationState`), which have no typed builder. True system reactions
 --- carry neither and enqueue typed engine commands such as `playSound`,
 --- `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the

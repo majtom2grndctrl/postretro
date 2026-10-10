@@ -392,17 +392,34 @@ def emit_reserved_corridor_grid(brushes, x0s, y0s, zf, tex, junction_seed,
     # solid separator above the hallway rather than a thin ceiling merely
     # touching tall-room walls at T-junctions.
     roof1 = zf + PITCH_Z
-    def floor_and_roof(ax0, ay0, ax1, ay1):
+    def has_guide_fin(i, j):
+        """Whether cross-junction (i, j) carries a diagonal guide fin."""
+        return ((i * 11 + j * 7 + junction_seed) % 3 == 0
+                and not all(arena_at(ii, jj)
+                            for ii in (i, i + 1) for jj in (j, j + 1)))
+
+    def floor_and_roof(ax0, ay0, ax1, ay1, finned_junction=False):
         brushes.append(box_brush(ax0, ay0, z0, ax1, ay1, z1, tex, tex, tex))
         brushes.append(box_brush(ax0, ay0, roof0, ax1, ay1, roof1, tex, tex, tex))
         if hallway_lights is None:
             return
-        length = max(ax1 - ax0, ay1 - ay0)
+        # Spots run down the band's long axis and stay centred across its
+        # width. Spacing both axes by the same fraction walked them diagonally
+        # off the centre line and buried some in walls.
+        along_x = (ax1 - ax0) >= (ay1 - ay0)
+        length = (ax1 - ax0) if along_x else (ay1 - ay0)
         count = max(1, math.ceil(length / HALLWAY_SPOT_SPACING))
+        mid_x, mid_y = (ax0 + ax1) / 2, (ay0 + ay1) / 2
         for n in range(count):
             fraction = (n + 0.5) / count
-            px = round(ax0 + (ax1 - ax0) * fraction)
-            py = round(ay0 + (ay1 - ay0) * fraction)
+            px = round(ax0 + (ax1 - ax0) * fraction) if along_x else round(mid_x)
+            py = round(mid_y) if along_x else round(ay0 + (ay1 - ay0) * fraction)
+            if finned_junction:
+                # The fin is a full-height 45-degree slab through the junction
+                # centre. A quarter-band step along x puts the spot about 68 u
+                # from the fin's centre line, clear of its half thickness
+                # either way the fin leans.
+                px += CORRIDOR_BAND // 4
             hallway_lights.append(light_entity(
                 "static", (px, py, roof0 - 24), (255, 244, 214),
                 HALLWAY_SPOT_FALLOFF, HALLWAY_SPOT_INTENSITY, True, None,
@@ -420,7 +437,8 @@ def emit_reserved_corridor_grid(brushes, x0s, y0s, zf, tex, junction_seed,
             if not all(arena_at(ii, jj)
                        for ii in (i, i + 1) for jj in (j, j + 1)):
                 floor_and_roof(x0s[i] + PITCH_XY, y0s[j] + PITCH_XY,
-                               x0s[i + 1], y0s[j + 1])
+                               x0s[i + 1], y0s[j + 1],
+                               finned_junction=has_guide_fin(i, j))
     # East/west bands only fill room columns, avoiding coplanar overlap with
     # north/south bands while retaining connected cross-junction airspace.
     for j in range(ny - 1):
@@ -435,9 +453,7 @@ def emit_reserved_corridor_grid(brushes, x0s, y0s, zf, tex, junction_seed,
     # corridor network.
     for j in range(ny - 1):
         for i in range(nx - 1):
-            if ((i * 11 + j * 7 + junction_seed) % 3 != 0
-                    or all(arena_at(ii, jj)
-                           for ii in (i, i + 1) for jj in (j, j + 1))):
+            if not has_guide_fin(i, j):
                 continue
             cx = (x0s[i] + PITCH_XY + x0s[i + 1]) / 2
             cy = (y0s[j] + PITCH_XY + y0s[j + 1]) / 2
@@ -997,6 +1013,29 @@ CLOSET_D = 384
 CLOSET_WALL_T = 40
 CLOSET_TRIGGER_REACH = 256
 CLOSET_ENEMY_COUNT = 2
+
+
+def move_lights_out_of_closet(lights, cx, front_y, zf, zc):
+    """Move room lights that landed inside a closet pod out to its front.
+
+    Room lights are scattered before closets are chosen, so one can sit in a
+    pod wall (buried in solid: the compiler drops it) or in the sealed pod.
+    Lights are moved after the fact, without drawing from the room RNG, so
+    every other entity in the map stays where it was.
+    """
+    x0, x1 = cx - CLOSET_W // 2, cx + CLOSET_W // 2
+    y0, y1 = front_y, front_y + CLOSET_D
+    for light in lights:
+        for n, line in enumerate(light):
+            if not line.startswith('"origin" '):
+                continue
+            tx, ty, tz = line.split('"')[3].split()
+            px, py, pz = float(tx), float(ty), float(tz)
+            if x0 <= px <= x1 and y0 <= py <= y1 and zf <= pz <= zc:
+                # LIGHT_MARGIN in front of the pod still clears the room's
+                # front wall by the same scatter margin. x and z keep their
+                # source text so the output stays byte-stable.
+                light[n] = f'"origin" "{tx} {y0 - (CLOSET_TRIGGER_REACH - LIGHT_MARGIN)} {tz}"'
 
 
 def monster_closet_entities(idx, cx, front_y, zf, zc):
@@ -1562,6 +1601,8 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
             nclosets, (x0i + x1i) // 2, y0i + CLOSET_TRIGGER_REACH, zf, zc)
         brushes.extend(closet_brushes)
         entities.extend(closet_entities)
+        move_lights_out_of_closet(lights, (x0i + x1i) // 2,
+                                  y0i + CLOSET_TRIGGER_REACH, zf, zc)
         nclosets += 1
 
     # --- Gameplay: lifts in the reserved shafts ----------------------------

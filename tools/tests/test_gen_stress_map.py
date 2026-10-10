@@ -55,6 +55,58 @@ class SpatialLayoutTests(unittest.TestCase):
                 f'"_falloff_range" "{GENERATOR.HALLWAY_SPOT_FALLOFF}"', light,
             )
 
+    def test_hallway_spots_sit_in_open_air_centred_across_their_band(self):
+        # Regression: spots were spaced along both axes of a band at once, so
+        # they walked diagonally off its centre line, and junction spots sat
+        # inside the diagonal guide fin. The compiler drops a light buried in
+        # solid, so every such spot was lost.
+        band = GENERATOR.CORRIDOR_BAND
+        pitch = GENERATOR.LATTICE_PITCH_XY
+        starts = [0, pitch, 2 * pitch]
+        centres = {start + GENERATOR.PITCH_XY + band // 2 for start in starts}
+        fins = 0
+        for seed in range(3):
+            brushes, lights = [], []
+            GENERATOR.emit_reserved_corridor_grid(
+                brushes, starts, starts, 64, "test", seed,
+                hallway_lights=lights)
+            solids = [brush_text_planes(brush) for brush in brushes]
+            # Only the oriented guide fins carry fractional coordinates.
+            fins += sum("." in brush for brush in brushes)
+            for light in lights:
+                point = origin_of(light)
+                for planes in solids:
+                    self.assertFalse(
+                        point_inside_planes(point, planes),
+                        f"seed {seed}: spot {point} is inside a corridor brush",
+                    )
+                x, y, _ = point
+                at_junction = (any(abs(x - c) <= band // 2 for c in centres)
+                               and any(abs(y - c) <= band // 2 for c in centres))
+                if not at_junction:
+                    self.assertTrue(
+                        x in centres or y in centres,
+                        f"seed {seed}: spot {point} is off its band's centre line",
+                    )
+        self.assertGreater(fins, 0, "some seed must exercise a finned junction")
+
+    def test_room_lights_inside_a_closet_move_to_its_front(self):
+        inside_wall = GENERATOR.light_entity(
+            "static", (-236, 400, 552), (255, 255, 255), 1024, 180, True, None)
+        outside = GENERATOR.light_entity(
+            "static", (0, 100, 552), (255, 255, 255), 1024, 180, True, None)
+        GENERATOR.move_lights_out_of_closet([inside_wall, outside], 0, 256, 64, 576)
+        front = 256 - (GENERATOR.CLOSET_TRIGGER_REACH - GENERATOR.LIGHT_MARGIN)
+        self.assertEqual(origin_of(inside_wall), (-236.0, float(front), 552.0))
+        self.assertEqual(origin_of(outside), (0.0, 100.0, 552.0))
+
+    def test_closet_light_move_accepts_non_integer_origins(self):
+        fractional = GENERATOR.light_entity(
+            "static", (-236.5, 400.0, 552.25), (255, 255, 255), 1024, 180, True, None)
+        GENERATOR.move_lights_out_of_closet([fractional], 0, 256, 64, 576)
+        front = 256 - (GENERATOR.CLOSET_TRIGGER_REACH - GENERATOR.LIGHT_MARGIN)
+        self.assertEqual(origin_of(fractional), (-236.5, float(front), 552.25))
+
     def test_ordinary_cells_are_not_merged_across_reserved_bands(self):
         rooms = GENERATOR.tile_layer(2, 2, None, set())
         self.assertEqual(len(set(rooms.values())), 4)
@@ -576,6 +628,30 @@ def cross(a, b):
 
 def dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def brush_text_planes(brush):
+    """The three-point planes of one emitted brush string."""
+    planes = []
+    for line in brush.splitlines():
+        if line.startswith("("):
+            parts = line.replace("(", " ").replace(")", " ").split()
+            nums = [float(v) for v in parts[:9]]
+            planes.append((tuple(nums[0:3]), tuple(nums[3:6]), tuple(nums[6:9])))
+    return planes
+
+
+def point_inside_planes(point, planes):
+    """True when `point` is strictly inside the convex brush `planes`."""
+    corners = [p for plane in planes for p in plane]
+    centre = tuple(sum(c[k] for c in corners) / len(corners) for k in range(3))
+    for a, b, c in planes:
+        normal = cross(sub(b, a), sub(c, a))
+        if dot(normal, sub(centre, a)) > 0:
+            normal = tuple(-v for v in normal)
+        if dot(normal, sub(point, a)) >= 0:
+            return False
+    return True
 
 
 if __name__ == "__main__":

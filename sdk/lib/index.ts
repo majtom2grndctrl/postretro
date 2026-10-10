@@ -51,7 +51,7 @@ export type {
   SetFogEdgeSoftnessStep,
   SetFogFalloffStep,
   SetFogParamsStep,
-  SetFogScatterStep,
+  SetFogGlowStep,
   SetLightAnimationStep,
   MoverStartStep,
   MoverStopStep,

@@ -66,6 +66,14 @@ BSP-leaf limit for the chosen connectivity and props.
 The committed `.map` variants above were generated before this layout revision;
 regenerate a variant when it should adopt the new geometry.
 
+The generator keeps lights out of solid: corridor spots run down the band
+centre line, finned-junction spots step off the guide fin, and room lights
+inside a monster-closet pod move to its front. prl-build drops and warns about
+any light whose origin is inside solid. `stress-warren-hallway-inspection` and
+the `stress-env-volumes` maps were regenerated with this;
+`stress-warren-hallway-inspection-mini` predates the current layout and keeps
+lights inside solid until it is regenerated.
+
 All of these are **off by default**, so the bare `stress-warren.map` stays a
 pure geometry/BVH probe. `--preset warren` turns the whole set on at a
   conservative feature-heavy grid (`6×5×3`, sized so one NFL-field arena plus its frame fits —

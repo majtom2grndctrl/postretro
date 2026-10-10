@@ -121,7 +121,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogScatter`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     kind?: GroupKind;

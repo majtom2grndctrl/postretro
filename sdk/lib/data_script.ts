@@ -115,7 +115,7 @@ export type SetLightAnimationStep = {
  * import directly from `"postretro"` for the common "build a sequence step
  * array" path. */
 export type SetFogDensityStep = import("postretro").SetFogDensityStep;
-export type SetFogScatterStep = import("postretro").SetFogScatterStep;
+export type SetFogGlowStep = import("postretro").SetFogGlowStep;
 export type SetFogEdgeSoftnessStep = import("postretro").SetFogEdgeSoftnessStep;
 export type SetFogFalloffStep = import("postretro").SetFogFalloffStep;
 export type SetFogParamsStep = import("postretro").SetFogParamsStep;
@@ -138,7 +138,7 @@ export type FireStep = import("postretro").FireStep;
 export type SequenceStep =
   | SetLightAnimationStep
   | SetFogDensityStep
-  | SetFogScatterStep
+  | SetFogGlowStep
   | SetFogEdgeSoftnessStep
   | SetFogFalloffStep
   | SetFogParamsStep

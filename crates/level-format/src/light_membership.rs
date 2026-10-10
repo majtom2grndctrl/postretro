@@ -10,7 +10,8 @@
 pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 
 /// Runtime-present map data supplied to `scripts-build` while evaluating a
-/// level data script. `_bake_only` lights are omitted; each surviving
+/// level data script. `_bake_only` lights and buried lights (static lights
+/// whose origin is inside solid) are omitted; each surviving
 /// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
 /// `map_members` carries the runtime-placed movers, trigger volumes and
 /// spawners so build-side member queries answer what runtime answers.

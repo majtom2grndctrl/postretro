@@ -438,9 +438,9 @@ fn planned_stage_contract_pins_order_labels_and_sdf_prediction() {
             .collect::<Vec<_>>(),
         vec![
             (StageId::Parsing, "Parsing"),
-            (StageId::DataScript, "DataScript"),
             (StageId::TextureValidation, "TexValidation"),
             (StageId::Partitioning, "Partitioning"),
+            (StageId::DataScript, "DataScript"),
             (StageId::Visibility, "Visibility"),
             (StageId::Geometry, "Geometry"),
             (StageId::BvhBuild, "BVH Build"),

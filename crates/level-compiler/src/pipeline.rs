@@ -29,6 +29,7 @@ mod finalized_publication;
 pub(crate) mod lightmap_stage;
 mod sdf_stage;
 mod stage_registry;
+use crate::buried_lights::BuriedLights;
 use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_residency_bake,
@@ -695,10 +696,33 @@ fn run_after_parsing(
         true,
     );
 
-    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
-    let animated_baked_lights =
-        light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
-    let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
+    let result = partition::partition(&map_data.brush_volumes)?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Partitioning,
+        stage_start,
+        true,
+    );
+    if args.verbose {
+        partition::log_stats(&result.tree, &result.faces);
+    }
+
+    // Light namespaces form after the BSP so a light buried in solid can be
+    // left out of every one of them (`buried_lights.rs`).
+    let buried_lights = BuriedLights::classify(&result.tree, &map_data.lights);
+    buried_lights.warn(&map_data.lights, &map_data.light_source_labels);
+    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights_excluding(
+        &map_data.lights,
+        &buried_lights,
+    );
+    let animated_baked_lights = light_namespaces::AnimatedBakedLights::from_lights_excluding(
+        &map_data.lights,
+        &buried_lights,
+    );
+    let alpha_lights_ns =
+        light_namespaces::AlphaLightsNs::from_lights_excluding(&map_data.lights, &buried_lights);
     let raw_slot_for_map_light =
         animated_baked_lights.slot_for_source_lights(map_data.lights.len());
     let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(
@@ -714,19 +738,6 @@ fn run_after_parsing(
              lightmap placeholder. Add at least one static baked light so world lightmaps render \
              correctly. The build will continue."
         );
-    }
-
-    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
-    let result = partition::partition(&map_data.brush_volumes)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::Partitioning,
-        stage_start,
-        true,
-    );
-    if args.verbose {
-        partition::log_stats(&result.tree, &result.faces);
     }
 
     // Watertightness diagnostic. Surfaces holes in the static world geometry
@@ -945,7 +956,12 @@ fn run_after_parsing(
         navmesh_section.is_some(),
     );
 
-    let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
+    let static_light_count = map_data
+        .lights
+        .iter()
+        .enumerate()
+        .filter(|(index, light)| !light.is_dynamic && !buried_lights.is_buried(*index))
+        .count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
     let lightmap_config = lightmap_bake::LightmapConfig {

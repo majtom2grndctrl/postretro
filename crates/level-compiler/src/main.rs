@@ -11,6 +11,7 @@ pub mod bake_control;
 pub mod bc5;
 pub mod bc6h;
 pub mod billboard_direct_scatter_bake;
+pub mod buried_lights;
 pub mod bvh_build;
 pub mod cache;
 pub mod cell_draw_index_bake;

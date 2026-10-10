@@ -1,63 +1,111 @@
 # E16 — Persistent Firing Modes
 
-Brief · compact · draft · Epic 16 · reads: `context/lib/entity_model.md` §2, §5, `context/lib/scripting.md` §5, §11–12, `context/lib/input.md` §2, §5, `context/lib/networking.md` §Combat authority · grounded at `a6074007e` on `codex/weapon-activations` · evidence: `research.md`
+Brief · compact · draft · Epic 16 · reads: `context/lib/entity_model.md` §2, `context/lib/scripting.md` §5, §11–12, `context/lib/input.md` §2, `context/lib/networking.md` §Combat authority, §Host input command queue · read at `ecc6adc` · evidence: `research.md`
 
-**Prerequisite:** [weapon activations, secondary fire, and charge — PR #549](https://github.com/majtom2grndctrl/postretro/pull/549). This implementation is unmerged at drafting time. Main lacks it. Build this brief after that prerequisite lands; re-ground the seams against its merged form.
+Builds after `context/plans/in-progress/E16--player-events` lands: the selected mode is one of its per-player owner-private engine values. Builds on `context/plans/done/E16--weapon-activations`.
 
 ## Problem
 
-An author can describe a single shot, a timed burst, held repetition, or a charged shot with the activation language. Primary and secondary still resolve to fixed actions. Secondary cannot select a configuration that persists and changes later primary activations. A weapon therefore cannot offer an authored semi/automatic/burst selector without adding another engine feature or pretending an author-time script runs during play.
+A requested capability, anticipated by the owner: no modder has hit it yet. Activations let an author describe single shots, bursts, held repetition and charge, but primary and secondary are fixed per weapon. A player cannot switch a live weapon between authored configurations — semi/burst/auto, or a weapon mod that changes what alt-fire does. Game designers want different blends: firing modes only, alt-fire only, later ADS only, or a mix. When done, a designer declares a weapon's modes, chooses how the player changes them, and each activation runs the selected mode's programs on host and owner prediction alike.
 
-## Outcome
+## Decisions
 
-Secondary can select or cycle author-defined firing modes. Primary starts the selected mode's activation program. Selection belongs to the weapon instance, survives ordinary wielding changes, and stays consistent between host authority and the owner's prediction in friends-only PvE. Authors name and present the modes; Rust executes the existing bounded activation language.
+- **Mechanism, not policy.** The engine names no modes. Modes are authored descriptor data, validated at install in TypeScript and Luau; Rust runs the existing bounded activation language. No burst opcode, gameplay callback, state-store expression or runtime VM (`scripting.md` §1, `plans/done/E16--weapon-activations`). The selection rules below are engine policy on purpose: selection is predicted in-tick and ordered against starts, which deferred reactions cannot do (`scripting.md` §12).
+- **A mode overrides primary, secondary, or both.** An omitted lane falls back to the weapon's own action, so `primary` stays required and descriptors without modes keep current behavior. A mode's secondary may be an activation or a selector. Combat bases, resource, reload, placement and bloom stay weapon-wide; existing shot scales cover per-mode tuning. Every mode spends the weapon's one resource (`entity_model.md` §Weapon resources).
+- **Input is separate from what it does.** The engine adds one gameplay command, `fire_mode_cycle`, relevant when any weapon declares two or more modes. Independently, alt-fire routes per weapon or mode to a secondary activation, `cycle`, or `select(id)`. Alt-fire stays relevant when any route uses it, which amends the relevance rule in `input.md` §2. The route set is closed and grows additively; ADS adds an `aim` route and its own command later. This lets a designer ship modes on a dedicated key with alt-fire free, modes on alt-fire, or a weapon mod whose alt-fire differs per mode.
+- **One fresh press, one selection.** Holding never repeats. Cycle advances in declaration order and wraps. A target equal to the current mode is a no-op: no cue, no delay. A selector press consumes the same command's fresh primary and secondary starts, as secondary already wins simultaneous starts (`entity_model.md` §Weapon activations).
+- **Applies only when idle; a busy press waits.** While charging, executing, reloading or in an equip transition, or on a fresh reload press's tick, a selector press sets the instance's one pending target instead. A cycle press advances from the pending target, so two presses step twice; `select` replaces it; a target equal to the current mode clears it. The pending target applies on the first tick the weapon is idle, before that tick's start gate. This diverges from "blocked presses are consumed rather than queued" (`entity_model.md` §Weapon activations) on purpose: a pending selection changes configuration and can never fire a late shot. Recovery is not busy: selection during recovery, with an empty magazine or cell, or while overheated applies at once.
+- **Pending is transient.** Switching away, drop, death, input suspension, disconnect, level change, despawn, hot replacement and restore discard a pending target and keep the applied mode. A cancel in the same command as a selector press wins and discards it.
+- **Authored switch delay.** A weapon-wide flat stat `modeSwitchMs`, default 0, beside `raiseMs`/`lowerMs`. An applied change raises the shared recovery to at least that value, so it overlaps recovery already owed and the existing predicted cooldown and host correction carry it; selection never clears or refunds recovery. As a flat stat it is a target for the future stat-modifier seam (`effective()`, roadmap augments) like any other.
+- **Each activation captures its resolved action.** A start freezes the action it resolved — a per-weapon action identity built at install — not the mode ID, so modes sharing a lane's action never disagree. Charge release, later due shots, correction and delayed impacts use the captured action. A later selection or correction never retargets a live execution. Only a correction proving the owner started a different action cancels remaining predicted work; it never replays damage or resurrects a projectile. A later ADS aim layer or AI choice resolves into the same identity.
+- **Selection belongs to the weapon instance.** Not to the player, archetype or slot (`research/weapon-model.md` §2). Holster, drop, reacquire by any player and level carry preserve the applied mode; despawn destroys it; a fresh spawn starts at the declared default. Death, suspension and disconnect cancel transient work and leave a retained instance's selection.
+- **Restore and carry.** Serialization keeps the stable mode ID; restore validates it, rebuilds caches and never resumes a serialized execution. Hot replacement cancels execution and keeps a still-valid ID. An unknown or missing ID warns once and falls back to the default. The carried loadout gains each slot's mode ID, amending "carried loadout keeps magazines only" (`entity_model.md` §Weapon resources); new or missing weapons use their default.
+- **Host-authoritative, owner-predicted, in-band.** The owner predicts an admitted press on a real fixed command. The press rides the input command as a press-lane edge, like reload, use and drop: observed before trim, delivered once, in the same client-tick order as activation starts (`networking.md` §Host input command queue). A Control declaration is rejected: switches' known gap would let a following shot reach the host before the selection. Host and owner each hold the pending target and apply it on the same idle tick. The host's applied mode or refusal rides the reliable owner-outcome stream. Duplicate, stale or reordered requests cannot cycle twice, rewind a newer selection, or reach a replacement weapon or new owner. Mode definitions reach the client only through host tuning; a HIT declaration cannot choose shot tuning.
+- **The selected mode is an owner-private per-player engine value.** It joins E16--player-events' catalog through its one pawn-to-value lookup. That one value repairs the owner on admission, resume and client re-materialization; makes the mode readable per player on the host and in `players().on`; and backs the HUD. The owner's HUD shows its prediction immediately, including a pending target, and converges silently on correction. Label and icon are local facts derived from the ID and installed tuning. HUD branches on the string ID with `stateEquals`.
+- **Conditions read modes through an install-resolved number.** The condition algebra is number and bool only (`plans/done/M14--behavior-ir-substrate`), so `fireMode.is(id)` compiles at install to a numeric comparison against a companion value. Every mode ID across installed descriptors is interned game-wide, never per-weapon position, so `is("burst")` means the active weapon's mode is named `burst` on any weapon. An ID no installed weapon declares fails install, naming the condition. The number is never authored, persisted or carried; the string ID stays the identity. In co-op the interning follows host tuning, as relevance does.
+- **One positioned cue per applied change.** It plays when the mode actually changes, not when a pending press is taken, at the pawn emitter, locally and to observers through a new observer weapon cue kind; acknowledgement never replays it. Refusal, no-op and a discarded pending target stay silent. Fire and impact cues keep their captured mode's sounds.
+- **Bounds.** At most 16 modes per weapon. IDs are unique, nonempty ASCII of at most 64 bytes in `[A-Za-z0-9_.:-]`, matching existing content identifiers. Default and `select` targets must exist. Each mode's programs obey existing activation ceilings. Request retention is finite with a safe refusal policy; render-only frames advance no selection.
+- **Non-goals.**
+  - AI-chosen modes. AI-wielded modal weapons fire the declared default. Enemy mode choice, with a statechart windup matching `modeSwitchMs` (`entity_model.md` §7c), is a follow-up AI brief.
+  - ADS itself. This brief reserves the route; view, FOV and accuracy belong to the roadmap ADS item.
+  - A stat-modifier or progression system. `modeSwitchMs` is a flat stat; augments own modification, and own how augments compose with modes: modes vary programs and shot scales, augments weapon-wide bases.
+  - Mode availability or unlocks. Additive later: cycle skips an unavailable mode, `select` refuses it.
+  - Per-mode resources, reload, placement or damage bases; per-mode commands or `select` on a dedicated binding; hold-to-cycle; more than one pending target.
+  - A disk save-game. Component serde and carried loadouts are covered; general save/load stays an engine non-goal.
+  - A reference weapon overhaul or new HUD design. One fixture weapon proves the feature.
 
-## Scope and constraints
+### Scripting surface
 
-- Opt-in mode set with a declared default and ordered, stable mode IDs. Each mode supplies a primary activation and optional authored display label, icon, and selection sound. Modes vary trigger, charge, sequence, scales, and action presentation through the existing activation vocabulary. Weapon-wide combat bases, resource kind, reload tuning, and placement remain shared.
-- Secondary has one role per descriptor: ordinary firing action, cycle through declared modes, or select one named mode. A selector and a firing secondary are mutually exclusive. A descriptor without modes retains its current primary/secondary behavior.
-- All declarations, references, and bounds validate at install in TypeScript and Luau. The VM drops after authoring. No gameplay callback, arbitrary state-store expression, new burst opcode, or unbounded program is introduced.
-- One component-owned selection per live weapon. No global, per-player, per-archetype, or inventory-slot selector. Resource balances, bloom, reload, and recovery are never cloned per mode.
-- Host-selected mode definitions reach connected prediction through host tuning. Clients cannot use differing local combat definitions as a fallback. Mode selection cannot let a HIT declaration choose shot tuning.
+```ts
+import { activation, defineEntity, fireMode } from "postretro";
 
-## Proposed behavior for review
+export const selectorRifle = defineEntity({
+  canonicalName: "selector_rifle",
+  components: {
+    weapon: {
+      // ...existing combat, resource and placement fields
+      primary: { trigger: "press", recoveryMs: 120, steps: [activation.shot()] },
+      secondary: fireMode.cycle(),          // or fireMode.select("auto"), or an activation
+      modeSwitchMs: 250,
+      sounds: { modeSelect: "weapons/selector_click" },
+      modes: {
+        default: "semi",
+        list: [
+          { id: "semi", label: "SEMI", icon: "ui/modes/semi.png" },
+          { id: "burst", label: "BURST", primary: { trigger: "press", recoveryMs: 400,
+              steps: [activation.shot(), activation.wait(60), activation.shot(), activation.wait(60), activation.shot()] } },
+          { id: "auto", label: "AUTO", primary: { trigger: "hold", recoveryMs: 90, steps: [activation.shot()] } },
+          // Alt-fire launches in this mode; `fire_mode_cycle` still leaves it.
+          { id: "launcher", label: "GL", secondary: { trigger: "press", recoveryMs: 900, steps: [activation.shot()] } },
+        ],
+      },
+    },
+  },
+});
+```
 
-These are the brief's default semantics, not existing APIs.
-
-1. **One press, one selection.** A secondary selector uses a fresh press only. Holding it never cycles repeatedly. Cycling advances in declaration order and wraps. Selecting the current ID is an accepted no-op with no selection cue. Secondary wins simultaneous fresh primary/secondary starts; that primary press is consumed.
-2. **No interruption or queue.** A selector is accepted only while the active weapon is idle and no equip transition, reload, or fresh reload press owns the tick. A press while charging, executing, reloading, or switching is consumed and rejected. Cancellation wins over selection in the same command. Rejected presses never become delayed selections.
-3. **Shared recovery remains owed.** An idle weapon may change mode during recovery, with an empty magazine/cell, or while overheated. Selection spends nothing, fires nothing, and neither clears nor adds recovery. The next primary activation must pass the ordinary shared gate. A fresh primary press blocked by recovery remains consumed; held repetition follows the selected mode's trigger.
-4. **Each activation captures its mode.** Starting primary freezes the mode ID and installed action/program for that activation. Charge release, later due shots, predicted shot correction, and delayed impacts use that captured identity. A later authoritative selection correction cannot substitute another mode's program halfway through execution. A correction proving the prediction used the wrong mode cancels remaining predicted work and corrects future starts; it never replays damage or resurrects a projectile.
-5. **Lifecycle follows the instance.** Holster/re-equip and successful drop/reacquire preserve selection, including acquisition by another player. Existing cancellation stops future shots and retains paid resources/recovery. Despawn destroys selection; a fresh spawn starts at the declared default. Death, input suspension, and disconnect cancel transient work without changing a retained instance's selection.
-6. **Restore is explicit.** Component serialization retains the stable selected ID. Restore validates it against installed modes, rebuilds executable caches, and cancels transient charge/execution; it cannot resume a serialized stale shot. In-memory speculative checkpoint/restore also restores selection and captured activation identity together with existing timing/resource state. Same-weapon carried loadouts preserve the ID across level changes; new/missing weapons use their defaults. Hot replacement cancels execution and preserves a still-valid ID; missing or unknown restored IDs warn once and fall back to the declared default. Old data without selection uses the default.
-7. **Selection is authoritative and predicted.** The owner predicts an admitted selector press on a real fixed command; the host validates the same instance, lifecycle, and ordering rules. Reliable acknowledgement/correction associates the request and selected ID with the bound weapon instance and content/session lifetime. Duplicate, stale, reordered, or pre-drop packets cannot cycle twice, rewind newer selection, or affect a replacement weapon or new owner. Admission/resume supplies authoritative selection for occupied weapons. Synthetic held/neutral commands create no selection.
-8. **Presentation is observable.** Readonly local HUD facts expose the active weapon's selected ID and authored display data on every role, with an empty/no-mode value when absent. The owner sees predicted selection immediately and converges after correction. An actual accepted change emits the authored selection cue once at the weapon's emitter; acknowledgement does not play it again. Rejection/no-op plays none. A correction updates the HUD silently. Other peers hear accepted changes through the existing observer presentation route. Shot/impact sounds continue to follow their captured mode action.
-9. **Work is bounded.** At most 16 modes per descriptor. IDs are unique, nonempty ASCII strings of at most 64 bytes, using only `[A-Za-z0-9_.:-]`, matching existing content identifiers; the declared default and selector targets must exist. Existing per-program step, shot, duration, and expression ceilings apply to every mode. Request/correction history has a finite capacity and expiry with a safe refusal/resynchronization policy; render-only frames advance no selector or activation.
+Luau mirrors it with `Postretro.fireMode.cycle()` and the same table shape. HUD reads `player.weapon.mode`, `player.weapon.modeLabel` and `player.weapon.modeIcon`.
 
 ## Acceptance
 
-- [ ] **AC1 — Authoring and compatibility.** Equivalent TS/Luau fixtures define semi, automatic, three-shot burst, and charged modes using existing activation builders. Invalid defaults/targets, duplicate or invalid IDs, excessive mode count, conflicting secondary roles, and invalid mode programs fail with field paths. Existing descriptors and their activation tests retain behavior without migration.
-- [ ] **AC2 — Selection.** Secondary presses cycle and wrap or select the authored target. A held secondary produces one change; a no-op produces no cue. Simultaneous primary/secondary presses select once and produce no primary shot. A press/release pair captured between fixed ticks survives until the next real command.
-- [ ] **AC3 — Gates and resources.** Busy/switching/reload/fresh-reload/cancel cases follow the rules above with no queued selection. Idle recovery, depleted resources, and heat lockout permit selection while preserving all resource/recovery/bloom values. Switching modes never bypasses a subsequent primary gate or refunds a shot.
-- [ ] **AC4 — Captured execution.** Burst and charge executions retain the selected program, charge rules, per-shot scales, and presentation through delayed outcomes and impacts. A mismatched authoritative mode cancels remaining prediction without changing another activation, replaying damage, or resurrecting a projectile.
-- [ ] **AC5 — Instance lifetime and restore.** Two instances of one archetype select independently. Holster, successful drop to another owner, death/suspension/disconnect on retained instances, carried level transition, hot replacement, component round-trip, and speculative checkpoint/restore obey the stated policy. Despawn/reuse cannot inherit selection or old requests. Missing/unknown restored IDs default safely; serialized executions never resume.
-- [ ] **AC6 — Co-op convergence.** Host/client tests cover rapid select→fire, multiple changes before acknowledgement, rejection, duplicate/stale/out-of-order outcomes, lost state repaired on admission/resume, differing local content, tick wrap, drop/reacquire, and instance/session replacement. Both agree on the selected mode and host-authorized shot program; old packets cannot rewind a newer selection. Conditioned-link play-test confirms predictable selection and firing for host and client.
-- [ ] **AC7 — Presentation.** Authored HUD label/icon follows the selected mode on single-player, host, and connected owner; switching/absence/correction never shows another instance's mode. Accepted changes play one positioned cue locally and to observers, with no acknowledgement duplicate. Rejected/no-op changes stay silent. Fire/impact cues retain the originating mode.
-- [ ] **AC8 — Bounds and delivery.** Boundary-size fixtures prove finite descriptor/program work and request retention. Zero-tick render frames change no simulation state. Focused lifecycle/network tests and required project preflight pass. SDK types, author docs, and surviving context contracts ship with the feature; author-doc commands work from an SDK bundle. No new `unsafe` or GPU ownership change.
+### Automated
+- [ ] **AC1 — Authoring.** The Scripting surface example installs as a TS fixture with an equivalent Luau fixture. Invalid default or `select` target, duplicate or invalid ID, excess mode count, invalid mode program and invalid `modeSwitchMs` fail with field paths. Existing descriptors and activation tests keep behavior unchanged.
+- [ ] **AC2 — Input composition.** `fire_mode_cycle` is bound and listed only when a weapon declares two or more modes. Alt-fire is relevant when any route uses it and unbound when none does. Cycle on the command and on alt-fire wraps in order; `select` reaches its target. A held selector changes once; a no-op plays no cue and adds no delay. A selector press with a fresh primary on one tick selects once and fires nothing. A press/release pair between fixed ticks survives to the next real command.
+- [ ] **AC3 — Gates, pending and delay.** A press during charge, execution, reload, equip transition or a fresh-reload tick changes nothing until the first idle tick, then applies once, before that tick's start gate; the interrupted execution's remaining shots keep the old mode. Two cycle presses while busy step twice; `select` replaces the pending target; a target equal to the current mode clears it; a same-command cancel discards it. Switch-away, drop, death and suspension discard it with no change and no cue. Selection during recovery, depletion and lockout applies at once and preserves resources and bloom. With `modeSwitchMs` 0 the next start obeys only existing recovery. With a positive value, recovery becomes at least that value and is never shortened. Primary and secondary both obey it.
+- [ ] **AC4 — Captured execution.** Burst and charge started in one mode keep its program, scales and sounds through delayed outcomes after a selection change. A mode overriding only secondary leaves primary on the weapon action. A mismatched authoritative mode cancels remaining prediction without replaying damage or resurrecting a projectile.
+- [ ] **AC5 — Instance lifetime.** Two instances of one archetype select independently. Holster, drop to another player, death/suspension/disconnect on retained instances (applied mode kept, pending discarded), carried level transition, hot replacement and component round-trip follow the stated policy. Despawn and reuse inherit nothing. Unknown or missing IDs default with one warning; serialized executions never resume.
+- [ ] **AC6 — Co-op convergence.** Host/client tests cover rapid select→fire, a press during a burst applied on the same idle tick on both, several changes before acknowledgement, rejection, duplicate/stale/reordered requests, admission and resume repair, client re-materialization after reacquire, differing local content, tick wrap and session replacement. Both sides agree on mode and host-authorized program; old requests never rewind a newer selection.
+- [ ] **AC7 — Per-player value and presentation.** On the host, the selected mode reads per player. A `players().on(becomes(fireMode.is("burst")))` event fires once for the changing player only, on two different weapons declaring `burst` at different positions; an undeclared ID fails install. HUD mode, label and icon follow the active weapon on single-player, host and connected owner, never another instance's. One applied change plays one positioned cue locally and to observers, at apply time; none on a pending press, acknowledgement, refusal or discard. The HUD shows a pending target until it applies or is discarded.
+- [ ] **AC8 — Bounds and delivery.** Boundary-size fixtures prove finite descriptor work and request retention. Render-only frames change no simulation state. SDK types, author docs and context contracts ship; author-doc commands run from an SDK bundle.
 
-## Non-goals
+### Manual
+- [ ] Conditioned-link co-op playtest: host and client switch semi/burst/auto and the launcher mode under load; selection feels immediate, firing matches the shown mode, and observers hear the cue.
 
-- Engine-named semi/auto/burst modes, new firing opcodes, runtime VM callbacks, or arbitrary mode-switch reactions.
-- Per-mode resource pools, reload styles, geometry/resolution changes, damage bases, placement, or inventory replacement. Existing shot scales cover permitted tuning variation.
-- Selection during an active execution, queued changes, timed selector animations, hold-to-cycle, or a new input binding/rebinding system.
-- Full weapon rollback, new ammo/heat/cell prediction, competitive PvP, server rewind, or remote prediction.
-- A disk save-game system or persistence of weapon selection in player settings/state-store files. Existing component and carried-loadout seams are covered; general entity save/load remains an engine non-goal.
-- A reference weapon balance overhaul or a new HUD design. One authored fixture/demo is enough to prove the selector and presentation.
+## Path
 
-## Implementation decisions
+- Seams are in `research.md`. The reload/use/drop press lane (`PressEdges`, `PressGate`) is the intake precedent; `ActivationOutcome` is the acknowledgement precedent. The switch lane's client rollback chain (`PendingSwitchDeclaration`) is a precedent for several unacknowledged changes.
+- The cursor stores a lane, not a program (`ActivationCursor`); capture must bind the resolved action at start, or a change retargets live work. Activation shot keys (pawn, tick, lane, ordinal) carry no action; host ordinal validation must use the captured action.
+- Recovery precedent: `WEAPON_COOLDOWN_SLOT` and `reconcile_client_weapon_cooldown_from_slot_table` already predict and correct cooldown.
+- Rivals rejected. Secondary as an exclusive selector role: takes alt-fire from ADS, dual-wield and deployables, and cannot express a mode that changes alt-fire. Mode policy in script (a settable per-instance mode driven by reactions): reactions run at the frame-end drain without prediction. Selection as a Control declaration: see Decisions.
+- First slice: the descriptor plus a single-player cycle that captures mode at start. It falsifies the capture seam before any netcode.
+- Split before extending `entities/src/components/weapon.rs`, `foundation/src/data_descriptors/types/combat.rs` and `netcode/src/client.rs`, behavior-preserving, own commit.
+- Retire the unused `FireMode` enum in `combat.rs` and its test helpers.
 
-Build-time decisions: exact descriptor/builder/HUD names, closed selector data shape, Rust ownership layout, and wire transport/encoding. Pin spelling and identity mapping across serde, TS/Luau, tuning, outcomes, and HUD before code. Stable IDs cross those boundaries; table positions are not saved identity. Change protocol/tuning/schema versions where their contracts change. This brief prescribes correlation and behavior, not packet field order.
+## Open questions
 
-Existing entry seams are listed in `research.md`. Selection must join authoritative execution, connected prediction, component restore, carried loadouts, and presentation together. This is a bounded feature across several subsystems, not an assumed small patch. Before extending large modules, split the affected responsibilities along their existing seams; keep those refactors behavior-preserving and directly before feature edits.
+- Engine default bindings for `fire_mode_cycle`, keyboard and gamepad, conflict-free with existing defaults — **delegated**
+- Exact HUD slot names, observer cue kind spelling, wire/tuning/schema version bumps — **delegated**
 
-**Owner review:** confirm idle-only selection, selection during recovery, and preservation across drop/level carry. The defaults above fully define the draft until review changes them. No implementation task breakdown belongs in this brief.
+## Boundary inventory
+
+| Name | Rust | Wire / tuning | TS | Luau |
+|---|---|---|---|---|
+| mode set | descriptor modes on `WeaponDescriptor` | host tuning payload (epoch bump) | `modes: { default, list }` | same table |
+| selector route | closed secondary variant | host tuning | `fireMode.cycle()`, `fireMode.select(id)` | `Postretro.fireMode.*` |
+| switch delay | flat weapon stat | host tuning | `modeSwitchMs` | same |
+| selection request | host-applied, client-tick ordered | input-command press edge; outcome on owner-outcome stream (wire bump) | — | — |
+| selected mode | owner-private per-player engine value | owner-private state slot | `player.weapon.mode` readonly | same |
+| mode condition | interned game-wide numeric companion; never persisted | follows host tuning | `fireMode.is(id)` → `BoolRef` | `Postretro.fireMode.is(id)` |
+| mode label / icon | local derived facts | none | `player.weapon.modeLabel`, `modeIcon` | same |
+| select cue | observer weapon cue kind | reliable observer cue (wire bump) | `sounds.modeSelect` | same |
+| carried mode | `CarriedState` per-slot ID | none (host-local) | — | — |

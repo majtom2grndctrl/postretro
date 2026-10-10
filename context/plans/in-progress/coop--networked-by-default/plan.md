@@ -31,6 +31,8 @@ read at: bd94e4e3f (source unchanged from fe1881a35 / research 221fdaf4a)
 13. AC 13's pending budget is deliberately not a total snapshot cap. Measure the full encoded envelope after state/faction records as well as the budget subtotal. Renet admits unreliable messages before fragmenting; an envelope larger than remaining tick allowance is dropped whole.
 14. Teardown currently caches original loadout IDs in `SlotPawns`; that cache misses pickups and can delete dropped/reacquired weapons after the pawn dies. Implement the existing current-owned auxiliary lifecycle at destruction, then remove the stale cache authority. Individual item disappearance retains existing inventory selection normalization.
 
+- Execution sequencing: P4’s behavior-preserving split is independent under original Task 1; it can run after P1 while P2 test-only work touches other files. Its dependency is P1 rather than P2; it still commits separately and P6 waits for P4/P5. No Decision or Acceptance changes.
+
 ## Delegated answers
 
 - Initial join budget: retain 16 KiB pending-baseline budget. Real-payload fixture measurement may tune this delegated constant; measure transport envelope too, never weaken the workload to make it fit.
@@ -103,9 +105,9 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 |---|---|---|---|---|
 | P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | complete |
 | P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | in progress |
-| P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | pending |
-| P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P2 | pending |
-| P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | pending |
+| P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | complete |
+| P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P1 | in progress |
+| P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | in progress |
 | P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | pending |
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | pending |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
@@ -126,6 +128,9 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 
 - P1/P2 integration focused checks: `cargo test -p postretro-entities --lib inventory_ownership` (4 passed); `cargo test -p postretro-sim -p postretro-ai -p postretro-physics --lib held_world_participation` (sim 6, AI 3, physics 2 passed); `cargo test -p postretro-netcode --lib enemy_replication_harness_test` (17 passed, including actual client HIT declaration, installed source-addressed XP policy and next-snapshot dummy tombstone, retained-health pickup/drop/fresh identity and held DefaultWeapon).
 - Additional focused checks: netcode `descriptor_class::tests` (5 passed), `replication::tests` (11 passed), `held_descriptor` (2 passed: ready/post-FIRE pending HIT before sweep and current-slot cleanup), `lifecycle::tests` (11 passed); sim `scripting::builtins::host_replicated::tests` (10 passed), `authored_loadout_strips_world_item_components_from_held_wieldable` (1 passed), `held_descriptor_lifecycle` (1 passed). Application `cargo test -p postretro --features dev-tools --bin postretro suppressed_descriptor_models_install_hit_zones_once` passed (1 test): the real model parses/uploads once through the injected CPU install seam and retains precise hit zones on both host and suppressed client. P1 complete. P2 production consumers passed their first focused checks; real-touch/refresh/reconstruction extensions remain in progress.
+
+
+- P3 complete: `cargo test -p postretro-sim --lib real_dummy_`: 2 passed, 0 failed. Actual glTF torso capsule and independent settled splash_direct player eye ray both hit local and mesh-only display copies, with entity impact contacts and real zone tags. Pins use authored map origins/floor/signed gravity, public IdTech2 scale and inspected compiler axis conversion, actual dev pistol placement and eye height. The initial eye fixture incorrectly used positive gravity; corrected to map -9.81 before the successful rerun. No engine geometry defect reproduced, so no production aiming change.
 
 ### P1 and P2 boundaries
 

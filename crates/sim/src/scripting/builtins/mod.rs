@@ -15,6 +15,8 @@ pub mod entity_spawner;
 pub mod host_replicated;
 pub mod net_descriptor;
 pub(crate) mod prop_mesh;
+#[cfg(test)]
+mod real_dummy_hit_tests;
 pub(crate) mod wieldable_inventory;
 
 // Shared descriptor/placement builders used by both `data_archetype`'s own

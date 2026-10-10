@@ -158,10 +158,10 @@ export type SetFogDensityStep = {
   args: { density: number },
 }
 
-export type SetFogScatterStep = {
+export type SetFogGlowStep = {
   id: number,
-  primitive: "setFogScatter",
-  args: { scatter: number },
+  primitive: "setFogGlow",
+  args: { glow: number },
 }
 
 export type SetFogEdgeSoftnessStep = {
@@ -179,7 +179,7 @@ export type SetFogFalloffStep = {
 export type SetFogParamsStep = {
   id: number,
   primitive: "setFogParams",
-  args: { density: number?, scatter: number?, edgeSoftness: number?, falloff: number? },
+  args: { density: number?, glow: number?, edgeSoftness: number?, falloff: number? },
 }
 
 export type MoverStartStep = {
@@ -260,7 +260,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

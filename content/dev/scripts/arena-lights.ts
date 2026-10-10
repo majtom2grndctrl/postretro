@@ -143,7 +143,7 @@ export function setupLevel(_ctx: unknown) {
   }
 
   // Fog demo: both fog entity types in the map carry the "pulse_fog" tag,
-  // so the tag-targeted scatter primitive and the per-id fog.pulse sequence
+  // so the tag-targeted glow primitive and the per-id fog.pulse sequence
   // both demonstrate cross-subtype dispatch (fog_volume + fog_lamp hit together).
   const fogs = getMapEntities("fog", { tag: "pulse_fog" });
   if (fogs.length > 0) {
@@ -151,9 +151,9 @@ export function setupLevel(_ctx: unknown) {
     // "pulse_fog" volume regardless of entity subtype.
     reactions.push(
       defineReaction("levelLoad", {
-        primitive: "setFogScatter",
+        primitive: "setFogGlow",
         tag: "pulse_fog",
-        args: { scatter: 0.4 },
+        args: { glow: 0.4 },
       }),
     );
 

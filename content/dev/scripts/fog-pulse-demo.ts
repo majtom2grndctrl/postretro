@@ -7,7 +7,7 @@
 //    matching fog volume and applies the change in one batch. Use this
 //    when every tagged volume should receive the same value at once
 //    (one-shot scene tweak, no per-step animation). Here, every
-//    `pulse_fog` volume's `scatter` is set to `0.4` on `levelLoad` in a
+//    `pulse_fog` volume's `glow` is set to `0.4` on `levelLoad` in a
 //    single dispatch — no per-volume sequence, no per-volume reaction.
 //
 // 2. `Sequence` (per-id steps). The `FogVolumeHandle.pulse` capability
@@ -39,9 +39,9 @@ export function setupLevel(_ctx: unknown) {
     // primitive shape is the API.
     reactions.push(
       defineReaction("levelLoad", {
-        primitive: "setFogScatter",
+        primitive: "setFogGlow",
         tag: "pulse_fog",
-        args: { scatter: 0.4 },
+        args: { glow: 0.4 },
       }),
     );
 

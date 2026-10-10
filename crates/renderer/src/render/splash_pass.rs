@@ -44,9 +44,15 @@ const SPLASH_CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: super::SPLASH_CLEAR_COLOR.a,
 };
 
-/// Fraction of the window width the logo spans: the minor golden section,
-/// `1 - 1/φ`. The logo keeps its source aspect ratio and is centered.
-const LOGO_WIDTH_FRACTION: f32 = 0.381_966;
+/// Fraction of the reference frame's width the logo spans. The logo keeps its
+/// source aspect ratio and is centered.
+const LOGO_WIDTH_FRACTION: f32 = 0.5;
+
+/// Aspect of the reference frame the logo is sized against: the largest 16:9
+/// frame that fits the window. A 16:9 window gets exactly `LOGO_WIDTH_FRACTION`
+/// of its width; a wider window keeps the logo at its 16:9 size for that
+/// height instead of growing it; a narrower one sizes by its own width.
+const REFERENCE_FRAME_ASPECT: f32 = 16.0 / 9.0;
 
 /// Cap on the logo's height as a fraction of the window height, so a tall logo
 /// on a short window still sits inside a margin. The committed wide banner
@@ -325,8 +331,9 @@ impl BootSplashPass {
 }
 
 /// Aspect-preserving device-pixel rect `[x, y, w, h]` for the logo, centered in
-/// the `viewport`: `LOGO_WIDTH_FRACTION` of the window width, unless that would
-/// exceed `LOGO_MAX_HEIGHT_FRACTION` of its height. Pure math — no GPU — so it
+/// the `viewport`: `LOGO_WIDTH_FRACTION` of the fitted 16:9 reference frame's
+/// width, unless that would exceed `LOGO_MAX_HEIGHT_FRACTION` of the window
+/// height. Pure math — no GPU — so it
 /// is unit-tested without a device. A degenerate viewport or source (zero on any
 /// axis) yields a zero-size rect, which the draw renders as nothing.
 fn logo_rect(src_dims: [u32; 2], viewport: [u32; 2]) -> [f32; 4] {
@@ -336,8 +343,10 @@ fn logo_rect(src_dims: [u32; 2], viewport: [u32; 2]) -> [f32; 4] {
         return [0.0, 0.0, 0.0, 0.0];
     }
 
-    // Size by width, then let the height cap bind for a tall source.
-    let max_w = vw * LOGO_WIDTH_FRACTION;
+    // Size by the reference frame's width, then let the height cap bind for a
+    // tall source.
+    let frame_w = vw.min(vh * REFERENCE_FRAME_ASPECT);
+    let max_w = frame_w * LOGO_WIDTH_FRACTION;
     let max_h = vh * LOGO_MAX_HEIGHT_FRACTION;
     let scale = (max_w / sw).min(max_h / sh);
     let w = sw * scale;
@@ -363,7 +372,7 @@ mod tests {
         // Width capped at the fraction of the window width.
         assert!(
             (w - 1280.0 * LOGO_WIDTH_FRACTION).abs() < EPS,
-            "wide logo spans the golden-section width, got w={w}",
+            "wide logo spans half a 16:9 window, got w={w}",
         );
         // Height derives from the source aspect — no stretch.
         let src_aspect = 2028.0 / 582.0;
@@ -378,6 +387,26 @@ mod tests {
             "centered horizontally"
         );
         assert!((y - (720.0 - h) * 0.5).abs() < EPS, "centered vertically");
+    }
+
+    /// An ultrawide window sizes against the 16:9 frame its height fits, so the
+    /// logo matches a 16:9 window of the same height rather than growing.
+    #[test]
+    fn logo_rect_on_ultrawide_matches_16_by_9_of_same_height() {
+        let [_, _, w_ultrawide, _] = logo_rect([2028, 582], [3440, 1440]);
+        let [_, _, w_16_9, _] = logo_rect([2028, 582], [2560, 1440]);
+        assert!(
+            (w_ultrawide - w_16_9).abs() < EPS,
+            "ultrawide {w_ultrawide} vs 16:9 {w_16_9}"
+        );
+        assert!((w_16_9 - 1280.0).abs() < EPS, "half of 2560, got {w_16_9}");
+    }
+
+    /// A window narrower than 16:9 sizes by its own width.
+    #[test]
+    fn logo_rect_on_4_by_3_is_half_window_width() {
+        let [_, _, w, _] = logo_rect([2028, 582], [1024, 768]);
+        assert!((w - 512.0).abs() < EPS, "half of 1024, got {w}");
     }
 
     /// A tall logo on a short window is height-bound: the height cap binds first

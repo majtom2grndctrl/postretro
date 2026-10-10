@@ -199,6 +199,7 @@ Orchestrator additions in r1 (from the despawn brief's findings): `prop_mesh` bo
 | r1 follow-up | orchestrator self-review | — | — | — | Task 8 split into Task 8 (fire origin and recipients) and Task 9 (audience authoring and install checks); later tasks renumbered 10–12 | — | — |
 | r2 | broad, anchor, temporal | 5 | 27 | 11 | 63 blocks after merges | `prop_mesh` binding dropped (no animation states, no health: A1, B4); A7, T12 moot | 4 (A1/B4 from the orchestrator's `prop_mesh` fold-in; T1 from r1's no-payload-without-override rule; T2 from r1's producer drop) |
 | r2 delta | delta pass | 0 | 4 | 8 | all 12 (3 pairs hand-applied after the applier dropped them) | — | 0 |
+| r3 | broad, anchor, temporal | 1 | 17 | 1 | 14 pairs after merges (A1+B1, T3+B6; T2a/T2b/T5 over B3a/B3b; A2 over B2) | B2, B3a, B3b (superseded) | 1 (T1: r2's any-origin capture met levelLoad's stale clock) |
 
 Tooling note: `apply_findings.py` applied only the first `FIX` block of a finding that carried several (D3–D8 second blocks were dropped while it reported success). The self-review re-applied them; verify full REPLACE text after any multi-block apply. It also drops later pairs under a single `FIX:` label, so the trigger is several pairs per finding, not the repeated label.
 

@@ -44,9 +44,14 @@ lights are outside id 40, so they render unshadowed specular today.
 
 - **Fragment storage:** 8 of 8 (group 2: five; group 3: three).
 - **Sampled textures:** 16 of 16.
-- **Vertex storage:** 6 of 8. No test pins the forward pipeline's count; only the
-  billboard pipeline's is pinned.
+- **Vertex storage:** 6 of 8. `forward_bindings_add_only_the_vertex_block_table`
+  already pins every forward fragment count per group, the vertex-visible entry set,
+  and vertex storage of 8 or fewer.
 - **Varyings:** 9 of 16 locations (downlevel 15). One more flat `vec4<u32>` fits.
+- **Vertex inputs:** the forward "Textured Pipeline" (`renderer_init_pipelines.rs`)
+  uses 6 of 16 vertex attributes on 1 of 8 vertex buffers, against `Limits::default`.
+  World vertices are unique per face (`extract_geometry`, `split_shared_vertices`,
+  `apply_face_cuts`).
 - **Block table:** one `vec4<u32>` per block, vertex-only (`resolve_lightmap_block`).
   Only pool layer and flags reach the fragment. Cleanly free bits total 32: too few for
   4 × u16.
@@ -143,3 +148,68 @@ elsewhere; the proxy is a lower bound.
 - Billboard specular cost is outside `forward`.
 - No GPU spike is planned. The owner loop runs at most four lights against chunk lists
   of up to 17 in the stress map.
+
+## Ordering pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | The sub-faces of one cut face sit in different bake layers | The walk runs layer-major. A light's partition for the first layer is consumed and dropped before its partition for the next layer arrives | The parent's owners are fixed before the walk from the cut-face estimate. Every owner's channel holds its own baked values in every sub-face. No light holds a channel in a sub-face whose values it never wrote |
+| P5 | A promoted candidate below the lit-texel floor arrives after four above-floor specular-only owners | Floor test from the candidate's own partition, then tier, then eviction, all on arrival | A below-floor candidate never evicts an above-floor one |
+| P2 | A warm build reuses the cached id 42 | A memo hit returns the section before the walk. No partition reaches the fill | Drop warnings and the `--verbose` peak per-face demand match the cold build's. Owner data is stored next to the memo entry or rebuilt; it is never silently skipped |
+| P3 | A light outside id 40 is edited, or only id 40 membership changes | The lightmap memo may hit while the id-42 memo must miss. Today both the id-42 key and the reuse path cover only selected lights | Id 42 is rebuilt from every eligible light's partitions and equals the cold build byte for byte |
+| P4 | A newcomer outranks an owner whose values are already written on face F | Incumbent written, newcomer arrives, channel reset, newcomer writes | Every texel that F's bilinear taps can reach (on-polygon, off-polygon, padding) holds the newcomer's value or zero. None keeps the evicted light's value or the 255 fill |
+| P6 | One light's partition covers texels on many faces in one bake layer | Sum per face over the whole partition, admit or evict per face, then write | No admission is decided on a partial sum. For faces that sit in one bake layer, the result does not depend on arrival order or window size |
+| P7 | Two candidates tie on contribution for the last free channel | Within a layer, arrival order is light order. The later light arrives while the earlier one already owns the channel | The lower compact spec-light index keeps the channel. Arrival order never decides |
+| P8 | Dynamic, SDF or bake-only lights come before a static light in the source light list | The walk keys partitions by source-list position. The owner table stores the compact `!is_dynamic` spec index over AlphaLights | Each owner entry names the light whose visibility filled its channel. A bake-only light takes no channel |
+| P9 | The renderer refuses the mask pool at install, but lightmap blocks stay resident or stream in later | The refusal happens at plan time. The owner stream is filled at load, and blocks become resident after that | No frame shows static non-SDF specular. A refused pool is never read as fully lit |
+| P10 | Id 40 is non-empty in the file and cleared at load | Id 40 is cleared, then id 42 is validated | Id 42 validation reads no id-40 state. The owner table is unchanged. Formerly promoted owners keep shadowed specular |
+| P11 | The level has more static spec lights than u16 can index | Checked before the walk allocates the fill | Named compile error before any lightmap bake work |
+| P12 | A block arrives after the first draw, is evicted, or repacks to another pool layer | The owner stream is fixed at load. Block-table entries change on each drain | A face's owners never change. While its block is missing the face adds no static non-SDF specular |
+| P13 | A covered texel carries non-finite raw visibility | It quantizes to zero, and the contribution sum runs at admission | The texel neither admits the light nor adds to its contribution. Ranking stays total |
+
+**Proof caveat.** The WGSL harnesses self-skip without a BC-capable adapter
+(`shadowmask_sample_test.rs`), so shader rows prove nothing unless run with a GPU
+required. The world specular loop is inline in `fs_main`, so the first-slice harness needs
+it extracted into a callable function first.
+
+## Cut faces span bake layers
+
+- **Why sub-faces split:** a face is cut only past the 2048 pool edge. Each sub-chart
+  nearly fills its block, and a bake layer is sized to the largest block. So a cut
+  parent's sub-faces usually land in different bake layers (`atlas_pack.rs`,
+  `block_layout.rs`).
+- **Why the walk can't rank them jointly:** it runs layer-major and drops each partition
+  after writing (`lightmap_stage.rs`, `fill.rs`). A joint sum would need retained
+  visibility or a second pass.
+- **Alternatives weighed:**
+  - Analytic (unshadowed) pre-rank: picks lights hidden behind walls on large faces.
+    On the census, unshadowed demand overflowed 209 faces on stress-warren-mini,
+    against 0 shadowed.
+  - Bounded retention: keeps per-texel data for the largest faces, the record class
+    behind the OOM.
+  - Keeping a parent's blocks in one layer: infeasible when one block fills the layer.
+- **Chosen:** a sparse shadowed estimate. The `kinematic-platform` floor is about 5k
+  samples × 9 lights at one sample per 16×16 tile.
+
+## Rejected rivals
+
+- **Unslotted reads as no specular, global slots kept.** It closes every leak at no
+  bake cost. It also drops every dropped light's highlight and every light outside
+  id 40: 10 of 14 in `campaign-test`. Ownership exists to restore that coverage.
+- **Specular from the directional lightmap** (dominant direction × irradiance). It
+  cannot leak and has no capacity limit. But it keeps one direction per texel, from a
+  low-resolution, nearest-sampled atlas, so overlapping lights blur into one highlight.
+  The residual overflow, mostly `movement-feel`, does not justify that loss everywhere.
+- **Ruled out by budget:**
+  - a per-texel light-index texture (sampled textures at 16 of 16);
+  - runtime SDF visibility for every light's specular (SDF selection is capped at four).
+- **Colour after the walk from a warm-cache re-read.** It fails cold builds.
+
+## Ranking evidence
+
+- Contribution ranking loses about a third to a half of what intensity ranking loses:
+  - movement-feel: 5.2% against 16.7%;
+  - kinematic-platform: 21% against 39%.
+- No light loses every face under either ranking.
+- Promoted-first was not in the census; its cost is that a promoted light can hold a
+  channel over a brighter specular-only light.

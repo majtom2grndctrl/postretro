@@ -12,18 +12,17 @@ The owner saw partial, hard-edged specular patches on floors and walls throughou
 
 Cause: world specular evaluates every static light in the fragment's 8 m chunk list,
 and treats a light with no mask slot as fully visible. A slotless light's highlight
-therefore passes through walls and stops only at a chunk plane.
-
-The diagnosed instance is a light sealed inside a wall, which the in-flight
-`buried-lights` build excludes. The general mechanism follows from source but has not
-yet been seen on a light that is not buried; a capture gates the build (Open
-questions).
+passes through walls and stops only at a chunk plane.
+- The diagnosed instance is a light sealed inside a wall. The `buried-lights` build
+  (merged) now excludes such lights.
+- The mechanism follows from source for lights that are not buried, but has not been
+  seen on one. A capture gates the build (Open questions).
 
 Slots are scarce:
 - Each light holds one channel map-wide, and competes for it everywhere it could reach
-  without shadows, occluded or not.
+  without shadows.
 - Static lights outside the entity-shadow selection never get a slot.
-- SDF lights outside the fragment's top four also render unshadowed.
+- SDF lights outside the fragment's top four render unshadowed.
 
 When done, a static light contributes world specular only where its baked contribution
 is non-zero. Every highlight it contributes is shadowed, and the compiler reports where
@@ -32,109 +31,85 @@ a light lost a highlight to capacity.
 ## Decisions
 
 - **Ownership replaces global slots.** Each lightmapped face carries up to four lights
-  that own its four mask channels. World specular evaluates only those lights there,
-  and so does the promoted-light union subtraction. Each finds a light's channel by its
-  position in the face's owner list. The map-wide per-light slot and its dropped
-  sentinel retire.
-- **Granularity: one owner list per lightmapped face,** meaning an id-17 face record
-  after compiler face cuts.
-  - Per block is too coarse. One 2048×1904 block in `kinematic-platform` meets 15
-    lights that never share a texel; per face, at most 9 meet there (`research.md`
-    §Granularity).
-  - World vertices are unique per face, so the owner list rides a forward-only second
-    vertex buffer, filled at load from per-face data, to a flat varying. The PRL vertex
-    format, the 36-byte stride and every other pipeline stay untouched.
+  owning its four mask channels.
+  - World specular and the promoted-light union subtraction evaluate only those owners,
+    each finding its channel by the light's position in the owner list.
+  - The map-wide per-light slot and its dropped sentinel retire.
+- **One owner list per lightmapped face** (an id-17 face record, after compiler face
+  cuts).
+  - Per block is too coarse (`research.md` §Granularity).
+  - Delivery adds no fragment binding, and leaves the PRL vertex format and its 36-byte
+    stride unchanged.
 - **Unowned means no world specular.** This supersedes the `rendering_pipeline.md` §4
-  rule "absent, rejected, or dropped shadowmask data is fully lit" for specular.
-  - No static non-SDF world specular comes from a missing or rejected id 42, a block
-    miss, placeholder mode, or a light outside the owner list.
-  - A missing highlight is a smaller error than light through a wall.
-  - Union subtraction already skips unslotted lights, so it keeps that behavior.
+  rule "absent, rejected, or dropped shadowmask data is fully lit" for specular. A
+  missing highlight is a smaller error than light through a wall.
 - **Eligibility: every static lightmap light,** decoupled from entity-shadow selection.
-  - Eligible: non-dynamic, non-animated, not bake-only, `StaticLightMap` shadow type.
-    Point, spot and directional lights all qualify.
+  - Eligible: non-dynamic, non-animated, not bake-only, `StaticLightMap`. Point, spot
+    and directional lights all qualify.
   - Id 40 stays the promotion set only.
-  - A promoted light still subtracts only where it owns a channel.
-  - Directional lights are included. This reverses the sun exclusion in
-    `plans/done/specular-shadowmask-occlusion`, which existed because a sun cost a
-    map-wide slot. Under shadowed per-face admission a sun takes a channel only on faces
-    it lights.
-  - Animated-baked lights are not eligible here, so they lose world specular until
-    the follow-up brief (Non-goals). Today they render it unshadowed and ignoring their
-    animation.
-- **Admission by shadowed contribution.** A light is a candidate in a face only where
-  its quantized baked visibility is non-zero on a texel it covers.
+  - Including directional lights reverses the sun exclusion in
+    `plans/done/specular-shadowmask-occlusion`. That exclusion existed because a sun
+    cost a map-wide slot.
+- **A directional highlight follows the light's direction,** as its bake does, rather
+  than aiming at the entity origin.
+- **Admission by shadowed contribution.** A light is a candidate on a face only where
+  its quantized baked visibility is non-zero on a chart-interior texel. Padding never
+  admits.
   - This supersedes the "coverage is unshadowed" contract in
-    `plans/done/lighting-scale--shadowmask-cold-working-set`. That contract protected
-    map-wide slot sharing, where an occluded light would read a co-slotted light's
-    value. Ownership removes the hazard, because a non-owner never reads a channel.
+    `plans/done/lighting-scale--shadowmask-cold-working-set`, which protected slot
+    sharing that ownership removes.
   - Ownership is decided during the fused lightmap walk. That reverses the
     `build_pipeline.md` ordering "channel assignment finishes before the walk".
-- **An owned channel starts at zero across its face.** Eviction and a new owner reset
-  the channel to occluded before writing. The raw fill initializes to 255, and a 255
-  residue would recreate the through-wall leak.
-- **Same walk resource bounds.** The stage retains no per-(light, texel) visibility and
-  runs no second visibility trace, cold or warm. The deleted record behind the 16 GiB
-  OOM stays deleted. Undo cost is high once this ships, because retained visibility is
-  what the cold-working-set brief removed. That brief's non-goal said
-  contribution-weighted priority would need the record back; summing per face while
-  the fill is resident does not.
-- **World specular set = face owners ∪ the SDF top-four selection.**
-  - World forward specular stops reading the chunk light list.
-  - An SDF light outside the fragment's selection contributes no specular.
-  - The chunk list stays baked for billboards and for SDF selection in the forward and
-    SDF-shadow passes.
-- **Over-capacity faces keep promoted lights first, then rank by shadowed
-  contribution, deterministically and loudly.**
-  - When more than four eligible lights reach a face, id-40 lights take channels ahead
-    of specular-only lights. A lost entity shadow costs more than a lost highlight.
-  - Within each group, the four kept are those with the largest shadowed contribution
-    summed over the face's interior texels.
-  - The sub-faces of one compiler-cut face rank once, on their joint contribution, and
-    share one owner set. A highlight never cuts along a compiler cut line.
-  - On the census, contribution ranking loses roughly a third of what intensity ranking
-    loses, and no light loses every face.
-  - Ties break by light index. The result is independent of worker count, cache state
-    and window order.
-  - A candidate below a small lit-area floor drops first and silently. Such specks are
-    every overflow on the stress maps.
-  - A warning without `--verbose` names each light dropped above the floor.
-  - `--verbose` reports peak per-face demand.
-- **Id 42 exists whenever any face admits an owner,** whether or not id 40 selects a
-  light. Clearing id 40 or 41 at load never drops id 42.
-- **Admission reads interior texels only.** Chart padding and ring texels hold copied
-  values and positions off the polygon, which inflate overlap.
-- **Placement.** Ownership is bake-time policy in the compiler; the runtime is
-  mechanism. The owner list reaches the fragment as a flat value through the vertex
-  stage.
-  - No fragment binding is added. Fragment storage is at 8 of 8 and sampled textures
-    at 16 of 16.
-  - Owner data rides a vertex buffer, not storage. A test pins the forward pipeline's
-    per-stage storage and sampled-texture counts at today's values.
-- **Capacity stays at four per face.** Both capacity levers are deferred:
-  - cutting over-capacity faces, which reuses the existing product-grid face cuts;
-  - more mask groups.
+- **Ranking when more than four candidates reach a face:**
+  1. Candidates above a lit-texel floor rank ahead of those below it. The floor is
+     measured from the candidate's own baked texels on that face.
+  2. Within the above-floor set, id-40 lights rank ahead of specular-only lights. A lost
+     entity shadow costs more than a lost highlight.
+  3. Within each tier, the larger shadowed contribution summed over the face ranks
+     higher.
+  4. A tie goes to the lower light index.
 
-  The drop report is their trigger. After the floor, residual overflow is one face in
-  `campaign-test` and two in `kinematic-platform`. `movement-feel`'s overflow is
-  texel-deep, so cuts cannot cure it (`research.md` §Granularity, §Capacity lever).
-- **Seams between distinct faces are accepted residue.** This diverges from
-  `plans/done/specular-continuity` (neighbouring regions keep the same lights) only
-  where an over-capacity face meets a neighbour that kept a light it dropped. Diffuse
-  stays continuous. The drop report names every such face.
+  The outcome is independent of arrival order, worker count, window size and cache
+  state.
+- **A cut face has one owner set.** All sub-faces of one compiler-cut face share it, so
+  a highlight never cuts along a cut line.
+  - Its ranking comes from a sparse shadowed estimate traced before the walk, because
+    sub-faces span bake layers.
+  - Faces that were not cut rank on exact per-face sums.
+- **An owned channel reads occluded wherever its owner wrote nothing,** including
+  padding and texels another owner held before.
+- **Walk resource bounds stay.**
+  - No per-(light, texel) visibility is retained, and no texel's visibility is traced
+    twice, cold or warm.
+  - The cut-face estimate traces only its sparse sample points.
+- **World specular set = face owners ∪ the SDF top-four selection.**
+  - World specular stops reading the chunk light list. The chunk list stays baked for
+    billboards and SDF selection.
+  - An SDF light outside the fragment's selection adds no specular.
+- **Id 42 exists whenever any face admits an owner,** whatever id 40 holds. Clearing id
+  40 or 41 at load never drops it.
+- **The drop report is complete on every build.**
+  - A warning names each above-floor light dropped and its face.
+  - `--verbose` reports peak per-face demand.
+  - Both are identical on cold and warm builds.
+- **Capacity stays at four per face.**
+  - Further face cuts and more mask groups are deferred; the drop report is their
+    trigger.
+  - Seams where an over-capacity face meets a neighbour that kept a light it dropped
+    are accepted residue. Diffuse stays continuous there. This diverges from
+    `plans/done/specular-continuity` at those faces only.
 - **Non-goals:**
   - **Billboard specular shadowing.** Its loops have no mask binding by documented
-    design (`rendering_pipeline.md` §4, billboard lighting models). Unchanged.
-  - **Kinematic mover specular.** It reads promoted records only.
-  - **Lights inside solid.** The in-flight `buried-lights` direct build excludes them.
-    This brief must not depend on it, because shadowed admission already gives them no
-    channel.
+    design (`rendering_pipeline.md` §4).
+  - **Kinematic mover specular.** It comes only from promoted records shadowed by the
+    pool shadow map, so it cannot leak through a wall.
+  - **Excluding lights inside solid.** `buried-lights` owns that exclusion. This brief
+    does not depend on it, because shadowed admission gives such a light no channel.
   - **Entity-shadow selection heuristics and chunk-list contents.** Both are unchanged.
-  - **Animated-baked owners and animation-following highlights.** A follow-up brief
-    owns them. Their visibility comes from the weight-map stage (ids 24/25), and holding
-    it through the walk is a memory risk on the map that once ran out of memory. The
-    owner table already names any spec light, so the follow-up needs no second format
-    change (`research.md` §Animated-baked lights).
+  - **Animated-baked owners and animation-following highlights.** A follow-up brief owns
+    both. Their visibility comes from the weight-map stage, and holding it through the
+    walk is a memory risk. Until then they lose world specular. The owner table can
+    already name them (`research.md` §Animated-baked lights).
 
 ## Acceptance
 
@@ -145,14 +120,34 @@ No leak, both sides of ownership:
 - [ ] A light that owns face R but not adjacent distinct face S lights R and adds
       nothing to S. Both fragments at the shared edge are asserted.
 - [ ] The sub-faces of one compiler-cut face carry identical owner sets, including when
-      one sub-face alone would have ranked a different fourth light.
+      they sit in different bake layers and when one sub-face alone would have ranked a
+      different fourth light. Each owner's mask holds its own baked values in every
+      sub-face. (P1)
+- [ ] On a cut face, a light walled off from the whole face takes no channel even when
+      it is in range. A light lighting part of it does.
 - [ ] Within a face it owns, a light's specular still follows the baked mask: zero on
       an occluded texel, full on a lit one.
 - [ ] An SDF light outside the fragment's selection adds zero specular. One inside it
       adds specular at its SDF visibility.
-- [ ] Missing data adds no static non-SDF specular and SDF specular is unchanged. This
-      holds for a block miss, a missing id 42, a rejected id 42, and placeholder mode.
-      Rejection logs a `[Renderer]` error and never panics.
+- [ ] A directional light's highlight lies along its baked direction. Moving its entity
+      origin without changing its direction leaves the highlight unchanged.
+- [ ] Missing data adds no static non-SDF specular, and SDF specular is unchanged. This
+      holds for:
+      - a block miss;
+      - a missing id 42;
+      - placeholder mode;
+      - a mask pool the renderer refuses while lightmap blocks stay resident, both
+        all-resident and streamed.
+
+      The refusal logs a `[Renderer]` error and never panics. (P9)
+- [ ] An owner occluded at a face edge reads zero there, including taps into chart
+      padding. No owned channel keeps the unwritten fill value on a texel its owner does
+      not reach. (P4)
+- [ ] Each owner position reads its own channel in either mask group. Swapping two
+      owners' table positions together with their mask planes leaves the image
+      unchanged.
+- [ ] Streamed and all-resident captures stay identical at the existing streaming poses
+      with owner specular on. (P12)
 - [ ] A static light outside id 40 owns channels and gets shadowed specular.
 
 Union subtraction:
@@ -164,34 +159,60 @@ Compiler:
 - [ ] Five eligible lights lit across one face yield four owners, chosen by largest
       shadowed contribution, plus a warning that names the fifth. Four lights yield four
       owners and no warning.
-- [ ] With five candidates on a face, a promoted light with the smallest contribution
-      keeps its channel over a brighter specular-only light. With no promoted light
-      among them, the smallest contribution drops.
+- [ ] The drop warning names each face that lost a light above the floor, as well as
+      the light. `--verbose` reports the most candidates seen on one face.
+- [ ] A warm build that reuses the cached id 42 repeats the cold build's drop warnings
+      and its peak per-face demand under `--verbose`. (P2)
+- [ ] When a later, higher-ranked light evicts a face's owner, none of the evicted
+      light's values remain in that channel. Texels the newcomer does not reach read
+      zero. (P4)
+- [ ] With five above-floor candidates on a face, a promoted light with the smallest
+      contribution keeps its channel over a brighter specular-only light. With no
+      promoted light among them, the smallest contribution drops.
+- [ ] A promoted candidate below the lit-area floor drops silently and never takes a
+      channel from an above-floor specular-only light. (P5)
 - [ ] A directional light takes a channel on a face it lights, and none on a face it
       cannot reach, such as one under a roof.
 - [ ] A fifth candidate below the lit-area floor is dropped without a warning. The same
       light above the floor is warned.
-- [ ] Two candidates with equal contribution resolve by light index. The result is
-      identical across worker-thread counts.
-- [ ] A light whose only lit texels on a face are padding or off-polygon texels takes
-      no channel there.
+- [ ] Two candidates with equal contribution for the last channel resolve to the lower
+      light index, whichever arrives first. The result is identical across worker-thread
+      counts. (P7)
+- [ ] Id 42 is byte-identical when the fill receives the same partitions in reversed
+      light order, and across partition-window sizes. (P6)
+- [ ] With dynamic, SDF and bake-only lights placed before a static light in the light
+      list, each owner entry names the light whose visibility filled its channel. A
+      bake-only light takes no channel. (P8)
+- [ ] A texel with non-finite visibility neither admits a light nor adds to its
+      contribution. (P13)
+- [ ] A light whose only lit texels on a face are padding takes no channel there.
 - [ ] A light occluded on every texel of a face takes no channel there. The same
       light with one lit texel there takes one.
-- [ ] Id 42 is byte-identical across worker-thread counts, and between cold and warm
-      builds.
+- [ ] Id 42 is byte-identical across worker-thread counts, and between a cold build, a
+      warm build, and a warm build that reuses the lightmap but rebuilds id 42.
+- [ ] Editing a light outside id 40, or changing only id 40 membership, rebuilds id 42
+      on a warm build. The result is byte-identical to a cold build, including when the
+      lightmap comes from cache. (P3)
+- [ ] A build that reuses the lightmap but rebuilds id 42 reads each eligible light's
+      partition at most once per bake layer, holds one raw fill, and traces no
+      visibility beyond the cut-face estimate.
 - [ ] Load rejects:
-  - an owner index at or past the static spec-light count;
-  - a duplicate owner within a face;
-  - a face count that disagrees with id 17;
-  - a payload length that disagrees with the block arithmetic.
+      - an owner index at or past the static spec-light count;
+      - a duplicate owner within a face;
+      - a face count that disagrees with id 17;
+      - a payload length that disagrees with the block arithmetic.
 
-  A section with the retired tag asks for a re-bake.
+      A section with the retired tag asks for a re-bake.
 - [ ] A level whose eligible lights include none in id 40 still emits id 42 and
-      shadows their specular. Loading it with id 40 cleared keeps id 42.
+      shadows their specular.
+- [ ] A level whose non-empty id 40 is cleared at load, because its deltas are missing,
+      keeps id 42. Formerly promoted owners keep shadowed specular and subtract nothing.
+      (P10)
+- [ ] A level whose eligible lights light no face interior emits no id 42.
 - [ ] A level with more static lights than the owner index can hold fails the compile
-      with a named error.
-- [ ] Forward pipeline per-stage storage and sampled-texture counts are pinned by test.
-      Fragment counts are unchanged.
+      with a named error before any lightmap bake work starts. (P11)
+- [ ] The existing forward binding inventory test passes with its snapshot unedited.
+- [ ] The world vertex stride stays 36 bytes and id 17's format version is unchanged.
 
 ### Manual
 - [ ] `stress-warren-hallway-inspection` at pose (-17, 21, 86): no sheen. Toggling
@@ -208,76 +229,61 @@ Compiler:
       GPU ms, from a capture built with `capture,dev-tools`.
 - [ ] Measured and reported on `stress-warren-hallway-inspection`, cold `--release`,
       before and after, per `testing_guide.md` §Resource bounds:
-      - shadowmask and lightmap stage time;
+      - shadowmask and lightmap stage time, including the cut-face estimate;
       - peak compile RSS.
 
 ## Path
 
-- **Assignment in the walk.** Partitions arrive in global light order through
-  `bake_fused_windowed` → `FusedShadowmaskPlan::consume_partition` →
-  `ShadowmaskFill`, whose raw fill buffer is resident for the walk.
-  - Chosen shape: ranked admission with eviction. A higher-ranked newcomer resets the
-    evicted owner's channel within that face, then writes its own values. One pass,
-    nothing retained.
-  - Rival: colour after the walk from a warm-cache re-read. It fails cold builds and
-    the no-second-trace decision.
-- **Joint ranking across cut faces.** `plan_face_cuts`/`apply_face_cuts` know each
-  sub-face's parent before `rebuild_face_identity`. Carry that parent to the walk, sum
-  contribution per parent, and write the parent's owners to every sub-face entry.
-- **Rejected rival: shadow-free slots read as no specular** (keep global slots; the
-  shader treats unslotted as dark). It closes every leak at no bake cost. It also drops
-  the highlights of every dropped light and every light outside id 40, which is 10 of
-  14 in `campaign-test`. Ownership's job is restoring that coverage.
-- **Rejected rivals ruled out by budget:**
-  - a per-texel light-index texture, since sampled textures are at 16 of 16;
-  - runtime SDF visibility for every light's specular, since SDF selection is capped
-    at four per fragment.
-- **Rejected rival: specular from the directional lightmap** (dominant direction ×
-  irradiance).
-  - It cannot leak and has no capacity limit.
-  - It holds one direction per texel, from a low-resolution, nearest-sampled direction
-    atlas. Overlapping lights blur into one highlight.
-  - The leftover overflow after ownership, mostly `movement-feel`, does not justify
-    that quality loss everywhere.
+- **Assignment in the walk.** Partitions arrive layer-major in light order through
+  `bake_fused_windowed` → `FusedShadowmaskPlan::consume_partition` → `ShadowmaskFill`,
+  whose raw fill is resident for the walk.
+  - Shape: sum a partition per face, then admit or evict per face, then write. An
+    evicting newcomer zeroes the channel across the face before writing.
+- **Cut-face estimate.**
+  - `plan_face_cuts`/`apply_face_cuts` know each sub-face's parent before
+    `rebuild_face_identity`. Carry that parent forward.
+  - Trace a coarse grid over the parent against the pre-cut BVH, for each light whose
+    analytic term reaches it. Rank once, and fix the owners before the walk writes any
+    sub-face.
+- **Sun lobe.** `pack_spec_lights` packs directional lights with a zero direction, and
+  the world specular loop derives `L` from position. The bake's direction comes from
+  `light_contribution_and_direction`.
+- **Owner delivery.**
+  - A forward-only second vertex buffer, filled at load from per-face data through face
+    index ranges, feeds a flat varying.
+  - Precedent: `stamp_animated_block_ids`.
+  - The forward pipeline has attribute and varying room (`research.md` §Runtime
+    budget).
+  - A vertex-stage storage lookup is not an option: `vs_main` has no face key.
 - **Id 42 presence keyed on id 40 today:** `prepare_fused_shadowmask` (`NoSelection`),
-  the lightmap residency dry run (`ShadowmaskState`), and the load-time drop on a
-  mismatched channel table.
-- **Retiring seams:** `build_analytic_overlap_graph_in_order`,
-  `assign_channels_with_drops_controlled` and the analytic-graph half of
-  `prepare_fused_shadowmask`. On the runtime side: `build_spec_light_shadowmask_channels`
-  and the promoted metadata channel field (`render/shadowmask.rs`), and the `cone_cos.z`
-  slot in `pack_spec_lights`.
-- **Runtime seams:**
-  - In `forward.wgsl`: `shadowmask_visibility_for_spec_light`,
-    `shadowmask_union_subtraction` and the world specular loop. The SDF half of the
-    loop iterates the selection's indices directly.
-  - Owner vertex buffer: the forward "Textured Pipeline" in
-    `renderer_init_pipelines.rs` uses 6 of 16 vertex attributes on 1 of 8 buffers, with
-    9 of 16 varyings.
-  - The per-face fill walks face index ranges at load. Precedent for a per-face
-    per-vertex value: `stamp_animated_block_ids`.
-  - A vertex-stage storage lookup is not an option: `vs_main` has no face key, and
-    index builtins are banned (`indirect_contract_compiled_pipeline_sources_ban_index_builtins`).
+  the lightmap residency dry run (`ShadowmaskState`), and the load-time reconcile that
+  drops id 42 on a mismatched selection.
+- **Retiring seams:**
+  - compiler: `build_analytic_overlap_graph_in_order` and
+    `assign_channels_with_drops_controlled`;
+  - runtime: `build_spec_light_shadowmask_channels`, the promoted metadata channel
+    field, and the `cone_cos.z` slot.
+- **Runtime seams:** in `forward.wgsl`, `shadowmask_visibility_for_spec_light`,
+  `shadowmask_union_subtraction` and the world specular loop. The loop is inline in
+  `fs_main`; extract it first. Its SDF half iterates the selection directly.
 - **First slice:** a forward-harness fixture that renders owner-only specular from a
-  hand-built per-face owner buffer. It falsifies the vertex-buffer and flat-varying
-  plumbing before the bake moves.
-- **Split first:** `pipeline/lightmap_stage.rs` and `shadowmask_bake.rs` are past
-  ~800 lines; `forward.wgsl` too, if its include composition allows.
+  hand-built per-face owner buffer, with a GPU required.
+- **Split first:** `pipeline/lightmap_stage.rs` and `shadowmask_bake.rs`.
+- **Rivals considered:** `research.md` §Rejected rivals.
 - **Durable capture at promotion:**
-  - `rendering_pipeline.md` §4: World specular shadowmask, Promoted static lights.
-  - `build_pipeline.md`: stage ordering and id 42.
+  - `rendering_pipeline.md` §4;
+  - `build_pipeline.md` stage ordering and id 42.
 
 ## Open questions
 
 - Before build, a pre-change capture must show a leak from a light the `buried-lights`
   build does not explain: a dropped non-buried light, or an unselected `campaign-test`
-  light. If none can be found, the Problem reduces to coverage, and the owner revisits
-  scope. — owner: executor, reported to the project owner — **blocks build**
-
-- Lit-area floor value: a minimum lit-texel count, a share of the face's
-  contribution, or both. The census cleared every stress-map overflow at 16 texels or
-  1%. — **delegated**: report the value and the drop report it yields in the plan of
-  record.
+  light. If none is found, the Problem reduces to coverage and the owner revisits scope.
+  — owner: executor, reported to the project owner — **blocks build**
+- Lit-texel floor value. The census cleared every stress-map overflow at 16 texels. —
+  **delegated**: report the value and its drop report in the plan of record.
+- Cut-face estimate density and sampling: hard ray or area samples. — **delegated**:
+  report rays traced and stage time.
 
 ## Wire format
 

@@ -248,7 +248,7 @@ impl<'a> OwnershipFill<'a> {
     ) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
         let mut owners: Vec<FaceOwners> = vec![NO_FACE_OWNERS; self.faces.len()];
         let mut any_owner = false;
-        for face in 0..self.faces.len() {
+        for (face, owner) in owners.iter_mut().enumerate() {
             if self.cut_of[face].is_some() {
                 continue;
             }
@@ -257,7 +257,7 @@ impl<'a> OwnershipFill<'a> {
                 any_owner = true;
                 self.reorder_channels(face, source, shared);
             }
-            owners[face] = entry;
+            *owner = entry;
         }
         let mut peak_cut_demand = 0;
         for c in 0..self.cuts.len() {

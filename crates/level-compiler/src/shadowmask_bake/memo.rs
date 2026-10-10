@@ -109,7 +109,7 @@ fn parse_report(bytes: &[u8]) -> Option<(OwnerReport, &[u8])> {
     let end = count.checked_mul(DROP_RECORD_BYTES)?.checked_add(8)?;
     let records = bytes.get(8..end)?;
     let mut drops = Vec::with_capacity(count);
-    for record in records.chunks_exact(DROP_RECORD_BYTES) {
+    for record in records.as_chunks::<DROP_RECORD_BYTES>().0 {
         let w = |i: usize| word(record, i * 4);
         let site = match w(0)? {
             0 => DropSite::Face(w(1)?),

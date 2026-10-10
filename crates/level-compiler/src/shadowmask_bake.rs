@@ -183,6 +183,7 @@ pub(crate) struct EstimateScene<'a> {
 ///
 /// `eligible_layer_hashes` holds each eligible light's `layer_count` layer
 /// hashes in ascending layer order, light-major, and is empty without a cache.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_fused_shadowmask<'a>(
     eligible: Vec<EligibleLight<'a>>,
     eligible_layer_hashes: &[[u8; 32]],

@@ -29,6 +29,10 @@ use crate::wire::{
 mod encode;
 use encode::ClientReplicationState;
 
+/// Pending FullBaseline bytes per snapshot beyond the first pending record.
+/// Tombstones, held-entity deltas and forced refreshes are exempt.
+pub const JOIN_BASELINE_BUDGET_BYTES: usize = 16 * 1024;
+
 /// One replicable entity's owned, post-tick component state, keyed by its stable
 /// `NetworkId`. Produced by the engine glue (`crate::netcode`) after it releases
 /// the registry borrow, then handed to [`ServerReplication::ingest_tick`].
@@ -284,6 +288,7 @@ impl ServerReplication {
     pub fn exclude_entity_for_client(&mut self, client_id: u64, network_id: u32) {
         if let Some(state) = self.clients.get_mut(&client_id) {
             state.excluded_entities.insert(network_id);
+            state.in_flight_baselines.remove(&network_id);
             state.pending_refreshes.retain(|(id, _)| *id != network_id);
         }
     }
@@ -426,6 +431,7 @@ impl ServerReplication {
             // mapping to tear down. Mark this tombstone as already acknowledged
             // for that client instead of sending an unknown-id despawn forever.
             for client in self.clients.values_mut() {
+                client.in_flight_baselines.remove(&id);
                 if client.excluded_entities.contains(&id) {
                     client.acked_tombstones.insert(id, tombstone_id);
                 }
@@ -495,6 +501,25 @@ impl ServerReplication {
             }
         }
 
+        // A qualifying snapshot ack closes the window even when the packet or
+        // this record was lost. Preserve additive older baseline progress: it can
+        // support a delta; otherwise the newest state becomes a pending full.
+        state.in_flight_baselines.retain(|network_id, flight| {
+            if latest_snapshot_sequence < flight.sent_sequence {
+                return true;
+            }
+            let covered = state.acked_baselines.get(network_id).copied().unwrap_or(0)
+                >= flight.sent_baseline_id;
+            if !covered {
+                // No flight state may suppress the next repair. The ack map alone
+                // decides whether that repair is a full baseline or a delta.
+                if state.acked_baselines.get(network_id) == Some(&0) {
+                    state.acked_baselines.remove(network_id);
+                }
+            }
+            false
+        });
+
         // This client may have just acked the last outstanding tombstone; once every
         // registered client has acked a tombstone it can leave the global map.
         self.prune_acked_tombstones();
@@ -513,6 +538,14 @@ impl ServerReplication {
         }
     }
 
+    /// Baselines deferred by the last encoding for this client, excluding flights.
+    #[must_use]
+    pub fn deferred_baseline_count(&self, client_id: u64) -> usize {
+        self.clients
+            .get(&client_id)
+            .map_or(0, |state| state.deferred_baselines)
+    }
+
     /// Allocate the next monotonic snapshot sequence. Called once per emitted
     /// 20 Hz snapshot batch so every client's snapshot in that batch shares a
     /// sequence.
@@ -529,7 +562,9 @@ impl ServerReplication {
     /// one; emit a `FullBaseline` if the client holds no acked baseline (or a refresh
     /// was requested for it); otherwise emit a `Delta` from the client's acked
     /// baseline to the current one. Active despawn tombstones the client has not
-    /// acked are appended as `Despawn` records and resend until acked.
+    /// acked go first as `Despawn` records and resend until acked. Pending full
+    /// baselines follow held updates in stable priority order, within the byte
+    /// budget, and remain in flight until a qualifying snapshot acknowledgement.
     ///
     /// Returns the raw envelope ready for `wire::encode`. The same `sequence` should
     /// be shared across all clients in one 20 Hz batch by allocating it once via the
@@ -1013,7 +1048,7 @@ mod tests {
         );
     }
 
-    // Two clients are independent: B acking does not omit A's records.
+    // Two clients are independent: B acking does not complete A's flight.
     #[test]
     fn per_client_baselines_are_independent() {
         let mut server = ServerReplication::new();
@@ -1032,11 +1067,22 @@ mod tests {
             panic!("fb");
         };
 
-        // Only B acks. A must still receive the entity next tick.
+        // Only B acks. A still has an independent flight, so neither repeats it.
         server.apply_ack(CLIENT_B, seq, &[(1, baseline_id)], &[]);
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
-        assert!(record_for(&server.encode_for_client(CLIENT_A, 61).unwrap(), 1).is_some());
+        let waiting_a = server.encode_for_client(CLIENT_A, 61).unwrap();
+        assert!(record_for(&waiting_a, 1).is_none());
         assert!(record_for(&server.encode_for_client(CLIENT_B, 62).unwrap(), 1).is_none());
+        assert!(!server.baseline_acked_by_all_recipients(1, baseline_id));
+
+        // A acknowledges a later snapshot without coverage: its lost record re-pends,
+        // while B's acknowledged entity remains omitted.
+        server.apply_ack(CLIENT_A, waiting_a.sequence, &[], &[]);
+        assert!(matches!(
+            record_for(&server.encode_for_client(CLIENT_A, 63).unwrap(), 1),
+            Some(EntityRecord::FullBaseline { .. })
+        ));
+        assert!(record_for(&server.encode_for_client(CLIENT_B, 64).unwrap(), 1).is_none());
     }
 
     #[test]
@@ -1911,5 +1957,377 @@ mod tests {
             }
             other => panic!("expected FullBaseline, got {other:?}"),
         }
+    }
+
+    fn join_budget_sized_entity(network_id: u32, encoded_bytes: usize) -> EntitySnapshot {
+        let mut snapshot = entity(network_id, vec![transform(network_id as f32)]);
+        snapshot.entity_class = Some("x".repeat(encoded_bytes));
+        for _ in 0..8 {
+            let mut probe = ServerReplication::new();
+            probe.register_client(CLIENT_A);
+            probe.ingest_tick(vec![snapshot.clone()]);
+            let raw = probe.encode_for_client(CLIENT_A, 0).unwrap();
+            let actual = crate::wire::encode(&raw.records[0]).len();
+            let class = snapshot.entity_class.as_mut().unwrap();
+            match actual.cmp(&encoded_bytes) {
+                std::cmp::Ordering::Equal => return snapshot,
+                std::cmp::Ordering::Greater => {
+                    class.truncate(class.len() - (actual - encoded_bytes))
+                }
+                std::cmp::Ordering::Less => class.push_str(&"x".repeat(encoded_bytes - actual)),
+            }
+        }
+        panic!("could not construct exact encoded record size");
+    }
+
+    fn join_budget_bound(network_id: u32) -> EntitySnapshot {
+        let mut snapshot = entity(
+            network_id,
+            vec![ComponentPayload::EmitterState(
+                crate::wire::WireEmitterState {
+                    rate: network_id as f32,
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                    anim_start: None,
+                },
+            )],
+        );
+        snapshot.presentation_binding = Some(WirePresentationBinding {
+            kind: 2,
+            index: network_id,
+            origin: [0.0; 3],
+        });
+        snapshot
+    }
+
+    fn join_budget_ids(snapshot: &RawSnapshotMessage) -> Vec<u32> {
+        snapshot
+            .records
+            .iter()
+            .map(|record| record.network_id)
+            .collect()
+    }
+
+    fn join_budget_ack(server: &mut ServerReplication, snapshot: &RawSnapshotMessage) {
+        let baselines: Vec<_> = snapshot
+            .records
+            .iter()
+            .filter_map(|record| match record.record_kind {
+                crate::wire::RECORD_KIND_FULL_BASELINE => {
+                    Some((record.network_id, record.baseline_id_or_ref))
+                }
+                crate::wire::RECORD_KIND_DELTA => {
+                    Some((record.network_id, record.new_baseline_id_or_tombstone_id))
+                }
+                _ => None,
+            })
+            .collect();
+        let tombstones: Vec<_> = snapshot
+            .records
+            .iter()
+            .filter(|record| record.record_kind == crate::wire::RECORD_KIND_DESPAWN)
+            .map(|record| (record.network_id, record.new_baseline_id_or_tombstone_id))
+            .collect();
+        server.apply_ack(CLIENT_A, snapshot.sequence, &baselines, &tombstones);
+    }
+
+    #[test]
+    fn join_budget_first_oversized_is_exempt_and_exact_remaining_budget_is_admitted() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![
+            join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100),
+            join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES),
+            entity(3, vec![transform(3.0)]),
+        ]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert!(first.validate().is_ok());
+        assert_eq!(join_budget_ids(&first), [1, 2]);
+        assert_eq!(
+            crate::wire::encode(&first.records[1]).len(),
+            JOIN_BASELINE_BUDGET_BYTES
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 1);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(
+            join_budget_ids(&second),
+            [3],
+            "in-flight window does not repeat"
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 0);
+    }
+
+    #[test]
+    fn join_budget_priority_is_own_pawn_then_unbound_then_bound_in_id_order() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![
+            join_budget_bound(2),
+            entity(9, vec![transform(9.0)]),
+            owned_movement(20, CLIENT_A, Some(1), 0.0),
+            join_budget_bound(1),
+            owned_movement(8, CLIENT_B, Some(1), 0.0),
+            entity(4, vec![transform(4.0)]),
+        ]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [20, 4, 8, 9, 1, 2]);
+        assert!(first.records[0].local_player);
+        assert!(!first.records[2].local_player);
+    }
+
+    #[test]
+    fn join_budget_pending_latest_state_and_despawn_precede_backlog() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let a = join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let b = join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let c = join_budget_sized_entity(3, JOIN_BASELINE_BUDGET_BYTES + 100);
+        server.ingest_tick(vec![a.clone(), b.clone(), c]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [1]);
+        let mut newest = b;
+        newest.components = vec![transform(42.0)];
+        server.ingest_tick(vec![a, newest]);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(join_budget_ids(&second), [3, 2]);
+        assert_eq!(
+            second.records[0].record_kind,
+            crate::wire::RECORD_KIND_DESPAWN
+        );
+        assert_eq!(
+            second.records[1].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_eq!(
+            second.records[1].components[0].transform.unwrap().position[0],
+            42.0
+        );
+        assert_eq!(
+            second
+                .records
+                .iter()
+                .filter(|record| record.network_id == 3)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn join_budget_held_deltas_and_forced_refresh_never_charge_pending_budget() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut held_a = join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let held_b = join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES + 100);
+        // Seed the two held entities over two windows.
+        server.ingest_tick(vec![held_a.clone(), held_b.clone()]);
+        let seed_a = server.encode_for_client(CLIENT_A, 0).unwrap();
+        join_budget_ack(&mut server, &seed_a);
+        let seed_b = server.encode_for_client(CLIENT_A, 1).unwrap();
+        join_budget_ack(&mut server, &seed_b);
+        held_a.components = vec![transform(99.0)];
+        server.ingest_tick(vec![
+            held_a,
+            held_b,
+            join_budget_sized_entity(3, JOIN_BASELINE_BUDGET_BYTES + 100),
+            join_budget_sized_entity(4, JOIN_BASELINE_BUDGET_BYTES),
+            entity(5, vec![transform(5.0)]),
+        ]);
+        server.request_refresh(CLIENT_A, 2, 0);
+        let raw = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert_eq!(join_budget_ids(&raw), [1, 2, 3, 4]);
+        assert_eq!(raw.records[0].record_kind, crate::wire::RECORD_KIND_DELTA);
+        assert_eq!(
+            raw.records[1].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_eq!(
+            crate::wire::encode(&raw.records[3]).len(),
+            JOIN_BASELINE_BUDGET_BYTES
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 1);
+    }
+
+    #[test]
+    fn join_budget_flight_waits_for_qualifying_sequence_then_repends_latest_after_loss() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        // Ensure an older sequence exists: the first real flight has sequence 1.
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let lost = server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        server.request_refresh(CLIENT_A, 1, 0);
+        server.apply_ack(CLIENT_A, old.sequence, &[], &[]);
+        let waiting = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert!(waiting.records.is_empty());
+        server.apply_ack(CLIENT_A, waiting.sequence, &[], &[]);
+        let repair = server.encode_for_client(CLIENT_A, 3).unwrap();
+        assert_eq!(join_budget_ids(&repair), [1]);
+        assert_eq!(
+            repair.records[0].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_ne!(
+            repair.records[0].baseline_id_or_ref,
+            lost.records[0].baseline_id_or_ref
+        );
+        assert_eq!(
+            repair.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &repair);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 4)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_older_baseline_ack_cannot_hide_newer_state_or_release_newer_flight() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        let old_id = old.records[0].baseline_id_or_ref;
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 1)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        let newer = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert_eq!(newer.records[0].record_kind, crate::wire::RECORD_KIND_DELTA);
+        assert_eq!(newer.records[0].baseline_id_or_ref, old_id);
+        assert_eq!(
+            newer.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &newer);
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 3)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_late_additive_older_baseline_supports_delta_after_new_flight_loss() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        let old_id = old.records[0].baseline_id_or_ref;
+        let empty = server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.apply_ack(CLIENT_A, empty.sequence, &[], &[]);
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        let lost_new = server.encode_for_client(CLIENT_A, 2).unwrap();
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 3)
+                .unwrap()
+                .records
+                .is_empty(),
+            "stale sequence cannot end newer flight"
+        );
+        server.apply_ack(CLIENT_A, lost_new.sequence, &[], &[]);
+        let repair = server.encode_for_client(CLIENT_A, 4).unwrap();
+        assert_eq!(
+            repair.records[0].record_kind,
+            crate::wire::RECORD_KIND_DELTA
+        );
+        assert_eq!(repair.records[0].baseline_id_or_ref, old_id);
+        assert_eq!(
+            repair.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &repair);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 5)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_windows_converge_without_flight_repeats() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut snapshots: Vec<_> = (1..=8)
+            .map(|id| join_budget_sized_entity(id, JOIN_BASELINE_BUDGET_BYTES))
+            .collect();
+        server.ingest_tick(snapshots.clone());
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [1, 2]);
+        snapshots.push(entity(20, vec![transform(20.0)]));
+        server.ingest_tick(snapshots);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(join_budget_ids(&second), [3, 4]);
+        join_budget_ack(&mut server, &first);
+        join_budget_ack(&mut server, &second);
+        let mut observed: HashSet<_> = first
+            .records
+            .iter()
+            .chain(&second.records)
+            .map(|r| r.network_id)
+            .collect();
+        for tick in 2..8 {
+            let raw = server.encode_for_client(CLIENT_A, tick).unwrap();
+            if raw.records.is_empty() {
+                break;
+            }
+            for record in &raw.records {
+                assert!(
+                    observed.insert(record.network_id),
+                    "already-admitted baseline repeated"
+                );
+            }
+            join_budget_ack(&mut server, &raw);
+        }
+        assert_eq!(observed.len(), 9);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 9)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_later_unbound_entity_passes_earlier_bound_backlog() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut snapshots: Vec<_> = (1..=1200).map(join_budget_bound).collect();
+        server.ingest_tick(snapshots.clone());
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert!(server.deferred_baseline_count(CLIENT_A) > 0);
+        let first_ids: HashSet<_> = join_budget_ids(&first).into_iter().collect();
+        snapshots.push(entity(1201, vec![transform(1201.0)]));
+        server.ingest_tick(snapshots);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(second.records[0].network_id, 1201);
+        assert!(second.records[0].presentation_binding.is_none());
+        assert!(
+            second.records[1..]
+                .iter()
+                .all(|r| r.presentation_binding.is_some() && !first_ids.contains(&r.network_id))
+        );
+        assert!(
+            second.records[1..]
+                .windows(2)
+                .all(|pair| pair[0].network_id < pair[1].network_id)
+        );
     }
 }

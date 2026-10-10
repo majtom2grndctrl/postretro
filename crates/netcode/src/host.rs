@@ -191,6 +191,13 @@ pub fn host_replicate(
             raw.faction_sentiment_record =
                 state_slots.produce_faction_sentiment_for_client(client_id);
             let bytes = wire::encode(&raw);
+            let deferred = replication.deferred_baseline_count(client_id);
+            if deferred > 0 {
+                log::debug!(
+                    "[Net] client {client_id} snapshot bytes={} deferred_baselines={deferred}",
+                    bytes.len()
+                );
+            }
             let _ = server.send_snapshot(client_id, bytes);
         }
     }

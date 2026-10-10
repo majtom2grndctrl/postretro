@@ -55,7 +55,7 @@ impl ContributorLedgerRecord {
 /// Attribution facts that travel beside a [`DamagePayload`] at the health
 /// chokepoint. The foundation-owned payload carries hit effects; entity
 /// identity stays here in `postretro-entities`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DamageContext {
     pub source_id: String,
     pub attacker: Option<EntityId>,
@@ -64,6 +64,10 @@ pub struct DamageContext {
     /// Identifies which engine arm reached the common damage chokepoint. This
     /// is evaluator-only data, never an IR input or command-target token.
     pub producer: DamageProducer,
+    /// World-space contact point (engine coordinates, no offset applied) when
+    /// the producer has one. Splash, script, crush and AI contact attacks leave
+    /// it `None`. Evaluator-only data, like `producer`.
+    pub point: Option<Vec3>,
 }
 
 impl DamageContext {
@@ -74,6 +78,7 @@ impl DamageContext {
             weapon: None,
             zone: None,
             producer,
+            point: None,
         }
     }
 }
@@ -125,6 +130,9 @@ pub struct ImpactDispatch {
     pub target: EntityId,
     pub source: Option<EntityId>,
     pub producer: DamageProducer,
+    /// World-space contact point carried from [`DamageContext::point`].
+    /// Evaluator-only: never an IR input, so [`Self::ir_values`] omits it.
+    pub point: Option<Vec3>,
 }
 
 impl ImpactDispatch {
@@ -516,6 +524,7 @@ pub fn apply_damage_with_context(
         target: id,
         source: context.attacker,
         producer: context.producer,
+        point: context.point,
     });
     true
 }
@@ -750,6 +759,36 @@ mod tests {
     }
 
     #[test]
+    fn damage_context_point_reaches_the_dispatch_and_defaults_to_none() {
+        let mut reg = EntityRegistry::new();
+        let target = reg.spawn(Transform::default());
+        reg.set_component(target, HealthComponent::from_descriptor(&descriptor(100.0)))
+            .unwrap();
+        let payload = DamagePayload {
+            amount: 1.0,
+            impulse: glam::Vec3::ZERO,
+        };
+        let contact = glam::Vec3::new(1.0, 2.0, 3.0);
+
+        let mut with_point = DamageContext::new("test.point", DamageProducer::InTick);
+        with_point.point = Some(contact);
+        apply_damage_with_context(&mut reg, target, &payload, with_point);
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &payload,
+            DamageContext::new("test.no-point", DamageProducer::InTick),
+        );
+
+        let points: Vec<_> = reg
+            .take_impact_dispatches()
+            .into_iter()
+            .map(|dispatch| dispatch.point)
+            .collect();
+        assert_eq!(points, vec![Some(contact), None]);
+    }
+
+    #[test]
     fn damage_chokepoint_dispatches_exact_facts_tokens_and_unfloored_health() {
         let mut reg = EntityRegistry::new();
         let target = reg.spawn(Transform::default());
@@ -770,6 +809,7 @@ mod tests {
                 weapon: None,
                 zone: None,
                 producer: DamageProducer::InTick,
+                point: None,
             },
         );
 
@@ -853,6 +893,7 @@ mod tests {
                 weapon: Some(weapon),
                 zone: Some("torso".to_string()),
                 producer: DamageProducer::InTick,
+                point: None,
             },
         );
         apply_damage_with_context(
@@ -868,6 +909,7 @@ mod tests {
                 weapon: Some(weapon),
                 zone: Some("head".to_string()),
                 producer: DamageProducer::InTick,
+                point: None,
             },
         );
 
@@ -908,6 +950,7 @@ mod tests {
                 weapon: None,
                 zone: None,
                 producer: DamageProducer::InTick,
+                point: None,
             },
         );
 

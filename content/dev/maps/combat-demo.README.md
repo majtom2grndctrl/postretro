@@ -246,8 +246,12 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
 - **Presentation fixture.** The dev mod globally registers floating damage
   numbers and a recently-damaged enemy health bar. Every hit on these dummies
   exercises the same `present()` and `damagedEnemies()` declarations used by
-  any other dev map with the shared dummy/enemy impact policies. Damage
-  numbers rise from the hit target; the bar lingers above it after a hit.
+  any other dev map with the shared dummy/enemy impact policies. Each pellet
+  spawns its own number, which rises from the point that pellet struck; the
+  bar lingers above the target after a hit. Every dev-map enemy carries the
+  `enemy` tag, through its `_tags` or its spawner's `spawned_tags`, so the
+  default `enemy-death` policy gives it numbers and a death everywhere;
+  `tools/tests/test_dev_map_enemy_tags.py` guards that.
 
 - The shot counts below assume a point-blank torso shot at **1 m or closer**.
   At that distance the 4° cone keeps every pellet within 7 cm of the aim ray, so

@@ -727,9 +727,9 @@ impl ImpactPolicyRuntime {
     }
 
     /// Presentation's numeric fact was frozen by `plan_effect` before any
-    /// consequences applied. Only the anchor deliberately comes from the live
-    /// target here: staged scripted despawn preserves Transform until the
-    /// app-owned frame-end removal pass.
+    /// consequences applied. The anchor is the dispatch's finite contact point,
+    /// else the live target's Transform: staged scripted despawn preserves
+    /// Transform until the app-owned frame-end removal pass.
     fn apply_presentation_spawn(
         &self,
         registry: &mut EntityRegistry,
@@ -743,17 +743,23 @@ impl ImpactPolicyRuntime {
             );
             return;
         };
-        let Ok(transform) = registry.get_component::<Transform>(dispatch.target) else {
-            log::warn!(
-                "[Impact] target has no world transform; presentation `{template_id}` was skipped"
-            );
-            return;
+        let world_anchor = match dispatch.point.filter(|point| point.is_finite()) {
+            Some(point) => point,
+            None => {
+                let Ok(transform) = registry.get_component::<Transform>(dispatch.target) else {
+                    log::warn!(
+                        "[Impact] target has no world transform; presentation `{template_id}` was skipped"
+                    );
+                    return;
+                };
+                transform.position
+            }
         };
 
         let mut facts = postretro_entities::PresentationFacts::new();
         facts.insert("value".to_string(), PresentationFact::Number(value));
         registry.push_presentation_spawn(PresentationSpawn {
-            world_anchor: transform.position,
+            world_anchor,
             template: PresentationTemplateHandle::from(template.id.clone()),
             facts,
             presenter: dispatch
@@ -1413,7 +1419,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::ammo_reserve::AmmoReserve;
     use postretro_entities::components::health::{
-        DamageContext, HealthComponent, Hitbox, apply_damage_with_context,
+        DamageContext, HealthComponent, Hitbox, IMPACT_DISPATCH_INPUTS, apply_damage_with_context,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::data_descriptors::{
@@ -2495,6 +2501,122 @@ mod tests {
                 .is_empty(),
             "a target without an anchor degrades to a skipped passive presentation"
         );
+    }
+
+    /// One `present()` hit on a target standing at `TARGET_POSITION`, optionally
+    /// stripped of its Transform, carrying `point`. Returns the staged spawns.
+    fn presentation_spawns_for_hit(
+        point: Option<glam::Vec3>,
+        keep_transform: bool,
+    ) -> Vec<PresentationSpawn> {
+        const TARGET_POSITION: glam::Vec3 = glam::Vec3::new(3.0, 4.0, 5.0);
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut transform = *registry
+                .get_component::<Transform>(target)
+                .expect("target has transform");
+            transform.position = TARGET_POSITION;
+            registry
+                .set_component(target, transform)
+                .expect("target transform updates");
+            if !keep_transform {
+                registry
+                    .remove_component::<Transform>(target)
+                    .expect("target had a transform");
+            }
+        }
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![presentation_template("damageNumber")]);
+        runtime.replace_global_events(vec![event(
+            "anchor",
+            "crate",
+            vec![present("damageNumber", input("@impact.amount"))],
+        )]);
+        let mut context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+        context.point = point;
+        apply_damage_with_context(
+            &mut ctx.registry.borrow_mut(),
+            target,
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO,
+            },
+            context,
+        );
+        evaluate_pending(&ctx, &mut runtime);
+        ctx.registry.borrow_mut().take_presentation_spawns()
+    }
+
+    #[test]
+    fn presentation_anchors_at_the_dispatch_contact_point() {
+        let point = glam::Vec3::new(-1.5, 0.25, 9.0);
+        let spawns = presentation_spawns_for_hit(Some(point), true);
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].world_anchor, point);
+    }
+
+    #[test]
+    fn presentation_without_a_point_anchors_at_the_target_position() {
+        let spawns = presentation_spawns_for_hit(None, true);
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].world_anchor, glam::Vec3::new(3.0, 4.0, 5.0));
+    }
+
+    #[test]
+    fn presentation_with_a_non_finite_point_falls_back_to_the_target_position() {
+        for bad in [
+            glam::Vec3::new(f32::NAN, 0.0, 0.0),
+            glam::Vec3::new(0.0, f32::INFINITY, 0.0),
+            glam::Vec3::new(0.0, 0.0, f32::NEG_INFINITY),
+        ] {
+            let spawns = presentation_spawns_for_hit(Some(bad), true);
+            assert_eq!(spawns.len(), 1, "{bad:?}");
+            assert_eq!(spawns[0].world_anchor, glam::Vec3::new(3.0, 4.0, 5.0));
+        }
+    }
+
+    #[test]
+    fn presentation_without_transform_spawns_at_a_finite_point_only() {
+        let point = glam::Vec3::new(-1.5, 0.25, 9.0);
+        let spawns = presentation_spawns_for_hit(Some(point), false);
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].world_anchor, point);
+
+        let nan = glam::Vec3::new(f32::NAN, 0.0, 0.0);
+        assert!(presentation_spawns_for_hit(Some(nan), false).is_empty());
+    }
+
+    #[test]
+    fn impact_dispatch_point_never_becomes_an_ir_input() {
+        assert_eq!(IMPACT_DISPATCH_INPUTS.len(), 4);
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+        context.point = Some(glam::Vec3::new(1.0, 2.0, 3.0));
+        apply_damage_with_context(
+            &mut ctx.registry.borrow_mut(),
+            target,
+            &DamagePayload {
+                amount: 1.0,
+                impulse: glam::Vec3::ZERO,
+            },
+            context,
+        );
+        let dispatches = ctx.registry.borrow_mut().take_impact_dispatches();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].point, Some(glam::Vec3::new(1.0, 2.0, 3.0)));
+        let names: Vec<&str> = dispatches[0]
+            .ir_values()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        let expected: Vec<&str> = IMPACT_DISPATCH_INPUTS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(names, expected);
     }
 
     #[test]

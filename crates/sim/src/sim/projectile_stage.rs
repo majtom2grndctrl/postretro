@@ -1536,6 +1536,62 @@ mod tests {
         assert!(projectile_impact_emissions(&[]).is_empty());
     }
 
+    #[test]
+    fn projectile_dispatch_point_is_the_contact_point_for_direct_hits_and_none_for_splash() {
+        for splash in [false, true] {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let target = spawn_target(
+                &mut registry.borrow_mut(),
+                Vec3::new(0.0, 0.0, -0.75),
+                Vec3::splat(0.1),
+            );
+            let neighbor = spawn_target(
+                &mut registry.borrow_mut(),
+                Vec3::new(1.0, 0.0, -0.75),
+                Vec3::splat(0.1),
+            );
+            let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+            if splash {
+                let mut registry = registry.borrow_mut();
+                let mut component = registry
+                    .get_component::<ProjectileComponent>(projectile)
+                    .unwrap()
+                    .clone();
+                component.splash = Some(SplashDescriptor {
+                    knockback: None,
+                    radius: 2.0,
+                    min_fraction: 0.0,
+                    self_damage: true,
+                });
+                registry.set_component(projectile, component).unwrap();
+            }
+
+            let world = CollisionWorld::default();
+            let zones = HitZoneStore::new();
+            assert!(advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {}).is_empty());
+            let contacts = advance(&registry, &world, &zones, 0.0, 1.0, &mut |_| {});
+            assert_eq!(contacts.len(), 1);
+
+            let dispatches = registry.borrow_mut().take_impact_dispatches();
+            if splash {
+                assert!(
+                    dispatches
+                        .iter()
+                        .any(|dispatch| dispatch.target == neighbor),
+                    "the blast damaged the neighbor"
+                );
+                assert!(
+                    dispatches.iter().all(|dispatch| dispatch.point.is_none()),
+                    "a splash receiver is not at the blast centre"
+                );
+            } else {
+                assert_eq!(dispatches.len(), 1);
+                assert_eq!(dispatches[0].target, target);
+                assert_eq!(dispatches[0].point, Some(contacts[0].point));
+            }
+        }
+    }
+
     // Pin P14: the projectile despawns on the tick it hits; its contact survives.
     #[test]
     fn projectile_despawned_on_hit_reports_its_full_contact_and_source() {

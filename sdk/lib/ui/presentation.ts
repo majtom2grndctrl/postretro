@@ -19,8 +19,10 @@ export type PresentationFactApi = Readonly<{
 export type PresentationTemplateProps = {
   root: WidgetDescriptor;
   lifetimeMs: number;
+  /** `rise` is the total upward travel over the lifetime, in device pixels. */
   motion: { rise: number; easing: WidgetEasing };
   fade: { startMs: number };
+  /** Maximum random screen-space offset per spawn, in device pixels. */
   spawnScatter: { radius: number };
   /** Required by an overlay consumer; ignored by event-spawn presentation. */
   worldAnchor?: { socket: string; offsetY: number };

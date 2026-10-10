@@ -91,6 +91,8 @@ which globally registers the enemy and weapon archetypes in
   and spends BSP leaves on the arena shell — the generator prints a warning and
   seats fewer arenas if the grid is too small.
 - **`--enemies N`** pre-places N `reference_enemy` AI enemies across the rooms.
+  Placed and closet-spawned enemies carry the `enemy` tag, which the dev mod's
+  default death and damage-number policy matches.
 - **`--weapons N`** pre-places N wieldable weapon pickups (the reference
   pistol/shotgun and the two fixture wieldables), touchable world items.
 - **`--doors N`** upgrades N maze doorways to automatic sliding `kinematic_mover`

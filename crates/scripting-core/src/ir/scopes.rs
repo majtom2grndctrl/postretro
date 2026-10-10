@@ -1054,6 +1054,7 @@ mod tests {
             target,
             source: None,
             producer: crate::components::health::DamageProducer::InTick,
+            point: None,
         }
     }
 

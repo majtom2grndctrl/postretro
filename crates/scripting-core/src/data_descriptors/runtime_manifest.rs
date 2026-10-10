@@ -50,9 +50,9 @@ pub struct PresentationTemplate {
     pub motion: PresentationTemplateMotion,
     pub fade: PresentationTemplateFade,
     pub spawn_scatter: PresentationTemplateSpawnScatter,
-    /// Overlay-only anchor metadata. Spawn presentation continues to use the
-    /// impact target's transform directly, so omitting this remains valid for
-    /// a number/toast template.
+    /// Overlay-only anchor metadata. Spawn presentation anchors at the
+    /// impact's contact point, else the target's transform, so omitting this
+    /// remains valid for a number/toast template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world_anchor: Option<PresentationWorldAnchor>,
 }

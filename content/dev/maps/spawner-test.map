@@ -212,6 +212,7 @@
 "archetype" "reference_enemy"
 "count" "3"
 "_tags" "closet_spawner"
+"spawned_tags" "enemy"
 }
 // entity 7
 // Static red billboard-lighting station. The player starts on the light-facing

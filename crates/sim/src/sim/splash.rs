@@ -12,7 +12,7 @@ use crate::scripting_systems::health::is_damage_target_eligible;
 use crate::scripting_systems::hit_zones::{
     HitZoneStore, damageable_volume, for_each_hittable_candidate,
 };
-use crate::sim::weapon_stage::apply_authorized_weapon_impact_damage;
+use crate::sim::weapon_stage::apply_authorized_splash_impact_damage;
 use crate::weapon::{ActivationOutcome, DamagePayload, WeaponImpact};
 
 /// A live damageable entity whose broad-phase volume intersects a sphere.
@@ -182,7 +182,7 @@ pub fn emit_splash_damage(
             zone: None,
             outcome: ActivationOutcome::Hit(DamagePayload { amount, impulse }),
         };
-        apply_authorized_weapon_impact_damage(
+        apply_authorized_splash_impact_damage(
             registry,
             owner_weapon,
             attacker,

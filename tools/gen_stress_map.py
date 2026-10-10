@@ -78,7 +78,8 @@ feature-heavy map.
   down through to the lower floor. Arena cells are reserved out of the maze
   lattice, so they replace rooms rather than adding to them.
 * `--enemies N` pre-places N `reference_enemy` AI enemies (globally registered
-  by the dev mod) across the rooms.
+  by the dev mod) across the rooms. Placed and closet-spawned enemies carry the
+  `enemy` tag, which the dev mod's death and damage-number policy matches.
 * `--weapons N` pre-places N wieldable weapon pickups (the dev mod's reference
   pistol/shotgun and the two fixture wieldables), touchable world items.
 * `--doors N` upgrades N maze doorways to automatic sliding `kinematic_mover`
@@ -301,6 +302,9 @@ WEAPON_CLASSES = [
 # AI enemy archetype the dev mod registers globally; directly map-placeable
 # because it carries health + mesh components (sdk/behaviors/reference/entities).
 ENEMY_CLASS = "reference_enemy"
+# The dev mod's death and damage-number policy matches this tag, so every
+# placed or closet-spawned enemy carries it.
+ENEMY_TAG = "enemy"
 
 # Enemy and pickup placement. The standing capsule is 0.4 m (~16 u) in radius,
 # so SPAWN_SPACING between centres leaves a body diameter of floor between two.
@@ -929,7 +933,7 @@ def enemy_entity(origin, yaw):
     """A pre-placed reference AI enemy (health + mesh + behavior graph)."""
     return ["{", f'"classname" "{ENEMY_CLASS}"',
             f'"origin" "{origin[0]} {origin[1]} {origin[2]}"',
-            f'"angles" "0 {yaw} 0"', "}"]
+            f'"angles" "0 {yaw} 0"', f'"_tags" "{ENEMY_TAG}"', "}"]
 
 
 def weapon_entity(origin, cls):
@@ -1043,7 +1047,7 @@ def monster_closet_entities(idx, cx, front_y, zf, zc):
     spawner = ["{", '"classname" "entity_spawner"',
                f'"origin" "{cx} {y1 - 96} {zf + 16}"', '"angles" "0 180 0"',
                f'"archetype" "{ENEMY_CLASS}"', f'"count" "{CLOSET_ENEMY_COUNT}"',
-               f'"_tags" "{spawner_tag}"', "}"]
+               f'"_tags" "{spawner_tag}"', f'"spawned_tags" "{ENEMY_TAG}"', "}"]
     return brushes, [mover,
                       ["{", '"classname" "kinematic_waypoint"', f'"name" "{shut}"',
                        f'"next" "{opn}"', f'"origin" "{cx} {door_cy} {door_cz}"', "}"],

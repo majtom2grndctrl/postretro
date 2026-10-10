@@ -171,7 +171,7 @@ impl Level {
                 )
                 .unwrap();
 
-            // The spawner's own tag addresses it; its spawns carry `closet`.
+            // The spawner's own tag addresses it; its spawns carry `closet` and `enemy`.
             let spawner = registry
                 .try_spawn(
                     at(Vec3::new(7.0, 0.5, 0.0)),
@@ -184,7 +184,7 @@ impl Level {
                     SpawnerComponent {
                         archetype_name: ARCHETYPE.to_string(),
                         count: SPAWN_COUNT,
-                        spawned_tags: vec!["closet".to_string()],
+                        spawned_tags: vec!["closet".to_string(), "enemy".to_string()],
                         resolved: true,
                     },
                 )

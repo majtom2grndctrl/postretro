@@ -219,5 +219,5 @@
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "closet_spawner"
-"spawned_tags" "closet"
+"spawned_tags" "closet enemy"
 }

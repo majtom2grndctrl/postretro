@@ -14,8 +14,8 @@
 // - `StaticBakedLights`: internal to lightmap and SH base bakes; no on-disk slot.
 //
 // Buried lights (`buried_lights.rs`) are absent from all three: a baked-tier
-// light whose emitter is wholly inside solid lights nothing, so it takes no
-// bake work, mask channel, chunk-list slot, or runtime record. Source indices
+// light whose origin is inside solid takes no bake work, mask channel,
+// chunk-list slot, or runtime record. Source indices
 // still name positions in the full `&[MapLight]`, so dropping one shifts no
 // other light's source identity.
 

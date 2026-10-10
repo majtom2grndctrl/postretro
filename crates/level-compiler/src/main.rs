@@ -1461,22 +1461,14 @@ impl Drop for DataScriptTempDir {
     }
 }
 
-/// Compile and evaluate the worldspawn `data_script`, if present.
-///
-/// The same `scripts-build --in/--out` invocation produces the PRL's script
-/// bytes and a mandatory, versioned membership sidecar. An absent KVP remains
-/// the normal no-script path; once a script is present, a missing or malformed
-/// sidecar is a build error rather than a silently unanimated static light.
-/// `map_members` rides in the light table so the script's mover, trigger and
-/// spawner queries answer what runtime answers. `buried_lights` are left out of
-/// the light table for the same reason: they have no runtime entity.
-fn compile_worldspawn_data_script(
+/// Resolve the worldspawn `data_script` KVP beside the map and check that the
+/// file exists with a supported extension. `None` means the map has no script.
+/// It needs nothing from later stages, so the pipeline runs it right after
+/// parse: a bad path fails before partitioning, not after it.
+fn resolve_data_script_source(
     map_path: &Path,
     data_script_path: Option<&str>,
-    lights: &[map_data::MapLight],
-    buried_lights: &buried_lights::BuriedLights,
-    map_members: Vec<postretro_level_format::light_membership::MapMember>,
-) -> anyhow::Result<Option<CompiledDataScript>> {
+) -> anyhow::Result<Option<PathBuf>> {
     let Some(rel) = data_script_path else {
         return Ok(None);
     };
@@ -1508,6 +1500,29 @@ fn compile_worldspawn_data_script(
             "[prl-build] data_script = {rel} has no file extension (expected .ts, .js, or .luau)"
         ),
     }
+
+    Ok(Some(source_path))
+}
+
+/// Compile and evaluate the worldspawn `data_script`, if present.
+///
+/// The same `scripts-build --in/--out` invocation produces the PRL's script
+/// bytes and a mandatory, versioned membership sidecar. An absent KVP remains
+/// the normal no-script path; once a script is present, a missing or malformed
+/// sidecar is a build error rather than a silently unanimated static light.
+/// `map_members` rides in the light table so the script's mover, trigger and
+/// spawner queries answer what runtime answers. `buried_lights` are left out of
+/// the light table for the same reason: they have no runtime entity.
+fn compile_worldspawn_data_script(
+    map_path: &Path,
+    data_script_path: Option<&str>,
+    lights: &[map_data::MapLight],
+    buried_lights: &buried_lights::BuriedLights,
+    map_members: Vec<postretro_level_format::light_membership::MapMember>,
+) -> anyhow::Result<Option<CompiledDataScript>> {
+    let Some(source_path) = resolve_data_script_source(map_path, data_script_path)? else {
+        return Ok(None);
+    };
 
     let temporary = DataScriptTempDir::create()?;
     let light_table =

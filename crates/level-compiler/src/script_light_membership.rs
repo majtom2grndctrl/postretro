@@ -222,14 +222,24 @@ pub(crate) fn apply_manifest(
     Ok(inventory)
 }
 
-pub(crate) fn log_inventory(inventory: &MembershipInventory, lights: &[MapLight]) {
+/// `buried` lights are skipped: their `_animated 1` reserves nothing, because
+/// the light namespaces leave them out, and they are already warned about.
+pub(crate) fn log_inventory(
+    inventory: &MembershipInventory,
+    lights: &[MapLight],
+    buried: &BuriedLights,
+) {
     for &index in &inventory.derived_static_indices {
         log::info!(
             "[prl-build] light membership: derived animated-bake reservation for static light {index} (tags: {})",
             tags_for_log(&lights[index])
         );
     }
-    for &index in &inventory.flag_only_indices {
+    for &index in inventory
+        .flag_only_indices
+        .iter()
+        .filter(|&&index| !buried.is_buried(index))
+    {
         log::info!(
             "[prl-build] light membership: explicit _animated reservation for static light {index} (tags: {})",
             tags_for_log(&lights[index])
@@ -432,6 +442,38 @@ mod tests {
         assert_eq!(inventory.dynamic_target_indices, vec![1]);
         assert_eq!(inventory.start_active_conflict_indices, vec![1]);
         assert_eq!(inventory.stubbed_primitives, ["spawnParticle"]);
+    }
+
+    #[test]
+    fn log_inventory_omits_explicit_animated_reservation_for_buried_lights() {
+        // The light namespaces leave a buried light out, so its `_animated 1`
+        // reserves nothing; logging a reservation for it would be false.
+        let mut buried_light = light(false);
+        buried_light.is_animated = true;
+        buried_light.animation = Some(animated_light_placeholder(true));
+        let mut open_light = light(false);
+        open_light.is_animated = true;
+        open_light.animation = Some(animated_light_placeholder(true));
+        let mut lights = vec![buried_light, open_light];
+        let inventory = apply_manifest(&mut lights, &[true, true], &manifest(vec![]))
+            .expect("manifest applies");
+        assert_eq!(inventory.flag_only_indices, vec![0, 1]);
+
+        let capture = postretro_test_log_capture::LogCapture::start();
+        log_inventory(
+            &inventory,
+            &lights,
+            &BuriedLights::from_flags(vec![true, false]),
+        );
+
+        capture.assert_not_logged(
+            log::Level::Info,
+            "explicit _animated reservation for static light 0",
+        );
+        capture.assert_logged_once(
+            log::Level::Info,
+            "explicit _animated reservation for static light 1",
+        );
     }
 
     #[test]

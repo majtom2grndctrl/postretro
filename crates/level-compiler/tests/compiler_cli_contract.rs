@@ -521,12 +521,17 @@ fn captured_streams_auto_select_plain_reporter_before_fast_pipeline_failure() {
     assert_plain_bytes("auto stderr", &output.stderr);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Parsing map...") && stderr.contains("Data script compilation..."),
+        stderr.contains("Parsing map..."),
         "captured streams must reach main's Auto TTY seam and select the line-oriented reporter:\n{stderr}",
     );
     assert!(
         stderr.contains("data_script = missing.luau") && stderr.contains("does not exist"),
-        "fixture must fail at the intended cheap post-selection precheck:\n{stderr}",
+        "fixture must fail at the intended cheap post-parse precheck:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains("Texture color-space validation...")
+            && !stderr.contains("BSP partitioning..."),
+        "the missing data script must fail before any later stage begins:\n{stderr}",
     );
 }
 

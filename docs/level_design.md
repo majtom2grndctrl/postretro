@@ -139,44 +139,115 @@ If you set both `brightness_curve` and `style`, the curve wins and `style` is ig
 
 ## Fog Volumes
 
-A fog volume is a brush entity that marks a region of the map for volumetric fog rendering.
+Fog is volumetric: the engine marches a ray through each fog region and adds in-scattered light along the way. Three entities place fog, and they share most of their keys.
 
-### Creating a Fog Volume
+| Entity | Kind | Shape | Use it for |
+|--------|------|-------|-----------|
+| `fog_volume` | brush | Ellipsoid (axis-aligned brush) or the brush's own convex hull (any other brush) | Rooms, corridors, large or oddly shaped regions |
+| `fog_lamp` | point | Sphere | A halo around a light, a puff of smoke |
+| `fog_tube` | point | Capsule, with a tilt | Strip lights, beams, steam from a pipe |
 
-1. Draw a hollow brush (or any convex brush) covering the area you want to fog.
-2. Select the brush and use **Entity > Tie to Entity** (or press `T`) to bind it to `env_fog_volume`.
-3. Set your desired properties in the Entity Inspector. The volume's AABB is derived from the brush geometry — the texture on the faces doesn't matter.
+**Sixteen fog entities per map, all three types combined.** The compiler skips any beyond the sixteenth and logs a warning naming the entity type. Entities are counted in the order they appear in the `.map` file.
 
-Up to 16 `env_fog_volume` entities are allowed per map.
+Fog has no color key. Its color comes from the level's baked lighting. To shift the hue, use `tint` (see the Appearance table below).
 
-### `env_fog_volume` Properties
+### Placing a `fog_volume`
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `color` | RGB | `255 255 255` | Fog tint color as `"R G B"` values 0–255 |
-| `density` | float | `0.5` | How opaque the fog is. Higher values thicken the fog faster; values above 1.0 are very heavy. |
-| `falloff` | float | `1.0` | How sharply the fog fades at the volume boundary. `0` = hard cutoff, `1` = smooth linear ramp. |
-| `glow` | float | `0.6` | How much the fog lights up near light sources. `0` stays dark even under bright lights; `1` picks up full light color. Raise for misty glow, lower for thick opaque smoke. |
-| `height_gradient` | float | `0.0` | Density bias by height. `0` = uniform density throughout the volume; `1` = denser at the bottom, thinner at the top. Good for ground-hugging smoke or water surface haze. |
-| `radial_falloff` | float | `0.0` | Density falloff toward the outer edges of the volume. `0` = no falloff (flat-sided box); `1` = sphere-shaped cloud, thin at the edges and dense at the center. |
-| `_tags` | string | `""` | Space-delimited tags for script queries (e.g. `"smoke ambient"`). Not visible in-game. |
+1. Draw a convex brush covering the area you want to fog.
+2. Select it and use **Entity > Tie to Entity** (or press `T`) to bind it to `fog_volume`.
+3. Set properties in the Entity Inspector. Only the brush's shape matters; the texture on its faces does not.
+
+The compiler picks the fog's shape from the brush's faces:
+
+| Brush | Fog shape | Keys that apply |
+|-------|-----------|-----------------|
+| **Axis-aligned.** Every face normal points along ±X, ±Y, or ±Z (a box, within about 1°). | An ellipsoid inscribed in the brush's bounding box. Dense in the middle, fading toward the surface. | `falloff`. `edge_softness` is ignored. |
+| **Anything else.** Any face is tilted. | The brush's own convex volume, with a hard or softened boundary at each face. | `edge_softness`. `falloff` is ignored. |
+
+An axis-aligned `fog_volume` may own several brushes; their bounding boxes are merged into one. A tilted one must own exactly one brush and at most 16 faces, or the compiler stops with an error. To fog a space with a compound shape, use several `fog_volume` entities.
+
+For a plain sphere or capsule, `fog_lamp` and `fog_tube` are easier to place and come with tuned defaults.
+
+### Placing a `fog_lamp` or `fog_tube`
+
+Place the point entity where you want the fog centered. `radius` (and `height` for a tube) size it, in map units. TrenchBroom shows a unit-sized model scaled to match.
+
+A `fog_tube` is a capsule along its local up axis. `yaw` turns it around the vertical axis first; `pitch` then tilts it around the resulting horizontal axis. Both are in degrees. With both at `0` the tube stands upright.
+
+The engine bounds each point-entity volume by an axis-aligned box that encloses the shape, and the fade is measured inside that box. A `fog_lamp` with `radial_falloff` above `0` fades to nothing at the sphere's surface. A `fog_tube` is an approximation: its fade is measured to the corner of its bounding box, so density at the box faces is not zero and a tilted tube can look boxy. Raise `radial_falloff` to hide the box.
+
+### Keys
+
+Keys you do not set take the defaults below. A value that cannot be read as a number is silently replaced by the default, so check the compiler log if a key seems to have no effect.
+
+#### Density and shape
+
+| Key | Entities | Type | Default | Range | What it does |
+|-----|----------|------|---------|-------|--------------|
+| `density` | all | float | `0.5` (`fog_tube`: `0.3`) | `0` and up | How opaque the fog is. `0` is invisible; values above `1` are very heavy. |
+| `falloff` | `fog_volume` (axis-aligned) | float | `2.0` | `0` and up | Fade exponent from the center to the surface. `0` = uniform density with a hard edge; higher = denser core, softer edge. |
+| `radial_falloff` | `fog_lamp`, `fog_tube` | float | `2.0` (`fog_tube`: `1.5`) | `0` and up | Same exponent as `falloff`, for the point entities. `0` fills the whole bounding box evenly. |
+| `edge_softness` | `fog_volume` (tilted) | float | `1.0` | `0` and up | Width of the fade band just inside each face, in **meters** (1 m ≈ 39 map units). `0` = hard cutoff at the face. |
+| `radius` | `fog_lamp`, `fog_tube` | float | `64` (`fog_tube`: `32`) | above `0` | Sphere or capsule radius, in map units. Zero or negative is a compile error. |
+| `height` | `fog_tube` | float | `128` | above `0` | Capsule length tip to tip, in map units. Zero or negative is a compile error. |
+| `pitch` | `fog_tube` | float | `0` | any | Tilt, in degrees, around the horizontal axis after yaw. |
+| `yaw` | `fog_tube` | float | `0` | any | Turn, in degrees, around the vertical axis. |
+
+#### Light and scatter
+
+| Key | Entities | Type | Default | Range | What it does |
+|-----|----------|------|---------|-------|--------------|
+| `glow` | all | float | `0.6` | `0`–`1` | How much the fog lights up near light sources. `0` = the fog still blocks the view but takes no light, so it stays dark even under bright lights; `1` = it picks up the full light color. Raise for misty glow, lower for thick opaque smoke. |
+| `light_range` | all | float | `1.0` | above `0` | Scales how far dynamic lights reach inside this fog. `1.0` = same reach as open air, `2.0` = double, `0.5` = half. Zero or negative is raised to `0.001` with a warning. |
+| `scatter_bias` | all | float | `0` | `0`–`100` | Makes the fog brighten when you look toward baked light. `0` = flat haze, `100` = strongest directional glow. Out-of-range values clamp, with a warning. |
+| `ambient_scatter` | all | float | `1.0` | `0`–`1` | How much baked ambient light shows in the fog. `0` = only dynamic lights show, `1` = full ambient. Out-of-range values clamp, with a warning. |
+| `min_brightness` | all | float | `0.0` | `0` and up | A floor on the fog's scattered light, so it stays at least this bright in unlit areas. `0` = no floor. The floor is applied before `tint`, so it takes the fog's color. |
+
+#### Appearance
+
+| Key | Type | Default | Range | What it does |
+|-----|------|---------|-------|--------------|
+| `tint` | color | `255 255 255` | `0`–`255` per channel | Multiplies the scattered light color. White = no change. A value that is not three whole numbers in range falls back to white. |
+| `saturation` | float | `1.0` | `0` and up | `0` = greyscale, `1` = natural, above `1` = boosted. Applied before `tint`. |
+
+#### Scripting
+
+| Key | Entities | Type | Default | What it does |
+|-----|----------|------|---------|--------------|
+| `_tags` | all | string | `""` | Space-delimited tags. Scripts find fog by tag. Not visible in-game. |
+
+### Changing fog from scripts
+
+Scripts reach fog by tag and can change `density`, `glow`, `edge_softness`, `falloff` (the value of `falloff` or `radial_falloff`, whichever the entity uses), `tint`, `saturation`, `min_brightness`, and `light_range` while the level runs. The shape, `scatter_bias`, and `ambient_scatter` are baked at compile time and cannot change. Scripts name these fields in camelCase (`edgeSoftness`, `minBrightness`, `lightRange`). Ranges and clamping are in the [`FogVolumeComponent` reference](scripting-reference.md#fogvolumecomponent).
+
+Changing `edge_softness` on an axis-aligned `fog_volume` or on a point entity does nothing visible, and neither does changing `falloff` on a tilted `fog_volume`; the shape ignores that value.
+
+### How overlapping fog combines
+
+Fog entities may overlap freely.
+
+- **Densities add.** Two volumes in the same space are denser together than either alone. Use this for layered effects, such as ground mist under a higher haze.
+- **Glow takes the highest value** among the overlapping volumes.
+- **Everything else is a density-weighted average** at each point: `tint`, `saturation`, `min_brightness`, `light_range`, `scatter_bias`, and `ambient_scatter`. A thin volume overlapping a thick one barely changes the thick one's color.
 
 ### Fog Resolution — `fog_pixel_scale`
 
-The fog pass renders at a reduced resolution for performance and to preserve the chunky pixelated look. The scale is controlled by a worldspawn property:
+The fog pass renders at reduced resolution for performance and to keep the chunky pixelated look. A `worldspawn` key sets the scale for every fog volume in the map:
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `fog_pixel_scale` | integer | `4` | Downscale factor for the fog render target. `1` = full resolution, `4` = quarter resolution (default), `8` = coarsest. |
+| Key | Type | Default | Range | What it does |
+|-----|------|---------|-------|--------------|
+| `fog_pixel_scale` | integer | `4` | `1`–`8` | Downscale factor for the fog render target. `1` = full resolution, `4` = quarter resolution, `8` = coarsest. Coarser is faster but blockier near edges. Values above `8` clamp to `8`; `0`, negative, or unset use `4`. |
 
-Set `fog_pixel_scale` on the `worldspawn` entity, not on individual volumes. It applies to all fog volumes in the map.
+Set it on the `worldspawn` entity, not on individual fog entities.
 
 ### Tips
 
-- **Keep volumes inside sealed rooms.** A fog volume that crosses exterior geometry will still render but the AABB extends to the brush bounds, which may clip unexpectedly at room boundaries.
-- **Overlapping volumes stack additively.** Two volumes occupying the same space add their densities together. Use this intentionally for layered effects (ground mist plus a higher haze layer), but avoid accidental overlap.
-- **Match color to your lighting.** Fog lit by a blue neon overhead looks better with a slightly blue `color` than pure white. The color is multiplied by scattered light, so very bright values can wash out.
-- **`radial_falloff` hides box edges.** If a rectangular volume looks obviously box-shaped, increase `radial_falloff` toward `0.5`–`1.0` to soften the corners into a cloud shape.
+- **Let the lighting color the fog.** Fog takes its color from the baked lighting around it. Leave `tint` white and nudge it only to shift the hue.
+- **Soften the box.** A rectangular `fog_volume` is an ellipsoid already, so raise `falloff` to make the core denser and the edge fainter. For a `fog_lamp` or `fog_tube`, raise `radial_falloff` toward `2`–`3`.
+- **Thick smoke versus misty glow.** Thick opaque smoke: high `density`, low `glow`. Misty glow around lights: moderate `density`, high `glow`.
+- **Fog in the dark.** Set `min_brightness` to give fog a faint visible body in unlit rooms.
+- **Keep volumes inside the space you mean them for.** Walls do not stop fog; it fills its whole volume. A volume that crosses a wall also fogs the space on the other side.
+- **Mind the sixteen-entity cap.** A few well-placed large volumes beat many small ones.
 
 ---
 

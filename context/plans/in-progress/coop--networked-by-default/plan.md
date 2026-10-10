@@ -104,11 +104,11 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | complete |
-| P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | in progress |
+| P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | complete |
 | P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | complete |
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P1 | complete |
 | P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | complete |
-| P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | pending |
+| P6 | Wire presentation state/bindings/clock/position, versions and all call sites (T5) | integrator | P4,P5 | in progress |
 | P7 | Descriptor display set + HitVolume22, completeness retry/cache (T4) | integrator | P6 | pending |
 | P8 | Extract client mover bindings (T1) | bounded worker | P7 | pending |
 | P9 | Stable identity, MapOrdinal23, authored-prefix resolver (T7) | integrator | P7,P8 | pending |
@@ -135,6 +135,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 - P4 complete: remote materialization loop extracted without behavior changes; normalized source-body comparison preserved the original dispatch, initial animation, locomotion cache and attachment order. `cargo test -p postretro-netcode --lib enemy_replication_harness_test`: 17 passed; `cargo test -p postretro-netcode --lib remote_materialize::tests`: 9 passed.
 
 - P5 complete: component constants, mirrors, raw slots and validation moved unchanged to `wire/components.rs`, with explicit existing-path re-exports. Field/variant order and normalized production bodies preserved; private movement-finiteness proof moved with its implementation. `cargo test -p postretro-net --lib wire::`: 77 passed, 0 failed.
+
+- P2 complete: real TouchSystem pickup/drop retains Health 37, magazine 3, recovery 87, every reserve (including explicit zero), ownership and spatial participation transitions. Deferred script removal still applies to held weapons and clears ownership on generation reuse. Client Control/baseline arrival orders, retuning and replacement/removal preserve retained state; current-inventory teardown protects former dropped/reacquired items; demotion/re-promotion rebuilds fresh instances. `held_descriptor_lifecycle` (sim 2 passed), the two touch lifecycle tests (1 each), duplicate/full and auto-touch ordering regressions (1 each), scripting-core `held_descriptor_lifecycle_refresh_preserves_ownership_and_retained_state` (1 passed), client current-inventory despawn and o22/o24 demotion tests (1 each) passed. Resource tests (11 passed) and nine existing inactive cooldown/reload/drop/tuning filters (1 each) passed. Initial AI/physics/spatial consumer checks are recorded above. Integration removed an overly broad queued-projectile guard: accepted endpoint contacts/effects remain, while target damage/policy rechecks ownership; corrected regression passed (1 test).
 
 ### P1 and P2 boundaries
 

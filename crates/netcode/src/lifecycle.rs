@@ -744,9 +744,18 @@ mod tests {
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         let mut pending_hit_declarations = crate::netcode::PendingHitDeclarations::new();
         let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut weapon_descriptor = weapon_descriptor("reference_pistol");
+        weapon_descriptor.health = Some(postretro_foundation::HealthDescriptor {
+            max: 75.0,
+            hitbox: Some(postretro_foundation::HitboxDescriptor {
+                half_extents: [0.5; 3],
+                offset: None,
+            }),
+            zone_multipliers: Default::default(),
+        });
         let descriptors = [
             player_with_loadout(&["reference_pistol", "reference_pistol"]),
-            weapon_descriptor("reference_pistol"),
+            weapon_descriptor,
         ];
         let spawn_points = [synthetic_placement()];
 
@@ -781,6 +790,20 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(weapons.len(), 2, "fixture equips two inventory slots");
+        for (slot, &item) in weapons.iter().enumerate() {
+            assert_eq!(registry.inventory_owner(item), Some((pawn, slot)));
+            let mut health = registry
+                .get_component::<postretro_entities::components::health::HealthComponent>(item)
+                .unwrap()
+                .clone();
+            health.current = 29.0;
+            registry.set_component(item, health).unwrap();
+            assert!(
+                !postretro_sim::scripting_systems::health::is_damage_target_eligible(
+                    &registry, item
+                )
+            );
+        }
         let mut lowering = registry
             .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapons[0])
             .unwrap()
@@ -793,6 +816,16 @@ mod tests {
         switching_inventory.switch_target = Some(1);
         switching_inventory.switch_origin = Some(0);
         registry.set_component(pawn, switching_inventory).unwrap();
+        for &item in &weapons {
+            assert_eq!(
+                registry
+                    .get_component::<postretro_entities::components::health::HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            assert!(registry.is_inventory_owned(item));
+        }
         let weapon = weapons[0];
         let pawn_net = allocator
             .network_id_for_entity(pawn)
@@ -941,6 +974,9 @@ mod tests {
                         && !allocator.maps_network_id(*net_id)),
             "slot close clears allocator forward and reverse mappings"
         );
+        for &item in &weapons {
+            assert_eq!(registry.inventory_owner(item), None);
+        }
         assert!(!replicable.contains(pawn));
         assert!(weapons.iter().all(|&weapon| !replicable.contains(weapon)));
         assert_eq!(open_shots.len(), 0);
@@ -986,6 +1022,38 @@ mod tests {
                 .all(|weapon| !weapons.contains(weapon)),
             "no pre-demotion instance or slot holder survives re-promotion"
         );
+        for (slot, item) in replacement_inventory.wieldables.iter().enumerate() {
+            let Some(item) = item else {
+                continue;
+            };
+            assert_eq!(registry.inventory_owner(*item), Some((replacement, slot)));
+            assert!(registry.is_inventory_owned(*item));
+            assert!(
+                !postretro_sim::scripting_systems::health::is_damage_target_eligible(
+                    &registry, *item
+                )
+            );
+            assert_eq!(
+                registry
+                    .get_component::<postretro_entities::components::health::HealthComponent>(*item)
+                    .unwrap()
+                    .current,
+                75.0
+            );
+        }
+        // Re-promotion reuses the retired generation-safe slots, never their ownership.
+        let retired = std::iter::once(pawn)
+            .chain(weapons.iter().copied())
+            .collect::<Vec<_>>();
+        for fresh in std::iter::once(replacement)
+            .chain(replacement_inventory.wieldables.iter().flatten().copied())
+        {
+            let old = retired
+                .iter()
+                .find(|old| old.to_raw() & 0xffff == fresh.to_raw() & 0xffff)
+                .unwrap();
+            assert_ne!(fresh.to_raw() >> 16, old.to_raw() >> 16);
+        }
     }
 
     #[test]

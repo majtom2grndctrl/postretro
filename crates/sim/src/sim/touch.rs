@@ -1076,7 +1076,15 @@ mod tests {
                 },
             )
             .unwrap();
-        let full_slots = [Some(owned); WIELDABLE_SLOT_CAPACITY];
+        let full_slots = std::array::from_fn(|_| {
+            Some(spawn_item(
+                &mut registry,
+                "filler",
+                Vec3::new(20.0, 0.0, 0.0),
+                TouchMode::Auto,
+                1,
+            ))
+        });
         registry
             .set_component(
                 full_owner,
@@ -1190,18 +1198,17 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::ZERO);
-        let filler = spawn_item(
-            &mut registry,
-            "filler",
-            Vec3::new(10.0, 0.0, 0.0),
-            TouchMode::Auto,
-            1,
-        );
         let lower_id_item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
         let higher_id_item = spawn_item(&mut registry, "plasma", Vec3::ZERO, TouchMode::Auto, 4);
         let mut inventory = Inventory::default();
         for slot in &mut inventory.wieldables[..WIELDABLE_SLOT_CAPACITY - 1] {
-            *slot = Some(filler);
+            *slot = Some(spawn_item(
+                &mut registry,
+                "filler",
+                Vec3::new(10.0, 0.0, 0.0),
+                TouchMode::Auto,
+                1,
+            ));
         }
         registry.set_component(pawn, inventory).unwrap();
         let mut system = TouchSystem {
@@ -1473,6 +1480,25 @@ mod tests {
             registry.is_marked_for_end_of_frame_removal(item).unwrap(),
             "a later deferred despawn is admitted and runs against the held weapon"
         );
+        assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+        let mut removed = Vec::new();
+        crate::impact_effects::run_end_of_frame_removal_pass(&mut registry, |removal| {
+            removed.push(removal.entity);
+        });
+        assert_eq!(removed, [item]);
+        assert!(!registry.exists(item));
+        assert_eq!(registry.inventory_owner(item), None);
+        assert!(registry.exists(pawn));
+        // The next tick's existing liveness normalization repairs selection;
+        // removal does not invent a new ownership-specific selection policy.
+        let (inventory, _) =
+            crate::sim::weapon_stage::normalize_inventory_liveness(&mut registry, pawn)
+                .expect("the holder survives its auxiliary's scripted removal");
+        assert!(inventory.wieldables.iter().all(Option::is_none));
+        assert_eq!(inventory.active_slot, 0);
+        let reused = registry.spawn(Transform::default());
+        assert_ne!(reused, item);
+        assert!(!registry.is_inventory_owned(reused));
     }
 
     #[test]
@@ -2109,7 +2135,67 @@ mod tests {
     fn pickup_and_drop_preserve_every_reserve_balance_including_explicit_zeroes() {
         let mut registry = EntityRegistry::new();
         let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
-        let item = spawn_item(&mut registry, "ion", Vec3::ZERO, TouchMode::Auto, 7);
+        use crate::scripting_systems::health::is_damage_target_eligible;
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_scripting_core::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+
+        let mut descriptor = drop_descriptor("ion", TouchMode::Auto, 1.0);
+        descriptor.health = Some(HealthDescriptor {
+            max: 80.0,
+            hitbox: Some(HitboxDescriptor {
+                half_extents: [0.3; 3],
+                offset: None,
+            }),
+            zone_multipliers: Default::default(),
+        });
+        let descriptors = [descriptor];
+        crate::scripting::builtins::apply_data_archetype_dispatch(
+            &[crate::scripting::builtins::MapEntity {
+                classname: "ion".into(),
+                origin: Vec3::ZERO,
+                angles: Vec3::ZERO,
+                key_values: Default::default(),
+                tags: vec![],
+            }],
+            &descriptors,
+            &Default::default(),
+            &mut registry,
+            None,
+        );
+        let item = registry
+            .iter_with_kind(ComponentKind::Touchable)
+            .next()
+            .unwrap()
+            .0;
+        let mut health = registry
+            .get_component::<HealthComponent>(item)
+            .unwrap()
+            .clone();
+        health.current = 37.0;
+        registry.set_component(item, health.clone()).unwrap();
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(item)
+            .unwrap()
+            .clone();
+        weapon.magazine = 3;
+        weapon.cooldown_remaining_ms = 87.0;
+        registry.set_component(item, weapon.clone()).unwrap();
+        let store = HitZoneStore::new();
+        let ray = |registry: &EntityRegistry| {
+            let position = registry.get_component::<Transform>(item).unwrap().position;
+            nearest_entity_hit(
+                registry,
+                &store,
+                0.0,
+                position + Vec3::Z * 5.0,
+                -Vec3::Z,
+                10.0,
+                0.0,
+            )
+        };
+        assert_eq!(ray(&registry).unwrap().target, item);
+        assert!(is_damage_target_eligible(&registry, item));
         let mut reserve = AmmoReserve::default();
         reserve.credit("cells", 11);
         reserve.set_exact("rockets", 0);
@@ -2121,7 +2207,6 @@ mod tests {
             .map(|(ammo_type, amount)| (ammo_type.to_owned(), amount))
             .collect::<Vec<_>>();
         let players = players(&[(PlayerId::Local(pawn), pawn)]);
-        let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
         let mut system = TouchSystem::default();
 
         tick(&mut system, &mut registry, &players, &[]);
@@ -2133,7 +2218,15 @@ mod tests {
             Some(item),
             "the reserve assertion covers a genuine pickup before the drop"
         );
-        tick_with_edges(
+        assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+        assert!(ray(&registry).is_none());
+        assert!(!is_damage_target_eligible(&registry, item));
+        assert_eq!(
+            registry.get_component::<HealthComponent>(item).unwrap(),
+            &health
+        );
+        let before_drop_position = registry.get_component::<Transform>(item).unwrap().position;
+        let dropped = tick_with_edges(
             &mut system,
             &mut registry,
             &floor_world(),
@@ -2143,6 +2236,27 @@ mod tests {
             &[(PlayerId::Local(pawn), true)],
         );
 
+        assert_eq!(dropped.dropped_item_meshes, [item]);
+        assert_eq!(registry.inventory_owner(item), None);
+        assert!(
+            registry
+                .get_component::<Transform>(item)
+                .unwrap()
+                .position
+                .distance(before_drop_position)
+                > 0.5
+        );
+        assert_eq!(ray(&registry).unwrap().target, item);
+        assert!(is_damage_target_eligible(&registry, item));
+        assert_eq!(
+            registry.get_component::<HealthComponent>(item).unwrap(),
+            &health
+        );
+        let after = registry.get_component::<WeaponComponent>(item).unwrap();
+        assert_eq!(after.magazine, weapon.magazine);
+        assert!((after.cooldown_remaining_ms - weapon.cooldown_remaining_ms).abs() < f32::EPSILON);
+        assert_eq!(after.heat, weapon.heat);
+        assert_eq!(after.cell, weapon.cell);
         assert_eq!(
             registry
                 .get_component::<AmmoReserve>(pawn)

@@ -1284,6 +1284,171 @@ mod tests {
     }
 
     #[test]
+    fn held_descriptor_lifecycle_client_materialization_orders_preserve_ownership_and_health() {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        fn health_weapon(name: &str) -> EntityTypeDescriptor {
+            let mut descriptor = touchable_mesh_weapon_descriptor(name);
+            descriptor.health = Some(postretro_foundation::HealthDescriptor {
+                max: 75.0,
+                hitbox: Some(postretro_foundation::HitboxDescriptor {
+                    half_extents: [0.5; 3],
+                    offset: None,
+                }),
+                zone_multipliers: Default::default(),
+            });
+            descriptor
+        }
+        for control_first in [false, true] {
+            let mut registry = EntityRegistry::new();
+            let pawn = registry.spawn(Transform::default());
+            let descriptors = [
+                player_with_default_weapon("player", "local_pistol"),
+                health_weapon("local_pistol"),
+                health_weapon("replacement_rifle"),
+            ];
+            let mut tuning = tuning_for_slot(0, "local_pistol", 220.0, 340.0, 55, 80);
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                if control_first { Some(&tuning) } else { None }
+            ));
+            let item = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0]
+                .unwrap();
+            assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+            assert!(registry.is_inventory_owned(item));
+            let mut health = registry
+                .get_component::<HealthComponent>(item)
+                .unwrap()
+                .clone();
+            health.current = 29.0;
+            registry.set_component(item, health).unwrap();
+            let mut weapon = registry
+                .get_component::<WeaponComponent>(item)
+                .unwrap()
+                .clone();
+            weapon.magazine = 3;
+            weapon.cooldown_remaining_ms = 47.0;
+            registry.set_component(item, weapon).unwrap();
+            // The other arrival must keep the already materialized instance and live state.
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                if control_first { None } else { Some(&tuning) }
+            ));
+            assert_eq!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0],
+                Some(item)
+            );
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            tuning.wieldables[0].as_mut().unwrap().range = 180.0;
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            assert_eq!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0],
+                Some(item)
+            );
+            assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            let weapon = registry.get_component::<WeaponComponent>(item).unwrap();
+            assert_eq!(weapon.range, 180.0);
+            assert_eq!(weapon.magazine, 3);
+            assert_eq!(weapon.cooldown_remaining_ms, 47.0);
+            let zones = HitZoneStore::new();
+            assert!(
+                nearest_entity_hit(&registry, &zones, 0.0, Vec3::Z * 2.0, Vec3::NEG_Z, 4.0, 0.0)
+                    .is_none()
+            );
+            // Positive query control proves the retained hitbox is usable in world space.
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            assert_eq!(
+                nearest_entity_hit(&registry, &zones, 0.0, Vec3::Z * 2.0, Vec3::NEG_Z, 4.0, 0.0)
+                    .unwrap()
+                    .target,
+                item
+            );
+            registry.set_component(pawn, inventory).unwrap();
+            tuning.wieldables[0].as_mut().unwrap().canonical_name = "replacement_rifle".into();
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            let replacement = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0]
+                .unwrap();
+            assert_ne!(replacement, item);
+            assert_eq!(replacement.to_raw() & 0xffff, item.to_raw() & 0xffff);
+            assert_ne!(replacement.to_raw() >> 16, item.to_raw() >> 16);
+            assert!(!registry.exists(item));
+            assert_eq!(registry.inventory_owner(item), None);
+            assert_eq!(registry.inventory_owner(replacement), Some((pawn, 0)));
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(replacement)
+                    .unwrap()
+                    .current,
+                75.0
+            );
+            tuning.wieldables[0] = None;
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            assert!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0]
+                    .is_none()
+            );
+            assert!(!registry.exists(replacement));
+            assert_eq!(registry.inventory_owner(replacement), None);
+            let reused = registry.spawn(Transform::default());
+            assert_eq!(reused.to_raw() & 0xffff, replacement.to_raw() & 0xffff);
+            assert_ne!(reused.to_raw() >> 16, replacement.to_raw() >> 16);
+            assert_eq!(registry.inventory_owner(reused), None);
+        }
+    }
+
+    #[test]
     fn tuning_first_materializes_capacity_slot_from_host_archetype() {
         let mut reg = EntityRegistry::new();
         let pawn = reg.spawn(Transform::default());
@@ -1306,6 +1471,7 @@ mod tests {
         assert_eq!(inventory.active_slot, 2);
         assert!(inventory.wieldables[0].is_none());
         let weapon_id = inventory.wieldables[2].expect("host slot materialized");
+        assert_eq!(reg.inventory_owner(weapon_id), Some((pawn, 2)));
         assert_eq!(
             reg.get_component::<DescriptorProvenance>(weapon_id)
                 .unwrap()
@@ -1390,6 +1556,8 @@ mod tests {
         let inventory = reg.get_component::<Inventory>(pawn).unwrap();
         assert_eq!(inventory.wieldables[0], Some(original));
         let grown = inventory.wieldables[2].expect("host-named slot is filled");
+        assert_eq!(reg.inventory_owner(original), Some((pawn, 0)));
+        assert_eq!(reg.inventory_owner(grown), Some((pawn, 2)));
         assert_eq!(
             reg.get_component::<DescriptorProvenance>(grown)
                 .unwrap()

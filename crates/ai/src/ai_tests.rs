@@ -12852,3 +12852,6 @@ fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static
         .filter_map(|emission| emission.address.clone())
         .collect()
 }
+
+#[path = "held_world_participation_tests.rs"]
+mod held_world_participation;

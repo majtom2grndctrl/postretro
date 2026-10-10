@@ -5173,7 +5173,22 @@ mod tests {
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
         inventory.wieldables[0] = Some(first);
         inventory.wieldables[3] = Some(second);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert_eq!(registry.inventory_owner(first), Some((pawn, 0)));
+        assert_eq!(registry.inventory_owner(second), Some((pawn, 3)));
+        // Retirement follows current membership, including a later acquisition.
+        let other = registry.spawn(Transform::default());
+        let later = registry.spawn(Transform::default());
+        inventory.wieldables[3] = None;
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert_eq!(registry.inventory_owner(second), None);
+        let mut transferred = postretro_entities::components::inventory::Inventory::default();
+        transferred.wieldables[8] = Some(second);
+        registry.set_component(other, transferred).unwrap();
+        inventory.wieldables[9] = Some(later);
         registry.set_component(pawn, inventory).unwrap();
+        assert_eq!(registry.inventory_owner(second), Some((other, 8)));
+        assert_eq!(registry.inventory_owner(later), Some((pawn, 9)));
 
         client.apply_snapshot(
             &mut registry,
@@ -5189,8 +5204,24 @@ mod tests {
         );
 
         assert!(!registry.exists(first));
-        assert!(!registry.exists(second));
+        assert!(!registry.exists(later));
         assert!(!registry.exists(pawn));
+        assert_eq!(registry.inventory_owner(first), None);
+        assert_eq!(registry.inventory_owner(later), None);
+        assert!(registry.exists(second));
+        assert!(registry.exists(other));
+        assert_eq!(registry.inventory_owner(second), Some((other, 8)));
+        // Every recycled retired slot starts without inherited ownership.
+        let retired = [pawn, first, later];
+        for _ in retired {
+            let fresh = registry.spawn(Transform::default());
+            let prior = retired
+                .iter()
+                .find(|old| old.to_raw() & 0xffff == fresh.to_raw() & 0xffff)
+                .unwrap();
+            assert_ne!(fresh.to_raw() >> 16, prior.to_raw() >> 16);
+            assert_eq!(registry.inventory_owner(fresh), None);
+        }
     }
 
     // Regression: archetype identity can remain unchanged while the descriptor mesh

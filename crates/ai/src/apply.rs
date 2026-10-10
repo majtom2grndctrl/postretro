@@ -64,10 +64,28 @@ where
     // outcome's brain through the damage chokepoint; publishing that later
     // snapshot after the hit would restore its stale pre-hit perception state.
     for outcome in &outcomes {
-        let _ = registry.set_component(outcome.id, outcome.brain.clone());
+        if !registry.is_inventory_owned(outcome.id) {
+            let _ = registry.set_component(outcome.id, outcome.brain.clone());
+        }
     }
 
     for mut outcome in outcomes {
+        // Holding suspends world work without retiring private controller state.
+        if registry.is_inventory_owned(outcome.id) {
+            continue;
+        }
+        if outcome
+            .target
+            .is_some_and(|target| registry.is_inventory_owned(target.entity))
+        {
+            outcome.target = None;
+            outcome.weapon_aim = None;
+            outcome.facing_direction = None;
+            outcome.combat_slot = None;
+            if matches!(outcome.steering, SteeringIntent::Chase) {
+                outcome.steering = SteeringIntent::Clear;
+            }
+        }
         // Earlier outcomes can synchronously damage or terminally inactivate a
         // later actor. Keep every compute snapshot published above, but do not
         // let that actor's stale outcome produce any observable work.
@@ -259,6 +277,10 @@ where
             }
         }
 
+        if registry.is_inventory_owned(outcome.id) {
+            continue;
+        }
+
         // Existing executions advance even after the activity's first-fire
         // latch closes. Apply rechecks the selected target before the shared
         // executor may debit or produce this tick's immutable shot.
@@ -297,6 +319,10 @@ where
                     attack: fire.attack_name,
                 },
             });
+        }
+
+        if registry.is_inventory_owned(outcome.id) {
+            continue;
         }
 
         // Animation: on a state change or locomotion stop/resume, request the

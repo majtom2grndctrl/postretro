@@ -119,8 +119,8 @@ export type PostretroUiModule = {
   displayModeAction: (op: DisplayModeOperation) -> string,
   --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
   accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
-  --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
-  updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
+  --- Write a literal, fluent or runtime value at game-logic time. Fluent values (`byPlayer(on.player)` reads included) and runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
+  updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> PrimitiveReactionDescriptor,
   appendText: (ref: Ref<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
   clearText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
@@ -148,6 +148,10 @@ export type PostretroModule = {
   npcs: typeof(npcs),
   --- Address every seat-bound player pawn. An opaque group resolved when each command takes effect.
   players: typeof(players),
+  --- Player-event edge word: fire when a Bool condition turns true for a player.
+  becomes: typeof(becomes),
+  --- Player-event edge word: fire when a Bool condition turns false for a player.
+  ceases: typeof(ceases),
   wait: typeof(wait),
   fire: typeof(fire),
   --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.

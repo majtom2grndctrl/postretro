@@ -35,7 +35,7 @@ Four channels, fixed layout, agreed by both peers (the layout is folded into the
 | Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input/activation commands, HIT declarations, repair/acks and time sync; host activation outcomes, shot verdicts and observer weapon cues |
-| Presentation | unreliable | host-addressed presentation to one client: passive events (damage numbers, damaged-enemy facts) and, decided not yet built, player-addressed presentation commands |
+| Presentation | unreliable | host-addressed presentation to one client: passive events (damage numbers, damaged-enemy facts) and player-addressed presentation commands |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
 Presentation is a separate event lane: it is addressed to one client, fire-and-forget,
@@ -179,7 +179,7 @@ unordered fact arrival cannot select a different retained target set.
 
 **The player's damage bearing is the declared exception (decided, not yet built).** It is transient feedback, yet it rides owner-private replicated slots, never the Presentation channel, and adds no message kind. It is a continuous fact a HUD binds, not a one-shot command: a per-owner slot binds directly to a HUD widget and holds the latest value until the next hit. The host computes, at the damage chokepoint, a per-owner latest bearing in a frame the client can re-project, a source-known flag (damage need not have a spatial source — `entity_model.md` §7c), and a recency signal. Slots reach the client at snapshot cadence carrying only the latest value, so recency changes on every hit and holds until the next — a count or elapsed time, never a one-tick pulse a snapshot can straddle. Within one tick the last-applied hit wins. The owning client re-projects the bearing against its current view every frame into a client-local, unreplicated, readonly slot. A non-owning client never receives it. The mod HUD draws the indicator; the engine publishes the fact, not the policy.
 
-**Player-addressed presentation commands (decided, not yet built).** A player event's presentation reactions (`playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`; `scripting.md` §12) present on that player's machine: locally for the host's own player, else as a Presentation-channel command sent to that client alone. Delivery follows the lane: unreliable, so a lost command presents nothing, and a client held, demoted or between levels presents nothing. The client drops a command carrying a non-finite number at intake, and turns each other command into the same local command a local reaction enqueues, so the receiving machine's accommodations (flash limiter, reduce motion) apply. The wire type mirrors the engine command inside the net crate; conversion lives in `postretro-netcode`, so no engine type enters `net`. Trigger-fired presentation is unchanged and plays on the host.
+**Player-addressed presentation commands.** A player event's presentation reactions (`playSound`, `rumble`, `flashScreen`, `vignette`, `screenShake`; `scripting.md` §12) present on that player's machine: locally for the host's own player, else as a Presentation-channel command sent to that client alone. Delivery follows the lane: unreliable, so a lost command presents nothing, and a client held, demoted or between levels presents nothing. The client drops a command carrying a non-finite number at intake, and turns each other command into the same local command a local reaction enqueues, so the receiving machine's accommodations (flash limiter, reduce motion) apply. The wire type mirrors the engine command inside the net crate; conversion lives in `postretro-netcode`, so no engine type enters `net`. Trigger-fired presentation is unchanged and plays on the host. The host routes at the top of its system-command drain: a seat bound to a remote client gets one `ServerPresentationPayload::Command`; any other seat presents in that same local drain.
 
 ### Mod identity
 
@@ -903,7 +903,10 @@ protocol to 10, spelled `PRLA` because the id is four ASCII bytes. They are appe
 variants and the append-layout guards show no shipped encoding changed, so they leave
 `WIRE_VERSION` at 25. The switch declaration's client tick advances `WIRE_VERSION` to
 26; the application protocol (`PRLA`), `SNAPSHOT_VERSION` (17) and the tuning epoch are
-unchanged. Incompatible peers fail the handshake; snapshot 17 independently rejects
+unchanged. Player-addressed presentation commands, appended to
+`ServerPresentationPayload`, advance the application protocol to 11 (`PRLB`); the
+append-layout guard shows no shipped presentation payload changed, so `WIRE_VERSION`
+stays 26. Incompatible peers fail the handshake; snapshot 17 independently rejects
 older snapshot envelopes. The PRL level-file format is
 unchanged. The host movement descriptor's knockback response advances the tuning
 epoch to 9; host-resolved activation programs/scaling bases advance it to 10.

@@ -922,3 +922,122 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     assert_eq!(brain.acquired_target, Some(attacker));
     assert_eq!(brain.retaliation_acquired_target, Some(attacker));
 }
+
+// A player event reads the settled tick: a remote client's HIT that waited on
+// this tick's FIRE lands after the fixed-tick sim, with its own death sweep,
+// and the frame loop evaluates player events after both. The condition sees
+// that damage on the tick it lands, as it sees a host hit.
+#[test]
+fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
+    use postretro_entities::ScriptCtx;
+    use postretro_foundation::{IrNode, IrValue, Seat};
+    use postretro_scripting_core::data_descriptors::{
+        NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor,
+        ReactionDescriptor,
+    };
+    use postretro_sim::player_events::{PlayerEventResidual, PlayerEventTable};
+
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (pawn, weapon, victim) = {
+        let mut r = registry.borrow_mut();
+        let pawn = r.spawn(Transform::default());
+        r.set_component(pawn, movement()).unwrap();
+        let weapon = r.spawn(Transform::default());
+        r.set_component(weapon, projectile_weapon("weapon.test.projectile"))
+            .unwrap();
+        // The victim is another seated player.
+        let victim = target(&mut r, Vec3::new(0.0, 0.5, -2.0), Vec3::splat(0.5));
+        r.set_component(victim, movement()).unwrap();
+        r.bind_pawn_seat(victim, Seat(2));
+        (pawn, weapon, victim)
+    };
+    let mut script_ctx = ScriptCtx::new();
+    script_ctx.registry = registry.clone();
+    {
+        let mut data = script_ctx.data_registry.borrow_mut();
+        data.set_level_reactions(vec![NamedReaction {
+            name: "hurt".to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "playSound".to_string(),
+                target: None,
+                kind: None,
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "sound": "hurt" }),
+            }),
+        }]);
+        data.set_level_player_events(vec![PlayerEventDescriptor {
+            edge: PlayerEventEdge::Becomes,
+            condition: IrNode::Lt {
+                a: Box::new(IrNode::Input {
+                    name: "player.health".to_string(),
+                    owner: None,
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Number(95.0),
+                }),
+            },
+            fire: vec!["hurt".to_string()],
+            levels: Vec::new(),
+            authored_index: 0,
+        }]);
+        data.recompose(&[]);
+    }
+    let mut player_events =
+        PlayerEventTable::build(&script_ctx, Default::default(), Default::default(), None);
+    let mut residuals: Vec<PlayerEventResidual> = Vec::new();
+
+    let mut allocator = NetworkIdAllocator::new();
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(pawn)).0,
+        9,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
+    let victim_network_id = allocator.stamp(victim);
+    let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
+
+    // Tick N: the sim authorizes the FIRE; the client's HIT waited on it.
+    let shot = authorization(&host.tick(&[remote_fire(pawn, weapon, shot_id)], |_, _| {}));
+    let mut owners = MovementOwners::new();
+    owners.set(pawn, CLIENT_ID);
+    let mut open = opened(shot);
+    let declaration = delivered(HitDeclaration {
+        shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+        records: vec![HitRecord {
+            normal: [0.0, 1.0, 0.0],
+            target: victim_network_id.0,
+            point: Vec3::new(0.0, 0.5, -2.0).to_array(),
+            zone: None,
+        }],
+    });
+    // The post-sim flush and its death sweep, in frame-loop order.
+    assert_eq!(
+        ingest(
+            &mut registry.borrow_mut(),
+            &host.world,
+            &allocator,
+            &owners,
+            &mut open,
+            &declaration,
+        ),
+        (true, true)
+    );
+    let _ = crate::sim::run_death_sweep(&registry);
+    // Then the tick settles and player events evaluate.
+    player_events.run_tick(&script_ctx, &mut residuals);
+
+    assert_eq!(
+        registry
+            .borrow()
+            .get_component::<HealthComponent>(victim)
+            .unwrap()
+            .current,
+        90.0
+    );
+    assert_eq!(
+        residuals.len(),
+        1,
+        "the remote hit is seen on the tick it lands"
+    );
+}

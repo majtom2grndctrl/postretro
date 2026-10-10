@@ -3,7 +3,7 @@
 
 mod command_binding;
 #[cfg(test)]
-mod group_tick_tests;
+pub(crate) mod group_tick_tests;
 mod install;
 mod manifest_events;
 mod partition;
@@ -11,6 +11,9 @@ mod partition;
 mod tests;
 #[cfg(test)]
 mod trigger_event_tests;
+
+pub(crate) use command_binding::BindSite;
+pub(crate) use partition::partition_direct_reaction;
 
 pub use manifest_events::{
     ResolutionDiagnostics, ResolvedTriggerEvent, TriggerEventSource,
@@ -34,7 +37,7 @@ pub(crate) use crate::trigger_commands::BoundTriggerCommandKind;
 use crate::trigger_commands::{BoundTriggerCommand, TriggerFireContext};
 use crate::trigger_system::TriggerEventEdge;
 
-const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
+pub(crate) const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
     &[("@occupancy", postretro_foundation::IrType::Number)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

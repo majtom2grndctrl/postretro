@@ -161,13 +161,16 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             && let Some(offset) = steps[wait_pos + 1..].iter().position(|step| {
                 matches!(
                     step.id,
-                    SequenceTarget::Activators | SequenceTarget::FiredTrigger
+                    SequenceTarget::Activators
+                        | SequenceTarget::FiredTrigger
+                        | SequenceTarget::EventPlayer
                 ) || args_read_emitter(&step.args)
+                    || postretro_scripting_core::player_event_scope::reads_event_player(&step.args)
             })
         {
             let step_index = wait_pos + 1 + offset;
             log::error!(
-                "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
+                "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`/`@player`, `byPlayer(on.player)`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
             );
             data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
             continue;
@@ -288,6 +291,12 @@ fn scoped_fire_targets(
                 .or_else(|| {
                     args_read_emitter(&primitive.args)
                         .then(|| format!("`{}` at `on.emitter`", primitive.primitive))
+                })
+                .or_else(|| {
+                    postretro_scripting_core::player_event_scope::reads_event_player(
+                        &primitive.args,
+                    )
+                    .then(|| format!("`{}` reads `byPlayer(on.player)`", primitive.primitive))
                 }),
             ReactionDescriptor::Sequence(steps) => {
                 steps
@@ -299,6 +308,9 @@ fn scoped_fire_targets(
                         )),
                         SequenceTarget::FiredTrigger => Some(format!(
                             "sequence step {step_index} target sentinel `@trigger`"
+                        )),
+                        SequenceTarget::EventPlayer => Some(format!(
+                            "sequence step {step_index} target sentinel `@player`"
                         )),
                         // Guards a sequenced step's raw args, not a live
                         // `playSound` step: `playSound` is a system-only
@@ -812,6 +824,42 @@ mod tests {
             capture.assert_logged_once(log::Level::Error, "reaction `reveal` step 2");
             assert!(is_dropped(&ctx, "reveal"));
         }
+    }
+
+    // `on.player` is fire context too: a post-`wait` subject step or
+    // `byPlayer(on.player)` read drops the reaction; the same step before the
+    // wait is kept.
+    #[test]
+    fn v4a_drops_post_wait_event_player_and_keeps_it_before_the_wait() {
+        let owner_read = SequenceStep {
+            id: SequenceTarget::Entity(postretro_entities::EntityId::from_raw(1)),
+            primitive: "updateNpcState".to_string(),
+            args: json!({ "aggro": { "op": "input", "name": "player.health", "owner": "@player" } }),
+        };
+        let ctx = ctx_with_reactions(vec![
+            sequence(
+                "lateStep",
+                vec![
+                    wait_step(json!(200), false),
+                    sentinel_step(SequenceTarget::EventPlayer),
+                ],
+            ),
+            sequence("lateRead", vec![wait_step(json!(200), false), owner_read]),
+            sequence(
+                "early",
+                vec![
+                    sentinel_step(SequenceTarget::EventPlayer),
+                    wait_step(json!(200), false),
+                ],
+            ),
+        ]);
+        let capture = LogCapture::start();
+        validate_reaction_bodies_pass_a(&ctx);
+        capture.assert_logged_once(log::Level::Error, "reaction `lateStep` step 1");
+        capture.assert_logged_once(log::Level::Error, "reaction `lateRead` step 1");
+        assert!(is_dropped(&ctx, "lateStep"));
+        assert!(is_dropped(&ctx, "lateRead"));
+        assert!(!is_dropped(&ctx, "early"));
     }
 
     // A pre-`wait` sentinel step is legitimate fire-time context and is not

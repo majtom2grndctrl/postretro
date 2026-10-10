@@ -156,6 +156,11 @@ impl SystemReactionRegistry {
         self.handlers.contains_key(name)
     }
 
+    /// Every registered system reaction name, in no order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.handlers.keys().map(String::as_str)
+    }
+
     pub fn dispatch(
         &self,
         name: &str,

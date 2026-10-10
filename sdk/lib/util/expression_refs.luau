@@ -24,6 +24,15 @@ local function boolNode(value: BoolValue): any
   return boolNodes[value] or value
 end
 
+-- The IR node behind a fluent ref; any other value (a literal, a raw node)
+-- unchanged.
+local function loweredValue(value: any): any
+  if type(value) ~= "table" then
+    return value
+  end
+  return numberNodes[value] or boolNodes[value] or value
+end
+
 local function numberRef(node: any): NumberRef
   local ref: any = {}
   ref.plus = function(_self: NumberRef, n: NumberValue): NumberRef
@@ -87,6 +96,7 @@ end
 return table.freeze({
   numberNode = numberNode,
   boolNode = boolNode,
+  loweredValue = loweredValue,
   numberRef = numberRef,
   boolRef = boolRef,
 })

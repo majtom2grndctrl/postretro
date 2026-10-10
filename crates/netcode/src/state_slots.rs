@@ -17,7 +17,12 @@ use postretro_entities::{
     SlotTable, SlotType, SlotValue,
 };
 use postretro_scripting_core::StoreIdentityLedger;
+use postretro_scripting_core::player_slots::{
+    PlayerSlot, ReloadRead, active_weapon, player_slot_value, weapon_slot_value,
+};
 
+#[cfg(test)]
+mod player_slot_lookup_test;
 mod resource_projection;
 use resource_projection::{ResourceSlotProjection, record_resource_sample};
 
@@ -494,9 +499,10 @@ use postretro_net::state_slots::{
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
 use crate::weapon::{ReplicatedWeaponProjection, SlotSample};
 use postretro_entities::EntityId;
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
-use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon::{ReloadFeedbackConsumer, WeaponComponent};
 
 /// Baseline/delta tracker for the complete sparse faction-sentiment overlay. It
 /// deliberately does not share `ServerStateReplication`: the overlay is a dynamic
@@ -933,7 +939,9 @@ fn owner_private_source_value(
     weapon_slots: &WeaponSlotProjection,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
-        return slot_value_to_wire(&value);
+        // A pawn with no health source sends nothing rather than falling
+        // through to the global scalar, which is the host's own value.
+        return value.as_ref().and_then(slot_value_to_wire);
     }
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
         return value;
@@ -989,6 +997,10 @@ fn descriptor_ammo_for_pawn(
     WeaponSlotProjection::for_pawn(registry, pawn).slot_value(name)
 }
 
+/// Owner-private projection samples reload through its own endpoint cursor.
+const OWNER_PROJECTION_READ: ReloadRead =
+    ReloadRead::Feedback(ReloadFeedbackConsumer::OwnerProjection);
+
 /// One owner's slot-correlated weapon values, from its own pawn's active weapon.
 struct WeaponSlotProjection {
     weapon: Option<EntityId>,
@@ -1015,23 +1027,23 @@ impl WeaponSlotProjection {
             .filter(|weapon| registry.get_component::<WeaponComponent>(*weapon).is_ok());
         let component =
             weapon.and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
-        let (reload_progress, reload_active) = component
-            .map(WeaponComponent::owner_reload_status)
-            .unwrap_or((0.0, false));
-        let mut magazine = None;
-        let mut reserve = None;
-        if let Some(weapon) = component {
-            let effective = weapon.effective();
-            if let Some(ammo) = effective.ammo {
-                magazine = Some(weapon.magazine as f32);
-                reserve = Some(
-                    registry
-                        .get_component::<AmmoReserve>(pawn)
-                        .map_or(0, |reserve| reserve.available(ammo.ammo_type))
-                        as f32,
-                );
-            }
-        }
+        let ammo_reserve = registry.get_component::<AmmoReserve>(pawn).ok();
+        let read = |slot| {
+            component.and_then(|weapon| {
+                weapon_slot_value(weapon, ammo_reserve, slot, OWNER_PROJECTION_READ)
+            })
+        };
+        let number = |slot| match read(slot) {
+            Some(SlotValue::Number(value)) => Some(value),
+            _ => None,
+        };
+        let magazine = number(PlayerSlot::Ammo);
+        let reserve = number(PlayerSlot::AmmoReserve);
+        let reload_progress = number(PlayerSlot::ReloadProgress).unwrap_or(0.0);
+        let reload_active = matches!(
+            read(PlayerSlot::ReloadActive),
+            Some(SlotValue::Boolean(true))
+        );
 
         Self {
             weapon,
@@ -1086,33 +1098,21 @@ impl WeaponSlotProjection {
     }
 }
 
-/// Read the descriptor-fed health value for `name` from `pawn`'s live
-/// `HealthComponent`, the first descriptor-defined replicated source (M15 Phase 3.5).
-/// `player.health` → current HP, `player.maxHealth` → max HP. `None` for any other
-/// name or a pawn carrying no `HealthComponent`. The production path reads each owned
-/// pawn's component per-owner, so each client's snapshot carries its own health.
+/// Read the health value for `name` from `pawn` through the shared per-pawn
+/// lookup. The outer option names the health slots; the inner one is `None`
+/// for a pawn carrying no `HealthComponent`. Each owned pawn is read per-owner,
+/// so each client's snapshot carries its own health.
 fn descriptor_health_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
-) -> Option<SlotValue> {
-    let field = match name {
-        "player.health" => HealthField::Current,
-        "player.maxHealth" => HealthField::Max,
+) -> Option<Option<SlotValue>> {
+    let slot = match name {
+        "player.health" => PlayerSlot::Health,
+        "player.maxHealth" => PlayerSlot::MaxHealth,
         _ => return None,
     };
-    let health = registry.get_component::<HealthComponent>(pawn).ok()?;
-    let value = match field {
-        HealthField::Current => health.current,
-        HealthField::Max => health.max,
-    };
-    Some(SlotValue::Number(value))
-}
-
-#[derive(Clone, Copy)]
-enum HealthField {
-    Current,
-    Max,
+    Some(player_slot_value(registry, slot, pawn))
 }
 
 /// Read the owner-private active weapon cooldown for `pawn`. The value is not on
@@ -1135,13 +1135,14 @@ fn active_weapon_cooldown_sample(
     registry: &EntityRegistry,
     pawn: EntityId,
 ) -> Option<WireSlotValue> {
-    let inventory = registry.get_component::<Inventory>(pawn).ok()?;
-    let weapon = inventory.active_wieldable()?;
-    let component = registry.get_component::<WeaponComponent>(weapon).ok()?;
-    wieldable_slot_sample(
-        inventory.active_slot,
-        &SlotValue::Number(component.cooldown_remaining_ms),
-    )
+    let active = active_weapon(registry, pawn)?;
+    let value = weapon_slot_value(
+        active.weapon,
+        None,
+        PlayerSlot::WeaponCooldownMs,
+        ReloadRead::Feedback(ReloadFeedbackConsumer::OwnerProjection),
+    )?;
+    wieldable_slot_sample(active.slot, &value)
 }
 
 // ---------------------------------------------------------------------------

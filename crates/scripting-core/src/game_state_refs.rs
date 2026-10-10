@@ -14,6 +14,52 @@ use super::error::ScriptError;
 pub const GAME_STATE_BRIDGE_GLOBAL: &str = "__postretroGameStateRefs";
 pub const GET_GAME_STATE_GLOBAL: &str = "getGameState";
 
+// A per-player leaf (`EngineStateCatalogEntry::is_per_player`) gains a
+// non-enumerable `byPlayer(owner)`, so the tree still serializes as `{slot,
+// kind}` and interior nodes stay method-free. The tree is built before the SDK
+// prelude, so `byPlayer` cannot see the SDK's owner tokens; it recognizes
+// `on.player` and `impact.source` by the wire spelling each carries as
+// `__wire`, and lowers anything else to `@invalid` for the engine to reject.
+// script-compiler's `light_membership.rs` mirrors both installers; the drift
+// guard in `postretro-sim` compares them, so they are public for it alone.
+#[doc(hidden)]
+pub const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
+  const slot = leaf.slot;
+  const kind = leaf.kind;
+  Object.defineProperty(leaf, "byPlayer", {
+    value: function byPlayer(owner) {
+      const wire = owner !== null && typeof owner === "object" ? owner.__wire : undefined;
+      return Object.freeze({
+        slot,
+        kind,
+        owner: wire === "@player" || wire === "@impact.source" ? wire : "@invalid",
+      });
+    },
+    enumerable: false,
+  });
+}"#;
+
+// `pcall`: an opaque SDK target raises on any field it does not serve.
+#[doc(hidden)]
+pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
+  local slot = leaf.slot
+  local kind = leaf.kind
+  local function byPlayer(_self, owner)
+    local wire = nil
+    if type(owner) == "table" then
+      local ok, value = pcall(function()
+        return owner.__wire
+      end)
+      wire = if ok then value else nil
+    end
+    if wire ~= "@player" and wire ~= "@impact.source" then
+      wire = "@invalid"
+    end
+    return table.freeze({ slot = slot, kind = kind, owner = wire })
+  end
+  setmetatable(leaf, table.freeze({ __index = table.freeze({ byPlayer = byPlayer }) }))
+end"#;
+
 pub fn install_quickjs_bridge(ctx: &Ctx<'_>) -> Result<(), ScriptError> {
     let catalog = engine_state_catalog().map_err(catalog_error)?;
     install_quickjs_bridge_from_catalog(ctx, &catalog)
@@ -44,7 +90,9 @@ fn host_error(action: &str, error: impl std::fmt::Display) -> ScriptError {
 
 /// SDK-only state-ref value tag. Consumers project refs to their stable wire
 /// identity through `.slot`, so this metadata never reaches descriptors.
-fn state_ref_kind(value_type: EngineStateValueType<'_>) -> &'static str {
+/// Public only for the build-time mirror's drift guard.
+#[doc(hidden)]
+pub fn state_ref_kind(value_type: EngineStateValueType<'_>) -> &'static str {
     match value_type {
         EngineStateValueType::Number => "number",
         EngineStateValueType::Boolean => "boolean",
@@ -61,7 +109,15 @@ fn install_quickjs_bridge_from_catalog(
     reject_quickjs_collision(ctx, GAME_STATE_BRIDGE_GLOBAL)?;
     reject_quickjs_collision(ctx, GET_GAME_STATE_GLOBAL)?;
 
-    let root = build_quickjs_object(ctx, catalog.tree().root(), catalog.entries())?;
+    let install_by_player: JsFunction = ctx
+        .eval(QUICKJS_INSTALL_BY_PLAYER)
+        .map_err(|e| host_error("failed to build QuickJS byPlayer installer", e))?;
+    let root = build_quickjs_object(
+        ctx,
+        catalog.tree().root(),
+        catalog.entries(),
+        &install_by_player,
+    )?;
     ctx.globals()
         .set(GAME_STATE_BRIDGE_GLOBAL, root)
         .map_err(|e| host_error("failed to install QuickJS bridge", e))?;
@@ -83,13 +139,14 @@ fn build_quickjs_object<'js>(
     ctx: &Ctx<'js>,
     children: &std::collections::BTreeMap<String, EngineStateTreeNode>,
     entries: &[EngineStateCatalogEntry<'static>],
+    install_by_player: &JsFunction<'js>,
 ) -> Result<JsObject<'js>, ScriptError> {
     let object = JsObject::new(ctx.clone())
         .map_err(|e| host_error("failed to allocate QuickJS state object", e))?;
     for (segment, node) in children {
         match node {
             EngineStateTreeNode::Object(grandchildren) => {
-                let child = build_quickjs_object(ctx, grandchildren, entries)?;
+                let child = build_quickjs_object(ctx, grandchildren, entries, install_by_player)?;
                 object
                     .set(segment.as_str(), child)
                     .map_err(|e| host_error("failed to set QuickJS state object field", e))?;
@@ -106,6 +163,11 @@ fn build_quickjs_object<'js>(
                     .map_err(|e| host_error("failed to set QuickJS state leaf slot", e))?;
                 leaf.set("kind", state_ref_kind(entry.value_type))
                     .map_err(|e| host_error("failed to set QuickJS state leaf kind", e))?;
+                if entry.is_per_player() {
+                    install_by_player
+                        .call::<_, ()>((leaf.clone(),))
+                        .map_err(|e| host_error("failed to install QuickJS byPlayer", e))?;
+                }
                 freeze_quickjs_object(ctx, &leaf)?;
                 object
                     .set(segment.as_str(), leaf)
@@ -138,7 +200,17 @@ fn install_luau_bridge_from_catalog(
     reject_luau_collision(lua, GAME_STATE_BRIDGE_GLOBAL)?;
     reject_luau_collision(lua, GET_GAME_STATE_GLOBAL)?;
 
-    let root = build_luau_table(lua, catalog.tree().root(), catalog.entries())?;
+    let install_by_player: mlua::Function = lua
+        .load(LUAU_INSTALL_BY_PLAYER)
+        .set_name("postretro/game_state_refs/byPlayer")
+        .eval()
+        .map_err(|e| host_error("failed to build Luau byPlayer installer", e))?;
+    let root = build_luau_table(
+        lua,
+        catalog.tree().root(),
+        catalog.entries(),
+        &install_by_player,
+    )?;
     lua.globals()
         .set(GAME_STATE_BRIDGE_GLOBAL, root)
         .map_err(|e| host_error("failed to install Luau bridge", e))?;
@@ -160,6 +232,7 @@ fn build_luau_table(
     lua: &mlua::Lua,
     children: &std::collections::BTreeMap<String, EngineStateTreeNode>,
     entries: &[EngineStateCatalogEntry<'static>],
+    install_by_player: &mlua::Function,
 ) -> Result<mlua::Table, ScriptError> {
     let table = lua
         .create_table()
@@ -167,7 +240,7 @@ fn build_luau_table(
     for (segment, node) in children {
         match node {
             EngineStateTreeNode::Object(grandchildren) => {
-                let child = build_luau_table(lua, grandchildren, entries)?;
+                let child = build_luau_table(lua, grandchildren, entries, install_by_player)?;
                 table
                     .set(segment.as_str(), child)
                     .map_err(|e| host_error("failed to set Luau state table field", e))?;
@@ -185,6 +258,11 @@ fn build_luau_table(
                     .map_err(|e| host_error("failed to set Luau state leaf slot", e))?;
                 leaf.set("kind", state_ref_kind(entry.value_type))
                     .map_err(|e| host_error("failed to set Luau state leaf kind", e))?;
+                if entry.is_per_player() {
+                    install_by_player
+                        .call::<()>(leaf.clone())
+                        .map_err(|e| host_error("failed to install Luau byPlayer", e))?;
+                }
                 leaf.set_readonly(true);
                 table
                     .set(segment.as_str(), leaf)
@@ -377,6 +455,73 @@ mod tests {
         let mut got = BTreeMap::new();
         collect_luau_kinds(root, &mut Vec::new(), &mut got);
         assert_eq!(got, expected_catalog_path_kinds());
+    }
+
+    #[test]
+    fn per_player_leaves_lower_by_player_owner_tokens_in_both_runtimes() {
+        // Only the catalog's per-player leaves carry `byPlayer`; it accepts
+        // the two owner tokens by wire spelling and lowers anything else to
+        // `@invalid` for the engine to reject.
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let ctx = rquickjs::Context::full(&runtime).unwrap();
+        ctx.with(|ctx| {
+            install_quickjs_bridge(&ctx).unwrap();
+            let json: String = ctx
+                .eval(
+                    r#"
+                    (() => {
+                      const p = globalThis.__postretroGameStateRefs.player;
+                      const player = {};
+                      Object.defineProperty(player, "__wire", { value: "@player" });
+                      Object.freeze(player);
+                      return JSON.stringify([
+                        p.health.byPlayer(player),
+                        p.overheated.byPlayer({ __wire: "@impact.source" }),
+                        p.heat.byPlayer({ __wire: "@emitter" }),
+                        typeof p.weapon.current.byPlayer,
+                        Object.keys(p.health),
+                      ]);
+                    })()
+                    "#,
+                )
+                .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                got,
+                serde_json::json!([
+                    { "slot": "player.health", "kind": "number", "owner": "@player" },
+                    { "slot": "player.overheated", "kind": "boolean", "owner": "@impact.source" },
+                    { "slot": "player.heat", "kind": "number", "owner": "@invalid" },
+                    "undefined",
+                    ["slot", "kind"],
+                ])
+            );
+        });
+
+        let lua = mlua::Lua::new();
+        install_luau_bridge(&lua).unwrap();
+        let got: (String, String, String, bool) = lua
+            .load(
+                r#"
+                local p = __postretroGameStateRefs.player
+                local opaque = setmetatable({}, { __index = function() error("opaque") end })
+                return p.health:byPlayer({ __wire = "@player" }).owner,
+                  p.overheated:byPlayer({ __wire = "@impact.source" }).owner,
+                  p.heat:byPlayer(opaque).owner,
+                  p.weapon.current.byPlayer == nil
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(
+            got,
+            (
+                "@player".to_string(),
+                "@impact.source".to_string(),
+                "@invalid".to_string(),
+                true
+            )
+        );
     }
 
     #[test]

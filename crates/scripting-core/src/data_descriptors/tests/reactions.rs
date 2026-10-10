@@ -1688,19 +1688,19 @@ fn subject_token_rejections_name_the_reaction_in_both_vms() {
             r#"({ name: "bad", sequence: [{ target: "@wait", primitive: "wait", args: { durationMs: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = "@wait", primitive = "wait", args = { durationMs = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\" or \"@trigger\", got \"@wait\"",
+            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got \"@wait\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: 7, primitive: "grantHealth", args: { amount: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = 7, primitive = "grantHealth", args = { amount = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\" or \"@trigger\", got a",
+            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got a",
         ),
         (
             r#"({ name: "bad", primitive: "applyDamage", target: "@everyone", args: { amount: 1 } })"#,
             r#"return { name = "bad", primitive = "applyDamage", target = "@everyone", args = { amount = 1 } }"#,
             "reaction `bad` primitive",
-            "`target` must be \"@activators\" or \"@trigger\", got \"@everyone\"",
+            "`target` must be \"@activators\", \"@trigger\" or \"@player\", got \"@everyone\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "armTrigger", args: {} }] })"#,

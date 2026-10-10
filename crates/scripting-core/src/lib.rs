@@ -42,6 +42,9 @@ pub mod ir {
 #[path = "ir/scopes.rs"]
 pub mod ir_scopes;
 
+#[path = "ir/player_scope.rs"]
+pub mod ir_player_scope;
+
 pub mod provenance {
     pub use postretro_entities::provenance::*;
 }
@@ -69,6 +72,8 @@ pub mod luau;
 pub mod luau_prelude;
 pub mod luau_require;
 pub mod luau_virtual_modules;
+pub mod player_event_scope;
+pub mod player_slots;
 pub mod primitive_adapters;
 pub mod primitives_registry;
 pub mod quickjs;

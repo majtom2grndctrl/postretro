@@ -130,6 +130,7 @@ impl App {
         self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
+        self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
@@ -280,7 +281,7 @@ impl App {
     /// into the next level.
     pub(crate) fn discard_pending_system_commands(&mut self) {
         if let Some(session) = self.session.as_ref() {
-            drop(session.scripting.script_ctx.system_commands.take());
+            session.scripting.script_ctx.system_commands.discard_all();
         }
     }
 

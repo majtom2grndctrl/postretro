@@ -19,6 +19,9 @@ pub mod state_store;
 pub mod typedef;
 
 #[cfg(test)]
+mod player_event_sdk_tests;
+
+#[cfg(test)]
 mod rust_source_scan {
     pub(super) fn mask_comments_and_string_literals(source: &str) -> String {
         let mut masked = String::with_capacity(source.len());

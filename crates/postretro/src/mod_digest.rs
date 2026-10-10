@@ -372,6 +372,7 @@ pub(crate) mod tests {
             events: Vec::new(),
             trigger_events: events(),
             trigger_pools: pools(),
+            player_events: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
         }
     }

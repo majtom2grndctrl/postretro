@@ -978,6 +978,9 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Host-only player events bound from the composed active set, with their
+    /// per-player edge memory. Rebuilt with the trigger bindings.
+    player_events: postretro_sim::player_events::PlayerEventTable,
     /// Host-local outcome of the most recent trigger-pool install. Connected
     /// clients retain the default empty report because they never run the pass.
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
@@ -3384,6 +3387,19 @@ impl App {
         else {
             return;
         };
+        // Presentation a player event fired for one player goes to that
+        // player's machine; whatever stays here joins this drain.
+        if let Some(session) = self.session.as_mut() {
+            let server = match session.net_endpoint.as_mut() {
+                Some(netcode::NetEndpoint::Host { server, .. }) => Some(server.as_mut()),
+                _ => None,
+            };
+            netcode::presentation_commands::route_player_presentation(
+                &script_ctx.system_commands,
+                server,
+                session.seat_table.as_ref(),
+            );
+        }
         for command in script_ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::PlaySound { sound, bus, at } => {
@@ -3540,9 +3556,12 @@ impl App {
                         match outcome {
                             SystemReactionIrDispatch::Evaluated
                             | SystemReactionIrDispatch::Rejected => {
-                                // Rejected IR was already diagnosed during install. It must
-                                // never fall through to the literal write path, but repeated
-                                // fires are a safe no-op rather than a per-dispatch warning.
+                                // Rejected IR was already diagnosed: during install, or by
+                                // `dispatch` itself, which warns once per binding for a
+                                // `byPlayer(on.player)` value reached outside a player
+                                // event. It must never fall through to the literal write
+                                // path, and repeated fires are a safe no-op rather than a
+                                // per-dispatch warning.
                             }
                             SystemReactionIrDispatch::Unknown => {
                                 // This command is not from the current install table (for
@@ -4344,6 +4363,14 @@ impl App {
                             &registry,
                         )
                     }));
+                let (presentation_commands, presentation_messages) =
+                    netcode::presentation_commands::split_presentation_commands(
+                        presentation_messages,
+                    );
+                netcode::presentation_commands::ingest_presentation_commands(
+                    presentation_commands,
+                    &script_ctx.system_commands,
+                );
                 netcode::ingest_client_presentation_messages(
                     &mut registry,
                     presentation_messages,
@@ -10983,6 +11010,7 @@ mod tests {
                     events: Vec::new(),
                     trigger_events: Vec::new(),
                     trigger_pools: Vec::new(),
+                    player_events: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     presentation_templates: Vec::new(),
                     presentation_overlays: Vec::new(),

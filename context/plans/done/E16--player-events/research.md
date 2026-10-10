@@ -40,6 +40,7 @@ The owner asked to record evidence that the crossings API was designed before th
 - `playerDied` is a single global event with no player token; in co-op a mod cannot tell who died. `players().on(died, …)` would be its natural home.
 - A local twin — `onStateEvent(becomes(cond), fire)` running on every machine over its own view — would make the two sources differ only in which machines run them. It is also where a per-owner HUD watcher belongs: designing it would retire the E16 per-owner crossing rejection without the trap a bare lift carries.
 - Spelling: resolved by `plans/done/sdk-addressing-model`. Per-member and per-group sources are `.on` on their target (`t.on`, `players().on`); only tag-keyed declarations and crossings wait for the redesign.
+- Building surfaced two rejection units for one token family: a crossing strips an address only when every reaction there needs trigger context, while a player event drops an address when any reaction there breaks a rule. A redesign that unifies the sources should pick one.
 Add a line here whenever building or using either source turns up another.
 
 ## Consumers

@@ -37,20 +37,40 @@ pub fn group_commands_apply_here(script_ctx: &ScriptCtx) -> bool {
 /// orders, including when a later spawn reuses a slot a despawn freed.
 pub fn resolve_group(registry: &EntityRegistry, target: &GroupTarget) -> Vec<EntityId> {
     let tag = target.tag.as_deref();
-    let local_pawn = registry.local_player_pawn();
-    let is_player = |id: EntityId| registry.seat_for_pawn(id).is_some() || Some(id) == local_pawn;
     match target.kind {
         GroupKind::Npc => registry
             .query_by_component_and_tag(ComponentKind::Brain, tag)
             .map(|(id, _)| id)
-            .filter(|id| !is_player(*id))
+            .filter(|id| !is_player_pawn(registry, *id))
             .collect(),
-        GroupKind::Player => registry
+        GroupKind::Player => {
+            let mut pawns = Vec::new();
+            extend_with_player_pawns(registry, tag, &mut pawns);
+            pawns
+        }
+    }
+}
+
+/// Append the `player` group's pawns to `out`, in the same order
+/// [`resolve_group`] returns them. Player events reuse a buffer every tick.
+pub fn extend_with_player_pawns(
+    registry: &EntityRegistry,
+    tag: Option<&str>,
+    out: &mut Vec<EntityId>,
+) {
+    out.extend(
+        registry
             .query_by_component_and_tag(ComponentKind::Transform, tag)
             .map(|(id, _)| id)
-            .filter(|id| is_player(*id))
-            .collect(),
-    }
+            .filter(|id| is_player_pawn(registry, *id)),
+    );
+}
+
+/// Whether `id` is a player pawn: bound to a seat, or the marked local pawn.
+/// The `player` group's membership rule, shared with every owner read that
+/// must name a player (`byPlayer(impact.source)`).
+pub fn is_player_pawn(registry: &EntityRegistry, id: EntityId) -> bool {
+    registry.seat_for_pawn(id).is_some() || Some(id) == registry.local_player_pawn()
 }
 
 #[cfg(test)]

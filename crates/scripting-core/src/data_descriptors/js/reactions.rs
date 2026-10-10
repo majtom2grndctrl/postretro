@@ -237,6 +237,7 @@ pub fn sequence_steps_from_js<'js>(
             match value.to_string().map_err(js_err)?.as_str() {
                 "@activators" => SequenceTarget::Activators,
                 "@trigger" => SequenceTarget::FiredTrigger,
+                "@player" => SequenceTarget::EventPlayer,
                 "@wait" => SequenceTarget::Wait,
                 "@fire" => SequenceTarget::Fire,
                 spelling => {

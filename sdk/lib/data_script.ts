@@ -9,8 +9,16 @@ import { numberNode, boolNode, numberRef, boolRef } from "./util/expression_refs
 import type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 export type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 import { DISPATCH_PARAMS } from "./data_script/reactions";
-import type { ActivatorsTarget, GroupCommand, SubjectTokenCommand, TriggerTarget } from "./data_script/commands";
+import { PLAYER_TARGET } from "./data_script/commands";
+import type {
+  ActivatorsTarget,
+  GroupCommand,
+  PlayerTarget,
+  SubjectTokenCommand,
+  TriggerTarget,
+} from "./data_script/commands";
 import type { VolumeTriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
+import type { PlayerEventDescriptor } from "./data_script/player_events";
 export { defineReaction, scopeReactions, wait, fire } from "./data_script/reactions";
 export { npcs, players } from "./data_script/commands";
 export type {
@@ -21,10 +29,19 @@ export type {
   NpcGroupFilter,
   NpcStateUpdateArgs,
   PlayerGroup,
+  PlayerTarget,
   SubjectTokenCommand,
   SubjectTokenTarget,
   TriggerTarget,
 } from "./data_script/commands";
+export { becomes, ceases } from "./data_script/player_events";
+export type {
+  PlayerEventDescriptor,
+  PlayerEventEdge,
+  PlayerEventEdgeWord,
+  PlayerEventOptions,
+  PlayerEventReaction,
+} from "./data_script/player_events";
 export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
 export type {
   TriggerEventDescriptor,
@@ -61,17 +78,22 @@ export type TriggerEventParams = Readonly<{
   occupancy: import("postretro").RuntimeRead;
 }>;
 
+/** Dispatch values published by a player event (`players().on`): the player it fired for. */
+export type PlayerEventParams = Readonly<{
+  player: PlayerTarget;
+}>;
+
 /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
 export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`) carries `target: "@activators"` or `target: "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
-  target?: "@activators" | "@trigger";
+  target?: "@activators" | "@trigger" | "@player";
   args?: Record<string, unknown>;
   onComplete?: string;
 };
@@ -165,6 +187,8 @@ export type LevelManifest = {
   /** Level trigger events, keyed by volume: build each with a trigger member's `on`. */
   triggerEvents?: VolumeTriggerEventDescriptor[];
   triggerPools?: TriggerPoolDescriptor[];
+  /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
+  playerEvents?: PlayerEventDescriptor[];
   /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same
    * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).
    * Malformed entries are logged and skipped. */
@@ -185,15 +209,19 @@ export type StoreDeclaration = {
   schema: Record<string, StoreSlotSchema>;
 };
 
+/** The wire owner a `byPlayer` read or write addresses. */
+export type OwnerToken = "@impact.source" | "@player";
 /** A ref with an explicit owner token, suitable for owner-addressed read/write lowering. */
-export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { readonly owner: "@impact.source" };
-export type OwnerAddressedRef<T> = Ref<T> & { readonly owner: "@impact.source" };
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { readonly owner: OwnerToken };
+export type OwnerAddressedRef<T> = Ref<T> & { readonly owner: OwnerToken };
+/** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
+export type PlayerOwner = SourceHandle | PlayerTarget;
 
 type StoreComputedRef<T> = ComputedRef<T> & {
-  byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T>;
+  byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T>;
 };
 type StoreRef<T> = Ref<T> & {
-  byPlayer(owner: SourceHandle): OwnerAddressedRef<T>;
+  byPlayer(owner: PlayerOwner): OwnerAddressedRef<T>;
 };
 
 export type StateRef<T = unknown> = StoreComputedRef<T> | StoreRef<T>;
@@ -385,11 +413,15 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
   },
 });
 
-const IMPACT_SOURCE: SourceHandle = Object.freeze({
-  grantHealth: (amount) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
-  grantAmmo: (type, amount) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
-  adjustSentimentToward: (toward, delta) => sentimentImpactEffect("@impact.source", toward, delta),
-}) as SourceHandle;
+const impactSource = {
+  grantHealth: (amount: NumberValue) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
+  grantAmmo: (type: string, amount: NumberValue) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  adjustSentimentToward: (toward: TargetHandle | SourceHandle, delta: NumberValue) =>
+    sentimentImpactEffect("@impact.source", toward, delta),
+};
+// Engine state refs' `byPlayer` recognizes the source by this wire spelling.
+Object.defineProperty(impactSource, "__wire", { value: "@impact.source", enumerable: false });
+const IMPACT_SOURCE: SourceHandle = Object.freeze(impactSource) as unknown as SourceHandle;
 
 const IMPACT: Impact = Object.freeze({
   target: IMPACT_TARGET,
@@ -572,8 +604,8 @@ export function defineEntity<T>(
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
  * arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
- * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
- * `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+ * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
+ * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
  * effects until the manifest is returned and validated. `factionSentimentDecay`
  * is an optional non-negative global return-to-baseline rate; it defaults to
  * zero (hold), and an individual sentiment row may override it with `decay`.
@@ -718,15 +750,16 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
 function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): StateRef {
   const ref = { slot, kind };
   Object.defineProperty(ref, "byPlayer", {
-    value: (owner: SourceHandle): OwnerAddressedRef<unknown> => {
+    value: (owner: PlayerOwner): OwnerAddressedRef<unknown> => {
       if (!perOwner) {
         throw new TypeError(`state slot \`${slot}\` is global and cannot be addressed with byPlayer`);
       }
-      return Object.freeze({
-        slot,
-        kind,
-        owner: owner === IMPACT_SOURCE ? "@impact.source" : "@invalid",
-      }) as OwnerAddressedRef<unknown>;
+      const token = owner === IMPACT_SOURCE
+        ? "@impact.source"
+        : (owner as unknown) === PLAYER_TARGET
+          ? "@player"
+          : "@invalid";
+      return Object.freeze({ slot, kind, owner: token }) as OwnerAddressedRef<unknown>;
     },
     enumerable: false,
     configurable: false,

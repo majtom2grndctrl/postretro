@@ -68,6 +68,15 @@ export type {
   TriggerEventParams,
   EmitterParams,
   EmitterTarget,
+  PlayerEventParams,
+  PlayerEventDescriptor,
+  PlayerEventEdge,
+  PlayerEventEdgeWord,
+  PlayerEventOptions,
+  PlayerEventReaction,
+  PlayerTarget,
+  PlayerOwner,
+  OwnerToken,
   TriggerEventDescriptor,
   TriggerEventReaction,
   TriggerEventRule,
@@ -125,6 +134,8 @@ export {
   wait,
   fire,
   defineTriggerEvent,
+  becomes,
+  ceases,
 } from "./data_script";
 
 export type {

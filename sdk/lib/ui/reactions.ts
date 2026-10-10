@@ -5,7 +5,8 @@
 // See: context/lib/scripting.md §12
 
 import type { RuntimeValue } from "postretro";
-import type { CrossingParams, EmitterTarget, Reaction } from "../data_script";
+import type { BoolRef, CrossingParams, EmitterTarget, NumberRef, Reaction } from "../data_script";
+import { loweredValue } from "../util/expression_refs";
 
 import type { ComputedRef, Ref } from "./widgets";
 
@@ -485,16 +486,24 @@ export function adjustSentiment(
  * Write `value` to the writable state reference at the game-logic stage.
  * Pure — returns the existing `setState` primitive reaction body, no engine
  * side effect. Literal values use the normal runtime readonly gate, coercion,
- * and range path. A `RuntimeValue` binds once at level install through
- * `StoreScope`. Known Number and Boolean slots, including readonly slots,
- * project as inputs. The write target must be writable; unknown or
- * nonprojectable inputs and readonly targets reject the IR before it can fire.
+ * and range path. A fluent value (`read(…)` and its operators, including
+ * `byPlayer(on.player)` reads in a player-event reaction) or a raw
+ * `RuntimeValue` binds once at level install. Known Number and Boolean slots,
+ * including readonly slots, project as inputs. The write target must be
+ * writable; unknown or nonprojectable inputs and readonly targets reject the
+ * IR before it can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: Ref<T>,
-  value: T | RuntimeValue,
+  value: T | RuntimeValue | NumberRef | BoolRef,
 ): import("../data_script").PrimitiveReactionDescriptor {
-  return { primitive: "setState", args: { slot: stateSlot(ref, "updateState"), value } };
+  if (typeof ref === "object" && ref !== null && "owner" in ref && (ref as { owner?: unknown }).owner !== undefined) {
+    throw new Error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot");
+  }
+  return {
+    primitive: "setState",
+    args: { slot: stateSlot(ref, "updateState"), value: loweredValue(value) },
+  };
 }
 
 /**

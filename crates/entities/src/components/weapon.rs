@@ -580,6 +580,22 @@ impl WeaponComponent {
         self.reload_feedback.owner_projection.lost_endpoints = 0;
     }
 
+    /// The weapon's reload progress and flag right now, from its state timer
+    /// alone. Frame-rate consumers read [`Self::reload_feedback_sample`]
+    /// instead, so an endpoint shorter than their cadence still shows; a
+    /// per-tick reader such as a player-event condition reads this.
+    pub fn reload_state(&self) -> (f32, bool) {
+        if !self.state.is_reload_activity() {
+            return (0.0, false);
+        }
+        if self.state_remaining_ms > 0 && self.state_total_ms > 0 {
+            let progress =
+                (1.0 - self.state_remaining_ms as f32 / self.state_total_ms as f32).clamp(0.0, 1.0);
+            return (progress, true);
+        }
+        (0.0, true)
+    }
+
     pub fn reload_feedback_sample(&self, consumer: ReloadFeedbackConsumer) -> ReloadFeedbackSample {
         let cursor = self.reload_feedback.cursor(consumer);
         let endpoint = self.reload_feedback.next_entry(consumer);
@@ -603,20 +619,7 @@ impl WeaponComponent {
             };
         }
 
-        let (progress, active) = match () {
-            () if self.state.is_reload_activity()
-                && self.state_remaining_ms > 0
-                && self.state_total_ms > 0 =>
-            {
-                (
-                    (1.0 - self.state_remaining_ms as f32 / self.state_total_ms as f32)
-                        .clamp(0.0, 1.0),
-                    true,
-                )
-            }
-            () if self.state.is_reload_activity() => (0.0, true),
-            () => (0.0, false),
-        };
+        let (progress, active) = self.reload_state();
         ReloadFeedbackSample {
             progress,
             active,

@@ -3,9 +3,14 @@
 // E16 rocket splash-damage reference fixture.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/splash-damage-demo.map -o content/dev/maps/splash-damage-demo.prl
 // Run: cargo run -p xtask -- run content/dev/maps/splash-damage-demo.prl
+// Also hosts the E16 player-events example (`scripts/player-events.ts`): each
+// dummy kill credits 10 XP, and 100 XP levels that player up once.
+// The level-up playtest needs pistol kills: a rocket gibs a dummy, so it pays
+// XP once and despawns; a pistol kill leaves the dummy to recover and pay again.
 {
 "classname" "worldspawn"
 "initialGravity" "-9.81"
+"data_script" "../scripts/player-events.ts"
 "wad" ""
 "_tb_mod" "dev"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"

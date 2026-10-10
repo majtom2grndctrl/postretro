@@ -258,9 +258,9 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`, `on.trigger`) carries `target =
---- "@activators"` or `target = "@trigger"`. A raw descriptor with only a
---- non-empty `tag` resolves over every entity carrying it — the form for fog,
+--- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
+--- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with
+--- only a non-empty `tag` resolves over every entity carrying it — the form for fog,
 --- emitter and animation primitives (`setFogGlow`, `setEmitterRate`,
 --- `setAnimationState`), which have no typed builder. True system reactions
 --- carry neither and enqueue typed engine commands such as `playSound`,
@@ -470,6 +470,23 @@ export type EmitterTarget = { __emitterTarget: true }
 --- Dispatch values published by a named gameplay event: weapon, reload,
 --- impact, enemy, movement and mover events.
 export type EmitterParams = { emitter: EmitterTarget }
+--- The player a player event fired for (`on.player`): a command target, and
+--- the owner `byPlayer(on.player)` reads. Legal only before any `wait`, and
+--- only in reactions a player event fires. Call its verbs with `:`.
+export type PlayerTarget = {
+  __playerTarget: true,
+  --- Damage this event's player by a finite, non-negative amount.
+  damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  --- Add health to this event's player.
+  grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  --- Add `amount` to this event's player's named ammo-reserve pool.
+  grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
+  --- Add `delta` to this event's player's value of a per-owner numeric slot.
+  addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
+}
+--- Dispatch values published by a player event (`players():on`): the player
+--- it fired for.
+export type PlayerEventParams = { player: PlayerTarget }
 --- `playSound` options: `bus` routes to a mixer bus (SFX when omitted); `at =
 --- on.emitter` positions the sound where the named gameplay event happened,
 --- on the SFX bus.
@@ -693,6 +710,10 @@ export type LevelManifest = {
   --- (`defineTriggerEvent`) and is rejected here.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
+  --- Per-player events, built with `players():on`. A level's entries belong
+  --- to that level; an entry carrying `levels` is skipped with a warning (its
+  --- siblings install).
+  playerEvents: {PlayerEventDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
@@ -716,6 +737,8 @@ declare defineReaction: (
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
   & ((name: string, tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
+  & ((tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<PlayerEventParams>)
+  & ((name: string, tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<PlayerEventParams>)
 )
 
 --- Define a pure impact-policy descriptor. Register it only by returning it
@@ -745,10 +768,10 @@ export type GroupKind = "npc" | "player"
 --- directly as a sequence entry; the group resolves when the command takes
 --- effect, so NPCs spawned or players joined before then are included.
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
---- The subject a token command addresses: this fire's activators or the volume
---- that fired.
-export type SubjectTokenTarget = "@activators" | "@trigger"
---- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- The subject a token command addresses: this fire's activators, the volume
+--- that fired, or the event's player.
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@player"
+--- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = { primitive: string, target: SubjectTokenTarget, args: { [string]: any } }
@@ -778,7 +801,30 @@ export type PlayerGroup = {
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
+  --- Fire `fire` once per player whenever `edge`'s condition crosses for that
+  --- player. Evaluated on the host (and in single player) once per
+  --- authoritative tick, after the tick settles; a connected client registers
+  --- nothing. Effective only when returned under a manifest's `playerEvents`;
+  --- `options.levels` scopes a `ModManifest` entry.
+  on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
+--- A condition paired with its edge word. Build it with `becomes(cond)` or
+--- `ceases(cond)`.
+export type PlayerEventEdge = { __playerEventEdge: true }
+--- `levels` scopes a `ModManifest` entry to matching map tags; a level
+--- script's entry must omit it.
+export type PlayerEventOptions = { levels: {string}? }
+--- One `playerEvents` entry, as `players():on` builds it.
+export type PlayerEventDescriptor = { edge: "becomes" | "ceases", condition: RuntimeValue, fire: {string}, levels: {string}? }
+--- Fire when `cond` turns true for a player. Inside `cond`, a plain read of a
+--- per-player slot (an engine player slot or a mod per-owner slot) means the
+--- player being evaluated. A player first observed while `cond` holds fires
+--- too, so guard a milestone with a condition its fire makes false.
+declare function becomes(cond: BoolRef): PlayerEventEdge
+--- Fire when `cond` turns false for a player who was observed with it true.
+--- Inside `cond`, a plain read of a per-player slot means the player being
+--- evaluated.
+declare function ceases(cond: BoolRef): PlayerEventEdge
 --- Address NPCs, optionally narrowed to those carrying `tag`. Resolved when
 --- each command takes effect, sequence steps included.
 declare function npcs(filter: NpcGroupFilter?): NpcGroup
@@ -813,7 +859,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -968,14 +1014,16 @@ declare function setSentiment(from: string, to: string, value: number): Primitiv
 --- deltas bond it. Unknown faction names warn and no-op.
 declare function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Goal F): write a literal or runtime value at the
---- game-logic stage. Literals use the normal readonly-gated coercion and range
---- path. Runtime values bind once at level install. Known Number and Boolean
+--- System-reaction body (M13 Goal F): write a literal, fluent or runtime value
+--- at the game-logic stage. Literals use the normal readonly-gated coercion and
+--- range path. A fluent value (`read(...)` and its operators,
+--- `byPlayer(on.player)` reads in a player-event reaction included) or a raw
+--- runtime value binds once at level install. Known Number and Boolean
 --- slots, including readonly slots, project as inputs. The output target must
 --- be writable; unknown or nonprojectable inputs and readonly targets reject
 --- the IR before the reaction can fire. Pure:
 --- returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
+declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
@@ -1006,13 +1054,25 @@ declare function clearText(ref: Ref<string>): PrimitiveReactionDescriptor
 export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
-export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: "@impact.source", __stateRefValueBrand: T? }
+--- The wire owner a `byPlayer` read or write addresses.
+export type OwnerToken = "@impact.source" | "@player"
+export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: OwnerToken, __stateRefValueBrand: T? }
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
-type StoreComputedRef<T> = ComputedRef<T> & { byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T> }
-type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T> }
+--- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
+--- event's player (`on.player`).
+export type PlayerOwner = SourceHandle | PlayerTarget
+--- A per-player engine slot. A plain read means the local player (HUD binds,
+--- crossings, impact policies), or the evaluated player inside a player-event
+--- condition; `byPlayer(on.player)` in a player-event reaction, or
+--- `byPlayer(impact.source)` in an impact policy, reads that player's value.
+export type PlayerComputedRef<T> = ComputedRef<T> & { byPlayer: (self: PlayerComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T> }
+--- Writable form of `PlayerComputedRef`.
+export type PlayerRef<T> = Ref<T> & { byPlayer: (self: PlayerRef<T>, owner: PlayerOwner) -> OwnerAddressedRef<T> }
+type StoreComputedRef<T> = ComputedRef<T> & { byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T> }
+type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: PlayerOwner) -> OwnerAddressedRef<T> }
 
 --- One slot inside a `defineStore` schema. Every slot needs `default`.
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
@@ -1075,6 +1135,7 @@ export type ModManifestInput = {
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
+  playerEvents: {PlayerEventDescriptor}?,
   stores: {StoreDeclaration | StoreDefinition}?,
 }
 

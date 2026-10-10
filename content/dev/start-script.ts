@@ -79,6 +79,7 @@ import {
 } from "./scripts/combat-lifecycle";
 import { runCounter } from "./scripts/run-counter";
 import { closetStore } from "./scripts/closet-store";
+import { leveling } from "./scripts/leveling";
 import { a11yStrobeStore } from "./scripts/a11y-strobe-store";
 import {
   damagedEnemyBar,
@@ -162,7 +163,7 @@ export default defineMod({
     factionSentimentBackstab,
   ],
   triggerEvents: factionSentimentTriggerEvents,
-  stores: [runCounter, progression, closetStore, a11yStrobeStore],
+  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

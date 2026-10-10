@@ -131,6 +131,12 @@ struct SystemSetStateBinding {
     value: serde_json::Value,
     program: Option<BoundProgram<DispatchScope>>,
     required_dispatch_inputs: Vec<String>,
+    /// The value reads `byPlayer(on.player)`. Only a player event publishes
+    /// the event player, and it binds the value in-tick; an app-drain
+    /// dispatch came from a source no install check covers (a UI action, a
+    /// progress target, an `onComplete` chain), so it warns once and skips.
+    reads_event_player: bool,
+    event_player_warned: std::cell::Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -148,6 +154,8 @@ impl SystemSetStateBinding {
 /// Outcome of looking up an object-shaped `setState` value at the app drain.
 /// Rejected entries deliberately remain in the table after their install-time
 /// diagnostic, so a validly queued command does not warn again on every fire.
+/// A `byPlayer(on.player)` value has no install-time diagnostic for the
+/// sources that reach it here; its first dispatch warns instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionIrDispatch {
     Evaluated,
@@ -201,6 +209,8 @@ impl SystemReactionIrBindings {
                         value: args.value,
                         program: None,
                         required_dispatch_inputs: Vec::new(),
+                        reads_event_player: false,
+                        event_player_warned: std::cell::Cell::new(false),
                     });
                 } else {
                     self.rejected_literals.push(SystemSetStateLiteralRejection {
@@ -223,6 +233,8 @@ impl SystemReactionIrBindings {
                 value: args.value,
                 program: None,
                 required_dispatch_inputs: Vec::new(),
+                reads_event_player: false,
+                event_player_warned: std::cell::Cell::new(false),
             };
 
             let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
@@ -242,6 +254,17 @@ impl SystemReactionIrBindings {
                 root,
             };
             binding.required_dispatch_inputs = baked.root.dispatch_input_names();
+            // A `byPlayer(on.player)` value binds in-tick under its player
+            // event; no app-drain source publishes the event player. Install
+            // rejects the subscriptions it can see (triggers, crossings,
+            // `levelLoad`), but a UI action, a progress target or an
+            // `onComplete` chain can still queue it here, so `dispatch` warns
+            // once for this binding and skips.
+            if postretro_scripting_core::player_event_scope::reads_event_player(&binding.value) {
+                binding.reads_event_player = true;
+                self.bindings.push(binding);
+                continue;
+            }
             match bind(&baked, &scope) {
                 Ok(program) => {
                     binding.program = Some(program);
@@ -280,6 +303,15 @@ impl SystemReactionIrBindings {
         else {
             return SystemReactionIrDispatch::Unknown;
         };
+        if binding.reads_event_player {
+            if !binding.event_player_warned.replace(true) {
+                log::warn!(
+                    "[Scripting] setState reaction `{}` reads `byPlayer(on.player)`, which only a player event publishes; skipped",
+                    binding.name
+                );
+            }
+            return SystemReactionIrDispatch::Rejected;
+        }
         let Some(program) = &binding.program else {
             return SystemReactionIrDispatch::Rejected;
         };
@@ -1045,6 +1077,39 @@ mod tests {
     }
 
     #[test]
+    fn an_app_side_event_player_set_state_warns_once_and_skips() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "leveling.lastHp", 7.0, 100.0, false);
+        let value =
+            serde_json::json!({ "op": "input", "name": "player.health", "owner": "@player" });
+        let data = active_reactions(vec![set_state_reaction(
+            "recordHp",
+            "leveling.lastHp",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        let capture = LogCapture::start();
+        for _ in 0..2 {
+            assert_eq!(
+                bindings.dispatch("leveling.lastHp", &value, "ui:levelUp", &[], &ctx),
+                SystemReactionIrDispatch::Rejected,
+                "no app-drain source publishes the event player",
+            );
+        }
+        capture.assert_logged_once(
+            Level::Warn,
+            "setState reaction `recordHp` reads `byPlayer(on.player)`, which only a player event publishes; skipped",
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "leveling.lastHp"),
+            7.0,
+            "the skipped write leaves the slot unchanged",
+        );
+    }
+
+    #[test]
     fn on_complete_named_dispatch_rejects_contextless_occupancy_without_slot_mutation() {
         let ctx = ScriptCtx::new();
         insert_number(&ctx, "trap.observedOccupancy", 7.0, 16.0, false);
@@ -1188,27 +1253,23 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_system_reaction_primitives_under_expected_names() {
+    fn registers_exactly_the_classified_system_reaction_kinds() {
+        use postretro_entities::reactions::system_commands::SystemReactionKind;
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
-        assert!(r.contains("playSound"));
-        assert!(r.contains("rumble"));
-        assert!(r.contains("flashScreen"));
-        assert!(r.contains("vignette"));
-        assert!(r.contains("screenShake"));
-        assert!(r.contains("showDialog"));
-        assert!(r.contains("openMenu"));
-        assert!(r.contains("closeDialog"));
-        assert!(r.contains("loadLevel"));
-        assert!(r.contains("restartLevel"));
-        assert!(r.contains("returnToFrontend"));
-        assert!(r.contains("setState"));
-        assert!(r.contains("setSentiment"));
-        assert!(r.contains("adjustSentiment"));
-        assert!(r.contains("cellWrite"));
-        assert!(r.contains("appendText"));
-        assert!(r.contains("backspaceText"));
-        assert!(r.contains("clearText"));
+        for name in r.names() {
+            assert!(
+                SystemReactionKind::from_primitive_name(name).is_some(),
+                "system reaction `{name}` is registered but not classified"
+            );
+        }
+        for kind in SystemReactionKind::ALL {
+            assert!(
+                r.contains(kind.primitive_name()),
+                "classified system reaction `{}` is not registered",
+                kind.primitive_name()
+            );
+        }
         // Defensive: system reactions are a distinct arm; entity primitives
         // are NOT registered here.
         assert!(!r.contains("setEmitterRate"));
@@ -1629,6 +1690,7 @@ mod tests {
             source: "crossing:7".to_string(),
             values: vec![("@rising".to_string(), IrValue::Bool(true))],
             emitter: None,
+            presentation_seat: None,
         });
 
         registry
@@ -1689,6 +1751,7 @@ mod tests {
             source: source.to_string(),
             values: Vec::new(),
             emitter,
+            presentation_seat: None,
         }
     }
 

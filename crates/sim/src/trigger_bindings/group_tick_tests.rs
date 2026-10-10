@@ -159,6 +159,7 @@ impl Level {
                         fired_trigger: Some(event.fire.trigger),
                         activator,
                         occupancy,
+                        event_player: None,
                     },
                 );
                 commands.extend(execution.commands.iter().copied());
@@ -341,7 +342,7 @@ fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
         .unwrap();
 }
 
-pub(super) fn movement() -> PlayerMovementComponent {
+pub(crate) fn movement() -> PlayerMovementComponent {
     PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
         sounds: None,
         knockback: Default::default(),

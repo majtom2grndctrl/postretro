@@ -5,6 +5,7 @@
 use postretro_entities::SlotValue;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_net::state_slots::WireSlotValue;
+use postretro_scripting_core::player_slots::{PlayerSlot, ReloadRead, weapon_slot_value};
 
 use super::{ReplicatedWireShape, absent_wieldable_slot_sample, wieldable_slot_sample};
 use crate::weapon::{ReplicatedWeaponProjection, SlotSample};
@@ -59,24 +60,26 @@ impl ResourceSlotProjection {
         let (Some(slot), Some(weapon)) = (wieldable_slot, weapon) else {
             return Self::default();
         };
-        let effective = weapon.effective();
+        let number = |slot| match weapon_slot_value(weapon, None, slot, ReloadRead::Current) {
+            Some(SlotValue::Number(value)) => Some(value),
+            _ => None,
+        };
+        let overheated = matches!(
+            weapon_slot_value(weapon, None, PlayerSlot::Overheated, ReloadRead::Current),
+            Some(SlotValue::Boolean(true))
+        );
         Self {
             wieldable_slot: Some(slot),
-            heat: weapon
-                .heat
-                .zip(effective.heat)
-                .map(|(live, tuning)| HeatValues {
-                    heat: live.heat,
-                    overheat_at: tuning.overheat_at,
-                    overheated: live.overheated,
+            heat: number(PlayerSlot::Heat)
+                .zip(number(PlayerSlot::OverheatAt))
+                .map(|(heat, overheat_at)| HeatValues {
+                    heat,
+                    overheat_at,
+                    overheated,
                 }),
-            cell: weapon
-                .cell
-                .zip(effective.cell)
-                .map(|(live, tuning)| CellValues {
-                    charge: live.charge,
-                    capacity: tuning.capacity,
-                }),
+            cell: number(PlayerSlot::Cell)
+                .zip(number(PlayerSlot::CellCapacity))
+                .map(|(charge, capacity)| CellValues { charge, capacity }),
         }
     }
 

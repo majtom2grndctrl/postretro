@@ -1328,8 +1328,9 @@ impl NetClient {
         accepted
     }
 
-    /// Drain decoded passive presentation events from the dedicated unreliable
-    /// channel. Unlike snapshots, these carry no participation epoch. The lane
+    /// Drain decoded passive presentation events and player-addressed
+    /// presentation commands from the dedicated unreliable channel. Unlike
+    /// snapshots, these carry no participation epoch. The lane
     /// is still participation-gated: held/disconnected clients exhaust and
     /// discard it so a retired cosmetic cannot enter a later world lifecycle.
     pub fn drain_presentation(&mut self) -> Vec<ServerPresentationMessage> {

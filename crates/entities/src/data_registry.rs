@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::data_descriptors::{
-    CrossingDescriptor, EntityTypeDescriptor, NamedReaction, TriggerEventDescriptor,
-    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
+    ComposedPlayerEvent, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
+    PlayerEventDescriptor, PlayerEventSource, TriggerEventDescriptor, TriggerPoolDescriptor,
+    VolumeTriggerEventDescriptor,
 };
 use postretro_foundation::{ModMapEntry, WeaponPlacementDescriptor};
 
@@ -711,6 +712,9 @@ pub struct DataRegistry {
     /// collapsed. Level member events are [`Self::volume_trigger_events`].
     pub trigger_events: Vec<TriggerEventDescriptor>,
     trigger_pools: Vec<TriggerPoolDescriptor>,
+    /// Active player events: matching mod-global entries, then the level's,
+    /// each in authored order. Host-side consumers bind these.
+    pub player_events: Vec<ComposedPlayerEvent>,
     /// Engine-global reaction definitions from `ModManifest.reactions`.
     /// These are durable definitions, not the currently active per-level set.
     pub global_reactions: Vec<ScopedReaction>,
@@ -719,6 +723,9 @@ pub struct DataRegistry {
     pub global_crossings: Vec<ScopedCrossing>,
     pub global_trigger_events: Vec<ScopedTriggerEvent>,
     pub global_trigger_pools: Vec<ScopedTriggerPool>,
+    /// Engine-global player events from `ModManifest.playerEvents`, each
+    /// scoped by its own `levels`.
+    pub global_player_events: Vec<PlayerEventDescriptor>,
     /// Level-local reaction definitions from `setupLevel()`. Retained so a
     /// staged mod-init reload can recompose active globals without rerunning the
     /// level data script.
@@ -731,6 +738,9 @@ pub struct DataRegistry {
     /// declared them — so the retained list is also the active one.
     level_trigger_events: Vec<VolumeTriggerEventDescriptor>,
     level_trigger_pools: Vec<TriggerPoolDescriptor>,
+    /// Level player events from `setupLevel()`. They belong to their level,
+    /// so the retained list composes unfiltered.
+    level_player_events: Vec<PlayerEventDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
     /// `entities` field of the validated mod manifest into here
@@ -794,6 +804,11 @@ impl DataRegistry {
     /// Append level-local reaction definitions retained for recomposition.
     pub fn set_level_reactions(&mut self, reactions: Vec<NamedReaction>) {
         self.level_reactions.extend(reactions);
+    }
+
+    /// Append level player events retained for recomposition.
+    pub fn set_level_player_events(&mut self, player_events: Vec<PlayerEventDescriptor>) {
+        self.level_player_events.extend(player_events);
     }
 
     /// Append level-local crossing definitions retained for recomposition.
@@ -879,10 +894,33 @@ impl DataRegistry {
         // declared them. Their retained `levels` field scopes only mod globals.
         trigger_pools.extend(self.level_trigger_pools.iter().cloned());
 
+        // Sources name the authored position, not the position among the
+        // entries that survived parse.
+        let mut player_events: Vec<ComposedPlayerEvent> = self
+            .global_player_events
+            .iter()
+            .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
+            .map(|descriptor| ComposedPlayerEvent {
+                descriptor: descriptor.clone(),
+                source: PlayerEventSource::ModGlobal {
+                    index: descriptor.authored_index,
+                },
+            })
+            .collect();
+        player_events.extend(self.level_player_events.iter().map(|descriptor| {
+            ComposedPlayerEvent {
+                descriptor: descriptor.clone(),
+                source: PlayerEventSource::Level {
+                    index: descriptor.authored_index,
+                },
+            }
+        }));
+
         self.reactions = reactions;
         self.crossings = crossings;
         self.trigger_events = trigger_events;
         self.trigger_pools = trigger_pools;
+        self.player_events = player_events;
     }
 
     fn levels_match(levels: &[String], tags: &[String]) -> bool {
@@ -978,6 +1016,12 @@ impl DataRegistry {
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
+    /// Replace the durable mod-global player events. The active set changes
+    /// at the next recompose.
+    pub fn replace_global_player_events(&mut self, player_events: Vec<PlayerEventDescriptor>) {
+        self.global_player_events = player_events;
+    }
+
     /// Replace the complete committed faction snapshot and rebase live state.
     /// Startup accepts any validated declaration order. Staged reload verifies
     /// that the name-to-index mapping is unchanged before calling this, while
@@ -1052,10 +1096,12 @@ impl DataRegistry {
         self.crossings.clear();
         self.trigger_events.clear();
         self.trigger_pools.clear();
+        self.player_events.clear();
         self.level_reactions.clear();
         self.level_crossings.clear();
         self.level_trigger_events.clear();
         self.level_trigger_pools.clear();
+        self.level_player_events.clear();
     }
 
     /// Returns `true` only when every registry collection is empty. After level
@@ -1068,14 +1114,17 @@ impl DataRegistry {
             && self.crossings.is_empty()
             && self.trigger_events.is_empty()
             && self.trigger_pools.is_empty()
+            && self.player_events.is_empty()
             && self.global_reactions.is_empty()
             && self.global_crossings.is_empty()
             && self.global_trigger_events.is_empty()
             && self.global_trigger_pools.is_empty()
+            && self.global_player_events.is_empty()
             && self.level_reactions.is_empty()
             && self.level_crossings.is_empty()
             && self.level_trigger_events.is_empty()
             && self.level_trigger_pools.is_empty()
+            && self.level_player_events.is_empty()
             && self.entities.is_empty()
             && self.factions.descriptors().is_empty()
             && self.maps.is_empty()
@@ -1271,6 +1320,46 @@ mod tests {
         let mut registry = DataRegistry::new();
         registry.level_trigger_pools.push(trigger_pool);
         assert!(!registry.is_empty());
+    }
+
+    fn player_event_at(authored_index: usize, levels: &[&str]) -> PlayerEventDescriptor {
+        PlayerEventDescriptor {
+            edge: crate::data_descriptors::PlayerEventEdge::Becomes,
+            condition: postretro_foundation::ir::IrNode::Const {
+                value: postretro_foundation::ir::IrValue::Bool(true),
+            },
+            fire: Vec::new(),
+            levels: levels.iter().map(|level| level.to_string()).collect(),
+            authored_index,
+        }
+    }
+
+    #[test]
+    fn composed_player_events_name_their_authored_positions_after_skips() {
+        let mut registry = DataRegistry::new();
+        // Parse skipped mod entries 0 and 2 and level entry 1; the survivors
+        // carry their authored positions. The levels filter also drops one.
+        registry.replace_global_player_events(vec![
+            player_event_at(1, &["deathmatch"]),
+            player_event_at(3, &[]),
+        ]);
+        registry.set_level_player_events(vec![player_event_at(0, &[]), player_event_at(2, &[])]);
+        registry.recompose(&tags(&["campaign"]));
+
+        let sources: Vec<String> = registry
+            .player_events
+            .iter()
+            .map(|composed| composed.source.to_string())
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                "ModManifest.playerEvents[3]",
+                "setupLevel().playerEvents[0]",
+                "setupLevel().playerEvents[2]",
+            ],
+            "sources name authored positions, not positions among survivors",
+        );
     }
 
     #[test]

@@ -160,16 +160,20 @@ pub(crate) fn install_world_cpu(
         }
         impact_policy_runtime
             .replace_level_events(std::mem::take(&mut manifest.events), active_level_tags);
-        script_ctx
-            .data_registry
-            .borrow_mut()
-            .populate_level_with_trigger_events(
+        {
+            let mut data_registry = script_ctx.data_registry.borrow_mut();
+            // Retained before `populate_level_with_trigger_events` recomposes
+            // the active set, so the level's player events join this
+            // composition.
+            data_registry.set_level_player_events(std::mem::take(&mut manifest.player_events));
+            data_registry.populate_level_with_trigger_events(
                 manifest.reactions,
                 manifest.crossings,
                 manifest.trigger_events,
                 manifest.trigger_pools,
                 active_level_tags,
             );
+        }
         // E18 validation — Pass A (V1, V4a, V6), then Pass B's rejection rows
         // (V2, V3, V4b). Both run BEFORE every consumer of the composed
         // reaction set: the subscriber/accumulator rebuilds below and

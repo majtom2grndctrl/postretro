@@ -1042,6 +1042,7 @@ impl ScriptingCore {
             data_registry
                 .replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
             data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
+            data_registry.replace_global_player_events(std::mem::take(&mut manifest.player_events));
             (
                 std::mem::take(&mut manifest.events),
                 std::mem::take(&mut manifest.presentation_templates),

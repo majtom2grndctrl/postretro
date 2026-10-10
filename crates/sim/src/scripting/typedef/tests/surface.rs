@@ -91,11 +91,11 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     let luau = generate_luau(&r);
 
     // The name-optional `(body)` overload is present alongside `(name, body)`.
-    // Four authoring shapes (data, crossing, trigger-event, emitter tracer),
-    // each with and without an explicit name.
+    // Five authoring shapes (data, crossing, trigger-event, emitter and
+    // player-event tracer), each with and without an explicit name.
     assert_eq!(
         ts.matches("export function defineReaction(").count(),
-        8,
+        10,
         "ts must declare data and all dispatch-scope tracer defineReaction overloads"
     );
     assert!(
@@ -456,7 +456,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     let ts_ui = ts_module_block(&ts, "postretro/ui");
 
     assert!(
-        ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
+        ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;")
             && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
             && ts.contains("export type PredicateCrossingDescriptor = {")
             && ts.contains("predicate: RuntimeValue;")
@@ -473,7 +473,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
         "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
     );
     assert!(
-        luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
+        luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> PrimitiveReactionDescriptor,")
             && luau.contains("& ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")

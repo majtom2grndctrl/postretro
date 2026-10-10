@@ -14,7 +14,9 @@ use postretro_entities::registry::EntityId;
 use postretro_entities::scripting::error::ScriptError;
 use postretro_scripting_core::primitives_registry::ContextScope;
 
+mod build_time_game_state_mirror;
 mod committed;
+mod player_surface;
 mod snapshots;
 mod surface;
 

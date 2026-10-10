@@ -61,6 +61,13 @@ pub struct EngineStateCatalogEntry<'a> {
 }
 
 impl EngineStateCatalogEntry<'_> {
+    /// Whether this slot is per-player on the host: an owner-private player
+    /// slot, read per pawn through the shared lookup in `scripting-core`
+    /// (`player_slots`). Its slot-table value stays the local player's.
+    pub fn is_per_player(&self) -> bool {
+        self.network == ReplicationScope::OwnerPrivatePlayer
+    }
+
     pub fn slot_record(&self) -> SlotRecord {
         SlotRecord::new(SlotSchema {
             slot_type: self.value_type.slot_type(),

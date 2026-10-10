@@ -201,7 +201,7 @@ fn committed_sdk_types_contain_heat_and_cell_resources() {
         assert!(output.contains("overheatBehavior?: OverheatBehavior;"));
         assert!(output.contains("regenDelayMs?: number;"));
         assert!(output.contains("overheat?: string;"));
-        assert!(output.contains("readonly overheated: ComputedRef<boolean>;"));
+        assert!(output.contains("readonly overheated: PlayerComputedRef<boolean>;"));
         assert!(output.contains(
             "readonly weaponResource: ComputedRef<\"none\" | \"ammo\" | \"heat\" | \"cell\">;"
         ));
@@ -211,7 +211,7 @@ fn committed_sdk_types_contain_heat_and_cell_resources() {
         assert!(output.contains("| (CellResource & { kind: \"cell\" })"));
         assert!(output.contains("coolDelayMs: number?,"));
         assert!(output.contains("overheat: string?,"));
-        assert!(output.contains("cellCapacity: ComputedRef<number>,"));
+        assert!(output.contains("cellCapacity: PlayerComputedRef<number>,"));
     }
 }
 
@@ -507,8 +507,9 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && ts.contains("perOwner?: false")
             && ts.contains("network?: \"ownerPrivate\"; perOwner: true; persist?: boolean; accumulate?: never")
             && !ts.contains("network?: \"shared\" | \"ownerPrivate\"; perOwner: true")
-            && ts.contains("byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T>")
-            && ts.contains("readonly owner: \"@impact.source\"")
+            && ts.contains("byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T>")
+            && ts.contains("export type OwnerToken = \"@impact.source\" | \"@player\";")
+            && ts.contains("readonly owner: OwnerToken")
             && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
             && ts.contains("read(name: string | ComputedRef<unknown>): RuntimeRead;")
             && ts.contains("export function read(ref: StateRef<number>): NumberRef;")
@@ -547,8 +548,9 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && luau.contains("perOwner: false?")
             && luau.contains("network: \"ownerPrivate\"?, perOwner: true, persist: boolean?, accumulate: nil?")
             && !luau.contains("network: (\"shared\" | \"ownerPrivate\")?, perOwner: true")
-            && luau.contains("byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>")
-            && luau.contains("owner: \"@impact.source\"")
+            && luau.contains("byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T>")
+            && luau.contains("export type OwnerToken = \"@impact.source\" | \"@player\"")
+            && luau.contains("owner: OwnerToken")
             && luau.contains("export type TickParams = { dt: RuntimeRead }")
             && luau.contains("read: (name: string | ComputedRef<any>) -> RuntimeRead")
             && luau.contains("declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: NumberValue): Effect")
@@ -655,7 +657,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly ammo: ComputedRef<number>;\n      readonly ammoReserve: ComputedRef<number>;\n      readonly cell: ComputedRef<number>;\n      readonly cellCapacity: ComputedRef<number>;\n      readonly health: ComputedRef<number>;\n      readonly heat: ComputedRef<number>;\n      readonly maxHealth: ComputedRef<number>;")
+        ts.contains("readonly player: {\n      readonly ammo: PlayerComputedRef<number>;\n      readonly ammoReserve: PlayerComputedRef<number>;\n      readonly cell: PlayerComputedRef<number>;\n      readonly cellCapacity: PlayerComputedRef<number>;\n      readonly health: PlayerComputedRef<number>;\n      readonly heat: PlayerComputedRef<number>;\n      readonly maxHealth: PlayerComputedRef<number>;")
             && ts.contains("readonly textEntry: Ref<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );
@@ -670,10 +672,10 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "luau missing getGameState declaration:\n{luau}"
     );
     assert!(
-        luau.contains("ammo: ComputedRef<number>,")
-            && luau.contains("ammoReserve: ComputedRef<number>,")
-            && luau.contains("health: ComputedRef<number>,")
-            && luau.contains("maxHealth: ComputedRef<number>,")
+        luau.contains("ammo: PlayerComputedRef<number>,")
+            && luau.contains("ammoReserve: PlayerComputedRef<number>,")
+            && luau.contains("health: PlayerComputedRef<number>,")
+            && luau.contains("maxHealth: PlayerComputedRef<number>,")
             && luau.contains("textEntry: Ref<string>,"),
         "luau GameStateRefs missing catalog path/capability refs"
     );
@@ -686,7 +688,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
             .expect("catalog validation requires nonempty SDK paths");
         let expected_ts = format!(
             "readonly {leaf}: {};",
-            state_ref_ts(entry.capability, entry.value_type)
+            state_ref_ts(entry.capability, entry.value_type, entry.is_per_player())
         );
         assert!(
             ts.contains(&expected_ts),
@@ -696,7 +698,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
 
         let expected_luau = format!(
             "{leaf}: {},",
-            state_ref_luau(entry.capability, entry.value_type)
+            state_ref_luau(entry.capability, entry.value_type, entry.is_per_player())
         );
         assert!(
             luau.contains(&expected_luau),

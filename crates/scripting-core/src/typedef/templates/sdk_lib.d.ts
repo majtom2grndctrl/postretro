@@ -121,7 +121,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`) carries `target: "@activators"` or `target: "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     kind?: GroupKind;
@@ -296,6 +296,21 @@
   export type EmitterTarget = Readonly<{ readonly [emitterTargetBrand]: true }>;
   /** Dispatch values published by a named gameplay event: weapon, reload, impact, enemy, movement and mover events. */
   export type EmitterParams = Readonly<{ emitter: EmitterTarget }>;
+  const playerTargetBrand: unique symbol;
+  /** The player a player event fired for (`on.player`): a command target, and the owner `byPlayer(on.player)` reads. Legal only before any `wait`, and only in reactions a player event fires. */
+  export interface PlayerTarget {
+    readonly [playerTargetBrand]: true;
+    /** Damage this event's player by a finite, non-negative amount. */
+    damage(amount: number): SubjectTokenCommand;
+    /** Add health to this event's player. */
+    grantHealth(amount: number): SubjectTokenCommand;
+    /** Add `amount` to this event's player's named ammo-reserve pool. */
+    grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Add `delta` to this event's player's value of a per-owner numeric slot. */
+    addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
+  }
+  /** Dispatch values published by a player event (`players().on`): the player it fired for. */
+  export type PlayerEventParams = Readonly<{ player: PlayerTarget }>;
   const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
@@ -452,6 +467,8 @@
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
+    /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
+    playerEvents?: PlayerEventDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -481,6 +498,9 @@
   export function defineReaction(
     tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<EmitterParams>;
+  export function defineReaction(
+    tracer: (params: PlayerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<PlayerEventParams>;
 
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
   export function defineImpactEvent(
@@ -511,6 +531,10 @@
     name: string,
     tracer: (params: EmitterParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<EmitterParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: PlayerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<PlayerEventParams>;
 
   /** Mod-global trigger event: a standing rule keyed by tag, accepted only in `ModManifest.triggerEvents`. Build it with `defineTriggerEvent`. */
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
@@ -529,9 +553,9 @@
   export type GroupKind = "npc" | "player";
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
-  /** The subject a token command addresses: this fire's activators or the volume that fired. */
-  export type SubjectTokenTarget = "@activators" | "@trigger";
-  /** One subject-token command (`on.activators`, `on.trigger`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
+  /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@player";
+  /** One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
   export type NpcGroupFilter = { tag?: string };
@@ -554,7 +578,24 @@
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
+    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
+    on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
   }
+  /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
+  export type PlayerEventEdgeWord = "becomes" | "ceases";
+  const playerEventEdgeBrand: unique symbol;
+  /** A condition paired with its edge word. Build it with `becomes(cond)` or `ceases(cond)`. */
+  export type PlayerEventEdge = Readonly<{ readonly [playerEventEdgeBrand]: true }>;
+  /** A reaction a player event fires: a sourceless or player-event-scoped handle, or a bare name. */
+  export type PlayerEventReaction = Reaction<{}> | Reaction<PlayerEventParams> | string;
+  /** `levels` scopes a `ModManifest` entry to matching map tags; a level script's entry must omit it. */
+  export type PlayerEventOptions = { levels?: string[] };
+  /** One `playerEvents` entry, as `players().on` builds it. */
+  export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
+  export function becomes(cond: BoolRef): PlayerEventEdge;
+  /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */
+  export function ceases(cond: BoolRef): PlayerEventEdge;
   /** Address NPCs, optionally narrowed to those carrying `tag`. Resolved when each command takes effect, sequence steps included. */
   export function npcs(filter?: NpcGroupFilter): NpcGroup;
   /** Address every seat-bound player pawn. Resolved when each command takes effect, sequence steps included. */
@@ -582,13 +623,21 @@
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
-  export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: "@impact.source"; readonly [stateRefValueBrand]: T };
+  /** The wire owner a `byPlayer` read or write addresses. */
+  export type OwnerToken = "@impact.source" | "@player";
+  export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: OwnerToken; readonly [stateRefValueBrand]: T };
   export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
-  type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: SourceHandle): OwnerAddressedComputedRef<T> };
-  type StoreRef<T> = Ref<T> & { byPlayer(owner: SourceHandle): OwnerAddressedRef<T> };
+  /** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
+  export type PlayerOwner = SourceHandle | PlayerTarget;
+  /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
+  export type PlayerComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
+  /** Writable form of `PlayerComputedRef`. */
+  export type PlayerRef<T> = Ref<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedRef<T> };
+  type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
+  type StoreRef<T> = Ref<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedRef<T> };
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves global slots on clean exit. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value and permits only omitted `network` or `network: "ownerPrivate"`; `network: "shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `postretro-tool mint-identity <mod>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
@@ -900,7 +949,7 @@
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;

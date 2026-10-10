@@ -228,9 +228,10 @@ impl App {
             .rebuild(&script_ctx.data_registry.borrow(), &script_ctx);
     }
 
-    /// Rebind trigger events after staged mod-init recomposes the active reaction
-    /// set. Tick dispatch holds bound commands, never reaction names, so it must
-    /// be refreshed alongside the other active reaction consumers.
+    /// Rebind trigger events and player events after staged mod-init recomposes
+    /// the active reaction set. Tick dispatch holds bound commands, never
+    /// reaction names, so it must be refreshed alongside the other active
+    /// reaction consumers.
     pub(crate) fn rebuild_active_trigger_bindings(&mut self) {
         let bindings = {
             let Some(session) = self.session.as_ref() else {
@@ -253,6 +254,22 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        self.rebuild_player_events(true);
+    }
+
+    /// Rebind player events over the active composed set. A recompose keeps
+    /// edge memory for every condition and edge that survives it.
+    pub(crate) fn rebuild_player_events(&mut self, keep_edge_memory: bool) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let previous = std::mem::take(&mut self.player_events);
+        self.player_events = postretro_sim::player_events::PlayerEventTable::build(
+            &session.scripting.script_ctx,
+            session.scripting.command_diagnostics.clone(),
+            session.scripting.spawn_context.clone(),
+            keep_edge_memory.then_some(&previous),
+        );
     }
 
     pub(super) fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
@@ -879,6 +896,9 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        // A level install starts every player unobserved: no edge memory
+        // carries from the previous level.
+        self.rebuild_player_events(false);
         self.trigger_pool_report = products.trigger_pool_report;
         // Retain spawn-point placements for the host's runtime seat-accept path:
         // each accepted client's descriptor pawn materializes from them later.
@@ -1126,7 +1146,16 @@ fn rebuild_reaction_subscribers(
                 *any |= uses_sentinel;
                 *all &= uses_sentinel;
             }
-            let level_load_has_sentinel = per_address.get("levelLoad").is_some_and(|(any, _)| *any);
+            // The legacy warning is for trigger sentinels other than the event
+            // player: an `@player` levelLoad reaction already gets the
+            // `on.player` error below.
+            let level_load_has_sentinel = data_registry.reactions.iter().any(|reaction| {
+                reaction.name == "levelLoad"
+                    && reaction_uses_trigger_sentinel(reaction)
+                    && !postretro_scripting_core::player_event_scope::reaction_uses_event_player(
+                        &reaction.descriptor,
+                    )
+            });
             // A name is strippable only when every reaction registered there is
             // sentinel-bound (each map key has at least one reaction, so the
             // non-empty requirement holds by construction).
@@ -1137,9 +1166,27 @@ fn rebuild_reaction_subscribers(
                 .collect();
             (fully_sentinel_bound, level_load_has_sentinel)
         };
+        // `on.player` exists only in a player event's fire. Unlike a trigger
+        // sentinel, one such reaction costs the crossing its whole address,
+        // the rejection unit player events use for the same token.
+        let mut event_player_addresses: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for reaction in &data_registry.reactions {
+            if postretro_scripting_core::player_event_scope::reaction_uses_event_player(
+                &reaction.descriptor,
+            ) {
+                event_player_addresses.insert(reaction.name.clone());
+            }
+        }
         data_registry.crossings.retain_mut(|crossing| {
             let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
             crossing.fire.retain(|address| {
+                if event_player_addresses.contains(address) {
+                    log::error!(
+                        "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses `on.player`, which only a player event publishes"
+                    );
+                    return false;
+                }
                 let strip = fully_sentinel_bound.contains(address);
                 if strip {
                     log::warn!(
@@ -1153,6 +1200,11 @@ fn rebuild_reaction_subscribers(
         if level_load_has_sentinel {
             log::warn!(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
+            );
+        }
+        if event_player_addresses.contains("levelLoad") {
+            log::error!(
+                "[Scripting] levelLoad: reaction `levelLoad` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
             );
         }
     }
@@ -1781,6 +1833,7 @@ pub(crate) mod tests {
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+            player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_weapon: Default::default(),
@@ -3407,6 +3460,7 @@ pub(crate) mod tests {
                 loading: Default::default(),
                 store_declarations: Default::default(),
                 dependency_paths: Vec::new(),
+                player_events: Vec::new(),
             })),
             diagnostics: Vec::new(),
         };
@@ -4642,6 +4696,66 @@ pub(crate) mod tests {
         assert!(
             fixture.armed_by_tag["ambush_trap"].is_empty(),
             "the client keeps authored enabled_on_spawn=false rather than running the host roll",
+        );
+    }
+
+    // `on.player` exists only in a player event's fire: a crossing loses the
+    // address, and a `levelLoad` reaction using it is reported at install.
+    #[test]
+    fn on_player_reactions_are_rejected_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        let ctx = ScriptCtx::new();
+        let on_player = |name: &str| NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "applyDamage".to_string(),
+                target: Some("@player".to_string()),
+                kind: None,
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "amount": 5.0 }),
+            }),
+        };
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![on_player("scald"), on_player("levelLoad")],
+            vec![CrossingDescriptor {
+                slot: Some("player.health".to_string()),
+                condition: CrossingCondition::Below { threshold: 0.5 },
+                max: 100.0,
+                edge: None,
+                fire: vec!["scald".to_string()],
+            }],
+            &[],
+        );
+        let capture = LogCapture::start();
+        rebuild_reaction_subscribers(
+            &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+            &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+            &ctx,
+            SubscriberRebuild::LevelInstall,
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "crossing on `player.health` drops address `scald`: reaction `scald` uses `on.player`",
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "levelLoad: reaction `levelLoad` uses `on.player`",
+        );
+        assert!(
+            ctx.data_registry.borrow().crossings.is_empty(),
+            "the crossing kept no other address"
+        );
+        // The `@player`-only levelLoad is covered by the error above; the legacy
+        // trigger-sentinel warning must not double-report it.
+        assert!(
+            !capture.records().iter().any(|record| {
+                record.level == log::Level::Warn
+                    && record
+                        .message
+                        .contains("levelLoad references trigger-sentinel work")
+            }),
+            "legacy sentinel warning fired for an `@player`-only levelLoad"
         );
     }
 }

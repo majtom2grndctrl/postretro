@@ -7,17 +7,18 @@ import type {
   CrossingParams,
   EmitterParams,
   EmitterTarget,
+  PlayerEventParams,
   Reaction,
   ReactionBody,
   SequenceStep,
   TriggerEventParams,
 } from "../data_script";
-import { ACTIVATORS_TARGET, TRIGGER_TARGET } from "./commands";
+import { ACTIVATORS_TARGET, PLAYER_TARGET, TRIGGER_TARGET } from "./commands";
 
 type ReactionTracer<S> = (params: S) => ReactionBody;
 
 // This is deliberately one plain merged object rather than a Proxy. The
-// subject tokens (activators, trigger) sit beside these input nodes and carry
+// subject tokens (activators, trigger, player) sit beside these input nodes and carry
 // their own verbs (`./commands`).
 // The emitter token carries its own wire spelling, so `playSound` (in the UI
 // reaction module) lowers it without importing this module's private tokens.
@@ -30,6 +31,7 @@ export const DISPATCH_PARAMS = Object.freeze({
   trigger: TRIGGER_TARGET,
   occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
   emitter: EMITTER_TARGET,
+  player: PLAYER_TARGET,
 });
 
 /**
@@ -113,6 +115,7 @@ export function defineReaction(body: ReactionBody): Reaction<{}>;
 export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
 export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
 export function defineReaction(tracer: ReactionTracer<EmitterParams>): Reaction<EmitterParams>;
+export function defineReaction(tracer: ReactionTracer<PlayerEventParams>): Reaction<PlayerEventParams>;
 export function defineReaction(
   name: string,
   descriptor: ReactionBody,
@@ -130,16 +133,23 @@ export function defineReaction(
   tracer: ReactionTracer<EmitterParams>,
 ): Reaction<EmitterParams>;
 export function defineReaction(
+  name: string,
+  tracer: ReactionTracer<PlayerEventParams>,
+): Reaction<PlayerEventParams>;
+export function defineReaction(
   nameOrBody:
     | string
     | ReactionBody
-    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
-  descriptor?: ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams>,
+    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams | PlayerEventParams>,
+  descriptor?:
+    | ReactionBody
+    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams | PlayerEventParams>,
 ):
   | Reaction<{}>
   | Reaction<CrossingParams>
   | Reaction<TriggerEventParams>
-  | Reaction<EmitterParams> {
+  | Reaction<EmitterParams>
+  | Reaction<PlayerEventParams> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
   const tracedBody = typeof authored === "function"
     ? authored(DISPATCH_PARAMS)

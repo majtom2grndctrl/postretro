@@ -7,10 +7,7 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use postretro_foundation::resolve_weapon_placement;
-use postretro_scripting_core::reaction_dispatch::{
-    ResidualOrigin, dispatch_deferred_named_events_with_sequences,
-    fire_prepartitioned_reactions_with_sequences,
-};
+use postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_with_sequences;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 use winit::event_loop::ActiveEventLoop;
 
@@ -498,6 +495,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // never enqueue host-local mover audio.
     let mut pending_mover_events = Vec::new();
     let mut pending_trigger_residuals = Vec::new();
+    let mut pending_player_event_residuals = Vec::new();
     let mut repointed_pawns = Vec::new();
 
     let mut host_snapshot_due = false;
@@ -996,6 +994,37 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             if app.host_flush_pending_hit_declarations(frame_anim_time, &mut remote_impacts) {
                 pending_death_events.extend(app.host_run_remote_hit_death_sweep());
             }
+            // The tick has settled: every hit this tick authorized, its death
+            // sweep and the accumulators have landed. Player events read that
+            // snapshot, then apply their in-tick commands.
+            {
+                let _scope = sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
+                app.player_events
+                    .run_tick(&script_ctx, &mut pending_player_event_residuals);
+            }
+            // A `spawnFromSpawner` in a player event's fire list runs at the
+            // seam above, after the drains earlier in this tick. Repeat them
+            // so its spawn resolves its mesh clips and enrolls its dynamic
+            // lights this tick, as trigger spawns do, not a tick late. Both
+            // are no-ops when nothing new was spawned.
+            {
+                let session = app.session.as_mut().expect("running session installed");
+                let spawned_meshes = session
+                    .scripting
+                    .spawn_context
+                    .take_pending_mesh_clip_resolves();
+                if !spawned_meshes.is_empty() {
+                    resolve_mesh_entity_bindings_for_entities(
+                        &mut script_ctx.registry.borrow_mut(),
+                        &session.mesh_clip_tables,
+                        &session.hit_zone_store,
+                        spawned_meshes,
+                    );
+                }
+                session
+                    .light_bridge
+                    .absorb_dynamic_lights(&script_ctx.registry.borrow());
+            }
             app.host_advance_projectile_presentations(&script_ctx.registry, tick_dt);
             pending_movement_events.extend(tick_events.movement);
             pending_movement_edges.extend(tick_events.movement_edges.into_iter().map(|edge| {
@@ -1311,38 +1340,21 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &session.scripting.system_registry,
             &script_ctx,
         ));
-        for (handle, trigger, player) in &pending_trigger_residuals {
-            let Some(residual) = app.trigger_bindings.residual(*handle) else {
-                log::warn!("[Trigger] residual handle {handle:?} was not bound at install");
-                continue;
-            };
-            // Scope the origin guard to THIS residual iteration only,
-            // released before the deferred batch below: a `wait`
-            // reached synchronously here keys its instance to this
-            // `(trigger, player)`, while a batch-seeded `fire` stays
-            // sourceless. The paired-enter standing check reads the
-            // trigger system from the session the drain already
-            // holds — an interruptible instance parks only while its
-            // origin's enter is live, so a player who left within
-            // the frame does not park an uncancellable beat.
-            let paired_enter_standing = session
-                .trigger_system
-                .paired_enters()
-                .contains(&(*trigger, *player));
-            let _origin =
-                session
-                    .scripting
-                    .scheduler
-                    .begin_origin(*trigger, *player, paired_enter_standing);
-            pending_trigger_follow_ups.extend(fire_prepartitioned_reactions_with_sequences(
-                residual.steps(),
-                &session.scripting.sequence_registry,
-                &session.scripting.reaction_registry,
-                &session.scripting.system_registry,
-                &script_ctx,
-                ResidualOrigin::TriggerBinding,
-            ));
-        }
+        postretro_sim::residual_drain::drain_frame_residuals(
+            &pending_trigger_residuals,
+            &app.trigger_bindings,
+            &session.trigger_system,
+            &pending_player_event_residuals,
+            &app.player_events,
+            &session.scripting.scheduler,
+            postretro_sim::residual_drain::ResidualRegistries {
+                sequence: &session.scripting.sequence_registry,
+                reaction: &session.scripting.reaction_registry,
+                system: &session.scripting.system_registry,
+            },
+            &script_ctx,
+            &mut pending_trigger_follow_ups,
+        );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and
             // run above. Follow-up names advance by bounded FIFO

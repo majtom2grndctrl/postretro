@@ -20,6 +20,7 @@ mod movement_crouch_forgiveness;
 mod movement_dash;
 mod movement_slide;
 mod movement_view_feel;
+mod player_events;
 mod reactions;
 mod sounds;
 mod ui_bridge;

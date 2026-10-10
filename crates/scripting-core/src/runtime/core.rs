@@ -429,6 +429,7 @@ impl ScriptRuntime {
                 next_global_crossings,
                 next_global_trigger_events,
                 next_global_trigger_pools,
+                next_global_player_events,
                 next_store_declarations,
                 next_dependencies,
                 next_mod_identity,
@@ -461,6 +462,7 @@ impl ScriptRuntime {
                         manifest.crossings.clone(),
                         manifest.trigger_events.clone(),
                         manifest.trigger_pools.clone(),
+                        manifest.player_events.clone(),
                         manifest.store_declarations.clone(),
                         dependencies,
                         Some((manifest.id.clone(), manifest.version.clone())),
@@ -489,6 +491,7 @@ impl ScriptRuntime {
                         Vec::new(),
                         Vec::new(),
                         None,
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -707,6 +710,7 @@ impl ScriptRuntime {
                 data_registry.replace_global_crossings(next_global_crossings);
                 data_registry.replace_global_trigger_events(next_global_trigger_events);
                 data_registry.replace_global_trigger_pools(next_global_trigger_pools);
+                data_registry.replace_global_player_events(next_global_player_events);
             }
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);

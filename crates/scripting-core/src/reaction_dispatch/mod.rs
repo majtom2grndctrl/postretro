@@ -75,6 +75,7 @@ pub fn fire_named_event_with_sequences(
             source,
             values,
             emitter,
+            presentation_seat: None,
         },
     );
     let mut chained = Vec::new();
@@ -154,7 +155,7 @@ pub enum PrepartitionedReactionStep {
 /// [`fire_prepartitioned_reactions_with_sequences`] assert that no
 /// `is_trigger_consequential_primitive` reaches the app drain — the binder should
 /// have bound such work into the fixed tick. That holds for a `TriggerBinding`
-/// residual, but a `ResumedTail` is by construction everything *after* a wait: the
+/// residual (trigger and player-event residuals), but a `ResumedTail` is by construction everything *after* a wait: the
 /// binder deliberately deferred it, so consequential work draining app-side is
 /// legitimate. The exemption keys on the caller, not on the steps — a content rule
 /// ("exempt a residual that contains a `Wait`") would still panic on a post-wait
@@ -166,7 +167,7 @@ pub enum ResidualOrigin {
 }
 
 /// Execute steps resolved and partitioned earlier, without a reaction-name
-/// lookup. Trigger residuals use this after their consequential commands have
+/// lookup. Trigger and player-event residuals use this after their consequential commands have
 /// already executed in the fixed simulation tick. Returns named work for the
 /// next app-side dispatch hop in the residual's authored composition order.
 pub fn fire_prepartitioned_reactions_with_sequences(

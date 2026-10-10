@@ -5,7 +5,7 @@ use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, GroupTarget, MoverCommand, ScriptCtx, SlotTable,
     SlotValue,
 };
-use postretro_foundation::{BoundProgram, IrValue, eval_and_write};
+use postretro_foundation::{BindingScope, BoundProgram, IrValue, eval_value};
 use postretro_scripting_core::group_resolution::{group_commands_apply_here, resolve_group};
 use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::{apply_store_slot_batch, validate_slot_value};
@@ -88,6 +88,8 @@ pub(crate) enum BoundTarget {
     Entity(EntityId),
     Activators,
     FiredTrigger,
+    /// `on.player`: the pawn of the player a player event fires for.
+    EventPlayer,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,6 +100,9 @@ pub struct TriggerFireContext {
     /// for every command in the fixed-tick path.
     pub activator: Option<EntityId>,
     pub occupancy: usize,
+    /// The event player's pawn on a player-event fire; `None` on every
+    /// trigger fire, so `on.player` never resolves under a trigger.
+    pub event_player: Option<EntityId>,
 }
 
 enum ResolvedTargets<'a> {
@@ -224,7 +229,17 @@ impl BoundTriggerCommand {
                         log::warn!("[Trigger] failed to seed @occupancy: {error:?}");
                         return;
                     }
-                    eval_and_write(program, dispatch_scope);
+                    dispatch_scope.seed_event_player(registry, fire_context.event_player);
+                    let value = eval_value(program, dispatch_scope);
+                    if dispatch_scope.take_missing_event_player_value() {
+                        log::warn!(
+                            "[Scripting] setState for `{slot}` reads a value the event player has no source for; skipping"
+                        );
+                        return;
+                    }
+                    if let Some(output) = &program.output {
+                        dispatch_scope.write(output, value);
+                    }
                 }
             },
             Self::AddOwnerSlot {
@@ -358,7 +373,8 @@ impl BoundTriggerCommand {
                     BoundTarget::Group(group) => resolve_group(registry, group),
                     BoundTarget::Entity(_)
                     | BoundTarget::Activators
-                    | BoundTarget::FiredTrigger => {
+                    | BoundTarget::FiredTrigger
+                    | BoundTarget::EventPlayer => {
                         log::warn!(
                             "[Trigger] updateNpcState requires a tag or group target; special target is invalid; skipping"
                         );
@@ -383,7 +399,10 @@ impl BoundTriggerCommand {
                         spawn_from_spawner_member(registry, id, spawn_context);
                     }
                 }
-                BoundTarget::Group(_) | BoundTarget::Activators | BoundTarget::FiredTrigger => {
+                BoundTarget::Group(_)
+                | BoundTarget::Activators
+                | BoundTarget::FiredTrigger
+                | BoundTarget::EventPlayer => {
                     log::warn!(
                         "[Trigger] spawnFromSpawner requires a spawner member or tag target; skipping"
                     );
@@ -461,6 +480,15 @@ impl BoundTarget {
             }
             Self::Activators => ResolvedTargets::Borrowed(fire_context.activator.as_slice()),
             Self::FiredTrigger => ResolvedTargets::Borrowed(fire_context.fired_trigger.as_slice()),
+            Self::EventPlayer => match fire_context.event_player {
+                Some(pawn) if !registry.exists(pawn) => {
+                    log::warn!(
+                        "[Scripting] player event target {pawn:?} no longer exists; skipping command"
+                    );
+                    ResolvedTargets::Borrowed(&[])
+                }
+                _ => ResolvedTargets::Borrowed(fire_context.event_player.as_slice()),
+            },
         }
     }
 }

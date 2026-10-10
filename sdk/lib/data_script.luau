@@ -65,8 +65,8 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`, `on.trigger`) carries `target =
---- "@activators"` or `target = "@trigger"`. A raw descriptor with only a non-empty `tag` resolves over every entity
+--- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
+--- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity
 --- carrying it (fog, emitter and animation primitives have no typed builder).
 --- True system reactions carry neither and enqueue typed engine commands such
 --- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
@@ -95,11 +95,11 @@ export type GroupCommand = {
   args: { [string]: any },
 }
 
---- The subject a token command addresses: this fire's activators or the
---- volume that fired.
-export type SubjectTokenTarget = "@activators" | "@trigger"
+--- The subject a token command addresses: this fire's activators, the volume
+--- that fired, or the event's player.
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@player"
 
---- One subject-token command (`on.activators`, `on.trigger`): a primitive
+--- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = {
@@ -128,6 +128,23 @@ export type PlayerGroup = {
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
+  on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
+}
+
+--- A condition paired with its edge word. Build it with `becomes(cond)` or
+--- `ceases(cond)`.
+export type PlayerEventEdge = { __playerEventEdge: true }
+
+--- `levels` scopes a `ModManifest` entry to matching map tags; a level
+--- script's entry must omit it.
+export type PlayerEventOptions = { levels: {string}? }
+
+--- One `playerEvents` entry, as `players():on` builds it.
+export type PlayerEventDescriptor = {
+  edge: "becomes" | "ceases",
+  condition: RuntimeValue,
+  fire: {string},
+  levels: {string}?,
 }
 
 --- Tween shape used by the billboard-emitter reaction primitive
@@ -290,6 +307,17 @@ export type ActivatorsTarget = {
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
+--- The player a player event fired for (`on.player`): a command target, and
+--- the owner `byPlayer(on.player)` reads. Legal only before any `wait`.
+export type PlayerTarget = {
+  __playerTarget: true,
+  damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
+  addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
+}
+--- Dispatch values published by a player event: the player it fired for.
+export type PlayerEventParams = { player: PlayerTarget }
 --- The trigger volume that fired the current edge. Legal only before any `wait`.
 export type TriggerTarget = {
   arm: (self: TriggerTarget) -> SubjectTokenCommand,
@@ -423,6 +451,10 @@ export type LevelManifest = {
   -- Level trigger events, keyed by volume: build each with a trigger member's `on`.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
+  -- Per-player events, built with `players():on`. A level's entries belong to
+  -- that level; an entry carrying `levels` is skipped with a warning (its
+  -- siblings install).
+  playerEvents: {PlayerEventDescriptor}?,
   -- Per-level UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   -- entries are logged and skipped.
@@ -457,13 +489,17 @@ export type StoreDeclaration = {
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
-export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: "@impact.source" }
-export type OwnerAddressedRef<T> = Ref<T> & { owner: "@impact.source" }
+export type OwnerToken = "@impact.source" | "@player"
+export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: OwnerToken }
+export type OwnerAddressedRef<T> = Ref<T> & { owner: OwnerToken }
+--- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
+--- event's player (`on.player`).
+export type PlayerOwner = SourceHandle | PlayerTarget
 type StoreComputedRef<T> = ComputedRef<T> & {
-  byPlayer: (self: StoreComputedRef<T>, owner: SourceHandle) -> OwnerAddressedComputedRef<T>,
+  byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T>,
 }
 type StoreRef<T> = Ref<T> & {
-  byPlayer: (self: StoreRef<T>, owner: SourceHandle) -> OwnerAddressedRef<T>,
+  byPlayer: (self: StoreRef<T>, owner: PlayerOwner) -> OwnerAddressedRef<T>,
 }
 export type StateRef<T> = StoreComputedRef<T> | StoreRef<T>
 export type StoreDefinition = {
@@ -479,6 +515,7 @@ local storeDeclarations = setmetatable({}, { __mode = "k" })
 -- shared dispatch params as `defineReaction`.
 local dataScriptParts = __postretroDataScriptParts
 local DISPATCH_PARAMS = dataScriptParts.reactions.DISPATCH_PARAMS
+local PLAYER_TARGET = dataScriptParts.commands.PLAYER_TARGET
 
 local expressionRefs = __postretroExpressionRefs
 local numberNode = expressionRefs.numberNode
@@ -585,6 +622,8 @@ IMPACT_TARGET = table.freeze({
 
 IMPACT_SOURCE = table.freeze({
   __impactSourceBrand = true,
+  -- Engine state refs' `byPlayer` recognizes the source by this wire spelling.
+  __wire = "@impact.source",
   grantHealth = function(_self: SourceHandle, amount: NumberValue): Effect
     return sourceImpactEffect("grantHealth", { amount = numberNode(amount) })
   end,
@@ -779,8 +818,8 @@ end
 --- multiplayer admission; the version is display-only and never compared. The
 --- first committed id and version remain active across staged reloads. Optional
 --- arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
---- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
---- `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+--- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
+--- `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
@@ -889,14 +928,18 @@ end
 local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
   local ref = { slot = slot, kind = kind }
   local methods = {
-    byPlayer = function(_self: any, owner: SourceHandle): OwnerAddressedRef<any>
+    byPlayer = function(_self: any, owner: PlayerOwner): OwnerAddressedRef<any>
       if not perOwner then
         error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
       end
+      local token = if rawequal(owner, IMPACT_SOURCE)
+        then "@impact.source"
+        elseif rawequal(owner, PLAYER_TARGET) then "@player"
+        else "@invalid"
       return table.freeze({
         slot = slot,
         kind = kind,
-        owner = if owner == IMPACT_SOURCE then "@impact.source" else "@invalid",
+        owner = token,
       }) :: any
     end,
   }
@@ -952,7 +995,12 @@ end
 -- Merge the part chunks' public builders. Field names are disjoint from the
 -- builders declared above; `data_script_export_inventory_matches_returned_sdk_fields`
 -- pins the merged set.
-for _, part in ipairs({ dataScriptParts.commands, dataScriptParts.reactions, dataScriptParts.triggerEvents }) do
+for _, part in ipairs({
+  dataScriptParts.playerEvents,
+  dataScriptParts.commands,
+  dataScriptParts.reactions,
+  dataScriptParts.triggerEvents,
+}) do
   for name, builder in pairs(part.builders) do
     DataScriptSdk[name] = builder
   end

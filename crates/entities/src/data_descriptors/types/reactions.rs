@@ -115,6 +115,8 @@ pub enum SequenceTarget {
     Group(GroupTarget),
     Activators,
     FiredTrigger,
+    /// `on.player`: the player a player event fires for.
+    EventPlayer,
     /// Control step: `wait`. Enrolls the remainder of the body with the host-only
     /// reaction scheduler and stops the drain. Payload-free — `durationMs` and
     /// `interruptible` ride in the step's `args`.

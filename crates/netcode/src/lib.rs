@@ -56,6 +56,7 @@ mod movement_state;
 mod netdiag;
 mod prediction;
 mod presentation;
+pub mod presentation_commands;
 mod projectile_presentation;
 mod reconcile;
 mod remote_materialize;
@@ -6053,8 +6054,8 @@ mod tests {
     fn enemy_projectile_authority_reuses_the_existing_wire_versions() {
         assert_eq!(
             postretro_net::handshake::PROTOCOL_ID,
-            0x_5052_4C41,
-            "the revealed participation vocabulary requires application protocol PRLA (protocol 10)"
+            0x_5052_4C42,
+            "player-addressed presentation commands require application protocol PRLB (protocol 11)"
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,

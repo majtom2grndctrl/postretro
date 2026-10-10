@@ -1531,6 +1531,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
+| `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
 ```typescript
 import { defineReaction, getMapEntities, npcs, players, fire, wait } from "postretro";
@@ -2482,6 +2483,65 @@ buttons in the registered `deathScreen` UI tree that fire `restartLevel()` or
 tree; an unknown tree name warns and no-ops. Level-complete flows use the same
 reaction vocabulary through `onStateCrossing`; there is no built-in
 `levelComplete` event.
+
+### Per-player events
+
+`players().on(becomes(condition), fire)` fires `fire` once for each player whose
+`condition` turns true; `ceases(condition)` fires when it turns false. Return the
+entries under `playerEvents` from `setupLevel`, or from your `ModManifest` to
+apply them in every level. To limit a mod-wide entry to some levels, pass
+`{ levels: [...] }` with their map tags as the third argument; a level script's
+entry must omit it.
+
+```typescript
+import { players, becomes, read, defineReaction } from "postretro";
+import type { PlayerEventParams } from "postretro";
+import { playSound } from "postretro/ui";
+import { progression } from "./combat-lifecycle";
+import { leveling } from "./leveling";
+
+const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) =>
+  on.player.addSlot(leveling.level, 1),
+);
+const fanfare = defineReaction("leveling.fanfare", playSound("sfx/test_tone"));
+
+export function setupLevel() {
+  return {
+    reactions: [levelUp, fanfare],
+    playerEvents: [
+      players().on(becomes(read(progression.xp).ge(100).and(read(leveling.level).lt(2))), [
+        levelUp,
+        fanfare,
+      ]),
+    ],
+  };
+}
+```
+
+- **The host decides.** Conditions are checked once per game tick, on the host
+  or in single player. A connected client never evaluates them.
+- **Reads in the condition mean that player.** A per-player slot read inside the
+  condition (`progression.xp` above, or an engine slot such as `player.health`)
+  reads the player being checked. A shared slot reads its one value.
+- **Reactions reach the player through `on.player`.** `on.player` targets that
+  player's pawn with the same verbs as `on.activators`, and
+  `slot.byPlayer(on.player)` reads that player's value. A plain per-player read
+  inside a fired reaction is rejected at load; use `byPlayer(on.player)`. Both
+  forms work only in reactions a player event fires, and only before any `wait`.
+- **Presentation plays on that player's machine.** `playSound`, `rumble`,
+  `flashScreen`, `vignette` and `screenShake` in the fire list play only for the
+  player the event is about, on their own machine. A machine-local effect that
+  cannot be sent to another player — a UI-stack verb, a text edit, or `setState`
+  on a slot without `network` — is rejected at load.
+- **A player not yet seen counts as false.** When a player first appears, or
+  comes back after a disconnect or respawn, `becomes` fires if the condition
+  already holds and `ceases` never does. For a one-time milestone, put the guard
+  in the condition and have the fire clear it (the `level < 2` term above), so a
+  rejoin does not award it twice.
+- **Pick the right tool.** Feedback on a player's own replicated state — a
+  low-health vignette, an ammo warning — belongs in a local `onStateCrossing`;
+  it plays immediately with no round trip to the host. Use a player event for
+  outcomes the host decides, such as a level-up or a penalty.
 
 ### The readonly `player.health` slot
 

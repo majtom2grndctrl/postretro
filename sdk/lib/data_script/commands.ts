@@ -1,9 +1,16 @@
-// Command targets: the `npcs` and `players` groups and the trigger-event
-// subject tokens (`on.activators`, `on.trigger`). Each carries exactly the
-// verbs its kind supports; a verb builds the closed wire descriptor.
+// Command targets: the `npcs` and `players` groups and the subject tokens
+// (`on.activators`, `on.trigger`, `on.player`). Each carries exactly the verbs
+// its kind supports; a verb builds the closed wire descriptor.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 import type { StateRef } from "../data_script";
+import { playerEvent } from "./player_events";
+import type {
+  PlayerEventDescriptor,
+  PlayerEventEdge,
+  PlayerEventOptions,
+  PlayerEventReaction,
+} from "./player_events";
 
 /** Kinds a group command addresses. */
 export type GroupKind = "npc" | "player";
@@ -53,10 +60,18 @@ export interface PlayerGroup {
   grantAmmo(type: string, amount: number): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
+  /**
+   * Fire `fire` once per player whenever `edge`'s condition crosses for that
+   * player. Evaluated on the host (and in single player) once per
+   * authoritative tick, after the tick settles; a connected client registers
+   * nothing. Effective only when returned under a
+   * manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry.
+   */
+  on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
 }
 
-/** The subject a token command addresses: this fire's activators or the volume that fired. */
-export type SubjectTokenTarget = "@activators" | "@trigger";
+/** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@player";
 
 /**
  * One subject-token command: a primitive descriptor whose `target` names the
@@ -72,6 +87,7 @@ export type SubjectTokenCommand = {
 
 declare const activatorsTargetBrand: unique symbol;
 declare const triggerTargetBrand: unique symbol;
+declare const playerTargetBrand: unique symbol;
 
 /** The pawns that caused the current trigger edge. Legal only before any `wait`. */
 export interface ActivatorsTarget {
@@ -86,6 +102,23 @@ export interface ActivatorsTarget {
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
 
+/**
+ * The player a player event fired for (`on.player`): a command target, and
+ * the owner `byPlayer(on.player)` reads. Legal only before any `wait`, and
+ * only in reactions a player event fires.
+ */
+export interface PlayerTarget {
+  readonly [playerTargetBrand]: true;
+  /** Damage this event's player. */
+  damage(amount: number): SubjectTokenCommand;
+  /** Add health to this event's player. */
+  grantHealth(amount: number): SubjectTokenCommand;
+  /** Add to this event's player's named ammo-reserve pool. */
+  grantAmmo(type: string, amount: number): SubjectTokenCommand;
+  /** Add `delta` to this event's player's value of a per-owner numeric slot. */
+  addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
+}
+
 /** The trigger volume that fired the current edge. Legal only before any `wait`. */
 export interface TriggerTarget {
   readonly [triggerTargetBrand]: true;
@@ -97,8 +130,8 @@ export interface TriggerTarget {
 
 type CommandBuilder<R> = (primitive: string, args: Record<string, unknown>) => R;
 
-// The four player-facing verbs, shared by `players()` and `on.activators`;
-// only the addressing each stamps differs.
+// The four player-facing verbs, shared by `players()`, `on.activators` and
+// `on.player`; only the addressing each stamps differs.
 function playerVerbs<R>(make: CommandBuilder<R>) {
   return {
     damage: (amount: number): R => make("applyDamage", { amount }),
@@ -125,7 +158,7 @@ export function npcs(filter?: NpcGroupFilter): NpcGroup {
 
 /** Address every seat-bound player pawn. Resolved when each command takes effect. */
 export function players(): PlayerGroup {
-  return Object.freeze(playerVerbs(groupCommand("player")));
+  return Object.freeze({ ...playerVerbs(groupCommand("player")), on: playerEvent });
 }
 
 // Subject tokens lower to one descriptor, `{ primitive, target, args }`, used
@@ -137,6 +170,12 @@ function tokenCommand(target: SubjectTokenTarget): CommandBuilder<SubjectTokenCo
 export const ACTIVATORS_TARGET = Object.freeze(
   playerVerbs(tokenCommand("@activators")),
 ) as unknown as ActivatorsTarget;
+
+// `__wire` (non-enumerable) lets an engine state ref's `byPlayer`, built
+// before this module loads, recognize the token without seeing it.
+const playerTarget = playerVerbs(tokenCommand("@player"));
+Object.defineProperty(playerTarget, "__wire", { value: "@player", enumerable: false });
+export const PLAYER_TARGET = Object.freeze(playerTarget) as unknown as PlayerTarget;
 
 const triggerCommand = tokenCommand("@trigger");
 export const TRIGGER_TARGET = Object.freeze({

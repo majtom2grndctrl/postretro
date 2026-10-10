@@ -56,7 +56,8 @@ pub enum PresentationFact {
     Bool(bool),
 }
 
-/// One host-to-client passive presentation event.
+/// One host-to-client presentation message: a passive presentation event, or a
+/// presentation command a player event addressed to this client's player.
 ///
 /// This family rides the dedicated unreliable `Channel::Presentation`; it is
 /// intentionally separate from [`ServerMessage`], whose envelope belongs to
@@ -68,9 +69,10 @@ pub struct ServerPresentationMessage {
 
 /// Payloads carried by [`ServerPresentationMessage`].
 ///
-/// New variants must be appended. bitcode encodes enum tags positionally, and
-/// both current variants are defined together so the later overlay surface does
-/// not need a second wire-version bump.
+/// New variants must be appended. bitcode encodes enum tags positionally. The
+/// first two variants (`Spawn`, `OverlayFact`) were defined together so the
+/// later overlay surface needed no second wire-version bump; `Command` was
+/// appended after them.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerPresentationPayload {
     /// A one-shot transient authored from a presentation template. `value` is
@@ -90,6 +92,40 @@ pub enum ServerPresentationPayload {
         shield_fraction: f32,
         has_shield: bool,
         alive: bool,
+    },
+    /// A presentation command a player event fired for this client's player.
+    /// The client turns it into the same local command a local reaction
+    /// enqueues.
+    Command(PresentationCommand),
+}
+
+/// Wire mirror of the engine's presentation system-reaction commands. Sounds
+/// carry no anchor: a player event publishes no emitter, so they play
+/// unpositioned.
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub enum PresentationCommand {
+    PlaySound {
+        sound: String,
+        bus: Option<String>,
+    },
+    Rumble {
+        strong: f32,
+        weak: Option<f32>,
+        duration_ms: f32,
+    },
+    FlashScreen {
+        color: [f32; 4],
+        duration_ms: f32,
+    },
+    Vignette {
+        color: Option<[f32; 3]>,
+        strength: f32,
+        duration_ms: f32,
+    },
+    ScreenShake {
+        amplitude: f32,
+        duration_ms: f32,
+        frequency: Option<f32>,
     },
 }
 
@@ -2073,6 +2109,45 @@ mod tests {
             },
         };
         assert!(round_trips(&overlay));
+    }
+
+    #[test]
+    fn every_presentation_command_round_trips_with_identical_fields() {
+        let commands = [
+            PresentationCommand::PlaySound {
+                sound: "level_up".to_string(),
+                bus: Some("ui".to_string()),
+            },
+            PresentationCommand::PlaySound {
+                sound: "scald".to_string(),
+                bus: None,
+            },
+            PresentationCommand::Rumble {
+                strong: 0.75,
+                weak: Some(0.25),
+                duration_ms: 120.0,
+            },
+            PresentationCommand::FlashScreen {
+                color: [1.0, 0.9, 0.3, 0.4],
+                duration_ms: 300.0,
+            },
+            PresentationCommand::Vignette {
+                color: Some([0.8, 0.0, 0.0]),
+                strength: 0.6,
+                duration_ms: 800.0,
+            },
+            PresentationCommand::ScreenShake {
+                amplitude: 0.4,
+                duration_ms: 250.0,
+                frequency: Some(18.0),
+            },
+        ];
+        for command in commands {
+            let message = ServerPresentationMessage {
+                payload: ServerPresentationPayload::Command(command),
+            };
+            assert!(round_trips(&message), "{message:?}");
+        }
     }
 
     #[test]

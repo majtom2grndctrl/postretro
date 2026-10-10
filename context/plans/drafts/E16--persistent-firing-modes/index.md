@@ -1,8 +1,8 @@
 # E16 — Persistent Firing Modes
 
-Brief · compact · draft · Epic 16 · reads: `context/lib/entity_model.md` §2, §5, `context/lib/scripting.md` §5, §11–12, `context/lib/input.md` §2, §5, `context/lib/networking.md` §Combat authority · grounded at `a6074007e` on `codex/weapon-activations` · evidence: `research.md`
+Brief · compact · draft · Epic 16 · reads: `context/lib/entity_model.md` §2, §5, `context/lib/scripting.md` §5, §11–12, `context/lib/input.md` §2, §5, `context/lib/networking.md` §Combat authority · read at `ecc6adc` · evidence: `research.md`
 
-**Prerequisite:** [weapon activations, secondary fire, and charge — PR #549](https://github.com/majtom2grndctrl/postretro/pull/549). This implementation is unmerged at drafting time. Main lacks it. Build this brief after that prerequisite lands; re-ground the seams against its merged form.
+Builds on `context/plans/done/E16--weapon-activations` (landed) and the activation start-lane, cadence, and switch-lane work in `context/lib/networking.md` §Combat authority, §Host input command queue.
 
 ## Problem
 

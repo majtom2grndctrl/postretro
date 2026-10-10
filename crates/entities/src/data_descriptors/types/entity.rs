@@ -11,6 +11,7 @@ use crate::data_descriptors::{
     BehaviorGraphDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor,
     TouchableDescriptor, WeaponDescriptor,
 };
+use crate::provenance::DescriptorComponentKind;
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
@@ -326,6 +327,22 @@ pub struct EntityTypeDescriptor {
     pub mesh: Option<MeshDescriptor>,
     pub health: Option<HealthDescriptor>,
     pub behavior: Option<BehaviorGraphDescriptor>,
+}
+
+impl EntityTypeDescriptor {
+    /// Whether this descriptor declares a component in the provenance vocabulary.
+    /// Behavior is a separate authoring surface and is checked directly by callers.
+    pub fn declares(&self, component: DescriptorComponentKind) -> bool {
+        match component {
+            DescriptorComponentKind::Weapon => self.weapon.is_some(),
+            DescriptorComponentKind::Movement => self.movement.is_some(),
+            DescriptorComponentKind::Light => self.light.is_some(),
+            DescriptorComponentKind::Emitter => self.emitter.is_some(),
+            DescriptorComponentKind::Mesh => self.mesh.is_some(),
+            DescriptorComponentKind::Health => self.health.is_some(),
+            DescriptorComponentKind::Touchable => self.touchable.is_some(),
+        }
+    }
 }
 
 /// Author-side player inventory composition. SDK builders validate typed

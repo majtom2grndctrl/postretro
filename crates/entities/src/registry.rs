@@ -1,6 +1,8 @@
 // Entity/component registry: the scripting surface that scripts address.
 // See: context/lib/scripting.md
 
+mod inventory_ownership;
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -685,6 +687,10 @@ pub enum RegistryError {
     GenerationMismatch(EntityId),
     #[error("entity {id} has no projectile presentation age")]
     ProjectilePresentationAgeNotFound { id: EntityId },
+    #[error("inventory item {item} is already held by {holder}")]
+    InventoryOwnershipConflict { item: EntityId, holder: EntityId },
+    #[error("Inventory requires checked component replacement")]
+    InventoryRequiresReplacement,
 }
 
 /// Internal per-slot metadata. `generation` matches the generation a live
@@ -747,6 +753,8 @@ pub struct EntityRegistry {
     /// live pawn: `despawn` removes it, so a recycled slot never inherits one.
     /// See: context/lib/networking.md §Session-state ledger.
     pawn_seats: HashMap<EntityId, Seat>,
+    /// Derived from live Inventory slots; never a separate ownership authority.
+    inventory_owners: HashMap<EntityId, (EntityId, usize)>,
     /// Fires from the health chokepoint after each accepted damage call. The
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
@@ -782,6 +790,7 @@ impl EntityRegistry {
             kvp_table: HashMap::new(),
             local_player_pawn: None,
             pawn_seats: HashMap::new(),
+            inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             active_deferred_effects: Vec::new(),
@@ -959,6 +968,11 @@ impl EntityRegistry {
         kind: ComponentKind,
         mut visit: impl FnMut(EntityId, &mut ComponentValue),
     ) {
+        assert_ne!(
+            kind,
+            ComponentKind::Inventory,
+            "Inventory requires checked replacement"
+        );
         let column = &mut self.components[kind as usize];
         for (idx, slot) in self.slots.iter().enumerate() {
             if !slot.live || slot.retired {
@@ -1041,6 +1055,37 @@ impl EntityRegistry {
     }
 
     pub fn despawn(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        self.validate(id)?;
+        // Retire before following ownership so malformed self/cyclic membership
+        // terminates, without recursion or retaining stale initial-loadout ids.
+        let mut pending = Vec::new();
+        self.retire_with_inventory(id, &mut pending)?;
+        while let Some(child) = pending.pop() {
+            if self.exists(child) {
+                self.retire_with_inventory(child, &mut pending)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn retire_with_inventory(
+        &mut self,
+        id: EntityId,
+        pending: &mut Vec<EntityId>,
+    ) -> Result<(), RegistryError> {
+        self.validate(id)?;
+        if let Ok(inventory) = self.get_component::<Inventory>(id) {
+            for child in inventory.wieldables.iter().flatten() {
+                if self
+                    .inventory_owner(*child)
+                    .is_some_and(|(holder, _)| holder == id)
+                {
+                    pending.push(*child);
+                }
+            }
+        }
+        self.clear_inventory_ownership(id);
+        self.inventory_owners.remove(&id);
         let index = id.index() as usize;
         let had_light = self.components[ComponentKind::Light as usize]
             .get(index)
@@ -1317,6 +1362,9 @@ impl EntityRegistry {
         kind: ComponentKind,
     ) -> Result<&mut ComponentValue, RegistryError> {
         let index = self.validate(id)?;
+        if kind == ComponentKind::Inventory {
+            return Err(RegistryError::InventoryRequiresReplacement);
+        }
         self.components[kind as usize][index]
             .as_mut()
             .ok_or(RegistryError::ComponentNotFound { id, kind })
@@ -1327,14 +1375,7 @@ impl EntityRegistry {
         id: EntityId,
         value: T,
     ) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
-        let adds_light =
-            T::KIND == ComponentKind::Light && self.components[T::KIND as usize][index].is_none();
-        self.components[T::KIND as usize][index] = Some(value.into_value());
-        if adds_light {
-            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
-        }
-        Ok(())
+        self.store_component(id, value.into_value())
     }
 
     pub fn set_component_value(
@@ -1342,9 +1383,20 @@ impl EntityRegistry {
         id: EntityId,
         mut value: ComponentValue,
     ) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
         if let ComponentValue::Weapon(weapon) = &mut value {
             weapon.ensure_activation_programs();
+        }
+        self.store_component(id, value)
+    }
+
+    fn store_component(
+        &mut self,
+        id: EntityId,
+        value: ComponentValue,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        if let ComponentValue::Inventory(inventory) = &value {
+            self.replace_inventory_ownership(id, inventory)?;
         }
         let kind = value.kind();
         let adds_light =
@@ -1371,16 +1423,7 @@ impl EntityRegistry {
     }
 
     pub fn remove_component<T: Component>(&mut self, id: EntityId) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
-        let cell = &mut self.components[T::KIND as usize][index];
-        if cell.is_none() {
-            return Err(RegistryError::ComponentNotFound { id, kind: T::KIND });
-        }
-        *cell = None;
-        if T::KIND == ComponentKind::Light {
-            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
-        }
-        Ok(())
+        self.remove_component_kind(id, T::KIND)
     }
 
     pub fn remove_component_kind(
@@ -1389,11 +1432,13 @@ impl EntityRegistry {
         kind: ComponentKind,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
-        let cell = &mut self.components[kind as usize][index];
-        if cell.is_none() {
+        if self.components[kind as usize][index].is_none() {
             return Err(RegistryError::ComponentNotFound { id, kind });
         }
-        *cell = None;
+        if kind == ComponentKind::Inventory {
+            self.clear_inventory_ownership(id);
+        }
+        self.components[kind as usize][index] = None;
         if kind == ComponentKind::Light {
             self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }

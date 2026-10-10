@@ -76,11 +76,11 @@ use super::client::{ClientReplication, RemoteEntityMaterialize};
 use super::interpolation::{MAX_DELAY_MICROS, PoseSource};
 use super::remote_materialize::materialize_armed_remote_enemy;
 use super::replication::{
-    ReplicableSet, host_register_map_enemies, host_register_world_items, produce_owned_snapshots,
+    ReplicableSet, host_register_descriptor_entities, produce_owned_snapshots,
 };
 use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
 use crate::scripting::builtins::{
-    descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
+    descriptor_is_host_replicated, descriptor_materializes_ai_enemy,
     filter_out_client_host_replicated_placements,
 };
 use postretro_entities::components::agent::AgentComponent;
@@ -254,11 +254,38 @@ fn spawn_host_map_world_item(
             radius: 32.0,
         },
     );
+    registry
+        .set_component(
+            id,
+            postretro_entities::components::weapon::WeaponComponent::from_descriptor(
+                &descriptor_world_harness_tests::wieldable_descriptor(),
+            ),
+        )
+        .unwrap();
+    registry
+        .set_component(
+            id,
+            postretro_entities::components::health::HealthComponent {
+                max: 48.0,
+                current: 17.0,
+                hitbox: None,
+                death_handled: false,
+                pending_kill_credit: None,
+                zone_multipliers: Default::default(),
+                contributor_ledger: Default::default(),
+            },
+        )
+        .unwrap();
     let _ = registry.set_component(
         id,
         DescriptorProvenance {
             canonical_name: class.to_string(),
-            owned_components: std::iter::once(DescriptorComponentKind::Touchable).collect(),
+            owned_components: [
+                DescriptorComponentKind::Touchable,
+                DescriptorComponentKind::Health,
+            ]
+            .into_iter()
+            .collect(),
             map_overrides: Default::default(),
             spawn_path: DescriptorSpawnPath::MapPlacement,
         },
@@ -270,7 +297,7 @@ fn spawn_host_map_world_item(
 /// descriptor carries an `ai` block (so the Task 5 client filter classifies it as an
 /// AI enemy) and a two-state animated mesh (so the Task 1/6 client materialization
 /// attaches a presentation mesh). A non-AI prop descriptor is included so the
-/// suppression assertions can prove props are NOT dropped.
+/// suppression assertions cover mesh props alongside enemies.
 fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
     vec![
         enemy_descriptor(ENEMY_CLASS),
@@ -448,6 +475,12 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
 
 fn world_item_descriptor(class: &str) -> EntityTypeDescriptor {
     let mut descriptor = prop_descriptor(class);
+    descriptor.weapon = Some(descriptor_world_harness_tests::wieldable_descriptor());
+    descriptor.health = Some(postretro_entities::data_descriptors::HealthDescriptor {
+        max: 48.0,
+        hitbox: None,
+        zone_multipliers: Default::default(),
+    });
     descriptor.touchable = Some(TouchableDescriptor {
         mode: TouchMode::Auto,
         radius: 32.0,
@@ -467,11 +500,9 @@ struct EnemyReplicationHarness {
     host_registry: EntityRegistry,
     allocator: NetworkIdAllocator,
     replicable: ReplicableSet,
-    /// The host endpoint's `map_enemies` tracking set (the field on `NetEndpoint::Host`).
+    /// The host endpoint's `descriptor_entities` tracking set (the field on `NetEndpoint::Host`).
     /// Drives the reload-cleanup / no-leak assertions.
-    map_enemies: HashSet<EntityId>,
-    /// Host endpoint world-item tracking. Touchability is the sole membership key.
-    world_items: HashSet<EntityId>,
+    descriptor_entities: HashSet<EntityId>,
     server_replication: ServerReplication,
     server_tick: u32,
 
@@ -494,8 +525,8 @@ impl EnemyReplicationHarness {
             host_registry: EntityRegistry::new(),
             allocator: NetworkIdAllocator::new(),
             replicable: ReplicableSet::new(),
-            map_enemies: HashSet::new(),
-            world_items: HashSet::new(),
+            descriptor_entities: HashSet::new(),
+
             server_replication,
             server_tick: 0,
             client_registry: EntityRegistry::new(),
@@ -506,24 +537,12 @@ impl EnemyReplicationHarness {
         }
     }
 
-    /// Register the host's eligible AI enemies for replication (the production
-    /// sweep) into the `ReplicableSet`, stamping NetworkIds and tracking ids in
-    /// `map_enemies`.
-    fn host_register_enemies(&mut self) {
-        host_register_map_enemies(
+    fn host_register_descriptors(&mut self) {
+        host_register_descriptor_entities(
             &self.host_registry,
             &mut self.allocator,
             &mut self.replicable,
-            &mut self.map_enemies,
-        );
-    }
-
-    fn host_register_world_items(&mut self) {
-        host_register_world_items(
-            &self.host_registry,
-            &mut self.allocator,
-            &mut self.replicable,
-            &mut self.world_items,
+            &mut self.descriptor_entities,
         );
     }
 
@@ -696,20 +715,16 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     // Host: one map-placed AI enemy, registered for replication.
     let enemy =
         spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(3.0, 0.0, 0.0));
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let net_id = h.enemy_network_id(enemy);
 
-    // Task 5: on the CLIENT install, the AI-enemy placement is filtered out before
-    // dispatch — so the client never spawns a local authoritative enemy. We assert the
-    // filter on the same descriptor table both peers share (the real suppression seam).
+    // Both networking descriptor placements are suppressed before local dispatch.
     let placements = vec![placement(ENEMY_CLASS), placement("crate")];
     let kept = filter_out_client_host_replicated_placements(&placements, &h.descriptors);
-    assert_eq!(
-        kept.len(),
-        1,
-        "the AI-enemy placement is suppressed on the client; the prop is kept"
+    assert!(
+        kept.is_empty(),
+        "both enemy and mesh prop placements are host replicated"
     );
-    assert_eq!(kept[0].classname, "crate", "only the non-AI prop survives");
 
     // Drive the host→client path: the client maps the enemy and materializes its
     // remote presentation (mesh only) via the Task 6 seam.
@@ -765,14 +780,12 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     );
     assert!(
         !descriptor_materializes_ai_enemy(&prop_descriptor("crate")),
-        "the prop descriptor is NOT an AI enemy (kept on the client)"
+        "the prop is not an AI enemy, but its mesh still networks it"
     );
 }
 
-// World items follow the same host-baseline path as AI enemies, but their lifecycle is
-// driven solely by `TouchableComponent`: acquisition removes it, drop restores it. The
-// client never runs touch, so every visible item must be exactly one descriptor-mesh
-// presentation materialized from a Transform + entity_class baseline.
+// Canonical held ownership suppresses world replication even with retained Health.
+// Releasing the item restores a fresh baseline without resetting its state.
 #[test]
 fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
@@ -781,20 +794,18 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
         WORLD_ITEM_CLASS,
         Vec3::new(3.0, 0.0, 0.0),
     );
-    h.host_register_world_items();
+    h.host_register_descriptors();
     let initial_network_id = h.world_item_network_id(item);
 
     let kept = filter_out_client_host_replicated_placements(
         &[placement(WORLD_ITEM_CLASS), placement("crate")],
         &h.descriptors,
     );
-    assert_eq!(
-        kept.len(),
-        1,
-        "the client suppresses its map-world-item copy"
+    assert!(
+        kept.is_empty(),
+        "world item and mesh prop are both suppressed"
     );
-    assert_eq!(kept[0].classname, "crate");
-    assert!(descriptor_materializes_world_item(
+    assert!(descriptor_is_host_replicated(
         h.descriptors
             .iter()
             .find(|descriptor| descriptor.canonical_name.as_deref() == Some(WORLD_ITEM_CLASS))
@@ -828,10 +839,20 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
         "touchability stays host-local"
     );
 
+    let holder = h.host_registry.spawn(Transform::default());
+    let mut inventory = postretro_entities::components::inventory::Inventory::default();
+    inventory.wieldables[4] = Some(item);
+    h.host_registry.set_component(holder, inventory).unwrap();
     h.host_registry
         .remove_component::<TouchableComponent>(item)
-        .expect("acquisition removes the world-item membership component");
-    h.host_register_world_items();
+        .unwrap();
+    // Health remains live, so only canonical ownership can exclude the item.
+    assert!(
+        h.host_registry
+            .get_component::<postretro_entities::components::health::HealthComponent>(item)
+            .is_ok()
+    );
+    h.host_register_descriptors();
     assert!(
         h.step_until_client_removes(initial_network_id, 16) > 0,
         "the stale registration emits a despawn tombstone"
@@ -843,6 +864,19 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
 
     h.host_registry
         .set_component(
+            holder,
+            postretro_entities::components::inventory::Inventory::default(),
+        )
+        .unwrap();
+    let mut dropped_pose = h
+        .host_registry
+        .get_component::<Transform>(item)
+        .unwrap()
+        .clone();
+    dropped_pose.position = Vec3::new(7.0, 0.0, 0.0);
+    h.host_registry.set_component(item, dropped_pose).unwrap();
+    h.host_registry
+        .set_component(
             item,
             TouchableComponent {
                 mode: TouchMode::Auto,
@@ -850,7 +884,7 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
             },
         )
         .expect("drop restores touchability");
-    h.host_register_world_items();
+    h.host_register_descriptors();
     let dropped_network_id = h.world_item_network_id(item);
     assert!(
         dropped_network_id.0 > initial_network_id.0,
@@ -869,6 +903,25 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
         "one dropped item remains"
     );
     assert_eq!(h.client_entities_with_kind(ComponentKind::Mesh), 1);
+    assert!(
+        (h.host_registry
+            .get_component::<postretro_entities::components::health::HealthComponent>(item)
+            .unwrap()
+            .current
+            - 17.0)
+            .abs()
+            < f32::EPSILON
+    );
+    assert!(
+        (h.client_registry
+            .get_component::<Transform>(dropped_remote)
+            .unwrap()
+            .position
+            .x
+            - 7.0)
+            .abs()
+            < f32::EPSILON
+    );
     assert_eq!(
         h.client_registry
             .get_component::<MeshComponent>(dropped_remote)
@@ -897,13 +950,15 @@ fn connected_client_suppresses_the_behavior_spelled_enemy_placement_too() {
         &descriptors,
     );
 
-    assert_eq!(kept.len(), 1, "the behavior-spelled enemy is suppressed");
-    assert_eq!(kept[0].classname, "crate", "only the non-AI prop survives");
+    assert!(
+        kept.is_empty(),
+        "behavior enemy and mesh prop are both suppressed"
+    );
 }
 
 // A runtime-spawned enemy uses the same host snapshot → client materialization
 // seam once the host registration sweep has assigned it a NetworkId: the
-// RuntimeSpawn classifier (descriptor_class::is_networked_ai_enemy) treats
+// RuntimeSpawn classifier (descriptor_class::is_host_replicated_descriptor_entity) treats
 // MapPlacement and RuntimeSpawn provenance identically, so this test pins the
 // shared transport and presentation budget against the E15 mandated
 // conditioned-link envelope. The spawner behavior test proves the host cannot
@@ -924,7 +979,7 @@ fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires(
             Vec3::ZERO,
             DescriptorSpawnPath::RuntimeSpawn,
         );
-        h.host_register_enemies();
+        h.host_register_descriptors();
         let net_id = h.enemy_network_id(enemy);
 
         while h.virtual_ms < windup_ms && h.client_mapped_entity(net_id).is_none() {
@@ -976,13 +1031,13 @@ fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
     let enemy =
         spawn_host_runtime_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(7.0, 0.0, -2.0));
 
-    h.host_register_enemies();
+    h.host_register_descriptors();
     assert!(
         h.replicable.contains(enemy),
         "runtime spawn enters ReplicableSet"
     );
     assert!(
-        h.map_enemies.contains(&enemy),
+        h.descriptor_entities.contains(&enemy),
         "runtime spawn is reload-tracked"
     );
     let net_id = h.enemy_network_id(enemy);
@@ -1197,7 +1252,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
         .map(|(id, _)| id)
         .next()
         .expect("the fired spawner materializes one authoritative enemy");
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let network_id = h.enemy_network_id(spawned);
     assert!(
         h.step_until_client_maps(network_id, 16) > 0,
@@ -1281,7 +1336,7 @@ fn remote_enemy_pose_comes_from_interpolation_under_conditioned_link() {
     let mut h = EnemyReplicationHarness::new(mandated_link());
 
     let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let net_id = h.enemy_network_id(enemy);
 
     // Move the host enemy along +X by a fixed step each tick (the host owns its motion;
@@ -1386,7 +1441,7 @@ fn remote_enemy_interpolation_is_deterministic_under_seed_0x1502() {
     fn run() -> (u64, usize) {
         let mut h = EnemyReplicationHarness::new(mandated_link());
         let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
-        h.host_register_enemies();
+        h.host_register_descriptors();
         let net_id = h.enemy_network_id(enemy);
         let mut x = 0.0_f32;
         for _ in 0..120 {
@@ -1415,7 +1470,7 @@ fn remote_enemy_interpolation_is_deterministic_under_seed_0x1502() {
 // A registered enemy removed on the host (it vanishes from the host registry — death /
 // despawn) flows through the existing absent-from-tick tracker path to emit a despawn;
 // the client despawn apply removes the remote entity AND forgets its
-// `RemoteInterpolationBuffer` state. Host-side: the `map_enemies` set does not leak the
+// `RemoteInterpolationBuffer` state. Host-side: the `descriptor_entities` set does not leak the
 // dead id in a way that re-registers it (a stale registration is harmless — the
 // producer skips a vanished id and a reused slot is a distinct generation-stamped
 // EntityId).
@@ -1425,7 +1480,7 @@ fn host_despawned_enemy_is_removed_and_interp_forgotten_on_client() {
 
     let enemy =
         spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(2.0, 0.0, 0.0));
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let net_id = h.enemy_network_id(enemy);
 
     // Establish the remote presentation and buffer a sample for it.
@@ -1475,20 +1530,20 @@ fn host_despawned_enemy_is_removed_and_interp_forgotten_on_client() {
     );
 }
 
-// Host-side cleanup: a dead enemy's id does NOT get re-registered. `map_enemies` may
+// Host-side cleanup: a dead enemy's id does NOT get re-registered. `descriptor_entities` may
 // hold a stale id until the next reload sweep (it drains there), but the re-sweep never
 // re-registers the dead enemy — a despawned id is not in the registry's Brain column,
-// so `host_register_map_enemies` cannot pick it up. A reused slot is a distinct
+// so `host_register_descriptor_entities` cannot pick it up. A reused slot is a distinct
 // generation-stamped EntityId. We prove the stale registration is harmless: the
 // producer emits nothing for it and a re-sweep does not resurrect it.
 #[test]
-fn host_map_enemies_does_not_leak_or_re_register_a_dead_enemy() {
+fn host_descriptor_entities_does_not_leak_or_re_register_a_dead_enemy() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
 
     let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
-    h.host_register_enemies();
+    h.host_register_descriptors();
     assert!(
-        h.map_enemies.contains(&enemy),
+        h.descriptor_entities.contains(&enemy),
         "enemy tracked after register"
     );
 
@@ -1497,9 +1552,9 @@ fn host_map_enemies_does_not_leak_or_re_register_a_dead_enemy() {
 
     // A re-sweep (as a level reload would run) drains the stale tracked id and finds no
     // live AI enemy to register — so nothing dead is re-registered.
-    h.host_register_enemies();
+    h.host_register_descriptors();
     assert!(
-        !h.map_enemies.contains(&enemy),
+        !h.descriptor_entities.contains(&enemy),
         "the reload sweep drained the dead enemy's stale tracked id"
     );
     assert!(
@@ -1541,17 +1596,17 @@ fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
     let mut host_registry = EntityRegistry::new();
     let mut allocator = NetworkIdAllocator::new();
     let mut replicable = ReplicableSet::new();
-    let mut map_enemies: HashSet<EntityId> = HashSet::new();
+    let mut descriptor_entities: HashSet<EntityId> = HashSet::new();
 
     let enemy_a =
         spawn_host_runtime_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
     let enemy_b =
         spawn_host_map_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(9.0, 0.0, 0.0));
-    host_register_map_enemies(
+    host_register_descriptor_entities(
         &host_registry,
         &mut allocator,
         &mut replicable,
-        &mut map_enemies,
+        &mut descriptor_entities,
     );
     let net_a = allocator.stamp(enemy_a);
     let net_b = allocator.stamp(enemy_b);
@@ -1677,7 +1732,7 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
     // Host: one map-placed AI enemy registered for replication.
     let enemy =
         spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(5.0, 0.0, 0.0));
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let net_id = h.enemy_network_id(enemy);
 
     // Drive the host→client path until the enemy materializes (first baseline).
@@ -1826,7 +1881,7 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
     // Optionally establish one live enemy so we can prove the despawn leaves it intact.
     let live_enemy =
         spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
-    h.host_register_enemies();
+    h.host_register_descriptors();
     let live_net_id = h.enemy_network_id(live_enemy);
     h.step_until_client_maps(live_net_id, 16);
     assert!(
@@ -1928,3 +1983,6 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
         "the live enemy's mapping is intact after the phantom despawn"
     );
 }
+
+#[path = "descriptor_world_harness_tests.rs"]
+mod descriptor_world_harness_tests;

@@ -494,7 +494,6 @@ pub fn host_handle_transport_disconnect(
             weaponless_fire_logged,
             client_id,
             pawn,
-            &[],
         );
     }
     closed.and_then(|closed| closed.network_id)

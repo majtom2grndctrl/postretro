@@ -1041,3 +1041,96 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
         "the remote hit is seen on the tick it lands"
     );
 }
+
+// Regression: pickup can happen after a HIT arrived and before the descriptor
+// sweep removes its old NetworkId. Readiness/authorization is not target liveness.
+#[test]
+fn held_descriptor_ready_and_pending_hits_recheck_ownership_before_sweep() {
+    use postretro_entities::components::inventory::Inventory;
+
+    for ready_before_pickup in [true, false] {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (attacker, weapon, item, holder) = {
+            let mut r = registry.borrow_mut();
+            let attacker = ai_pawn(&mut r, Vec3::ZERO);
+            let weapon = r.spawn(Transform::default());
+            let mut component = projectile_weapon("weapon.test.held_hit");
+            component.resolution = ResolutionMode::Hitscan;
+            component.projectile = None;
+            r.set_component(weapon, component.clone()).unwrap();
+            let item = target(&mut r, Vec3::new(0.0, 0.5, -2.0), Vec3::splat(0.5));
+            r.set_component(item, component).unwrap();
+            let holder = r.spawn(Transform::default());
+            r.set_component(holder, Inventory::default()).unwrap();
+            (attacker, weapon, item, holder)
+        };
+        let mut allocator = NetworkIdAllocator::new();
+        let shot_id = ShotId::from_parts(
+            allocator.stamp(attacker).0,
+            12,
+            postretro_foundation::ActivationLane::Primary,
+            0,
+        );
+        let old_id = allocator.stamp(item);
+        let mut owners = MovementOwners::new();
+        owners.set(attacker, CLIENT_ID);
+        let mut pending = PendingHitDeclarations::new();
+        pending.push(
+            CLIENT_ID,
+            HitDeclaration {
+                shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+                records: vec![HitRecord {
+                    target: old_id.0,
+                    point: [0.0, 0.5, -2.0],
+                    normal: [0.0, 0.0, 1.0],
+                    zone: None,
+                }],
+            },
+        );
+        let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
+        let shot = authorization(&host.tick(&[remote_fire(attacker, weapon, shot_id)], |_, _| {}));
+        let mut open = opened(shot);
+        let mut ready = if ready_before_pickup {
+            host_take_ready_hit_declarations(&HostCommandQueues::new(), &mut open, &mut pending, 12)
+        } else {
+            Vec::new()
+        };
+        {
+            let mut r = registry.borrow_mut();
+            let mut inventory = r.get_component::<Inventory>(holder).unwrap().clone();
+            // Inactive slots own their items as strongly as the active slot.
+            inventory.wieldables[7] = Some(item);
+            r.set_component(holder, inventory).unwrap();
+            assert!(r.is_inventory_owned(item));
+            r.take_impact_dispatches();
+        }
+        if !ready_before_pickup {
+            ready = host_take_ready_hit_declarations(
+                &HostCommandQueues::new(),
+                &mut open,
+                &mut pending,
+                12,
+            );
+        }
+        assert_eq!(ready.len(), 1);
+        assert_eq!(allocator.entity_for_network_id(old_id), Some(item));
+        let declaration = &ready[0].declaration;
+        assert_eq!(
+            ingest(
+                &mut registry.borrow_mut(),
+                &host.world,
+                &allocator,
+                &owners,
+                &mut open,
+                declaration
+            ),
+            (true, false),
+            "a ready or post-FIRE pending HIT must refuse the now-held target",
+        );
+        let mut r = registry.borrow_mut();
+        let health = r.get_component::<HealthComponent>(item).unwrap();
+        assert!((health.current - 100.0).abs() < f32::EPSILON);
+        assert!(health.contributor_ledger.entries().is_empty());
+        assert!(r.take_impact_dispatches().is_empty());
+    }
+}

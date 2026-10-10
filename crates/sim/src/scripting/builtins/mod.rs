@@ -39,7 +39,7 @@ pub use data_archetype::{
 };
 #[allow(unused_imports)]
 pub use host_replicated::{
-    descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
+    descriptor_is_host_replicated, descriptor_materializes_ai_enemy,
     filter_out_client_host_replicated_placements, suppressed_client_host_replicated_mesh_models,
 };
 

@@ -46,6 +46,10 @@ impl From<RegistryError> for ScriptError {
                 kind: format!("{kind:?}"),
             },
             RegistryError::GenerationMismatch(id) => ScriptError::GenerationMismatch(id),
+            error @ (RegistryError::InventoryOwnershipConflict { .. }
+            | RegistryError::InventoryRequiresReplacement) => ScriptError::InvalidArgument {
+                reason: error.to_string(),
+            },
             RegistryError::ProjectilePresentationAgeNotFound { id } => {
                 ScriptError::ComponentNotFound {
                     id,

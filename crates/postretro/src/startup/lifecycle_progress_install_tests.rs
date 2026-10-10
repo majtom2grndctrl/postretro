@@ -116,7 +116,7 @@ fn install_captures_map_placed_descriptor_npcs_and_excludes_later_spawner_output
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
-            suppress_ai_enemies: false,
+            suppress_host_replicated: false,
             suppress_boot_pawn: false,
             local_carried_loadout: None,
         };

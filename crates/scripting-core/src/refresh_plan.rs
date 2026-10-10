@@ -271,7 +271,7 @@ fn plan_existing_descriptor(
     plan: &mut DescriptorRefreshPlan,
 ) {
     for component in DescriptorComponentKind::ALL {
-        let new_declares = descriptor_declares(new_descriptor, component);
+        let new_declares = new_descriptor.declares(component);
         let live_exists = live_component_exists(registry, entity, component);
 
         if new_declares {
@@ -365,21 +365,6 @@ fn plan_removed_descriptor(
             None,
             "descriptor was removed, but provenance recorded no descriptor-owned components",
         );
-    }
-}
-
-fn descriptor_declares(
-    descriptor: &EntityTypeDescriptor,
-    component: DescriptorComponentKind,
-) -> bool {
-    match component {
-        DescriptorComponentKind::Weapon => descriptor.weapon.is_some(),
-        DescriptorComponentKind::Movement => descriptor.movement.is_some(),
-        DescriptorComponentKind::Light => descriptor.light.is_some(),
-        DescriptorComponentKind::Emitter => descriptor.emitter.is_some(),
-        DescriptorComponentKind::Mesh => descriptor.mesh.is_some(),
-        DescriptorComponentKind::Health => descriptor.health.is_some(),
-        DescriptorComponentKind::Touchable => descriptor.touchable.is_some(),
     }
 }
 

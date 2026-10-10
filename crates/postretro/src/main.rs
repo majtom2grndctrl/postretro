@@ -3846,8 +3846,7 @@ impl App {
                 tick,
                 last_emitted_snapshot_tick: _,
                 host_pawn: _,
-                map_enemies: _,
-                world_items: _,
+                descriptor_entities: _,
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
@@ -4650,8 +4649,7 @@ impl App {
             pending_hit_declarations: _,
             weaponless_fire_logged: _,
             host_pawn,
-            map_enemies: _,
-            world_items: _,
+            descriptor_entities: _,
             loaded_movers: _,
             demo_mover,
             state_slots,
@@ -5409,31 +5407,17 @@ impl App {
         }
     }
 
-    /// Register the listen host's networked AI enemies for outbound replication after a
-    /// level install (E10 Task 4). Descriptor enemies carrying `Brain` + `Agent` from a
-    /// map placement or runtime spawner must enter the `ReplicableSet`, or clients never
-    /// receive their snapshots.
-    ///
-    /// Host-gated: a no-op for single-player and the connected client (the endpoint is not
-    /// the `Host` variant). Thin delegation to `netcode::host_register_map_enemies`, which
-    /// sweeps the registry for networked AI enemies, stamps each a `NetworkId`, registers it with
-    /// NO owner mapping (host-authoritative, never `local_player`), and tracks the ids in
-    /// the `Host` endpoint's `map_enemies` set so a level reload unregisters the stale ones
-    /// first. The enemies stay driven by the host's AI/steering systems — this only
-    /// replicates their `Transform` (and descriptor class) outbound.
-    fn host_register_map_enemies_after_install(&mut self) {
-        self.host_register_map_enemies();
+    /// Register unheld descriptor-world entities after install and every host tick.
+    /// The shared classifier also removes acquired items and stale level entities.
+    fn host_register_descriptor_entities_after_install(&mut self) {
+        self.host_register_descriptor_entities();
     }
 
-    /// Re-sweep after every completed host fixed tick so runtime-spawned AI enemies are
-    /// registered before the next outbound snapshot. The underlying sweep is idempotent,
-    /// so existing registered enemies retain their `NetworkId`; this is a no-op off the host.
-    fn host_register_map_enemies_after_fixed_sim_tick(&mut self) {
-        self.host_register_map_enemies();
+    fn host_register_descriptor_entities_after_fixed_sim_tick(&mut self) {
+        self.host_register_descriptor_entities();
     }
 
-    /// Shared host-gated delegation for install-time and post-tick AI registration.
-    fn host_register_map_enemies(&mut self) {
+    fn host_register_descriptor_entities(&mut self) {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5444,7 +5428,7 @@ impl App {
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
-            map_enemies,
+            descriptor_entities,
             ..
         }) = self
             .session
@@ -5454,46 +5438,12 @@ impl App {
             return;
         };
         let registry = script_ctx.registry.borrow();
-        netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
-    }
-
-    /// Register map-placed and dropped world items after level install. The item sweep
-    /// is host-gated and reload-safe; connected clients receive these entities solely
-    /// through host baselines.
-    fn host_register_world_items_after_install(&mut self) {
-        self.host_register_world_items();
-    }
-
-    /// Re-sweep after every host fixed tick so acquisition emits a despawn and a drop
-    /// receives a fresh baseline before the next outbound snapshot.
-    fn host_register_world_items_after_fixed_sim_tick(&mut self) {
-        self.host_register_world_items();
-    }
-
-    /// Shared host-gated delegation for install-time and post-tick world-item
-    /// registration. Membership derives solely from `TouchableComponent` presence.
-    fn host_register_world_items(&mut self) {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
-            return;
-        };
-        let Some(netcode::NetEndpoint::Host {
+        netcode::host_register_descriptor_entities(
+            &registry,
             allocator,
             replicable,
-            world_items,
-            ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
-        };
-        let registry = script_ctx.registry.borrow();
-        netcode::host_register_world_items(&registry, allocator, replicable, world_items);
+            descriptor_entities,
+        );
     }
 
     /// Register PRL-loaded kinematic movers for outbound replication after level

@@ -50,11 +50,13 @@ pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: Ent
 }
 
 /// A damage target must carry positive finite health and have no terminal
-/// lifecycle commitment. Healthless presentation targets remain ineligible.
+/// lifecycle commitment or inventory ownership. Explicit script mutations use
+/// their existing health chokepoint independently of this spatial target gate.
 pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
         .is_ok_and(|health| !is_depleted(health))
+        && !registry.is_inventory_owned(entity)
         && !is_terminally_committed_to_removal(registry, entity)
 }
 
@@ -377,6 +379,51 @@ mod tests {
         registry
             .set_component(id, PlayerMovementComponent::from_descriptor(&descriptor))
             .unwrap();
+    }
+
+    #[test]
+    fn held_world_participation_spatial_gate_preserves_explicit_health_mutation() {
+        let mut registry = EntityRegistry::new();
+        let holder = registry.spawn(Transform::default());
+        let item = spawn_health_entity(&mut registry, 80.0, 37.0, &[]);
+        let mut inventory = Inventory::default();
+        inventory.wieldables[6] = Some(item);
+        registry.set_component(holder, inventory).unwrap();
+        assert!(!is_damage_target_eligible(&registry, item));
+        assert!(
+            !is_quiescent(&registry, item),
+            "ownership is distinct from depletion"
+        );
+        apply_damage_with_context(
+            &mut registry,
+            item,
+            &DamagePayload {
+                amount: 7.0,
+                impulse: glam::Vec3::ZERO,
+            },
+            DamageContext::new("script.explicit", DamageProducer::InTick),
+        );
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(item)
+                .unwrap()
+                .current
+                - 30.0)
+                .abs()
+                < f32::EPSILON
+        );
+        set_health_absolute(&mut registry, item, 45.0);
+        assert!(
+            (registry
+                .get_component::<HealthComponent>(item)
+                .unwrap()
+                .current
+                - 45.0)
+                .abs()
+                < f32::EPSILON
+        );
+        registry.remove_component::<Inventory>(holder).unwrap();
+        assert!(is_damage_target_eligible(&registry, item));
     }
 
     #[test]

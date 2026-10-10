@@ -1328,19 +1328,6 @@ impl ClientReplication {
                 transform,
             })
         });
-        let sibling_wieldables: Vec<EntityId> = self
-            .map
-            .get(&network_id)
-            .and_then(|pawn| {
-                registry
-                    .get_component::<postretro_entities::components::inventory::Inventory>(*pawn)
-                    .ok()
-            })
-            .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
-            .unwrap_or_default();
-        for wieldable in sibling_wieldables {
-            let _ = registry.despawn(wieldable);
-        }
         if let Some(id) = self.clear_identity_state(network_id) {
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.

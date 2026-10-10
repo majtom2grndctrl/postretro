@@ -101,8 +101,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | in progress |
-| P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | pending |
+| P1 | Thin highest-risk proof: sim predicate extraction, canonical ownership seam, generic classifier/sweep and dummy + health-bearing pickup/drop/HIT-before-sweep slice (T1 sim + T2) | integrator | owner plan approval | complete |
+| P2 | Complete world participation and ownership lifecycle (T2a), resource/refresh/reconstruction/teardown proofs | integrator; bounded AI/physics worker after seam fixed | P1 | in progress |
 | P3 | Real dummy glTF/aim regression (T3) | bounded combat worker | P1 | pending |
 | P4 | Extract remote materialization loop to snapshot_apply (T1) | integrator | P2 | pending |
 | P5 | Extract wire component mirrors/validation (T1) | bounded worker | P1 | pending |
@@ -122,6 +122,10 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 ### Execution evidence
 
 - P1 prerequisite sim extraction complete. Six production bodies and nine existing test bodies preserved; old capsule-helper path and sibling brain access retained. `cargo test -p postretro-sim --lib scripting::builtins::host_replicated::tests`: 9 passed, 0 failed. Ownership/classification changes remain in progress.
+
+
+- P1/P2 integration focused checks: `cargo test -p postretro-entities --lib inventory_ownership` (4 passed); `cargo test -p postretro-sim -p postretro-ai -p postretro-physics --lib held_world_participation` (sim 6, AI 3, physics 2 passed); `cargo test -p postretro-netcode --lib enemy_replication_harness_test` (17 passed, including actual client HIT declaration, installed source-addressed XP policy and next-snapshot dummy tombstone, retained-health pickup/drop/fresh identity and held DefaultWeapon).
+- Additional focused checks: netcode `descriptor_class::tests` (5 passed), `replication::tests` (11 passed), `held_descriptor` (2 passed: ready/post-FIRE pending HIT before sweep and current-slot cleanup), `lifecycle::tests` (11 passed); sim `scripting::builtins::host_replicated::tests` (10 passed), `authored_loadout_strips_world_item_components_from_held_wieldable` (1 passed), `held_descriptor_lifecycle` (1 passed). Application `cargo test -p postretro --features dev-tools --bin postretro suppressed_descriptor_models_install_hit_zones_once` passed (1 test): the real model parses/uploads once through the injected CPU install seam and retains precise hit zones on both host and suppressed client. P1 complete. P2 production consumers passed their first focused checks; real-touch/refresh/reconstruction extensions remain in progress.
 
 ### P1 and P2 boundaries
 

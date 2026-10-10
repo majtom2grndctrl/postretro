@@ -67,7 +67,7 @@ pub(crate) fn install_world_cpu(
         mesh_clip_tables,
         hit_zone_store,
         trigger_pool_policy,
-        suppress_ai_enemies,
+        suppress_host_replicated,
         suppress_boot_pawn,
         local_carried_loadout,
     } = handles;
@@ -278,7 +278,7 @@ pub(crate) fn install_world_cpu(
     let first_spawn = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
-        if suppress_ai_enemies {
+        if suppress_host_replicated {
             // A connected client must not spawn local copies of host-authoritative
             // map entities. Filter before dispatch, while descriptor metadata is
             // available but live components do not exist yet.
@@ -344,7 +344,7 @@ pub(crate) fn install_world_cpu(
     // Pool arming is host-only and occurs after every trigger/spawner binding
     // exists, but before `levelLoad` so level-load reactions can override it.
     // Connected clients retain their authored trigger state and an empty report.
-    let trigger_pool_report = if suppress_ai_enemies {
+    let trigger_pool_report = if suppress_host_replicated {
         TriggerPoolInstallReport::default()
     } else {
         let pools = script_ctx.data_registry.borrow().trigger_pools().to_vec();
@@ -442,7 +442,7 @@ pub(crate) fn install_world_cpu(
     // detector already initialized above. `progress` is host-authoritative: a
     // connected client (host-replicated placements suppressed) captures nothing,
     // stays unsubscribed, and never warns.
-    let progress_already_met = if suppress_ai_enemies {
+    let progress_already_met = if suppress_host_replicated {
         Vec::new()
     } else {
         capture_progress_membership(progress_tracker, script_ctx)

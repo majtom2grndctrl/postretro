@@ -1056,8 +1056,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Unconditional per-tick registration sweeps, not gated on "did a spawn
             // happen this tick": they catch runtime enemies and component-driven
             // world-item acquisition/drop changes before post-loop serialization.
-            app.host_register_map_enemies_after_fixed_sim_tick();
-            app.host_register_world_items_after_fixed_sim_tick();
+            app.host_register_descriptor_entities_after_fixed_sim_tick();
         }
     }
 

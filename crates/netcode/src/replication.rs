@@ -14,7 +14,7 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 
-use super::descriptor_class::{descriptor_entity_class, is_networked_ai_enemy};
+use super::descriptor_class::{descriptor_entity_class, is_host_replicated_descriptor_entity};
 use super::movement_state::movement_state_to_wire;
 use super::{
     HostCommandQueues, MovementOwners, NetworkIdAllocator, component_kind_discriminant,
@@ -292,24 +292,10 @@ pub(crate) fn kinematic_mover_state_to_wire(
     }
 }
 
-/// Register the host's networked AI enemies for outbound replication (E10 Task 4): every
-/// entity carrying `Brain` + `Agent` from a `MapPlacement` or `RuntimeSpawn` descriptor spawn
-/// ([`is_networked_ai_enemy`]) enters the [`ReplicableSet`] and is stamped a stable `NetworkId`,
-/// so its authoritative `Transform` replicates to clients. Static descriptor props (a
-/// light/mesh/health placement without AI) stay unregistered.
-///
-/// Reload-safe and idempotent. `tracked` is the host endpoint's owning set of the
-/// previously-registered enemy ids: on a level reload the freshly-spawned enemies are
-/// distinct `EntityId`s, so every stale tracked id is unregistered (and dropped from
-/// `tracked`) before the new sweep registers this level's enemies. Re-running the sweep
-/// on the same level is a no-op (the set, the allocator, and `tracked` are all stable
-/// per `EntityId`). The host pawn's own registration lives in `host_register_own_pawn`;
-/// this is the enemy-only counterpart.
-///
-/// Host-gated by the caller (it only runs inside the `NetEndpoint::Host` arm). Reads the
-/// registry through the borrow the caller threads in and touches only the replication
-/// bookkeeping — it never reaches into `App`.
-pub fn host_register_map_enemies(
+/// Synchronize the host's descriptor-world membership with live components and
+/// canonical inventory ownership. Leaving the world forgets the old mapping, so
+/// a later drop receives a fresh session-monotonic NetworkId.
+pub fn host_register_descriptor_entities(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
@@ -318,26 +304,18 @@ pub fn host_register_map_enemies(
     let stale_ids: Vec<EntityId> = tracked
         .iter()
         .copied()
-        .filter(|&id| !is_networked_ai_enemy(registry, id))
+        .filter(|&id| !is_host_replicated_descriptor_entity(registry, id))
         .collect();
     for stale in stale_ids {
         tracked.remove(&stale);
         replicable.unregister(stale);
-        // Prune the dead EntityId mapping so the allocator map does not accrue one
-        // entry per ever-spawned enemy. NetworkIds stay monotonic; only the stale
-        // mapping is dropped.
         allocator.forget(stale);
     }
-
-    let mut count = 0usize;
-    for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
-        if !is_networked_ai_enemy(registry, id) {
+    let mut count = 0;
+    for (id, _) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
+        if !is_host_replicated_descriptor_entity(registry, id) {
             continue;
         }
-        // Stamp the stable session-monotonic NetworkId and register for replication.
-        // No `MovementOwners` entry: an AI enemy is host-authoritative and unowned by any
-        // client, so its per-recipient `local_player` flag is false everywhere. Its class
-        // rides the finite-Transform snapshot via `descriptor_entity_class`.
         allocator.stamp(id);
         replicable.register(id);
         if tracked.insert(id) {
@@ -345,7 +323,7 @@ pub fn host_register_map_enemies(
         }
     }
     if count > 0 {
-        log::info!("[Net] host registered {count} networked AI enemy/enemies for replication");
+        log::info!("[Net] host registered {count} descriptor entity/entities for replication");
     }
 }
 
@@ -387,49 +365,6 @@ pub fn host_register_loaded_movers(
     }
     if count > 0 {
         log::info!("[Net] host registered {count} kinematic mover/movers for replication");
-    }
-}
-
-/// Register every host world item for outbound replication. World-item membership is
-/// defined exclusively by live `ComponentKind::Touchable` presence: acquisition
-/// removes that component, so the next sweep unregisters and forgets the item; a drop
-/// restores it, so the next sweep assigns a fresh session-monotonic `NetworkId`.
-///
-/// Reload-safe and idempotent. `tracked` owns the previously registered item ids; the
-/// stale-id prologue removes entries that no longer carry `TouchableComponent` before
-/// registering the current world-item set. Held wieldables have no touchable component
-/// and are therefore never registered by this path.
-pub fn host_register_world_items(
-    registry: &EntityRegistry,
-    allocator: &mut NetworkIdAllocator,
-    replicable: &mut ReplicableSet,
-    tracked: &mut HashSet<EntityId>,
-) {
-    let stale_ids: Vec<EntityId> = tracked
-        .iter()
-        .copied()
-        .filter(|&id| {
-            !registry
-                .has_component_kind(id, ComponentKind::Touchable)
-                .unwrap_or(false)
-        })
-        .collect();
-    for stale in stale_ids {
-        tracked.remove(&stale);
-        replicable.unregister(stale);
-        allocator.forget(stale);
-    }
-
-    let mut count = 0usize;
-    for (id, _) in registry.iter_with_kind(ComponentKind::Touchable) {
-        allocator.stamp(id);
-        replicable.register(id);
-        if tracked.insert(id) {
-            count += 1;
-        }
-    }
-    if count > 0 {
-        log::info!("[Net] host registered {count} world item/items for replication");
     }
 }
 
@@ -641,7 +576,7 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
 
         assert!(
             set.contains(enemy),
@@ -666,10 +601,10 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         let first_network_id = allocator.stamp(enemy);
 
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         let second_network_id = allocator.stamp(enemy);
 
         assert_eq!(
@@ -681,23 +616,22 @@ mod tests {
         assert!(tracked.contains(&enemy));
     }
 
-    // E10 Task 4: a non-AI static descriptor prop (MapPlacement, no Brain/Agent) is NOT
-    // registered — only AI enemies cross the wire from this path.
+    // Mesh/Health props participate without an AI brain.
     #[test]
-    fn host_does_not_register_static_descriptor_prop() {
+    fn host_registers_static_descriptor_prop() {
         let mut registry = EntityRegistry::new();
         let prop = spawn_static_descriptor_prop(&mut registry, "barrel");
 
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
 
         assert!(
-            !set.contains(prop),
-            "a static descriptor prop without Brain+Agent stays off the wire"
+            set.contains(prop),
+            "a static descriptor prop participates through its live Mesh/Health"
         );
-        assert!(tracked.is_empty(), "no static prop is tracked");
+        assert!(tracked.contains(&prop), "the descriptor prop is tracked");
     }
 
     #[test]
@@ -708,7 +642,7 @@ mod tests {
         let mut set = ReplicableSet::new();
         let mut tracked = HashSet::new();
 
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         let initial_network_id = allocator.stamp(item);
         assert!(set.contains(item), "a touchable item is registered");
         assert!(tracked.contains(&item), "the host tracks the world item");
@@ -736,10 +670,15 @@ mod tests {
             "TouchableComponent remains host-local; Transform is enough for client materialization"
         );
 
-        registry
-            .remove_component::<TouchableComponent>(item)
-            .expect("acquisition removes touchability");
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        let holder = registry.spawn(Transform::default());
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[4] = Some(item);
+        registry.set_component(holder, inventory).unwrap();
+        assert!(
+            registry.is_inventory_owned(item),
+            "holstered ownership counts"
+        );
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         assert!(!set.contains(item), "acquired item is unregistered");
         assert!(
             !tracked.contains(&item),
@@ -752,14 +691,11 @@ mod tests {
 
         registry
             .set_component(
-                item,
-                TouchableComponent {
-                    mode: TouchMode::Auto,
-                    radius: 32.0,
-                },
+                holder,
+                postretro_entities::components::inventory::Inventory::default(),
             )
-            .expect("drop restores touchability");
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+            .unwrap();
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         let dropped_network_id = allocator.stamp(item);
         assert!(set.contains(item), "dropped item is registered again");
         assert!(
@@ -780,7 +716,7 @@ mod tests {
 
         // Level 1: one enemy registered + tracked.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         assert!(set.contains(level1_enemy));
 
         // Reload: despawn the level-1 enemy and spawn a fresh level-2 enemy (a distinct
@@ -792,7 +728,7 @@ mod tests {
             "the reloaded enemy is a distinct entity"
         );
 
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
 
         assert!(
             !set.contains(level1_enemy),
@@ -818,7 +754,7 @@ mod tests {
 
         // Level 1: one enemy registered, stamped, and mapped in the allocator.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
         let level1_net_id = allocator.stamp(level1_enemy);
         assert!(
             allocator.maps_entity(level1_enemy),
@@ -828,7 +764,7 @@ mod tests {
         // Reload: despawn the level-1 enemy and spawn a fresh, distinct level-2 enemy.
         registry.despawn(level1_enemy).expect("live enemy despawns");
         let level2_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
 
         assert!(
             !allocator.maps_entity(level1_enemy),
@@ -854,7 +790,7 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(&registry, &mut allocator, &mut set, &mut tracked);
 
         let snaps = produce_owned_snapshots(
             &registry,

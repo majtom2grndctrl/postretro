@@ -162,8 +162,7 @@ pub(crate) use reconcile::reconcile_local_pawn;
 #[allow(unused_imports)]
 pub(crate) use replication::produce_owned_snapshots;
 pub use replication::{
-    ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
-    host_register_world_items,
+    ReplicableSet, host_register_descriptor_entities, host_register_loaded_movers,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -557,6 +556,20 @@ impl NetworkIdAllocator {
         if let Some(net_id) = self.map.remove(&id) {
             self.reverse.remove(&net_id);
         }
+    }
+
+    /// Retire mappings for entities game logic already destroyed, including
+    /// current inventory auxiliaries destroyed with a pawn before slot cleanup.
+    fn forget_dead(&mut self, registry: &EntityRegistry, replicable: &mut ReplicableSet) {
+        let reverse = &mut self.reverse;
+        self.map.retain(|id, network_id| {
+            if registry.exists(*id) {
+                return true;
+            }
+            reverse.remove(network_id);
+            replicable.unregister(*id);
+            false
+        });
     }
 
     /// Resolve a host-side `EntityId` to its stable `NetworkId`, if it has been
@@ -1508,7 +1521,7 @@ fn cleanup_stale_slot_replacement(
         return;
     }
 
-    let Some((_removed_pawn, wieldables)) = slot_pawns.remove_client(client_id) else {
+    let Some(_removed_pawn) = slot_pawns.remove_client(client_id) else {
         return;
     };
     command_queues.remove_client(client_id);
@@ -1523,7 +1536,6 @@ fn cleanup_stale_slot_replacement(
         weaponless_fire_logged,
         client_id,
         pawn,
-        &wieldables,
     );
 }
 
@@ -1539,7 +1551,6 @@ fn cleanup_remote_pawn_owned_state(
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     client_id: u64,
     pawn: EntityId,
-    wieldables: &[EntityId],
 ) {
     // Pawn and sibling weapon are one runtime ownership unit. Despawning both
     // prevents a non-cancellable reload from surviving without the reserve-owning
@@ -1552,12 +1563,8 @@ fn cleanup_remote_pawn_owned_state(
     weapon_owners.remove_pawn(pawn);
     replicable.unregister(pawn);
     allocator.forget(pawn);
-    for &wieldable in wieldables {
-        replicable.unregister(wieldable);
-        allocator.forget(wieldable);
-        let _ = registry.despawn(wieldable);
-    }
     let _ = registry.despawn(pawn);
+    allocator.forget_dead(registry, replicable);
 }
 
 /// Drain and apply one accepted client's reliable `Channel::Input` messages on the
@@ -2278,7 +2285,11 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
-    if crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target) {
+    // Touch acquisition precedes ready/pending HIT application; the registration
+    // sweep may not have forgotten this item's former NetworkId yet.
+    if registry.is_inventory_owned(target)
+        || crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target)
+    {
         return false;
     }
     let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {

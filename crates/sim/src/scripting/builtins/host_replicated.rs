@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use glam::Vec3;
 use postretro_entities::components::mesh::capsule_center_to_feet_origin_offset;
+use postretro_entities::provenance::{DescriptorComponentKind, ReplicationRole};
 use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
@@ -38,9 +39,8 @@ pub(super) fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> boo
 /// predicate would later return `true` for an eligible descriptor spawn of this
 /// descriptor.
 ///
-/// Used by the connected-client install path to drop AI-enemy map
-/// placements *before* dispatch, since those enemies must arrive only as
-/// host-authoritative snapshots — never as locally-spawned authoritative copies.
+/// Used by the AI-only spawner resolver. Generic connected-client placement
+/// suppression uses [`descriptor_is_host_replicated`] instead.
 /// Keying on the brain block (not classname strings, not
 /// `DescriptorProvenance.owned_components`, which never tracks AI) keeps the same
 /// single definition of "AI map enemy" the live predicate enforces.
@@ -48,18 +48,20 @@ pub fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor) -> bo
     descriptor_carries_brain(descriptor)
 }
 
-/// Whether this descriptor materializes a host-authoritative world item. A world
-/// item is defined solely by its `touchable` block; the host derives outbound
-/// replication membership from the corresponding live component.
-pub fn descriptor_materializes_world_item(descriptor: &EntityTypeDescriptor) -> bool {
-    descriptor.touchable.is_some()
+/// Whether a world placement declares host-owned gameplay or mesh state.
+/// Inventory ownership is a live-entity concern; the placement classifier sees
+/// only the descriptor, before materialization or acquisition.
+pub fn descriptor_is_host_replicated(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor_carries_brain(descriptor)
+        || DescriptorComponentKind::ALL.into_iter().any(|kind| {
+            kind.replication_role() == ReplicationRole::NetworksEntity && descriptor.declares(kind)
+        })
 }
 
 /// Partition map placements for a **connected client** install:
 /// returns only the placements that should still materialize locally, dropping
-/// any whose matched descriptor would materialize a host-authoritative AI enemy
-/// ([`descriptor_materializes_ai_enemy`]) or world item
-/// ([`descriptor_materializes_world_item`]). Those entities reach the client solely
+/// any whose matched descriptor is host-replicated
+/// ([`descriptor_is_host_replicated`]). Those entities reach the client solely
 /// via host snapshots; spawning a local copy here would duplicate their
 /// host-authoritative state.
 ///
@@ -75,10 +77,7 @@ pub fn filter_out_client_host_replicated_placements(
         .iter()
         .filter(
             |entity| match find_descriptor(descriptors, &entity.classname) {
-                Some(descriptor) => {
-                    !descriptor_materializes_ai_enemy(descriptor)
-                        && !descriptor_materializes_world_item(descriptor)
-                }
+                Some(descriptor) => !descriptor_is_host_replicated(descriptor),
                 // No descriptor match: retain for the normal unknown-classname
                 // diagnostics in dispatch.
                 None => true,
@@ -98,9 +97,9 @@ pub fn filter_out_client_host_replicated_placements(
 /// Scoped to the classes the **map actually references** (the placements passed
 /// in), not every descriptor in the data registry — only host-replicated map
 /// entities in this level need their model on the GPU. A placement is included only
-/// when its matched descriptor materializes either an AI enemy or world item and
-/// carries a `mesh` block with a non-empty `model`; ordinary placements and
-/// meshless descriptors contribute nothing.
+/// when its matched descriptor is host-replicated and
+/// carries a `mesh` block with a non-empty `model`; client-local presentation
+/// placements and meshless descriptors contribute nothing.
 ///
 /// Regression (E10 AC #3): a connected client filtered out the AI-enemy
 /// placement before dispatch, so its model was never in the registry-driven
@@ -124,9 +123,7 @@ pub fn suppressed_client_host_replicated_mesh_models(
         let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
             continue;
         };
-        if !descriptor_materializes_ai_enemy(descriptor)
-            && !descriptor_materializes_world_item(descriptor)
-        {
+        if !descriptor_is_host_replicated(descriptor) {
             continue;
         }
         let Some(mesh) = descriptor.mesh.as_ref() else {
@@ -245,23 +242,101 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_materializes_world_item_when_touchable() {
+    fn descriptor_classifier_and_filter_cover_all_world_placement_shapes() {
+        use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let health = HealthDescriptor {
+            max: 90.0,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        };
+        let mut item = weapon_descriptor("item");
+        item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 1.0,
+        });
+        let mut mesh_health = mesh_descriptor("mesh_health", false);
+        mesh_health.health = Some(health.clone());
+        let mut health_only = mesh_descriptor("health", false);
+        health_only.mesh = None;
+        health_only.health = Some(health.clone());
+        let mut emitter = light_descriptor("emitter", true);
+        emitter.light = None;
+        emitter.emitter = Some(BillboardEmitterComponent {
+            rate: 1.0,
+            burst: None,
+            spread: 0.0,
+            lifetime: 1.0,
+            velocity: [0.0; 3],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![1.0].into(),
+            opacity_over_lifetime: vec![1.0].into(),
+            color: [1.0; 3],
+            sprite: "spark".into(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        });
+        let mut light_mesh = light_descriptor("light_mesh", true);
+        light_mesh.mesh = mesh_descriptor("light_mesh", false).mesh;
+        let mut emitter_health = emitter.clone();
+        emitter_health.canonical_name = Some("emitter_health".into());
+        emitter_health.health = Some(health);
+        let descriptors = vec![
+            behavior_enemy_descriptor("enemy"),
+            item,
+            mesh_health,
+            mesh_descriptor("mesh", false),
+            health_only,
+            light_descriptor("light", true),
+            emitter,
+            light_mesh,
+            emitter_health,
+        ];
+        let expected = [true, true, true, true, true, false, false, true, true];
+        let placements: Vec<_> = descriptors
+            .iter()
+            .map(|descriptor| placement(descriptor.canonical_name.as_deref().unwrap(), &[]))
+            .collect();
+        for (descriptor, expected) in descriptors.iter().zip(expected) {
+            assert_eq!(
+                descriptor_is_host_replicated(descriptor),
+                expected,
+                "shape {:?}",
+                descriptor.canonical_name
+            );
+        }
+        let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
+        assert_eq!(
+            kept.iter()
+                .map(|entity| entity.classname.as_str())
+                .collect::<Vec<_>>(),
+            ["light", "emitter"]
+        );
+        assert!(!descriptor_is_host_replicated(&weapon_descriptor(
+            "held_only"
+        )));
+    }
+
+    #[test]
+    fn descriptor_is_host_replicated_when_touchable_or_mesh() {
         let mut item = weapon_descriptor("reference_pistol");
         item.touchable = Some(TouchableDescriptor {
             mode: TouchMode::Auto,
             radius: 32.0,
         });
 
-        assert!(descriptor_materializes_world_item(&item));
-        assert!(!descriptor_materializes_world_item(&mesh_descriptor(
+        assert!(descriptor_is_host_replicated(&item));
+        assert!(descriptor_is_host_replicated(&mesh_descriptor(
             "crate", false
         )));
     }
 
     #[test]
-    fn client_filter_drops_host_replicated_placements_keeps_props() {
-        // The connected-client pre-dispatch filter drops behavior-authored AI enemies
-        // and touchable world items, while keeping ordinary local props.
+    fn client_filter_drops_host_replicated_placements_keeps_local_presentation() {
+        // Gameplay and mesh placements arrive from the host; light-only content
+        // remains a local placement.
         let mut item = weapon_descriptor("reference_pistol");
         item.touchable = Some(TouchableDescriptor {
             mode: TouchMode::Auto,
@@ -271,11 +346,13 @@ mod tests {
             behavior_enemy_descriptor("grunt"),
             item,
             mesh_descriptor("crate", false),
+            light_descriptor("torch", true),
         ];
         let placements = vec![
             placement("grunt", &[]),
             placement("reference_pistol", &[]),
             placement("crate", &[]),
+            placement("torch", &[]),
             placement("grunt", &[]),
         ];
 
@@ -284,9 +361,9 @@ mod tests {
         assert_eq!(
             kept.len(),
             1,
-            "host-replicated placements drop, crate stays"
+            "host-replicated placements drop, local light stays"
         );
-        assert_eq!(kept[0].classname, "crate");
+        assert_eq!(kept[0].classname, "torch");
     }
 
     #[test]
@@ -306,7 +383,9 @@ mod tests {
         });
         item.mesh = mesh_descriptor("reference_pistol", false).mesh;
         item.mesh.as_mut().expect("fixture mesh").model = "models/pistol_world.gltf".to_string();
-        let descriptors = vec![grunt, item, mesh_descriptor("crate", false)];
+        let mut prop = mesh_descriptor("crate", false);
+        prop.mesh.as_mut().unwrap().model = "models/crate.gltf".to_string();
+        let descriptors = vec![grunt, item, prop];
         let placements = vec![
             placement("grunt", &[]),
             placement("reference_pistol", &[]),
@@ -317,14 +396,14 @@ mod tests {
 
         let models = suppressed_client_host_replicated_mesh_models(&placements, &descriptors);
 
-        // Both host-replicated categories contribute their models, while the ordinary
-        // crate and unknown classname add nothing.
+        // Enemies, items and mesh-only props all contribute; unknown names do not.
         assert_eq!(
             models,
             vec![
                 "decraniated".to_string(),
                 "models/grunt_prop.gltf".to_string(),
                 "models/pistol_world.gltf".to_string(),
+                "models/crate.gltf".to_string(),
             ],
             "suppressed host-replicated models must preload"
         );
@@ -334,8 +413,8 @@ mod tests {
     fn suppressed_host_replicated_mesh_models_empty_without_suppressed_placements() {
         // No map-referenced host-replicated placement means the ordinary registry
         // sweep already covers every mesh.
-        let descriptors = vec![mesh_descriptor("crate", false)];
-        let placements = vec![placement("crate", &[]), placement("mystery", &[])];
+        let descriptors = vec![light_descriptor("torch", true)];
+        let placements = vec![placement("torch", &[]), placement("mystery", &[])];
 
         assert!(
             suppressed_client_host_replicated_mesh_models(&placements, &descriptors).is_empty()
@@ -356,11 +435,11 @@ mod tests {
     }
 
     #[test]
-    fn client_filtered_dispatch_spawns_no_brain_but_host_dispatch_does() {
+    fn client_filtered_dispatch_spawns_no_gameplay_or_mesh_copies() {
         // End-to-end on the dispatch seam: the SAME placements + descriptors
         // produce a Brain-bearing entity through the unfiltered (host /
         // single-player) path but NONE through the connected-client filtered
-        // path. The non-AI prop materializes in BOTH.
+        // path. Mesh-only props also arrive only from host snapshots.
         let descriptors = vec![
             behavior_enemy_descriptor("grunt"),
             mesh_descriptor("crate", false),
@@ -429,8 +508,8 @@ mod tests {
             })
             .count();
         assert_eq!(
-            client_crates, 1,
-            "connected client still materializes the non-AI prop"
+            client_crates, 0,
+            "connected client suppresses the host-owned mesh prop"
         );
     }
 

@@ -897,15 +897,21 @@ pub(crate) fn nearest_entity_hit_ignoring(
 ///
 /// The mesh walk intentionally includes health-less presentation entries; each
 /// caller applies its own liveness/damageability gate before acting on them.
+/// Every inventory slot is excluded before visiting, even with retained Health
+/// or a Mesh component restored by another presentation path.
 pub(crate) fn for_each_hittable_candidate(
     registry: &EntityRegistry,
     mut visit: impl FnMut(EntityId),
 ) {
     for (id, _) in registry.iter_with_kind(ComponentKind::Health) {
-        visit(id);
+        if !registry.is_inventory_owned(id) {
+            visit(id);
+        }
     }
     for (id, _) in registry.iter_with_kind(ComponentKind::Mesh) {
-        if registry.get_component::<HealthComponent>(id).is_err() {
+        if !registry.is_inventory_owned(id)
+            && registry.get_component::<HealthComponent>(id).is_err()
+        {
             visit(id);
         }
     }
@@ -2433,6 +2439,32 @@ mod tests {
             candidates.contains(&both),
             "Health+Mesh entity is still a candidate"
         );
+    }
+
+    #[test]
+    fn held_world_participation_candidates_exclude_retained_health_and_mesh() {
+        use postretro_entities::components::inventory::Inventory;
+        let mut registry = EntityRegistry::new();
+        let holder = registry.spawn(Transform::default());
+        let health_only = spawn_aabb_entity(&mut registry, Vec3::ZERO, Vec3::splat(0.5));
+        let mesh_only = spawn_mesh_only_entity(&mut registry, "mob", Vec3::ZERO);
+        let both = spawn_zone_entity(&mut registry, "mob", Vec3::ZERO);
+        let unheld = spawn_aabb_entity(&mut registry, Vec3::ZERO, Vec3::splat(0.5));
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(health_only);
+        inventory.wieldables[3] = Some(mesh_only);
+        inventory.wieldables[8] = Some(both);
+        registry.set_component(holder, inventory).unwrap();
+        let mut candidates = Vec::new();
+        for_each_hittable_candidate(&registry, |id| candidates.push(id));
+        assert_eq!(candidates, [unheld]);
+        registry.remove_component::<Inventory>(holder).unwrap();
+        candidates.clear();
+        for_each_hittable_candidate(&registry, |id| candidates.push(id));
+        assert_eq!(candidates.len(), 4);
+        for item in [health_only, mesh_only, both, unheld] {
+            assert!(candidates.contains(&item));
+        }
     }
 
     #[test]

@@ -838,7 +838,7 @@ impl App {
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
-            suppress_ai_enemies: suppress,
+            suppress_host_replicated: suppress,
             suppress_boot_pawn: suppress,
             local_carried_loadout: session
                 .seat_table
@@ -935,8 +935,7 @@ impl App {
         // Register host-authoritative map entities and PRL-loaded movers for outbound
         // replication. Host-gated (a no-op off a listen host) and reload-safe; each
         // takes its own registry borrow.
-        self.host_register_map_enemies_after_install();
-        self.host_register_world_items_after_install();
+        self.host_register_descriptor_entities_after_install();
         self.host_register_loaded_movers_after_install();
         self.level_timings.record("host_registration");
 
@@ -1495,7 +1494,7 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// Connected-client setup flag: skip host-authoritative map-placement
     /// materialization and boot-pawn spawn. Both `false` off a connected client
     /// (single-player, listen host, headless).
-    pub(crate) suppress_ai_enemies: bool,
+    pub(crate) suppress_host_replicated: bool,
     pub(crate) suppress_boot_pawn: bool,
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
@@ -2415,6 +2414,8 @@ pub(crate) mod tests {
     struct TriggerPoolWorldInstall {
         report: TriggerPoolInstallReport,
         registry: postretro_entities::EntityRegistry,
+        upload_models: Vec<String>,
+        hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
     }
 
     fn install_trigger_pool_world(
@@ -2422,10 +2423,32 @@ pub(crate) mod tests {
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
         global_pools: Vec<TriggerPoolDescriptor>,
-        suppress_ai_enemies: bool,
+        suppress_host_replicated: bool,
+    ) -> TriggerPoolWorldInstall {
+        install_descriptor_world(
+            world,
+            policy,
+            active_level_tags,
+            global_pools,
+            suppress_host_replicated,
+            Vec::new(),
+        )
+    }
+
+    fn install_descriptor_world(
+        world: postretro_level_loader::LevelWorld,
+        policy: TriggerPoolSeedPolicy,
+        active_level_tags: &[&str],
+        global_pools: Vec<TriggerPoolDescriptor>,
+        suppress_host_replicated: bool,
+        descriptors: Vec<EntityTypeDescriptor>,
     ) -> TriggerPoolWorldInstall {
         let mut app = test_app();
         let ctx = script_ctx(&app);
+        ctx.data_registry.borrow_mut().entities = descriptors;
+        let mut upload_models = Vec::new();
+        let content_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
         ctx.data_registry
             .borrow_mut()
             .replace_global_trigger_pools(global_pools);
@@ -2444,7 +2467,7 @@ pub(crate) mod tests {
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
-                content_root: std::path::Path::new("content/dev"),
+                content_root: &content_root,
                 active_level_tags: &active_level_tags,
                 nav_graph: None,
                 fog_volume_bridge: &mut session.fog_volume_bridge,
@@ -2462,14 +2485,18 @@ pub(crate) mod tests {
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: policy,
-                suppress_ai_enemies,
-                suppress_boot_pawn: suppress_ai_enemies,
+                suppress_host_replicated,
+                suppress_boot_pawn: suppress_host_replicated,
                 local_carried_loadout: None,
             };
             install_world_cpu(
                 handles,
                 &mut timings,
-                |_models, _clip_tables| {
+                |models, _clip_tables| {
+                    upload_models.extend(models.iter().map(|model| {
+                        assert!(model.result.is_ok(), "{} must parse", model.handle);
+                        model.handle.clone()
+                    }));
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
                 |_spawn_points| {},
@@ -2480,6 +2507,64 @@ pub(crate) mod tests {
         TriggerPoolWorldInstall {
             report: products.trigger_pool_report,
             registry,
+            upload_models,
+            hit_zone_store: std::mem::take(&mut app.session.as_mut().unwrap().hit_zone_store),
+        }
+    }
+
+    #[test]
+    fn suppressed_descriptor_models_install_hit_zones_once() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
+        use postretro_entities::ComponentKind;
+        use postretro_entities::provenance::DescriptorProvenance;
+        use postretro_level_format::map_entity::MapEntityRecord;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let model = "models/decraniated_low_poly_retro_pixel/scene.gltf";
+        let mut prop = mesh_descriptor("network_prop", false);
+        prop.mesh.as_mut().unwrap().model = model.to_string();
+        let mut dummy = prop.clone();
+        dummy.canonical_name = Some("network_dummy".to_string());
+        dummy.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        });
+        for connected in [false, true] {
+            let mut world = level_world("descriptor_install", 1);
+            world.map_entities = ["network_prop", "network_dummy", "network_dummy"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, classname)| MapEntityRecord {
+                    classname: classname.to_string(),
+                    origin: [i as f32 * 3.0, 0.0, 0.0],
+                    ..Default::default()
+                })
+                .collect();
+
+            let installed = install_descriptor_world(
+                world,
+                TriggerPoolSeedPolicy::ArmAll,
+                &[],
+                Vec::new(),
+                connected,
+                vec![prop.clone(), dummy.clone()],
+            );
+            let placements = installed.registry.iter_with_kind(ComponentKind::DescriptorProvenance)
+                .filter(|(_, value)| matches!(value, postretro_entities::ComponentValue::DescriptorProvenance(DescriptorProvenance { canonical_name, .. }) if canonical_name.starts_with("network_")))
+                .count();
+            assert_eq!(placements, if connected { 0 } else { 3 });
+            assert_eq!(
+                installed.upload_models,
+                [model],
+                "shared suppressed models upload once"
+            );
+            let zones = installed
+                .hit_zone_store
+                .get_by_name(model)
+                .expect("suppressed model retains CPU hit zones");
+            assert!(zones.joint_zones.iter().any(Option::is_some));
+            assert!(zones.derived_bound.is_some());
         }
     }
 
@@ -2491,14 +2576,14 @@ pub(crate) mod tests {
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
         global_pools: Vec<TriggerPoolDescriptor>,
-        suppress_ai_enemies: bool,
+        suppress_host_replicated: bool,
     ) -> TrapPoolFixtureInstall {
         let installed = install_trigger_pool_world(
             trap_pool_fixture_world(),
             policy,
             active_level_tags,
             global_pools,
-            suppress_ai_enemies,
+            suppress_host_replicated,
         );
         let registry = &installed.registry;
         let armed_by_tag = ["closet_trap", "ambush_trap"]
@@ -4517,7 +4602,7 @@ pub(crate) mod tests {
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
-                suppress_ai_enemies: false,
+                suppress_host_replicated: false,
                 suppress_boot_pawn: false,
                 local_carried_loadout: None,
             };

@@ -2,7 +2,7 @@
 
 Brief · compact · draft · Epic 16 · reads: `context/lib/entity_model.md` §2, `context/lib/scripting.md` §5, §11–12, `context/lib/input.md` §2, `context/lib/networking.md` §Combat authority, §Host input command queue · read at `ecc6adc` · evidence: `research.md`
 
-Builds after `context/plans/in-progress/E16--player-events` lands: the selected mode is one of its per-player owner-private engine values. Builds on `context/plans/done/E16--weapon-activations`.
+Builds on `context/plans/done/E16--player-events`: the selected mode is one of its per-player owner-private engine values. Builds on `context/plans/done/E16--weapon-activations`.
 
 ## Problem
 

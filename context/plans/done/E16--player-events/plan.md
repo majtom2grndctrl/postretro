@@ -89,8 +89,8 @@ Rows follow the brief's Acceptance order. Proposed test names are binding on int
 | 51 Scripting surface example runs as `content/dev` script; TS/Luau twins byte-identical | new twin pair + parity test (`closet_reveal_surface_tests.rs` pattern) | achievable as stated | pass: `startup::player_events_surface_tests::player_events_twins_emit_byte_identical_wire_data` |
 | 52 grep gate: no seat identifier in typedefs or scripting surface; state tree has no methods | typedef test over `Seat`/`SeatId`/`seatId`/`seat:` identifiers (not the English word) + runtime tree walk (`game_state_refs.rs`) | achievable as stated | pass: `player_surface::seat_identifiers_stay_off_the_sdk_surface_and_the_player_state_tree_has_no_methods` |
 | 53 networking.md §Presentation and §Channel model updated as stated | doc review at preflight | achievable as stated | pass: networking.md §Channel model, §Presentation events and §Version gates updated (doc review) |
-| M1 two-client co-op playtest: level-up and scald on affected machine only; vignette local, no delay | owner, in-engine | manual | outstanding: owner, two-client playtest |
-| M2 flash limiter and reduce motion apply to forwarded flash and shake | owner, in-engine | manual | outstanding: owner, flash limiter and reduce motion on a client |
+| M1 two-client co-op playtest: level-up and scald on affected machine only; vignette local, no delay | owner, in-engine | manual | outstanding, carried forward: the first Mac↔Windows playtest (2026-10-10) found the client cannot damage `target_dummy` — a pre-existing replication gap (non-AI descriptor entities get no NetworkId), not E16. The host half could run; the client half re-runs under `coop--networked-by-default`'s proof |
+| M2 flash limiter and reduce motion apply to forwarded flash and shake | owner, in-engine | manual | outstanding, carried forward: blocked with M1 (the only forwarded flash is the level-up's); the dev example also has no `screenShake` reaction, so `coop--networked-by-default`'s proof adds one before re-running M2 |
 
 ## Tasks
 
@@ -109,6 +109,10 @@ Rows follow the brief's Acceptance order. Proposed test names are binding on int
 | 11 | **Preflight and review loop.** `/preflight`, `/review-panel`, `/fix-review-findings` until no new concrete findings; full gate including `--features postretro/dev-tools`. | integrating executor | 10 | |
 
 Hot paths: the evaluator runs every authoritative tick on the host. It allocates nothing per tick in steady state: edge memory and the player scratch list are reused, bound programs are bound at install, and pawn and seat resolution is one registry walk per tick shared by every event. Its cost is O(events × players) IR evals, measured under `POSTRETRO_CPU_TIMING` against a new `SimStage`-style scope.
+
+## Landing
+- Landed 2026-10-10 with M1 and M2 carried forward, on the owner's call: the blocker is pre-existing, so E16 does not wait on its fix.
+- Durable docs: `scripting.md` §5/§12 and `networking.md` §Presentation events re-checked against final code (every identifier the branch added exists in source). `docs/scripting-reference.md` gained the author-facing `playerEvents` manifest row and a *Per-player events* section, which the build had missed.
 
 ## Review loop
 - Round 1 (10 reviewers): no 🔴 code findings; 2 🔴 comment drifts, 11 🟡 and a batch of 🟢 nits, fixed in `712c9a0cd`. Skipped: `WeaponComponent::reload_status`/`owner_reload_status` stay `pub`, because test callers in other crates would break under `#[cfg(test)]`.

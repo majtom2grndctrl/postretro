@@ -393,13 +393,13 @@ mod tests {
     /// logo matches a 16:9 window of the same height rather than growing.
     #[test]
     fn logo_rect_on_ultrawide_matches_16_by_9_of_same_height() {
-        let [_, _, w_ultrawide, _] = logo_rect([2028, 582], [3440, 1440]);
-        let [_, _, w_16_9, _] = logo_rect([2028, 582], [2560, 1440]);
+        let [_, _, w_ultrawide, _] = logo_rect([2028, 582], [2560, 1080]);
+        let [_, _, w_16_9, _] = logo_rect([2028, 582], [1920, 1080]);
         assert!(
             (w_ultrawide - w_16_9).abs() < EPS,
             "ultrawide {w_ultrawide} vs 16:9 {w_16_9}"
         );
-        assert!((w_16_9 - 1280.0).abs() < EPS, "half of 2560, got {w_16_9}");
+        assert!((w_16_9 - 960.0).abs() < EPS, "half of 1920, got {w_16_9}");
     }
 
     /// A window narrower than 16:9 sizes by its own width.

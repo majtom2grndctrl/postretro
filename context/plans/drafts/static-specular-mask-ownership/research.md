@@ -173,6 +173,10 @@ elsewhere; the proxy is a lower bound.
 | P21 | A level over the owner-index cap has a cut face | The cap check runs before the estimate | The named error comes before any estimate ray |
 | P22 | The estimate's grid reaches the edge of a cut parent that meets a wall | Samples are placed before the walk, from the parent's chart | Samples sit only at chart-interior positions of the parent, as the walk's texels do. A light that reaches only beyond the parent's chart interior takes no channel |
 | P23 | The estimate's density or sampling mode changes between builds while every lightmap partition is unchanged | The lightmap memo hits, then the id-42 memo key is probed | The key misses. Id 42 equals the cold build's |
+| P14 | A light lights a cut face above the floor only between the estimate's sample points | The estimate fixes the parent's owners before the walk. The light's partitions arrive later, one bake layer at a time | The light takes no channel in any sub-face, even a free one. The walk sums its lit texels over the parent, and the drop warning names it |
+| P15 | The estimate admits a light to a cut parent, but every texel that light bakes on the parent's sub-faces quantizes to zero | Owners are fixed before the walk. The light's partitions write only zeros | After the walk, the light's entry is empty in every sub-face. A light it displaced is warned if that light is above the floor |
+| P17 | On a cut face, a promoted candidate below the floor competes with four above-floor specular-only lights | The estimate's floor test, then tier, then contribution, all before the walk | The promoted candidate takes no channel. Whether it is warned follows the parent's exact lit-texel count after the walk |
+| P24 | Two lights become owners of one face in descending index order | The higher index arrives and takes a channel first; the lower arrives later | The entry lists the lower index first, and each owner's mask values move with it before encode |
 
 **Proof caveat.** The WGSL harnesses self-skip without a BC-capable adapter
 (`shadowmask_sample_test.rs`), so shader rows prove nothing unless run with a GPU
@@ -195,8 +199,10 @@ it extracted into a callable function first.
   - Bounded retention: keeps per-texel data for the largest faces, the record class
     behind the OOM.
   - Keeping a parent's blocks in one layer: infeasible when one block fills the layer.
-- **Chosen:** a sparse shadowed estimate. The `kinematic-platform` floor is about 5k
-  samples × 9 lights at one sample per 16×16 tile.
+- **Chosen:** a sparse shadowed estimate whose spacing follows the floor. At a 16-texel
+  floor, that is one sample per 4×4 texels: about 80k samples × 9 lights on the
+  `kinematic-platform` floor, roughly 0.2% of that face's walk rays (1.27M texels × 9
+  lights × 32 area samples).
 
 ## Rejected rivals
 

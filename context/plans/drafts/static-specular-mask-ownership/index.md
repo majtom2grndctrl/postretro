@@ -34,6 +34,8 @@ a light lost a highlight to capacity.
   owning its four mask channels.
   - World specular and the promoted-light union subtraction evaluate only those owners,
     each finding its channel by the light's position in the owner list.
+  - A face's owners sit in ascending light-index order, so channel placement never
+    depends on the order the bake meets them.
   - The map-wide per-light slot and its dropped sentinel retire.
 - **One owner list per lightmapped face** (an id-17 face record, after compiler face
   cuts).
@@ -75,7 +77,14 @@ a light lost a highlight to capacity.
 - **A cut face has one owner set.** All sub-faces of one compiler-cut face share it, so
   a highlight never cuts along a cut line.
   - Its ranking comes from a sparse shadowed estimate traced before the walk, because
-    sub-faces span bake layers.
+    sub-faces span bake layers. Sample spacing follows the floor, so an above-floor
+    light rarely falls between samples.
+  - The estimate's owners are final. A light it missed takes no channel, even a free
+    one, and the drop report names it.
+  - An estimated owner that bakes no lit texel on any sub-face is cleared after the
+    walk.
+  - For ranking, a cut face's floor comes from the estimate scaled to area. For the
+    report, it comes from the parent's exact lit-texel count after the walk.
   - Faces that were not cut rank on exact per-face sums.
 - **An owned channel reads occluded wherever its owner wrote nothing,** including
   padding and texels another owner held before.
@@ -90,7 +99,8 @@ a light lost a highlight to capacity.
 - **Id 42 exists whenever any face admits an owner,** whatever id 40 holds. Clearing id
   40 or 41 at load never drops it.
 - **The drop report is complete on every build.**
-  - A warning names each above-floor light dropped and its face.
+  - A warning names each above-floor light dropped and its face. A cut face is named
+    once, as its parent with its sub-face range.
   - `--verbose` reports peak per-face demand.
   - Both are identical on cold and warm builds.
 - **Capacity stays at four per face.**
@@ -131,6 +141,14 @@ No leak, both sides of ownership:
       owned channel. (P16)
 - [ ] On a cut face meeting a wall, a light behind that wall that reaches only the
       face's edge, and no interior texel, takes no channel. (P22)
+- [ ] On a cut face, a light that lights more texels than the floor but misses every
+      estimate sample takes no channel in any sub-face, and the drop warning names it.
+      (P14)
+- [ ] On a cut face, a light the estimate chose that bakes no lit texel on any sub-face
+      holds no channel in the final owner table. (P15)
+- [ ] On a cut face, a promoted light lighting fewer texels than the floor across the
+      whole face never takes a channel from an above-floor specular-only light, even when
+      one sub-face alone would put it above the floor. (P17)
 - [ ] Within a face it owns, a light's specular still follows the baked mask: zero on
       an occluded texel, full on a lit one.
 - [ ] An SDF light outside the fragment's selection adds zero specular. One inside it
@@ -166,7 +184,10 @@ Compiler:
       shadowed contribution, plus a warning that names the fifth. Four lights yield four
       owners and no warning.
 - [ ] The drop warning names each face that lost a light above the floor, as well as
-      the light. `--verbose` reports the most candidates seen on one face.
+      the light. A cut face appears once, as its parent with its sub-face range.
+      `--verbose` reports the most candidates seen on one face.
+- [ ] A face's owners appear in ascending light-index order whatever order the bake met
+      them, and every owner's mask values sit in that owner's channel. (P24)
 - [ ] A warm build that reuses the cached id 42 repeats the cold build's drop warnings
       and its peak per-face demand under `--verbose`. (P2)
 - [ ] When a later, higher-ranked light evicts a face's owner, none of the evicted
@@ -220,6 +241,7 @@ Compiler:
 - [ ] Load rejects:
       - an owner index at or past the static spec-light count;
       - a duplicate owner within a face;
+      - owners out of ascending order, or an owner after an empty channel;
       - a face count that disagrees with id 17;
       - a payload length that disagrees with the block arithmetic.
 
@@ -305,8 +327,8 @@ Compiler:
   — owner: executor, reported to the project owner — **blocks build**
 - Lit-texel floor value. The census cleared every stress-map overflow at 16 texels. —
   **delegated**: report the value and its drop report in the plan of record.
-- Cut-face estimate density and sampling: hard ray or area samples. — **delegated**:
-  report rays traced and stage time.
+- Cut-face estimate sampling: hard ray or area samples, at a spacing that follows the
+  floor. — **delegated**: report rays traced and stage time.
 
 ## Wire format
 
@@ -319,7 +341,7 @@ lengths as today.
 | Per-selected-light slot table and its count | Removed |
 | Face count | u32, placed where the slot-table count was. Must equal id 17's face count |
 | Owner table | One entry per id-17 face, in face order. Each entry is 4 × u16 compact static spec-light indices: the `!is_dynamic` order that id 23 already uses. Entry position *s* is channel *s*: BC5 group *s*/2, channel *s*%2. Loaded whole at install; never streamed |
-| Empty channel | `0xFFFF`. Owners are distinct within an entry; empty channels may sit at any position |
+| Empty channel | `0xFFFF`. Owners are distinct and ascending within an entry; empty channels follow the last owner |
 | Empty level | Face count 0, no table |
 | Retired `SMB6` | Named so load asks for a re-bake |
 

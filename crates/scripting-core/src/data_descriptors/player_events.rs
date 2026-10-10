@@ -10,7 +10,8 @@ use postretro_entities::data_descriptors::{PlayerEventDescriptor, PlayerEventEdg
 /// The manifest a `playerEvents` array arrived in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerEventSite {
-    /// `setupLevel()`: entries belong to that level, so `levels` is rejected.
+    /// `setupLevel()`: entries belong to that level, so an entry carrying
+    /// `levels` is skipped with a warning; its siblings install.
     Level,
     /// `ModManifest`: `levels` scopes each entry.
     Mod,
@@ -155,6 +156,13 @@ pub fn drain_player_events_js<'js>(
         return Ok(Vec::new());
     }
     let Some(entries) = raw.as_array() else {
+        // An empty object reads as an empty list, as an empty Luau table does.
+        if raw
+            .as_object()
+            .is_some_and(|object| object.keys::<String>().next().is_none())
+        {
+            return Ok(Vec::new());
+        }
         return Err(not_an_array(scope));
     };
     let mut out = Vec::with_capacity(entries.len());

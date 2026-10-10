@@ -18,13 +18,25 @@ pub(super) struct Fire {
     pub(super) pawn: EntityId,
 }
 
+/// One player's condition for one event this tick.
+#[derive(Debug, Clone, Copy, Default)]
+enum Observation {
+    /// No pawn, no seat, or no value for a slot the condition reads.
+    #[default]
+    Unobserved,
+    /// The condition divided by zero or went non-finite: no observation, so
+    /// the player keeps last tick's value and no edge fires.
+    Invalid,
+    Holds(bool),
+}
+
 /// Buffers reused every tick, so steady-state evaluation allocates nothing.
 #[derive(Default)]
 pub(super) struct Scratch {
     pawns: Vec<EntityId>,
     players: Vec<(PlayerKey, EntityId)>,
-    /// Row-major by event: `None` while the player is unobserved for it.
-    values: Vec<Option<bool>>,
+    /// Row-major by event.
+    values: Vec<Observation>,
     memory: Vec<(PlayerKey, bool)>,
     pub(super) fires: Vec<Fire>,
 }
@@ -55,7 +67,7 @@ impl PlayerEventTable {
         scratch.values.clear();
         scratch
             .values
-            .resize(self.events.len() * player_count, None);
+            .resize(self.events.len() * player_count, Observation::Unobserved);
         for (player_index, &(key, pawn)) in scratch.players.iter().enumerate() {
             let seat = match key {
                 PlayerKey::Seat(seat) => Some(seat),
@@ -68,29 +80,39 @@ impl PlayerEventTable {
                 }
                 // A non-finite or divide-by-zero result is not an observation:
                 // the totalizing value (0) would read as a real `false` and
-                // could fire a `ceases` edge. Leave the player unobserved.
-                let Ok(value) = eval_value_checked(&event.program, scope) else {
-                    continue;
-                };
-                let holds = matches!(value, IrValue::Bool(true));
-                scratch.values[event_index * player_count + player_index] = Some(holds);
+                // could fire a `ceases` edge, and dropping the player would
+                // re-fire `becomes` once the value recovers.
+                scratch.values[event_index * player_count + player_index] =
+                    match eval_value_checked(&event.program, scope) {
+                        Ok(value) => Observation::Holds(matches!(value, IrValue::Bool(true))),
+                        Err(_) => Observation::Invalid,
+                    };
             }
         }
 
         for (event_index, event) in self.events.iter_mut().enumerate() {
             scratch.memory.clear();
             for (player_index, &(key, pawn)) in scratch.players.iter().enumerate() {
-                // Unobserved: the player drops out of memory and reads as
-                // false at its next observation. Becoming unobserved fires
-                // nothing.
-                let Some(holds) = scratch.values[event_index * player_count + player_index] else {
-                    continue;
-                };
-                let held = event
+                let remembered = event
                     .memory
                     .iter()
                     .find(|(remembered, _)| *remembered == key)
-                    .is_some_and(|(_, held)| *held);
+                    .map(|(_, held)| *held);
+                let holds = match scratch.values[event_index * player_count + player_index] {
+                    // Unobserved: the player drops out of memory and reads as
+                    // false at its next observation. Becoming unobserved
+                    // fires nothing.
+                    Observation::Unobserved => continue,
+                    // Invalid: keep what was remembered, fire nothing.
+                    Observation::Invalid => {
+                        if let Some(held) = remembered {
+                            scratch.memory.push((key, held));
+                        }
+                        continue;
+                    }
+                    Observation::Holds(holds) => holds,
+                };
+                let held = remembered.unwrap_or(false);
                 let fires = match event.edge {
                     PlayerEventEdge::Becomes => !held && holds,
                     PlayerEventEdge::Ceases => held && !holds,

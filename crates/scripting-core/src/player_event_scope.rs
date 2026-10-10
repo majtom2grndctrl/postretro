@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use crate::data_descriptors::{ReactionDescriptor, SequenceTarget};
 use crate::engine_state_catalog::engine_state_catalog;
 use crate::player_slots::PlayerSlot;
-use crate::slot_table::SlotTable;
+use crate::slot_table::{ReplicationScope, SlotTable};
 
 /// The wire token for `on.player`, as a `target` and as an IR read `owner`.
 pub const EVENT_PLAYER_TOKEN: &str = "@player";
@@ -92,7 +92,10 @@ pub fn is_local_player_slot(name: &str) -> bool {
                 .expect("built-in engine-state catalog must be valid")
                 .entries()
                 .iter()
-                .filter(|entry| entry.sdk_path.first() == Some(&"player") && !entry.is_per_player())
+                .filter(|entry| {
+                    entry.sdk_path.first() == Some(&"player")
+                        && entry.network == ReplicationScope::None
+                })
                 .map(|entry| entry.wire_name)
                 .collect()
         })

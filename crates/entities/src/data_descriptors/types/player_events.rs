@@ -32,7 +32,7 @@ impl PlayerEventEdge {
 /// `players().on(edge(condition), fire, { levels? })`, returned under a
 /// `playerEvents` manifest key. Wire: `{ edge, condition, fire, levels? }`.
 /// `levels` scopes a `ModManifest` entry; a level script's entry carrying it
-/// is rejected at parse.
+/// is skipped at parse with a warning, and its siblings install.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerEventDescriptor {
     pub edge: PlayerEventEdge,

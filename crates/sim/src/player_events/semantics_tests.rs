@@ -682,7 +682,7 @@ fn a_missing_weapon_value_is_unobserved_and_regaining_it_fires_once() {
 }
 
 #[test]
-fn an_invalid_evaluation_is_unobserved_and_the_next_valid_tick_is_first_sight() {
+fn an_invalid_evaluation_fires_nothing_and_keeps_the_remembered_value() {
     let mut world = World::new();
     let pawn = world.spawn_player(Some(Seat(1)), 0.0);
     // 10 / health is a division by zero at zero health.
@@ -720,10 +720,9 @@ fn an_invalid_evaluation_is_unobserved_and_the_next_valid_tick_is_first_sight() 
 
     world.set_health(pawn, 5.0);
     world.tick();
-    assert_eq!(
-        world.take_residual_reactions(),
-        vec!["bleed".to_string()],
-        "the invalid tick dropped the player from memory: first sight again"
+    assert!(
+        world.take_residual_reactions().is_empty(),
+        "the invalid tick kept the remembered true: no re-fire on recovery"
     );
 }
 

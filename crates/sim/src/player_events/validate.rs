@@ -29,6 +29,10 @@ pub(super) fn fire_list_violation(
     if let Some(rule) = direct_violation(&reaction.descriptor, slot_table) {
         return Some(rule);
     }
+    // Checked on fire-list reactions only: the drain begins their origin with
+    // no paired enter. A reaction reached through `fire` or `onComplete`
+    // dispatches with no origin, which the trigger-coupled rows (V2, V3)
+    // already govern.
     if holds_interruptible_wait(&reaction.descriptor) {
         return Some(
             "uses an interruptible `wait`, which only a trigger's exit cancels".to_string(),

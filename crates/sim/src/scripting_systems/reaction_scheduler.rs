@@ -255,10 +255,12 @@ impl ReactionScheduler {
         self.state.borrow_mut().frame_counter += 1;
     }
 
-    /// Set the origin for the trigger residual currently being drained, cleared
-    /// on drop. Held across the residual loop ONLY (released before the deferred
-    /// batch — O54). `standing` is whether this origin's paired enter is live at
-    /// drain time, feeding the O52 enrollment check. Mirrors `begin_resume`.
+    /// Set the origin for the trigger or player-event residual currently being
+    /// drained, cleared on drop. Held across the residual loop ONLY (released
+    /// before the deferred batch — O54). `standing` is whether this origin's
+    /// paired enter is live at drain time, feeding the O52 enrollment check; a
+    /// player event has no paired enter and passes `false`, keyed by the event
+    /// player's pawn. Mirrors `begin_resume`.
     pub fn begin_origin(&self, trigger: EntityId, player: PlayerId, standing: bool) -> OriginGuard {
         {
             let mut state = self.state.borrow_mut();

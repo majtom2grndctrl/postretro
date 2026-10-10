@@ -1,8 +1,5 @@
-// Drift guard: script-compiler's build-time `getGameState()` mirror against the
-// engine-state catalog and scripting-core's runtime bridge. script-compiler
-// cannot depend on either, so the comparison lives here, where both are seen.
-// See: context/lib/scripting.md §5 · context/lib/testing_guide.md
-// ("Drift guards derive from the source")
+// Drift guard: script-compiler's build-time `getGameState()` mirror vs. the catalog and runtime bridge.
+// See: context/lib/scripting.md §5 · context/lib/testing_guide.md (Drift guards derive from the source)
 
 use std::collections::BTreeMap;
 

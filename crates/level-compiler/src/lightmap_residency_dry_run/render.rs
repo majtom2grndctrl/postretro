@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use postretro_level_format::cell_visibility::{
     CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE, CELL_VISIBILITY_FANOUT_K,
 };
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 
 use super::layouts::RUNTIME_LAYER_FLOOR;
 use super::mandatory::{DistanceBound, MandatoryBytes};
@@ -47,7 +47,7 @@ pub(super) fn input_summary(input: &DryRunInput) -> String {
                 sm.payload_bytes
             );
         }
-        ShadowmaskState::OmittedForWidth | ShadowmaskState::Absent => {}
+        ShadowmaskState::Absent => {}
     }
     let _ = writeln!(out, "{}", shadowmask_policy(f));
     let stored_bytes: u64 = (0..f.blocks.len()).map(|b| f.stored_block_bytes(b)).sum();
@@ -91,12 +91,7 @@ pub(super) fn shadowmask_policy(formats: &AtlasFormats) -> String {
             "id 42 stored: charged 2 B/texel in texel-exact, every stored block, and every \
              simulated layer up to {limit} wide"
         ),
-        ShadowmaskState::OmittedForWidth => format!(
-            "id 42 omitted although id 40 selects shadow lights: texel-exact and stored blocks \
-             carry none, the \"+ omitted id42\" rows restore it; simulated layers up to {limit} \
-             wide are charged 2 B/texel"
-        ),
-        ShadowmaskState::Absent => "id 42 absent: no selected shadow lights, never charged".into(),
+        ShadowmaskState::Absent => "id 42 absent: no face has a mask owner, never charged".into(),
     }
 }
 
@@ -111,19 +106,12 @@ pub(super) fn mib_f64(bytes: f64) -> f64 {
 impl DryRunReport {
     fn metric_names(&self) -> Vec<String> {
         let mut names = vec!["texel-exact".to_string(), "half-res texel".to_string()];
-        if self.omitted_mask {
-            names.push("texel-exact + omitted id42".to_string());
-            names.push("half-res + omitted id42".to_string());
-        }
         names.extend(self.layouts.iter().map(|l| format!("layer {}", l.name)));
         names
     }
 
     pub(super) fn metric_values(bytes: &MandatoryBytes) -> Vec<f64> {
         let mut values = vec![bytes.texel_exact, bytes.half_res];
-        if let Some((texel_exact, half_res)) = bytes.with_omitted_mask {
-            values.extend([texel_exact, half_res]);
-        }
         values.extend(bytes.layer.iter().map(|&b| b as f64));
         values
     }
@@ -341,9 +329,6 @@ impl DryRunReport {
         let mut out = String::from(
             "source,granularity,bound,cell,cluster,center_x,center_y,center_z,set_cells,texel_exact_bytes,half_res_bytes",
         );
-        if self.omitted_mask {
-            out.push_str(",texel_exact_with_omitted_id42_bytes,half_res_with_omitted_id42_bytes");
-        }
         for layout in &self.layouts {
             let _ = write!(out, ",layer_{}_bytes", layout.name.replace([' ', '²'], ""));
         }
@@ -364,9 +349,6 @@ impl DryRunReport {
                         bytes.texel_exact,
                         bytes.half_res
                     );
-                    if let Some((texel_exact, half_res)) = bytes.with_omitted_mask {
-                        let _ = write!(out, ",{texel_exact:.0},{half_res:.0}");
-                    }
                     for layer in &bytes.layer {
                         let _ = write!(out, ",{layer}");
                     }

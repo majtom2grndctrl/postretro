@@ -46,7 +46,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 #[cfg(test)]
@@ -1144,12 +1144,12 @@ mod tests {
     /// Fully visible groups for each of `lightmap`'s blocks.
     fn shadowmask_for(lightmap: &LightmapSection) -> ShadowmaskAtlasSection {
         ShadowmaskAtlasSection {
-            channels: vec![0],
+            owners: Vec::new(),
             blocks: lightmap
                 .blocks
                 .iter()
                 .map(|block| {
-                    let len = postretro_level_format::shadowmask_atlas_smb6::group_plane_len(
+                    let len = postretro_level_format::shadowmask_atlas::group_plane_len(
                         block.width.into(),
                         block.height.into(),
                     )
@@ -1807,7 +1807,9 @@ mod tests {
     }
 
     #[test]
-    fn pack_write_emits_shadowmask_only_with_usable_entity_shadow_selection() {
+    // AC 45 and P10: id 42 carries per-face owners and is written whatever ids
+    // 40 and 41 hold.
+    fn pack_write_emits_shadowmask_whatever_the_entity_shadow_sections_hold() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
         let _ = std::fs::create_dir_all(&dir);
         let direct = minimal_direct_sh_volume();
@@ -1837,7 +1839,7 @@ mod tests {
         write_pack_with_shadowmask(
             &output_no_delta,
             Some(&direct),
-            Some(&selected),
+            None,
             None,
             Some(&shadowmask),
         );
@@ -1846,6 +1848,10 @@ mod tests {
         let meta = read_container(&mut cursor).expect("should read container");
         assert!(
             meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_some()
+        );
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
                 .is_none()
         );
 

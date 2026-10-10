@@ -59,7 +59,7 @@ mod visible_set_tests;
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
-use postretro_level_format::shadowmask_atlas_smb6::SHADOWMASK_GROUP_COUNT;
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_level_loader::LevelWorld;
 
 use crate::cell_residency_bake::portal_distance::PortalGraphInput;
@@ -94,11 +94,7 @@ pub(crate) struct ShadowmaskFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ShadowmaskState {
     Stored(ShadowmaskFormat),
-    /// EntityShadowLights (id 40) selects lights but the bake omitted id 42.
-    /// Pre-block PRLs did so when a layer could not double; a block PRL never
-    /// should, so on one this flags a compiler fault.
-    OmittedForWidth,
-    /// No selected shadow lights: the level has no shadowmask to stream.
+    /// No face has a mask owner: the level has no shadowmask to stream.
     Absent,
 }
 
@@ -154,7 +150,7 @@ impl AtlasFormats {
     pub(crate) fn stored_shadowmask(&self) -> Option<&ShadowmaskFormat> {
         match &self.shadowmask {
             ShadowmaskState::Stored(format) => Some(format),
-            ShadowmaskState::OmittedForWidth | ShadowmaskState::Absent => None,
+            ShadowmaskState::Absent => None,
         }
     }
 
@@ -166,12 +162,12 @@ impl AtlasFormats {
         self.blocks.iter().map(|b| b.direction_bytes).sum()
     }
 
-    /// Whether a layer `width` texels wide would carry id 42: the level
-    /// selects shadow lights and the doubled texture fits. A stored block
-    /// always fits; the width rule still bounds the simulated whole layers.
+    /// Whether a layer `width` texels wide would carry id 42: the level stores
+    /// id 42 and the doubled texture fits. A stored block always fits; the
+    /// width rule still bounds the simulated whole layers.
     pub(crate) fn layer_carries_shadowmask(&self, width: u32) -> bool {
-        let selected = !matches!(self.shadowmask, ShadowmaskState::Absent);
-        selected
+        let stored = matches!(self.shadowmask, ShadowmaskState::Stored(_));
+        stored
             && width
                 .checked_mul(SHADOWMASK_GROUP_COUNT)
                 .is_some_and(|doubled| doubled <= MAX_SHADOWMASK_TEXTURE_WIDTH)
@@ -239,18 +235,8 @@ impl AtlasFormats {
                 let unit = Self::shadowmask_unit();
                 unit.bytes as f64 / f64::from(unit.width * unit.height)
             }
-            ShadowmaskState::OmittedForWidth | ShadowmaskState::Absent => 0.0,
+            ShadowmaskState::Absent => 0.0,
         }
-    }
-
-    /// Id 42 bytes per chart texel a level would carry if its omitted
-    /// shadowmask were restored; `None` for any other state. Makes the floor
-    /// comparable to capped layouts, which charge id 42 where it fits.
-    pub(crate) fn omitted_shadowmask_bytes_per_texel(&self) -> Option<f64> {
-        matches!(self.shadowmask, ShadowmaskState::OmittedForWidth).then(|| {
-            let unit = Self::shadowmask_unit();
-            unit.bytes as f64 / f64::from(unit.width * unit.height)
-        })
     }
 
     pub(crate) fn bytes_per_texel(&self) -> f64 {

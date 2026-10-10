@@ -1794,8 +1794,8 @@ fn run_after_parsing(
     reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
     let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
 
-    // Shadowmask memo probing, graph construction, and channel assignment must
-    // finish before the fused ray walk. Lightmap remains the foreground stage
+    // The shadowmask memo probe finishes before the fused ray walk; on a miss,
+    // mask ownership is decided inside it. Lightmap remains the foreground stage
     // while shadowmask progress advances in the background; summary timing
     // still charges only shadowmask-owned work.
     reporter.begin_background_stage(StageId::ShadowmaskAtlas);
@@ -1811,6 +1811,7 @@ fn run_after_parsing(
         &static_baked_lights,
         &alpha_lights_ns,
         delta_sections.entity_shadow_lights.as_ref(),
+        &map_data.light_source_labels,
         &bvh,
         &bvh_primitives,
         &lightmap_config,
@@ -1823,7 +1824,6 @@ fn run_after_parsing(
         lightmap: lightmap_bake_output,
         shadowmask: shadowmask_atlas_section,
         shadowmask_elapsed,
-        shadowmask_overlap,
     } = fused_lighting;
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
@@ -1861,21 +1861,14 @@ fn run_after_parsing(
     if args.verbose {
         if let Some(ref section) = shadowmask_atlas_section {
             log::info!(
-                "ShadowmaskAtlas: {} cell blocks, {} selected channel entr(y/ies), {} bytes",
+                "ShadowmaskAtlas: {} cell blocks, {} face owner entries, {} bytes",
                 section.blocks.len(),
-                section.channels.len(),
+                section.owners.len(),
                 section.byte_len(),
             );
-        } else if shadowmask_overlap == crate::shadowmask_bake::ShadowmaskOverlapReport::NoSelection
-        {
-            log::info!(
-                "ShadowmaskAtlas: skipped (no selected static lights or no lightmap charts)"
-            );
+        } else {
+            log::info!("ShadowmaskAtlas: skipped (no face admits a mask owner)");
         }
-        crate::shadowmask_bake::log_overlap_report(
-            shadowmask_overlap,
-            shadowmask_atlas_section.as_ref(),
-        );
     }
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);

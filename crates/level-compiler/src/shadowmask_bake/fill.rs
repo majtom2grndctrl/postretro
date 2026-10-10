@@ -1,196 +1,310 @@
-// Shadowmask channel fill over already-assigned selected lights.
-// See: context/lib/build_pipeline.md §PRL section IDs
+// Raw shadowmask fill under per-face ownership: admission, eviction and the
+// mask write as each partition arrives in the fused walk.
+// See: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
 
-use postretro_level_format::shadowmask_atlas_smb6::{
-    SHADOWMASK_CHANNEL_DROPPED, ShadowmaskAtlasSection,
+use std::collections::BTreeMap;
+
+use postretro_level_format::shadowmask_atlas::{
+    FaceOwners, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS, ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
-use crate::lightmap_bake::CellBlock;
-use crate::lightmap_layer::{LayerTexel, LightmapLayer};
-use crate::map_data::MapLight;
+use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
+use crate::lightmap_bake::{CellBlock, light_contribution_and_direction};
+use crate::lightmap_layer::{LightmapLayer, SharedAtlas, for_each_light_layer_chart_texel};
 
-use super::assignment::*;
+use super::SHADOWMASK_FILL_CHECKPOINT_TEXELS;
+use super::eligibility::EligibleLight;
 use super::encode::encode_blocks_bc5;
-use super::{
-    ResidentLayerTracker, SHADOWMASK_FILL_CHECKPOINT_TEXELS, allocate_shadowmask_raw_fill,
-};
+use super::ownership::{Admission, Candidate, DropSite, FaceChannels, OwnerDrop, OwnerReport};
 
-pub(super) fn raw_visibility_is_covered(raw_visibility: f32) -> bool {
-    raw_visibility.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
+/// Raw visibility quantized as the mask stores it, or `None` for a non-finite
+/// value, which neither admits a light nor adds to its contribution.
+pub(super) fn quantize_visibility(raw_visibility: f32) -> Option<u8> {
+    raw_visibility
+        .is_finite()
+        .then(|| (raw_visibility.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
 }
 
-pub(super) struct ShadowmaskFill<'a> {
+/// Which face owns each chart-interior texel of one bake layer. Partitions
+/// arrive layer-major, so one layer's map is live at a time.
+struct LayerFaceMap {
+    layer: Option<u32>,
+    faces: Vec<u32>,
+}
+
+impl LayerFaceMap {
+    const NONE: u32 = u32::MAX;
+
+    fn ensure(&mut self, layer: u32, shared: &SharedAtlas<'_>) {
+        if self.layer == Some(layer) {
+            return;
+        }
+        self.layer = Some(layer);
+        let plane = shared.atlas_width as usize * shared.atlas_height as usize;
+        self.faces.clear();
+        self.faces.resize(plane, Self::NONE);
+        for face in 0..shared.placements.len() {
+            if shared.placements[face].layer != layer {
+                continue;
+            }
+            for_each_light_layer_chart_texel(shared, face, |sample| {
+                self.faces[sample.idx as usize] = face as u32;
+            });
+        }
+    }
+
+    fn face(&self, idx: u32) -> Option<usize> {
+        let face = *self.faces.get(idx as usize)?;
+        (face != Self::NONE).then_some(face as usize)
+    }
+}
+
+pub(super) struct OwnershipFill<'a> {
     width: u32,
     height: u32,
     layer_count: u32,
+    plane: usize,
     /// Cell blocks the encoder slices out of the bake layers, in block order.
     blocks: Vec<CellBlock>,
-    plane: usize,
-    compact_channels: Vec<u8>,
-    channels: Vec<u8>,
+    /// Layer-major, four channels per texel, 0 = occluded. An owned channel
+    /// therefore reads occluded wherever its owner wrote nothing.
     data: RawFillBuffer,
+    /// One per chart: the id-17 face order.
+    faces: Vec<FaceChannels>,
+    drops: Vec<OwnerDrop>,
+    face_map: LayerFaceMap,
     control: Option<&'a BakeControl>,
-    resident_layers: Option<&'a ResidentLayerTracker>,
 }
 
-impl<'a> ShadowmaskFill<'a> {
-    #[allow(clippy::too_many_arguments)]
+impl<'a> OwnershipFill<'a> {
     pub(super) fn new(
-        width: u32,
-        height: u32,
+        shared: &SharedAtlas<'_>,
         layer_count: u32,
-        blocks: &[CellBlock],
-        selected_light_count: usize,
-        selected: &[(usize, u32, &MapLight)],
-        graph: &OverlapGraph,
         control: Option<&'a BakeControl>,
-        resident_layers: Option<&'a ResidentLayerTracker>,
     ) -> Self {
-        Self::new_with_assignment_checkpoint(
-            width,
-            height,
-            layer_count,
-            blocks,
-            selected_light_count,
-            selected,
-            graph,
-            control,
-            resident_layers,
-            || {
-                if let Some(control) = control {
-                    control.governor().checkpoint();
-                }
-            },
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn new_with_assignment_checkpoint(
-        width: u32,
-        height: u32,
-        layer_count: u32,
-        blocks: &[CellBlock],
-        selected_light_count: usize,
-        selected: &[(usize, u32, &MapLight)],
-        graph: &OverlapGraph,
-        control: Option<&'a BakeControl>,
-        resident_layers: Option<&'a ResidentLayerTracker>,
-        assignment_checkpoint: impl FnOnce(),
-    ) -> Self {
-        debug_assert_eq!(selected.len(), graph.light_count());
-        assignment_checkpoint();
-        let assignment = assign_channels_with_drops_controlled(
-            graph,
-            selected,
-            SHADOWMASK_COLOR_SEARCH_NODE_BUDGET,
-            || {
-                if let Some(control) = control {
-                    control.governor().checkpoint();
-                }
-            },
-        );
-        let compact_channels = assignment.channels;
-        if let Some(control) = control.filter(|_| !selected.is_empty()) {
-            control.advance(1);
-        }
-        let mut channels = vec![SHADOWMASK_CHANNEL_DROPPED; selected_light_count];
-        for (compact_index, &(selection_index, _, _)) in selected.iter().enumerate() {
-            if selection_index < channels.len() {
-                channels[selection_index] = compact_channels[compact_index];
-            }
-        }
-        let plane = texel_plane_len(width, height);
+        let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
         let data_len = plane
             .checked_mul(layer_count as usize)
-            .and_then(|texels| texels.checked_mul(4))
+            .and_then(|texels| texels.checked_mul(SHADOWMASK_OWNER_CHANNELS))
             .expect("shadowmask atlas byte count exceeds addressable memory");
-
         Self {
-            width,
-            height,
+            width: shared.atlas_width,
+            height: shared.atlas_height,
             layer_count,
-            blocks: blocks.to_vec(),
             plane,
-            compact_channels,
-            channels,
-            data: allocate_shadowmask_raw_fill(data_len),
+            blocks: shared.layout.blocks.clone(),
+            data: super::allocate_shadowmask_raw_fill(data_len),
+            faces: vec![FaceChannels::default(); shared.charts.len()],
+            drops: Vec::new(),
+            face_map: LayerFaceMap {
+                layer: None,
+                faces: Vec::new(),
+            },
             control,
-            resident_layers,
         }
     }
 
-    pub(super) fn write_partition(
+    /// Rank `light` on every face its partition lights, then write its mask
+    /// values into the channels it holds. The whole partition is summed before
+    /// any face decides, so no admission rests on a partial sum.
+    pub(super) fn consume(
         &mut self,
-        compact_light_index: usize,
+        light: &EligibleLight<'_>,
         partition: &LightmapLayer,
+        shared: &SharedAtlas<'_>,
     ) {
-        let _resident_partition = self.resident_layers.map(ResidentLayerTracker::acquire);
-        self.write_texels(
-            compact_light_index,
-            partition.target_layer,
-            &partition.texels,
-        );
-    }
+        self.face_map.ensure(partition.target_layer, shared);
+        let mut sums: BTreeMap<usize, (u32, f64)> = BTreeMap::new();
+        for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
+            self.checkpoint();
+            for texel in chunk {
+                let Some(face) = self.face_map.face(texel.idx) else {
+                    continue;
+                };
+                let Some(visibility) = quantize_visibility(texel.raw_visibility) else {
+                    continue;
+                };
+                if visibility == 0 {
+                    continue;
+                }
+                let chart = &shared.charts[face];
+                let world_p = texel_world_position(shared, face, texel.idx);
+                let (contribution, _) =
+                    light_contribution_and_direction(light.light, world_p, chart.normal);
+                let sum = sums.entry(face).or_default();
+                sum.0 += 1;
+                sum.1 += f64::from(contribution.x + contribution.y + contribution.z)
+                    * f64::from(visibility)
+                    / 255.0;
+            }
+        }
 
-    pub(super) fn write_texels(
-        &mut self,
-        compact_light_index: usize,
-        target_layer: u32,
-        texels: &[LayerTexel],
-    ) {
-        let channel = self.compact_channels[compact_light_index];
-        if channel == SHADOWMASK_CHANNEL_DROPPED {
+        let mut held: BTreeMap<usize, usize> = BTreeMap::new();
+        for (face, (lit_texels, contribution)) in sums {
+            let candidate = Candidate {
+                spec_index: light.spec_index,
+                lit_texels,
+                contribution,
+                promoted: light.promoted,
+            };
+            match self.faces[face].offer(candidate) {
+                Admission::Admitted { channel, evicted } => {
+                    if let Some(evicted) = evicted {
+                        self.zero_channel(face, channel, shared);
+                        self.note_drop(face, evicted);
+                    }
+                    held.insert(face, channel);
+                }
+                Admission::Rejected => self.note_drop(face, candidate),
+            }
+        }
+        if held.is_empty() {
             return;
         }
-        for chunk in texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
-            if let Some(control) = self.control {
-                control.governor().checkpoint();
-            }
+        let layer_offset = (partition.target_layer as usize)
+            .checked_mul(self.plane)
+            .expect("shadowmask layer offset exceeds addressable memory");
+        for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
+            self.checkpoint();
             for texel in chunk {
-                let global_texel_index = (target_layer as usize)
-                    .checked_mul(self.plane)
-                    .and_then(|offset| offset.checked_add(texel.idx as usize))
-                    .expect("shadowmask global texel index exceeds addressable memory");
-                let offset = shadowmask_data_offset(global_texel_index, channel)
-                    .expect("shadowmask texel byte offset exceeds addressable memory");
-                let visibility = (texel.raw_visibility.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                let Some(face) = self.face_map.face(texel.idx) else {
+                    continue;
+                };
+                let Some(&channel) = held.get(&face) else {
+                    continue;
+                };
+                let Some(visibility) = quantize_visibility(texel.raw_visibility) else {
+                    continue;
+                };
+                let offset =
+                    (layer_offset + texel.idx as usize) * SHADOWMASK_OWNER_CHANNELS + channel;
                 self.data[offset] = visibility;
             }
         }
     }
 
-    /// Encodes the raw fill and drops it before the section exists, so no
-    /// cached or returned section coexists with the raw buffer.
-    pub(super) fn finish(self) -> ShadowmaskAtlasSection {
+    /// Order every face's owners ascending, moving their mask values with them,
+    /// then encode. No face owned means no section.
+    pub(super) fn finish(
+        mut self,
+        shared: &SharedAtlas<'_>,
+    ) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
+        let mut owners: Vec<FaceOwners> = Vec::with_capacity(self.faces.len());
+        let mut any_owner = false;
+        for face in 0..self.faces.len() {
+            let (entry, source) = self.faces[face].ascending_order();
+            if entry != NO_FACE_OWNERS {
+                any_owner = true;
+                self.reorder_channels(face, source, shared);
+            }
+            owners.push(entry);
+        }
+        let mut drops = std::mem::take(&mut self.drops);
+        drops.sort_unstable();
+        let report = OwnerReport {
+            peak_face_demand: self
+                .faces
+                .iter()
+                .map(FaceChannels::candidates)
+                .max()
+                .unwrap_or(0),
+            drops,
+        };
         let Self {
             width,
             height,
             layer_count,
             blocks,
-            channels,
             data: raw,
+            face_map,
             ..
         } = self;
+        drop(face_map);
+        if !any_owner {
+            return (None, report);
+        }
         // Test-only full copy of the raw fill for exact-value assertions. It
         // is not a `RawFillBuffer`, so the residency counters never see it.
         #[cfg(test)]
         super::record_raw_fill(&raw);
         let blocks = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
         drop(raw);
-        ShadowmaskAtlasSection { channels, blocks }
+        (Some(ShadowmaskAtlasSection { owners, blocks }), report)
     }
 
-    #[cfg(test)]
-    pub(super) fn finish_raw(self) -> RawShadowmaskFill {
-        RawShadowmaskFill {
-            width: self.width,
-            height: self.height,
-            layer_count: self.layer_count,
-            channels: self.channels,
-            data: self.data.into_vec(),
+    fn note_drop(&mut self, face: usize, candidate: Candidate) {
+        if candidate.above_floor() {
+            self.drops.push(OwnerDrop {
+                site: DropSite::Face(face as u32),
+                spec_index: candidate.spec_index,
+                lit_texels: candidate.lit_texels,
+            });
         }
     }
+
+    fn checkpoint(&self) {
+        if let Some(control) = self.control {
+            control.governor().checkpoint();
+        }
+    }
+
+    /// Every texel a bilinear tap on `face` can reach: its whole padded chart.
+    fn padded_rect_offsets(
+        &self,
+        face: usize,
+        shared: &SharedAtlas<'_>,
+    ) -> impl Iterator<Item = usize> + use<> {
+        let chart = &shared.charts[face];
+        let placement = shared.placements[face];
+        let (width, plane) = (self.width as usize, self.plane);
+        let (chart_w, chart_h) = (chart.width_texels as usize, chart.height_texels as usize);
+        (0..chart_h).flat_map(move |row| {
+            let start = placement.layer as usize * plane
+                + (placement.y as usize + row) * width
+                + placement.x as usize;
+            (start..start + chart_w).map(|texel| texel * SHADOWMASK_OWNER_CHANNELS)
+        })
+    }
+
+    /// An evicted owner's values leave with it.
+    fn zero_channel(&mut self, face: usize, channel: usize, shared: &SharedAtlas<'_>) {
+        for base in self.padded_rect_offsets(face, shared).collect::<Vec<_>>() {
+            self.data[base + channel] = 0;
+        }
+    }
+
+    fn reorder_channels(
+        &mut self,
+        face: usize,
+        source: [Option<usize>; SHADOWMASK_OWNER_CHANNELS],
+        shared: &SharedAtlas<'_>,
+    ) {
+        if source
+            .iter()
+            .enumerate()
+            .all(|(position, channel)| channel.is_none_or(|channel| channel == position))
+        {
+            return;
+        }
+        for base in self.padded_rect_offsets(face, shared).collect::<Vec<_>>() {
+            let held: [u8; SHADOWMASK_OWNER_CHANNELS] =
+                std::array::from_fn(|channel| self.data[base + channel]);
+            for (position, channel) in source.iter().enumerate() {
+                self.data[base + position] = channel.map_or(0, |channel| held[channel]);
+            }
+        }
+    }
+}
+
+/// World position of the chart-interior texel at bake-layer index `idx`.
+fn texel_world_position(shared: &SharedAtlas<'_>, face: usize, idx: u32) -> glam::Vec3 {
+    let placement = &shared.placements[face];
+    let atlas_x = idx % shared.atlas_width;
+    let atlas_y = idx / shared.atlas_width;
+    let tx = (atlas_x - placement.x - CHART_PADDING_TEXELS) as i32;
+    let ty = (atlas_y - placement.y - CHART_PADDING_TEXELS) as i32;
+    chart_texel_world_position(&shared.charts[face], tx, ty)
 }
 
 /// The raw fill buffer. Test builds count its live bytes when it is dropped,
@@ -204,14 +318,6 @@ impl RawFillBuffer {
         #[cfg(test)]
         super::raw_fill_live_bytes_add(bytes.len());
         Self { bytes }
-    }
-
-    /// Hands the bytes out of the tracked buffer, so they stop counting as
-    /// live raw fill here; `Drop` then sees an empty buffer.
-    #[cfg(test)]
-    fn into_vec(mut self) -> Vec<u8> {
-        super::raw_fill_live_bytes_sub(self.bytes.len());
-        std::mem::take(&mut self.bytes)
     }
 }
 
@@ -236,26 +342,8 @@ impl Drop for RawFillBuffer {
     }
 }
 
-/// The completed fill before encoding: layer-major `Rgba8Unorm`, one mask
-/// slot per channel, 255 fully visible.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RawShadowmaskFill {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) layer_count: u32,
-    pub(super) channels: Vec<u8>,
-    pub(super) data: Vec<u8>,
-}
-
 pub(super) fn texel_plane_len(width: u32, height: u32) -> usize {
     (width as usize)
         .checked_mul(height as usize)
         .expect("shadowmask atlas plane exceeds addressable memory")
-}
-
-pub(super) fn shadowmask_data_offset(global_texel_index: usize, channel: u8) -> Option<usize> {
-    global_texel_index
-        .checked_mul(4)
-        .and_then(|base| base.checked_add(channel as usize))
 }

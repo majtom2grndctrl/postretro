@@ -1,146 +1,201 @@
-// Whole-section shadowmask memo: input hash, cache read/write, and stale-entry validation.
+// Whole-section shadowmask memo: input hash, cache read/write with the drop
+// report, and stale-entry validation.
 // See: context/lib/build_pipeline.md §Build Cache
 
-use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockRecord, LightmapHeader, LightmapMode, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, ShadowmaskOwnerBounds};
 
+use super::eligibility::EligibleLight;
+use super::ownership::{DropSite, LIT_TEXEL_FLOOR, OwnerDrop, OwnerReport};
 #[cfg(test)]
 use super::{
     RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE, SHADOWMASK_STREAMED_CACHE_WRITE_COUNT, raw_fill_live_bytes,
 };
-use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::lightmap_layer::{self, SharedAtlas};
 
 /// Whole-section input hash for the `"shadowmask_atlas"` memo entry.
 ///
-/// The byte layout is fixed and order-sensitive:
-/// `LAYER_FORMAT_VERSION`, selected-light count, selected `AlphaLights` indices,
-/// then every selected `(light, atlas layer)`
-/// `lightmap_layer::layer_input_hash` in selected-light-major, ascending-layer
-/// order, followed by atlas width/height/layer-count. The caller supplies that
-/// exact order; the helper does no sorting.
-pub fn shadowmask_atlas_input_hash(
-    selection: &EntityShadowLightsSection,
+/// Fixed, order-sensitive byte layout: `LAYER_FORMAT_VERSION`, the lit-texel
+/// floor, the face count, the eligible count, then per eligible light (in
+/// ascending spec index) its spec index, its id-40 membership and its
+/// `(light, atlas layer)` layer hashes in ascending layer order, then atlas
+/// width/height/layer-count, then `estimate_params` verbatim. The spec indices
+/// are hashed because inserting a dynamic light shifts them without changing
+/// any layer hash.
+pub(crate) fn shadowmask_atlas_input_hash(
+    eligible: &[EligibleLight<'_>],
     layer_input_hashes: &[[u8; 32]],
+    face_count: usize,
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
+    estimate_params: &[u8],
 ) -> [u8; 32] {
     debug_assert_eq!(
-        selection
-            .light_indices
-            .len()
-            .saturating_mul(layer_count as usize),
+        eligible.len().saturating_mul(layer_count as usize),
         layer_input_hashes.len(),
-        "shadowmask selected light/layer hash slices must align"
+        "eligible light/layer hash slices must align"
     );
-
     let mut hasher = blake3::Hasher::new();
     hasher.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
-    hasher.update(&(selection.light_indices.len() as u32).to_le_bytes());
-    for &alpha_index in &selection.light_indices {
-        hasher.update(&alpha_index.to_le_bytes());
-    }
-    for hash in layer_input_hashes {
-        hasher.update(hash);
+    hasher.update(&LIT_TEXEL_FLOOR.to_le_bytes());
+    hasher.update(&(face_count as u64).to_le_bytes());
+    hasher.update(&(eligible.len() as u32).to_le_bytes());
+    for (light, hashes) in eligible
+        .iter()
+        .zip(layer_input_hashes.chunks(layer_count.max(1) as usize))
+    {
+        hasher.update(&light.spec_index.to_le_bytes());
+        hasher.update(&[u8::from(light.promoted)]);
+        for hash in hashes {
+            hasher.update(hash);
+        }
     }
     hasher.update(&atlas_width.to_le_bytes());
     hasher.update(&atlas_height.to_le_bytes());
     hasher.update(&layer_count.to_le_bytes());
+    hasher.update(&(estimate_params.len() as u32).to_le_bytes());
+    hasher.update(estimate_params);
     *hasher.finalize().as_bytes()
 }
 
-/// Whole-section memo entry: the miss's peak per-texel overlap (`u32` LE),
-/// then the section's wire bytes. The count shares the entry so it can never
-/// be evicted apart from the section it describes.
-pub(super) const MEMO_OVERLAP_PREFIX_BYTES: usize = 4;
-
 pub(super) struct ShadowmaskMemo {
-    pub(super) section: ShadowmaskAtlasSection,
-    pub(super) peak_texel_overlap: u32,
+    pub(super) section: Option<ShadowmaskAtlasSection>,
+    pub(super) report: OwnerReport,
 }
 
-/// A memo entry usable for this selection and atlas, or `None` (logged) when
-/// it is absent, truncated, undecodable or describes another atlas.
+/// Memo entry: the drop report, a presence byte, then (when present) the
+/// section's wire bytes. The report shares the entry so a warm build repeats
+/// the cold build's warnings and can never lose them apart from the section.
+const DROP_RECORD_BYTES: usize = 24;
+
+fn report_bytes(report: &OwnerReport) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + report.drops.len() * DROP_RECORD_BYTES);
+    out.extend_from_slice(&report.peak_face_demand.to_le_bytes());
+    out.extend_from_slice(&(report.drops.len() as u32).to_le_bytes());
+    for drop in &report.drops {
+        let (kind, site, first, last) = match drop.site {
+            DropSite::Face(face) => (0u32, face, face, face),
+            DropSite::CutFace {
+                parent,
+                first_face,
+                last_face,
+            } => (1u32, parent, first_face, last_face),
+        };
+        for word in [
+            kind,
+            site,
+            first,
+            last,
+            u32::from(drop.spec_index),
+            drop.lit_texels,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// The report and the bytes after it, or `None` when the entry is malformed.
+fn parse_report(bytes: &[u8]) -> Option<(OwnerReport, &[u8])> {
+    let word = |bytes: &[u8], at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    };
+    let peak_face_demand = word(bytes, 0)?;
+    let count = word(bytes, 4)? as usize;
+    let end = count.checked_mul(DROP_RECORD_BYTES)?.checked_add(8)?;
+    let records = bytes.get(8..end)?;
+    let mut drops = Vec::with_capacity(count);
+    for record in records.chunks_exact(DROP_RECORD_BYTES) {
+        let w = |i: usize| word(record, i * 4);
+        let site = match w(0)? {
+            0 => DropSite::Face(w(1)?),
+            1 => DropSite::CutFace {
+                parent: w(1)?,
+                first_face: w(2)?,
+                last_face: w(3)?,
+            },
+            _ => return None,
+        };
+        drops.push(OwnerDrop {
+            site,
+            spec_index: u16::try_from(w(4)?).ok()?,
+            lit_texels: w(5)?,
+        });
+    }
+    Some((
+        OwnerReport {
+            peak_face_demand,
+            drops,
+        },
+        &bytes[end..],
+    ))
+}
+
+/// A memo entry usable for this atlas and owner bounds, or `None` (logged)
+/// when it is absent, truncated, or undecodable.
 pub(super) fn read_shadowmask_memo(
     cache: &StageCache,
     key: &CacheKey,
-    selection: &EntityShadowLightsSection,
     shared: &SharedAtlas<'_>,
+    bounds: ShadowmaskOwnerBounds,
 ) -> Option<ShadowmaskMemo> {
     let bytes = cache.get(key)?;
-    let Some((prefix, section_bytes)) = bytes.split_first_chunk::<MEMO_OVERLAP_PREFIX_BYTES>()
-    else {
-        log::warn!(
-            "[Compiler] corrupt shadowmask atlas, re-baking: memo entry has no overlap count"
-        );
+    let Some((report, rest)) = parse_report(&bytes) else {
+        log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: memo entry has no drop report");
         return None;
     };
-    let section = match ShadowmaskAtlasSection::from_bytes(section_bytes, &extent_index(shared)) {
-        Ok(section) => section,
-        Err(err) => {
-            log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: {err}");
+    let section = match rest.split_first() {
+        Some((0, [])) => None,
+        Some((1, section_bytes)) => {
+            match ShadowmaskAtlasSection::from_bytes(section_bytes, &extent_index(shared), bounds) {
+                Ok(section) => Some(section),
+                Err(err) => {
+                    log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: {err}");
+                    return None;
+                }
+            }
+        }
+        _ => {
+            log::warn!("[Compiler] corrupt shadowmask atlas, re-baking: bad presence byte");
             return None;
         }
     };
-    if let Err(reason) = validate_cached_shadowmask_section(&section, selection) {
-        log::warn!(
-            "[Compiler] shadowmask_atlas cache entry does not match current atlas ({reason}), re-baking"
-        );
-        return None;
-    }
-    Some(ShadowmaskMemo {
-        section,
-        peak_texel_overlap: u32::from_le_bytes(*prefix),
-    })
+    Some(ShadowmaskMemo { section, report })
 }
 
-pub(super) fn cache_shadowmask_section_then_complete(
+/// Store the report and section as one entry, streaming the section's own
+/// byte order with no second contiguous copy of the payload.
+pub(super) fn cache_shadowmask_section(
     cache: &StageCache,
     section_key: &CacheKey,
-    section: &ShadowmaskAtlasSection,
-    peak_texel_overlap: u32,
-    control: &BakeControl,
-    has_valid_selection: bool,
-    after_cache_write: impl FnOnce(),
+    section: Option<&ShadowmaskAtlasSection>,
+    report: &OwnerReport,
 ) {
-    let section_index = section.index_bytes();
-
+    let report = report_bytes(report);
     #[cfg(test)]
     {
         SHADOWMASK_STREAMED_CACHE_WRITE_COUNT.with(|count| count.set(count.get() + 1));
         RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE
             .with(|at_write| at_write.set(Some(raw_fill_live_bytes())));
     }
-    let entry_len = MEMO_OVERLAP_PREFIX_BYTES + section.byte_len();
-    // The index, then each block's groups: the section's own byte order, with
-    // no second contiguous copy of the payload.
+    let entry_len = report.len() + 1 + section.map_or(0, ShadowmaskAtlasSection::byte_len);
     cache.put_streamed(section_key, entry_len as u64, |writer| {
-        writer.write_all(&peak_texel_overlap.to_le_bytes())?;
-        writer.write_all(&section_index)?;
+        writer.write_all(&report)?;
+        let Some(section) = section else {
+            return writer.write_all(&[0]);
+        };
+        writer.write_all(&[1])?;
+        writer.write_all(&section.index_bytes())?;
         for [group_a, group_b] in &section.blocks {
             writer.write_all(group_a)?;
             writer.write_all(group_b)?;
         }
         Ok(())
     });
-    after_cache_write();
-    if has_valid_selection {
-        // Keep the final fill unit pending through whole-section memo storage.
-        control.advance(1);
-    }
-}
-
-pub(super) fn invalid_selected_light_hash(alpha_index: u32, target_layer: u32) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"shadowmask_atlas_invalid_selected_alpha_light");
-    hasher.update(&alpha_index.to_le_bytes());
-    hasher.update(&target_layer.to_le_bytes());
-    *hasher.finalize().as_bytes()
 }
 
 /// The id-22 index the memo's id-42 parse checks group lengths against. The
@@ -169,20 +224,4 @@ pub(super) fn extent_index(shared: &SharedAtlas<'_>) -> LightmapBlockIndex {
             })
             .collect(),
     }
-}
-
-/// Block count and group extents are already checked by the parse against
-/// [`extent_index`]; what remains is the selection the section was built for.
-fn validate_cached_shadowmask_section(
-    section: &ShadowmaskAtlasSection,
-    selection: &EntityShadowLightsSection,
-) -> Result<(), String> {
-    if section.channels.len() != selection.light_indices.len() {
-        return Err(format!(
-            "channel count {} != selected light count {}",
-            section.channels.len(),
-            selection.light_indices.len()
-        ));
-    }
-    Ok(())
 }

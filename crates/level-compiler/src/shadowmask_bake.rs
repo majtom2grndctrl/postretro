@@ -1,74 +1,54 @@
-// Per-light shadowmask bake for selected static entity-shadow lights.
-// Governing context: context/lib/build_pipeline.md
+// Per-face owner shadowmask bake for owner-eligible static lights, fused into
+// the lightmap walk.
+// Governing context: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use glam::DVec3;
-use rayon::prelude::*;
-
-use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
-use postretro_level_format::shadowmask_atlas_smb6::{
-    SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection,
+use postretro_level_format::shadowmask_atlas::{
+    SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
 };
 
 use crate::bake_control::BakeControl;
-use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
-use crate::geometry::GeometryResult;
-use crate::light_namespaces::AlphaLightsNs;
+use crate::lightmap_bake;
 use crate::lightmap_layer::{self, LightmapLayer, SharedAtlas};
-use crate::map_data::{LightType, MapLight};
-use crate::{affinity_grid, lightmap_bake};
 
-mod analytic_graph;
-mod assignment;
+mod eligibility;
 mod encode;
 mod fill;
 mod memo;
-mod partitions;
-mod section;
-mod standalone;
+mod ownership;
 
-#[cfg(test)]
-pub(crate) use encode::decode_blocks_to_layers;
-
-use analytic_graph::*;
-use assignment::*;
-use fill::*;
-pub use memo::shadowmask_atlas_input_hash;
-use memo::{
-    cache_shadowmask_section_then_complete, invalid_selected_light_hash, read_shadowmask_memo,
+pub(crate) use eligibility::{
+    EligibleLight, MAX_STATIC_SPEC_LIGHTS, owner_eligible_lights, static_spec_light_count,
 };
-use partitions::{fill_cached_shadowmask_partitions, fill_uncached_shadowmask_partitions};
-pub use section::bake_shadowmask_atlas_from_layers;
-use section::{empty_section_for_selection, layer_count_from_shared};
-use standalone::*;
-pub use standalone::{bake_shadowmask_atlas, bake_shadowmask_atlas_cached};
+use fill::*;
+pub(crate) use memo::shadowmask_atlas_input_hash;
+use memo::{cache_shadowmask_section, read_shadowmask_memo};
+pub(crate) use ownership::{OwnerReport, log_owner_report};
 
 pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
-/// hash change: channel assignment/drop policy, raw-visibility quantization,
+/// hash change: owner admission or ranking, raw-visibility quantization,
 /// payload encoding (BC5 groups, per-block BC4 mode choice), memo entry
-/// layout (the peak-overlap prefix), empty-section behavior, or
-/// `ShadowmaskAtlasSection::to_bytes` payload semantics.
+/// layout (the drop-report prefix), or `ShadowmaskAtlasSection::to_bytes`
+/// payload semantics.
 ///
 /// v5: `SMB6`, one pair of BC5 group planes per lightmap cell block.
 ///
-/// v6: raw visibility follows the chart-local soft-visibility seeds. The key
-/// also folds `LAYER_FORMAT_VERSION`, whose bump already misses old memos;
-/// this one marks the stage's own output change.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 6;
+/// v6: raw visibility follows the chart-local soft-visibility seeds.
+///
+/// v7: `SMB7` per-face owners ranked in the walk; the entry carries the drop
+/// report.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 7;
 
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
-/// texture dimension. The old whole-layer omission rule (id 42 dropped when
-/// the lightmap layer could not double) cannot trigger any more: the
-/// oversize-face cut and cell packing bound every block by the pool layer
-/// edge, and the doubled pool layer fits by construction.
+/// texture dimension. The oversize-face cut and cell packing bound every block
+/// by the pool layer edge, so the doubled pool layer fits by construction.
 pub(crate) const MAX_SHADOWMASK_TEXTURE_WIDTH: u32 = lightmap_bake::MAX_ATLAS_DIMENSION;
 
 const _: () =
@@ -81,28 +61,39 @@ pub(crate) enum ShadowmaskBakeError {
          BC5 encodes 4x4 blocks and would truncate the payload"
     )]
     MisalignedAtlas { width: u32, height: u32 },
+    #[error(
+        "the level has {count} static spec lights, more than the {max} a shadowmask owner \
+         index can name; make some of them dynamic or remove them"
+    )]
+    TooManyStaticSpecLights { count: usize, max: usize },
 }
 
-/// Maximum selected-light count in one governed chart batch. Each light's raw
-/// chart buffers collectively carry one full layer payload, so the batch must
-/// never widen beyond this residency window.
-const SHADOWMASK_RESIDENT_LAYER_WINDOW: usize = 4;
+/// Fails before any lightmap bake work when the level's compact static
+/// spec-light count overflows the u16 owner index.
+pub(crate) fn check_owner_index_capacity(
+    static_spec_light_count: usize,
+) -> Result<(), ShadowmaskBakeError> {
+    if static_spec_light_count > MAX_STATIC_SPEC_LIGHTS {
+        return Err(ShadowmaskBakeError::TooManyStaticSpecLights {
+            count: static_spec_light_count,
+            max: MAX_STATIC_SPEC_LIGHTS,
+        });
+    }
+    Ok(())
+}
 
 /// Fill checks the cooperative pause gate at this cadence without consuming a
 /// governor permit; chart work remains the only governed parallel level.
 const SHADOWMASK_FILL_CHECKPOINT_TEXELS: usize = 1024;
 
-/// Shadowmask state prepared before the fused lightmap walk. A section-cache
-/// hit carries the finished section and requests no partitions. A miss owns an
-/// already-colored fill buffer, so each partition can be consumed directly
-/// while the lightmap fold still has it resident.
+/// Shadowmask state prepared before the fused lightmap walk. A memo hit, or a
+/// level with nothing to own, carries its finished outcome and requests no
+/// partitions. A miss owns an empty fill that ranks each eligible light's
+/// partition while the lightmap fold still has it resident.
 pub(crate) struct FusedShadowmaskPlan<'a> {
-    section: Option<ShadowmaskAtlasSection>,
-    overlap: ShadowmaskOverlapReport,
-    fill: Option<ShadowmaskFill<'a>>,
-    /// The miss's graph peak, stored beside the section in the memo entry.
-    peak_texel_overlap: u32,
-    compact_index_by_source: HashMap<usize, usize>,
+    outcome: Option<(Option<ShadowmaskAtlasSection>, OwnerReport)>,
+    fill: Option<OwnershipFill<'a>>,
+    eligible_by_source: HashMap<usize, EligibleLight<'a>>,
     cache_write: Option<(&'a StageCache, CacheKey)>,
     control: &'a BakeControl,
     work_elapsed: Duration,
@@ -110,115 +101,83 @@ pub(crate) struct FusedShadowmaskPlan<'a> {
 
 impl FusedShadowmaskPlan<'_> {
     pub(crate) fn needs_source(&self, source_index: usize) -> bool {
-        self.fill.is_some() && self.compact_index_by_source.contains_key(&source_index)
+        self.fill.is_some() && self.eligible_by_source.contains_key(&source_index)
     }
 
-    pub(crate) fn consume_partition(&mut self, source_index: usize, partition: &LightmapLayer) {
+    pub(crate) fn consume_partition(
+        &mut self,
+        source_index: usize,
+        partition: &LightmapLayer,
+        shared: &SharedAtlas<'_>,
+    ) {
         let Some(fill) = self.fill.as_mut() else {
             return;
         };
-        let Some(&compact_index) = self.compact_index_by_source.get(&source_index) else {
+        let Some(light) = self.eligible_by_source.get(&source_index) else {
             return;
         };
         let started = Instant::now();
-        fill.write_partition(compact_index, partition);
+        fill.consume(light, partition, shared);
+        self.control.advance(1);
         self.work_elapsed += started.elapsed();
     }
 
-    pub(crate) fn finish(mut self) -> FusedShadowmaskOutput {
+    pub(crate) fn finish(mut self, shared: &SharedAtlas<'_>) -> FusedShadowmaskOutput {
         let started = Instant::now();
-        if let Some(fill) = self.fill.take() {
-            let section = fill.finish();
-            if let Some((cache, key)) = self.cache_write.take() {
-                cache_shadowmask_section_then_complete(
-                    cache,
-                    &key,
-                    &section,
-                    self.peak_texel_overlap,
-                    self.control,
-                    true,
-                    || {},
-                );
-            } else {
+        let (section, report) = match (self.outcome.take(), self.fill.take()) {
+            (Some(outcome), _) => outcome,
+            (None, Some(fill)) => {
+                let (section, report) = fill.finish(shared);
+                if let Some((cache, key)) = self.cache_write.take() {
+                    cache_shadowmask_section(cache, &key, section.as_ref(), &report);
+                }
                 self.control.advance(1);
+                (section, report)
             }
-            self.section = Some(section);
-        }
+            (None, None) => (None, OwnerReport::default()),
+        };
         self.work_elapsed += started.elapsed();
         FusedShadowmaskOutput {
-            section: self.section,
+            section,
+            report,
             elapsed: self.work_elapsed,
-            overlap: self.overlap,
         }
     }
 }
 
 pub(crate) struct FusedShadowmaskOutput {
     pub(crate) section: Option<ShadowmaskAtlasSection>,
+    pub(crate) report: OwnerReport,
     pub(crate) elapsed: Duration,
-    pub(crate) overlap: ShadowmaskOverlapReport,
 }
 
-/// What `--verbose` reports about per-texel mask overlap for one bake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShadowmaskOverlapReport {
-    /// No selected static light: no section and nothing measured.
-    NoSelection,
-    /// Most selected lights covering one texel, from this bake's graph or the
-    /// memo entry that graph produced.
-    Peak(u32),
-}
-
-/// The `--verbose` overlap line. The mask-capacity decision reads this number;
-/// nothing in the bake acts on it.
-pub(crate) fn log_overlap_report(
-    report: ShadowmaskOverlapReport,
-    section: Option<&ShadowmaskAtlasSection>,
-) {
-    if let (ShadowmaskOverlapReport::Peak(peak), Some(section)) = (report, section) {
-        log::info!(
-            "[ShadowmaskAtlas] peak per-texel overlap: {peak} selected light(s) at one texel; \
-             {} cell block(s), BC5 .rg in {} groups ({} slots)",
-            section.blocks.len(),
-            SHADOWMASK_GROUP_COUNT,
-            SHADOWMASK_GROUP_COUNT * 2,
-        );
-    }
-}
-
-/// Probe the whole shadowmask memo and, on a miss, complete analytic overlap
-/// graph construction plus deterministic channel assignment before the fused
-/// lightmap walk begins. No visibility ray is traced here.
-#[allow(clippy::too_many_arguments)]
+/// Probe the whole shadowmask memo and, on a miss, set up the empty owner fill
+/// the fused walk ranks partitions into. No visibility ray is traced here.
+///
+/// `eligible_layer_hashes` holds each eligible light's `layer_count` layer
+/// hashes in ascending layer order, light-major, and is empty without a cache.
 pub(crate) fn prepare_fused_shadowmask<'a>(
-    selection: Option<&EntityShadowLightsSection>,
-    alpha_lights: &'a AlphaLightsNs<'a>,
+    eligible: Vec<EligibleLight<'a>>,
+    eligible_layer_hashes: &[[u8; 32]],
+    static_spec_light_count: usize,
+    layer_count: u32,
     shared: &SharedAtlas<'_>,
-    primitives: &[BvhPrimitive],
-    geometry: &GeometryResult,
-    lightmap_density: f32,
-    area_sample_count: u32,
     cache: Option<&'a StageCache>,
     control: &'a BakeControl,
 ) -> Result<FusedShadowmaskPlan<'a>, ShadowmaskBakeError> {
     let started = Instant::now();
-    let no_section = |started: Instant, overlap| FusedShadowmaskPlan {
-        section: None,
-        overlap,
+    let finished = |outcome, eligible_by_source| FusedShadowmaskPlan {
+        outcome: Some(outcome),
         fill: None,
-        peak_texel_overlap: 0,
-        compact_index_by_source: HashMap::new(),
+        eligible_by_source,
         cache_write: None,
         control,
         work_elapsed: started.elapsed(),
     };
-    let Some(selection) = selection.filter(|selection| !selection.light_indices.is_empty()) else {
-        return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
-    };
-    // No placed chart means no lightmap texel for a mask to cover. The empty-
+    // No eligible light, or no placed chart, means nothing to own. The empty-
     // geometry atlas is 1×1 and would otherwise fail the alignment check.
-    if shared.placements.is_empty() {
-        return Ok(no_section(started, ShadowmaskOverlapReport::NoSelection));
+    if eligible.is_empty() || shared.placements.is_empty() {
+        return Ok(finished((None, OwnerReport::default()), HashMap::new()));
     }
     if !shared.atlas_width.is_multiple_of(4) || !shared.atlas_height.is_multiple_of(4) {
         return Err(ShadowmaskBakeError::MisalignedAtlas {
@@ -226,46 +185,19 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             height: shared.atlas_height,
         });
     }
-    let layer_count = layer_count_from_shared(shared);
-    let mut selected = Vec::with_capacity(selection.light_indices.len());
-    let mut compact_index_by_source = HashMap::new();
-    // The layer keys feed only the memo key, so an uncached bake hashes nothing.
-    let key_context = cache.map(|_| {
-        lightmap_layer::LayerKeyContext::new(shared, geometry, lightmap_density, area_sample_count)
-    });
-    let mut layer_input_hashes = Vec::new();
-    for (selection_index, &alpha_index) in selection.light_indices.iter().enumerate() {
-        let Some(entry) = alpha_lights.entries().get(alpha_index as usize) else {
-            log::warn!(
-                "[ShadowmaskAtlas] selected AlphaLights index {alpha_index} is out of range; marking dropped"
-            );
-            if key_context.is_some() {
-                for target_layer in 0..layer_count {
-                    layer_input_hashes.push(invalid_selected_light_hash(alpha_index, target_layer));
-                }
-            }
-            continue;
-        };
-        compact_index_by_source.insert(entry.source_index, selected.len());
-        selected.push((selection_index, alpha_index, entry.light));
-        if let Some(context) = &key_context {
-            let prefix = context.light_prefix(entry.light, primitives, geometry);
-            for target_layer in 0..layer_count {
-                layer_input_hashes.push(lightmap_layer::LayerKeyContext::layer_hash(
-                    &prefix,
-                    target_layer,
-                ));
-            }
-        }
-    }
-
+    let bounds = ShadowmaskOwnerBounds {
+        face_count: shared.charts.len() as u32,
+        static_spec_light_count: static_spec_light_count as u32,
+    };
     let section_key = cache.map(|_| {
         let input_hash = shadowmask_atlas_input_hash(
-            selection,
-            &layer_input_hashes,
+            &eligible,
+            eligible_layer_hashes,
+            shared.charts.len(),
             shared.atlas_width,
             shared.atlas_height,
             layer_count,
+            &[],
         );
         CacheKey::new(
             SHADOWMASK_ATLAS_STAGE_ID,
@@ -273,22 +205,23 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             &input_hash,
         )
     });
-
-    let fused_total = if selected.is_empty() {
-        0
-    } else {
-        shared.placements.len().saturating_add(2)
-    };
-    if fused_total != 0 {
-        control.publish_total(fused_total);
-    }
+    // One unit per eligible partition the walk ranks, plus the encode.
+    let total = eligible
+        .len()
+        .saturating_mul(layer_count as usize)
+        .saturating_add(1);
+    control.publish_total(total);
+    let eligible_by_source: HashMap<usize, EligibleLight<'a>> = eligible
+        .iter()
+        .map(|light| (light.source_index, *light))
+        .collect();
 
     if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
-        if let Some(memo) = read_shadowmask_memo(cache, key, selection, shared) {
+        if let Some(memo) = read_shadowmask_memo(cache, key, shared, bounds) {
             log::info!("[cache] shadowmask_atlas hit");
-            // The memo stands in for the selected partitions it summarizes;
+            // The memo stands in for the eligible partitions it summarizes;
             // the next prune must keep them as the fallback for a light edit.
-            for hash in &layer_input_hashes {
+            for hash in eligible_layer_hashes {
                 cache.mark_used(&CacheKey::new(
                     "lightmap_layer",
                     lightmap_layer::LAYER_FORMAT_VERSION,
@@ -296,58 +229,16 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
                 ));
             }
             control.governor().checkpoint();
-            control.advance(fused_total);
-            return Ok(FusedShadowmaskPlan {
-                section: Some(memo.section),
-                overlap: ShadowmaskOverlapReport::Peak(memo.peak_texel_overlap),
-                fill: None,
-                peak_texel_overlap: 0,
-                compact_index_by_source,
-                cache_write: None,
-                control,
-                work_elapsed: started.elapsed(),
-            });
+            control.advance(total);
+            return Ok(finished((memo.section, memo.report), eligible_by_source));
         }
         log::info!("[cache] shadowmask_atlas miss");
     }
 
-    if selected.is_empty() {
-        // No valid selected light covers anything: the peak is zero.
-        let section = empty_section_for_selection(shared, selection.light_indices.len());
-        if let (Some(cache), Some(key)) = (cache, section_key.as_ref()) {
-            cache_shadowmask_section_then_complete(cache, key, &section, 0, control, false, || {});
-        }
-        return Ok(FusedShadowmaskPlan {
-            section: Some(section),
-            overlap: ShadowmaskOverlapReport::Peak(0),
-            fill: None,
-            peak_texel_overlap: 0,
-            compact_index_by_source,
-            cache_write: None,
-            control,
-            work_elapsed: started.elapsed(),
-        });
-    }
-
-    let graph = build_analytic_overlap_graph(&selected, shared, geometry, control);
-    let fill = ShadowmaskFill::new(
-        shared.atlas_width,
-        shared.atlas_height,
-        layer_count,
-        &shared.layout.blocks,
-        selection.light_indices.len(),
-        &selected,
-        &graph,
-        Some(control),
-        None,
-    );
-    let peak_texel_overlap = graph.peak_texel_overlap();
     Ok(FusedShadowmaskPlan {
-        section: None,
-        overlap: ShadowmaskOverlapReport::Peak(peak_texel_overlap),
-        fill: Some(fill),
-        peak_texel_overlap,
-        compact_index_by_source,
+        outcome: None,
+        fill: Some(OwnershipFill::new(shared, layer_count, Some(control))),
+        eligible_by_source,
         cache_write: cache.zip(section_key),
         control,
         work_elapsed: started.elapsed(),
@@ -391,11 +282,12 @@ fn take_last_raw_fill() -> Vec<u8> {
         .expect("a shadowmask fill must have finished on this thread")
 }
 
-/// Allocates the pre-encode raw fill, initialized fully visible.
+/// Allocates the pre-encode raw fill, initialized occluded: an owned channel
+/// reads zero wherever its owner wrote nothing, padding included.
 fn allocate_shadowmask_raw_fill(data_len: usize) -> RawFillBuffer {
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
-    RawFillBuffer::new(vec![255; data_len])
+    RawFillBuffer::new(vec![0; data_len])
 }
 
 #[cfg(test)]
@@ -414,14 +306,14 @@ fn raw_fill_live_bytes() -> usize {
 }
 
 #[cfg(test)]
-fn reset_shadowmask_output_allocation_count() {
+pub(crate) fn reset_shadowmask_output_allocation_count() {
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(0));
 }
 
 /// Section payload allocations on this thread: a raw fill, or the encoded
 /// payload of an empty section, which has no raw fill.
 #[cfg(test)]
-fn shadowmask_output_allocation_count() -> usize {
+pub(crate) fn shadowmask_output_allocation_count() -> usize {
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(std::cell::Cell::get)
 }
 

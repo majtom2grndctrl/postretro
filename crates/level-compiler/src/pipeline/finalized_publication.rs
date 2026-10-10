@@ -34,7 +34,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 
 use super::cell_partition::CellPartitionPlan;

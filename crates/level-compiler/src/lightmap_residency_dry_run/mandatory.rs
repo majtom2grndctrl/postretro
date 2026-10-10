@@ -190,22 +190,8 @@ pub(crate) struct MandatoryBytes {
     pub texel_exact: f64,
     /// `texel_exact` with each chart interior halved per axis.
     pub half_res: f64,
-    /// `(texel_exact, half_res)` with an omitted-for-width id 42 restored;
-    /// `None` unless the level omitted id 42 for width.
-    pub with_omitted_mask: Option<(f64, f64)>,
     /// Distinct layers touched × their bytes, one entry per layout.
     pub layer: Vec<u64>,
-}
-
-impl MandatoryBytes {
-    /// Texel-exact bytes with id 42 charged whenever the level selects shadow
-    /// lights: the restored-mask column when the bake omitted id 42 for width. Blocks and tiles narrow enough to double charge id 42 the
-    /// same way (`AtlasFormats::layer_carries_shadowmask`), so this is the
-    /// matching denominator for them.
-    pub(crate) fn texel_exact_charging_mask(&self) -> f64 {
-        self.with_omitted_mask
-            .map_or(self.texel_exact, |(texel_exact, _)| texel_exact)
-    }
 }
 
 /// Per-cell chart areas and the combined id 22 + id 42 byte rate.
@@ -213,7 +199,6 @@ pub(crate) struct CellFootprint {
     pub area: Vec<u64>,
     pub half_area: Vec<u64>,
     pub bytes_per_texel: f64,
-    pub omitted_mask_bytes_per_texel: Option<f64>,
 }
 
 impl CellFootprint {
@@ -228,7 +213,6 @@ impl CellFootprint {
             area,
             half_area,
             bytes_per_texel: input.formats.bytes_per_texel(),
-            omitted_mask_bytes_per_texel: input.formats.omitted_shadowmask_bytes_per_texel(),
         }
     }
 }
@@ -262,10 +246,6 @@ pub(crate) fn mandatory_bytes(
         cell_count: set.len(),
         texel_exact: area as f64 * footprint.bytes_per_texel,
         half_res: half_area as f64 * footprint.bytes_per_texel,
-        with_omitted_mask: footprint.omitted_mask_bytes_per_texel.map(|mask| {
-            let rate = footprint.bytes_per_texel + mask;
-            (area as f64 * rate, half_area as f64 * rate)
-        }),
         layer,
     }
 }

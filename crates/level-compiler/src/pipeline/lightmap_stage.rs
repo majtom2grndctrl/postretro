@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bvh::bvh::Bvh;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
-use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
 use crate::Args;
 use crate::bake_control::BakeControl;
@@ -36,7 +36,6 @@ pub(crate) struct FusedLightingOutput {
     pub lightmap: LightmapBakeOutput,
     pub shadowmask: Option<ShadowmaskAtlasSection>,
     pub shadowmask_elapsed: Duration,
-    pub shadowmask_overlap: shadowmask_bake::ShadowmaskOverlapReport,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -96,6 +95,7 @@ pub(crate) fn bake_fused_prepared(
     static_lights: &StaticBakedLights<'_>,
     alpha_lights: &AlphaLightsNs<'_>,
     shadow_selection: Option<&EntityShadowLightsSection>,
+    light_source_labels: &[String],
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
@@ -110,6 +110,7 @@ pub(crate) fn bake_fused_prepared(
         static_lights,
         alpha_lights,
         shadow_selection,
+        light_source_labels,
         bvh,
         primitives,
         config,
@@ -128,12 +129,16 @@ pub(crate) fn bake_fused_windowed(
     static_lights: &StaticBakedLights<'_>,
     alpha_lights: &AlphaLightsNs<'_>,
     shadow_selection: Option<&EntityShadowLightsSection>,
+    light_source_labels: &[String],
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
     window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
+    // An owner index past u16 fails the build before any lightmap work.
+    let static_spec_light_count = shadowmask_bake::static_spec_light_count(alpha_lights);
+    shadowmask_bake::check_owner_index_capacity(static_spec_light_count)?;
     let density = config.lightmap_density;
     let shared = SharedAtlas {
         charts: &prepared.charts,
@@ -142,26 +147,83 @@ pub(crate) fn bake_fused_windowed(
         atlas_height: prepared.atlas_height,
         layout: &prepared.layout,
     };
-    // P1: the shadowmask whole-section memo and channel assignment are both
-    // resolved before the lightmap memo can choose to skip the walk.
+    let layer_lights: Vec<_> = static_lights
+        .entries()
+        .iter()
+        .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
+        .collect();
+    // Partition keys feed only the cache, so an uncached bake hashes nothing.
+    let layer_input_hashes = if stage_cache.is_some() && !prepared.placements.is_empty() {
+        layer_key_hashes(
+            &layer_lights,
+            &shared,
+            primitives,
+            geometry,
+            density,
+            args.soft_shadow_samples,
+            prepared.layer_count,
+            lightmap_control,
+        )
+    } else {
+        Vec::new()
+    };
+    let eligible =
+        shadowmask_bake::owner_eligible_lights(static_lights, alpha_lights, shadow_selection);
+    let label_source: std::collections::HashMap<u16, usize> = eligible
+        .iter()
+        .map(|light| (light.spec_index, light.source_index))
+        .collect();
+    // Each eligible light's layer hashes, light-major, out of the layer-major
+    // partition keys. Every eligible light is a layer light.
+    let eligible_layer_hashes: Vec<[u8; 32]> = if layer_input_hashes.is_empty() {
+        Vec::new()
+    } else {
+        eligible
+            .iter()
+            .flat_map(|light| {
+                let position = layer_lights
+                    .iter()
+                    .position(|entry| entry.source_index == light.source_index)
+                    .expect("an owner-eligible light is a layer light");
+                let lights = layer_lights.len();
+                let hashes = &layer_input_hashes;
+                (0..prepared.layer_count as usize)
+                    .map(move |layer| hashes[layer * lights + position])
+            })
+            .collect()
+    };
+    // The shadowmask memo resolves before the lightmap memo can choose to skip
+    // the walk; on a miss, ownership is decided inside the walk.
     let mut shadowmask = shadowmask_bake::prepare_fused_shadowmask(
-        shadow_selection,
-        alpha_lights,
+        eligible,
+        &eligible_layer_hashes,
+        static_spec_light_count,
+        prepared.layer_count,
         &shared,
-        primitives,
-        geometry,
-        density,
-        args.soft_shadow_samples,
         stage_cache,
         shadowmask_control,
     )?;
+    let log_report = |report: &shadowmask_bake::OwnerReport| {
+        shadowmask_bake::log_owner_report(
+            report,
+            |spec_index| {
+                label_source
+                    .get(&spec_index)
+                    .and_then(|&source| light_source_labels.get(source))
+                    .cloned()
+                    .unwrap_or_else(|| format!("static light {spec_index}"))
+            },
+            args.verbose,
+        )
+    };
 
     if static_lights.is_empty() || prepared.placements.is_empty() {
         let shadowmask_bake::FusedShadowmaskOutput {
             section: shadowmask,
+            report: shadowmask_report,
             elapsed: shadowmask_elapsed,
-            overlap: shadowmask_overlap,
-        } = shadowmask.finish();
+        } = shadowmask.finish(&shared);
+        log_report(&shadowmask_report);
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
                 section: postretro_level_format::lightmap::LightmapSection::empty(
@@ -176,33 +238,12 @@ pub(crate) fn bake_fused_windowed(
             },
             shadowmask,
             shadowmask_elapsed,
-            shadowmask_overlap,
         });
     }
 
-    let layer_lights: Vec<_> = static_lights
-        .entries()
-        .iter()
-        .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
-        .collect();
     let total = prepared.placements.len().saturating_mul(layer_lights.len());
     lightmap_control.publish_total(total);
 
-    // Partition keys feed only the cache, so an uncached bake hashes nothing.
-    let layer_input_hashes = if stage_cache.is_some() {
-        layer_key_hashes(
-            &layer_lights,
-            &shared,
-            primitives,
-            geometry,
-            density,
-            args.soft_shadow_samples,
-            prepared.layer_count,
-            lightmap_control,
-        )
-    } else {
-        Vec::new()
-    };
     let section_key = stage_cache.map(|_| {
         let input_hash = lightmap_layer::section_input_hash(
             &layer_input_hashes,
@@ -347,7 +388,7 @@ pub(crate) fn bake_fused_windowed(
                     let entry = layer_lights[light];
                     let (_, accumulator) = open.as_mut().expect("a layer accumulator is open");
                     accumulator.fold_partition(entry.light, &partition, &shared);
-                    shadowmask.consume_partition(entry.source_index, &partition);
+                    shadowmask.consume_partition(entry.source_index, &partition, &shared);
                 },
                 #[cfg(test)]
                 window.probe.clone(),
@@ -363,7 +404,7 @@ pub(crate) fn bake_fused_windowed(
     };
 
     // If the lightmap memo hit but the shadowmask memo missed, consume only the
-    // selected partitions. They are read/baked once here and never by a later
+    // owner-eligible partitions. They are read/baked once here and never by a later
     // pipeline stage.
     if !compose_lightmap {
         let items: Vec<(u32, usize)> = (0..prepared.layer_count)
@@ -400,12 +441,12 @@ pub(crate) fn bake_fused_windowed(
                     hook(item);
                 }
                 let (_, light) = items[item];
-                shadowmask.consume_partition(layer_lights[light].source_index, &partition);
+                shadowmask.consume_partition(layer_lights[light].source_index, &partition, &shared);
             },
             #[cfg(test)]
             window.probe.clone(),
         );
-        // This pass consumes only shadowmask-selected partitions, so the rest
+        // This pass consumes only owner-eligible partitions, so the rest
         // of the published `total` is completed here to leave progress at 100%.
         if completed_work < total {
             lightmap_control.advance(total - completed_work);
@@ -417,9 +458,10 @@ pub(crate) fn bake_fused_windowed(
     }
     let shadowmask_bake::FusedShadowmaskOutput {
         section: shadowmask,
+        report: shadowmask_report,
         elapsed: shadowmask_elapsed,
-        overlap: shadowmask_overlap,
-    } = shadowmask.finish();
+    } = shadowmask.finish(&shared);
+    log_report(&shadowmask_report);
     Ok(FusedLightingOutput {
         lightmap: LightmapBakeOutput {
             section,
@@ -432,7 +474,6 @@ pub(crate) fn bake_fused_windowed(
         },
         shadowmask,
         shadowmask_elapsed,
-        shadowmask_overlap,
     })
 }
 

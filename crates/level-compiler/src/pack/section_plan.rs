@@ -209,22 +209,23 @@ pub(super) fn build_finalized_section_plan<'a>(
                 || Ok(section.to_bytes()),
             ));
         }
-        if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
-            // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
-            // count mismatch, so refuse to write one.
-            anyhow::ensure!(
-                section.blocks.len() == lightmap.blocks.len(),
-                "ShadowmaskAtlas has {} blocks but Lightmap has {}",
-                section.blocks.len(),
-                lightmap.blocks.len()
-            );
-            sections.push(PlannedSection::new(
-                SectionId::ShadowmaskAtlas as u32,
-                2,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
-            ));
-        }
+    }
+    // Id 42 carries per-face owners, independent of ids 40 and 41.
+    if let Some(section) = shadowmask_atlas {
+        // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
+        // count mismatch, so refuse to write one.
+        anyhow::ensure!(
+            section.blocks.len() == lightmap.blocks.len(),
+            "ShadowmaskAtlas has {} blocks but Lightmap has {}",
+            section.blocks.len(),
+            lightmap.blocks.len()
+        );
+        sections.push(PlannedSection::new(
+            SectionId::ShadowmaskAtlas as u32,
+            2,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
     }
     if let Some(section) = animated_light_chunks {
         sections.push(PlannedSection::new(

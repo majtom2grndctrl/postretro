@@ -53,6 +53,19 @@ pub struct ShadowmaskOwnerBounds {
     pub static_spec_light_count: u32,
 }
 
+impl ShadowmaskOwnerBounds {
+    /// Bounds taken from the section's own header, for diagnostics that read
+    /// only block sizes and hold neither id 17 nor the level's lights. Owner
+    /// order is still checked; whether an owner names a real light is not.
+    pub fn from_section_header(fixed_header: &[u8]) -> crate::Result<Self> {
+        let (face_count, _) = owner_table(fixed_header)?;
+        Ok(Self {
+            face_count,
+            static_spec_light_count: u32::from(SHADOWMASK_OWNER_EMPTY),
+        })
+    }
+}
+
 /// Bytes of one BC5 group plane at a `width × height` block extent.
 pub fn group_plane_len(width: u32, height: u32) -> Option<u64> {
     u64::from(width)

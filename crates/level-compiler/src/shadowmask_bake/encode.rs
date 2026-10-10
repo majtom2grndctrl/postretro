@@ -1,7 +1,7 @@
 // Raw RGBA shadowmask fill → per-block BC5 group planes.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use postretro_level_format::shadowmask_atlas_smb6::{SHADOWMASK_GROUP_COUNT, group_plane_len};
+use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 
 use crate::bc5::encode_bc5_rg_masks;
 use crate::lightmap_bake::{CellBlock, copy_unit_rect};
@@ -133,46 +133,19 @@ pub(super) fn take_peak_encode_residency() -> Option<EncodeResidency> {
     PEAK_ENCODE_RESIDENCY.with(std::cell::Cell::take)
 }
 
-/// Every block's groups for a fully visible raw fill, built without the raw
-/// fill: a constant BC4 block is `[v, v, 0, 0, 0, 0, 0, 0]`.
-pub(super) fn all_visible_blocks(blocks: &[CellBlock]) -> Vec<[Vec<u8>; 2]> {
-    const FULLY_VISIBLE_BLOCK: [u8; 16] = [255, 255, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 0, 0, 0];
-    blocks
-        .iter()
-        .map(|block| {
-            assert!(
-                block.width % 4 == 0 && block.height % 4 == 0,
-                "shadowmask block {}x{} is not 4-aligned; BC5 would truncate it",
-                block.width,
-                block.height
-            );
-            let len = group_plane_len(block.width, block.height)
-                .expect("shadowmask group length exceeds addressable memory")
-                as usize;
-            let plane: Vec<u8> = FULLY_VISIBLE_BLOCK
-                .iter()
-                .copied()
-                .cycle()
-                .take(len)
-                .collect();
-            [plane.clone(), plane]
-        })
-        .collect()
-}
-
 /// Decode every block's groups back into a layer-major raw fill of the bake
 /// layers, per texel `[g0.r, g0.g, g1.r, g1.g]`. Texels outside every block
-/// read fully visible, as the raw fill initializes them.
+/// read occluded, as the raw fill initializes them.
 #[cfg(test)]
-pub(crate) fn decode_blocks_to_layers(
-    section: &postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection,
+pub(super) fn decode_blocks_to_layers(
+    section: &postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
     blocks: &[CellBlock],
     width: u32,
     height: u32,
     layer_count: u32,
 ) -> Vec<u8> {
     let plane = width as usize * height as usize;
-    let mut masks = vec![255u8; plane * layer_count as usize * 4];
+    let mut masks = vec![0u8; plane * layer_count as usize * 4];
     for (block, [a, b]) in blocks.iter().zip(&section.blocks) {
         let group_a = crate::bc5::decode_bc5_rg(a, block.width, block.height);
         let group_b = crate::bc5::decode_bc5_rg(b, block.width, block.height);
@@ -198,7 +171,7 @@ pub(crate) fn decode_blocks_to_layers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::shadowmask_atlas_smb6::ShadowmaskAtlasSection;
+    use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
     fn block(layer: u32, x: u32, y: u32, width: u32, height: u32) -> CellBlock {
         CellBlock {
@@ -236,30 +209,12 @@ mod tests {
         assert_eq!(groups[0][0].len(), 16);
         assert_eq!(groups[1][1].len(), 32);
         let section = ShadowmaskAtlasSection {
-            channels: vec![0],
+            owners: vec![],
             blocks: groups,
         };
         assert_eq!(
             decode_blocks_to_layers(&section, &blocks, width, height, layer_count),
             raw
-        );
-    }
-
-    #[test]
-    fn all_visible_blocks_equal_encoding_an_all_visible_fill_and_decode_fully_lit() {
-        let (width, height, layer_count) = (8u32, 8u32, 3u32);
-        let blocks = [block(0, 0, 0, 8, 8), block(2, 4, 4, 4, 4)];
-        let raw = vec![255u8; (width * height * layer_count * 4) as usize];
-        let encoded = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
-        assert_eq!(all_visible_blocks(&blocks), encoded);
-        let section = ShadowmaskAtlasSection {
-            channels: vec![],
-            blocks: encoded,
-        };
-        assert!(
-            decode_blocks_to_layers(&section, &blocks, width, height, layer_count)
-                .iter()
-                .all(|&mask| mask == 255)
         );
     }
 

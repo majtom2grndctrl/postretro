@@ -227,6 +227,20 @@ Read at ed33f260c, after merging main.
 - Its first-sight rule fires `becomes` for a player first observed already swimming; crossings' arm-only rule would not. Pinned by an Acceptance row.
 - **Particle rows wait on the pool.** `drafts/perf-particle-sim-cost` (owner landing order, step 5) writes E24's particle rows against its per-particle step; this brief's Path now says so. Before, only the perf brief recorded the dependency.
 
+## Fifth direction review (validate-plan, 2026-10-09)
+
+Evidence read at 1dd1e3639, main merged at 2de61c843. **Verdict: direction sound.** The reviewer reached the resolve, the per-field overlap rule, native swim, sent-not-hashed gravity and fluids, and the tint-as-limiter-channel independently before reading Decisions. Premises re-checked against merged main all hold: tuning resend on change, P8 install order (the digest is computed in `install_level_payload` right after the static-collision build), digest contents, `initialGravity` in FogVolumes, engine slots `per_owner: false`, the `networking.md` sections cited.
+
+Engineering calls, made on precedent and recorded here:
+- **Agents take only downward gravity.** `agent::collide_and_slide` adds `gravity * dt` every tick, grounded included, with no clamp, so an upward-gravity volume would lift agents off the navmesh. §Gravity as a force had settled "downward part only" for agents; the rule was lost when `gravity` became a signed scalar, and is restored as `min(gravity, 0)`.
+- **An output-only per-pawn record holds the slot values.** E16's lookup reads pawn components, but the resolve is pure and never stored (first direction review). Immersion and fluid go into a record written after each authoritative tick and never read by intents, replay or the wire merge; storing it as input would bring back the reconcile bug the first review fixed.
+- **Runtime-mutable volumes are deferred for scope, not blocked on E15.** `KinematicMoverState` already replicates phase over digest-proven static PRL data; that is the likely route.
+- **Doc amendments added:** `networking.md` §What gates ("at the participation transition" → resent on change) and `movement.md` §2's no-script-reads invariant. E15's research premise that gravity "cannot ride the tuning payload" is superseded by the resend.
+- **Splash for peers watching another client's shot** is named as a follow-up on the splash fact.
+- **Executor check, not a decision:** the tuning resend skips a participating client with no pawn. A client that gains a pawn after a mid-level `setGravity` must still receive the current value; the join row covers the first pawn.
+
+Closes off: push combines per field, winner takes all, so an overlapping wind and updraft don't add; switching to summing later would change existing maps. Strongest alternative: volumes as map members with replicated live state over a hashed baseline (the mover pattern), better only if runtime-mutable volumes were in scope; it stays additive through the load-time BVH.
+
 ## Ordering pins
 
 Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 records the owner's ruling on fluid-jump re-entry.

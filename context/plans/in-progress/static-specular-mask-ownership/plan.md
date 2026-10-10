@@ -1,7 +1,7 @@
 # static-specular-mask-ownership — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 75ac7e12f
 
 Branch `static-specular-mask-ownership`, worktree `.claude/worktrees/static-specular-ownership`.

@@ -1,7 +1,7 @@
 # coop--networked-by-default — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: bd94e4e3f (source unchanged from fe1881a35 / research 221fdaf4a)
 
 ## Session state
@@ -9,7 +9,7 @@ read at: bd94e4e3f (source unchanged from fe1881a35 / research 221fdaf4a)
 - Owner chose resumable mode on 2026-10-10. Claim commit `fe1881a35` is on `origin/main`; branch `codex/coop-networked-by-default`.
 - Source audit found one false Decision premise: held weapons do not carry Weapon only. Block recorded in `bd94e4e3f`; no implementation or tests ran.
 - Owner approved canonical held ownership, shared world-targeting/replication exclusion, retained state and existing weapon resources on 2026-10-10. Applied to Decision 1, AC 2/4, new AC 22, Task 2/2a/10, orderings and M1. No unrelated Decisions changed.
-- Full resumable source verification is complete. All proof below is **planned**, not passed. No implementation is authorized by this proposed plan until the owner's skim approval.
+- Owner approved this plan on 2026-10-10 ("Approved. Carry on!"). Full resumable source verification is complete. All proof below is **planned**, not passed; implementation is authorized.
 - Durable entity/networking contracts record the approved direction as decided, not built. Original Decisions 2–12 remain in force.
 - Use the existing checkout and warm `target/`. Integrator owns plan, shared contracts, commits, Cargo runs and final verification. Workers never commit or edit this file.
 - Free space at planning: 37 GiB. Check after each workflow step/task; apply the build-brief cache-only cleanup rule below 15 GB.

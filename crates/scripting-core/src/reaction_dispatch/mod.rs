@@ -129,9 +129,9 @@ pub fn fire_named_event_with_sequences(
         .collect()
 }
 
-/// Explicit per-fire context for sources that publish ephemeral dispatch
-/// inputs. Ordinary named events derive their source identity from the event
-/// name and pass `None`.
+/// Explicit fire origin and optional dispatch inputs for a named event.
+/// `None` uses the default every-machine origin; host-only fires must provide
+/// context even when they have no inputs or emitter.
 pub struct NamedEventDispatchContext<'a> {
     pub origin: FireOrigin,
     pub source: String,

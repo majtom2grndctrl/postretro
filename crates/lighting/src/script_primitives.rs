@@ -1,4 +1,5 @@
-// Light-domain scripting primitives: `setLightAnimation` definition context.
+// Light-domain scripting primitives: `setLightAnimation` definition, member
+// sequence, and fire-time tag-targeted reaction handlers.
 // Also owns world-query shared typedef registrations to preserve SDK typedef order:
 // `WorldQueryComponent`, `WorldQueryFilter`, `Entity`, and `EmitterEntity`.
 // See: context/lib/scripting.md
@@ -9,6 +10,7 @@ use postretro_entities::{
 };
 use postretro_foundation::Vec3Lit;
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
+use postretro_scripting_core::reaction_registry::{ReactionError, ReactionPrimitiveRegistry};
 use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegistry};
 
 /// A single entity-handle snapshot produced by `worldQuery`. Carries the
@@ -211,6 +213,33 @@ fn register_set_light_animation(registry: &mut PrimitiveRegistry, ctx: ScriptCtx
         .param("id", "EntityId")
         .param("animation", "LightAnimation | null")
         .finish();
+}
+
+/// Resolve descriptor lights at fire time, including placements installed after
+/// the level script assembled its reactions. Uses the same member validator.
+pub fn register_light_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    registry.register("setLightAnimation", |registry, targets, args| {
+        let animation: Option<LightAnimation> =
+            serde_json::from_value(args.clone()).map_err(|error| {
+                ReactionError::InvalidArgument {
+                    reason: format!("setLightAnimation: failed to deserialize args: {error}"),
+                }
+            })?;
+        for &id in targets {
+            if registry.get_component::<LightComponent>(id).is_err() {
+                log::warn!(
+                    "[Scripting] setLightAnimation: entity {id} has no LightComponent; skipping"
+                );
+                continue;
+            }
+            apply_light_animation_inner(registry, id, animation.clone()).map_err(|error| {
+                ReactionError::InvalidArgument {
+                    reason: error.to_string(),
+                }
+            })?;
+        }
+        Ok(())
+    });
 }
 
 pub fn register_sequenced_light_primitives(

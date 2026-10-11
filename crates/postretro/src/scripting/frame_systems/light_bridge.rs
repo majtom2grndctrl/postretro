@@ -28,9 +28,9 @@ use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
 /// endpoint-clamped GPU sampling.
 /// When `current_time − t` reaches `play_count × period_ms / 1000.0`, the bridge
 /// samples the final keyframe, writes a static `LightComponent` back to the registry,
-/// and clears the timing state. Any `setAnimation` call resets
-/// `animation_start_time` to the current frame time — "last call wins" always
-/// restarts the count from zero.
+/// and clears the timing state. A component change observed between frames resets
+/// `animation_start_time` to the current sample time. Identical rewrites and
+/// same-frame restoration keep the running clock.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LightSnapshot {
     pub(crate) component: LightComponent,
@@ -715,13 +715,16 @@ impl LightBridge {
                 None => true,
             };
 
-            if let Some(settled_component) = check_play_count_completion(
-                current,
-                snapshot,
-                current_time,
-                (!shape.animated_baked_raw_indices.is_empty())
-                    .then_some(shape.authored_rest_direction),
-            ) {
+            // A replacement starts this frame; its duration cannot use the old start.
+            if !changed
+                && let Some(settled_component) = check_play_count_completion(
+                    current,
+                    snapshot,
+                    current_time,
+                    (!shape.animated_baked_raw_indices.is_empty())
+                        .then_some(shape.authored_rest_direction),
+                )
+            {
                 let had_radius_animation = current
                     .animation
                     .as_ref()
@@ -5018,6 +5021,88 @@ mod tests {
         );
         bridge.clear();
         assert!(bridge.snapshots.is_empty());
+    }
+
+    // Regression: replacing a finite light settled the new animation against the old start.
+    #[test]
+    fn replicated_finite_replacement_matches_host_start_and_completion() {
+        let mut host_registry = EntityRegistry::new();
+        let mut host = LightBridge::new();
+        let mut animation = sample_animation();
+        animation.period_ms = 5000.0;
+        animation.play_count = Some(1);
+        animation.brightness = Some(vec![1.0, 0.25]);
+        let mut component = runtime_component([0.0; 3], 4.0, Some(animation));
+        let host_id = spawn_runtime_light(&mut host_registry, component.clone());
+        host.absorb_dynamic_lights(&host_registry);
+        let _ = host.update(&mut host_registry, 10.0, 0.0);
+
+        // Restoring the frame-start component before sampling keeps A's clock.
+        let mut intermediate = component.clone();
+        intermediate.animation.as_mut().unwrap().period_ms = 2000.0;
+        host_registry.set_component(host_id, intermediate).unwrap();
+        host_registry
+            .set_component(host_id, component.clone())
+            .unwrap();
+        let _ = host.update(&mut host_registry, 12.0, 0.0);
+        assert!((host.snapshots[&host_id].animation_start_time.unwrap() - 10.0).abs() < 1e-5);
+
+        component.animation.as_mut().unwrap().period_ms = 1000.0;
+        host_registry
+            .set_component(host_id, component.clone())
+            .unwrap();
+        // Capture publishes B's start at host 13; this client's clock is 100 s ahead.
+        let mut client_registry = EntityRegistry::new();
+        let client_id = spawn_runtime_light(&mut client_registry, component.clone());
+        let mut client = LightBridge::new();
+        assert!(client.seed_replicated_state(&client_registry, client_id, Some(113.0)));
+        client.absorb_dynamic_lights(&client_registry);
+
+        for (host_time, client_time, complete) in [
+            (13.0, 113.0, false),
+            (13.5, 113.5, false),
+            (14.0, 114.0, true),
+        ] {
+            if host_time == 13.5 {
+                // An identical rewrite must not restart B.
+                host_registry
+                    .set_component(host_id, component.clone())
+                    .unwrap();
+            }
+            let host_brightness = host
+                .update(&mut host_registry, host_time, 0.0)
+                .unwrap()
+                .effective_brightness[0];
+            let client_brightness = client
+                .update(&mut client_registry, client_time, 0.0)
+                .unwrap()
+                .effective_brightness[0];
+            assert!((host_brightness - client_brightness).abs() < 1e-5);
+            let host_component = host_registry
+                .get_component::<LightComponent>(host_id)
+                .unwrap();
+            let client_component = client_registry
+                .get_component::<LightComponent>(client_id)
+                .unwrap();
+            assert_eq!(host_component.animation.is_none(), complete);
+            assert_eq!(client_component.animation.is_none(), complete);
+            assert!((host_component.intensity - client_component.intensity).abs() < 1e-5);
+            if !complete {
+                let host_start = host.snapshots[&host_id].animation_start_time.unwrap();
+                let client_start = client.snapshots[&client_id].animation_start_time.unwrap();
+                assert!((host_start - 13.0).abs() < 1e-5);
+                assert!((client_start - host_start - 100.0).abs() < 1e-5);
+            }
+        }
+        assert!(
+            (host_registry
+                .get_component::<LightComponent>(host_id)
+                .unwrap()
+                .intensity
+                - component.intensity * 0.25)
+                .abs()
+                < 1e-5
+        );
     }
 
     #[test]

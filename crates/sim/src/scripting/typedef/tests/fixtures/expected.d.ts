@@ -18,7 +18,7 @@ declare module "postretro" {
   /** Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting. */
   export type LightDescriptor = {
     /** Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted. */
-    color: Vec3;
+    color: readonly [number, number, number];
     /** Unitless brightness multiplier. Must be finite and ≥ 0; 0 produces no light. */
     intensity: number;
     /** Falloff range in metres. Must be finite and ≥ 0; 0 gives the light no spatial reach. */

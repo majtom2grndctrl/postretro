@@ -55,6 +55,7 @@ impl Fixture {
         let mut reactions = ReactionPrimitiveRegistry::new();
         register_emitter_reaction_primitives(&mut reactions);
         register_fog_reaction_primitives(&mut reactions);
+        postretro_lighting::script_primitives::register_light_reaction_primitives(&mut reactions);
         Self {
             ctx,
             data: DataRegistry::new(),
@@ -548,7 +549,7 @@ fn real_light_sequence_captures_component_and_start() {
 }
 
 #[test]
-fn actual_cpu_install_captures_level_load_and_already_met_progress_at_zero_clock() {
+fn actual_cpu_install_starts_level_load_and_already_met_progress_at_zero_clock() {
     use crate::startup::lifecycle::tests::{
         install_capture_world, level_world, script_ctx, test_app,
     };
@@ -627,9 +628,10 @@ fn actual_cpu_install_captures_level_load_and_already_met_progress_at_zero_clock
         .warned_writes
         .insert((ids[0], "old-level".into()));
     install_capture_world(&mut app, &level_world("capture-clock", 1));
-    assert_eq!(ctx.presentation_script_time.get(), 0.0);
+    assert!(ctx.presentation_script_time.get().abs() < f64::EPSILON);
+    assert!(app.script_time.abs() < f64::EPSILON);
     assert!(ctx.presentation_overrides.borrow().warned_writes.is_empty());
-    for id in ids {
+    for &id in &ids {
         let table = ctx.presentation_overrides.borrow();
         let record = &table.records[&(id, ComponentKind::BillboardEmitter)];
         assert_eq!(record.anim_start, Some(0.0));
@@ -637,6 +639,39 @@ fn actual_cpu_install_captures_level_load_and_already_met_progress_at_zero_clock
             panic!("emitter")
         };
         assert!(component.spin_animation.is_some());
+    }
+    // Regression: first observation treated an install-time tween as a running-frame
+    // write and skipped this delta, although its immutable start was already zero.
+    assert_eq!(
+        ctx.registry
+            .borrow()
+            .iter_with_kind(ComponentKind::ParticleState)
+            .count(),
+        0,
+        "install primes clocks without emitting particles",
+    );
+    app.session.as_mut().unwrap().emitter_bridge.update(
+        &mut ctx.registry.borrow_mut(),
+        0.5,
+        0.5,
+        &Default::default(),
+    );
+    for id in ids {
+        assert!(
+            (ctx.registry
+                .borrow()
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .spin_rate
+                - 0.1)
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(
+            ctx.presentation_overrides.borrow().records[&(id, ComponentKind::BillboardEmitter)]
+                .anim_start,
+            Some(0.0)
+        );
     }
 }
 
@@ -743,6 +778,7 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
     let registration_ctx = ScriptCtx::new();
     let mut tag_registry = ReactionPrimitiveRegistry::new();
     register_fog_reaction_primitives(&mut tag_registry);
+    postretro_lighting::script_primitives::register_light_reaction_primitives(&mut tag_registry);
     register_emitter_reaction_primitives(&mut tag_registry);
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_fog_primitives(&mut sequence_registry, registration_ctx.clone());
@@ -757,11 +793,8 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
     assert!(tag_names.remove("applyDamage"));
     assert!(tag_names.remove("setAnimationState"));
     let sequence_names: std::collections::BTreeSet<_> = sequence_registry.names().collect();
-    let expected_tag: std::collections::BTreeSet<_> = rows
-        .iter()
-        .filter(|(_, kind, _)| *kind != ComponentKind::Light)
-        .map(|(name, _, _)| *name)
-        .collect();
+    let expected_tag: std::collections::BTreeSet<_> =
+        rows.iter().map(|(name, _, _)| *name).collect();
     let expected_sequence: std::collections::BTreeSet<_> = rows
         .iter()
         .filter(|(_, kind, _)| *kind != ComponentKind::BillboardEmitter)
@@ -790,10 +823,9 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
             } else {
                 fixture.reactions.contains(verb)
             };
-            // Light has a member-sequence handler; emitter has tag/group handlers;
-            // fog ships both and both paths must capture every fog primitive.
+            // Light and fog ship both handlers; emitter has tag/group handlers.
             let expected_registered = match kind {
-                ComponentKind::Light => sequence_path,
+                ComponentKind::Light => true,
                 ComponentKind::BillboardEmitter => !sequence_path,
                 ComponentKind::FogVolume => true,
                 _ => unreachable!(),
@@ -826,6 +858,12 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
                         .registry
                         .borrow_mut()
                         .set_component(id, component)
+                        .unwrap();
+                    fixture
+                        .ctx
+                        .registry
+                        .borrow_mut()
+                        .set_tags(id, vec!["lamp".into()])
                         .unwrap();
                     (id, "lamp")
                 }

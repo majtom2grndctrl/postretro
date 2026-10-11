@@ -189,7 +189,13 @@ local function presentationAudience(args, options)
   end
   if options ~= nil and options.audience ~= nil then
     local audience = options.audience
-    local wire = if type(audience) == "table" then audience.__wire else audience
+    local wire = audience
+    if type(audience) == "table" then
+      -- Unsupported opaque groups throw on missing fields. Keep malformed
+      -- audiences for the named install rejection instead of aborting setup.
+      local ok, value = pcall(function() return audience.__wire end)
+      wire = if ok then value else nil
+    end
     args.audience = if wire == "@activators" or wire == "@trigger" or wire == "@player" or wire == "everyone" then wire else "@invalid"
   end
 end

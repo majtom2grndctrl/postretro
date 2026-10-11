@@ -14,6 +14,8 @@ use postretro_net::wire;
 
 #[cfg(test)]
 mod conditioned_tests;
+#[cfg(test)]
+mod presentation_conditioned_tests;
 
 fn wire_token(token: ActivationToken) -> wire::WireActivationToken {
     wire::WireActivationToken {

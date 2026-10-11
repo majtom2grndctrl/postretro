@@ -23,7 +23,9 @@ use crate::render;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
-use crate::scripting::primitives::light::register_sequenced_light_primitives;
+use crate::scripting::primitives::light::{
+    register_light_reaction_primitives, register_sequenced_light_primitives,
+};
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
@@ -915,6 +917,7 @@ fn build_scripting_core(
     register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
+    register_light_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
         &mut reaction_registry,
         command_diagnostics.clone(),

@@ -289,8 +289,8 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
 /// player (`scripting.md` §12, Player events).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionClass {
-    /// Presents to whoever plays on the draining machine. A player event
-    /// forwards it to its player's machine.
+    /// A one-shot effect whose audience is resolved from its fire origin and
+    /// optional audience.
     Presentation,
     /// Changes the draining machine's own UI or text state. Nothing forwards
     /// it, so on the host it would land on the host's screen.

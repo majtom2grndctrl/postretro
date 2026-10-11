@@ -15,6 +15,34 @@ use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
 };
 
+/// Finish windowed CPU presentation install after reactions and attachment setup.
+/// Settling does not advance these clocks. The first running frame must sample
+/// install-time animations from zero, matching their captured wire start.
+pub(crate) fn start_installed_presentation_animations(
+    registry: &postretro_entities::EntityRegistry,
+    lights: &mut crate::scripting_systems::light_bridge::LightBridge,
+    fog: &mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    emitters: &mut crate::scripting_systems::emitter_bridge::EmitterBridge,
+) {
+    use postretro_entities::{ComponentKind, ComponentValue};
+
+    lights.absorb_dynamic_lights(registry);
+    for (id, component) in registry.iter_with_kind(ComponentKind::Light) {
+        if matches!(component, ComponentValue::Light(light) if light.animation.as_ref().is_some_and(|animation|
+            animation.play_count.is_some_and(|count| count > 0)
+                && animation.start_active.unwrap_or(true)))
+        {
+            lights.seed_replicated_state(registry, id, Some(0.0));
+        }
+    }
+    for (id, component) in registry.iter_with_kind(ComponentKind::FogVolume) {
+        if matches!(component, ComponentValue::FogVolume(fog) if fog.animation.is_some()) {
+            fog.seed_replicated_state(registry, id, Some(0.0));
+        }
+    }
+    emitters.start_installed_animations(registry);
+}
+
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half

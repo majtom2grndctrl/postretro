@@ -107,7 +107,7 @@ fn player_events_twins_emit_byte_identical_wire_data() {
     assert_eq!(ts_manifest.reactions, luau_manifest.reactions);
     assert_eq!(ts_manifest.player_events, luau_manifest.player_events);
     assert_eq!(ts_manifest.crossings, luau_manifest.crossings);
-    assert_eq!(ts_manifest.reactions.len(), 8);
+    assert_eq!(ts_manifest.reactions.len(), 9);
     assert_eq!(
         ts_manifest.crossings.len(),
         1,
@@ -128,7 +128,8 @@ fn player_events_twins_emit_byte_identical_wire_data() {
                     "leveling.levelUp",
                     "leveling.recordLevelUp",
                     "leveling.fanfare",
-                    "leveling.goldFlash"
+                    "leveling.goldFlash",
+                    "leveling.shake"
                 ]
             ),
             (

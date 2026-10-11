@@ -1,0 +1,351 @@
+// Game: Postretro
+// Format: Standard
+// Co-op fixture. Build/run and station guide: coop-presentation-test.README.md.
+// Map coordinates are editor units; gameplay descriptor dimensions are metres.
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"data_script" "../scripts/coop-presentation-test.ts"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+{
+( 0 768 -16 ) ( 0 0 0 ) ( 0 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1280 0 0 ) ( 1280 0 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1280 768 -16 ) ( 0 768 -16 ) concrete_pavement_036 0 0 0 1 1
+( 0 768 0 ) ( 1280 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 768 -16 ) ( 0 768 0 ) ( 0 768 -16 ) concrete_pavement_036 0 0 0 1 1
+( 1280 0 -16 ) ( 1280 768 0 ) ( 1280 768 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 768 256 ) ( 0 0 272 ) ( 0 0 256 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 256 ) ( 1280 0 272 ) ( 1280 0 256 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 256 ) ( 1280 768 256 ) ( 0 768 256 ) concrete_pavement_036 0 0 0 1 1
+( 0 768 272 ) ( 1280 0 272 ) ( 0 0 272 ) concrete_pavement_036 0 0 0 1 1
+( 1280 768 256 ) ( 0 768 272 ) ( 0 768 256 ) concrete_pavement_036 0 0 0 1 1
+( 1280 0 256 ) ( 1280 768 272 ) ( 1280 768 256 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 768 0 ) ( 0 0 256 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 16 0 256 ) ( 16 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 16 768 0 ) ( 0 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 768 256 ) ( 16 0 256 ) ( 0 0 256 ) concrete_pavement_036 0 0 0 1 1
+( 16 768 0 ) ( 0 768 256 ) ( 0 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 16 0 0 ) ( 16 768 256 ) ( 16 768 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1264 768 0 ) ( 1264 0 256 ) ( 1264 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1264 0 0 ) ( 1280 0 256 ) ( 1280 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 1264 0 0 ) ( 1280 768 0 ) ( 1264 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 1264 768 256 ) ( 1280 0 256 ) ( 1264 0 256 ) concrete_pavement_036 0 0 0 1 1
+( 1280 768 0 ) ( 1264 768 256 ) ( 1264 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 0 0 ) ( 1280 768 256 ) ( 1280 768 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 16 0 ) ( 0 0 256 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1280 0 256 ) ( 1280 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1280 16 0 ) ( 0 16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 16 256 ) ( 1280 0 256 ) ( 0 0 256 ) concrete_pavement_036 0 0 0 1 1
+( 1280 16 0 ) ( 0 16 256 ) ( 0 16 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 0 0 ) ( 1280 16 256 ) ( 1280 16 0 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 768 0 ) ( 0 752 256 ) ( 0 752 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 752 0 ) ( 1280 752 256 ) ( 1280 752 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 752 0 ) ( 1280 768 0 ) ( 0 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 768 256 ) ( 1280 752 256 ) ( 0 752 256 ) concrete_pavement_036 0 0 0 1 1
+( 1280 768 0 ) ( 0 768 256 ) ( 0 768 0 ) concrete_pavement_036 0 0 0 1 1
+( 1280 752 0 ) ( 1280 768 256 ) ( 1280 768 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// Colored station floors: blue=audience, green=atmosphere, yellow=damage mark.
+{
+( 192 288 0 ) ( 192 160 2 ) ( 192 160 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 192 160 0 ) ( 320 160 2 ) ( 320 160 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 192 160 0 ) ( 320 288 0 ) ( 192 288 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 192 288 2 ) ( 320 160 2 ) ( 192 160 2 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 320 288 0 ) ( 192 288 2 ) ( 192 288 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 320 160 0 ) ( 320 288 2 ) ( 320 288 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
+{
+( 192 544 0 ) ( 192 416 2 ) ( 192 416 0 ) DebugTextures/debug_floor_green 0 0 0 1 1
+( 192 416 0 ) ( 320 416 2 ) ( 320 416 0 ) DebugTextures/debug_floor_green 0 0 0 1 1
+( 192 416 0 ) ( 320 544 0 ) ( 192 544 0 ) DebugTextures/debug_floor_green 0 0 0 1 1
+( 192 544 2 ) ( 320 416 2 ) ( 192 416 2 ) DebugTextures/debug_floor_green 0 0 0 1 1
+( 320 544 0 ) ( 192 544 2 ) ( 192 544 0 ) DebugTextures/debug_floor_green 0 0 0 1 1
+( 320 416 0 ) ( 320 544 2 ) ( 320 544 0 ) DebugTextures/debug_floor_green 0 0 0 1 1
+}
+{
+( 64 128 0 ) ( 64 64 2 ) ( 64 64 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 64 64 0 ) ( 112 64 2 ) ( 112 64 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 64 64 0 ) ( 112 128 0 ) ( 64 128 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 64 128 2 ) ( 112 64 2 ) ( 64 64 2 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 112 128 0 ) ( 64 128 2 ) ( 64 128 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 112 64 0 ) ( 112 128 2 ) ( 112 128 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+}
+{
+( 1136 464 0 ) ( 1136 432 2 ) ( 1136 432 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 1136 432 0 ) ( 1168 432 2 ) ( 1168 432 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 1136 432 0 ) ( 1168 464 0 ) ( 1136 464 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 1136 464 2 ) ( 1168 432 2 ) ( 1136 432 2 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 1168 464 0 ) ( 1136 464 2 ) ( 1136 464 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 1168 432 0 ) ( 1168 464 2 ) ( 1168 464 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "128 224 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+{
+"classname" "player_spawn"
+"origin" "128 288 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+// West stations: pickup, one-use damage pad, and heat weapon.
+{
+"classname" "coop_health_weapon"
+"origin" "128 96 16"
+"_tags" "coop_health_weapon"
+}
+{
+"classname" "coop_heat_test"
+"origin" "128 384 16"
+"_tags" "coop_heat_test"
+}
+{
+"classname" "trigger_volume"
+"name" "retained_health_mark"
+"activation" "use"
+"fire_mode" "once"
+"enabled_on_spawn" "1"
+"_tags" "coop_weapon_mark"
+{
+( 64 128 0 ) ( 64 64 32 ) ( 64 64 0 ) concrete_pavement_036 0 0 0 1 1
+( 64 64 0 ) ( 112 64 32 ) ( 112 64 0 ) concrete_pavement_036 0 0 0 1 1
+( 64 64 0 ) ( 112 128 0 ) ( 64 128 0 ) concrete_pavement_036 0 0 0 1 1
+( 64 128 32 ) ( 112 64 32 ) ( 64 64 32 ) concrete_pavement_036 0 0 0 1 1
+( 112 128 0 ) ( 64 128 32 ) ( 64 128 0 ) concrete_pavement_036 0 0 0 1 1
+( 112 64 0 ) ( 112 128 32 ) ( 112 128 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// Blue pressure plate: four independent presentation reactions.
+{
+"classname" "trigger_volume"
+"name" "coop_pressure_plate"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "coop_plate"
+{
+( 192 288 0 ) ( 192 160 16 ) ( 192 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 160 0 ) ( 320 160 16 ) ( 320 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 160 0 ) ( 320 288 0 ) ( 192 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 288 16 ) ( 320 160 16 ) ( 192 160 16 ) concrete_pavement_036 0 0 0 1 1
+( 320 288 0 ) ( 192 288 16 ) ( 192 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 160 0 ) ( 320 288 16 ) ( 320 288 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// South plate: durable atmosphere/props and the positioned-sound door.
+{
+"classname" "trigger_volume"
+"name" "coop_atmosphere_plate"
+"activation" "touch"
+"fire_mode" "once"
+"enabled_on_spawn" "1"
+"_tags" "coop_atmosphere"
+{
+( 192 544 0 ) ( 192 416 16 ) ( 192 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 416 0 ) ( 320 416 16 ) ( 320 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 416 0 ) ( 320 544 0 ) ( 192 544 0 ) concrete_pavement_036 0 0 0 1 1
+( 192 544 16 ) ( 320 416 16 ) ( 192 416 16 ) concrete_pavement_036 0 0 0 1 1
+( 320 544 0 ) ( 192 544 16 ) ( 192 544 0 ) concrete_pavement_036 0 0 0 1 1
+( 320 416 0 ) ( 320 544 16 ) ( 320 544 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+{
+"classname" "light"
+"origin" "384 256 176"
+"light" "300"
+"_color" "102 204 255"
+"_falloff_range" "768"
+"_animated" "1"
+"_tags" "coop_prl_light"
+}
+{
+"classname" "light"
+"origin" "768 256 176"
+"light" "300"
+"_color" "102 204 255"
+"_falloff_range" "768"
+"_animated" "1"
+"_tags" "coop_prl_light"
+}
+{
+"classname" "light"
+"origin" "640 512 208"
+"light" "300"
+"_falloff_range" "1600"
+"_color" "255 217 166"
+}
+{
+"classname" "fog_volume"
+"density" "0.05"
+"glow" "0.05"
+"edge_softness" "0"
+"falloff" "1"
+"tint" "180 210 255"
+"_tags" "coop_fog"
+{
+( 352 400 16 ) ( 352 144 160 ) ( 352 144 16 ) concrete_pavement_036 0 0 0 1 1
+( 352 144 16 ) ( 896 144 160 ) ( 896 144 16 ) concrete_pavement_036 0 0 0 1 1
+( 352 144 16 ) ( 896 400 16 ) ( 352 400 16 ) concrete_pavement_036 0 0 0 1 1
+( 352 400 160 ) ( 896 144 160 ) ( 352 144 160 ) concrete_pavement_036 0 0 0 1 1
+( 896 400 16 ) ( 352 400 160 ) ( 352 400 16 ) concrete_pavement_036 0 0 0 1 1
+( 896 144 16 ) ( 896 400 160 ) ( 896 400 16 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+{
+"classname" "billboard_emitter"
+"origin" "448 256 24"
+"sprite" "smoke_puff"
+"rate" "18"
+"lifetime" "4"
+"spread" "0.3"
+"buoyancy" "0.1"
+"drag" "0.5"
+"initial_velocity_y" "0.8"
+"spin_rate" "0.5"
+"_tags" "coop_map_emitter"
+}
+{
+"classname" "coop_light_only"
+"origin" "384 352 96"
+"angles" "0 180 0"
+"_tags" "coop_descriptor_light"
+}
+{
+"classname" "coop_lit_prop"
+"origin" "576 352 0"
+"angles" "0 180 0"
+"_tags" "coop_descriptor_light"
+}
+{
+"classname" "coop_mesh_prop"
+"origin" "704 352 0"
+"angles" "0 180 0"
+"_tags" "coop_mesh_prop"
+}
+{
+"classname" "coop_emitter_only"
+"origin" "832 352 24"
+"angles" "0 180 0"
+"_tags" "coop_descriptor_emitter"
+}
+{
+"classname" "coop_invisible_target"
+"origin" "1152 448 0"
+"angles" "0 180 0"
+"_tags" "coop_invisible_target"
+}
+// Ten targets give one player 100 XP without requiring a resurrection loop.
+{
+"classname" "coop_target_dummy"
+"origin" "512 576 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "640 576 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "768 576 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "896 576 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "1024 576 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "512 688 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "640 688 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "768 688 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "896 688 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "coop_target_dummy"
+"origin" "1024 688 0"
+"angles" "0 180 0"
+"_tags" "dummy coop_dummy"
+}
+{
+"classname" "reference_enemy"
+"origin" "1120 192 0"
+"angles" "0 180 0"
+"_tags" "enemy coop_death_enemy"
+}
+// Door travels vertically; the open terminus publishes its bounds center.
+{
+"classname" "kinematic_mover"
+"name" "coop_door"
+"path" "coop_door_closed"
+"speed" "3"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"auto_close_ms" "0"
+"open_event" "door.open"
+"_tags" "coop_door"
+{
+( 960 416 0 ) ( 960 320 112 ) ( 960 320 0 ) concrete_pavement_036 0 0 0 1 1
+( 960 320 0 ) ( 976 320 112 ) ( 976 320 0 ) concrete_pavement_036 0 0 0 1 1
+( 960 320 0 ) ( 976 416 0 ) ( 960 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 960 416 112 ) ( 976 320 112 ) ( 960 320 112 ) concrete_pavement_036 0 0 0 1 1
+( 976 416 0 ) ( 960 416 112 ) ( 960 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 976 320 0 ) ( 976 416 112 ) ( 976 416 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"name" "coop_door_closed"
+"next" "coop_door_open"
+"origin" "968 368 56"
+}
+{
+"classname" "kinematic_waypoint"
+"name" "coop_door_open"
+"origin" "968 368 184"
+}

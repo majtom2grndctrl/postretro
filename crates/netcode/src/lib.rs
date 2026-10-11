@@ -150,6 +150,9 @@ pub use presentation::{
     route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
 };
 pub use seat::clear_released_seat_slot_values;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use state_slots::ClientStateApply;
 pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -165,6 +168,9 @@ pub(crate) use reconcile::reconcile_local_pawn;
 #[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub(crate) use replication::produce_owned_snapshots;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
     ReplicableSet, host_register_descriptor_entities, host_register_loaded_movers,
     host_register_presentation_overrides,

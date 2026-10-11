@@ -7,9 +7,13 @@
 mod agent_diagnostics;
 mod app;
 mod camera;
+#[cfg(test)]
+mod coop_fixture_tests;
 mod frame_eye;
 mod frame_loop;
 mod host_activations;
+#[cfg(test)]
+mod presentation_budget_measurement_tests;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};

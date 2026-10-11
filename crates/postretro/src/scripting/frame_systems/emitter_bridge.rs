@@ -33,7 +33,8 @@ struct EmitterBridgeState {
     /// Elapsed time within the active `SpinAnimation` tween, in seconds. Reset
     /// to `0.0` when a new tween starts or the tween completes.
     spin_elapsed: f32,
-    /// A replicated age already includes this frame's elapsed time.
+    /// A new tween starts at this frame's sample time; a replicated age already
+    /// includes this frame's elapsed time.
     skip_next_spin_advance: bool,
     /// Per-emitter LCG state. Seeded once on first-seen from the emitter's
     /// world-space position so two emitters at distinct positions produce
@@ -138,6 +139,26 @@ impl EmitterBridge {
 
     pub(crate) fn clear(&mut self) {
         self.states.clear();
+    }
+
+    /// Install reactions run at clock zero, before any running-frame delta.
+    /// Cache their tweens without emitting particles or consuming that first delta.
+    pub(crate) fn start_installed_animations(&mut self, registry: &EntityRegistry) {
+        for (id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+            let ComponentValue::BillboardEmitter(component) = value else {
+                continue;
+            };
+            if component.spin_animation.is_none() {
+                continue;
+            }
+            let origin = registry
+                .get_component::<Transform>(id)
+                .map(|transform| transform.position)
+                .unwrap_or(Vec3::ZERO);
+            let mut state = EmitterBridgeState::new(emitter_seed(id, origin));
+            state.last_spin_animation = component.spin_animation.clone();
+            self.states.insert(id, state);
+        }
     }
 
     /// Number of live tracked emitter entries. Exposed for tests asserting
@@ -292,7 +313,7 @@ impl EmitterBridge {
             // tween does not leak elapsed time into a later install.
             if state.last_spin_animation != component.spin_animation {
                 state.spin_elapsed = 0.0;
-                state.skip_next_spin_advance = false;
+                state.skip_next_spin_advance = component.spin_animation.is_some();
                 state.last_spin_animation = component.spin_animation.clone();
             }
             if let Some(anim) = component.spin_animation.clone() {
@@ -841,7 +862,7 @@ mod tests {
         // accumulator-then-anim phase order matches production.
         let dt = 1.0 / 60.0;
         let mut t = 0.0;
-        for _ in 0..60 {
+        for _ in 0..=60 {
             update_bridge(&mut bridge, &mut registry, dt, t);
             t += dt;
         }
@@ -992,6 +1013,124 @@ mod tests {
             "expected at least one particle spawned at the map entity origin",
         );
     }
+    // Regression: the host advanced a new tween by the write-frame delta ahead of its captured start.
+    #[test]
+    fn replicated_changed_spin_tween_matches_host_samples_and_completion() {
+        for replace_running in [false, true] {
+            let mut host_registry = EntityRegistry::new();
+            let mut component = base_component(0.0);
+            if replace_running {
+                component.spin_animation = Some(SpinAnimation {
+                    duration: 5.0,
+                    rate_curve: vec![0.0, 2.0],
+                });
+            }
+            let host_id = spawn_emitter(&mut host_registry, component.clone());
+            let mut host = EmitterBridge::new();
+            update_bridge(&mut host, &mut host_registry, 0.5, 10.0);
+
+            component.spin_animation = Some(SpinAnimation {
+                duration: 1.0,
+                rate_curve: vec![0.0, 1.0],
+            });
+            host_registry
+                .set_component(host_id, component.clone())
+                .unwrap();
+            let mut client_registry = EntityRegistry::new();
+            let client_id = spawn_emitter(&mut client_registry, component.clone());
+            let mut client = EmitterBridge::new();
+            // The write frame advances 10 -> 10.5, so capture publishes start 10.5.
+            // Applying at that shared instant seeds age zero, even on a different local clock.
+            assert!(client.seed_replicated_state(&client_registry, client_id, Some(0.0)));
+
+            for (host_time, client_time, expected_rate, complete) in [
+                (10.5, 110.5, 0.0, false),
+                (11.0, 111.0, 0.5, false),
+                (11.5, 111.5, 1.0, true),
+            ] {
+                if host_time == 11.0 {
+                    // Scalar changes and identical tween rewrites keep elapsed time.
+                    let mut host_component = host_registry
+                        .get_component::<BillboardEmitterComponent>(host_id)
+                        .unwrap()
+                        .clone();
+                    host_component.rate = 0.25;
+                    host_component.spin_animation = component.spin_animation.clone();
+                    host_registry
+                        .set_component(host_id, host_component)
+                        .unwrap();
+                }
+                update_bridge(&mut host, &mut host_registry, 0.5, host_time);
+                update_bridge(&mut client, &mut client_registry, 0.5, client_time);
+                let host_component = host_registry
+                    .get_component::<BillboardEmitterComponent>(host_id)
+                    .unwrap();
+                let client_component = client_registry
+                    .get_component::<BillboardEmitterComponent>(client_id)
+                    .unwrap();
+                assert!((host_component.spin_rate - expected_rate).abs() < 1e-5);
+                assert!((client_component.spin_rate - expected_rate).abs() < 1e-5);
+                assert_eq!(host_component.spin_animation.is_none(), complete);
+                assert_eq!(client_component.spin_animation.is_none(), complete);
+                if !complete {
+                    assert!((host.states[&host_id].spin_elapsed - (host_time - 10.5)).abs() < 1e-5);
+                    assert!(
+                        (client.states[&client_id].spin_elapsed
+                            - host.states[&host_id].spin_elapsed)
+                            .abs()
+                            < 1e-5
+                    );
+                }
+            }
+        }
+    }
+
+    // Regression: installation starts at zero, not at the first running frame's sample time.
+    #[test]
+    fn installed_spin_uses_first_delta_without_emitting_during_install() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(0.0);
+        component.burst = Some(2);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 1.0,
+            rate_curve: vec![0.0, 1.0],
+        });
+        let id = spawn_emitter(&mut registry, component.clone());
+        let mut bridge = EmitterBridge::new();
+        bridge.start_installed_animations(&registry);
+        assert_eq!(
+            registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap(),
+            &component
+        );
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .count(),
+            0
+        );
+        update_bridge(&mut bridge, &mut registry, 0.5, 0.5);
+        let half = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
+        assert!((half.spin_rate - 0.5).abs() < 1e-5);
+        assert!(half.spin_animation.is_some());
+        assert!(half.burst.is_none());
+        assert_eq!(
+            registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .count(),
+            2
+        );
+        update_bridge(&mut bridge, &mut registry, 0.5, 1.0);
+        let completed = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
+        assert!((completed.spin_rate - 1.0).abs() < 1e-5);
+        assert!(completed.spin_animation.is_none());
+    }
+
     #[test]
     fn replicated_spin_seed_samples_same_frame_age_then_advances_locally() {
         let mut registry = EntityRegistry::new();
@@ -1044,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    fn replicated_spin_seed_does_not_skip_a_replaced_local_animation() {
+    fn replicated_spin_seed_replaced_locally_starts_at_current_sample() {
         let mut registry = EntityRegistry::new();
         let mut component = base_component(0.0);
         component.spin_animation = Some(SpinAnimation {
@@ -1057,7 +1196,18 @@ mod tests {
         component.spin_animation.as_mut().unwrap().duration = 10.0;
         registry.set_component(id, component).unwrap();
         update_bridge(&mut bridge, &mut registry, 0.5, 10.0);
-        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
+        assert!(bridge.states[&id].spin_elapsed.abs() < 1e-5);
+        update_bridge(&mut bridge, &mut registry, 0.5, 10.5);
+        assert!((bridge.states[&id].spin_elapsed - 0.5).abs() < 1e-5);
+        assert!(
+            (registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .spin_rate
+                - 0.05)
+                .abs()
+                < 1e-5
+        );
         assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::NAN)));
         registry.despawn(id).unwrap();
         assert!(!bridge.seed_replicated_state(&registry, id, Some(0.0)));
@@ -1078,7 +1228,7 @@ mod tests {
         assert!(bridge.seed_replicated_state(&registry, id, Some(2.0)));
         bridge.clear();
         update_bridge(&mut bridge, &mut registry, 0.5, 10.5);
-        assert_eq!(bridge.states[&id].spin_elapsed, 0.5);
+        assert!(bridge.states[&id].spin_elapsed.abs() < 1e-5);
         assert!(!bridge.states[&id].skip_next_spin_advance);
     }
     #[test]

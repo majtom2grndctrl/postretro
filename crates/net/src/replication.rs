@@ -26,6 +26,9 @@ use crate::wire::{
     RawComponentPayload, RawSnapshotMessage, WirePresentationBinding, WireProjectilePresentation,
 };
 
+#[cfg(test)]
+mod presentation_budget_tests;
+
 mod encode;
 use encode::ClientReplicationState;
 

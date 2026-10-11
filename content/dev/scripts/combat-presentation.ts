@@ -13,7 +13,7 @@ import {
   fact,
 } from "postretro/ui";
 
-export const damageNumber = definePresentationTemplate("dev.damageNumber", {
+export const damageNumber = definePresentationTemplate({
   root: Text({
     content: "0",
     fontSize: 20.0,
@@ -28,7 +28,7 @@ export const damageNumber = definePresentationTemplate("dev.damageNumber", {
   spawnScatter: { radius: 8 },
 });
 
-export const damagedEnemyBar = definePresentationTemplate("dev.damagedEnemyBar", {
+export const damagedEnemyBar = definePresentationTemplate({
   root: VStack(
     { gap: 2.0 },
     [

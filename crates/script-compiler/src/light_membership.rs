@@ -1539,7 +1539,7 @@ mod tests {
         let js = r#"
             function setupLevel() {
               return { reactions: [defineReaction("capture", on => ({ primitive: "capture", args: {
-                bodies: [on.activators, on.trigger, on.player, "everyone", 42].flatMap(audience => [
+                bodies: [on.activators, on.trigger, on.player, "everyone", 42, players(), npcs()].flatMap(audience => [
                   playSound("alarm", { bus: "ui", audience }),
                   rumble(0.75, 200, 0.25, { audience }),
                   flashScreen([1, 0, 0, 0.5], 300, { audience }),
@@ -1554,10 +1554,18 @@ mod tests {
         "#;
         let luau = r#"
             local ui = require("postretro/ui")
+            local Postretro = require("postretro")
             function setupLevel()
               return { reactions = { defineReaction("capture", function(on)
                 local bodies = {}
-                for _, audience in ipairs({ on.activators, on.trigger, on.player, "everyone", 42 }) do
+                local players = Postretro.players()
+                local npcs = Postretro.npcs()
+                -- Internal audience lowering must not relax ordinary opaque indexing.
+                for _, group in ipairs({ players, npcs }) do
+                  local ok, message = pcall(function() return group.__wire end)
+                  assert(not ok and string.find(message, "has no verb or field", 1, true))
+                end
+                for _, audience in ipairs({ on.activators, on.trigger, on.player, "everyone", 42, players, npcs }) do
                   local batch = {
                     ui.playSound("alarm", { bus = "ui", audience = audience }),
                     ui.rumble(0.75, 200, 0.25, { audience = audience }),
@@ -1587,12 +1595,14 @@ mod tests {
         .unwrap();
         assert_eq!(ts, lua);
         let bodies = ts["reactions"][0]["args"]["bodies"].as_array().unwrap();
-        assert_eq!(bodies.len(), 40);
+        assert_eq!(bodies.len(), 56);
         for (batch, audience) in bodies.chunks_exact(8).zip([
             "@activators",
             "@trigger",
             "@player",
             "everyone",
+            "@invalid",
+            "@invalid",
             "@invalid",
         ]) {
             for body in batch {

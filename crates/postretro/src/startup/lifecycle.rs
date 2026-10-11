@@ -18,7 +18,7 @@ mod lifecycle_sprite_collections;
 mod lifecycle_world_cpu;
 
 use lifecycle_model_sweep::ParsedSweepModel;
-pub(crate) use lifecycle_world_cpu::install_world_cpu;
+pub(crate) use lifecycle_world_cpu::{install_world_cpu, start_installed_presentation_animations};
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
@@ -955,15 +955,20 @@ impl App {
         self.host_register_loaded_movers_after_install();
         self.level_timings.record("host_registration");
 
-        // Pick up any descriptor-spawned `LightComponent`s so they participate in
-        // the per-frame light bridge pack.
+        // Enroll descriptor lights and start install-time animations at clock zero.
+        // The first running frame advances from that origin after Settling.
         {
             let registry = script_ctx.registry.borrow();
-            self.session
+            let session = self
+                .session
                 .as_mut()
-                .expect("session installed before level install")
-                .light_bridge
-                .absorb_dynamic_lights(&registry);
+                .expect("session installed before level install");
+            start_installed_presentation_animations(
+                &registry,
+                &mut session.light_bridge,
+                &mut session.fog_volume_bridge,
+                &mut session.emitter_bridge,
+            );
         }
 
         // Teleport the camera to the first player spawn (or the geometry center
@@ -2762,7 +2767,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Production segment-B install for presentation capture tests.
+    /// Production segment-B install and presentation finalization for CPU tests.
     pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loader::LevelWorld) {
         let ctx = script_ctx(app);
         let content_root =
@@ -2805,6 +2810,13 @@ pub(crate) mod tests {
             |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
             |_spawns| {},
         );
+        start_installed_presentation_animations(
+            &ctx.registry.borrow(),
+            &mut session.light_bridge,
+            &mut session.fog_volume_bridge,
+            &mut session.emitter_bridge,
+        );
+        app.script_time = 0.0;
     }
 
     struct CpuFixture {

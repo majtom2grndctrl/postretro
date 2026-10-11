@@ -1903,15 +1903,24 @@ mod tests {
     /// through the `scripts-build` library and run its `setupLevel` the way
     /// level load does, returning the SDK-authored reactions.
     fn sdk_reactions(source: &str) -> Vec<NamedReaction> {
+        sdk_reactions_in_runtime(source, false)
+    }
+
+    fn sdk_reactions_in_runtime(source: &str, luau: bool) -> Vec<NamedReaction> {
         use postretro_level_format::data_script::DataScriptSection;
         use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
         use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
 
         let dir = tempfile::tempdir().expect("script dir");
-        let entry = dir.path().join("level.ts");
+        let entry = dir
+            .path()
+            .join(if luau { "level.luau" } else { "level.ts" });
         std::fs::write(&entry, source).expect("level script writes");
-        let bundled =
-            postretro_script_compiler::bundle_entry(&entry).expect("level script bundles");
+        let bundled = if luau {
+            source.to_owned()
+        } else {
+            postretro_script_compiler::bundle_entry(&entry).expect("level script bundles")
+        };
         let runtime = ScriptRuntime::new(
             &PrimitiveRegistry::new(),
             &ScriptRuntimeConfig::default(),
@@ -2183,6 +2192,92 @@ mod tests {
                 .iter()
                 .any(|record| record.message.contains("machine-local reaction"))
         );
+    }
+
+    // Regression: opaque groups used as audiences aborted Luau setup before
+    // Pass A could name and drop the bad reaction, losing valid siblings too.
+    #[test]
+    fn runtime_opaque_audience_install_parity_rejects_groups_and_preserves_valid_siblings() {
+        let ts = sdk_reactions_in_runtime(
+            r#"
+            import { defineReaction, players, npcs } from "postretro";
+            import { playSound, rumble, flashScreen, vignette, screenShake } from "postretro/ui";
+            export function setupLevel() {
+              return { reactions: [["players", players()], ["npcs", npcs()]].flatMap(([group, audience]) => [
+                defineReaction(`${group}.playSound`, playSound("alarm", { audience })),
+                defineReaction(`${group}.rumble`, rumble(0.75, 200, undefined, { audience })),
+                defineReaction(`${group}.flashScreen`, flashScreen([1, 0, 0, 0.5], 300, { audience })),
+                defineReaction(`${group}.vignette`, vignette(0.5, 400, undefined, { audience })),
+                defineReaction(`${group}.screenShake`, screenShake(3, 500, undefined, { audience })),
+                defineReaction(`${group}.valid`, flashScreen([0, 1, 0, 0.5], 300, { audience: "everyone" })),
+              ]) };
+            }
+            "#,
+            false,
+        );
+        let luau = sdk_reactions_in_runtime(
+            r#"
+            local Postretro = require("postretro")
+            local UI = require("postretro/ui")
+            function setupLevel()
+              local reactions = {}
+              for _, entry in ipairs({ { "players", Postretro.players() }, { "npcs", Postretro.npcs() } }) do
+                local group, audience = entry[1], entry[2]
+                local batch = {
+                  Postretro.defineReaction(group .. ".playSound", UI.playSound("alarm", { audience = audience })),
+                  Postretro.defineReaction(group .. ".rumble", UI.rumble(0.75, 200, nil, { audience = audience })),
+                  Postretro.defineReaction(group .. ".flashScreen", UI.flashScreen({1, 0, 0, 0.5}, 300, { audience = audience })),
+                  Postretro.defineReaction(group .. ".vignette", UI.vignette(0.5, 400, nil, { audience = audience })),
+                  Postretro.defineReaction(group .. ".screenShake", UI.screenShake(3, 500, nil, { audience = audience })),
+                  Postretro.defineReaction(group .. ".valid", UI.flashScreen({0, 1, 0, 0.5}, 300, { audience = "everyone" })),
+                }
+                for _, reaction in ipairs(batch) do table.insert(reactions, reaction) end
+              end
+              return { reactions = reactions }
+            end
+            "#,
+            true,
+        );
+        assert_eq!(ts.len(), 12, "every SDK-authored reaction parses");
+        assert_eq!(ts, luau, "opaque audiences lower identically");
+        let mut diagnostics = Vec::new();
+        for reactions in [ts, luau] {
+            let ctx = ctx_with_reactions(reactions);
+            let siblings = [body(&ctx, "players.valid"), body(&ctx, "npcs.valid")];
+            let capture = LogCapture::start();
+            validate_reaction_bodies_pass_a(&ctx);
+            for group in ["players", "npcs"] {
+                for primitive in [
+                    "playSound",
+                    "rumble",
+                    "flashScreen",
+                    "vignette",
+                    "screenShake",
+                ] {
+                    let name = format!("{group}.{primitive}");
+                    assert!(is_dropped(&ctx, &name), "{name} must be rejected");
+                    capture.assert_logged_once(
+                        log::Level::Error,
+                        &format!(
+                            "reaction `{name}`: `{primitive}` has invalid audience \"@invalid\""
+                        ),
+                    );
+                }
+                assert!(!is_dropped(&ctx, &format!("{group}.valid")));
+                capture.assert_not_logged(log::Level::Error, &format!("reaction `{group}.valid`"));
+            }
+            assert_eq!(body(&ctx, "players.valid"), siblings[0]);
+            assert_eq!(body(&ctx, "npcs.valid"), siblings[1]);
+            let errors: Vec<_> = capture
+                .records()
+                .into_iter()
+                .filter(|record| record.level == log::Level::Error)
+                .map(|record| record.message)
+                .collect();
+            assert_eq!(errors.len(), 10, "only malformed siblings are rejected");
+            diagnostics.push(errors);
+        }
+        assert_eq!(diagnostics[0], diagnostics[1], "named rejection parity");
     }
 
     #[test]

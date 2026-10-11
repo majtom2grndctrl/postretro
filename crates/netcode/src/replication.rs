@@ -145,7 +145,7 @@ pub(crate) fn produce_owned_snapshots(
 /// command queue; the host pawn has no `MovementOwners` entry and therefore receives
 /// its directly-authorized local camera pitch through this explicit source.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn produce_owned_snapshots_with_host_aim(
+pub fn produce_owned_snapshots_with_host_aim(
     registry: &EntityRegistry,
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,

@@ -1,6 +1,8 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
+pub(crate) mod named_drains;
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -18,14 +20,14 @@ use crate::startup::BootState;
 use crate::{
     App, GamepadPollVotes, append_tick_weapon_script_events, apply_mover_yaw_carry,
     build_post_movement_command, build_sim_command, camera, cpu_timing,
-    drain_named_events_with_sequences, follow_camera_to_local_pawn, followed_player_pawn,
-    frame_eye, frontend_root_is_pushed, gameplay_capture_gate_for_frame,
-    gameplay_snapshot_for_capture_state, has_player_pawn, impact_effects, input,
-    local_active_wieldable, local_player_ground, local_viewmodel_asset, local_wieldable_occupancy,
-    maybe_save_connected_client_per_owner_state, netcode, poll_gamepad, rebuild_blocked_portals,
-    render, render_preparation, resolve_crouch_intent, resolve_mesh_entity_bindings_for_entities,
-    resolve_sprint_intent, scripting_systems, sim, sound_events, trigger_system, view_feel,
-    viewmodel_asset_for_archetype, viewmodel_world_transform,
+    follow_camera_to_local_pawn, followed_player_pawn, frame_eye, frontend_root_is_pushed,
+    gameplay_capture_gate_for_frame, gameplay_snapshot_for_capture_state, has_player_pawn,
+    impact_effects, input, local_active_wieldable, local_player_ground, local_viewmodel_asset,
+    local_wieldable_occupancy, maybe_save_connected_client_per_owner_state, netcode, poll_gamepad,
+    rebuild_blocked_portals, render, render_preparation, resolve_crouch_intent,
+    resolve_mesh_entity_bindings_for_entities, resolve_sprint_intent, scripting_systems, sim,
+    sound_events, trigger_system, view_feel, viewmodel_asset_for_archetype,
+    viewmodel_world_transform,
 };
 #[cfg(feature = "dev-tools")]
 use crate::{
@@ -1254,106 +1256,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             })
             .collect();
     if let Some(session) = app.session.as_ref() {
-        let mut pending_trigger_follow_ups = Vec::new();
-        // Every post-tick named source uses the executing path, then
-        // contributes `fire`/`on_complete` names to one bounded deferred
-        // batch. This keeps movement, AI, weapon, mover, and death events
-        // semantically aligned and lets waits enroll through the common
-        // sequence control arm.
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_movement_events
-                .iter()
-                .map(|emission| (emission.address, Some(emission.emitter.clone()))),
-            postretro_entities::FireOrigin::EveryMachine,
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
+        let mut pending_trigger_follow_ups = named_drains::drain_frame_named_events(
+            named_drains::NamedFrameEvents {
+                movement: &pending_movement_events,
+                ai: &pending_ai_events,
+                observer: &app.observer_weapon_cues,
+                weapon: &pending_weapon_script_events,
+                movers: &pending_mover_event_names,
+                deaths: &pending_death_events,
+            },
+            &session.scripting,
             &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_ai_events.iter().filter_map(|emission| {
-                emission
-                    .address
-                    .as_deref()
-                    .map(|address| (address, Some(emission.emitter.clone())))
-            }),
-            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_ai_events
-                .iter()
-                .filter(|emission| emission.shot_id.is_some())
-                .flat_map(|emission| {
-                    std::iter::once("activate")
-                        .chain(
-                            emission
-                                .action
-                                .as_ref()
-                                .and_then(|a| a.emits.as_ref())
-                                .and_then(|e| e.activate.as_deref()),
-                        )
-                        .map(move |address| (address, Some(emission.emitter.clone())))
-                }),
-            postretro_entities::FireOrigin::EveryMachine,
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            app.observer_weapon_cues.iter().flat_map(|cue| {
-                let builtin = match cue.kind {
-                    netcode::weapon_cues::WeaponCueKind::Activate => "activate",
-                    netcode::weapon_cues::WeaponCueKind::Impact => "impact",
-                };
-                std::iter::once(builtin)
-                    .chain(cue.alias.as_deref())
-                    .map(move |address| (address, Some(cue.emitter.clone())))
-            }),
-            postretro_entities::FireOrigin::EveryMachine,
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_weapon_script_events.iter().flat_map(|emission| {
-                sound_events::weapon_emission_addresses(emission)
-                    .map(move |address| (address, Some(emission.emitter.clone())))
-            }),
-            postretro_entities::FireOrigin::EveryMachine,
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_mover_event_names,
-            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_death_events.iter().map(|name| (name, None)),
-            postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
+        );
         postretro_sim::residual_drain::drain_frame_residuals(
             &pending_trigger_residuals,
             &app.trigger_bindings,

@@ -1,6 +1,6 @@
-# Playtest parity direction — proposed owner amendment
+# Playtest parity direction — approved owner amendment
 
-status: proposed; no Decision or Acceptance change approved by this document
+status: approved by the owner on 2026-10-11; Decision 13 / AC 23–24 and Task 13 applied in index.md
 source: `5fbd32328`; [Astra audit](parity-audit.md), [weapon investigation](alternate-fire-audit.md)
 
 ## Recommendation

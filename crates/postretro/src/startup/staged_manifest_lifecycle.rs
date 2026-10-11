@@ -802,26 +802,20 @@ mod tests {
             u64::from(entity.to_raw()),
         );
         let mut client_facts = crate::netcode::ClientOverlayFactState::default();
-        crate::netcode::ingest_client_overlay_fact(
-            &mut client_facts,
-            &mut pool,
-            crate::netcode::ClientOverlayFact::new(
-                postretro_net::wire::NetworkId(7),
-                0.0,
-                0.0,
-                false,
-                false,
-            ),
-            None,
-            None,
-            None,
-        );
+        assert!(client_facts.receive(
+            postretro_net::wire::WireOverlayRoster {
+                revision: 7,
+                server_script_time: 1.0,
+                entries: Vec::new(),
+            },
+            1,
+        ));
         let mut host_facts = crate::netcode::HostOverlayFactTracker::default();
 
         clear_replaced_presentation_overlay_state(&mut pool, &mut client_facts, &mut host_facts);
 
         assert_eq!(pool.live_counts(), (0, 0));
-        assert_eq!(client_facts.terminal_len(), 0);
+        assert_eq!(client_facts.revision(), None);
         assert_eq!(client_facts.pending_len(), 0);
     }
 }

@@ -143,11 +143,9 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub use prediction::ClientPrediction;
-#[cfg(feature = "test-support")]
-pub use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
-    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
+    route_host_presentation_spawns, update_client_overlay_anchors, update_host_overlay_roster,
 };
 pub use seat::clear_released_seat_slot_values;
 #[cfg(any(test, feature = "test-support"))]
@@ -172,8 +170,8 @@ pub(crate) use replication::produce_owned_snapshots;
 #[doc(hidden)]
 pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
-    ReplicableSet, host_register_descriptor_entities, host_register_loaded_movers,
-    host_register_presentation_overrides,
+    ReplicableSet, host_register_descriptor_entities, host_register_descriptor_entity,
+    host_register_loaded_movers, host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;

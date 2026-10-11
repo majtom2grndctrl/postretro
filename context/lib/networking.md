@@ -168,14 +168,35 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 ### Presentation events vs. replicated state
 
-Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel; loss and reordering are acceptable. Impact-policy `present` spawns (damage numbers) reach the listen host and every currently participating client, including enemy-on-enemy hits and impacts without a source. Each spawn is offered to transport once even if local rendering skips intake; held/demoted clients receive nothing, and late joiners get no replay. Personal damage-number display preferences are deferred. Damaged-enemy overlay eligibility remains private per recipient, as below; XP/reward ownership and player-event audiences are unchanged. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
+Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel; loss and reordering are acceptable. Impact-policy `present` spawns (damage numbers) reach the listen host and every currently participating client, including enemy-on-enemy hits and impacts without a source. Each spawn is offered to transport once even if local rendering skips intake; held/demoted clients receive nothing, and late joiners get no replay. Personal damage-number display preferences are deferred. Damaged-enemy overlays use recoverable shared expiring state, as below; XP/reward ownership and player-event audiences are unchanged. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
 
 **Impact bursts follow the same rule: one per contact on every peer, spawned locally.** The built-in spark burst never crosses the wire. The firing peer's own simulation spawns it: the host's local fire, or the client's predicted hitscan and projectile contact, gated like its `impact` event, so a dry or silent pull shows none and a later rejection does not retract it. Every other client spawns it from the reliable observer impact cue's contacts, using each contact's normal, and the host spawns it for a client's shot at HIT ingestion from the validated contacts. One route per peer is the invariant: splash sends no Presentation-channel burst, since it would double the cue's. An impact that publishes no cue (no `shot_id`, or more contacts than a cue carries) shows no burst to observers.
 
-Damaged-enemy overlays are private per recipient. The host renderer owns only
-host-local feedback; each remote recipient has an independent cap and linger
-lifecycle. Equal-time cap decisions use the stable non-recycled `NetworkId`, so
-unordered fact arrival cannot select a different retained target set.
+Damaged-enemy overlays use one host-selected roster for the host and every
+participating client. Any qualifying source enrolls a live, unheld replicated
+enemy. Original host damage time plus authored linger determines expiry; the
+host's authored maximum-visible cap applies once. Equal-time overflow keeps the
+highest stable, non-recycled `NetworkId`s. Damage edges stream directly into
+bounded selection, and health/shield expressions are sampled once per selected
+target after final frame removal, independent of recipient count.
+
+The dedicated unreliable Presentation lane carries complete sorted rosters
+(`WireOverlayRoster`), including revision, publication script time, original hit
+time and expiry. Changes publish at most ten times per second; unchanged state
+repairs every 250 ms, including empty state. A new participant receives the next
+current publication with remaining lifetime. Clients retain only the latest
+roster (at most authored K, hard wire limit 64), wait for entity baselines and the
+existing snapshot/RTT presentation clock, and project facts onto local display
+copies. They retain no Health or damage authority. Older revisions cannot
+resurrect removals; equal-revision repair cannot restart expiry. A monotonic
+presentation-clock high-water mark prevents clock re-anchoring from reviving a
+bar. Pools project the selection without applying another cap ranking or timer.
+
+All Presentation payloads, including disposable damage-number spawns and private
+commands, carry the existing participation epoch. The client accepts only its
+active epoch, so packets from before demotion are rejected after re-promotion.
+This framing adds no replay or reliability to disposable events. XP/reward
+ownership, hit confirmation and private player feedback retain their audiences.
 
 **The player's damage bearing is the declared exception (decided, not yet built).** It is transient feedback, yet it rides owner-private replicated slots, never the Presentation channel, and adds no message kind. It is a continuous fact a HUD binds, not a one-shot command: a per-owner slot binds directly to a HUD widget and holds the latest value until the next hit. The host computes, at the damage chokepoint, a per-owner latest bearing in a frame the client can re-project, a source-known flag (damage need not have a spatial source — `entity_model.md` §7c), and a recency signal. Slots reach the client at snapshot cadence carrying only the latest value, so recency changes on every hit and holds until the next — a count or elapsed time, never a one-tick pulse a snapshot can straddle. Within one tick the last-applied hit wins. The owning client re-projects the bearing against its current view every frame into a client-local, unreplicated, readonly slot. A non-owning client never receives it. The mod HUD draws the indicator; the engine publishes the fact, not the policy.
 
@@ -917,6 +938,11 @@ value, so `WIRE_VERSION` and `SNAPSHOT_VERSION` are unchanged. A mixed-build pee
 refused: the handshake admits it, and its client rejects every state batch at the
 fingerprint check for the whole session, so no replicated state (health included) reaches
 it until both peers run the same build.
+
+Shared damaged-enemy rosters replace the former individual overlay facts, and
+Presentation payloads gain participation-epoch framing. These coordinated layout
+changes advance `WIRE_VERSION` to 28; peers at 27 are refused explicitly.
+`SNAPSHOT_VERSION` remains 18 and application protocol PRLB remains unchanged.
 
 ## Current contract
 

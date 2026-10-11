@@ -537,6 +537,18 @@ pub struct MoverCorrection {
 }
 
 impl ClientReplication {
+    /// Estimate the host script clock from the accepted snapshot anchor and RTT.
+    /// Shared presentation state waits for the same clock readiness as bindings.
+    #[must_use]
+    pub fn presentation_host_time(
+        &self,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+    ) -> Option<f64> {
+        self.bindings
+            .presentation_host_time(local_script_time, rtt_micros)
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }

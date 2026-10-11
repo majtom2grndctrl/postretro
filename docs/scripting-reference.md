@@ -2405,8 +2405,12 @@ so they do not multiply a cue across the network.
 
 Damage numbers authored with impact-policy `present` appear on every participating
 player's machine, including hits between enemies. They are transient: a late joiner
-does not replay earlier hits. Damaged-enemy health bars retain their per-player
-selection, and XP or rewards still belong to the player your policy credits.
+does not replay earlier hits. Damaged-enemy health and shield bars share one
+host-selected set across participating players, using your authored maximum
+visible count and linger. A joining player sees only still-live bars with their
+remaining lifetime. Each machine anchors them to its local view; clients display
+the host's facts without simulating enemy health. XP and rewards still belong to
+the player your policy credits.
 
 World descriptor entities carrying a mesh, health, a touchable component, or enemy behavior
 reach connected clients automatically. Light-only and emitter-only descriptors

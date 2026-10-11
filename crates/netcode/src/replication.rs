@@ -376,18 +376,37 @@ pub fn host_register_descriptor_entities(
     }
     let mut count = 0;
     for (id, _) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
-        if !is_host_replicated_descriptor_entity(registry, id) {
-            continue;
-        }
-        allocator.stamp(id);
-        replicable.register(id);
-        if tracked.insert(id) {
-            capture_placement_overrides(registry, id, overrides);
+        if host_register_descriptor_entity(registry, allocator, replicable, tracked, overrides, id)
+        {
             count += 1;
         }
     }
     if count > 0 {
         log::info!("[Net] host registered {count} descriptor entity/entities for replication");
+    }
+}
+
+/// Register a newly affected descriptor target without scanning the world.
+/// This closes the trigger-spawn → same-tick damage seam before the usual
+/// end-of-tick membership sweep. Returns whether membership was newly added.
+pub fn host_register_descriptor_entity(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+    overrides: &mut PresentationOverrides,
+    id: EntityId,
+) -> bool {
+    if !is_host_replicated_descriptor_entity(registry, id) {
+        return false;
+    }
+    allocator.stamp(id);
+    replicable.register(id);
+    if tracked.insert(id) {
+        capture_placement_overrides(registry, id, overrides);
+        true
+    } else {
+        false
     }
 }
 

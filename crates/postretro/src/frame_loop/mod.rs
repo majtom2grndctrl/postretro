@@ -860,6 +860,29 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let hit_zone_store = &session.hit_zone_store;
             let progress_tracker = &mut session.progress_tracker;
             let scripting = &mut session.scripting;
+            let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+            let overlay_tracker = &mut session.host_overlay_fact_tracker;
+            let (mut host_hit_intake, host_overlay_identities) = match net_endpoint.as_mut() {
+                Some(netcode::NetEndpoint::Host {
+                    server,
+                    allocator,
+                    replicable,
+                    descriptor_entities,
+                    owners,
+                    open_shots,
+                    projectile_presentations,
+                    tick,
+                    ..
+                }) => (
+                    Some((server, owners, open_shots, projectile_presentations, *tick)),
+                    Some(crate::host_overlays::HostOverlayIdentities::new(
+                        allocator,
+                        replicable,
+                        descriptor_entities,
+                    )),
+                ),
+                _ => (None, None),
+            };
             let trigger_system = &mut session.trigger_system;
             let touch_system = &mut session.touch_system;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
@@ -924,24 +947,26 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     use_edges: &trigger_use_edges,
                 }),
                 |registry, on_impact| {
-                    let Some(netcode::NetEndpoint::Host {
-                        server,
-                        allocator,
-                        owners,
-                        open_shots,
-                        projectile_presentations,
-                        tick,
-                        ..
-                    }) = net_endpoint.as_mut()
+                    let Some((server, owners, open_shots, projectile_presentations, tick)) =
+                        host_hit_intake.as_mut()
                     else {
                         return;
                     };
+                    let identities = host_overlay_identities
+                        .as_ref()
+                        .expect("host HIT intake has canonical identities");
+                    if overlay_config.is_some() && !ready_hit_declarations.is_empty() {
+                        identities.register_before_remote_hits(
+                            registry,
+                            &mut script_ctx.presentation_overrides.borrow_mut(),
+                        );
+                    }
                     let _ = netcode::host_ingest_ready_hit_declarations(
                         server,
                         registry,
                         collision_world,
                         hit_zone_store,
-                        allocator,
+                        &identities.allocator(),
                         owners,
                         open_shots,
                         *tick,
@@ -952,7 +977,26 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         |impact| remote_impacts.push(impact),
                     );
                 },
-                |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+                |registry| {
+                    if let Some(identities) = host_overlay_identities.as_ref() {
+                        scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+                            registry,
+                            |registry, damage| {
+                                if let Some(config) = overlay_config.as_ref() {
+                                    identities.record_damage(
+                                        registry,
+                                        damage,
+                                        &mut script_ctx.presentation_overrides.borrow_mut(),
+                                        overlay_tracker,
+                                        config,
+                                    );
+                                }
+                            },
+                        );
+                    } else {
+                        scripting.evaluate_pending_in_tick_impacts(registry);
+                    }
+                },
                 sim_cpu.gate(),
             );
             sim_cpu.absorb(&tick_events.cpu);
@@ -1118,72 +1162,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // client receives cues, so other roles skip the registry borrow.
     if app.is_connected_client() {
         app.spawn_observer_impact_bursts(&mut script_ctx.registry.borrow_mut());
-    }
-
-    // Status overlays are host/single-player presentation facts.
-    // This runs once after every fixed tick (including zero-tick
-    // frames), so a same-frame damage refresh is stamped before
-    // Render while a create-then-kill is removed before it draws.
-    if !app.is_connected_client() {
-        let session = app.session.as_mut().expect("running session installed");
-        let overlay_config = session
-            .scripting
-            .impact_policy_runtime
-            .client_overlay_config();
-        if let Some(config) = overlay_config.as_ref()
-            && let Some(netcode::NetEndpoint::Host {
-                server,
-                allocator,
-                replicable,
-                owners,
-                ..
-            }) = session.net_endpoint.as_mut()
-        {
-            session
-                .host_overlay_fact_tracker
-                .begin_frame(frame_dt, config.linger_seconds, owners);
-            let overlay_frame = {
-                let registry = script_ctx.registry.borrow();
-                session
-                    .scripting
-                    .impact_policy_runtime
-                    .update_damaged_enemy_overlays(
-                        &mut session.presentation_pool,
-                        &registry,
-                        &session.hit_zone_store,
-                        frame_anim_time,
-                        session.host_overlay_fact_tracker.tracked_entities(),
-                        |source| source.is_some_and(|source| owners.owner_of(source).is_some()),
-                    )
-            };
-
-            // The host renderer pool contains only host-local feedback.
-            // Each remote recipient has an independently capped fact
-            // stream on the unreliable presentation channel.
-            netcode::send_host_overlay_facts(
-                &mut session.host_overlay_fact_tracker,
-                server,
-                allocator,
-                replicable,
-                owners,
-                &overlay_frame,
-                config.max_visible,
-            );
-        } else {
-            session.host_overlay_fact_tracker.clear();
-            let registry = script_ctx.registry.borrow();
-            let _ = session
-                .scripting
-                .impact_policy_runtime
-                .update_damaged_enemy_overlays(
-                    &mut session.presentation_pool,
-                    &registry,
-                    &session.hit_zone_store,
-                    frame_anim_time,
-                    [],
-                    |_| false,
-                );
-        }
     }
 
     drop(stage_scope);
@@ -1442,6 +1420,42 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session.pending_death_events.extend(fired);
         },
     );
+
+    // Select/read shared facts after every frame-end consequence, including
+    // zero-tick frames, and before either snapshots or rendering observe them.
+    if !app.is_connected_client() {
+        let session = app.session.as_mut().expect("running session installed");
+        let registry = script_ctx.registry.borrow();
+        if let Some(netcode::NetEndpoint::Host {
+            server, replicable, ..
+        }) = session.net_endpoint.as_mut()
+        {
+            netcode::update_host_overlay_roster(
+                &mut session.host_overlay_fact_tracker,
+                &mut session.scripting.impact_policy_runtime,
+                &registry,
+                replicable,
+                &mut session.presentation_pool,
+                &session.hit_zone_store,
+                server,
+                frame_script_time,
+                frame_anim_time,
+            );
+        } else {
+            session.host_overlay_fact_tracker.clear();
+            let _ = session
+                .scripting
+                .impact_policy_runtime
+                .update_damaged_enemy_overlays(
+                    &mut session.presentation_pool,
+                    &registry,
+                    &session.hit_zone_store,
+                    frame_anim_time,
+                    [],
+                    |_| false,
+                );
+        }
+    }
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::HostSend);

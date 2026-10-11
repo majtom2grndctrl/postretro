@@ -58,12 +58,13 @@ Coordinates below are TrenchBroom editor units, with Z up.
   damage and hears the hiss; it cools in about 5 seconds, then that owner hears
   the cooled sound. Holstering also cools it.
 
-Compare floating damage numbers on both screens for host and client hits.
-Also repeat the reported enemy-on-enemy fight on `splash-damage-demo`: its
-damage numbers should now appear on both screens. Record other hit effects
-separately if they differ; only missing numbers were confirmed in the original
-observation. Damage-number visibility does not change who earns XP or which
-damaged-enemy health bars each player sees.
+Compare floating damage numbers and recently damaged enemies' health/shield
+bars on both screens for host and client hits. Repeat the reported enemy-on-enemy
+fight on `splash-damage-demo`: numbers and the selected bars should appear on
+both screens. Join or rejoin while bars are live and confirm they retain only
+their remaining lifetime. Expired or dead enemies must not regain bars. Record
+other hit effects separately if they differ. Shared feedback does not change
+who earns XP or receives private player feedback. Swap host/client roles.
 
 ## Player events and accommodations
 

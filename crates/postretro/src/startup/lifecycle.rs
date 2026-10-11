@@ -2996,20 +2996,14 @@ pub(crate) mod tests {
                 fade: postretro_foundation::PresentationFade::default(),
                 scatter_radius: 0.0,
             });
-            crate::netcode::ingest_client_overlay_fact(
-                &mut session.client_overlay_facts,
-                &mut session.presentation_pool,
-                crate::netcode::ClientOverlayFact::new(
-                    postretro_net::wire::NetworkId(91),
-                    0.0,
-                    0.0,
-                    false,
-                    false,
-                ),
-                None,
-                None,
-                None,
-            );
+            assert!(session.client_overlay_facts.receive(
+                postretro_net::wire::WireOverlayRoster {
+                    revision: 91,
+                    server_script_time: 1.0,
+                    entries: Vec::new(),
+                },
+                1,
+            ));
         }
 
         let slots_before = slot_snapshot(&app);
@@ -3061,7 +3055,7 @@ pub(crate) mod tests {
         );
         let session = app.session.as_ref().expect("test app session installed");
         assert_eq!(session.presentation_pool.live_counts(), (0, 0));
-        assert_eq!(session.client_overlay_facts.terminal_len(), 0);
+        assert_eq!(session.client_overlay_facts.revision(), None);
         assert!(
             session
                 .scripting

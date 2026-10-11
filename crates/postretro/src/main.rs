@@ -12,6 +12,7 @@ mod coop_fixture_tests;
 mod frame_eye;
 mod frame_loop;
 mod host_activations;
+mod host_overlays;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
 #[cfg(test)]
@@ -4407,7 +4408,8 @@ impl App {
                     hit_zone_store,
                     host_agent_params,
                     presentation_anim_time,
-                    frame_dt,
+                    script_ctx.presentation_script_time.get(),
+                    time_sync.rtt_micros(),
                 );
                 if apply_outcome.replicated_state_changed
                     && let Some(local_seat) = session_status.local_seat()
@@ -4824,7 +4826,11 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let Some(netcode::NetEndpoint::Client { replication, .. }) = session.net_endpoint.as_ref()
+        let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = session.net_endpoint.as_ref()
         else {
             return;
         };
@@ -4844,6 +4850,8 @@ impl App {
             &session.hit_zone_store,
             agent_params,
             anim_time,
+            script_ctx.presentation_script_time.get(),
+            time_sync.rtt_micros(),
         );
     }
 
@@ -5283,9 +5291,13 @@ impl App {
         };
         let scripting = &mut session.scripting;
         let hit_zone_store = &session.hit_zone_store;
+        let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+        let overlay_tracker = &mut session.host_overlay_fact_tracker;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
+            replicable,
+            descriptor_entities,
             tick,
             command_queues,
             owners,
@@ -5299,22 +5311,57 @@ impl App {
         };
 
         let mut registry = script_ctx.registry.borrow_mut();
-        netcode::host_flush_pending_hit_declarations(
-            server,
-            &mut registry,
-            &self.collision_world,
-            hit_zone_store,
-            allocator,
-            owners,
+        let ready = netcode::host_take_ready_hit_declarations(
             command_queues,
             open_shots,
             pending_hit_declarations,
             *tick,
+        );
+        if ready.is_empty() {
+            return false;
+        }
+        let identities = crate::host_overlays::HostOverlayIdentities::new(
+            allocator,
+            replicable,
+            descriptor_entities,
+        );
+        if overlay_config.is_some() {
+            identities.register_before_remote_hits(
+                &registry,
+                &mut script_ctx.presentation_overrides.borrow_mut(),
+            );
+        }
+        let accepted = netcode::host_ingest_ready_hit_declarations(
+            server,
+            &mut registry,
+            &self.collision_world,
+            hit_zone_store,
+            &identities.allocator(),
+            owners,
+            open_shots,
+            *tick,
             anim_time,
-            |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+            ready,
+            |registry| {
+                scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+                    registry,
+                    |registry, damage| {
+                        if let Some(config) = overlay_config.as_ref() {
+                            identities.record_damage(
+                                registry,
+                                damage,
+                                &mut script_ctx.presentation_overrides.borrow_mut(),
+                                overlay_tracker,
+                                config,
+                            );
+                        }
+                    },
+                );
+            },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
-        )
+        );
+        accepted
     }
 
     fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {

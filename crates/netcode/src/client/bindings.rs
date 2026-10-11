@@ -150,6 +150,18 @@ impl ClientBindings {
         }
     }
 
+    pub(super) fn presentation_host_time(
+        &self,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+    ) -> Option<f64> {
+        rtt_micros
+            .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
+            .zip(self.clock_anchor)
+            .map(|(rtt, (host, local))| host + rtt / 2_000_000.0 + (local_script_time - local))
+            .filter(|host_now| host_now.is_finite() && local_script_time.is_finite())
+    }
+
     /// Apply after the entire snapshot batch and display materialization, on
     /// every frame including frames with no snapshot. RTT is in microseconds.
     pub(super) fn apply_presentation_batch(
@@ -165,11 +177,7 @@ impl ClientBindings {
         self.deferred.retain(|(network_id, _), _| {
             map.contains_key(network_id) && !self.rejected_presentation_ids.contains(network_id)
         });
-        let ready_clock = rtt_micros
-            .filter(|rtt| rtt.is_finite() && *rtt >= 0.0)
-            .zip(self.clock_anchor)
-            .map(|(rtt, (host, local))| host + rtt / 2_000_000.0 + (local_script_time - local))
-            .filter(|host_now| host_now.is_finite() && local_script_time.is_finite());
+        let ready_clock = self.presentation_host_time(local_script_time, rtt_micros);
         let collected: Vec<_> = collected
             .into_iter()
             .filter(|(network_id, payload)| {

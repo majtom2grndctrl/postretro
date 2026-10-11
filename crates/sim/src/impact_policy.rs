@@ -41,12 +41,10 @@ pub struct ImpactPolicyRuntime {
     global_events: Vec<ImpactEventDescriptor>,
     presentation_templates: HashMap<String, PresentationTemplate>,
     presentation_overlays: Vec<BoundPresentationOverlay>,
-    /// Dispatch-driven tracking input. This is populated at the same
-    /// synchronous impact evaluation point as `present`, never by taking the
-    /// destructive registry dispatch queue a second time.
+    /// Local dispatch-driven tracking input, coalesced to authored max-visible
+    /// live targets. Hosted evaluation streams edges without using this queue.
     pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
-    /// Reused union of host-local, remote-recipient, and just-damaged targets
-    /// sampled by the post-tick overlay pass.
+    /// Reused selected-target set sampled by the post-tick overlay pass.
     overlay_entity_scratch: Vec<EntityId>,
     level_events: Vec<ImpactEventDescriptor>,
     active_level_tags: Vec<String>,
@@ -56,13 +54,13 @@ pub struct ImpactPolicyRuntime {
     presentation: Vec<PlannedEffect>,
 }
 
-/// One dispatch-driven damaged-enemy refresh. The host presentation sender
-/// resolves `source` through `MovementOwners` after Task 6 has settled the
-/// frame's overlay facts; local and unowned sources intentionally remain local.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One dispatch-driven damaged-enemy refresh, with the original host script
+/// clock captured before deferred post-tick roster selection.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DamagedEnemyOverlayDamage {
     pub entity: EntityId,
     pub source: Option<EntityId>,
+    pub damaged_at: f64,
 }
 
 /// One authoritative fact sample from Task 6's post-tick overlay stamp.
@@ -419,7 +417,81 @@ impl ImpactPolicyRuntime {
             if dispatch.producer != DamageProducer::InTick {
                 continue;
             }
-            self.evaluate_dispatch(registry, dispatch);
+            if let Some(damage) = self.evaluate_dispatch(registry, dispatch) {
+                self.retain_local_overlay_damage(registry, damage);
+            }
+        }
+    }
+
+    fn retain_local_overlay_damage(
+        &mut self,
+        registry: &EntityRegistry,
+        damage: DamagedEnemyOverlayDamage,
+    ) {
+        let Some(binding) = self.presentation_overlays.first() else {
+            return;
+        };
+        let is_alive = |entity| {
+            registry
+                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
+                .is_ok_and(|health| health.current > 0.0)
+        };
+        self.pending_overlay_damage
+            .retain(|pending| is_alive(pending.entity));
+        if !is_alive(damage.entity) || !damage.damaged_at.is_finite() {
+            return;
+        }
+        if let Some(pending) = self
+            .pending_overlay_damage
+            .iter_mut()
+            .find(|pending| pending.entity == damage.entity)
+        {
+            if damage.damaged_at >= pending.damaged_at {
+                *pending = damage;
+            }
+            return;
+        }
+        if self.pending_overlay_damage.len() < binding.max_visible {
+            self.pending_overlay_damage.push(damage);
+            return;
+        }
+        let Some((least_recent_index, least_recent)) = self
+            .pending_overlay_damage
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
+                (left.damaged_at, left.entity.to_raw())
+                    .partial_cmp(&(right.damaged_at, right.entity.to_raw()))
+                    .expect("retained overlay damage times are finite")
+            })
+        else {
+            return;
+        };
+        if (damage.damaged_at, damage.entity.to_raw())
+            > (least_recent.damaged_at, least_recent.entity.to_raw())
+        {
+            self.pending_overlay_damage[least_recent_index] = damage;
+        }
+    }
+
+    /// Evaluate the same synchronous policy batch while streaming each overlay
+    /// edge to its external bounded selector. The sink observes the registry
+    /// after that dispatch's policy consequences; no overlay edge enters the
+    /// local pending queue. All dispatches are taken before evaluation, keeping
+    /// splash's existing post-blast policy batch ordering.
+    pub fn evaluate_pending_in_registry_with_overlay_sink(
+        &mut self,
+        registry: &mut EntityRegistry,
+        mut sink: impl FnMut(&EntityRegistry, DamagedEnemyOverlayDamage),
+    ) {
+        let dispatches = registry.take_impact_dispatches();
+        for dispatch in dispatches {
+            if dispatch.producer != DamageProducer::InTick {
+                continue;
+            }
+            if let Some(damage) = self.evaluate_dispatch(registry, dispatch) {
+                sink(registry, damage);
+            }
         }
     }
 
@@ -481,23 +553,23 @@ impl ImpactPolicyRuntime {
         &mut self,
         registry: &mut postretro_entities::EntityRegistry,
         dispatch: ImpactDispatch,
-    ) {
-        if !self.presentation_overlays.is_empty() {
-            self.pending_overlay_damage.push(DamagedEnemyOverlayDamage {
+    ) -> Option<DamagedEnemyOverlayDamage> {
+        let overlay_damage =
+            (!self.presentation_overlays.is_empty()).then(|| DamagedEnemyOverlayDamage {
                 entity: dispatch.target,
                 source: dispatch.source,
+                damaged_at: self.ctx.presentation_script_time.get(),
             });
-        }
         let tags = {
             let Ok(tags) = registry.get_tags(dispatch.target) else {
-                return;
+                return overlay_damage;
             };
             tags.to_vec()
         };
 
         if let Err(error) = self.scope.seed_impact_from_registry(registry, &dispatch) {
             log::warn!("[Impact] dispatch scope seed failed; skipping impact: {error:?}");
-            return;
+            return overlay_damage;
         }
 
         self.consequential.clear();
@@ -552,6 +624,7 @@ impl ImpactPolicyRuntime {
 
         self.apply_planned(registry, &dispatch, false);
         self.apply_planned(registry, &dispatch, true);
+        overlay_damage
     }
 
     fn apply_planned(
@@ -779,6 +852,33 @@ impl ImpactPolicyRuntime {
         });
     }
 
+    /// Transfer damage edges without selecting targets or reading presentation
+    /// state. The authoritative roster owns their subsequent lifetime.
+    pub fn take_damaged_enemy_overlay_damage(&mut self) -> Vec<DamagedEnemyOverlayDamage> {
+        std::mem::take(&mut self.pending_overlay_damage)
+    }
+
+    /// Sample only the caller's chosen targets, once per distinct ID. This
+    /// performs no source selection and never reads or mutates a draw pool.
+    pub fn sample_damaged_enemy_overlay_facts(
+        &mut self,
+        registry: &EntityRegistry,
+        entities: impl IntoIterator<Item = EntityId>,
+    ) -> Vec<DamagedEnemyOverlayFact> {
+        let Some(binding) = self.presentation_overlays.first() else {
+            return Vec::new();
+        };
+        self.overlay_entity_scratch.clear();
+        self.overlay_entity_scratch.extend(entities);
+        self.overlay_entity_scratch
+            .sort_by_key(|entity| entity.to_raw());
+        self.overlay_entity_scratch.dedup();
+        self.overlay_entity_scratch
+            .iter()
+            .map(|&entity| sample_overlay_fact(binding, registry, entity))
+            .collect()
+    }
+
     /// Consume dispatch-driven refreshes, then stamp only already-tracked
     /// overlays once after all fixed ticks. This keeps the damage event edge
     /// separate from the bounded per-frame health/shield read.
@@ -792,10 +892,10 @@ impl ImpactPolicyRuntime {
         is_remote_source: impl Fn(Option<EntityId>) -> bool,
     ) -> DamagedEnemyOverlayFrame {
         let mut frame = DamagedEnemyOverlayFrame {
-            damage: std::mem::take(&mut self.pending_overlay_damage),
+            damage: self.take_damaged_enemy_overlay_damage(),
             facts: Vec::new(),
         };
-        let Some(binding) = self.presentation_overlays.first_mut() else {
+        let Some(binding) = self.presentation_overlays.first() else {
             return frame;
         };
 
@@ -811,57 +911,19 @@ impl ImpactPolicyRuntime {
             }
         }
 
-        let mut tracked_entities = std::mem::take(&mut self.overlay_entity_scratch);
-        tracked_entities.clear();
-        tracked_entities.extend(pool.tracked_overlay_ids_iter());
-        tracked_entities.extend(remote_tracked_entities);
-        tracked_entities.extend(frame.damage.iter().map(|damage| damage.entity));
-        tracked_entities.sort_by_key(|entity| entity.to_raw());
-        tracked_entities.dedup();
-        frame.facts.reserve(tracked_entities.len());
-
-        for &entity in &tracked_entities {
-            let Ok(health) = registry
-                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
-            else {
-                frame.facts.push(DamagedEnemyOverlayFact {
-                    entity,
-                    health_fraction: 0.0,
-                    shield_fraction: 0.0,
-                    has_shield: false,
-                    alive: false,
-                });
-                pool.evict_overlay(entity);
-                continue;
-            };
-            if health.current <= 0.0 {
-                frame.facts.push(DamagedEnemyOverlayFact {
-                    entity,
-                    health_fraction: 0.0,
-                    shield_fraction: 0.0,
-                    has_shield: false,
-                    alive: false,
-                });
+        frame.facts = self.sample_damaged_enemy_overlay_facts(
+            registry,
+            pool.tracked_overlay_ids_iter()
+                .chain(remote_tracked_entities)
+                .chain(frame.damage.iter().map(|damage| damage.entity)),
+        );
+        let binding = &self.presentation_overlays[0];
+        for fact in &frame.facts {
+            let entity = fact.entity;
+            if !fact.alive {
                 pool.evict_overlay(entity);
                 continue;
             }
-
-            let health_fraction = fraction_or_zero(health.current, health.max);
-            let (shield_fraction, has_shield) =
-                binding.shield.as_ref().map_or((0.0, false), |shield| {
-                    binding.scope.seed(registry, entity);
-                    let value = number_from_ir(eval_value(&shield.value, &binding.scope));
-                    let max = number_from_ir(eval_value(&shield.max, &binding.scope));
-                    let has_shield = max.is_finite() && max > 0.0;
-                    (
-                        if has_shield {
-                            fraction_or_zero(value, max)
-                        } else {
-                            0.0
-                        },
-                        has_shield,
-                    )
-                });
             if pool.has_overlay(entity) {
                 if let Some(anchor) = overlay_anchor(
                     registry,
@@ -872,27 +934,56 @@ impl ImpactPolicyRuntime {
                 ) {
                     pool.stamp_damaged_enemy_overlay(
                         entity,
-                        health_fraction,
-                        shield_fraction,
-                        has_shield,
+                        fact.health_fraction,
+                        fact.shield_fraction,
+                        fact.has_shield,
                         anchor,
-                        binding.hide_at_full && health.current == health.max,
+                        binding.hide_at_full
+                            && registry
+                                .get_component::<postretro_entities::components::health::HealthComponent>(entity)
+                                .is_ok_and(|health| health.current == health.max),
                     );
                 } else {
                     pool.evict_overlay(entity);
                 }
             }
-            frame.facts.push(DamagedEnemyOverlayFact {
-                entity,
-                health_fraction,
-                shield_fraction,
-                has_shield,
-                alive: true,
-            });
         }
-        self.overlay_entity_scratch = tracked_entities;
         frame
     }
+}
+
+fn sample_overlay_fact(
+    binding: &BoundPresentationOverlay,
+    registry: &EntityRegistry,
+    entity: EntityId,
+) -> DamagedEnemyOverlayFact {
+    let mut fact = DamagedEnemyOverlayFact {
+        entity,
+        health_fraction: 0.0,
+        shield_fraction: 0.0,
+        has_shield: false,
+        alive: false,
+    };
+    let Ok(health) =
+        registry.get_component::<postretro_entities::components::health::HealthComponent>(entity)
+    else {
+        return fact;
+    };
+    if health.current <= 0.0 {
+        return fact;
+    }
+    fact.health_fraction = fraction_or_zero(health.current, health.max);
+    if let Some(shield) = &binding.shield {
+        binding.scope.seed(registry, entity);
+        let value = number_from_ir(eval_value(&shield.value, &binding.scope));
+        let max = number_from_ir(eval_value(&shield.max, &binding.scope));
+        fact.has_shield = max.is_finite() && max > 0.0;
+        if fact.has_shield {
+            fact.shield_fraction = fraction_or_zero(value, max);
+        }
+    }
+    fact.alive = true;
+    fact
 }
 
 fn bind_damaged_enemies_overlay(
@@ -2093,55 +2184,256 @@ mod tests {
         );
     }
 
-    // Regression: a remote client's private damaged-enemy target was inserted
-    // into the host renderer pool and competed with host-local overlays.
     #[test]
-    fn remote_overlay_damage_samples_facts_without_entering_local_pool() {
-        use crate::presentation_pool::PresentationPool;
-        use crate::scripting_systems::hit_zones::HitZoneStore;
+    fn damaged_enemy_overlay_sampling_reads_only_distinct_selected_targets() {
+        let ctx = ScriptCtx::new();
+        let selected = target(&ctx, &["enemy"]);
+        let unselected = target(&ctx, &["enemy"]);
+        let dead = target(&ctx, &["enemy"]);
+        let missing = target(&ctx, &["enemy"]);
+        let shield = DamagedEnemiesShield {
+            value: IrNode::Input {
+                name: "@state.shield".to_string(),
+                owner: None,
+            },
+            max: IrNode::Input {
+                name: "@state.shieldMax".to_string(),
+                owner: None,
+            },
+        };
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let state = registry
+                .entity_state_mut(selected)
+                .expect("selected target state");
+            state.set("shield", 25.0);
+            state.set("shieldMax", 50.0);
+            let mut health = registry
+                .get_component::<HealthComponent>(dead)
+                .expect("dead target health")
+                .clone();
+            health.current = 0.0;
+            registry.set_component(dead, health).expect("live target");
+            registry.despawn(missing).expect("live target");
+        }
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay(
+            "enemy-status",
+            Some(shield),
+        )]);
+        hit(&ctx, unselected, DamageProducer::InTick);
+        hit(&ctx, selected, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
 
+        let facts = runtime.sample_damaged_enemy_overlay_facts(
+            &ctx.registry.borrow(),
+            [selected, dead, missing, selected],
+        );
+        assert_eq!(facts.len(), 3, "duplicate IDs are sampled once");
+        assert!(
+            !facts.iter().any(|fact| fact.entity == unselected),
+            "pending damage never adds a target to the chosen roster"
+        );
+        let selected_fact = facts
+            .iter()
+            .find(|fact| fact.entity == selected)
+            .expect("selected sample");
+        assert!(selected_fact.alive);
+        assert!((selected_fact.health_fraction - 0.99).abs() < 1.0e-5);
+        assert!((selected_fact.shield_fraction - 0.5).abs() < 1.0e-5);
+        assert!(selected_fact.has_shield);
+        for entity in [dead, missing] {
+            let fact = facts
+                .iter()
+                .find(|fact| fact.entity == entity)
+                .expect("terminal sample");
+            assert!(!fact.alive);
+            assert!(fact.health_fraction.abs() < 1.0e-5);
+            assert!(fact.shield_fraction.abs() < 1.0e-5);
+            assert!(!fact.has_shield);
+        }
+        assert_eq!(
+            runtime.take_damaged_enemy_overlay_damage().len(),
+            2,
+            "sampling does not consume damage edges"
+        );
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_damage_retains_original_dispatch_script_times() {
         let ctx = ScriptCtx::new();
         let enemy = target(&ctx, &["enemy"]);
-        give_target_hitbox(&ctx, enemy);
-        let remote_pawn = source(&ctx, false, false);
+        let second_enemy = target(&ctx, &["enemy"]);
+        let attacker = source(&ctx, false, false);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
         runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
         runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
-        let mut pool = PresentationPool::new(1);
-        let hit_zones = HitZoneStore::new();
-
-        hit_from(&ctx, enemy, Some(remote_pawn), DamageProducer::InTick);
+        ctx.presentation_script_time.set(2.0);
+        hit_from(&ctx, enemy, Some(attacker), DamageProducer::InTick);
         evaluate_pending(&ctx, &mut runtime);
-        let frame = {
-            let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(
-                &mut pool,
-                &registry,
-                &hit_zones,
-                0.0,
-                [],
-                |source| source == Some(remote_pawn),
-            )
-        };
+        ctx.presentation_script_time.set(2.25);
+        hit(&ctx, second_enemy, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        ctx.presentation_script_time.set(50.0);
 
-        assert!(pool.tracked_overlay_ids().is_empty());
-        assert_eq!(frame.damage.len(), 1);
-        assert_eq!(frame.facts.len(), 1);
-        assert_eq!(frame.facts[0].entity, enemy);
+        let damage = runtime.take_damaged_enemy_overlay_damage();
+        assert_eq!(damage.len(), 2);
+        assert_eq!(damage[0].entity, enemy);
+        assert_eq!(damage[0].source, Some(attacker));
+        assert!((damage[0].damaged_at - 2.0).abs() < 1.0e-9);
+        assert_eq!(damage[1].entity, second_enemy);
+        assert_eq!(damage[1].source, None);
+        assert!((damage[1].damaged_at - 2.25).abs() < 1.0e-9);
+        assert!(runtime.take_damaged_enemy_overlay_damage().is_empty());
+    }
 
-        let next = {
-            let registry = ctx.registry.borrow();
-            runtime.update_damaged_enemy_overlays(
-                &mut pool,
-                &registry,
-                &hit_zones,
-                0.0,
-                [enemy],
-                |_| false,
-            )
-        };
-        assert!(pool.tracked_overlay_ids().is_empty());
-        assert_eq!(next.facts.len(), 1, "remote recharge sampling stays live");
+    #[test]
+    fn damaged_enemy_overlay_local_queue_bounds_latest_targets_and_rejects_dead_or_missing() {
+        let ctx = ScriptCtx::new();
+        let targets: Vec<_> = (0..16).map(|_| target(&ctx, &["enemy"])).collect();
+        let attacker = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        ctx.presentation_script_time.set(2.0);
+        for &entity in targets.iter().rev() {
+            hit(&ctx, entity, DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+            assert!(runtime.pending_overlay_damage.len() <= 2);
+        }
+        let mut retained_ids: Vec<_> = runtime
+            .pending_overlay_damage
+            .iter()
+            .map(|damage| damage.entity)
+            .collect();
+        retained_ids.sort_by_key(|entity| entity.to_raw());
+        assert_eq!(retained_ids, targets[14..]);
+
+        ctx.presentation_script_time.set(3.0);
+        hit_from(&ctx, targets[0], Some(attacker), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        ctx.presentation_script_time.set(3.25);
+        hit(&ctx, targets[0], DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        assert_eq!(runtime.pending_overlay_damage.len(), 2);
+        let refreshed = runtime
+            .pending_overlay_damage
+            .iter()
+            .find(|damage| damage.entity == targets[0])
+            .expect("latest target retained");
+        assert!((refreshed.damaged_at - 3.25).abs() < 1.0e-9);
+        assert_eq!(refreshed.source, None);
+
+        ctx.presentation_script_time.set(4.0);
+        let doomed = target(&ctx, &["enemy"]);
+        runtime.replace_global_events(vec![event(
+            "kill",
+            "enemy",
+            vec![json!({
+                "primitive": "setHealth", "target": "@impact.target",
+                "args": { "value": number(0.0) },
+            })],
+        )]);
+        hit(&ctx, doomed, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        let missing = target(&ctx, &["enemy"]);
+        hit(&ctx, missing, DamageProducer::InTick);
+        ctx.registry
+            .borrow_mut()
+            .despawn(missing)
+            .expect("live target");
+        evaluate_pending(&ctx, &mut runtime);
+        let mut retained_ids: Vec<_> = runtime
+            .pending_overlay_damage
+            .iter()
+            .map(|damage| damage.entity)
+            .collect();
+        retained_ids.sort_by_key(|entity| entity.to_raw());
+        assert_eq!(
+            retained_ids,
+            [targets[0], targets[15]],
+            "post-policy dead or missing candidates cannot evict live targets"
+        );
+        assert_eq!(runtime.take_damaged_enemy_overlay_damage().len(), 2);
+    }
+
+    #[test]
+    fn damaged_enemy_overlay_sink_streams_many_targets_after_policy_without_local_queue() {
+        const TARGET_COUNT: usize = 256;
+        const RETAINED_CAP: usize = 3;
+        let ctx = ScriptCtx::new();
+        let targets: Vec<_> = (0..TARGET_COUNT)
+            .map(|_| target(&ctx, &["enemy"]))
+            .collect();
+        let attacker = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_presentation_templates(vec![overlay_template("enemy-status")]);
+        runtime.replace_presentation_overlays(vec![damaged_enemies_overlay("enemy-status", None)]);
+        runtime.replace_global_events(vec![event(
+            "streamed-consequence",
+            "enemy",
+            vec![
+                state_write("observedHealthAfter", input("@impact.healthAfter")),
+                json!({
+                    "primitive": "setHealth", "target": "@impact.target",
+                    "args": { "value": number(75.0) },
+                }),
+            ],
+        )]);
+        let mut delivered = 0;
+        let mut retained = Vec::with_capacity(RETAINED_CAP);
+        for (batch_index, batch) in targets.chunks(TARGET_COUNT / 2).enumerate() {
+            let script_time = 2.0 + batch_index as f64 * 0.25;
+            ctx.presentation_script_time.set(script_time);
+            let mut registry = ctx.registry.borrow_mut();
+            // Splash publishes one policy batch after applying its entire
+            // blast. Stream that batch without changing evaluation ordering.
+            for (index, &entity) in batch.iter().enumerate() {
+                let mut context = DamageContext::new("stream-test", DamageProducer::InTick);
+                context.attacker = (index % 2 == 0).then_some(attacker);
+                apply_damage_with_context(
+                    &mut registry,
+                    entity,
+                    &DamagePayload {
+                        amount: 1.0,
+                        impulse: glam::Vec3::ZERO,
+                    },
+                    context,
+                );
+            }
+            runtime.evaluate_pending_in_registry_with_overlay_sink(
+                &mut registry,
+                |registry, damage| {
+                    assert_eq!(damage.entity, targets[delivered]);
+                    assert_eq!(damage.source, (delivered % 2 == 0).then_some(attacker));
+                    assert!((damage.damaged_at - script_time).abs() < 1.0e-9);
+                    let health = registry
+                        .get_component::<HealthComponent>(damage.entity)
+                        .expect("streamed live target health");
+                    assert_number_approx_eq(health.current, 75.0);
+                    let state = registry
+                        .get_component::<EntityStateComponent>(damage.entity)
+                        .expect("policy consequence state");
+                    assert_number_approx_eq(state.get("observedHealthAfter"), 99.0);
+                    if retained.len() == RETAINED_CAP {
+                        retained.remove(0);
+                    }
+                    retained.push(damage);
+                    delivered += 1;
+                },
+            );
+            assert!(runtime.pending_overlay_damage.is_empty());
+        }
+        assert_eq!(delivered, TARGET_COUNT);
+        assert_eq!(retained.len(), RETAINED_CAP);
+        assert!(runtime.take_damaged_enemy_overlay_damage().is_empty());
+        runtime.evaluate_pending_in_registry_with_overlay_sink(
+            &mut ctx.registry.borrow_mut(),
+            |_, _| {
+                panic!("consumed dispatches cannot stream twice");
+            },
+        );
     }
 
     #[test]

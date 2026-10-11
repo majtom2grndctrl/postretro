@@ -80,10 +80,9 @@ pub struct ServerPresentationMessage {
 
 /// Payloads carried by [`ServerPresentationMessage`].
 ///
-/// New variants must be appended. bitcode encodes enum tags positionally. The
-/// first two variants (`Spawn`, `OverlayFact`) were defined together so the
-/// later overlay surface needed no second wire-version bump; `Command` was
-/// appended after them.
+/// bitcode encodes enum tags positionally. Wire 28 replaces the attacker-private
+/// OverlayFact at tag 1 with complete shared roster state; older peers are gated
+/// before decode. Transient Spawn and Command retain their existing semantics.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerPresentationPayload {
     /// A one-shot transient authored from a presentation template. `value` is
@@ -95,18 +94,61 @@ pub enum ServerPresentationPayload {
         value: f32,
         facts: BTreeMap<String, PresentationFact>,
     },
-    /// Reserved for host-pushed enemy-status facts. It is deliberately fully
-    /// decodable now even though Tasks 7/8 are its first producer/consumer.
-    OverlayFact {
-        enemy_id: NetworkId,
-        health_fraction: f32,
-        shield_fraction: f32,
-        has_shield: bool,
-        alive: bool,
-    },
+    /// Complete bounded live roster. Absence at a newer revision retires a bar;
+    /// repair sends repeat current state without replaying combat events.
+    OverlayRoster(WireOverlayRoster),
     /// A host presentation command routed to this client by audience. The client
     /// turns it into the same local command a local reaction enqueues.
     Command(PresentationCommand),
+}
+
+/// Mirrors the existing authoring limit, checked against it in netcode tests.
+pub const MAX_OVERLAY_ROSTER_ENTRIES: usize = 64;
+
+/// One live enemy in the shared host-selected overlay roster. Network ids are
+/// never recycled; a newer complete roster supplies removal/terminal ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct WireEnemyOverlay {
+    pub enemy_id: NetworkId,
+    pub health_fraction: f32,
+    pub shield_fraction: f32,
+    pub has_shield: bool,
+    pub damaged_at: f64,
+    pub expires_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireOverlayRoster {
+    pub revision: u64,
+    /// Host script clock at publication, not at reception or original damage.
+    pub server_script_time: f64,
+    /// Sorted by stable NetworkId; every entry is live at publication.
+    pub entries: Vec<WireEnemyOverlay>,
+}
+
+impl WireOverlayRoster {
+    pub fn is_valid(&self) -> bool {
+        self.revision > 0
+            && self.server_script_time.is_finite()
+            && self.server_script_time >= 0.0
+            && self.entries.len() <= MAX_OVERLAY_ROSTER_ENTRIES
+            && self
+                .entries
+                .windows(2)
+                .all(|pair| pair[0].enemy_id.0 < pair[1].enemy_id.0)
+            && self.entries.iter().all(|entry| {
+                entry.health_fraction.is_finite()
+                    && entry.health_fraction > 0.0
+                    && entry.shield_fraction.is_finite()
+                    && entry.shield_fraction >= 0.0
+                    && entry.damaged_at.is_finite()
+                    && entry.damaged_at >= 0.0
+                    && entry.damaged_at <= self.server_script_time
+                    && entry.expires_at.is_finite()
+                    && entry.expires_at > entry.damaged_at
+                    && entry.expires_at > self.server_script_time
+            })
+    }
 }
 
 /// Wire mirror of the engine's presentation system-reaction commands.
@@ -1825,15 +1867,128 @@ mod tests {
         assert!(round_trips(&spawn));
 
         let overlay = ServerPresentationMessage {
-            payload: ServerPresentationPayload::OverlayFact {
-                enemy_id: NetworkId(77),
-                health_fraction: 0.25,
-                shield_fraction: 0.5,
-                has_shield: true,
-                alive: true,
-            },
+            payload: ServerPresentationPayload::OverlayRoster(WireOverlayRoster {
+                revision: 4,
+                server_script_time: 10.0,
+                entries: vec![WireEnemyOverlay {
+                    enemy_id: NetworkId(77),
+                    health_fraction: 0.25,
+                    shield_fraction: 0.5,
+                    has_shield: true,
+                    damaged_at: 9.0,
+                    expires_at: 12.0,
+                }],
+            }),
         };
         assert!(round_trips(&overlay));
+    }
+
+    #[test]
+    fn overlay_roster_validates_capacity_order_finite_facts_and_absolute_expiry() {
+        let entry = WireEnemyOverlay {
+            enemy_id: NetworkId(0),
+            health_fraction: 0.5,
+            shield_fraction: 0.0,
+            has_shield: false,
+            damaged_at: 1.0,
+            expires_at: 3.0,
+        };
+        let valid = WireOverlayRoster {
+            revision: 1,
+            server_script_time: 2.0,
+            entries: vec![entry],
+        };
+        assert!(valid.is_valid(), "the first allocated NetworkId is zero");
+        let mut roster = valid.clone();
+        roster.entries = (0..MAX_OVERLAY_ROSTER_ENTRIES)
+            .map(|id| WireEnemyOverlay {
+                enemy_id: NetworkId(id as u32),
+                ..entry
+            })
+            .collect();
+        assert!(roster.is_valid());
+        assert!(round_trips(&roster));
+        roster.entries.push(WireEnemyOverlay {
+            enemy_id: NetworkId(MAX_OVERLAY_ROSTER_ENTRIES as u32),
+            ..entry
+        });
+        assert!(!roster.is_valid());
+        for bad in [
+            WireEnemyOverlay {
+                health_fraction: f32::NAN,
+                ..entry
+            },
+            WireEnemyOverlay {
+                health_fraction: 0.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                shield_fraction: -1.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                shield_fraction: f32::INFINITY,
+                ..entry
+            },
+            WireEnemyOverlay {
+                damaged_at: -1.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                damaged_at: 2.1,
+                ..entry
+            },
+            WireEnemyOverlay {
+                expires_at: 2.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                expires_at: f64::INFINITY,
+                ..entry
+            },
+        ] {
+            assert!(
+                !WireOverlayRoster {
+                    entries: vec![bad],
+                    ..valid.clone()
+                }
+                .is_valid()
+            );
+        }
+        assert!(
+            !WireOverlayRoster {
+                revision: 0,
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                server_script_time: f64::NAN,
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                entries: vec![entry, entry],
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                entries: vec![
+                    WireEnemyOverlay {
+                        enemy_id: NetworkId(1),
+                        ..entry
+                    },
+                    entry
+                ],
+                ..valid
+            }
+            .is_valid()
+        );
     }
 
     #[test]

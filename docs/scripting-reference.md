@@ -2403,6 +2403,11 @@ so they do not multiply a cue across the network.
 
 ### Co-op
 
+Damage numbers authored with impact-policy `present` appear on every participating
+player's machine, including hits between enemies. They are transient: a late joiner
+does not replay earlier hits. Damaged-enemy health bars retain their per-player
+selection, and XP or rewards still belong to the player your policy credits.
+
 World descriptor entities carrying a mesh, health, a touchable component, or enemy behavior
 reach connected clients automatically. Light-only and emitter-only descriptors
 stay local until a host-only reaction changes their presentation. Every light,

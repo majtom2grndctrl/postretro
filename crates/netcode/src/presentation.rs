@@ -411,22 +411,22 @@ pub fn send_host_overlay_facts(
     }
 }
 
-/// Drain the host's presentation intake once per frame and route each transient
-/// to exactly one screen. A remote pawn owner receives one unreliable packet;
-/// host-owned, absent, and non-pawn presenters remain host-local.
-pub fn route_host_presentation_spawns(
-    registry: &mut EntityRegistry,
-    server: &mut NetServer,
-    owners: &MovementOwners,
-) {
-    registry.retain_presentation_spawns(|spawn| {
-        match presentation_recipient(spawn, owners) {
-            Some(client_id) => {
-                // A failed addressed send is intentionally a dropped cosmetic.
-                let _ = server.send_presentation(client_id, presentation_message_from_spawn(spawn));
-                false
-            }
-            None => true,
+/// Share each new impact-policy transient with every participating client and
+/// keep one local copy for the host. The registry's routing cursor consumes the
+/// offer even when there are no recipients or rendering skips local intake.
+pub fn route_host_presentation_spawns(registry: &mut EntityRegistry, server: &mut NetServer) {
+    // Resolve the bounded participant set only when new work exists, once per
+    // batch rather than allocating it for every impact or every empty frame.
+    let mut clients = None;
+    registry.visit_unrouted_presentation_spawns(|spawn| {
+        let clients = clients.get_or_insert_with(|| server.participating_clients());
+        if clients.is_empty() {
+            return;
+        }
+        let message = presentation_message_from_spawn(spawn);
+        for &client_id in clients.iter() {
+            // A failed addressed send is intentionally a dropped cosmetic.
+            let _ = server.send_presentation(client_id, message.clone());
         }
     });
 }
@@ -818,13 +818,6 @@ fn client_overlay_hitbox(
     })
 }
 
-fn presentation_recipient(spawn: &PresentationSpawn, owners: &MovementOwners) -> Option<u64> {
-    spawn
-        .presenter
-        .map(|presenter| EntityId::from_raw(presenter.0))
-        .and_then(|source| owners.owner_of(source))
-}
-
 fn presentation_message_from_spawn(spawn: &PresentationSpawn) -> ServerPresentationMessage {
     ServerPresentationMessage {
         payload: ServerPresentationPayload::Spawn {
@@ -1147,22 +1140,148 @@ mod tests {
         }
     }
 
+    // Regression: NPC damage numbers stayed on the host, and player damage
+    // numbers reached only the attacker rather than the shared fight's viewers.
     #[test]
-    fn presentation_recipient_addresses_only_the_owning_remote_pawn() {
-        let remote = EntityId::from_raw(7);
-        let host_pawn = EntityId::from_raw(8);
-        let mut owners = MovementOwners::new();
-        owners.set(remote, 41);
+    fn shared_damage_numbers_reach_every_participant_once_and_keep_one_host_copy() {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = socket.local_addr().unwrap();
+        let mut server = NetServer::new(socket, address, 8, Duration::from_secs(1), None).unwrap();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let mut attacker =
+            connect_presentation_client(&mut server, address, PREDICTED_OWNER_CLIENT);
+        let mut observer =
+            connect_presentation_client(&mut server, address, REMOTE_OBSERVER_CLIENT);
+        let mut registry = EntityRegistry::new();
+        let host_player = registry.spawn(Transform::default());
+        let remote_player = registry.spawn(Transform::default());
+        let enemy = registry.spawn(Transform::default());
+        let mut originals = Vec::new();
+        for (index, source) in [Some(host_player), Some(remote_player), Some(enemy), None]
+            .into_iter()
+            .enumerate()
+        {
+            let mut number = spawn(source);
+            number.facts.insert(
+                "value".into(),
+                PresentationFact::Number(index as f32 + 10.0),
+            );
+            originals.push(number.clone());
+            registry.push_presentation_spawn(number);
+        }
+        route_host_presentation_spawns(&mut registry, &mut server);
+        // No renderer drain: re-routing must not repeat old numbers, but must
+        // still pick up a subsequent hit in the retained bounded queue.
+        route_host_presentation_spawns(&mut registry, &mut server);
+        let next = spawn(Some(enemy));
+        registry.push_presentation_spawn(next.clone());
+        originals.push(next);
+        route_host_presentation_spawns(&mut registry, &mut server);
+        let expected: Vec<_> = originals
+            .iter()
+            .map(presentation_message_from_spawn)
+            .collect();
+        for (id, client) in [
+            (PREDICTED_OWNER_CLIENT, &mut attacker),
+            (REMOTE_OBSERVER_CLIENT, &mut observer),
+        ] {
+            let received = relay_server_presentation(
+                &mut server,
+                client,
+                id,
+                &mut PacketConditioner::new(perfect_link(id)),
+            );
+            assert_eq!(
+                received, expected,
+                "every viewer receives the original frozen facts once"
+            );
+        }
+        assert_eq!(
+            registry.take_presentation_spawns(),
+            originals,
+            "the host retains exactly one local copy of every hit"
+        );
 
+        let next_frame = spawn(None);
+        registry.push_presentation_spawn(next_frame.clone());
+        route_host_presentation_spawns(&mut registry, &mut server);
         assert_eq!(
-            presentation_recipient(&spawn(Some(remote)), &owners),
-            Some(41)
+            relay_server_presentation(
+                &mut server,
+                &mut attacker,
+                PREDICTED_OWNER_CLIENT,
+                &mut PacketConditioner::new(perfect_link(4))
+            ),
+            vec![presentation_message_from_spawn(&next_frame)],
+            "local intake resets routing for the next frame"
         );
-        assert_eq!(
-            presentation_recipient(&spawn(Some(host_pawn)), &owners),
-            None
+    }
+
+    #[test]
+    fn shared_damage_numbers_skip_held_clients_and_never_replay_on_promotion_or_join() {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = socket.local_addr().unwrap();
+        let mut server = NetServer::new(socket, address, 8, Duration::from_secs(1), None).unwrap();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let mut client = connect_presentation_client(&mut server, address, PREDICTED_OWNER_CLIENT);
+        server.set_mod_digest(None);
+        assert!(!server.is_participating(PREDICTED_OWNER_CLIENT));
+        let mut registry = EntityRegistry::new();
+        registry.push_presentation_spawn(spawn(None));
+        route_host_presentation_spawns(&mut registry, &mut server);
+        assert!(
+            relay_server_presentation(
+                &mut server,
+                &mut client,
+                PREDICTED_OWNER_CLIENT,
+                &mut PacketConditioner::new(perfect_link(5))
+            )
+            .is_empty()
         );
-        assert_eq!(presentation_recipient(&spawn(None), &owners), None);
+
+        server.set_mod_digest(Some([7; 32]));
+        assert!(server.is_participating(PREDICTED_OWNER_CLIENT));
+        let mut late_joiner =
+            connect_presentation_client(&mut server, address, REMOTE_OBSERVER_CLIENT);
+        // The host still has the old number pending local intake; neither a
+        // re-promoted client nor a late joiner should receive that old event.
+        route_host_presentation_spawns(&mut registry, &mut server);
+        for (id, peer) in [
+            (PREDICTED_OWNER_CLIENT, &mut client),
+            (REMOTE_OBSERVER_CLIENT, &mut late_joiner),
+        ] {
+            assert!(
+                relay_server_presentation(
+                    &mut server,
+                    peer,
+                    id,
+                    &mut PacketConditioner::new(perfect_link(id))
+                )
+                .is_empty()
+            );
+        }
+        let fresh = spawn(None);
+        registry.push_presentation_spawn(fresh.clone());
+        route_host_presentation_spawns(&mut registry, &mut server);
+        for (id, peer) in [
+            (PREDICTED_OWNER_CLIENT, &mut client),
+            (REMOTE_OBSERVER_CLIENT, &mut late_joiner),
+        ] {
+            assert_eq!(
+                relay_server_presentation(
+                    &mut server,
+                    peer,
+                    id,
+                    &mut PacketConditioner::new(perfect_link(id))
+                ),
+                vec![presentation_message_from_spawn(&fresh)]
+            );
+        }
+        assert_eq!(registry.take_presentation_spawns().len(), 2);
     }
 
     #[test]

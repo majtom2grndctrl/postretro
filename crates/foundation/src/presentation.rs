@@ -72,8 +72,8 @@ pub struct PresentationDrawInput {
 }
 
 /// Opaque source identity stamped by an impact presenter. The packed value
-/// avoids a foundation dependency on the entity registry while retaining the
-/// sender choice required by a future addressed transport path.
+/// avoids a foundation dependency on the entity registry while retaining impact
+/// provenance. Shared damage-number routing does not restrict its audience by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PresentationPresenter(pub u32);
 
@@ -132,7 +132,7 @@ pub struct PresentationSpawn {
     pub template: PresentationTemplateHandle,
     pub facts: PresentationFacts,
     /// Local presentation does not dereference this. It is carried from the
-    /// dispatch so the source/presenter decision is not lost before transport.
+    /// dispatch as impact provenance, independently of its presentation audience.
     pub presenter: Option<PresentationPresenter>,
     pub lifetime_seconds: f32,
     pub motion: PresentationMotion,

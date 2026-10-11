@@ -4697,7 +4697,7 @@ impl App {
         // no-op on an ordinary host.
         {
             let mut registry = script_ctx.registry.borrow_mut();
-            netcode::route_host_presentation_spawns(&mut registry, server, owners);
+            netcode::route_host_presentation_spawns(&mut registry, server);
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
             if weapon_owners.has_attachment_changes() {
                 let descriptors = script_ctx.data_registry.borrow();

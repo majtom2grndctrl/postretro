@@ -803,6 +803,8 @@ pub struct EntityRegistry {
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
     /// state.
     presentation_spawns: Vec<PresentationSpawn>,
+    /// Prefix already offered to transport, retained until local frame intake.
+    routed_presentation_spawns: usize,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
     /// Ownership returns here after every tick so the allocation is reused.
     active_deferred_effects: Vec<EntityId>,
@@ -832,6 +834,7 @@ impl EntityRegistry {
             inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
+            routed_presentation_spawns: 0,
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -1227,6 +1230,7 @@ impl EntityRegistry {
     pub fn take_presentation_spawns(&mut self) -> Vec<PresentationSpawn> {
         let mut spawns = Vec::with_capacity(self.presentation_spawns.len());
         spawns.append(&mut self.presentation_spawns);
+        self.routed_presentation_spawns = 0;
         spawns
     }
 
@@ -1237,13 +1241,21 @@ impl EntityRegistry {
     pub fn drain_presentation_spawns_into(&mut self, out: &mut Vec<PresentationSpawn>) {
         out.clear();
         out.append(&mut self.presentation_spawns);
+        self.routed_presentation_spawns = 0;
     }
 
-    /// Retain selected queued presentation spawns in place. Host routing uses
-    /// this to remove addressed remote cosmetics while leaving host-local work
-    /// for the ordinary frame-pool drain without allocating a partition Vec.
-    pub fn retain_presentation_spawns(&mut self, mut keep: impl FnMut(&PresentationSpawn) -> bool) {
-        self.presentation_spawns.retain(|spawn| keep(spawn));
+    /// Offer newly queued spawns to transport once, keeping one local copy for
+    /// frame intake. Rendering may be skipped for several routing passes; the
+    /// prefix cursor prevents those retained cosmetics from being sent again.
+    /// A dropped send is still consumed: transient presentation has no replay.
+    pub fn visit_unrouted_presentation_spawns(
+        &mut self,
+        mut visit: impl FnMut(&PresentationSpawn),
+    ) {
+        for spawn in &self.presentation_spawns[self.routed_presentation_spawns..] {
+            visit(spawn);
+        }
+        self.routed_presentation_spawns = self.presentation_spawns.len();
     }
 
     /// Discard presentation work whose world anchors belong to the retiring
@@ -1251,6 +1263,7 @@ impl EntityRegistry {
     /// fixed-tick intake.
     pub fn clear_presentation_spawns(&mut self) {
         self.presentation_spawns.clear();
+        self.routed_presentation_spawns = 0;
     }
 
     /// Mutable access to the engine-managed deferred-effect storage.
@@ -1365,7 +1378,7 @@ impl EntityRegistry {
                 .map(|(idx, _)| idx as u16),
         );
         self.impact_dispatches.clear();
-        self.presentation_spawns.clear();
+        self.clear_presentation_spawns();
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1779,6 +1792,43 @@ mod tests {
             drained.last().unwrap().template.0,
             format!("template-{}", MAX_PENDING_PRESENTATION_SPAWNS - 1)
         );
+    }
+
+    // Regression: retaining shared numbers for local rendering must not carry
+    // the transport cursor into a later frame, demotion, or level's intake.
+    #[test]
+    fn presentation_spawn_routing_resets_after_every_intake_or_clear() {
+        for reset in ["take", "drain", "clear", "unload"] {
+            let mut registry = EntityRegistry::new();
+            let number = PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "damage-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: PresentationMotion::default(),
+                fade: PresentationFade::default(),
+                scatter_radius: 0.0,
+            };
+            registry.push_presentation_spawn(number.clone());
+            let mut routed = Vec::new();
+            registry.visit_unrouted_presentation_spawns(|spawn| routed.push(spawn.clone()));
+            registry.visit_unrouted_presentation_spawns(|_| panic!("retained spawn routed twice"));
+            assert_eq!(routed, vec![number.clone()]);
+            match reset {
+                "take" => {
+                    registry.take_presentation_spawns();
+                }
+                "drain" => registry.drain_presentation_spawns_into(&mut Vec::new()),
+                "clear" => registry.clear_presentation_spawns(),
+                "unload" => registry.clear_for_level_unload(),
+                _ => unreachable!(),
+            }
+            registry.push_presentation_spawn(number.clone());
+            routed.clear();
+            registry.visit_unrouted_presentation_spawns(|spawn| routed.push(spawn.clone()));
+            assert_eq!(routed, vec![number], "fresh work must route after {reset}");
+        }
     }
 
     // Regression: level unload left a fixed-tick presentation spawn queued for

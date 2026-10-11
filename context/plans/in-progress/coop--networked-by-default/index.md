@@ -19,6 +19,7 @@ Whatever the host owns at runtime reaches every client, a late joiner included. 
 - An author-declared `audience` on trigger-fired presentation one-shots, with per-kind defaults, routed over E16's player-addressed lane.
 - An install warning for UI-stack and text verbs a hosted session's trigger can reach.
 - Dev content and author docs for the above; re-running E16's carried-forward manual checks.
+- Shared impact-policy damage numbers on every participating peer, including enemy-on-enemy combat (owner-approved playtest amendment, 2026-10-11). Personal damage-number preferences remain deferred; damaged-enemy overlay selection and reward ownership keep their existing contracts.
 
 ### Out of scope
 
@@ -110,6 +111,8 @@ Whatever the host owns at runtime reaches every client, a late joiner included. 
 | Pawn, projectile presentation, mover | own paths | unchanged |
 | Held wieldable, including retained Health/behavior and holstered slots | no | Inventory ownership excludes world participation; existing held presentation and weapon timers remain |
 
+13. **Shared impact-policy presentation (owner amendment, 2026-10-11).** Transient spawns from impact-policy `present` (damage numbers) reach the listen host and every currently participating client once, regardless of whether the impact source is the host player, a client player, an NPC, or absent. Keep the existing unreliable Presentation lane, frozen anchors/facts, queue/pool bounds, and no replay to late joiners. Retained host intake must never resend a previously routed spawn when rendering is skipped. This replaces the previous attacker-private routing for these spawns only. Damaged-enemy overlay eligibility/caps/linger, personal XP/rewards, player-event audiences, and observer attack/impact cues remain unchanged. Per-player display preferences are deferred.
+
 ### Drain origins
 
 Origin is set where each drain is called (`frame_loop/mod.rs`, plus the install-time `progress` dispatch in `install_world_cpu`), from where that drain's input is produced. Verified against the connected-client branch, which fills its own predicted movement events, its own weapon events, and `observer_weapon_cues` — the `activate`/`impact` cues the host forwards for other shooters and for enemy shots (`publish_observer_weapon_cues`).
@@ -169,9 +172,11 @@ Automated:
 - [ ] 21. Review gate: `docs/scripting-reference.md` documents `audience`, its defaults, what reaches clients in co-op (networked kinds, host-only presentation changes), and the UI-verb limitation; the dev `player-events.ts` example includes a `screenShake` in a player event's fire list.
 - [ ] 22. Ownership is consistent across loadout composition, acquisition/release, typed and erased Inventory replacement/removal, connected-client inventory reconstruction, item/holder despawn, demotion, and level reload. Conflicting live ownership fails atomically, leaving both inventories and the item unchanged; stale IDs and malformed selection indices retain existing safe degradation. While held, an item with retained Health/behavior is absent from every world-participation path in Decision 1 on host and connected-client roles, including queued/ready HITs naming its former NetworkId before the registration sweep. A successful drop restores eligibility without resetting retained Health, weapon resources or recovery; holstered heat/cell updates continue and inactive recovery remains frozen. Descriptor refresh while held never restores world participation through component presence. Holder teardown removes current owned auxiliaries, including later pickups, and leaves dropped/reacquired items alive; slot reuse inherits no ownership. Existing explicit script damage/healing/despawn semantics remain valid.
 
+- [ ] 23. Each impact-policy damage-number spawn from a host player, client player, NPC, or absent source reaches every participating peer once with the original template, anchor, and facts. A second routing pass before local intake sends nothing; later queued spawns still send once. Held/demoted clients receive nothing, and joining/re-promoting does not replay old spawns. The host retains one local copy. Personal XP/rewards and damaged-enemy overlay selection remain unchanged.
+
 Manual (owner, Mac↔Windows on `content/dev/maps/splash-damage-demo.map` and the co-op test fixture from Task 12):
 
-- [ ] M1. Client pistol kills on dummies credit XP to the client; a dummy either player kills plays its death animation and disappears after its linger on both machines; client impact bursts land on the dummy; the client can hit the invisible health-only target. A health-bearing weapon disappears as a world item when either player picks it up, remains usable after holstering and re-equipping, and returns at its drop pose with retained state on both machines.
+- [ ] M1. Client pistol kills on dummies credit XP to the client; a dummy either player kills plays its death animation and disappears after its linger on both machines; client impact bursts land on the dummy; the client can hit the invisible health-only target. A health-bearing weapon disappears as a world item when either player picks it up, remains usable after holstering and re-equipping, and returns at its drop pose with retained state on both machines. Damage numbers from either player's hits and enemy-on-enemy hits appear on both machines (owner amendment, 2026-10-11).
 - [ ] M2. A trigger dims lights, changes fog, stops an emitter, switches a prop's animation state, and changes a networked lit prop's light for both players, including a client that joins after the trigger; a looping light pulses in visible sync on both screens.
 - [ ] M3. A pressure-plate flash plays only for the player who stepped on it; its alarm sound plays for both.
 - [ ] M4. E16 M1 (level-up and scald on the affected machine only; vignette local, no delay) and E16 M2 (flash limiter and reduce motion apply to a forwarded flash and shake on a client).

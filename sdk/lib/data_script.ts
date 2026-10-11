@@ -434,9 +434,9 @@ const IMPACT: Impact = Object.freeze({
 });
 
 /**
- * Spawn a passive presentation at the current impact target. The target token
- * is closed over here; Rust stamps the dispatch source as its future presenter
- * route and freezes `value` before a subsequent despawn can remove the target.
+ * Spawn a passive presentation at the current impact target, shared with every
+ * participating peer. Rust freezes `value` and the anchor before a subsequent
+ * despawn can remove the target; source identity does not restrict the audience.
  */
 export function present(template: PresentationTemplate, value: NumberValue): Effect {
   if (template === null || typeof template !== "object" || typeof template.id !== "string") {

@@ -27,6 +27,8 @@ struct Atlas {
     placements: Vec<ChartPlacement>,
     layout: BlockLayout,
     width: u32,
+    height: u32,
+    layer_count: u32,
 }
 
 impl Atlas {
@@ -69,7 +71,30 @@ impl Atlas {
                 chart_blocks: vec![0; faces],
             },
             width,
+            height: CHART,
+            layer_count: 1,
         }
+    }
+
+    /// Re-seat the one chart of a single-face atlas at `placement` in a
+    /// `width × height` atlas of `layer_count` bake layers, its whole-atlas
+    /// block on the placement's layer.
+    fn placed(
+        mut self,
+        placement: ChartPlacement,
+        width: u32,
+        height: u32,
+        layer_count: u32,
+    ) -> Self {
+        assert_eq!(self.charts.len(), 1, "placed() re-seats a single chart");
+        self.placements[0] = placement;
+        self.width = width;
+        self.height = height;
+        self.layer_count = layer_count;
+        self.layout.blocks[0].width = width;
+        self.layout.blocks[0].height = height;
+        self.layout.blocks[0].layer = placement.layer;
+        self
     }
 
     fn shared(&self) -> SharedAtlas<'_> {
@@ -77,21 +102,23 @@ impl Atlas {
             charts: &self.charts,
             placements: &self.placements,
             atlas_width: self.width,
-            atlas_height: CHART,
+            atlas_height: self.height,
             layout: &self.layout,
         }
     }
 
-    /// Bake-layer index of interior texel `(tx, ty)` of `face`.
+    /// Within-layer index of interior texel `(tx, ty)` of `face`.
     fn idx(&self, face: usize, tx: u32, ty: u32) -> u32 {
-        (PAD + ty) * self.width + face as u32 * CHART + PAD + tx
+        let placement = self.placements[face];
+        (placement.y + PAD + ty) * self.width + placement.x + PAD + tx
     }
 
-    /// Every texel of `face`'s padded chart.
+    /// Every within-layer texel index of `face`'s padded chart.
     fn padded(&self, face: usize) -> Vec<u32> {
+        let placement = self.placements[face];
         (0..CHART)
             .flat_map(|y| (0..CHART).map(move |x| (y, x)))
-            .map(|(y, x)| y * self.width + face as u32 * CHART + x)
+            .map(|(y, x)| (placement.y + y) * self.width + placement.x + x)
             .collect()
     }
 
@@ -108,8 +135,8 @@ fn partition(atlas: &Atlas, mut texels: Vec<(u32, f32)>) -> LightmapLayer {
     texels.sort_by_key(|&(idx, _)| idx);
     LightmapLayer {
         atlas_width: atlas.width,
-        atlas_height: CHART,
-        layer_count: 1,
+        atlas_height: atlas.height,
+        layer_count: atlas.layer_count,
         target_layer: 0,
         texels: texels
             .into_iter()
@@ -220,6 +247,23 @@ impl Fill {
             })
             .collect()
     }
+
+    /// Channel `channel` over `face`'s padded chart at its placement, layer
+    /// included, as `[y][x]`.
+    fn chart_rect(&self, atlas: &Atlas, face: usize, channel: usize) -> Vec<Vec<u8>> {
+        let placement = atlas.placements[face];
+        let layer_start = placement.layer * atlas.width * atlas.height;
+        (0..CHART)
+            .map(|y| {
+                (0..CHART)
+                    .map(|x| {
+                        let idx = layer_start + (placement.y + y) * atlas.width + placement.x + x;
+                        self.channel(idx, channel)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 /// The lightmap's edge-dilation rule run over one padded chart alone, written
@@ -259,8 +303,8 @@ fn dilated_reference(interior: &[Vec<u8>]) -> Vec<Vec<u8>> {
                         }
                     }
                 }
-                if count > 0 {
-                    value[y][x] = ((sum + count / 2) / count) as u8;
+                if let Some(mean) = (sum + count / 2).checked_div(count) {
+                    value[y][x] = mean as u8;
                     covered[y][x] = true;
                 }
             }
@@ -272,7 +316,7 @@ fn dilated_reference(interior: &[Vec<u8>]) -> Vec<Vec<u8>> {
 /// Consume `arrivals` in order through one owner fill.
 fn run(atlas: &Atlas, arrivals: &[(&EligibleLight<'_>, LightmapLayer)]) -> Fill {
     let shared = atlas.shared();
-    let mut fill = OwnershipFill::new(&shared, 1, &[], Vec::new(), None);
+    let mut fill = OwnershipFill::new(&shared, atlas.layer_count, &[], Vec::new(), None);
     for (light, partition) in arrivals {
         fill.consume(light, partition, &shared);
     }
@@ -405,11 +449,11 @@ fn an_evicting_newcomer_leaves_none_of_the_evicted_values() {
     }
 }
 
-// An owner occluded at a face edge reads zero there, including the
-// padding a bilinear tap past that edge reaches; elsewhere its padding repeats
-// its own lit edge, and no unowned channel holds a value.
+// Padding beside an occluded run reads zero; where the run ends at a lit
+// texel, the padding blends as the lightmap's padding does (the full-grid
+// reference check covers that). No unowned channel holds a value.
 #[test]
-fn an_owner_occluded_at_the_face_edge_reads_zero_there_and_in_padding() {
+fn an_owner_occluded_along_a_face_edge_pads_that_edge_with_zero() {
     let atlas = Atlas::new(1);
     let light = light_over(0, 2.0);
     let owner = eligible(&light, 0, false);
@@ -516,6 +560,56 @@ fn a_lit_owners_padding_repeats_its_edge_as_the_lightmap_dilates() {
             "unowned channel {channel}"
         );
     }
+}
+
+// A chart placed on a later bake layer at a non-zero row and column dilates
+// its own padded rect there, and nothing lands on layer 0.
+#[test]
+fn a_chart_on_a_later_layer_and_row_dilates_its_own_padding() {
+    let placement = ChartPlacement {
+        x: 4,
+        y: 4,
+        layer: 1,
+    };
+    let atlas = Atlas::new(1).placed(placement, 16, 16, 2);
+    let light = light_over(0, 2.0);
+    let owner = eligible(&light, 0, false);
+    // A row ramp quantizing to 51, 102, 153, 204: it varies along y only, so
+    // an x/y swap in the padding offset would read a different grid.
+    let ramp = [0.2, 0.4, 0.6, 0.8];
+    let texels: Vec<(u32, f32)> = (0..16)
+        .map(|n| {
+            let (tx, ty) = (n % INTERIOR, n / INTERIOR);
+            (atlas.idx(0, tx, ty), ramp[ty as usize])
+        })
+        .collect();
+    let on_layer_1 = LightmapLayer {
+        target_layer: placement.layer,
+        ..partition(&atlas, texels)
+    };
+    let fill = run(&atlas, &[(&owner, on_layer_1)]);
+    assert_eq!(fill.owners(0), [0, E, E, E]);
+
+    let interior: Vec<Vec<u8>> = [51, 102, 153, 204]
+        .into_iter()
+        .map(|value| vec![value; INTERIOR as usize])
+        .collect();
+    assert_eq!(fill.chart_rect(&atlas, 0, 0), dilated_reference(&interior));
+    for channel in 1..4 {
+        assert!(
+            fill.chart_rect(&atlas, 0, channel)
+                .iter()
+                .flatten()
+                .all(|&value| value == 0),
+            "unowned channel {channel}"
+        );
+    }
+    // Layer 0 holds nothing, at the chart's x/y or anywhere else.
+    let layer_0_bytes = (atlas.width * atlas.height) as usize * 4;
+    assert!(
+        fill.raw[..layer_0_bytes].iter().all(|&byte| byte == 0),
+        "a missing layer term would write layer 0"
+    );
 }
 
 // Two abutting charts on one layer, each owned in channel 0 by a different

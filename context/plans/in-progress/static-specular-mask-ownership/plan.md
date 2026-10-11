@@ -208,6 +208,14 @@ packing, and runtime.
   - `cargo clippy -p postretro --features capture,dev-tools` has 4 errors, in capture files this
     branch does not touch (`prepared.rs`, `report.rs`, `scene.rs`). They are not introduced
     here.
+- **Occluded-edge padding after dilation (clarifies the occluded-edge Acceptance row; same
+  meaning).** Padding repeats the owner's edge by the lightmap's 8-neighbour rule (owner,
+  2026-10-10). Beside a run of occluded edge texels the padding is zero, so a tap past an
+  occluded edge reads zero. Where that run ends next to a lit texel, the padding blends
+  the two, which is the same texel-scale softening bilinear sampling already gives the
+  shadow boundary inside the face. No padding texel ever holds another light's value.
+  Test: `an_owner_occluded_along_a_face_edge_pads_that_edge_with_zero`, with a full-grid
+  check against the reference rule.
 
 ## Delegated answers
 
@@ -227,66 +235,70 @@ Harness rows use the forward-function GPU harness pattern (`shadowmask_sample_te
 and run with `POSTRETRO_REQUIRE_GPU=1`; without a BC adapter they prove nothing. Compiler
 rows are `prl-build` bin tests (`--bin prl-build`).
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 walled-off light adds zero specular to receiver; reaching light keeps highlight | compiler fixture (wall between light and receiver face: no channel) + harness (non-owner adds 0, owner adds lit) | achievable as stated |
-| 2 owns R not S; both fragments at shared edge | harness: two faces sharing an edge with distinct owner streams, sampled each side of the edge | achievable as stated |
-| 3 P1 cut sub-faces identical owner sets across layers, incl. one sub-face alone would rank another fourth; own baked values per sub-face | compiler fixture: oversize face cut across two bake layers | achievable as stated |
-| 4 cut face: walled-off light no channel; partial light gets one | compiler fixture | achievable as stated |
-| 5 P16 owner lighting one sub-face reads zero across the others incl. padding | compiler raw-fill inspection | achievable as stated |
-| 6 P22 light behind wall reaching only cut face edge takes no channel | compiler fixture | achievable as stated |
-| 7 P14 above-floor light missed by every sample: no channel, warned | compiler fixture with a sample spacing that misses a lit patch + log capture | achievable as stated |
-| 8 P15 estimated owner baking no lit texel cleared from owner table | compiler fixture | achievable as stated |
-| 9 P17 below-floor promoted light on cut face never beats above-floor specular-only | compiler fixture | achievable as stated |
-| 10 within owned face specular follows mask: 0 occluded, full lit | harness | achievable as stated |
-| 11 SDF light outside selection 0; inside at SDF visibility | harness | achievable as stated |
-| 12 directional highlight along baked direction; moving origin changes nothing | `spec_buffer` pack test + harness | achievable as stated |
-| 13 P9 missing data (block miss, missing id 42, placeholder, refused pool all-resident and streamed): no static non-SDF specular, SDF unchanged; refusal logs `[Renderer]` error, no panic | harness (block miss, mask-present bit off) + renderer plan tests for refusal both modes with log capture + loader test for missing id 42 | achievable as stated |
-| 14 P4 owner occluded at face edge reads zero incl. padding taps | compiler raw-fill inspection | achievable as stated |
-| 15 each owner position reads its own channel in either group; swap invariance | harness over all four positions + `capture_shadowmask_groups` rewritten to swap two owners with their planes | achievable as stated |
-| 16 P12 streamed = all-resident at existing streaming poses with owner specular on | `capture_lightmap_streaming` `#[ignore]` captures, `--features capture`, run on the 1660 | achievable as stated |
-| 17 static light outside id 40 owns channels and gets shadowed specular | compiler fixture + harness | achievable as stated |
-| 18 union subtraction matches pre-change when every promoted light owns its face | harness: new union vs a test-held copy of the pre-change function | achievable as stated |
-| 19 promoted light not owning a face subtracts nothing | harness | achievable as stated |
-| 20 five lights → four owners by contribution + warning naming fifth; four → no warning | compiler test + log capture | achievable as stated |
-| 21 warning names face and light; cut face once as parent with sub-face range; `--verbose` peak | compiler test + log capture | achievable as stated |
-| 22 P24 ascending owners whatever arrival order; masks follow | compiler test | achievable as stated |
-| 23 P2 warm id-42 memo hit repeats drop warnings and peak | compiler cache test + log capture | achievable as stated |
-| 24 P4 eviction leaves none of the evicted values; unreached reads 0 | compiler raw-fill test | achievable as stated |
-| 25 promoted smallest keeps channel over brighter specular-only; none promoted → smallest drops | compiler test | achievable as stated |
-| 26 P5 below-floor promoted drops silently, never takes from above-floor | compiler test + log capture | achievable as stated |
-| 27 P19 below-floor promoted incumbent evicted by four above-floor arrivals | compiler test | achievable as stated |
-| 28 3 above + 2 below: last channel to brighter below-floor even when dimmer is promoted | compiler test | achievable as stated |
-| 29 directional takes channel on lit face, none under a roof | compiler fixture | achievable as stated |
-| 30 fifth below floor: no warning; above floor: warned | compiler test + log capture | achievable as stated |
-| 31 P7 tie → lower index whatever arrives first; identical across worker counts | compiler test | achievable as stated |
-| 32 P6 id 42 byte-identical under reversed partition order and across window sizes | compiler test (template `reversed_partition_fill_keeps_compact_selection_bytes`) | achievable as stated |
-| 33 P18 cut face across two layers: id 42 and report identical across workers, windows, cold/warm/reuse; estimate tie → lower index | compiler test | achievable as stated |
-| 34 P8 dynamic/SDF/bake-only before a static light: entries name the filling light; bake-only takes none | compiler test | achievable as stated |
-| 35 P13 non-finite visibility neither admits nor contributes | compiler test | achievable as stated |
-| 36 light lit only in padding takes no channel | compiler test | achievable as stated |
-| 37 occluded on every texel: none; one lit texel: one | compiler test | achievable as stated |
-| 38 id 42 byte-identical across workers, cold, warm, and lightmap-reuse rebuild | extend `fused_cold_warm_and_selection_only_paths_match_reference_bytes` | achievable as stated |
-| 39 P3 editing a non-id-40 light or only id-40 membership rebuilds id 42 = cold, incl. cached lightmap | same test; flip its unselected-edit memo-hit assertion | achievable as stated |
-| 40 reuse rebuild reads each eligible partition ≤ once per layer, one raw fill, no trace beyond estimate | `cache.test_access("lightmap_layer")` counts + raw-fill allocation counter + trace counter | achievable as stated |
-| 41 P20 warm id-42 memo hit traces nothing, estimate included | estimate/walk trace counter test | achievable as stated |
-| 42 no cut face → no estimate sample; estimate traces only lights whose unshadowed term reaches | trace counter test | achievable as stated |
-| 43 P23 estimate density or mode change rebuilds id 42 on warm build | memo key test | achievable as stated |
-| 44 load rejects owner ≥ static spec count, duplicate, out of order / after empty, face count ≠ id 17, payload length; `SMB6` asks for re-bake | `level-format` codec tests + loader test | achievable as stated |
-| 45 no eligible light in id 40 still emits id 42 and shadows specular | compiler pipeline test | achievable as stated |
-| 46 P10 id 40 cleared at load keeps id 42; former promoted owners keep shadowed specular, subtract nothing | loader test (id 41 missing) + harness | achievable as stated |
-| 47 eligible lights light no face interior → no id 42 | compiler pipeline test | achievable as stated |
-| 48 P11/P21 over the owner-index cap → named error before any lightmap work incl. estimate | compiler test with 65 536 static lights and trace/bake counters | achievable as stated |
-| 49 forward binding inventory test passes, snapshot unedited | `forward_bindings_add_only_the_vertex_block_table` | achievable as stated |
-| 50 vertex stride 36, id-17 version unchanged | existing `level-format` stride test + version constant untouched | achievable as stated |
-| M1 hallway pose (−17, 21, 86): no sheen; 0x40 toggle shows no patch | executor capture at pose, owner visual read | manual |
-| M2 campaign-test leak poses p1–p4: no leak specular; lit-surface highlight remains | executor captures (three masks per pose) before/after | manual |
-| M3 animated light's world highlight gone, nothing else changes, diffuse animation unchanged | executor captures + owner read | manual |
-| M4 campaign-test highlights continuous across 8 m chunk planes | owner, in-engine | manual |
-| M5 kinematic-platform floor and movement-feel: drop report read, highlight loss assessed | executor reports drop report; owner assesses visuals | manual |
-| M6 1660 dense pose forward GPU ms before/after (`capture,dev-tools`) | subsumed by M8 (hallway arena and sheen poses) | manual |
-| M7 hallway cold `--release` before/after: shadowmask + lightmap stage time incl. estimate, peak RSS | owner launches in terminal if over ~2 h; executor otherwise | manual |
-| M8 (owner amendment) runtime perf matrix before/after on five maps: no forward or frame-GPU regression past run-to-run spread at any pose; gains reported | executor on the 1660; protocol below | manual |
+Results: the full gate on 2026-10-10 (fmt, clippy `-D warnings`, `cargo test` at 10 134
+passed, `cargo check --release`, crate graph), with the GPU harnesses and captures on the
+1660 under `POSTRETRO_REQUIRE_GPU=1`.
+
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 walled-off light adds zero specular to receiver; reaching light keeps highlight | compiler fixture (wall between light and receiver face: no channel) + harness (non-owner adds 0, owner adds lit) | achievable as stated | pass |
+| 2 owns R not S; both fragments at shared edge | harness: two faces sharing an edge with distinct owner streams, sampled each side of the edge | achievable as stated | pass |
+| 3 P1 cut sub-faces identical owner sets across layers, incl. one sub-face alone would rank another fourth; own baked values per sub-face | compiler fixture: oversize face cut across two bake layers | achievable as stated | pass |
+| 4 cut face: walled-off light no channel; partial light gets one | compiler fixture | achievable as stated | pass |
+| 5 P16 owner lighting one sub-face reads zero across the others incl. padding | compiler raw-fill inspection | achievable as stated | pass |
+| 6 P22 light behind wall reaching only cut face edge takes no channel | compiler fixture | achievable as stated | pass |
+| 7 P14 above-floor light missed by every sample: no channel, warned | compiler fixture with a sample spacing that misses a lit patch + log capture | achievable as stated | pass |
+| 8 P15 estimated owner baking no lit texel cleared from owner table | compiler fixture | achievable as stated | pass |
+| 9 P17 below-floor promoted light on cut face never beats above-floor specular-only | compiler fixture | achievable as stated | pass; the owner accepted the estimate's 16-texel sample weight as a recorded limit (owner amendments) |
+| 10 within owned face specular follows mask: 0 occluded, full lit | harness | achievable as stated | pass |
+| 11 SDF light outside selection 0; inside at SDF visibility | harness | achievable as stated | pass |
+| 12 directional highlight along baked direction; moving origin changes nothing | `spec_buffer` pack test + harness | achievable as stated | pass for owners; SDF directional lights stay keyed on their origin (owner amendment, `sdf_directional_specular_stays_keyed_on_its_origin`) |
+| 13 P9 missing data (block miss, missing id 42, placeholder, refused pool all-resident and streamed): no static non-SDF specular, SDF unchanged; refusal logs `[Renderer]` error, no panic | harness (block miss, mask-present bit off) + renderer plan tests for refusal both modes with log capture + loader test for missing id 42 | achievable as stated | pass |
+| 14 P4 owner occluded at face edge reads zero incl. padding taps | compiler raw-fill inspection | achievable as stated | pass, as clarified under Corrections (occluded-edge padding after dilation) |
+| 15 each owner position reads its own channel in either group; swap invariance | harness over all four positions + `capture_shadowmask_groups` rewritten to swap two owners with their planes | achievable as stated | pass |
+| 16 P12 streamed = all-resident at existing streaming poses with owner specular on | `capture_lightmap_streaming` `#[ignore]` captures, `--features capture`, run on the 1660 | achievable as stated | pass, 3/3 on the 1660, re-run after the review fixes |
+| 17 static light outside id 40 owns channels and gets shadowed specular | compiler fixture + harness | achievable as stated | pass |
+| 18 union subtraction matches pre-change when every promoted light owns its face | harness: new union vs a test-held copy of the pre-change function | achievable as stated | pass |
+| 19 promoted light not owning a face subtracts nothing | harness | achievable as stated | pass |
+| 20 five lights → four owners by contribution + warning naming fifth; four → no warning | compiler test + log capture | achievable as stated | pass |
+| 21 warning names face and light; cut face once as parent with sub-face range; `--verbose` peak | compiler test + log capture | achievable as stated | pass |
+| 22 P24 ascending owners whatever arrival order; masks follow | compiler test | achievable as stated | pass |
+| 23 P2 warm id-42 memo hit repeats drop warnings and peak | compiler cache test + log capture | achievable as stated | pass |
+| 24 P4 eviction leaves none of the evicted values; unreached reads 0 | compiler raw-fill test | achievable as stated | pass |
+| 25 promoted smallest keeps channel over brighter specular-only; none promoted → smallest drops | compiler test | achievable as stated | pass |
+| 26 P5 below-floor promoted drops silently, never takes from above-floor | compiler test + log capture | achievable as stated | pass |
+| 27 P19 below-floor promoted incumbent evicted by four above-floor arrivals | compiler test | achievable as stated | pass |
+| 28 3 above + 2 below: last channel to brighter below-floor even when dimmer is promoted | compiler test | achievable as stated | pass |
+| 29 directional takes channel on lit face, none under a roof | compiler fixture | achievable as stated | pass |
+| 30 fifth below floor: no warning; above floor: warned | compiler test + log capture | achievable as stated | pass |
+| 31 P7 tie → lower index whatever arrives first; identical across worker counts | compiler test | achievable as stated | pass |
+| 32 P6 id 42 byte-identical under reversed partition order and across window sizes | compiler test (template `reversed_partition_fill_keeps_compact_selection_bytes`) | achievable as stated | pass |
+| 33 P18 cut face across two layers: id 42 and report identical across workers, windows, cold/warm/reuse; estimate tie → lower index | compiler test | achievable as stated | pass |
+| 34 P8 dynamic/SDF/bake-only before a static light: entries name the filling light; bake-only takes none | compiler test | achievable as stated | pass |
+| 35 P13 non-finite visibility neither admits nor contributes | compiler test | achievable as stated | pass |
+| 36 light lit only in padding takes no channel | compiler test | achievable as stated | pass |
+| 37 occluded on every texel: none; one lit texel: one | compiler test | achievable as stated | pass |
+| 38 id 42 byte-identical across workers, cold, warm, and lightmap-reuse rebuild | extend `fused_cold_warm_and_selection_only_paths_match_reference_bytes` | achievable as stated | pass |
+| 39 P3 editing a non-id-40 light or only id-40 membership rebuilds id 42 = cold, incl. cached lightmap | same test; flip its unselected-edit memo-hit assertion | achievable as stated | pass |
+| 40 reuse rebuild reads each eligible partition ≤ once per layer, one raw fill, no trace beyond estimate | `cache.test_access("lightmap_layer")` counts + raw-fill allocation counter + trace counter | achievable as stated | pass |
+| 41 P20 warm id-42 memo hit traces nothing, estimate included | estimate/walk trace counter test | achievable as stated | pass |
+| 42 no cut face → no estimate sample; estimate traces only lights whose unshadowed term reaches | trace counter test | achievable as stated | pass |
+| 43 P23 estimate density or mode change rebuilds id 42 on warm build | memo key test | achievable as stated | pass |
+| 44 load rejects owner ≥ static spec count, duplicate, out of order / after empty, face count ≠ id 17, payload length; `SMB6` asks for re-bake | `level-format` codec tests + loader test | achievable as stated | pass |
+| 45 no eligible light in id 40 still emits id 42 and shadows specular | compiler pipeline test | achievable as stated | pass |
+| 46 P10 id 40 cleared at load keeps id 42; former promoted owners keep shadowed specular, subtract nothing | loader test (id 41 missing) + harness | achievable as stated | pass |
+| 47 eligible lights light no face interior → no id 42 | compiler pipeline test | achievable as stated | pass |
+| 48 P11/P21 over the owner-index cap → named error before any lightmap work incl. estimate | compiler test with 65 536 static lights and trace/bake counters | achievable as stated | pass at the stage; the pipeline-level early check has no test of its own (needs a 65 536-light map) |
+| 49 forward binding inventory test passes, snapshot unedited | `forward_bindings_add_only_the_vertex_block_table` | achievable as stated | pass |
+| 50 vertex stride 36, id-17 version unchanged | existing `level-format` stride test + version constant untouched | achievable as stated | pass |
+| M1 hallway pose (−17, 21, 86): no sheen; 0x40 toggle shows no patch | executor capture at pose, owner visual read | manual | outstanding: no sheen in either arm at a four-yaw sweep; the owner confirms the view or records it as gone before this change |
+| M2 campaign-test leak poses p1–p4: no leak specular; lit-surface highlight remains | executor captures (three masks per pose) before/after | manual | pass (owner read, 2026-10-10) |
+| M3 animated light's world highlight gone, nothing else changes, diffuse animation unchanged | executor captures + owner read | manual | pass (owner read, 2026-10-10) |
+| M4 campaign-test highlights continuous across 8 m chunk planes | owner, in-engine | manual | pass (owner read in-engine, 2026-10-10) |
+| M5 kinematic-platform floor and movement-feel: drop report read, highlight loss assessed | executor reports drop report; owner assesses visuals | manual | pass (owner read in-engine, 2026-10-10) |
+| M6 1660 dense pose forward GPU ms before/after (`capture,dev-tools`) | subsumed by M8 (hallway arena and sheen poses) | manual | pass, within M8 |
+| M7 hallway cold `--release` before/after: shadowmask + lightmap stage time incl. estimate, peak RSS | owner launches in terminal if over ~2 h; executor otherwise | manual | pass: lightmap + shadowmask 393.3 → 393.1 s, peak 4.31 → 4.32 GiB |
+| M8 (owner amendment) runtime perf matrix before/after on five maps: no forward or frame-GPU regression past run-to-run spread at any pose; gains reported | executor on the 1660; protocol below | manual | pass at every pose; `forward` up to −23%; see §Task 11 results |
 
 ### M8 protocol
 
@@ -351,7 +363,22 @@ Each task commits with its plan update.
 - An engine-level id-40 strip cannot load: the cluster directory requires id 40 beside id 41. P10 stays proven by the loader test.
 - AC 16, run in task 11 on the new compiler's campaign-test and hallway PRLs: `capture_lightmap_streaming -- --ignored` 3/3 pass (`streamed_lightmap_capture_matches_all_resident_on_campaign_test`, `..._on_hallway_inspection`, `forced_missing_lightmap_block_drops_exactly_its_static_direct_and_specular`) |
 | 11 | Manual captures and measurements M1–M8 before and after. Build the pre-change binary from 75ac7e12f in a throwaway target and compile both PRL sets. M8 runs interleaved in one session | integrating executor + owner | 10 | done except M1. The sheen view is unconfirmed: the owner picks a view or gives the original angles. Results: §Task 11 results |
-| 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |
+| 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | done. Preflight is clean. Three review rounds:
+- **Round 1:** 10 reviewers across three slices plus a seam pass. No 🔴. Fixed (`f3253deb9`): nine 🟡, the nits, and about 25 comment-drift items. The 🟡 items:
+  - SDF-tagged suns had their highlight follow their aim while their shadow came from their origin.
+  - The cut-face drop warning gave the wrong cause.
+  - Thin cut faces got no estimate samples.
+  - The owner-index cap check ran late in the pipeline.
+  - Pack did not check the owner table against id 17.
+  - The memo-hit estimate test could not fail.
+  - `cut_parents` was set after construction.
+  - An owner-stream length mismatch was silent.
+  - GPU test helpers were duplicated.
+- **Round 1 owner calls:** mask padding, SDF directional specular and P17 went to the owner (owner amendments).
+- **Round 2:** 3 reviewers on the fix commit. No 🔴, only nits, fixed with the owner-approved padding dilation (`a8cb20c5a`).
+- **Round 3:** 1 adversarial reviewer on the dilation. No code defect. It added an occluded-edge clarification (Corrections) and a layer-offset test.
+- **Padding check:** capture A/B of campaign-test rebaked with dilation against zero padding, same engine. Changed pixels lie only on face-boundary lines and all brighten: at most 360 specular pixels per 1080p frame, at most 12/255, under 0.3% of specular energy.
+- **Full gate:** clean, 10 134 tests |
 
 ## Task 11 results
 

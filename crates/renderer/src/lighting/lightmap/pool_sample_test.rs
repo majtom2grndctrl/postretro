@@ -25,6 +25,8 @@ use super::test_fixtures::{FixtureTexels, block_fixture};
 use super::upload::{upload_placeholder_direction, upload_placeholder_irradiance};
 use super::{StaticPoolPlan, filtering_sampler_descriptor, upload_placeholder_shadowmask};
 
+use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip, wgsl_const_line, wgsl_item};
+
 const FORWARD_WGSL: &str = include_str!("../../shaders/forward.wgsl");
 const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../../shaders/lightmap_sample.wgsl");
 const PROBE_BYTES: usize = 16;
@@ -60,94 +62,6 @@ const PLACEMENTS: [BlockPlacement; 4] = [
 ];
 const MISSING_BLOCK: u32 = 4;
 pub(super) const SCALE: u32 = 2;
-
-pub(super) struct GpuCtx {
-    pub(super) device: wgpu::Device,
-    pub(super) queue: wgpu::Queue,
-}
-
-fn try_init_gpu() -> Option<GpuCtx> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))
-    .ok()?;
-    if !adapter
-        .features()
-        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
-    {
-        return None;
-    }
-    eprintln!(
-        "[pool_sample_test] running on {:?}",
-        adapter.get_info().name
-    );
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("pool_sample_test Device"),
-        required_features: wgpu::Features::TEXTURE_COMPRESSION_BC,
-        required_limits: wgpu::Limits::default(),
-        ..Default::default()
-    }))
-    .ok()?;
-    Some(GpuCtx { device, queue })
-}
-
-pub(super) fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
-    if let Some(ctx) = try_init_gpu() {
-        return Some(ctx);
-    }
-    let required =
-        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "[pool_sample_test] {test}: POSTRETRO_REQUIRE_GPU is set but no BC-capable GPU adapter \
-         is available"
-    );
-    eprintln!("[pool_sample_test] skipping {test}: no BC-capable GPU adapter available");
-    None
-}
-
-/// The text of `fn name(` or `struct name {` through its matching brace.
-fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
-    let start = source
-        .find(header)
-        .unwrap_or_else(|| panic!("the WGSL source must declare `{header}`"));
-    let open = start + source[start..].find('{').expect("item body");
-    let mut depth = 0usize;
-    for (offset, ch) in source[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    // Structs end `};`; keep the semicolon with them.
-                    let end = open + offset + 1;
-                    let end = if source[end..].starts_with(';') {
-                        end + 1
-                    } else {
-                        end
-                    };
-                    return &source[start..end];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{header}` body never closes");
-}
-
-fn wgsl_const_line<'a>(source: &'a str, name: &str) -> &'a str {
-    source
-        .lines()
-        .find(|line| line.starts_with(&format!("const {name}:")))
-        .unwrap_or_else(|| panic!("the WGSL source must declare `{name}`"))
-}
 
 fn shader_source() -> String {
     let prelude = r#"
@@ -283,7 +197,9 @@ pub(super) struct ProbeResult {
     pub(super) mask: [f32; 4],
     /// The visibility world static specular gives the probe's owner.
     pub(super) owner_visibility: f32,
-    pub(super) union_slot0_visibility: f32,
+    /// The union's channel-0 read, ungated: the mask value owner position 0
+    /// selects.
+    pub(super) union_channel0_visibility: f32,
     pub(super) missing: bool,
     /// Whether owners may read their mask at this fragment.
     pub(super) owners_readable: bool,
@@ -310,8 +226,8 @@ pub(super) fn direction_texel(block: usize, x: u32, y: u32) -> [u8; 2] {
     ]
 }
 
-pub(super) fn mask_byte(block: usize, slot: u32, bx: u32, by: u32) -> u8 {
-    (10 + slot * 50 + bx * 20 + by * 7 + block as u32 * 3) as u8
+pub(super) fn mask_byte(block: usize, channel: u32, bx: u32, by: u32) -> u8 {
+    (10 + channel * 50 + bx * 20 + by * 7 + block as u32 * 3) as u8
 }
 
 /// The two-layer pool holding blocks 0–3, and a table naming them resident
@@ -632,7 +548,7 @@ pub(super) fn run_probes(
             direction: sampled[1],
             mask: masks[0],
             owner_visibility: masks[1][0],
-            union_slot0_visibility: masks[1][1],
+            union_channel0_visibility: masks[1][1],
             missing: masks[1][2] == 1.0,
             owners_readable: masks[1][3] == 1.0,
         })
@@ -652,8 +568,9 @@ pub(super) fn assert_near(actual: &[f32], expected: &[f32], tolerance: f32, what
 pub(super) fn expected_texel(block: usize, x: u32, y: u32) -> ([f32; 3], [f32; 2], [f32; 4]) {
     let [r, g, b, _] = irradiance_texel(block, x, y);
     let direction = direction_texel(block, x / SCALE, y / SCALE).map(|c| f32::from(c) / 255.0);
-    let mask =
-        std::array::from_fn(|slot| f32::from(mask_byte(block, slot as u32, x / 4, y / 4)) / 255.0);
+    let mask = std::array::from_fn(|channel| {
+        f32::from(mask_byte(block, channel as u32, x / 4, y / 4)) / 255.0
+    });
     ([r, g, b], direction, mask)
 }
 
@@ -665,13 +582,13 @@ pub(super) fn resident_probe(uv: [f32; 2], block: u32) -> Probe {
     }
 }
 
-// AC 5, renderer half: every resident block reads its own texels at pool
-// offset + block-local texel on both layers, and a block-local coordinate past
-// any edge clamps to the block's own edge texel instead of reaching the
-// neighbour placed flush against it.
+// Every resident block reads its own texels at pool offset + block-local
+// texel on both layers, and a block-local coordinate past any edge clamps to
+// the block's own edge texel instead of reaching the neighbour placed flush
+// against it.
 #[test]
 fn resident_blocks_read_their_own_texels_on_both_layers_and_clamp_at_their_edges() {
-    let Some(ctx) = gpu_or_skip(
+    let Some(ctx) = bc_gpu_or_skip(
         "resident_blocks_read_their_own_texels_on_both_layers_and_clamp_at_their_edges",
     ) else {
         return;
@@ -730,22 +647,23 @@ fn resident_blocks_read_their_own_texels_on_both_layers_and_clamp_at_their_edges
             "{what}: a resident block is readable"
         );
         assert_near(
-            &[result.owner_visibility, result.union_slot0_visibility],
+            &[result.owner_visibility, result.union_channel0_visibility],
             &[mask[0], mask[0]],
             1.0e-5,
-            &format!("{what}: slot-0 selects"),
+            &format!("{what}: channel-0 selects"),
         );
     }
 }
 
-// Restated AC 7, shader half, and AC 13 (block miss): a block whose entry is
-// not resident reads zero irradiance and zero shadowmask, and its owners may
-// not read the mask at all, so every owner's specular and the union
-// visibility drop; the no-lightmap entry reads zero irradiance, the neutral
-// direction and an all-visible shadowmask.
+// A block whose entry is not resident reads zero irradiance and zero
+// shadowmask, and its owners may not read the mask at all, so every owner's
+// specular and the union visibility drop. The no-lightmap entry reads zero
+// irradiance, the neutral direction and an all-visible shadowmask; that read
+// is no owner's baked visibility, so owners may not read it either.
 #[test]
 fn missing_and_no_lightmap_entries_drop_or_neutralize_their_terms() {
-    let Some(ctx) = gpu_or_skip("missing_and_no_lightmap_entries_drop_or_neutralize_their_terms")
+    let Some(ctx) =
+        bc_gpu_or_skip("missing_and_no_lightmap_entries_drop_or_neutralize_their_terms")
     else {
         return;
     };
@@ -768,7 +686,7 @@ fn missing_and_no_lightmap_entries_drop_or_neutralize_their_terms() {
         assert!(result.missing, "{what}");
         assert!(!result.owners_readable, "{what}: a miss drops every owner");
         assert_eq!(result.owner_visibility, 0.0, "{what}: owner specular drops");
-        assert_eq!(result.union_slot0_visibility, 0.0, "{what}: union drops");
+        assert_eq!(result.union_channel0_visibility, 0.0, "{what}: union drops");
     }
     for (what, result) in [
         ("no lightmap", &results[4]),
@@ -783,17 +701,22 @@ fn missing_and_no_lightmap_entries_drop_or_neutralize_their_terms() {
         );
         assert_eq!(result.mask, [1.0; 4], "{what}: all-visible shadowmask");
         assert!(!result.missing, "{what}");
+        assert!(
+            !result.owners_readable,
+            "{what}: the no-lightmap entry drops every owner"
+        );
+        assert_eq!(result.owner_visibility, 0.0, "{what}: owner specular drops");
     }
 }
 
 // Placeholder mode matches the pre-block look: every vertex reads the white
-// irradiance, +Y direction and all-visible shadowmask placeholders. AC 13
-// (placeholder mode): the placeholder is no mask, so the mask-present bit is
-// clear and no owner reads it; an all-visible texel must not light owners.
+// irradiance, +Y direction and all-visible shadowmask placeholders. The
+// placeholder is no mask, so the mask-present bit is clear and no owner
+// reads it; an all-visible texel must not light owners.
 #[test]
 fn placeholder_mode_reads_the_neutral_placeholders_for_every_block_id() {
     let Some(ctx) =
-        gpu_or_skip("placeholder_mode_reads_the_neutral_placeholders_for_every_block_id")
+        bc_gpu_or_skip("placeholder_mode_reads_the_neutral_placeholders_for_every_block_id")
     else {
         return;
     };

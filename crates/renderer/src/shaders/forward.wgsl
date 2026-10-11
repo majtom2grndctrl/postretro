@@ -158,8 +158,10 @@ struct SpecLight {
 };
 @group(2) @binding(2) var<storage, read> spec_lights: array<SpecLight>;
 
+// The chunk bindings below are read only by the concatenated
+// `sdf_light_select.wgsl`; world specular no longer walks the chunk list.
 // Chunk grid metadata — uniform buffer with `has_chunk_grid` sentinel.
-// 0 = no chunk list present (fallback: iterate full spec buffer).
+// 0 = no chunk list present (SDF selection then scans the full spec buffer).
 struct ChunkGridInfo {
     grid_origin: vec3<f32>,
     cell_size: f32,
@@ -709,6 +711,7 @@ fn shadowmask_channel_value(mask: vec4<f32>, channel: u32) -> f32 {
         case 1u: { return mask.g; }
         case 2u: { return mask.b; }
         case 3u: { return mask.a; }
+        // Callers pass 0..SPEC_OWNER_CHANNELS-1; the lit default is not a contract.
         default: { return 1.0; }
     }
 }
@@ -741,9 +744,10 @@ fn static_spec_mask_present() -> bool {
 
 // Whether this fragment's face owners may read their mask channels: a bound
 // mask at a resident block. A miss drops every owner, as it drops every other
-// term the block holds.
+// term the block holds. So does the no-lightmap entry, whose all-visible mask
+// read is no owner's baked visibility.
 fn static_spec_owners_readable(lightmap_layer_flags: u32) -> bool {
-    return static_spec_mask_present() && !lightmap_block_missing(lightmap_layer_flags);
+    return static_spec_mask_present() && lightmap_block_resident(lightmap_layer_flags);
 }
 
 // The mask channel `spec_idx` reads on this face: its position among the
@@ -761,17 +765,21 @@ fn shadowmask_owner_channel(owners: vec4<u32>, spec_idx: u32) -> u32 {
     return SPEC_OWNER_CHANNELS;
 }
 
-// A spec light's aim for loops that place every light at its origin (SDF
-// diffuse). Only world specular follows a directional light's packed aim;
-// these loops keep the zero aim a directional light always carried here.
+// A spec light's aim for loops that place every light at its origin: SDF
+// diffuse and SDF specular, whose visibility slice is traced toward that
+// origin. Only owner specular follows a directional light's packed aim; these
+// loops keep the zero aim a directional light always carried here.
 fn positional_cone_aim(sl: SpecLight) -> vec3<f32> {
     let directional = u32(round(sl.cone_dir_and_type.w)) == SPEC_LIGHT_TYPE_DIRECTIONAL;
     return select(sl.cone_dir_and_type.xyz, vec3<f32>(0.0), directional);
 }
 
-// One static light's world Blinn-Phong highlight before visibility. A
-// directional light shines along its packed aim, as its bake does, wherever its
-// entity origin sits; a zero aim falls back to the bake's default straight down.
+// One static light's world Blinn-Phong highlight before visibility. With
+// `follow_aim` (face owners), a directional light shines along its packed aim,
+// as its bake does, wherever its entity origin sits; a zero aim falls back to
+// the bake's default straight down for both the light direction and the cone.
+// Without it (the SDF selection), every light shines from its origin with
+// `positional_cone_aim`, as its SDF diffuse and visibility trace place it.
 fn world_static_light_specular(
     sl: SpecLight,
     world_pos: vec3<f32>,
@@ -779,13 +787,17 @@ fn world_static_light_specular(
     V: vec3<f32>,
     spec_exp: f32,
     spec_int: f32,
+    follow_aim: bool,
 ) -> vec3<f32> {
     let range = sl.position_and_range.w;
     var L: vec3<f32>;
+    var aim = positional_cone_aim(sl);
     var dist = 0.0;
-    if u32(round(sl.cone_dir_and_type.w)) == SPEC_LIGHT_TYPE_DIRECTIONAL {
-        let aim = sl.cone_dir_and_type.xyz;
-        L = select(vec3<f32>(0.0, 1.0, 0.0), -normalize(aim), dot(aim, aim) > 1.0e-12);
+    let directional = u32(round(sl.cone_dir_and_type.w)) == SPEC_LIGHT_TYPE_DIRECTIONAL;
+    if follow_aim && directional {
+        let packed = sl.cone_dir_and_type.xyz;
+        aim = select(vec3<f32>(0.0, -1.0, 0.0), packed, dot(packed, packed) > 1.0e-12);
+        L = -normalize(aim);
     } else {
         let to_light = sl.position_and_range.xyz - world_pos;
         dist = length(to_light);
@@ -799,7 +811,7 @@ fn world_static_light_specular(
         return vec3<f32>(0.0);
     }
     let atten = select(1.0, light_eval_falloff(dist, range, u32(round(sl.cone_cos.w))), range > 0.0);
-    let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+    let cone = cone_attenuation_cos(L, aim, sl.cone_cos.x, sl.cone_cos.y);
     return blinn_phong(L, V, N, sl.color_and_pad.xyz, spec_exp, spec_int) * (atten * cone);
 }
 
@@ -838,9 +850,11 @@ fn world_static_specular(
             if owner >= spec_len || visibility <= 0.0 {
                 continue;
             }
-            sum = sum + world_static_light_specular(spec_lights[owner], world_pos, N, V, spec_exp, spec_int) * visibility;
+            sum = sum + world_static_light_specular(spec_lights[owner], world_pos, N, V, spec_exp, spec_int, true) * visibility;
         }
     }
+    // An SDF light has no baked direct to follow; it keeps the positional
+    // highlight its SDF diffuse and visibility slice share.
     for (var s: u32 = 0u; s < sdf_sel.count; s = s + 1u) {
         let visibility = select(slice_for_visibility(sdf_factor, s), 1.0, sdf_force_lit);
         sum = sum + world_static_light_specular(
@@ -850,6 +864,7 @@ fn world_static_specular(
             V,
             spec_exp,
             spec_int,
+            false,
         ) * visibility;
     }
     return sum;
@@ -955,6 +970,10 @@ fn shadowmask_union_subtraction(
     }
     // No mask bound, no channel to read: no light subtracts.
     if !static_spec_mask_present() {
+        return out;
+    }
+    // A face with no owner has no channel any light could read.
+    if owners[0] == SPEC_OWNER_EMPTY {
         return out;
     }
     // Hoisted because every promoted light shares this fragment's lightmap
@@ -1123,11 +1142,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     indirect = indirect * surface_depth_indirect_ao(depth, light_terms);
 
     // SDF static-occluder shadow factor. The four RGBA channels are the K = 4
-    // per-light visibility slices consumed by the sdf-tag diffuse/specular loop
-    // below. `vec4(1.0)` when no SDF atlas is loaded, so the multiply downstream
-    // is a no-op. `lm_irr` (baked-tag lights) and `lm_anim` (animated-baked
-    // lights) carry their shadow baked in — neither is SDF-multiplied, so the
-    // disjoint direct sets stay additive with no re-weighting.
+    // per-light visibility slices consumed by the sdf diffuse loop below and
+    // the SDF half of `world_static_specular`. `vec4(1.0)` when no SDF atlas
+    // is loaded, so the multiply downstream is a no-op. `lm_irr` (baked-tag
+    // lights) and `lm_anim` (animated-baked lights) carry their shadow baked
+    // in — neither is SDF-multiplied, so the disjoint direct sets stay
+    // additive with no re-weighting.
     var sdf_factor = vec4<f32>(1.0, 1.0, 1.0, 1.0);
     if uniforms.sdf_shadow_flags != 0u {
         sdf_factor = upsample_shadow_factor(in.clip_position.xy, in.clip_position.z);

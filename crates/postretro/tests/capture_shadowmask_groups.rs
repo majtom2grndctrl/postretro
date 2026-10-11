@@ -75,19 +75,19 @@ fn shadowmask_of(sections: &[prl_format::SectionBlob]) -> ShadowmaskAtlasSection
 /// Per cell block, the group A then group B BC5 planes.
 type GroupPlanes = Vec<[Vec<u8>; 2]>;
 
-/// Group planes whose every texel holds `slots[s]` in channel `s`, block for
-/// block at the baked lengths. A constant BC4 block is
+/// Group planes whose every texel holds `channels[c]` in channel `c`, block
+/// for block at the baked lengths. A constant BC4 block is
 /// `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to exactly `v`.
-fn constant_payload(section: &ShadowmaskAtlasSection, slots: [u8; 4]) -> GroupPlanes {
+fn constant_payload(section: &ShadowmaskAtlasSection, channels: [u8; 4]) -> GroupPlanes {
     let bc4 = |value: u8| [value, value, 0, 0, 0, 0, 0, 0];
     section
         .blocks
         .iter()
         .map(|groups| {
             std::array::from_fn(|group| {
-                let bc5: Vec<u8> = bc4(slots[group * 2])
+                let bc5: Vec<u8> = bc4(channels[group * 2])
                     .into_iter()
-                    .chain(bc4(slots[group * 2 + 1]))
+                    .chain(bc4(channels[group * 2 + 1]))
                     .collect();
                 let plane = bc5.repeat(groups[group].len() / 16);
                 assert_eq!(plane.len(), groups[group].len());
@@ -337,7 +337,7 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
     );
 }
 
-// AC 15, engine half: each owner position reads its own channel in either mask
+// End to end, each owner position reads its own channel in either mask
 // group. The fixture's lights overlap on the north wall, so faces there carry
 // owners in both groups. Opening one group alone brightens the frame, the two
 // groups brighten it differently, and opening both is at least as bright as
@@ -363,7 +363,7 @@ fn owners_in_either_mask_group_reach_the_frame_through_their_own_channels() {
     );
 
     let mut images = Vec::new();
-    for (label, slots) in [
+    for (label, channels) in [
         ("closed", [0u8, 0, 0, 0]),
         ("group-a", [255, 255, 0, 0]),
         ("group-b", [0, 0, 255, 255]),
@@ -378,7 +378,7 @@ fn owners_in_either_mask_group_reach_the_frame_through_their_own_channels() {
         write_variant(
             &sections,
             baked.owners.clone(),
-            constant_payload(&baked, slots),
+            constant_payload(&baked, channels),
             &path,
         );
         let (image, stderr) = capture_scene(
@@ -457,12 +457,13 @@ fn lit_pixels(image: &RgbaImage) -> usize {
         .count()
 }
 
-// AC 1 and 10, end to end: a static light adds world specular only
-// where it owns the face, through its baked mask. With every owner entry
-// emptied (the light walled off from every face) or every mask closed, the
-// specular term is black, and the baked mask darkens part of the fully open
-// highlight (the blocker's shadow). P10 is proven on the loader: a hand-
-// stripped id 40 here would orphan the cluster directory's id-41 resource.
+// End to end, a static light adds world specular only where it owns the
+// face, through its baked mask. With every owner entry emptied (the light
+// walled off from every face) or every mask closed, the specular term is
+// black, and the baked mask darkens part of the fully open highlight (the
+// blocker's shadow). Keeping id 42 when id 40 is cleared at load is proven
+// on the loader: a hand-stripped id 40 here would orphan the cluster
+// directory's id-41 resource.
 #[test]
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
 fn static_specular_comes_only_from_face_owners_through_their_baked_masks() {

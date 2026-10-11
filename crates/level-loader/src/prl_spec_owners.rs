@@ -10,13 +10,25 @@ use postretro_render_data::geometry::BvhLeaf;
 /// [`NO_FACE_OWNERS`]. Always `vertex_count` long, so the forward pass never
 /// binds a short buffer.
 ///
-/// Id 17 keeps no face index ranges, but the compiler emits exactly one BVH
-/// leaf per face, in face order, each covering that face's contiguous index
-/// range. Sorting the leaves by `index_offset` recovers face `i`'s range as
-/// the `i`-th. When that identity fails (leaf count differs from the face
-/// count, ranges leave a gap or overlap, or an index names no vertex), one
-/// `[Loader]` error is logged and the stream stays empty: every face then gets
-/// no static non-SDF world specular, never another face's owners.
+/// Id 17 keeps no face index ranges, but the compiler emits each face's
+/// indices as one contiguous range, ranges in face order, and each face owns
+/// exactly one non-empty BVH leaf covering its range. The BVH flattens leaves
+/// in material-bucket order, so they arrive shuffled; sorting by `index_offset`
+/// restores face order, and face `i`'s range is the `i`-th. One non-empty leaf
+/// per face holds because the compiler refuses to pack id 42 when a face has
+/// no triangle.
+///
+/// Vertices must not be shared between faces whose owner entries differ: the
+/// stamp is per vertex, so a shared vertex could carry only one of them. The
+/// compiler un-shares vertices per face, but this is checked here rather than
+/// trusted. Faces that share a vertex and agree on their entry are harmless
+/// and allowed.
+///
+/// When any of that fails (leaf count differs from the face count, ranges
+/// leave a gap or overlap, an index names no vertex, or a shared vertex is
+/// claimed by conflicting entries), one `[PRL]` error is logged and the stream
+/// stays empty: every face then gets no static non-SDF world specular, never
+/// another face's owners.
 pub(crate) fn build_vertex_spec_owners(
     vertex_count: usize,
     indices: &[u32],
@@ -27,22 +39,35 @@ pub(crate) fn build_vertex_spec_owners(
     let Some(face_owners) = face_owners else {
         return stream;
     };
+    // The face that stamped each vertex, so a second face can be compared
+    // against the entry already there.
+    let mut stamped_by: Vec<Option<usize>> = vec![None; vertex_count];
     let stamped = face_index_ranges(leaves, face_owners.len(), indices.len()).and_then(|ranges| {
         for (face, (range, owners)) in ranges.into_iter().zip(face_owners).enumerate() {
             for &index in &indices[range] {
-                let slot = stream.get_mut(index as usize).ok_or_else(|| {
-                    format!(
+                let vertex = index as usize;
+                let (Some(slot), Some(first)) =
+                    (stream.get_mut(vertex), stamped_by.get_mut(vertex))
+                else {
+                    return Err(format!(
                         "face {face} names vertex {index} past the {vertex_count}-vertex Geometry"
-                    )
-                })?;
+                    ));
+                };
+                if let Some(other) = (*first).filter(|&other| other != face && *slot != *owners) {
+                    return Err(format!(
+                        "faces {other} and {face} share vertex {index} but their owner \
+                         entries differ"
+                    ));
+                }
                 *slot = *owners;
+                *first = Some(face);
             }
         }
         Ok(())
     });
     if let Err(reason) = stamped {
         log::error!(
-            "[Loader] ShadowmaskAtlas face owners cannot reach the world vertices: {reason}; \
+            "[PRL] ShadowmaskAtlas face owners cannot reach the world vertices: {reason}; \
              this level gets no static non-SDF world specular"
         );
         stream.fill(NO_FACE_OWNERS);
@@ -125,7 +150,7 @@ mod tests {
         capture
             .records()
             .into_iter()
-            .filter(|record| record.level == Level::Error && record.message.starts_with("[Loader]"))
+            .filter(|record| record.level == Level::Error && record.message.starts_with("[PRL]"))
             .map(|record| record.message)
             .collect()
     }
@@ -212,5 +237,57 @@ mod tests {
             errors[0].contains("past the 8-vertex Geometry"),
             "{errors:?}"
         );
+    }
+
+    // Face 1's second triangle reuses vertex 3, which face 0 already stamped.
+    fn faces_sharing_vertex_3() -> Vec<u32> {
+        vec![0, 1, 2, 0, 2, 3, 4, 5, 3, 7, 8, 9, 7, 9, 10]
+    }
+
+    // The stamp is per vertex, so a vertex two faces share cannot carry both
+    // faces' differing entries: the whole stream stays empty rather than let
+    // the later face overwrite the earlier one.
+    #[test]
+    fn a_vertex_shared_by_faces_with_different_owners_empties_the_stream() {
+        let (vertex_count, _) = three_faces();
+        let leaves = [leaf(0, 6), leaf(6, 3), leaf(9, 6)];
+        assert_ne!(OWNERS[0], OWNERS[1]);
+        let capture = LogCapture::start();
+        let stream = build_vertex_spec_owners(
+            vertex_count,
+            &faces_sharing_vertex_3(),
+            &leaves,
+            Some(&OWNERS),
+        );
+        assert_eq!(stream, vec![NO_FACE_OWNERS; vertex_count]);
+        let errors = loader_errors(&capture);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("faces 0 and 1 share vertex 3"),
+            "{errors:?}"
+        );
+        assert!(
+            errors[0].contains("no static non-SDF world specular"),
+            "{errors:?}"
+        );
+    }
+
+    // Faces that agree on their entry lose nothing at a shared vertex.
+    #[test]
+    fn a_vertex_shared_by_faces_with_the_same_owners_keeps_the_stream() {
+        let (vertex_count, _) = three_faces();
+        let leaves = [leaf(0, 6), leaf(6, 3), leaf(9, 6)];
+        let owners = [OWNERS[0], OWNERS[0], OWNERS[2]];
+        let capture = LogCapture::start();
+        let stream = build_vertex_spec_owners(
+            vertex_count,
+            &faces_sharing_vertex_3(),
+            &leaves,
+            Some(&owners),
+        );
+        assert!(loader_errors(&capture).is_empty());
+        assert_eq!(&stream[0..6], &[OWNERS[0]; 6], "faces 0 and 1");
+        assert_eq!(stream[6], NO_FACE_OWNERS, "no face references vertex 6");
+        assert_eq!(&stream[7..11], &[OWNERS[2]; 4], "face 2's vertices");
     }
 }

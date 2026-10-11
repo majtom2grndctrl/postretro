@@ -13,7 +13,7 @@ use super::LIGHTMAP_PARTITION_WINDOW;
 /// and `chart_index` (`u32`). One layer is live at a time.
 const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1) + 12 + 12 + 4;
 /// Shadowmask raw fill (`shadowmask_bake::allocate_shadowmask_raw_fill`):
-/// four mask slots per texel of every bake layer, empty layer area included,
+/// four mask channels per texel of every bake layer, empty layer area included,
 /// live for the whole layer loop.
 const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;
 /// Shadowmask owner fill's texel → face map (`u32`) for the one bake layer

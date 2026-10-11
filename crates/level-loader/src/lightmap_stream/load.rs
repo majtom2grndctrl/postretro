@@ -190,8 +190,9 @@ fn read_lightmap_index_prefix(
 
 /// Id 42's fixed header, then its owner table through the block count, then
 /// its records, each step reading only the bytes the last one proved needed.
-/// The owner table's length is bounded against the section before it is
-/// read, so a bogus face count cannot pull in the blobs.
+/// The header's face count is checked against id 17's before the owner table
+/// is sized or read, and the table's length is then bounded against the
+/// section, so a bogus face count cannot pull in the table or the blobs.
 fn read_shadowmask_index_prefix(
     file: &PrlFile,
     meta: &ContainerMeta,
@@ -205,6 +206,18 @@ fn read_shadowmask_index_prefix(
     let invalid = |err| section_validation_from_error("ShadowmaskAtlas", err);
     let mut prefix = Vec::new();
     extend_prefix(file, entry, &mut prefix, 8)?;
+    // Same check, same wording, and same position as `from_prefix`: a face
+    // count that disagrees with id 17's fails here, before any size bound.
+    let header_bounds = ShadowmaskOwnerBounds::from_section_header(&prefix).map_err(invalid)?;
+    if header_bounds.face_count != bounds.face_count {
+        return Err(section_validation(
+            "ShadowmaskAtlas",
+            format!(
+                "shadowmask face count {} does not match id 17's {}",
+                header_bounds.face_count, bounds.face_count
+            ),
+        ));
+    }
     let bound = |block_count| {
         shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap, block_count)
     };

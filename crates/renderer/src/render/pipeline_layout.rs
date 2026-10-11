@@ -23,8 +23,8 @@ use super::*;
 // source string is concatenated into the half-res SDF visibility pass
 // (`sdf_shadow.rs`) so both pick the same `sdf`-tagged lights in the same order.
 // It reads `spec_lights` / `chunk_grid` / `chunk_offsets` / `chunk_indices` by
-// name — all already declared in `forward.wgsl` for the static-light loop — and
-// declares no buffers of its own. Never reimplement the selection here.
+// name — all already declared in `forward.wgsl` for this SDF-selection helper —
+// and declares no buffers of its own. Never reimplement the selection here.
 //
 // `surface_depth.wgsl` owns the Surface Depth texel-space parallax DDA. It is
 // the LOAD-BEARING parity seam between static world geometry and kinematic

@@ -232,6 +232,29 @@ pub(super) fn build_finalized_section_plan<'a>(
             section.blocks.len(),
             lightmap.blocks.len()
         );
+        // The loader validates the owner table against id 17's face count and
+        // the static spec-light count (`!is_dynamic` id-18 records, the index
+        // space an owner names), so refuse to write a table it would reject.
+        anyhow::ensure!(
+            section.owners.len() == geo_result.geometry.faces.len(),
+            "ShadowmaskAtlas has {} owner entries but Geometry has {} faces",
+            section.owners.len(),
+            geo_result.geometry.faces.len()
+        );
+        let static_spec_light_count = alpha_lights
+            .lights
+            .iter()
+            .filter(|light| !light.is_dynamic)
+            .count();
+        let static_spec_light_count = u32::try_from(static_spec_light_count).unwrap_or(u32::MAX);
+        for (face, owners) in section.owners.iter().enumerate() {
+            postretro_level_format::shadowmask_atlas::validate_face_owners(
+                face,
+                owners,
+                static_spec_light_count,
+            )
+            .map_err(|error| anyhow::anyhow!("ShadowmaskAtlas owner table is invalid: {error}"))?;
+        }
         sections.push(PlannedSection::new(
             SectionId::ShadowmaskAtlas as u32,
             2,

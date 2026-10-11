@@ -136,7 +136,8 @@ pub(crate) fn bake_fused_windowed(
     prepared: PreparedAtlas,
     window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
-    // An owner index past u16 fails the build before any lightmap work.
+    // An owner index past u16 fails before any lightmap work. The pipeline
+    // checks first, before any bake stage; this guards direct callers.
     let static_spec_light_count = shadowmask_bake::static_spec_light_count(alpha_lights);
     shadowmask_bake::check_owner_index_capacity(static_spec_light_count)?;
     let density = config.lightmap_density;
@@ -178,12 +179,16 @@ pub(crate) fn bake_fused_windowed(
     let eligible_layer_hashes: Vec<[u8; 32]> = if layer_input_hashes.is_empty() {
         Vec::new()
     } else {
+        let layer_position: std::collections::HashMap<usize, usize> = layer_lights
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| (entry.source_index, position))
+            .collect();
         eligible
             .iter()
             .flat_map(|light| {
-                let position = layer_lights
-                    .iter()
-                    .position(|entry| entry.source_index == light.source_index)
+                let position = *layer_position
+                    .get(&light.source_index)
                     .expect("an owner-eligible light is a layer light");
                 let lights = layer_lights.len();
                 let hashes = &layer_input_hashes;

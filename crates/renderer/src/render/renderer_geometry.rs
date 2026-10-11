@@ -50,7 +50,9 @@ pub(crate) fn cast_world_vertices_to_bytes(
 /// The forward pass's owner vertex stream as bytes: one `Uint16x4` per
 /// vertex, at least one entry so the buffer is never empty. An `owners` slice
 /// that does not match `vertex_count` packs all-empty, so a vertex never reads
-/// another vertex's owners.
+/// another vertex's owners. An empty slice is the normal no-owner case
+/// (hand-built geometry, a level without id 42); a non-empty mismatch means
+/// the loader's stream disagrees with the geometry, so it warns.
 pub(crate) fn cast_spec_owners_to_bytes(
     owners: &[postretro_level_format::shadowmask_atlas::FaceOwners],
     vertex_count: usize,
@@ -60,6 +62,13 @@ pub(crate) fn cast_spec_owners_to_bytes(
     let owners = if owners.len() == vertex_count {
         owners
     } else {
+        if !owners.is_empty() {
+            log::warn!(
+                "[Renderer] spec owner stream holds {} entries for {vertex_count} vertices; \
+                 world static specular adds nothing from face owners",
+                owners.len()
+            );
+        }
         &[]
     };
     let mut bytes = Vec::with_capacity(count * SPEC_OWNER_STRIDE);
@@ -71,8 +80,9 @@ pub(crate) fn cast_spec_owners_to_bytes(
     bytes
 }
 
-/// Bytes per owner-stream vertex: four u16 owners.
-pub(crate) const SPEC_OWNER_STRIDE: usize = 8;
+/// Bytes per owner-stream vertex: one face's four u16 owners.
+pub(crate) const SPEC_OWNER_STRIDE: usize =
+    std::mem::size_of::<postretro_level_format::shadowmask_atlas::FaceOwners>();
 
 // Each triangle [a, b, c] → three line pairs [a,b, b,c, c,a].
 // Shared edges are emitted multiple times; fine for a debug overlay.

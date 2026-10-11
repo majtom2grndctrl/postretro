@@ -1,6 +1,5 @@
-// Per-face owner shadowmask bake for owner-eligible static lights, fused into
-// the lightmap walk.
-// Governing context: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
+// Per-face owner shadowmask bake for owner-eligible static lights, fused into the lightmap walk.
+// See: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -96,7 +95,8 @@ pub(crate) fn check_owner_index_capacity(
 }
 
 /// Fill checks the cooperative pause gate at this cadence without consuming a
-/// governor permit; chart work remains the only governed parallel level.
+/// governor permit; chart work and the cut-face estimate are the governed
+/// parallel levels.
 const SHADOWMASK_FILL_CHECKPOINT_TEXELS: usize = 1024;
 
 /// Shadowmask state prepared before the fused lightmap walk. A memo hit, or a
@@ -314,6 +314,26 @@ thread_local! {
     static SHADOWMASK_STREAMED_CACHE_WRITE_COUNT: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
     };
+    static ESTIMATE_TRACE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Adds the visibility evaluations one cut-face estimate traced. Called on the
+/// thread that ran the estimate, after its workers joined.
+#[cfg(test)]
+fn record_estimate_traces(traces: usize) {
+    ESTIMATE_TRACE_COUNT.with(|count| count.set(count.get() + traces));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_estimate_trace_count() {
+    ESTIMATE_TRACE_COUNT.with(|count| count.set(0));
+}
+
+/// Cut-face estimate visibility evaluations on this thread since the last
+/// reset: zero when no estimate ran, a memo hit included.
+#[cfg(test)]
+pub(crate) fn estimate_trace_count() -> usize {
+    ESTIMATE_TRACE_COUNT.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]

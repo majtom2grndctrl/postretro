@@ -1,6 +1,8 @@
 // Renderer unit tests (split from the original `mod tests`).
 // See: context/lib/testing_guide.md
 
+use super::super::gpu_test_harness::wgsl_function;
+
 use super::super::*;
 
 fn scripted_light_intensity_scalar_reference(
@@ -813,11 +815,12 @@ fn forward_shader_shadowmask_samples_both_groups_hoisted_at_one_layer() {
         "the union helper has its definition and exactly one fs_main call",
     );
     // Missing data reads no owner mask: owners read their channels only from
-    // a bound mask at a resident block, never from the all-visible placeholder.
+    // a bound mask at a resident block, never from the all-visible placeholder
+    // or the no-lightmap entry.
     let readable = wgsl_function(src, "static_spec_owners_readable");
     assert!(
         readable.contains(
-            "static_spec_mask_present() && !lightmap_block_missing(lightmap_layer_flags)"
+            "static_spec_mask_present() && lightmap_block_resident(lightmap_layer_flags)"
         ),
         "owners need the mask-present bit and a resident block",
     );
@@ -891,28 +894,6 @@ fn strip_line_comments(source: &str) -> String {
         .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The text of `fn name(` through its matching closing brace in `source`.
-fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
-    let start = source
-        .find(&format!("fn {name}("))
-        .unwrap_or_else(|| panic!("WGSL source must declare `{name}`"));
-    let open = start + source[start..].find('{').expect("function body");
-    let mut depth = 0usize;
-    for (offset, ch) in source[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[start..=open + offset];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{name}` body never closes");
 }
 
 /// Byte offsets of `ident` where it appears as a whole WGSL identifier, not

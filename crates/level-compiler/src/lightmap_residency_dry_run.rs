@@ -90,7 +90,7 @@ pub(crate) struct ShadowmaskFormat {
     pub payload_bytes: u64,
 }
 
-/// Whether a level carries id 42, and why not when it doesn't.
+/// Whether a level carries id 42.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ShadowmaskState {
     Stored(ShadowmaskFormat),
@@ -227,8 +227,7 @@ impl AtlasFormats {
     }
 
     /// Id 42 bytes per irradiance texel of chart area, charged only when id
-    /// 42 is stored. An omitted shadowmask is charged by layouts whose layers
-    /// fit it, never by the texel-exact floor.
+    /// 42 is stored.
     pub(crate) fn shadowmask_bytes_per_texel(&self) -> f64 {
         match self.shadowmask {
             ShadowmaskState::Stored(_) => {

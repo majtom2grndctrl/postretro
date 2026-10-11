@@ -35,8 +35,10 @@ pub struct PreparedAtlas {
     pub layer_count: u32,
     /// Cell blocks in block-id order and each chart's block.
     pub layout: BlockLayout,
-    /// Every face cut past one pool layer, with its sub-faces: one mask owner
-    /// set each.
+    /// Every face [`plan_cut_charts`] cut past the pool edge, with its emitted
+    /// sub-faces; each cut face's sub-faces share one mask owner set. Empty
+    /// without a cut. [`pack_cut_charts`] takes it from the cut phase, so the
+    /// cut-face estimate always sees the cut that made `charts`.
     pub cut_parents: Vec<CutParent>,
 }
 
@@ -97,17 +99,15 @@ pub(crate) fn prepare_atlas_within(
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
     let cut = plan_cut_charts(geom, static_lights, texel_density, scale_regions, pool_edge)?;
-    let cut_parents = cut.cut_parents;
-    let mut prepared = pack_cut_charts(
+    pack_cut_charts(
         geom,
         static_lights,
         cut.charts,
+        cut.cut_parents,
         ordering,
         pool_edge,
         control,
-    )?;
-    prepared.cut_parents = cut_parents;
-    Ok(prepared)
+    )
 }
 
 /// Atlas preparation's first phase: the charts after any oversize-face cut.
@@ -200,8 +200,9 @@ fn check_planned_area(
 
 /// Atlas preparation's second phase: pack `charts` into cell blocks in
 /// `ordering` and write every vertex's block id and block-local lightmap UV.
-/// With static lights, every chart must fit `pool_edge`, which
-/// [`plan_cut_charts`] guarantees.
+/// `charts` and `cut_parents` come from one [`CutCharts`] and reach the
+/// prepared atlas together. With static lights, every chart must fit
+/// `pool_edge`, which [`plan_cut_charts`] guarantees.
 ///
 /// Without static lights the section has no blocks, so vertices keep block
 /// 0, but placements are still returned for the animated-light passes; when a
@@ -212,21 +213,22 @@ pub fn pack_cut_charts(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     charts: Vec<Chart>,
+    cut_parents: Vec<CutParent>,
     ordering: BlockOrdering<'_>,
     pool_edge: u32,
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
-    let unplaced = |charts| PreparedAtlas {
+    let unplaced = |charts, cut_parents| PreparedAtlas {
         charts,
         placements: Vec::new(),
         atlas_width: 1,
         atlas_height: 1,
         layer_count: 1,
         layout: empty_layout(ordering),
-        cut_parents: Vec::new(),
+        cut_parents,
     };
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
-        return Ok(unplaced(charts));
+        return Ok(unplaced(charts, cut_parents));
     }
     let fits = |chart: &Chart| chart.width_texels <= pool_edge && chart.height_texels <= pool_edge;
     if static_lights.is_empty() {
@@ -235,7 +237,7 @@ pub fn pack_cut_charts(
         // chunks. The empty layout keeps the direction scale, which the
         // placeholder id-22 header carries.
         if !charts.iter().all(fits) {
-            return Ok(unplaced(charts));
+            return Ok(unplaced(charts, cut_parents));
         }
         return Ok(
             match pack_cell_blocks_within(&charts, ordering, pool_edge, control) {
@@ -246,9 +248,9 @@ pub fn pack_cut_charts(
                     atlas_height: pack.layer_dim,
                     layer_count: pack.layer_count,
                     layout: pack.layout,
-                    cut_parents: Vec::new(),
+                    cut_parents,
                 },
-                Err(_) => unplaced(charts),
+                Err(_) => unplaced(charts, cut_parents),
             },
         );
     }
@@ -265,7 +267,7 @@ pub fn pack_cut_charts(
         atlas_height: pack.layer_dim,
         layer_count: pack.layer_count,
         layout: pack.layout,
-        cut_parents: Vec::new(),
+        cut_parents,
     })
 }
 

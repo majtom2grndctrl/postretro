@@ -394,7 +394,9 @@ impl<'a> OwnershipFill<'a> {
 
     /// An evicted owner's values leave with it.
     fn zero_channel(&mut self, face: usize, channel: usize, shared: &SharedAtlas<'_>) {
-        for base in self.padded_rect_offsets(face, shared).collect::<Vec<_>>() {
+        // The offsets capture neither `self` nor `shared` (`use<>`), so the
+        // writes can run straight off the iterator with no buffered copy.
+        for base in self.padded_rect_offsets(face, shared) {
             self.data[base + channel] = 0;
         }
     }
@@ -412,7 +414,7 @@ impl<'a> OwnershipFill<'a> {
         {
             return;
         }
-        for base in self.padded_rect_offsets(face, shared).collect::<Vec<_>>() {
+        for base in self.padded_rect_offsets(face, shared) {
             let held: [u8; SHADOWMASK_OWNER_CHANNELS] =
                 std::array::from_fn(|channel| self.data[base + channel]);
             for (position, channel) in source.iter().enumerate() {

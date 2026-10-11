@@ -6609,8 +6609,8 @@ mod tests {
         assert_eq!(&world.vertex_spec_owners[3..], &[owners[1]; 3]);
     }
 
-    // AC 13 (missing id 42): every vertex carries the empty entry, at full
-    // vertex count, so no face draws static non-SDF world specular.
+    // A missing id 42: every vertex carries the empty entry, at full vertex
+    // count, so no face draws static non-SDF world specular.
     #[test]
     fn load_prl_without_shadowmask_gives_every_vertex_no_owners() {
         use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
@@ -6659,7 +6659,7 @@ mod tests {
         );
     }
 
-    // AC 44 (loader side): the owner table is checked against the level it
+    // The owner table is checked against the level it
     // loads beside — id 17's face count and the static spec-light count — and
     // the retired per-light-slot layout asks for a rebake.
     #[test]
@@ -6675,7 +6675,8 @@ mod tests {
             ),
             (
                 // Two static lights, so spec index 2 names no spec light: it
-                // is the dynamic spot's global index.
+                // is the directional light's global index (its compact
+                // index is 1).
                 "owner-past-static-count",
                 shadowmask_blob(shadowmask_section(
                     &[(4, 4)],
@@ -6838,7 +6839,7 @@ mod tests {
         );
     }
 
-    // P10: id 41 disagreeing with id 34 clears the promotion set (ids 40 and
+    // Id 41 disagreeing with id 34 clears the promotion set (ids 40 and
     // 41), but id 42 belongs to static specular, not promotion: it stays,
     // owners unchanged.
     #[test]
@@ -6889,7 +6890,7 @@ mod tests {
         );
     }
 
-    // AC 46 (P10): a level whose id 40 is cleared at load because id 41 is
+    // A level whose id 40 is cleared at load because id 41 is
     // missing keeps id 42 whole. Formerly promoted owners keep their owner
     // entries, so they keep shadowed specular; with id 40 empty they have no
     // promoted record, so they subtract nothing.

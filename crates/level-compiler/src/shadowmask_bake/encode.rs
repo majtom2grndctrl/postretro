@@ -21,8 +21,8 @@ const BC5_BLOCK_BYTES: usize = 16;
 ///
 /// Panics in every profile on dimensions that are not multiples of 4: the
 /// encoder would otherwise drop the remainder blocks and emit a truncated
-/// payload. `prepare_fused_shadowmask` rejects such atlases with an error
-/// first; the test-reference bake entry points reach this panic instead.
+/// payload. `prepare_fused_shadowmask` rejects such atlases first; this assert
+/// guards direct callers.
 pub(super) fn encode_blocks_bc5(
     raw: &[u8],
     width: u32,

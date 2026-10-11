@@ -266,8 +266,8 @@ fn unusable_shadowmask_groups_keep_the_lightmap_and_drop_only_the_shadowmask() {
     assert!(renderer_errors(&logs).is_empty(), "{logs:?}");
 }
 
-// AC 13 (P9): a mask pool the renderer refuses while the lightmap blocks stay
-// usable, all-resident or streamed, logs one `[Renderer]` error and clears the
+// A mask pool the renderer refuses while the lightmap blocks stay usable,
+// all-resident or streamed, logs one `[Renderer]` error and clears the
 // mask-present bit, so the level draws no static non-SDF world specular
 // rather than reading the all-visible placeholder. Refusal never panics.
 #[test]

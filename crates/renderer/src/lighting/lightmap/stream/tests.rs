@@ -19,8 +19,8 @@ use postretro_render_cpu::lightmap_pool::BlockTableEntry;
 use postretro_test_log_capture::LogCapture;
 
 use super::super::pool_sample_test::{
-    BoundLightmap, GpuCtx, SCALE, assert_near, direction_texel, expected_texel, gpu_or_skip,
-    irradiance_texel, mask_byte, resident_probe, run_probes,
+    BoundLightmap, SCALE, assert_near, direction_texel, expected_texel, irradiance_texel,
+    mask_byte, resident_probe, run_probes,
 };
 use super::super::test_fixtures::{BlockFixture, FixtureTexels, block_fixture};
 use super::super::{
@@ -28,6 +28,7 @@ use super::super::{
     bind_group_layout, block_table_bind_group_layout,
 };
 use super::{LightmapResidencyDrainError, LightmapStreamState};
+use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 
 const TAG: [u8; 32] = [7; 32];
 
@@ -126,7 +127,7 @@ impl Stream {
         cap: u32,
         max_layers: u32,
     ) -> Option<Self> {
-        let ctx = gpu_or_skip(test)?;
+        let ctx = bc_gpu_or_skip(test)?;
         let fixture = fixture(extents);
         let state =
             LightmapStreamState::new(&ctx.device, &plan(&ctx, &fixture, cap, max_layers), 0);
@@ -769,7 +770,7 @@ fn batch(
 // old level's state and refuses its generation.
 #[test]
 fn reload_while_a_generation_retires_releases_both_pools_and_refuses_the_old_generation() {
-    let Some(ctx) = gpu_or_skip(
+    let Some(ctx) = bc_gpu_or_skip(
         "reload_while_a_generation_retires_releases_both_pools_and_refuses_the_old_generation",
     ) else {
         return;

@@ -1,6 +1,6 @@
 // ShadowmaskAtlas PRL section (ID 42): each lightmapped face's owner lights
 // and their baked visibility masks, stored per lightmap cell block.
-// Governing context: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas)
+// Governing context: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::lightmap::{
     LightmapBlockIndex, SectionByteRange, check_adjacent, check_after_previous_block, check_blob,
@@ -54,9 +54,12 @@ pub struct ShadowmaskOwnerBounds {
 }
 
 impl ShadowmaskOwnerBounds {
-    /// Bounds taken from the section's own header, for diagnostics that read
-    /// only block sizes and hold neither id 17 nor the level's lights. Owner
-    /// order is still checked; whether an owner names a real light is not.
+    /// Bounds taken from the section's own header: the face count comes from
+    /// the header and the light count is the empty sentinel, so every
+    /// non-sentinel owner index passes. That checks only the table's shape
+    /// (length, ascending order, no duplicates, empties trailing), never
+    /// whether an owner names a real light. The residency dry run uses it
+    /// because it measures bytes and never resolves owners to lights.
     pub fn from_section_header(fixed_header: &[u8]) -> crate::Result<Self> {
         let (face_count, _) = owner_table(fixed_header)?;
         Ok(Self {
@@ -565,11 +568,7 @@ mod tests {
         let lm = lightmap(&[(8, 4)]);
         let bytes = section_for(&lm, vec![[3, 0x0102, E, E]]).to_bytes();
         assert_eq!(&bytes[0..4], b"SMB7");
-        assert_eq!(
-            read_u32(&bytes, 4),
-            1,
-            "face count sits where SMB6's slot count did"
-        );
+        assert_eq!(read_u32(&bytes, 4), 1, "face count follows the format tag");
         assert_eq!(&bytes[8..16], &[3, 0, 2, 1, 0xFF, 0xFF, 0xFF, 0xFF]);
         assert_eq!(
             read_u32(&bytes, 16),

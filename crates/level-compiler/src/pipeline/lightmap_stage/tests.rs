@@ -266,7 +266,7 @@ fn fused_outputs(
     );
     let shadowmask = output
         .shadowmask
-        .expect("selected fixture light must emit a shadowmask");
+        .expect("lit fixture faces must emit id 42");
     (
         output.lightmap.section.to_bytes(),
         shadowmask.to_bytes(),
@@ -305,7 +305,7 @@ fn fused_outputs_with_workers(
         });
     let shadowmask = output
         .shadowmask
-        .expect("selected fixture lights must emit a shadowmask");
+        .expect("lit fixture faces must emit id 42");
     (
         (
             output.lightmap.section.to_bytes(),
@@ -344,8 +344,9 @@ fn reference_lightmap(lights: &[MapLight], config: &LightmapConfig) -> Vec<u8> {
     .to_bytes()
 }
 
-/// Per-texel mask slots `[g0.r, g0.g, g1.r, g1.g]` of one block.
-fn decode_block_slots(groups: &[Vec<u8>; 2], width: u32, height: u32) -> Vec<[u8; 4]> {
+/// Per-texel mask channels `0..4` of one block: group 0's `.rg`, then group
+/// 1's.
+fn decode_block_channels(groups: &[Vec<u8>; 2], width: u32, height: u32) -> Vec<[u8; 4]> {
     let a = crate::bc5::decode_bc5_rg(&groups[0], width, height);
     let b = crate::bc5::decode_bc5_rg(&groups[1], width, height);
     a.as_chunks::<2>()
@@ -381,7 +382,7 @@ fn assert_two_lights_own_a_face_in_block_one(lightmap: &[u8], bytes: &[u8]) {
             .all(|&owner| owner == SHADOWMASK_OWNER_EMPTY || owner < 3)
     );
     let block = &lightmap.blocks[1];
-    let texels = decode_block_slots(
+    let texels = decode_block_channels(
         &shadowmask.blocks[1],
         u32::from(block.width),
         u32::from(block.height),
@@ -401,8 +402,8 @@ fn cold_outputs(
     fused_outputs_with_workers(1, &test_args(), None, lights, selection, config).0
 }
 
-// AC 38, 39, 40: id 42 is byte-identical across worker counts and between cold,
-// warm, and lightmap-reuse builds; editing a light outside id 40, or only id-40
+// Id 42 is byte-identical across worker counts and between cold, warm, and
+// lightmap-reuse builds; editing a light outside id 40, or only id-40
 // membership, rebuilds it; a reuse rebuild reads each eligible partition once
 // per layer and bakes none.
 #[test]
@@ -545,7 +546,68 @@ fn fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes() {
     }
 }
 
-// AC 45: id 42 does not depend on id 40.
+// A static light that cannot own (here SDF-shadowed) inserted before the
+// eligible lights changes no lightmap layer key, so the lightmap memo hits; it
+// shifts every owner's compact spec index, so id 42 must rebuild from the
+// cached partitions and equal a cold build of the edited level.
+#[test]
+fn an_earlier_unownable_static_light_rebuilds_id_42_over_a_reused_lightmap() {
+    let args = test_args();
+    let config = config(false);
+    let mut lights = vec![
+        point_light(DVec3::new(13.0, 8.0, 5.0), [1.0, 0.25, 0.1]),
+        point_light(DVec3::new(15.0, 9.0, 7.0), [0.1, 0.35, 1.0]),
+        point_light(DVec3::new(14.0, 7.0, 6.0), [0.2, 1.0, 0.3]),
+    ];
+    for light in &mut lights {
+        light.falloff_range = 40.0;
+    }
+    let selection = EntityShadowLightsSection {
+        light_indices: vec![0, 1],
+    };
+    let dir = fresh_cache_dir("spec_index_shift");
+    let cache = StageCache::new(&dir).expect("create spec-index shift cache");
+    let before = fused_outputs(&args, Some(&cache), &lights, &selection, &config);
+    cache.clear_test_accesses();
+
+    let mut sdf = point_light(DVec3::new(14.0, 8.0, 6.0), [1.0; 3]);
+    sdf.shadow_type = ShadowType::Sdf;
+    let mut shifted = lights.clone();
+    shifted.insert(0, sdf);
+    // Id 40 indexes AlphaLights, so the same lights stay promoted.
+    let shifted_selection = EntityShadowLightsSection {
+        light_indices: vec![1, 2],
+    };
+    let shifted_cold = cold_outputs(&shifted, &shifted_selection, &config);
+    let logs = LogCapture::start();
+    let warm = fused_outputs(&args, Some(&cache), &shifted, &shifted_selection, &config);
+    logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
+    logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
+    assert_eq!(
+        warm, shifted_cold,
+        "a spec-index shift must rebuild id 42 equal to its cold build"
+    );
+    assert_eq!(warm.0, before.0, "the lightmap is reused unchanged");
+    assert_ne!(
+        warm.1, before.1,
+        "the owner table names the shifted indices"
+    );
+    let layers = cache.test_access("lightmap_layer");
+    assert_eq!(
+        layers.read_attempts, layers.read_hits,
+        "the rebuild must bake no lightmap partition"
+    );
+    assert_eq!(
+        layers.read_hits,
+        lights.len() * warm.2 as usize,
+        "the rebuild must read each eligible partition exactly once per layer"
+    );
+    drop(logs);
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// Id 42 does not depend on id 40.
 #[test]
 fn fused_stage_progress_is_exact_and_a_cleared_selection_keeps_the_shadowmask() {
     let args = test_args();
@@ -744,7 +806,7 @@ fn multi_block_fused_outputs(workers: usize, uncompressed: bool) -> (Vec<u8>, Ve
                 output.lightmap.section.to_bytes(),
                 output
                     .shadowmask
-                    .expect("selected light must emit a shadowmask")
+                    .expect("the lit cell must emit id 42")
                     .to_bytes(),
                 blocks,
             )
@@ -910,9 +972,7 @@ fn fused_bake_of_a_moved_and_renumbered_chart_is_byte_identical() {
             .iter()
             .position(|block| block.cell_id == 1)
             .expect("cell 1 bakes a block");
-        let shadowmask = output
-            .shadowmask
-            .expect("the selected light emits a shadowmask");
+        let shadowmask = output.shadowmask.expect("the lit floor emits id 42");
         (
             (floor.x, floor.y),
             output.lightmap.section.blocks[block].clone(),
@@ -967,10 +1027,9 @@ fn owners_of(output: &FusedLightingOutput) -> Vec<[u16; 4]> {
         .clone()
 }
 
-// AC 1 (compiler half), AC 17 and AC 29: a light walled off from a receiver
-// inside its range takes no channel there while one that reaches it does; a
-// directional light owns the face it lights and none under a roof; lights
-// outside id 40 own channels.
+// A light walled off from a receiver inside its range takes no channel there
+// while one that reaches it does; a directional light owns the face it lights
+// and none under a roof; lights outside id 40 own channels.
 #[test]
 fn occluded_lights_and_suns_own_only_the_faces_they_reach() {
     let args = test_args();
@@ -1007,9 +1066,9 @@ fn occluded_lights_and_suns_own_only_the_faces_they_reach() {
     );
 }
 
-// AC 21 and AC 23 (P2): the drop warning names the light and its face, and
-// `--verbose` the peak demand; a warm build that reuses the cached id 42 repeats
-// the cold build's warnings and peak.
+// The drop warning names the light and its face, and `--verbose` the peak
+// demand; a warm build that reuses the cached id 42 repeats the cold build's
+// warnings and peak.
 #[test]
 fn the_drop_report_names_light_and_face_and_repeats_on_a_warm_memo_hit() {
     let args = test_args();
@@ -1068,8 +1127,9 @@ fn the_drop_report_names_light_and_face_and_repeats_on_a_warm_memo_hit() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-// AC 48 (P11, P21): more static spec lights than an owner index can name fail
-// the compile by name before any lightmap or estimate work.
+// More static spec lights than an owner index can name fail the stage by name
+// before any lightmap or estimate work. The pipeline runs the same check before
+// its first bake stage; this guards callers that reach the stage directly.
 #[test]
 fn too_many_static_spec_lights_fail_before_any_lightmap_work() {
     let args = test_args();
@@ -1176,9 +1236,17 @@ impl Default for CutRun<'_> {
 }
 
 fn bake_cut(quads: &[(f32, f32, f32, f32)], lights: &[MapLight], run: CutRun<'_>) -> CutBake {
+    bake_cut_geometry(horizontal_quads(quads), lights, run)
+}
+
+/// [`bake_cut`] over `geometry`, whose face 0 must be cut.
+fn bake_cut_geometry(
+    mut geometry: GeometryResult,
+    lights: &[MapLight],
+    run: CutRun<'_>,
+) -> CutBake {
     let args = test_args();
     let config = config(false);
-    let mut geometry = horizontal_quads(quads);
     let static_lights = StaticBakedLights::from_lights(lights);
     let alpha_lights = AlphaLightsNs::from_lights(lights);
     let progress = StageProgress::indeterminate();
@@ -1266,7 +1334,7 @@ fn broad_and_corner() -> Vec<MapLight> {
     ]
 }
 
-// AC 3 (P1): the sub-faces of one cut face carry identical owner sets, even
+// The sub-faces of one cut face carry identical owner sets, even
 // where they sit in different bake layers and one sub-face alone would have
 // ranked a different fourth light; each owner's mask holds its own baked
 // values in every sub-face.
@@ -1324,10 +1392,10 @@ fn cut_sub_faces_share_one_owner_set_ranked_over_the_whole_face() {
     }
 }
 
-// AC 33 (P18): with a cut face whose sub-faces span bake layers, id 42 and the
-// drop report are identical across worker counts, window sizes, and cold, warm
-// and lightmap-reuse builds; two lights tied on the estimate resolve to the
-// lower index.
+// With a cut face whose sub-faces span bake layers, id 42 and the drop report
+// are identical across worker counts, window sizes, and cold, warm and
+// lightmap-reuse builds; two lights tied on the estimate resolve to the lower
+// index.
 #[test]
 fn cut_face_owners_are_identical_across_workers_windows_and_cache_paths() {
     let lights = broad_and_corner();
@@ -1353,6 +1421,9 @@ fn cut_face_owners_are_identical_across_workers_windows_and_cache_paths() {
         cache: Some(&cache),
         ..CutRun::default()
     };
+    // One worker bakes on the test thread, so the estimate's trace count,
+    // recorded on the thread that ran it, is visible here.
+    crate::shadowmask_bake::reset_estimate_trace_count();
     let logs = LogCapture::start();
     assert_eq!(bake_cut(&[FLOOR], &lights, cached).section, cold.section);
     logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
@@ -1360,14 +1431,23 @@ fn cut_face_owners_are_identical_across_workers_windows_and_cache_paths() {
         Level::Info,
         "[ShadowmaskAtlas] cut-face estimate: 1 cut face(s)",
     );
-    logs.assert_logged_once(Level::Warn, "on cut face 0 (faces 0..=3)");
+    logs.assert_logged_once(Level::Warn, "of pre-cut face 0 (now faces 0..=3)");
     drop(logs);
+    assert!(
+        crate::shadowmask_bake::estimate_trace_count() > 0,
+        "a memo miss on a cut face traces the estimate"
+    );
+    crate::shadowmask_bake::reset_estimate_trace_count();
     let logs = LogCapture::start();
     assert_eq!(bake_cut(&[FLOOR], &lights, cached).section, cold.section);
     logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas hit");
-    // P20: a memo hit traces no estimate sample.
+    assert_eq!(
+        crate::shadowmask_bake::estimate_trace_count(),
+        0,
+        "a memo hit traces no estimate sample"
+    );
     logs.assert_not_logged(Level::Info, "cut-face estimate");
-    logs.assert_logged_once(Level::Warn, "on cut face 0 (faces 0..=3)");
+    logs.assert_logged_once(Level::Warn, "of pre-cut face 0 (now faces 0..=3)");
     drop(logs);
     // Membership alone: the lightmap memo hits and id 42 rebuilds from cache.
     let selection = EntityShadowLightsSection {
@@ -1405,7 +1485,7 @@ fn cut_face_owners_are_identical_across_workers_windows_and_cache_paths() {
     }
 }
 
-// AC 4 and AC 6 (P22): on a cut face, a light walled off from the whole face
+// On a cut face, a light walled off from the whole face
 // takes no channel even in range, a light lighting part of it does, and a light
 // that reaches only past the face's edge takes none.
 #[test]
@@ -1424,7 +1504,7 @@ fn cut_face_admission_needs_a_lit_interior_texel() {
     for face in bake.cut.faces.clone() {
         assert_eq!(bake.owners[face], [1, E, E, E], "sub-face {face}");
     }
-    // AC 5 (P16) on real geometry: the corner light lights one sub-face, and
+    // On real geometry: the corner light lights one sub-face, and
     // its channel reads zero across the others, padding included.
     let lit: Vec<usize> = bake
         .cut
@@ -1439,7 +1519,7 @@ fn cut_face_admission_needs_a_lit_interior_texel() {
     );
 }
 
-// AC 9 (P17): on a cut face, a promoted light lighting fewer texels than the
+// On a cut face, a promoted light lighting fewer texels than the
 // floor takes no channel from an above-floor specular-only light, and is not
 // warned.
 #[test]
@@ -1476,10 +1556,42 @@ fn a_small_promoted_light_on_a_cut_face_never_displaces_an_above_floor_light() {
     for face in bake.cut.faces.clone() {
         assert_eq!(bake.owners[face], [0, 1, 2, 3], "sub-face {face}");
     }
-    logs.assert_not_logged(Level::Warn, "lost its specular mask channel");
+    logs.assert_not_logged(Level::Warn, "no world highlight there");
 }
 
-// AC 41 and AC 42: a level with no cut face traces no estimate sample, and on a
+// A cut face only two texels across, cut along its length, still gets estimate
+// samples: its thin own segments hold no stride-lattice row, so each is
+// sampled at its centre. One light over it owns every sub-face, undropped.
+#[test]
+fn a_thin_cut_face_gets_estimate_samples_and_an_owner() {
+    const E: u16 = SHADOWMASK_OWNER_EMPTY;
+    // 24 m × 0.5 m: 96 × 2 interior texels at 0.25 m/texel.
+    let mut strip = horizontal_quads(&[FLOOR]);
+    // Set exactly: a scaled 0.5 m can round up past two texels.
+    for vertex in &mut strip.geometry.vertices {
+        if vertex.position[2] > 0.0 {
+            vertex.position[2] = 0.5;
+        }
+    }
+    let lights = vec![over([12.0, 2.0, 0.25], 40.0, 3.0)];
+    let logs = LogCapture::start();
+    let bake = bake_cut_geometry(strip, &lights, CutRun::default());
+    assert!(
+        bake.cut.faces.len() > 1,
+        "the strip is cut along its length"
+    );
+    assert!(
+        bake.cut.own.iter().all(|[u, v]| u.len().min(v.len()) <= 2),
+        "every own segment is at most two texels across: {:?}",
+        bake.cut.own
+    );
+    for face in bake.cut.faces.clone() {
+        assert_eq!(bake.owners[face], [0, E, E, E], "sub-face {face}");
+    }
+    logs.assert_not_logged(Level::Warn, "no world highlight there");
+}
+
+// A level with no cut face traces no estimate sample, and on a
 // cut face the estimate traces only lights whose unshadowed term reaches it.
 #[test]
 fn the_estimate_traces_only_cut_faces_and_lights_that_reach_them() {

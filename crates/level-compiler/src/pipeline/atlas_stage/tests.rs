@@ -286,6 +286,7 @@ fn map_without_static_lights_cuts_nothing() {
         &mut geometry,
         &static_lights,
         cut.charts,
+        cut.cut_parents,
         BlockOrdering::by_cell_id(2),
         64,
         &control,

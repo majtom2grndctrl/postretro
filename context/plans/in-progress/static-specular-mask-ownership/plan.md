@@ -135,9 +135,12 @@ packing, and runtime.
 - **Cut-face estimate as built.** `apply_face_cuts` now records a `CutParent` per cut face:
   the pre-cut index, the emitted sub-face range, and each sub-face's own segment of the parent
   grid. These reach `PreparedAtlas.cut_parents`.
-  - The estimate samples the parent-grid lattice `g ≡ 2 (mod 4)` on both axes. Each sample goes
-    through the emitted sub-face whose own segment holds it, so samples never sit in padding or
-    in a piece the polygon missed.
+  - The estimate samples the parent-grid lattice `g ≡ 2 (mod 4)` on both axes. An own segment
+    that holds no lattice coordinate on an axis (a sub-face one to three texels across) is
+    sampled at its centre on that axis instead, so a thin cut face still gets samples; the mode
+    tag in the memo key names this placement. Each sample goes through the emitted sub-face
+    whose own segment holds it, so samples never sit in padding or in a piece the polygon
+    missed.
   - A light is traced only where its unshadowed term reaches the sample, after a parent-box
     reach cull.
   - Ranking reads `lit_samples × 16` and `contribution × 16`.
@@ -170,11 +173,16 @@ packing, and runtime.
   - An SDF directional light (`light_sun` with `_shadow_type sdf`) is valid authoring.
     - Its SDF diffuse keeps today's cone factor through `positional_cone_aim`, so its diffuse
       output is byte-identical.
-    - Its SDF specular now follows its aim. That is new behavior, in line with the directional
-      Decision.
+    - Its SDF specular stays positional as well: keyed on its origin, with the zero-aim cone,
+      exactly as before the change. Its visibility slice is traced toward that origin, and the
+      directional Decision follows a bake an SDF light does not have. Only owner specular
+      follows a directional light's aim (review fix;
+      `sdf_directional_specular_stays_keyed_on_its_origin`).
   - World specular skips the two mask samples on a face with no owner, or when owners are
-    unreadable. `sample_shadowmask_atlas` uses `textureSampleLevel`, so the branch is
-    uniformity-safe.
+    unreadable. Owners are unreadable at a block miss and at the no-lightmap entry, whose
+    all-visible read is no owner's mask (review fix). The union keeps reading the mask there;
+    no valid compile gives a no-lightmap face an owner. `sample_shadowmask_atlas` uses
+    `textureSampleLevel`, so the branch is uniformity-safe.
   - `pool_sample_test.rs` called the retired select. It now tests the owners-readable gate
     against the real pool.
   - Two `capture_shadowmask_groups.rs` tests cannot be expressed in SMB7, because owners must

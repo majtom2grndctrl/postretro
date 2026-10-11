@@ -28,13 +28,14 @@ pub struct LightmapBlockFileRanges {
 
 /// Immutable handle for a level whose lightmap blocks stream.
 ///
-/// Holds only the id-22/42 indexes (header, slot table, records), each
+/// Holds only the id-22/42 indexes (headers, id 42's owner table, records), each
 /// section's absolute file range, the level's content tag, and the retained
 /// file. Never a block blob.
 ///
 /// Owner: `LevelWorld::lightmap_storage`, shared by `Arc` with the residency
 /// controller and the issuer's lightmap route. The indexes are a copy of the
-/// ones `LevelWorld` keeps (tens of bytes per block). Released, and with it
+/// ones `LevelWorld` keeps: tens of bytes per block, plus 8 bytes per id-17
+/// face for the owner table, which loads whole and never streams. Released, and with it
 /// the file handle when no SH manifest shares it, when the level's storage and
 /// every clone drop; level unload must drop the controller's clones.
 #[derive(Debug)]

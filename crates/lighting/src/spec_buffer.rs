@@ -30,9 +30,10 @@ use postretro_level_loader::{LightType, MapLight, ShadowType};
 pub const SPEC_LIGHT_SIZE: usize = 64;
 
 /// `cone_dir_and_type.w` discriminant. Point and directional lights are
-/// cone-less (full-bright `cos_inner`/`cos_outer` sentinels). World specular
-/// reads a directional light's aim as its light direction; every other loop
-/// treats a directional light as cone-less at its origin.
+/// cone-less (full-bright `cos_inner`/`cos_outer` sentinels). Owner world
+/// specular reads a directional light's aim as its light direction; every
+/// other loop, SDF specular included, treats a directional light as cone-less
+/// at its origin.
 pub const SPEC_LIGHT_TYPE_POINT: f32 = 0.0;
 pub const SPEC_LIGHT_TYPE_SPOT: f32 = 1.0;
 pub const SPEC_LIGHT_TYPE_DIRECTIONAL: f32 = 2.0;
@@ -214,7 +215,8 @@ mod tests {
         assert_eq!(bytes.len(), 2 * SPEC_LIGHT_SIZE);
     }
 
-    // Face owners name the mask channel; no record carries a map-wide slot.
+    // No record carries a shadowmask channel: channels belong to faces, by
+    // owner position.
     #[test]
     fn cone_cos_z_is_unused_for_every_light_type() {
         let mut spot = sample();
@@ -227,7 +229,7 @@ mod tests {
         }
     }
 
-    /// AC 12: a directional light packs the direction it shines, normalized,
+    /// A directional light packs the direction it shines, normalized,
     /// and no position-derived aim: moving its origin changes only the
     /// position lanes. An unauthored aim falls back to the bake's straight
     /// down.

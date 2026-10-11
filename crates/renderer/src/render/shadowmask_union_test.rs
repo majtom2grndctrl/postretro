@@ -12,7 +12,7 @@
 
 use postretro_render_cpu::frame_uniforms::SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
 
-use super::gpu_test_harness::{GpuCtx, try_init_gpu};
+use super::gpu_test_harness::{GpuCtx, gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
 use super::renderer_types::{
     PromotedBakedLightRecord, PromotedBakedLightSource, PromotedShadowPoolKind,
 };
@@ -32,21 +32,23 @@ const PRE_CHANGE_DROPPED: f32 = 4.0;
 
 /// `shadowmask_union_subtraction` and its channel guard as they stood before
 /// per-face ownership, verbatim but for their names: a promoted light read
-/// the map-wide mask slot the CPU packed into its metadata `.z`.
+/// the map-wide mask slot the CPU packed into its metadata `.z`. Every name
+/// from that retired format carries a `pre_change` prefix, so none can stand
+/// in for a production name the shader grep gates retire.
 const PRE_CHANGE_UNION: &str = r#"
-const SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
-// `shadowmask_union_channel`'s skip sentinel; never a mask slot.
-const SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;
+const PRE_CHANGE_SHADOWMASK_CHANNEL_DROPPED: f32 = 4.0;
+// `pre_change_shadowmask_union_channel`'s skip sentinel; never a mask slot.
+const PRE_CHANGE_SHADOWMASK_UNION_CHANNEL_NONE: u32 = 4u;
 
 // A promoted light's mask slot from its metadata channel float, or
-// SHADOWMASK_UNION_CHANNEL_NONE for a dropped, negative, fractional or
-// out-of-range value. The union skips a light whose slot is NONE, so the u32
+// PRE_CHANGE_SHADOWMASK_UNION_CHANNEL_NONE for a dropped, negative, fractional
+// or out-of-range value. The union skips a light whose slot is NONE, so the u32
 // cast here follows every guard.
 fn pre_change_shadowmask_union_channel(channel_value: f32) -> u32 {
     if channel_value < 0.0 ||
-       channel_value >= SHADOWMASK_CHANNEL_DROPPED ||
+       channel_value >= PRE_CHANGE_SHADOWMASK_CHANNEL_DROPPED ||
        floor(channel_value) != channel_value {
-        return SHADOWMASK_UNION_CHANNEL_NONE;
+        return PRE_CHANGE_SHADOWMASK_UNION_CHANNEL_NONE;
     }
     return u32(channel_value);
 }
@@ -107,7 +109,7 @@ fn pre_change_shadowmask_union_subtraction(
         if weight <= 0.0 ||
            spec_idx_value <= SHADOWMASK_INVALID_INDEX_VALUE ||
            spec_idx_value >= f32(spec_len) ||
-           channel == SHADOWMASK_UNION_CHANNEL_NONE {
+           channel == PRE_CHANGE_SHADOWMASK_UNION_CHANNEL_NONE {
             continue;
         }
         if pool_kind_value != SHADOWMASK_POOL_SPOT_VALUE && pool_kind_value != SHADOWMASK_POOL_CUBE_VALUE {
@@ -143,60 +145,6 @@ fn pre_change_shadowmask_union_subtraction(
     return out;
 }
 "#;
-
-fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
-    if let Some(ctx) = try_init_gpu() {
-        return Some(ctx);
-    }
-    let required =
-        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "[shadowmask_union_test] {test}: POSTRETRO_REQUIRE_GPU is set but no GPU adapter is available"
-    );
-    eprintln!("[shadowmask_union_test] skipping {test}: no GPU adapter available");
-    None
-}
-
-/// The text of `fn name(` through its matching closing brace in `source`.
-fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
-    let header = format!("fn {name}(");
-    let start = source
-        .find(&header)
-        .unwrap_or_else(|| panic!("the WGSL source must declare `{header}`"));
-    let open = start + source[start..].find('{').expect("function body");
-    let mut depth = 0usize;
-    for (offset, ch) in source[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[start..=open + offset];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{header}` never closes");
-}
-
-/// `struct name {` through its `};` in forward.wgsl.
-fn wgsl_struct(name: &str) -> &'static str {
-    let header = format!("struct {name} {{");
-    let start = FORWARD_WGSL
-        .find(&header)
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"));
-    let end = start + FORWARD_WGSL[start..].find("};").expect("struct closes") + 2;
-    &FORWARD_WGSL[start..end]
-}
-
-fn wgsl_const_line(name: &str) -> &'static str {
-    FORWARD_WGSL
-        .lines()
-        .find(|line| line.starts_with(&format!("const {name}:")))
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"))
-}
 
 fn shader_source() -> String {
     let prelude = r#"
@@ -303,11 +251,11 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
         "SPEC_OWNER_CHANNELS",
         "SPEC_SHADOWMASK_FLAG_MASK_PRESENT",
     ]
-    .map(wgsl_const_line)
+    .map(|name| wgsl_const_line(FORWARD_WGSL, name))
     .join("\n");
     let structs = [
-        wgsl_struct("ShadowmaskDirect"),
-        wgsl_struct("ShadowmaskUnion"),
+        wgsl_item(FORWARD_WGSL, "struct ShadowmaskDirect {"),
+        wgsl_item(FORWARD_WGSL, "struct ShadowmaskUnion {"),
     ]
     .join("\n");
     let helpers = [
@@ -729,8 +677,8 @@ fn assert_close(actual: [f32; 4], expected: [f32; 4], what: &str) {
 /// diagnostic both run.
 const MASK: [f32; 4] = [0.9, 0.55, 0.0, 0.7];
 
-// AC 18: on a face every promoted light owns, the ownership union reproduces
-// the pre-change union exactly, with each light's owner position equal to the
+// On a face every promoted light owns, the ownership union reproduces the
+// pre-change union exactly, with each light's owner position equal to the
 // map-wide slot it held before. Owners ascend (0, 1, 3) while records arrive
 // as 3, 1, 0, and spec light 3's position 2 holds a baked-dark channel.
 #[test]
@@ -769,7 +717,7 @@ fn union_matches_the_pre_change_union_where_every_promoted_light_owns_the_face()
     }
 }
 
-// AC 19: a promoted light that does not own the face subtracts nothing there.
+// A promoted light that does not own the face subtracts nothing there.
 // The current union equals the pre-change union with that light unslotted.
 #[test]
 fn union_subtracts_nothing_for_a_promoted_light_that_does_not_own_the_face() {
@@ -833,9 +781,8 @@ fn union_subtracts_nothing_for_a_promoted_light_that_does_not_own_the_face() {
     }
 }
 
-// AC 13 (union side): with the mask-present bit clear — no id 42, a refused
-// pool, or placeholder mode — no promoted light subtracts, even where it owns
-// the face.
+// With the mask-present bit clear — no id 42, a refused pool, or placeholder
+// mode — no promoted light subtracts, even where it owns the face.
 #[test]
 fn union_subtracts_nothing_without_a_bound_mask() {
     let Some(ctx) = gpu_or_skip("union_subtracts_nothing_without_a_bound_mask") else {

@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md §PRL (ShadowmaskAtlas ownership)
 
 use std::cell::Cell;
+use std::ops::Range;
 
 use glam::Vec3;
 use rayon::prelude::*;
@@ -28,8 +29,10 @@ use super::ownership::{Candidate, FaceChannels, LIT_TEXEL_FLOOR};
 pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
 /// Each sample runs the walk's own area-sampled visibility, seed and sample
-/// count, so a sample reads exactly what the walk bakes at that texel.
-const ESTIMATE_MODE: &[u8] = b"walk-area-samples";
+/// count, so a sample reads exactly what the walk bakes at that texel. A thin
+/// own segment with no lattice coordinate is sampled at its centre; the tag
+/// names that placement so a build without it never shares a memo entry.
+const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";
 
 /// The estimate's inputs that can change id 42 while every partition stays
 /// the same: stride, sampling mode, and the cut map. Folded into the memo key.
@@ -54,21 +57,39 @@ pub(super) fn estimate_params(cut_parents: &[CutParent]) -> Vec<u8> {
     out
 }
 
-/// One cut face's fixed owners and how much the estimate traced for it.
+/// Every cut face's fixed owners, and how much the estimate traced over all of
+/// them.
 pub(super) struct CutEstimate {
-    /// Per cut parent, its ranked owners.
+    /// Per cut parent, in `cut_parents` order, its ranked owners.
     pub(super) owners: Vec<FaceChannels>,
+    /// Sample texels over every cut face.
     pub(super) samples: usize,
-    /// Sample × light visibility evaluations: lights whose unshadowed term
-    /// reached the sample.
+    /// Sample × light visibility evaluations over every cut face: lights whose
+    /// unshadowed term reached the sample.
     pub(super) traces: usize,
 }
 
-/// Sample texels of `cut`: parent-grid texels on the stride lattice, each
-/// through the emitted sub-face whose own segment holds it. A lattice point in
-/// a piece the polygon missed has no sub-face and no sample.
-fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
+/// Parent-grid coordinates one own segment is sampled at on one axis: its
+/// stride-lattice coordinates, ascending. A segment too thin to hold one (a
+/// sub-face a texel or two across) is sampled at its centre instead, so it
+/// still gets samples, and they stay inside its own segment.
+fn axis_samples(segment: &Range<u32>) -> Vec<u32> {
     let half = ESTIMATE_STRIDE / 2;
+    let lattice: Vec<u32> = segment
+        .clone()
+        .filter(|g| g % ESTIMATE_STRIDE == half)
+        .collect();
+    if lattice.is_empty() && !segment.is_empty() {
+        return vec![segment.start + (segment.end - segment.start) / 2];
+    }
+    lattice
+}
+
+/// Sample texels of `cut`, in sub-face then row-major order, each through the
+/// emitted sub-face whose own segment holds it. Own segments are disjoint, so
+/// no parent-grid texel is sampled twice. A piece the polygon missed has no
+/// sub-face and no sample.
+fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, i32)> {
     let mut points = Vec::new();
     for (k, [u, v]) in cut.own.iter().enumerate() {
         let face = cut.faces.start + k;
@@ -77,8 +98,9 @@ fn sample_points(cut: &CutParent, shared: &SharedAtlas<'_>) -> Vec<(usize, i32, 
             .window
             .expect("a cut sub-face's chart windows its parent");
         let (interior_w, interior_h) = chart_interior_dims(chart);
-        for gy in v.clone().filter(|gy| gy % ESTIMATE_STRIDE == half) {
-            for gx in u.clone().filter(|gx| gx % ESTIMATE_STRIDE == half) {
+        let columns = axis_samples(u);
+        for gy in axis_samples(v) {
+            for &gx in &columns {
                 let tx = gx as i32 - window.origin[0] as i32;
                 let ty = gy as i32 - window.origin[1] as i32;
                 if (0..interior_w).contains(&tx) && (0..interior_h).contains(&ty) {
@@ -212,6 +234,9 @@ pub(super) fn estimate_cut_owners(
             promoted: light.promoted,
         });
     }
+    // Counted on the caller thread: the traces themselves ran on workers.
+    #[cfg(test)]
+    super::record_estimate_traces(traces);
     CutEstimate {
         owners,
         samples: samples.iter().map(Vec::len).sum(),

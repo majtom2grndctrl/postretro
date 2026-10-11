@@ -734,6 +734,12 @@ fn run_after_parsing(
     );
     let alpha_lights_ns =
         light_namespaces::AlphaLightsNs::from_lights_excluding(&map_data.lights, &buried_lights);
+    // A level whose static spec lights overflow the u16 owner index fails here,
+    // before any SH, atlas or lightmap work. The fused lightmap stage keeps the
+    // same check as a guard for callers that reach it directly.
+    crate::shadowmask_bake::check_owner_index_capacity(
+        crate::shadowmask_bake::static_spec_light_count(&alpha_lights_ns),
+    )?;
     let raw_slot_for_map_light =
         animated_baked_lights.slot_for_source_lights(map_data.lights.len());
     let script_mutable_descriptor_slots = crate::delta_drop_policy::script_mutable_descriptor_slots(

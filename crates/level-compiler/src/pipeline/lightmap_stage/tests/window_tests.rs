@@ -98,7 +98,7 @@ fn bake_window_with_irradiance(
                 output.lightmap.section.to_bytes(),
                 output
                     .shadowmask
-                    .expect("selected lights emit a shadowmask")
+                    .expect("lit window fixture faces emit id 42")
                     .to_bytes(),
             )
         })
@@ -1020,8 +1020,9 @@ fn lightmap_window_paused_warm_hits_advance_no_progress_until_resume() {
 // re-bakes only that light.
 #[test]
 fn memo_hit_rebuild_then_light_edit_rebakes_one_light() {
-    // Lights 0 and 1 are shadow-selected; light 2 is protected only by the
-    // lightmap memo's mark, and light 3 is the one edited.
+    // Lights 0 and 1 are shadow-selected; light 2 is unselected and kept only
+    // by the memos' marks (the shadowmask memo marks every eligible light, not
+    // just selected ones), and light 3 is the one edited.
     let lights = window_lights(4);
     let root = fresh_cache_dir("memo_record");
     let input = root.join("fixture.map");

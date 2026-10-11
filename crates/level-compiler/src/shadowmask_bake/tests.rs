@@ -242,7 +242,7 @@ fn drop_at(face: u32, spec_index: u16, lit_texels: u32) -> OwnerDrop {
     }
 }
 
-// AC 20: five eligible lights lit across one face yield four owners, chosen by
+// Five eligible lights lit across one face yield four owners, chosen by
 // largest shadowed contribution, and the fifth is reported; four yield none.
 #[test]
 fn five_lit_lights_keep_the_four_largest_contributions_and_report_the_fifth() {
@@ -271,7 +271,7 @@ fn five_lit_lights_keep_the_four_largest_contributions_and_report_the_fifth() {
     assert_eq!(four.report.peak_face_demand, 4);
 }
 
-// AC 22 (P24): owners sit in ascending light-index order whatever order the
+// Owners sit in ascending light-index order whatever order the
 // bake met them, and every owner's mask values sit in that owner's channel.
 #[test]
 fn owners_ascend_whatever_the_arrival_order_and_their_masks_move_with_them() {
@@ -303,7 +303,7 @@ fn owners_ascend_whatever_the_arrival_order_and_their_masks_move_with_them() {
     }
 }
 
-// AC 24 (P4): when a later, higher-ranked light evicts an owner, none of the
+// When a later, higher-ranked light evicts an owner, none of the
 // evicted light's values remain in that channel; texels the newcomer does not
 // reach read zero, padding included.
 #[test]
@@ -348,7 +348,7 @@ fn an_evicting_newcomer_leaves_none_of_the_evicted_values() {
     }
 }
 
-// AC 14 (P4): an owner occluded at a face edge reads zero there, including the
+// An owner occluded at a face edge reads zero there, including the
 // padding a bilinear tap reaches; no owned channel keeps an unwritten value.
 #[test]
 fn an_owner_occluded_at_the_face_edge_reads_zero_there_and_in_padding() {
@@ -382,7 +382,7 @@ fn an_owner_occluded_at_the_face_edge_reads_zero_there_and_in_padding() {
     }
 }
 
-// AC 25: with five above-floor candidates, a promoted light with the smallest
+// With five above-floor candidates, a promoted light with the smallest
 // contribution keeps its channel over a brighter specular-only light; with no
 // promoted light among them, the smallest contribution drops.
 #[test]
@@ -413,7 +413,7 @@ fn an_above_floor_promoted_light_outranks_brighter_specular_only_lights() {
     }
 }
 
-// AC 26 (P5): a promoted candidate below the floor drops silently and never
+// A promoted candidate below the floor drops silently and never
 // takes a channel from an above-floor specular-only light.
 #[test]
 fn a_below_floor_promoted_candidate_never_displaces_an_above_floor_owner() {
@@ -435,7 +435,7 @@ fn a_below_floor_promoted_candidate_never_displaces_an_above_floor_owner() {
     assert!(fill.report.drops.is_empty(), "a below-floor drop is silent");
 }
 
-// AC 27 (P19): a below-floor promoted light that arrives first and takes a free
+// A below-floor promoted light that arrives first and takes a free
 // channel loses it once four above-floor specular-only lights arrive.
 #[test]
 fn a_below_floor_promoted_incumbent_is_evicted_by_four_above_floor_arrivals() {
@@ -463,7 +463,7 @@ fn a_below_floor_promoted_incumbent_is_evicted_by_four_above_floor_arrivals() {
     }
 }
 
-// AC 28: with three above-floor candidates and two below-floor ones, the last
+// With three above-floor candidates and two below-floor ones, the last
 // channel goes to the brighter below-floor light, even when the dimmer one is
 // promoted.
 #[test]
@@ -498,7 +498,7 @@ fn the_last_channel_goes_to_the_brighter_below_floor_light_even_over_a_promoted_
     );
 }
 
-// AC 30: a fifth candidate below the lit-area floor is dropped without a
+// A fifth candidate below the lit-area floor is dropped without a
 // warning; the same light above the floor is warned.
 #[test]
 fn a_fifth_candidate_is_reported_only_above_the_floor() {
@@ -527,7 +527,7 @@ fn a_fifth_candidate_is_reported_only_above_the_floor() {
     }
 }
 
-// AC 31 (P7): two candidates with equal contribution for the last channel
+// Two candidates with equal contribution for the last channel
 // resolve to the lower light index, whichever arrives first.
 #[test]
 fn a_tie_for_the_last_channel_goes_to_the_lower_index_whatever_arrives_first() {
@@ -551,7 +551,7 @@ fn a_tie_for_the_last_channel_goes_to_the_lower_index_whatever_arrives_first() {
     }
 }
 
-// AC 32 (P6): id 42 is byte-identical when the fill receives the same
+// Id 42 is byte-identical when the fill receives the same
 // partitions in reversed light order, with lights spanning several faces.
 #[test]
 fn reversed_light_order_yields_identical_owners_and_bytes() {
@@ -582,7 +582,7 @@ fn reversed_light_order_yields_identical_owners_and_bytes() {
     assert!(a.report.drops.len() >= 3, "every face overflows");
 }
 
-// AC 35 (P13): a texel with non-finite visibility neither admits a light nor
+// A texel with non-finite visibility neither admits a light nor
 // adds to its contribution.
 #[test]
 fn non_finite_visibility_neither_admits_nor_counts() {
@@ -620,7 +620,7 @@ fn non_finite_visibility_neither_admits_nor_counts() {
     assert!(fill.report.drops.is_empty());
 }
 
-// AC 36: a light whose only lit texels on a face are padding takes no channel.
+// A light whose only lit texels on a face are padding takes no channel.
 #[test]
 fn a_light_lit_only_in_padding_takes_no_channel() {
     let atlas = Atlas::new(1);
@@ -637,7 +637,7 @@ fn a_light_lit_only_in_padding_takes_no_channel() {
     assert!(fill.section.is_none());
 }
 
-// AC 37 and AC 47: a light occluded on every texel of a face takes no channel
+// A light occluded on every texel of a face takes no channel
 // there, and a level whose lights light no face interior emits no id 42; one
 // lit texel takes a channel.
 #[test]
@@ -665,7 +665,7 @@ fn an_occluded_light_takes_no_channel_and_one_lit_texel_takes_one() {
     assert_eq!(one.section.as_ref().unwrap().owners.len(), 2);
 }
 
-// AC 1 (compiler half) and AC 2 (compiler half): a light owns only the faces it
+// A light owns only the faces it
 // lights; the face it cannot see keeps its own owner.
 #[test]
 fn a_light_owns_only_the_faces_it_lights() {
@@ -687,7 +687,7 @@ fn a_light_owns_only_the_faces_it_lights() {
     assert_eq!(fill.owners(1), [1, E, E, E]);
 }
 
-// AC 34 (P8): dynamic, SDF and bake-only lights placed before a static light do
+// Dynamic, SDF and bake-only lights placed before a static light do
 // not shift its owner index off the light that fills its channel; a bake-only
 // light takes no channel, and id 40 marks only the promotion tier.
 #[test]
@@ -721,7 +721,7 @@ fn eligibility_skips_dynamic_sdf_bake_only_and_animated_lights() {
     assert_eq!(static_spec_light_count(&alpha_lights), 4);
 }
 
-// AC 48 (P11): more static spec lights than a u16 owner can name fails with a
+// More static spec lights than a u16 owner can name fails with a
 // named error.
 #[test]
 fn the_owner_index_cap_is_the_u16_range_less_the_empty_sentinel() {
@@ -737,7 +737,7 @@ fn the_owner_index_cap_is_the_u16_range_less_the_empty_sentinel() {
     assert!(error.to_string().contains("65536 static spec lights"));
 }
 
-// AC 23 (P2): the memo entry carries the drop report, so a warm hit repeats it.
+// The memo entry carries the drop report, so a warm hit repeats it.
 #[test]
 fn the_memo_entry_round_trips_the_drop_report_and_an_absent_section() {
     let atlas = Atlas::new(1);
@@ -788,7 +788,7 @@ fn the_memo_entry_round_trips_the_drop_report_and_an_absent_section() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// AC 43-adjacent: every input that can change id 42 changes the memo key.
+// Every input that can change id 42 changes the memo key.
 #[test]
 fn the_memo_key_covers_spec_indices_promotion_faces_and_estimate_parameters() {
     let light = light_over(0, 1.0);
@@ -1000,9 +1000,9 @@ const CUT_SITE: DropSite = DropSite::CutFace {
     last_face: 1,
 };
 
-// AC 7 (P14), fill half: a light the estimate missed takes no channel in any
-// sub-face, even a free one, and the drop warning names it once, by its parent,
-// counting each parent-grid texel once.
+// A light the estimate missed takes no channel in any sub-face, even a free
+// one, and the drop warning names it once, by its parent, counting each
+// parent-grid texel once.
 #[test]
 fn a_light_the_estimate_missed_takes_no_channel_and_is_reported_once_by_its_parent() {
     let cut = CutAtlas::new();
@@ -1042,7 +1042,7 @@ fn a_light_the_estimate_missed_takes_no_channel_and_is_reported_once_by_its_pare
     }
 }
 
-// AC 8 (P15): an estimated owner whose partitions bake no lit texel on any
+// An estimated owner whose partitions bake no lit texel on any
 // sub-face holds no channel in the final owner table; an above-floor light it
 // displaced is warned.
 #[test]
@@ -1072,7 +1072,7 @@ fn an_estimated_owner_that_bakes_nothing_is_cleared_after_the_walk() {
     );
 }
 
-// AC 5 (P16): a cut face's owner that lights only one of its sub-faces reads
+// A cut face's owner that lights only one of its sub-faces reads
 // zero across the other, padding included; no sub-face keeps an unwritten value
 // in an owned channel.
 #[test]
@@ -1100,8 +1100,8 @@ fn a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other() {
     assert_eq!(fill.channel(cut.idx(1, 11, 2), 1), 128);
 }
 
-// AC 43 and P23: the estimate's stride, sampling mode and cut map all reach the
-// memo key; a level with no cut face adds nothing.
+// The estimate's stride, sampling mode and cut map all reach the memo key; a
+// level with no cut face adds nothing.
 #[test]
 fn estimate_parameters_carry_stride_mode_and_cut_map() {
     let cut = CutAtlas::new().cut;

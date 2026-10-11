@@ -9,7 +9,9 @@ use postretro_level_format::shadowmask_atlas::{
 };
 
 /// Lit chart-interior texels a light needs on a face to rank in the upper
-/// tier. The stress-map census cleared every overflow at this value.
+/// tier. A perfect square: the cut-face estimate samples once per
+/// `ESTIMATE_STRIDE²` = floor texels, so a light lighting the floor's worth of
+/// a cut face rarely falls between samples.
 pub(crate) const LIT_TEXEL_FLOOR: u32 = 16;
 
 /// One light's shadowed presence on one face.
@@ -140,8 +142,10 @@ impl FaceChannels {
 /// pre-cut face and the id-17 faces it became.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DropSite {
+    /// An id-17 face index.
     Face(u32),
     CutFace {
+        /// The face's index before the cut, not an id-17 index.
         parent: u32,
         first_face: u32,
         last_face: u32,
@@ -167,26 +171,37 @@ pub(crate) struct OwnerReport {
 
 /// Warn once per dropped light, naming the light by its source label and the
 /// face it lost. `--verbose` adds the peak per-face demand.
+///
+/// An uncut face's drop always lost to four higher-ranked owners. A cut face's
+/// owners are the estimate's, so a light dropped there may have missed every
+/// sample, or stayed out beside a channel freed after the walk by an owner that
+/// baked nothing; its warning says only that the estimate left it out. The cut
+/// face is named by its pre-cut index, which is not an id-17 face index, beside
+/// the id-17 faces it became.
 pub(crate) fn log_owner_report(
     report: &OwnerReport,
     label_of: impl Fn(u16) -> String,
     verbose: bool,
 ) {
     for drop in &report.drops {
-        let site = match drop.site {
-            DropSite::Face(face) => format!("face {face}"),
+        let label = label_of(drop.spec_index);
+        match drop.site {
+            DropSite::Face(face) => log::warn!(
+                "[ShadowmaskAtlas] {label} lost its specular mask channel on face {face} to \
+                 four higher-ranked lights ({} lit texels): no world highlight there",
+                drop.lit_texels,
+            ),
             DropSite::CutFace {
                 parent,
                 first_face,
                 last_face,
-            } => format!("cut face {parent} (faces {first_face}..={last_face})"),
-        };
-        log::warn!(
-            "[ShadowmaskAtlas] {} lost its specular mask channel on {site} to four \
-             higher-ranked lights ({} lit texels): no world highlight there",
-            label_of(drop.spec_index),
-            drop.lit_texels,
-        );
+            } => log::warn!(
+                "[ShadowmaskAtlas] {label} is not among the estimated specular mask owners of \
+                 pre-cut face {parent} (now faces {first_face}..={last_face}) ({} lit texels): \
+                 no world highlight there",
+                drop.lit_texels,
+            ),
+        }
     }
     if verbose {
         log::info!(

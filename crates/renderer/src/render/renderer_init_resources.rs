@@ -384,16 +384,20 @@ pub(crate) fn build_lighting_bind_group(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Absent → fallback payload with has_chunk_grid=0; shader iterates full spec buffer.
+    // Absent → fallback payload with has_chunk_grid=0: SDF selection scans the
+    // full spec buffer and billboard specular skips its static lights. World
+    // specular does not read the grid.
     let chunk_grid = match geometry.and_then(|g| g.chunk_light_list) {
         Some(sec) => ChunkGrid::from_section(sec),
         None => ChunkGrid::fallback(),
     };
     if chunk_grid.present {
-        log::info!("[Renderer] ChunkLightList active (spec-only path is spatially partitioned)");
+        log::info!(
+            "[Renderer] ChunkLightList active (SDF selection and billboard specular are spatially partitioned)"
+        );
     } else {
         log::info!(
-            "[Renderer] ChunkLightList absent — specular path iterates the full spec buffer"
+            "[Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off"
         );
     }
     let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

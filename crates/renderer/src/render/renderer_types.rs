@@ -467,7 +467,8 @@ pub struct LevelGeometry<'a> {
     /// payloads and builds an empty streamed pool over `lightmap` and
     /// `shadowmask_atlas`. `None` installs every block at once.
     pub lightmap_streaming: Option<LevelGeometryLightmapStreaming>,
-    /// `None` → `has_chunk_grid == 0`; shader iterates the full spec buffer.
+    /// `None` → `has_chunk_grid == 0`: SDF light selection scans the full
+    /// spec buffer and billboard specular skips its static lights.
     pub chunk_light_list:
         Option<&'a postretro_level_format::chunk_light_list::ChunkLightListSection>,
     /// `None` when the map has zero animated lights.

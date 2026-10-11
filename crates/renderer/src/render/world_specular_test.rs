@@ -10,7 +10,7 @@
 // so; a skipped run proves nothing. Set `POSTRETRO_REQUIRE_GPU` to any
 // non-empty value other than `0` to make a missing adapter fail instead.
 
-use super::gpu_test_harness::{GpuCtx, try_init_gpu};
+use super::gpu_test_harness::{GpuCtx, gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
 
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 const MATERIAL_SHADING_WGSL: &str = include_str!("../shaders/material_shading.wgsl");
@@ -21,54 +21,6 @@ const WIDTH: u32 = 16;
 const TEXEL_BYTES: u32 = 16;
 const EMPTY: u16 = 0xFFFF;
 const NO_OWNERS: [u16; 4] = [EMPTY; 4];
-
-fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
-    if let Some(ctx) = try_init_gpu() {
-        return Some(ctx);
-    }
-    let required =
-        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "[world_specular_test] {test}: POSTRETRO_REQUIRE_GPU is set but no GPU adapter is available"
-    );
-    eprintln!("[world_specular_test] skipping {test}: no GPU adapter available");
-    None
-}
-
-/// The text of `fn name(` through its matching closing brace in `source`.
-fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
-    wgsl_block(source, &format!("fn {name}("))
-}
-
-/// The text from `header` through the brace that closes it.
-fn wgsl_block<'a>(source: &'a str, header: &str) -> &'a str {
-    let start = source
-        .find(header)
-        .unwrap_or_else(|| panic!("the WGSL source must declare `{header}`"));
-    let open = start + source[start..].find('{').expect("block body");
-    let mut depth = 0usize;
-    for (offset, ch) in source[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[start..=open + offset];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{header}` never closes");
-}
-
-fn wgsl_const_line(name: &str) -> &'static str {
-    FORWARD_WGSL
-        .lines()
-        .find(|line| line.starts_with(&format!("const {name}:")))
-        .unwrap_or_else(|| panic!("forward.wgsl must declare `{name}`"))
-}
 
 fn shader_source() -> String {
     let prelude = r#"
@@ -135,16 +87,18 @@ fn fs_main(in: HarnessVaryings) -> @location(0) vec4<f32> {
 }
 "#;
     let consts = [
-        wgsl_const_line("SPEC_OWNER_EMPTY"),
-        wgsl_const_line("SPEC_OWNER_CHANNELS"),
-        wgsl_const_line("SPEC_LIGHT_TYPE_DIRECTIONAL"),
-        wgsl_const_line("SPEC_SHADOWMASK_FLAG_FORCE_ONE"),
+        "SPEC_OWNER_EMPTY",
+        "SPEC_OWNER_CHANNELS",
+        "SPEC_LIGHT_TYPE_DIRECTIONAL",
+        "SPEC_SHADOWMASK_FLAG_FORCE_ONE",
     ]
+    .map(|name| wgsl_const_line(FORWARD_WGSL, name))
     .join("\n");
     let helpers = [
-        wgsl_block(SDF_LIGHT_SELECT_WGSL, "struct SdfLightSelection {"),
+        wgsl_item(SDF_LIGHT_SELECT_WGSL, "struct SdfLightSelection {"),
         wgsl_function(FORWARD_WGSL, "world_static_specular"),
         wgsl_function(FORWARD_WGSL, "world_static_light_specular"),
+        wgsl_function(FORWARD_WGSL, "positional_cone_aim"),
         wgsl_function(FORWARD_WGSL, "spec_shadowmask_forced_one"),
         wgsl_function(FORWARD_WGSL, "shadowmask_channel_value"),
         wgsl_function(FORWARD_WGSL, "slice_for_visibility"),
@@ -797,10 +751,10 @@ fn sdf_specular_comes_only_from_the_fragment_selection() {
     }
 }
 
-// AC 13: missing data — a block miss, a missing or refused mask, placeholder
-// mode — leaves owners unreadable (fs_main's `static_spec_owners_readable`).
-// That drops every owner's specular and leaves the SDF selection's exactly as
-// it was.
+// Missing data — a block miss, a missing or refused mask, placeholder mode —
+// leaves owners unreadable (fs_main's `static_spec_owners_readable`). That
+// drops every owner's specular and leaves the SDF selection's exactly as it
+// was.
 #[test]
 fn unreadable_owners_drop_static_specular_and_keep_sdf_specular_unchanged() {
     let Some(ctx) =
@@ -884,4 +838,75 @@ fn directional_owner_highlight_follows_its_aim_not_its_origin() {
         Case::default(),
     );
     assert!(below.iter().all(|px| *px == [0.0; 3]), "{below:?}");
+    // A zero aim falls back to straight down for its cone as well as its
+    // light direction, so it reads exactly as an authored straight-down sun.
+    let unaimed = render(
+        &ctx,
+        &[Light::directional([0.0, 5.0, 0.0], [0.0; 3])],
+        &face,
+        Case::default(),
+    );
+    assert_eq!(unaimed, overhead, "a zero aim is the straight-down sun");
+}
+
+// A directional light tagged `_shadow_type sdf` has no baked direct to
+// follow: its SDF visibility slice is traced toward its origin and its SDF
+// diffuse shines from there. Its specular stays the positional highlight it
+// always was — keyed on the origin, with the zero-aim cone a point light at
+// that origin gets — while an owned directional follows its aim.
+#[test]
+fn sdf_directional_specular_stays_keyed_on_its_origin() {
+    let Some(ctx) = gpu_or_skip("sdf_directional_specular_stays_keyed_on_its_origin") else {
+        return;
+    };
+    let tilted = [0.6, -0.8, 0.0];
+    let sdf_sun = |origin: [f32; 3]| Light {
+        sdf: true,
+        ..Light::directional(origin, tilted)
+    };
+    let selected = Case {
+        sdf_indices: [0, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        ..Case::default()
+    };
+    let face = one_face(NO_OWNERS);
+    let here = render(&ctx, &[sdf_sun([0.0, 2.0, 0.0])], &face, selected);
+    let moved = render(&ctx, &[sdf_sun([1.5, 2.0, 0.0])], &face, selected);
+    assert!(here[LEFT_OF_EDGE][0] > 0.0, "{here:?}");
+    assert_ne!(here, moved, "moving the origin moves the highlight");
+    assert!(
+        here.iter().any(|px| *px != here[0]),
+        "a positional highlight varies across the floor: {here:?}"
+    );
+
+    // The same light as a cone-less point at that origin, through the owner
+    // half: the expression SDF specular evaluated before owners existed.
+    let point = Light {
+        position: [0.0, 2.0, 0.0],
+        range: 0.0,
+        ..Light::point(WHITE)
+    };
+    let as_point = render(
+        &ctx,
+        &[point],
+        &one_face([0, EMPTY, EMPTY, EMPTY]),
+        Case::default(),
+    );
+    for column in 0..WIDTH as usize {
+        assert_close(
+            here[column],
+            as_point[column],
+            "SDF sun as its origin point",
+        );
+    }
+
+    // An owned directional with the same origin and aim follows the aim.
+    let owned = render(
+        &ctx,
+        &[Light::directional([0.0, 2.0, 0.0], tilted)],
+        &one_face([0, EMPTY, EMPTY, EMPTY]),
+        Case::default(),
+    );
+    assert!(owned.iter().all(|px| *px == owned[0]), "{owned:?}");
+    assert_ne!(owned, here);
 }

@@ -377,8 +377,7 @@ fn streaming_load_reads_exactly_the_id22_and_id42_index_prefixes() {
     assert_eq!(
         reads.section_bytes(SHADOWMASK),
         shadowmask.index().index_byte_len() as u64,
-        "id 42's prefix is read even though the load later drops the section \
-         for want of EntityShadowLights"
+        "id 42's prefix is read as an index only; no block blob is fetched"
     );
 }
 
@@ -782,22 +781,26 @@ fn a_bogus_face_count_is_rejected_without_reading_the_owner_table() {
         read_lightmap_for_residency(&container, stream_inputs(), FIXTURE_CELLS).unwrap();
     let index = loaded.expect("fixture carries id 22").index;
     let message = match read.read_shadowmask(&container, Some(&index), FACE_FREE_BOUNDS) {
-        Ok(_) => panic!("an owner table larger than the section allows must fail"),
+        Ok(_) => panic!("a face count that disagrees with id 17's must fail"),
         Err(error) => error.to_string(),
     };
     assert!(
         message.contains("ShadowmaskAtlas validation error"),
         "{message}"
     );
-    // The bogus table puts blob bytes where the count would sit, so the
-    // error names both causes.
-    assert!(message.contains("owner table"), "{message}");
-    assert!(message.contains("too large"), "{message}");
+    // The same wording the all-resident parse reports, found from the header
+    // alone: the face count is compared before the owner table is sized.
+    assert!(
+        message.contains(&format!(
+            "shadowmask face count {bogus} does not match id 17's 0"
+        )),
+        "{message}"
+    );
     let reads = container.read_counters().expect("positional reads count");
     assert_eq!(
         reads.section_bytes(SHADOWMASK),
-        8 + 4,
-        "only id 42's fixed header, then the four bytes where the count would sit, are read"
+        8,
+        "only id 42's fixed header is read; no owner-table byte is"
     );
 }
 

@@ -23,8 +23,10 @@ use crate::lightmap_layer::{self, SharedAtlas};
 /// ascending spec index) its spec index, its id-40 membership and its
 /// `(light, atlas layer)` layer hashes in ascending layer order, then atlas
 /// width/height/layer-count, then `estimate_params` verbatim. The spec indices
-/// are hashed because inserting a dynamic light shifts them without changing
-/// any layer hash.
+/// are hashed because they count every `!is_dynamic` light, owner-eligible or
+/// not: a static light that cannot own (SDF-shadowed or animated) placed
+/// earlier in the light list shifts every later index without changing any
+/// eligible light's layer hash.
 pub(crate) fn shadowmask_atlas_input_hash(
     eligible: &[EligibleLight<'_>],
     layer_input_hashes: &[[u8; 32]],
@@ -67,11 +69,12 @@ pub(super) struct ShadowmaskMemo {
     pub(super) report: OwnerReport,
 }
 
-/// Memo entry: the drop report, a presence byte, then (when present) the
-/// section's wire bytes. The report shares the entry so a warm build repeats
-/// the cold build's warnings and can never lose them apart from the section.
+/// One drop record in the memo entry: six little-endian u32 words, the site
+/// kind (0 face, 1 cut face), site, first face, last face, spec index and lit
+/// texels.
 const DROP_RECORD_BYTES: usize = 24;
 
+/// The entry's report prefix: peak demand, drop count, then the drop records.
 fn report_bytes(report: &OwnerReport) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + report.drops.len() * DROP_RECORD_BYTES);
     out.extend_from_slice(&report.peak_face_demand.to_le_bytes());
@@ -167,8 +170,11 @@ pub(super) fn read_shadowmask_memo(
     Some(ShadowmaskMemo { section, report })
 }
 
-/// Store the report and section as one entry, streaming the section's own
-/// byte order with no second contiguous copy of the payload.
+/// Store the report and section as one entry: the drop report, a presence
+/// byte, then (when present) the section's wire bytes, streamed in their own
+/// order with no second contiguous copy of the payload. The report shares the
+/// entry so a warm build repeats the cold build's warnings and can never lose
+/// them apart from the section.
 pub(super) fn cache_shadowmask_section(
     cache: &StageCache,
     section_key: &CacheKey,

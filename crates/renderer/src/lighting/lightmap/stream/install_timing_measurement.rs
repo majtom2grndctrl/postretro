@@ -14,11 +14,10 @@ use postretro_level_loader::{
 };
 
 use super::super::StreamingPoolPlan;
-use super::super::pool_sample_test::{
-    SCALE, direction_texel, gpu_or_skip, irradiance_texel, mask_byte,
-};
+use super::super::pool_sample_test::{SCALE, direction_texel, irradiance_texel, mask_byte};
 use super::super::test_fixtures::{FixtureTexels, block_fixture};
 use super::LightmapStreamState;
+use crate::render::gpu_test_harness::bc_gpu_or_skip;
 
 const TAG: [u8; 32] = [3; 32];
 /// 256² blocks: 512 KiB irradiance, 32 KiB direction, 2 × 32 KiB shadowmask.
@@ -31,7 +30,7 @@ const DRAINS: usize = 120;
 #[test]
 #[ignore = "measurement helper; needs a GPU"]
 fn lightmap_drain_install_timing() {
-    let Some(ctx) = gpu_or_skip("lightmap_drain_install_timing") else {
+    let Some(ctx) = bc_gpu_or_skip("lightmap_drain_install_timing") else {
         return;
     };
     let queue = crate::render::uploads::UploadQueue::new(&ctx.device, ctx.queue.clone(), true);

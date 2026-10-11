@@ -352,17 +352,134 @@ fn materialize_net_local_wieldable_at_slot(
     true
 }
 
+/// Compare only the host fields installed on this instance. Sound keys remain
+/// local, placement belongs to the owner projection, and resource balances and
+/// activation/recovery state are live values rather than descriptor tuning.
+fn net_wieldable_gameplay_matches(
+    weapon: &WeaponComponent,
+    tuning: &WieldableTuningPayload,
+) -> bool {
+    // Keep this exhaustive so a new host field cannot silently skip retuning.
+    let WieldableTuningPayload {
+        canonical_name: _,
+        placement: _,
+        muzzle_offset,
+        range,
+        primary,
+        secondary,
+        damage,
+        knockback,
+        projectile,
+        splash,
+        resource,
+        pellet_count,
+        spread_degrees,
+        bloom_per_shot_degrees,
+        bloom_max_degrees,
+        bloom_decay_degrees_per_second,
+        bloom_decay_delay_ms,
+        movement_spread_degrees,
+        spread_vertical_bias,
+        resolution,
+        lower_ms,
+        raise_ms,
+        block_during_reload,
+    } = tuning;
+    let activation_matches =
+        |installed: &postretro_foundation::WeaponActivationDescriptor,
+         incoming: &postretro_foundation::WeaponActivationDescriptor| {
+            let postretro_foundation::WeaponActivationDescriptor {
+                trigger,
+                recovery_ms,
+                steps,
+                charge,
+                sounds: _,
+                emits,
+            } = incoming;
+            installed.trigger == *trigger
+                && installed.recovery_ms == *recovery_ms
+                && &installed.steps == steps
+                && &installed.charge == charge
+                && &installed.emits == emits
+        };
+    let resource_matches = match (
+        resource,
+        weapon.ammo.as_ref(),
+        weapon.heat.as_ref(),
+        weapon.cell.as_ref(),
+    ) {
+        (None, None, None, None) => true,
+        (Some(postretro_foundation::WeaponResource::Ammo(incoming)), Some(ammo), None, None) => {
+            let postretro_foundation::AmmoResource {
+                ammo_type,
+                magazine,
+                cost_per_shot,
+                // Initial grants are not installed on the weapon component.
+                reserve: _,
+                reload_ms,
+                reload_style,
+            } = incoming;
+            ammo.ammo_type == *ammo_type
+                && ammo.capacity == *magazine
+                && ammo.cost_per_shot == *cost_per_shot
+                && ammo.reload_ms == *reload_ms
+                && ammo.reload_style == *reload_style
+        }
+        (Some(postretro_foundation::WeaponResource::Heat(incoming)), None, Some(heat), None) => {
+            heat.tuning == *incoming
+        }
+        (Some(postretro_foundation::WeaponResource::Cell(incoming)), None, None, Some(cell)) => {
+            cell.tuning == *incoming
+        }
+        _ => false,
+    };
+    weapon.damage == *damage
+        && weapon.knockback == *knockback
+        && weapon.range == *range
+        && &weapon.projectile == projectile
+        && &weapon.splash == splash
+        && weapon.muzzle_offset.map(|offset| offset.to_array()) == *muzzle_offset
+        && weapon.pellet_count == (*pellet_count).clamp(1, MAX_PELLET_COUNT)
+        && weapon.spread_degrees == clamp_tuning_degrees(*spread_degrees)
+        && weapon.bloom_per_shot_degrees == clamp_tuning_degrees(*bloom_per_shot_degrees)
+        && weapon.bloom_max_degrees == clamp_tuning_degrees(*bloom_max_degrees)
+        && weapon.bloom_decay_degrees_per_second
+            == clamp_tuning_nonnegative(*bloom_decay_degrees_per_second)
+        && weapon.bloom_decay_delay_ms == clamp_tuning_nonnegative(*bloom_decay_delay_ms)
+        && weapon.movement_spread_degrees == clamp_tuning_degrees(*movement_spread_degrees)
+        && weapon.spread_vertical_bias
+            == if spread_vertical_bias.is_finite() {
+                spread_vertical_bias.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        && weapon.resolution == *resolution
+        && weapon.lower_ms == *lower_ms
+        && weapon.raise_ms == *raise_ms
+        && weapon.block_during_reload == *block_during_reload
+        && resource_matches
+        && activation_matches(&weapon.primary, primary)
+        && match (weapon.secondary.as_deref(), secondary.as_ref()) {
+            (None, None) => true,
+            (Some(installed), Some(incoming)) => activation_matches(installed, incoming),
+            _ => false,
+        }
+}
+
 fn apply_net_wieldable_tuning(
     registry: &mut EntityRegistry,
     weapon_id: EntityId,
     tuning: &WieldableTuningPayload,
 ) {
-    let Ok(mut weapon) = registry
-        .get_component::<WeaponComponent>(weapon_id)
-        .cloned()
-    else {
+    let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
         return;
     };
+    // Ordinary owner snapshots revisit every slot. An unchanged row must leave
+    // captured activation work and installed programs on this instance intact.
+    if net_wieldable_gameplay_matches(weapon, tuning) {
+        return;
+    }
+    let mut weapon = weapon.clone();
     weapon.cancel_activation();
     weapon.range = tuning.range;
     weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
@@ -1423,6 +1540,234 @@ mod tests {
             block_during_reload: None,
         });
         TuningPayload::new(None, wieldables)
+    }
+
+    #[test]
+    fn net_wieldable_repeat_tuning_preserves_burst_and_charge_without_allocations() {
+        use crate::weapon::FireButtonState;
+        use crate::weapon::execution::{ActivationCommand, advance_weapon_activation};
+        use postretro_foundation::{
+            ActivationCharge, ActivationInput, ActivationLane, ActivationRelease, ActivationToken,
+            ActivationTrigger, WeaponActivationDescriptor,
+        };
+        use std::sync::Arc;
+
+        let burst: WeaponActivationDescriptor = serde_json::from_value(serde_json::json!({
+            "trigger": "press", "recoveryMs": 300.0,
+            "steps": [
+                {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0},
+                {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0},
+                {"kind": "shot"}
+            ],
+            "emits": {"activate": "burst.activate"}
+        }))
+        .unwrap();
+        let mut charge = WeaponActivationDescriptor::single(ActivationTrigger::Press, 300.0);
+        charge.charge = Some(ActivationCharge {
+            min_ms: 200.0,
+            full_ms: 1000.0,
+        });
+        let token = ActivationToken {
+            start_tick: 10,
+            lane: ActivationLane::Secondary,
+        };
+
+        for (action, release_tick, expected_shots) in [(burst, None, 3), (charge, Some(25), 1)] {
+            let mut registry = EntityRegistry::new();
+            let weapon_id = registry.spawn(Transform::default());
+            let mut descriptor = ammo_weapon_descriptor("reference_pistol");
+            let local = descriptor.weapon.as_mut().unwrap();
+            local.secondary = Some(action.clone());
+            local.secondary.as_mut().unwrap().sounds =
+                Some(postretro_foundation::ActivationSounds {
+                    fire: Some("sfx/local-secondary".into()),
+                    impact: None,
+                });
+            let mut weapon = WeaponComponent::from_descriptor(local);
+            weapon.magazine = 5;
+            registry.set_component(weapon_id, weapon).unwrap();
+            let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+            let row = tuning.wieldables[0].as_mut().unwrap();
+            row.secondary = Some(action);
+            row.resource = local.resource.clone();
+            row.bloom_per_shot_degrees = 1.0;
+            row.bloom_max_degrees = 6.0;
+            apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+            let mut shots = Vec::new();
+
+            for tick in 10..=30 {
+                let mut weapon = registry
+                    .get_component::<WeaponComponent>(weapon_id)
+                    .unwrap()
+                    .clone();
+                let advance = advance_weapon_activation(
+                    &mut weapon,
+                    ActivationCommand {
+                        tick,
+                        pawn: 7,
+                        real_command: true,
+                        input: ActivationInput {
+                            initiation: (tick == 10).then_some(token),
+                            release: (release_tick == Some(tick)).then_some(ActivationRelease {
+                                token,
+                                release_tick: tick,
+                            }),
+                            cancel: None,
+                        },
+                        controller_starts: false,
+                        primary: FireButtonState {
+                            pressed: false,
+                            active: false,
+                        },
+                        secondary: FireButtonState {
+                            pressed: tick == 10,
+                            active: release_tick.is_none_or(|release| tick < release),
+                        },
+                    },
+                    1000.0 / 60.0,
+                    true,
+                    true,
+                );
+                if tick == 10 {
+                    assert!(weapon.state.activation_cursor().is_some());
+                }
+                if let Some(shot) = advance.shot {
+                    shots.push(shot);
+                }
+                let before = weapon.clone();
+                registry.set_component(weapon_id, weapon).unwrap();
+                let probe = crate::alloc_probe::AllocSnapshot::arm();
+                apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+                apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+                let allocations = probe.allocs_since();
+                assert_eq!(
+                    allocations, 0,
+                    "unchanged tuning must not rebuild installed data"
+                );
+                let installed = registry
+                    .get_component::<WeaponComponent>(weapon_id)
+                    .unwrap();
+                assert_eq!(
+                    installed, &before,
+                    "repeat install changed live state at tick {tick}"
+                );
+                assert!(Arc::ptr_eq(&installed.primary, &before.primary));
+                assert!(Arc::ptr_eq(
+                    installed.secondary.as_ref().unwrap(),
+                    before.secondary.as_ref().unwrap(),
+                ));
+                assert!(Arc::ptr_eq(
+                    installed.activation_programs.primary.as_ref().unwrap(),
+                    before.activation_programs.primary.as_ref().unwrap(),
+                ));
+                assert!(Arc::ptr_eq(
+                    installed.activation_programs.secondary.as_ref().unwrap(),
+                    before.activation_programs.secondary.as_ref().unwrap(),
+                ));
+            }
+            assert_eq!(shots.len(), expected_shots);
+            for (ordinal, shot) in shots.iter().enumerate() {
+                assert_eq!(shot.shot_id.start_tick, token.start_tick);
+                assert_eq!(shot.shot_id.lane, token.lane);
+                assert_eq!(shot.shot_id.ordinal, ordinal as u8);
+            }
+            if release_tick.is_some() {
+                assert!((shots[0].charge - 0.25).abs() < f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn net_wieldable_changed_tuning_cancels_future_work_after_atomic_validation() {
+        use crate::weapon::FireButtonState;
+        use crate::weapon::execution::{ActivationCommand, advance_weapon_activation};
+        use postretro_foundation::{ActivationInput, ActivationLane, ActivationToken};
+        use std::sync::Arc;
+
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+        let row = tuning.wieldables[0].as_mut().unwrap();
+        row.secondary = Some(
+            serde_json::from_value(serde_json::json!({
+                "trigger": "press", "recoveryMs": 300.0,
+                "steps": [
+                    {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0}, {"kind": "shot"}
+                ]
+            }))
+            .unwrap(),
+        );
+        row.resource = ammo_weapon_descriptor("reference_pistol")
+            .weapon
+            .unwrap()
+            .resource;
+        let mut weapon =
+            WeaponComponent::from_descriptor(&row.weapon_descriptor().validate().unwrap());
+        let advance = advance_weapon_activation(
+            &mut weapon,
+            ActivationCommand {
+                tick: 10,
+                pawn: 7,
+                real_command: true,
+                input: ActivationInput {
+                    initiation: Some(ActivationToken {
+                        start_tick: 10,
+                        lane: ActivationLane::Secondary,
+                    }),
+                    ..Default::default()
+                },
+                controller_starts: false,
+                primary: FireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                secondary: FireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+            },
+            1000.0 / 60.0,
+            false,
+            true,
+        );
+        let frozen_shot = advance.shot.unwrap();
+        assert_eq!(weapon.magazine, 11);
+        assert!(weapon.state.activation_cursor().is_some());
+        let before = weapon.clone();
+        registry.set_component(weapon_id, weapon).unwrap();
+
+        row.damage = f32::NAN;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        let installed = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(
+            installed, &before,
+            "rejected tuning must not cancel live execution"
+        );
+        assert!(Arc::ptr_eq(
+            installed.activation_programs.secondary.as_ref().unwrap(),
+            before.activation_programs.secondary.as_ref().unwrap(),
+        ));
+
+        row.damage = 25.0;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        let installed = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(installed.state, WieldableState::Idle);
+        assert_eq!(installed.damage, 25.0);
+        assert_eq!(installed.magazine, before.magazine);
+        assert_eq!(
+            installed.cooldown_remaining_ms,
+            before.cooldown_remaining_ms
+        );
+        assert!(!Arc::ptr_eq(
+            installed.activation_programs.secondary.as_ref().unwrap(),
+            &frozen_shot.program,
+        ));
+        assert_eq!(frozen_shot.values.damage, 10.0);
+        assert_eq!(frozen_shot.shot_id.ordinal, 0);
     }
 
     #[test]

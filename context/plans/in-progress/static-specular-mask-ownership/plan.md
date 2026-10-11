@@ -330,13 +330,19 @@ Each task commits with its plan update.
 - `capture_lightmap_streaming::forced_missing_lightmap_block_drops_exactly_its_static_direct_and_specular` passes (AC 13 engine half).
 - An engine-level id-40 strip cannot load: the cluster directory requires id 40 beside id 41. P10 stays proven by the loader test.
 - AC 16, run in task 11 on the new compiler's campaign-test and hallway PRLs: `capture_lightmap_streaming -- --ignored` 3/3 pass (`streamed_lightmap_capture_matches_all_resident_on_campaign_test`, `..._on_hallway_inspection`, `forced_missing_lightmap_block_drops_exactly_its_static_direct_and_specular`) |
-| 11 | Manual captures and measurements M1–M8 before and after. Build the pre-change binary from 75ac7e12f in a throwaway target and compile both PRL sets. M8 runs interleaved in one session | integrating executor + owner | 10 | in progress. Arms: before = 75ac7e12f binaries (`capture,dev-tools`) in the `ssmo-before` worktree; after = branch `--release --features capture,dev-tools`. Both compilers baked sdf-shadow-test, campaign-test, kinematic-platform, movement-feel and hallway from the same `.map`s against one seeded cache.
+| 11 | Manual captures and measurements M1–M8 before and after. Build the pre-change binary from 75ac7e12f in a throwaway target and compile both PRL sets. M8 runs interleaved in one session | integrating executor + owner | 10 | done except M1. The sheen view is unconfirmed: the owner picks a view or gives the original angles. Results: §Task 11 results |
+| 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |
+
+## Task 11 results
+
+- **Arms:** before = 75ac7e12f binaries (`capture,dev-tools`) in the `ssmo-before` worktree; after = branch `--release --features capture,dev-tools`. Both compilers baked sdf-shadow-test, campaign-test, kinematic-platform, movement-feel and hallway from the same `.map`s against one seeded cache.
 - **Bakes.** Branch hallway, warm: 2888 s total, lightmap 1464 s, ShadowmaskAtlas 9.1 s, peak per-face demand 3, 0 drops. The pre-change hallway dropped 121 selected masks to fit four global channels.
 - **M5 drop reports** (branch compiler): campaign-test 1 drop (entity 32, face 577, 4288 lit texels); kinematic-platform 20 drops, peak demand 15, one cut face (estimate: 6,677 traces over 35,108 samples, 16.8 ms); movement-feel 248 drops, peak demand 22; hallway 0. Logs print each warning twice: once inline, once in the end-of-bake summary.
 - **M2/M3 captures** at 1920×1080 with `sync-proof`, three masks per pose (all; 0x13F; 0x40). Specular-only lit pixels before → after, and the specular-off image diff:
-  - p1 136 642 → 11 739; p2 47 522 → 2 267; p3 555 236 → 74 837; p4 64 282 → 41 098. Specular-off images are bit-identical at all four poses. At p3 the wall keeps its highlight above the shadow line and loses it below; at p4 the south-floor patch is gone and the lit-wall highlights remain. Owner read pending.
-  - M3, style-2 room (`[-53, 3.5, 40]`, yaw −139.8 and 40, pitch −20): the yellow style-2 highlight is gone (animB 274 699 → 0 lit px); the white static spot's highlight remains (animC); specular-off images are bit-identical. Owner read pending.
+  - p1 136 642 → 11 739; p2 47 522 → 2 267; p3 555 236 → 74 837; p4 64 282 → 41 098. Specular-off images are bit-identical at all four poses. At p3 the wall keeps its highlight above the shadow line and loses it below; at p4 the south-floor patch is gone and the lit-wall highlights remain. Owner read 2026-10-10: passes.
+  - M3, style-2 room (`[-53, 3.5, 40]`, yaw −139.8 and 40, pitch −20): the yellow style-2 highlight is gone (animB 274 699 → 0 lit px); the white static spot's highlight remains (animC); specular-off images are bit-identical. Owner read 2026-10-10: passes.
 - **M1:** a four-yaw sweep at (−17, 21, 86) m, pitch −20, is nearly identical before and after (at most 438 lit px differ). The owner picks the view or supplies the original angles.
+- **M4, M5 owner reads (2026-10-10, in-engine):** pass. The owner reports campaign-test, kinematic-platform and movement-feel all read more correct and closer to Quake. Highlights stay continuous across chunk planes, and the drop-report highlight loss is acceptable. The deliberate ceiling shimmer in combat-test stays clearly legible.
 - **M7**, run by the owner with `measure-hallway.ps1 -Cold -SkipBuild`, one run per arm (`--release`, no cache, i5-9400F, 5 jobs). Results, before → after:
   - Wall: 1248.7 → 1254.3 s. CPU: 4821 → 4719 s.
   - Peak working set: 4.31 → 4.32 GiB.
@@ -344,5 +350,41 @@ Each task commits with its plan update.
   - Ownership fill now runs inside the lightmap walk, so time moves from the shadowmask stage to the lightmap stage. The hallway has no cut face, so it ran no estimate and logged no drops.
   - Unchanged stages varied by about 2% between runs (SH Bake 621.5 → 608.5 s), with n = 1.
   - The PRL grew by 67,170 bytes, matching the 8437-face owner table (8 B per face).
-- **M8:** stopped before the first sample, because the power plan was on Balanced and the protocol needs High performance |
-| 12 | `/preflight`, then `/review-panel` → `/fix-review-findings` loop, then the full gate | integrating executor | 11 | |
+- **M8**, 2026-10-10, GTX 1660 Super, Vulkan, 3840×2160, `sync-proof`. Three interleaved runs per arm per pose, alternating which arm goes first; each run is 120 warmup frames plus 360 sampled (three 120-sample windows).
+  - **Power.** The plan stayed Balanced with the Windows 11 *Best performance* power-mode overlay. Under load the GPU held 1935–1950 MHz (nvidia-smi probe), so it did not downclock.
+  - **Sources.** The source `.map` SHA-256 prefixes match across arms: hallway `5f70a4233f53`, campaign-test `7fa6fae30d3b`, kinematic-platform `fc2efc5df054`, movement-feel `9e6f66efe600`, sdf-shadow-test `1ce84d64a530`.
+  - **Sheen pose.** The sheen row uses yaw 90 / pitch −20 as a stand-in, because the original angles are unrecorded (M1).
+  - **GPU,** median [min..max] ms:
+
+    | Pose | `forward` before | `forward` after | GPU sum before | GPU sum after |
+    |---|---|---|---|---|
+    | hallway arena | 13.860 [13.822..13.898] | 13.235 [13.177..13.306] | 15.138 [15.097..15.181] | 14.509 [14.458..14.589] |
+    | hallway sheen y90 | 11.702 [11.696..11.705] | 8.972 [8.960..8.973] | 12.815 [12.807..12.819] | 10.088 [10.078..10.090] |
+    | campaign spawn | 5.854 [5.847..5.857] | 5.848 [5.847..5.854] | 6.833 [6.829..6.838] | 6.831 [6.829..6.836] |
+    | campaign p1 | 6.385 [6.384..6.388] | 6.100 [6.097..6.104] | 7.441 [7.439..7.441] | 7.157 [7.153..7.159] |
+    | kinematic station | 9.121 [9.112..9.129] | 8.513 [8.507..8.518] | 11.733 [11.731..11.749] | 11.211 [11.168..11.267] |
+    | movement spawn | 10.258 [10.244..10.268] | 9.486 [9.480..9.524] | 11.227 [11.212..11.233] | 10.457 [10.449..10.497] |
+    | sdf spawn | 8.697 [8.644..8.709] | 8.499 [8.479..8.506] | 10.876 [10.802..11.148] | 10.958 [10.653..10.986] |
+
+    - `forward` gains at six poses and ties at campaign spawn. The largest gain is the sheen pose, at −2.73 ms (−23%).
+    - The only GPU-sum rise is sdf spawn, at +0.082 ms. That is inside both arms' spread (before 0.346, after 0.333), so it passes.
+  - **CPU `render_record`** median ms, before → after:
+    - hallway arena 0.861 → 0.847; sheen 0.393 → 0.378; campaign spawn 0.174 → 0.173; p1 0.196 → 0.195; movement 0.130 → 0.128; sdf 0.076 → 0.074.
+    - kinematic station 0.818 → 0.828: +0.010 ms, inside the 0.012 spread.
+    - `render_sh_drain` is flat everywhere.
+  - **Load,** log line C sum, median [min..max] ms. One discarded warmup launch per arm per map, then three interleaved launches, all `--windowed`:
+
+    | Map | Before | After |
+    |---|---|---|
+    | hallway | 2317.5 [2306.3..2416.1] | 2280.3 [2270.1..2384.5] |
+    | campaign-test | 578.9 [572.7..596.8] | 596.0 [591.6..597.7] |
+    | kinematic-platform | 666.4 [659.6..685.3] | 682.2 [677.5..687.4] |
+    | movement-feel | 438.3 [428.9..438.3] | 444.1 [436.8..446.1] |
+    | sdf-shadow-test | 188.4 [187.8..191.4] | 192.1 [190.7..195.4] |
+
+    - Every rise sits inside the larger arm's spread, so load passes.
+    - The rises fall in stages this change does not touch: `settle_hold` (+3 to +18.5 ms, largest on kinematic-platform) and `audio_load` (+2 to +3 ms on every map). The `settle_hold` rise is plausibly the different id-42 block bytes held at settle.
+    - `worker_delivered` falls by 45.8 ms on the hallway and 13.1 ms on kinematic-platform, mostly in `prl_parse`. `geometry_upload` moves by 1.5 ms or less.
+    - Measuring needed the pre-change worktree's gitignored `content/dev` script build outputs, copied from the branch. `content/` and `sdk/` show no diff between 75ac7e12f and the branch.
+  - **Owner stream bytes,** 8 B per vertex: hallway 269,952 (33,744 vertices); campaign-test 24,752; movement-feel 8,704; kinematic-platform 1,968; sdf-shadow-test 768. sdf-shadow-test has no id 42, because none of its lights are eligible (AC 47), so it binds a placeholder.
+  - **Budget:** passes at every pose. There is no regression for the owner to rule on

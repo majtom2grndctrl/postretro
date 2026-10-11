@@ -96,6 +96,8 @@ pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtract
         );
     }
 
+    let faces = compact_unlinked_faces(tree, faces);
+
     for conflict in &coplanar_conflicts {
         log::warn!(
             "Coplanar brush sides with mismatched textures: \
@@ -113,6 +115,33 @@ pub fn extract_faces(tree: &mut BspTree, brushes: &[BrushVolume]) -> FaceExtract
         faces,
         coplanar_conflicts,
     }
+}
+
+/// Drop faces that coplanar dedup unlinked from their leaf, remapping every
+/// leaf's indices. The returned vec is then exactly the emitted surface: the
+/// watertightness check and any other whole-vec consumer would otherwise count a
+/// superseded face that is never drawn as a duplicate surface.
+fn compact_unlinked_faces(tree: &mut BspTree, faces: Vec<Face>) -> Vec<Face> {
+    const UNLINKED: usize = usize::MAX;
+    let mut remap = vec![UNLINKED; faces.len()];
+    for leaf in &tree.leaves {
+        for &fi in &leaf.face_indices {
+            remap[fi] = 0;
+        }
+    }
+    let mut compacted = Vec::with_capacity(faces.len());
+    for (old, face) in faces.into_iter().enumerate() {
+        if remap[old] != UNLINKED {
+            remap[old] = compacted.len();
+            compacted.push(face);
+        }
+    }
+    for leaf in tree.leaves.iter_mut() {
+        for fi in leaf.face_indices.iter_mut() {
+            *fi = remap[*fi];
+        }
+    }
+    compacted
 }
 
 struct SideRecord {
@@ -305,14 +334,16 @@ fn put_hull_into_areas(
             // Containment rule:
             //   • Incoming inside existing → drop incoming (existing covers it).
             //   • Existing inside incoming → unlink existing, emit incoming.
-            //   • Partial overlap / disjoint → emit both; z-fight signals the
-            //     authoring error. Merging partial overlaps requires general 2D
-            //     polygon union — not worth it at compile time.
+            //   • Partial overlap → the existing face keeps the overlap; emit
+            //     incoming minus existing. Overlapping brushes are ordinary
+            //     authoring (corner overlaps), and both faces drawn on one plane
+            //     z-fight. Convex minus convex is a chain of edge-plane splits,
+            //     so no general polygon union is needed.
+            //   • Disjoint or edge-sharing → emit both.
             //
-            // Unlinked entries stay in `faces` as orphans. The downstream
-            // geometry pass walks faces via leaf face-index lists, so orphans
-            // are never drawn. Compacting `faces` would invalidate every other
-            // leaf's indices for negligible gain.
+            // Unlinked entries stay in `faces` as orphans until
+            // `compact_unlinked_faces` drops them after the walk, so indices
+            // already on other leaves stay valid mid-walk.
             let coplanar_existing: Vec<usize> = tree.leaves[idx]
                 .face_indices
                 .iter()
@@ -361,16 +392,41 @@ fn put_hull_into_areas(
                     .retain(|fi| !newly_orphaned.contains(fi));
             }
 
-            let face_idx = faces.len();
-            faces.push(Face {
-                vertices: polygon.to_vec(),
-                normal: record.plane_normal,
-                distance: record.plane_distance,
-                texture: record.texture.clone(),
-                tex_projection: record.tex_projection.clone(),
-                brush_index: record.brush_index,
-            });
-            tree.leaves[idx].face_indices.push(face_idx);
+            let mut pieces = vec![polygon.to_vec()];
+            for &existing_idx in &coplanar_existing {
+                if newly_orphaned.contains(&existing_idx)
+                    || !convex_overlaps(&faces[existing_idx].vertices, polygon, record.plane_normal)
+                {
+                    continue;
+                }
+                if faces[existing_idx].texture != record.texture {
+                    conflicts.push(CoplanarConflict {
+                        winner_brush: faces[existing_idx].brush_index,
+                        loser_brush: record.brush_index,
+                        winner_texture: faces[existing_idx].texture.clone(),
+                        loser_texture: record.texture.clone(),
+                    });
+                }
+                pieces = pieces
+                    .iter()
+                    .flat_map(|piece| {
+                        convex_subtract(piece, &faces[existing_idx].vertices, record.plane_normal)
+                    })
+                    .collect();
+            }
+
+            for piece in pieces {
+                let face_idx = faces.len();
+                faces.push(Face {
+                    vertices: piece,
+                    normal: record.plane_normal,
+                    distance: record.plane_distance,
+                    texture: record.texture.clone(),
+                    tex_projection: record.tex_projection.clone(),
+                    brush_index: record.brush_index,
+                });
+                tree.leaves[idx].face_indices.push(face_idx);
+            }
         }
         BspChild::Node(idx) => {
             // Snapshot before recursing so the immutable borrow on `tree.nodes`
@@ -577,6 +633,87 @@ fn convex_contains(outer: &[DVec3], inner: &[DVec3], plane_normal: DVec3) -> boo
         }
     }
     true
+}
+
+/// Penetration below this is touching, not overlap, in meters. Matches
+/// `convex_contains`: abutting coplanar faces share an edge and must stay whole.
+const OVERLAP_TOLERANCE: f64 = 1e-3;
+/// Split epsilon for coplanar subtraction, in meters. Far tighter than
+/// `SPLIT_EPSILON`: it cuts visible faces, so it must not round off real edges.
+const SUBTRACT_EPSILON: f64 = 1e-4;
+
+/// In-plane outward unit normals of a convex polygon's edges, with each edge's
+/// start vertex. Orientation comes from the centroid, so it holds for either
+/// winding.
+fn edge_outward_normals(poly: &[DVec3], plane_normal: DVec3) -> Vec<(DVec3, DVec3)> {
+    let centroid = poly.iter().copied().sum::<DVec3>() / poly.len() as f64;
+    let mut out = Vec::with_capacity(poly.len());
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let outward = (b - a).cross(plane_normal);
+        if outward.length_squared() < 1e-24 {
+            continue;
+        }
+        let mut outward = outward.normalize();
+        if (centroid - a).dot(outward) > 0.0 {
+            outward = -outward;
+        }
+        out.push((a, outward));
+    }
+    out
+}
+
+/// True when convex coplanar `a` and `b` overlap by more than
+/// `OVERLAP_TOLERANCE` (separating-axis test over both polygons' edges).
+/// Polygons that only share an edge or a vertex do not overlap.
+fn convex_overlaps(a: &[DVec3], b: &[DVec3], plane_normal: DVec3) -> bool {
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    let separated_by = |edges_of: &[DVec3], other: &[DVec3]| {
+        edge_outward_normals(edges_of, plane_normal)
+            .iter()
+            .any(|&(start, outward)| {
+                other
+                    .iter()
+                    .all(|&p| (p - start).dot(outward) >= -OVERLAP_TOLERANCE)
+            })
+    };
+    !separated_by(a, b) && !separated_by(b, a)
+}
+
+/// `subject` minus `clip`, both convex and coplanar, as convex pieces that
+/// tile the difference. Each clip edge plane peels off the part of the
+/// remainder outside it; what survives every edge lies inside `clip`.
+fn convex_subtract(subject: &[DVec3], clip: &[DVec3], plane_normal: DVec3) -> Vec<Vec<DVec3>> {
+    if !convex_overlaps(subject, clip, plane_normal) {
+        return vec![subject.to_vec()];
+    }
+    let mut pieces = Vec::new();
+    let mut remainder = subject.to_vec();
+    for (start, outward) in edge_outward_normals(clip, plane_normal) {
+        let (outside, inside) =
+            split_polygon(&remainder, outward, outward.dot(start), SUBTRACT_EPSILON);
+        if let Some(outside) = outside {
+            if polygon_area(&outside, plane_normal) > 1e-12 {
+                pieces.push(outside);
+            }
+        }
+        match inside {
+            Some(inside) => remainder = inside,
+            None => break,
+        }
+    }
+    pieces
+}
+
+fn polygon_area(poly: &[DVec3], plane_normal: DVec3) -> f64 {
+    let mut twice = DVec3::ZERO;
+    for i in 0..poly.len() {
+        twice += poly[i].cross(poly[(i + 1) % poly.len()]);
+    }
+    0.5 * twice.dot(plane_normal).abs()
 }
 
 #[cfg(test)]
@@ -1345,5 +1482,192 @@ mod tests {
             result.coplanar_conflicts.is_empty(),
             "matching textures should not emit a conflict"
         );
+    }
+
+    /// Six slabs enclosing `[min, max]`, overlapping along every room edge the
+    /// way mappers build rooms: the X and Y walls span the full Z extent and the
+    /// floor and ceiling span the full X/Y extent.
+    fn overlapping_room(min: DVec3, max: DVec3, wall: f64, texture: &str) -> Vec<BrushVolume> {
+        vec![
+            box_brush_with_sides(min, DVec3::new(min.x + wall, max.y, max.z), texture),
+            box_brush_with_sides(DVec3::new(max.x - wall, min.y, min.z), max, texture),
+            box_brush_with_sides(min, DVec3::new(max.x, min.y + wall, max.z), texture),
+            box_brush_with_sides(DVec3::new(min.x, max.y - wall, min.z), max, texture),
+            box_brush_with_sides(min, DVec3::new(max.x, max.y, min.z + wall), texture),
+            box_brush_with_sides(DVec3::new(min.x, min.y, max.z - wall), max, texture),
+        ]
+    }
+
+    fn assert_no_overlapping_coplanar_faces(faces: &[Face]) {
+        for (i, a) in faces.iter().enumerate() {
+            for b in &faces[i + 1..] {
+                if planes_match_oriented(a.normal, a.distance, b.normal, b.distance) {
+                    assert!(
+                        !convex_overlaps(&a.vertices, &b.vertices, a.normal),
+                        "brush {} and brush {} emit overlapping faces on plane {:?}/{} — they z-fight",
+                        a.brush_index,
+                        b.brush_index,
+                        a.normal,
+                        a.distance,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_room_walls_emit_only_linked_faces() {
+        // Corner-overlapping walls make coplanar sides land in one leaf, where
+        // containment dedup unlinks the smaller one. The returned vec must not
+        // keep it: the watertightness check reads the whole vec, and a stale
+        // face there is reported as an open edge around its outline.
+        let brushes = overlapping_room(DVec3::ZERO, DVec3::new(640.0, 512.0, 192.0), 16.0, "wall");
+        let mut tree = build_bsp_from_brushes(&brushes).expect("room should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        let mut links = vec![0usize; result.faces.len()];
+        for leaf in &tree.leaves {
+            for &fi in &leaf.face_indices {
+                links[fi] += 1;
+            }
+        }
+        for (fi, count) in links.iter().enumerate() {
+            assert_eq!(
+                *count, 1,
+                "face {fi} is linked from {count} leaves (expected 1)"
+            );
+        }
+        let report = crate::partition::check_watertight(&result.faces);
+        assert!(
+            report.is_watertight(),
+            "overlapping room should be closed, got {} open edge(s): {:?}",
+            report.open_edge_count,
+            report.samples,
+        );
+    }
+
+    #[test]
+    fn partially_overlapping_coplanar_wall_emits_single_layer() {
+        // The +Y wall is two brushes overlapping over x = 300..400. Their inner
+        // sides share the visible plane y = 496 and neither contains the other.
+        // That overlap must be drawn once, or the two faces z-fight in view.
+        let (min, max, wall) = (DVec3::ZERO, DVec3::new(640.0, 512.0, 192.0), 16.0);
+        let mut brushes = overlapping_room(min, max, wall, "wall");
+        brushes.remove(3);
+        brushes.push(box_brush_with_sides(
+            DVec3::new(0.0, 496.0, 0.0),
+            DVec3::new(400.0, 512.0, 192.0),
+            "wall",
+        ));
+        brushes.push(box_brush_with_sides(
+            DVec3::new(300.0, 496.0, 0.0),
+            DVec3::new(640.0, 512.0, 192.0),
+            "wall",
+        ));
+        let mut tree = build_bsp_from_brushes(&brushes).expect("room should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        assert_no_overlapping_coplanar_faces(&result.faces);
+
+        // The interior face of the +Y wall is still covered exactly: x 16..624
+        // between the floor and ceiling at z 16..176.
+        let inner_area: f64 = result
+            .faces
+            .iter()
+            .filter(|f| planes_match_oriented(f.normal, f.distance, DVec3::NEG_Y, -496.0))
+            .map(|f| polygon_area(&f.vertices, f.normal))
+            .sum();
+        assert!(
+            (inner_area - 608.0 * 160.0).abs() < 1e-6,
+            "inner +Y wall face should cover 608x160, covers {inner_area}"
+        );
+
+        let report = crate::partition::check_watertight(&result.faces);
+        assert!(
+            report.is_watertight(),
+            "room should be closed, got {} open edge(s): {:?}",
+            report.open_edge_count,
+            report.samples,
+        );
+    }
+
+    #[test]
+    fn partial_overlap_with_mismatched_textures_keeps_first_arrival() {
+        // An exposed corner overlap: the west wall's top and bottom partially
+        // overlap the south wall's. The first-arriving brush keeps the overlap
+        // and the loser's mismatched texture is reported.
+        let brushes = vec![
+            box_brush_with_sides(DVec3::ZERO, DVec3::new(16.0, 512.0, 192.0), "west"),
+            box_brush_with_sides(DVec3::ZERO, DVec3::new(640.0, 16.0, 192.0), "south"),
+        ];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("corner should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        assert_no_overlapping_coplanar_faces(&result.faces);
+        let report = crate::partition::check_watertight(&result.faces);
+        assert!(
+            report.is_watertight(),
+            "corner should be closed, got {} open edge(s): {:?}",
+            report.open_edge_count,
+            report.samples,
+        );
+
+        // West wins its -X side (contains the south's) and both partial
+        // overlaps (top, bottom); south wins the -Y side (contains the west's
+        // end cap).
+        let west_wins = result
+            .coplanar_conflicts
+            .iter()
+            .filter(|c| c.winner_brush == 0 && c.winner_texture == "west")
+            .count();
+        let south_wins = result
+            .coplanar_conflicts
+            .iter()
+            .filter(|c| c.winner_brush == 1 && c.winner_texture == "south")
+            .count();
+        assert_eq!(west_wins, 3, "conflicts: {:?}", result.coplanar_conflicts);
+        assert_eq!(south_wins, 1, "conflicts: {:?}", result.coplanar_conflicts);
+    }
+
+    #[test]
+    fn convex_subtract_tiles_the_difference() {
+        let normal = DVec3::Z;
+        let square = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            vec![
+                DVec3::new(x0, y0, 0.0),
+                DVec3::new(x1, y0, 0.0),
+                DVec3::new(x1, y1, 0.0),
+                DVec3::new(x0, y1, 0.0),
+            ]
+        };
+        let subject = square(0.0, 0.0, 10.0, 10.0);
+        let total =
+            |pieces: &[Vec<DVec3>]| -> f64 { pieces.iter().map(|p| polygon_area(p, normal)).sum() };
+
+        let partial = square(5.0, 5.0, 15.0, 15.0);
+        let pieces = convex_subtract(&subject, &partial, normal);
+        assert!((total(&pieces) - 75.0).abs() < 1e-9);
+        assert!(pieces.iter().all(|p| !convex_overlaps(p, &partial, normal)));
+
+        let hole = square(2.0, 2.0, 8.0, 8.0);
+        let pieces = convex_subtract(&subject, &hole, normal);
+        assert!((total(&pieces) - 64.0).abs() < 1e-9);
+        assert!(pieces.iter().all(|p| !convex_overlaps(p, &hole, normal)));
+
+        // Edge-sharing and disjoint neighbours leave the subject whole.
+        let abutting = square(10.0, 0.0, 20.0, 10.0);
+        assert!(!convex_overlaps(&subject, &abutting, normal));
+        assert_eq!(
+            convex_subtract(&subject, &abutting, normal),
+            vec![subject.clone()]
+        );
+        let disjoint = square(20.0, 20.0, 30.0, 30.0);
+        assert_eq!(
+            convex_subtract(&subject, &disjoint, normal),
+            vec![subject.clone()]
+        );
+
+        // Fully covered → nothing left.
+        assert!(convex_subtract(&hole, &subject, normal).is_empty());
     }
 }

@@ -18,6 +18,18 @@ packing, and runtime.
   overhead. A gain is acceptable: recent wins came from cutting how far light travels, and
   this change cuts world specular from the chunk list (up to 17 lights) to at most four
   owners plus the SDF selection. Row M8 holds the protocol, and it subsumes M6.
+- **Review-panel owner calls (owner, 2026-10-10).**
+  - *Mask padding:* owned channels pad with their owner's dilated edge values, the
+    lightmap's rule, instead of zero. A zero pad halved every owned highlight at face
+    edges. The Decision on owned channels is reworded to match.
+  - *SDF directional specular:* stays positional, keyed on the light's origin like its
+    SDF diffuse and shadow trace. The directional Decision and its Acceptance row now
+    name owners. This reverses the build-time Correction that had SDF specular follow
+    the aim.
+  - *Estimate sample weight (P17):* accepted as recorded. One lit sample counts as
+    `ESTIMATE_STRIDE²` texels, so a sub-floor promoted light on a lattice point can rank
+    above the floor. It touches only cut faces, the drop report names any light it
+    costs, and it is revisited only if a real map's drop report shows it.
 
 ## Corrections
 
@@ -38,7 +50,7 @@ packing, and runtime.
       a face with fewer than three vertices today. Such a face fails a named check, or is
       dropped before id 17 if one is found in a real map.
     - The loader requires leaf count = face count, with contiguous ascending ranges. On a
-      mismatch it logs a `[Loader]` error and leaves the owner stream empty, so the face
+      mismatch it logs a `[PRL]` error and leaves the owner stream empty, so the face
       gets no static non-SDF specular.
   - **What stays unchanged.** Vertex stride, id-17 version, the `SMB7` wire table and the
     binding inventory.

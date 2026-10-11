@@ -1881,7 +1881,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("2 owner entries but Geometry has 1 faces"),
+                .contains("owner-entry count is 2 but Geometry's face count is 1"),
             "{error}"
         );
 

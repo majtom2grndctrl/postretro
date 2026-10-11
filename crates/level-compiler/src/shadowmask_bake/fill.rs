@@ -82,7 +82,9 @@ pub(super) struct OwnershipFill<'a> {
     /// Cell blocks the encoder slices out of the bake layers, in block order.
     blocks: Vec<CellBlock>,
     /// Layer-major, four channels per texel, 0 = occluded. An owned channel
-    /// therefore reads occluded wherever its owner wrote nothing.
+    /// reads occluded on every chart-interior texel its owner wrote nothing
+    /// to; `finish` then fills each owned channel's padding from its owner's
+    /// own edge values.
     data: RawFillBuffer,
     /// One per chart: the id-17 face order. A cut face's sub-faces use
     /// `cuts` instead.
@@ -241,7 +243,8 @@ impl<'a> OwnershipFill<'a> {
     }
 
     /// Order every face's owners ascending, moving their mask values with them,
-    /// then encode. No face owned means no section.
+    /// fill each owned channel's chart padding from its own owner's edge, then
+    /// encode. No face owned means no section.
     pub(super) fn finish(
         mut self,
         shared: &SharedAtlas<'_>,
@@ -256,6 +259,8 @@ impl<'a> OwnershipFill<'a> {
             if entry != NO_FACE_OWNERS {
                 any_owner = true;
                 self.reorder_channels(face, source, shared);
+                let owned = source.map(|channel| channel.is_some());
+                self.dilate_owned_padding(face, owned, shared);
             }
             *owner = entry;
         }
@@ -281,8 +286,10 @@ impl<'a> OwnershipFill<'a> {
             }
             if entry != NO_FACE_OWNERS {
                 any_owner = true;
+                let owned = source.map(|channel| channel.is_some());
                 for face in self.cuts[c].faces.clone() {
                     self.reorder_channels(face, source, shared);
+                    self.dilate_owned_padding(face, owned, shared);
                     owners[face] = entry;
                 }
             }
@@ -422,6 +429,92 @@ impl<'a> OwnershipFill<'a> {
             }
         }
     }
+
+    /// Fill `face`'s chart padding in every `owned` position from that face's
+    /// own chart-interior values, so a bilinear tap straddling the interior
+    /// edge reads the owner's edge visibility rather than half of it. Mirrors
+    /// the lightmap's edge dilation: `CHART_PADDING_TEXELS` passes, the
+    /// interior covered from the start, and each pass giving every uncovered
+    /// texel the mean of the 8-neighbours covered when the pass began. That
+    /// makes pass `n` exactly padding ring `n` reading ring `n - 1`, so the
+    /// rings fill in place with no snapshot.
+    ///
+    /// Unlike the lightmap's whole-layer pass, this one never reads outside
+    /// `face`'s padded rect: channel `s` on a neighbouring chart holds a
+    /// different light. The mean is the integer mean rounded half up, taken
+    /// on the stored u8 values. Unowned positions stay zero, and an owner
+    /// occluded along an edge leaves zero padding there.
+    fn dilate_owned_padding(
+        &mut self,
+        face: usize,
+        owned: [bool; SHADOWMASK_OWNER_CHANNELS],
+        shared: &SharedAtlas<'_>,
+    ) {
+        let chart = &shared.charts[face];
+        // The walk writes nothing on a zero-extent chart, so it has no edge.
+        if !owned.contains(&true) || chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            return;
+        }
+        let placement = shared.placements[face];
+        let padding = i64::from(CHART_PADDING_TEXELS);
+        // Inclusive interior bounds in padded-rect coordinates.
+        let (x_lo, x_hi) = (padding, i64::from(chart.width_texels) - padding - 1);
+        let (y_lo, y_hi) = (padding, i64::from(chart.height_texels) - padding - 1);
+        debug_assert!(x_lo <= x_hi && y_lo <= y_hi, "a lit chart has an interior");
+        // Chebyshev distance from the interior: 0 inside, ring `n` in padding.
+        let ring_of =
+            move |x: i64, y: i64| (x_lo - x).max(x - x_hi).max(y_lo - y).max(y - y_hi).max(0);
+        let layer_start = placement.layer as usize * self.plane;
+        let atlas_width = self.width as usize;
+        // Only called for texels of ring `CHART_PADDING_TEXELS` or less, which
+        // all lie inside the padded rect, so both coordinates are non-negative.
+        let offset = move |x: i64, y: i64| {
+            (layer_start
+                + (placement.y as usize + y as usize) * atlas_width
+                + placement.x as usize
+                + x as usize)
+                * SHADOWMASK_OWNER_CHANNELS
+        };
+        for ring in 1..=padding {
+            for (x, y) in rect_perimeter(x_lo - ring, x_hi + ring, y_lo - ring, y_hi + ring) {
+                let mut sums = [0u32; SHADOWMASK_OWNER_CHANNELS];
+                let mut covered = 0u32;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let (nx, ny) = (x + dx, y + dy);
+                        // Inner ring only: the outer side and this ring were
+                        // uncovered when the pass began.
+                        if ring_of(nx, ny) != ring - 1 {
+                            continue;
+                        }
+                        let base = offset(nx, ny);
+                        for (position, sum) in sums.iter_mut().enumerate() {
+                            *sum += u32::from(self.data[base + position]);
+                        }
+                        covered += 1;
+                    }
+                }
+                // Every ring texel touches at least one inner-ring texel.
+                debug_assert!(covered > 0);
+                let base = offset(x, y);
+                for (position, &sum) in sums.iter().enumerate() {
+                    if owned[position] {
+                        self.data[base + position] = ((sum + covered / 2) / covered) as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every texel on the border of the inclusive rect `[x0, x1] × [y0, y1]`,
+/// each once. The rect is at least two texels across on each axis.
+fn rect_perimeter(x0: i64, x1: i64, y0: i64, y1: i64) -> impl Iterator<Item = (i64, i64)> {
+    let rows = [y0, y1]
+        .into_iter()
+        .flat_map(move |y| (x0..=x1).map(move |x| (x, y)));
+    let columns = (y0 + 1..y1).flat_map(move |y| [(x0, y), (x1, y)]);
+    rows.chain(columns)
 }
 
 /// World position of the chart-interior texel at bake-layer index `idx`.

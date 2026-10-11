@@ -480,6 +480,14 @@ fn assert_close(actual: [f32; 3], expected: [f32; 3], what: &str) {
     }
 }
 
+/// `assert_close` for every column of two renders.
+fn assert_columns_close(actual: &[[f32; 3]], expected: &[[f32; 3]], what: &str) {
+    assert_eq!(actual.len(), expected.len(), "{what}: column count");
+    for (column, (a, e)) in actual.iter().zip(expected).enumerate() {
+        assert_close(*a, *e, &format!("{what}, column {column}"));
+    }
+}
+
 fn scaled(value: [f32; 3], scale: f32) -> [f32; 3] {
     value.map(|c| c * scale)
 }
@@ -819,7 +827,7 @@ fn directional_owner_highlight_follows_its_aim_not_its_origin() {
 
     // Every column sees the same sun, so a directional highlight is uniform
     // across the floor, and it changes with the aim.
-    assert!(here.iter().all(|px| *px == here[0]), "{here:?}");
+    assert_columns_close(&here, &vec![here[0]; here.len()], "uniform sun highlight");
     let overhead = render(
         &ctx,
         &[Light::directional([0.0, 5.0, 0.0], [0.0, -1.0, 0.0])],
@@ -838,15 +846,17 @@ fn directional_owner_highlight_follows_its_aim_not_its_origin() {
         Case::default(),
     );
     assert!(below.iter().all(|px| *px == [0.0; 3]), "{below:?}");
-    // A zero aim falls back to straight down for its cone as well as its
-    // light direction, so it reads exactly as an authored straight-down sun.
+    // A zero aim falls back to straight down. The full-bright cone sentinels
+    // still make the cone factor smoothstep(-1, 1, dot(-L, aim)), which is 1
+    // only while the aim the cone reads is the light direction's own, so this
+    // pins the fallback aim feeding the cone as well as the light direction.
     let unaimed = render(
         &ctx,
         &[Light::directional([0.0, 5.0, 0.0], [0.0; 3])],
         &face,
         Case::default(),
     );
-    assert_eq!(unaimed, overhead, "a zero aim is the straight-down sun");
+    assert_columns_close(&unaimed, &overhead, "a zero aim is the straight-down sun");
 }
 
 // A directional light tagged `_shadow_type sdf` has no baked direct to
@@ -907,6 +917,10 @@ fn sdf_directional_specular_stays_keyed_on_its_origin() {
         &one_face([0, EMPTY, EMPTY, EMPTY]),
         Case::default(),
     );
-    assert!(owned.iter().all(|px| *px == owned[0]), "{owned:?}");
+    assert_columns_close(
+        &owned,
+        &vec![owned[0]; owned.len()],
+        "owned directional is uniform",
+    );
     assert_ne!(owned, here);
 }

@@ -50,7 +50,8 @@ fn lightmap_block_resident(layer_flags: u32) -> bool {
     return ((layer_flags >> 16u) & LIGHTMAP_BLOCK_RESIDENT) != 0u;
 }
 
-// A real block whose texels are not in the pool: a transient miss.
+// A real block whose texels are not in the pool: a transient miss. No
+// production caller; kept as a test probe for the block-flag states.
 fn lightmap_block_missing(layer_flags: u32) -> bool {
     return ((layer_flags >> 16u) & (LIGHTMAP_BLOCK_RESIDENT | LIGHTMAP_BLOCK_NONE)) == 0u;
 }

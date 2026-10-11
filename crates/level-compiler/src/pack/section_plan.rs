@@ -237,7 +237,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         // space an owner names), so refuse to write a table it would reject.
         anyhow::ensure!(
             section.owners.len() == geo_result.geometry.faces.len(),
-            "ShadowmaskAtlas has {} owner entries but Geometry has {} faces",
+            "ShadowmaskAtlas's owner-entry count is {} but Geometry's face count is {}",
             section.owners.len(),
             geo_result.geometry.faces.len()
         );

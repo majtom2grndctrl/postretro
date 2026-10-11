@@ -45,9 +45,9 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 
 /// Bump when the cached `ShadowmaskAtlas` bytes can change without a layer input
 /// hash change: owner admission or ranking, raw-visibility quantization,
-/// payload encoding (BC5 groups, per-block BC4 mode choice), memo entry
-/// layout (the drop-report prefix), or `ShadowmaskAtlasSection::to_bytes`
-/// payload semantics.
+/// payload encoding (BC5 groups, per-block BC4 mode choice), chart-padding
+/// fill, memo entry layout (the drop-report prefix), or
+/// `ShadowmaskAtlasSection::to_bytes` payload semantics.
 ///
 /// v5: `SMB6`, one pair of BC5 group planes per lightmap cell block.
 ///
@@ -55,7 +55,9 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 ///
 /// v7: `SMB7` per-face owners ranked in the walk; the entry carries the drop
 /// report.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 7;
+///
+/// v8: each owned channel's chart padding repeats its owner's dilated edge.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 8;
 
 /// A pool layer holds the two mask groups side by side, so it is
 /// `SHADOWMASK_GROUP_COUNT` pool edges wide and must fit the pinned device
@@ -366,7 +368,8 @@ pub(crate) fn take_last_raw_fill() -> Vec<u8> {
 }
 
 /// Allocates the pre-encode raw fill, initialized occluded: an owned channel
-/// reads zero wherever its owner wrote nothing, padding included.
+/// reads zero on every chart-interior texel its owner wrote nothing to, and
+/// its padding later repeats that interior's edge.
 fn allocate_shadowmask_raw_fill(data_len: usize) -> RawFillBuffer {
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));

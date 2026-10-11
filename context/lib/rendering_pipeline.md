@@ -377,6 +377,7 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
   - an SDF light outside the selection;
   - a missing or refused mask;
   - a block miss;
+  - a face with no lightmap block;
   - placeholder mode.
 - **Eligibility.** Every non-animated static lightmap light, whether or not it is in the entity-shadow selection. Animated-baked lights add no world specular until they can own channels.
 - **Directional lights.** An owner's highlight follows the light's direction, not its entity origin. An SDF directional light has no bake to follow: its highlight stays at its origin, where its SDF diffuse and visibility trace place it.

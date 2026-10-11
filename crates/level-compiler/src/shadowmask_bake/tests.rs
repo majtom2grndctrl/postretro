@@ -208,6 +208,65 @@ impl Fill {
     fn channel(&self, idx: u32, channel: usize) -> u8 {
         self.raw[idx as usize * 4 + channel]
     }
+
+    /// Channel `channel` over the `w × h` padded chart at `(x0, 0)` of a
+    /// `width`-wide bake layer 0, as `[y][x]`.
+    fn rect(&self, width: u32, x0: u32, w: u32, h: u32, channel: usize) -> Vec<Vec<u8>> {
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| self.channel(y * width + x0 + x, channel))
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// The lightmap's edge-dilation rule run over one padded chart alone, written
+/// out independently of the fill: `PAD` passes, the interior covered from the
+/// start, each pass giving every uncovered texel the mean, rounded half up, of
+/// the 8-neighbours covered when the pass began. `interior` is `[ty][tx]`; the
+/// result is the whole padded chart, `[y][x]`.
+fn dilated_reference(interior: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let pad = PAD as usize;
+    let (h, w) = (interior.len() + 2 * pad, interior[0].len() + 2 * pad);
+    let mut value = vec![vec![0u8; w]; h];
+    let mut covered = vec![vec![false; w]; h];
+    for (ty, row) in interior.iter().enumerate() {
+        for (tx, &v) in row.iter().enumerate() {
+            value[ty + pad][tx + pad] = v;
+            covered[ty + pad][tx + pad] = true;
+        }
+    }
+    for _ in 0..PAD {
+        let (prev_value, prev_covered) = (value.clone(), covered.clone());
+        for y in 0..h {
+            for x in 0..w {
+                if prev_covered[y][x] {
+                    continue;
+                }
+                let (mut sum, mut count) = (0u32, 0u32);
+                for dy in -1i64..=1 {
+                    for dx in -1i64..=1 {
+                        let (ny, nx) = (y as i64 + dy, x as i64 + dx);
+                        let outside = ny < 0 || nx < 0 || ny >= h as i64 || nx >= w as i64;
+                        if (dy, dx) == (0, 0) || outside {
+                            continue;
+                        }
+                        if prev_covered[ny as usize][nx as usize] {
+                            sum += u32::from(prev_value[ny as usize][nx as usize]);
+                            count += 1;
+                        }
+                    }
+                }
+                if count > 0 {
+                    value[y][x] = ((sum + count / 2) / count) as u8;
+                    covered[y][x] = true;
+                }
+            }
+        }
+    }
+    value
 }
 
 /// Consume `arrivals` in order through one owner fill.
@@ -304,8 +363,8 @@ fn owners_ascend_whatever_the_arrival_order_and_their_masks_move_with_them() {
 }
 
 // When a later, higher-ranked light evicts an owner, none of the
-// evicted light's values remain in that channel; texels the newcomer does not
-// reach read zero, padding included.
+// evicted light's values remain in that channel; its padding repeats the
+// newcomer's own edge.
 #[test]
 fn an_evicting_newcomer_leaves_none_of_the_evicted_values() {
     let atlas = Atlas::new(1);
@@ -336,20 +395,19 @@ fn an_evicting_newcomer_leaves_none_of_the_evicted_values() {
     assert_eq!(fill.owners(0), [1, 2, 3, 4], "the dim incumbent is evicted");
     assert_eq!(fill.report.drops, vec![drop_at(0, 0, 16)]);
     // The newcomer took the dim light's channel 0 and sorted to position 3.
-    for idx in atlas.padded(0) {
-        let value = fill.channel(idx, 3);
-        let interior_row = (idx / atlas.width).checked_sub(PAD);
-        let expected = match interior_row {
-            Some(0 | 1) if (PAD..PAD + INTERIOR).contains(&(idx % atlas.width)) => 255,
-            Some(2 | 3) if (PAD..PAD + INTERIOR).contains(&(idx % atlas.width)) => 128,
-            _ => 0,
-        };
-        assert_eq!(value, expected, "texel {idx}");
+    let grid = fill.rect(atlas.width, 0, CHART, CHART, 3);
+    let interior = [vec![255; 4], vec![255; 4], vec![128; 4], vec![128; 4]];
+    assert_eq!(grid, dilated_reference(&interior));
+    // The padding below the half-visible rows reads the newcomer's 128, which
+    // the evicted light, lit at 255 everywhere, never wrote.
+    for row in &grid[(PAD + INTERIOR) as usize..] {
+        assert_eq!(row, &vec![128u8; CHART as usize]);
     }
 }
 
 // An owner occluded at a face edge reads zero there, including the
-// padding a bilinear tap reaches; no owned channel keeps an unwritten value.
+// padding a bilinear tap past that edge reaches; elsewhere its padding repeats
+// its own lit edge, and no unowned channel holds a value.
 #[test]
 fn an_owner_occluded_at_the_face_edge_reads_zero_there_and_in_padding() {
     let atlas = Atlas::new(1);
@@ -371,14 +429,124 @@ fn an_owner_occluded_at_the_face_edge_reads_zero_there_and_in_padding() {
         assert_eq!(fill.channel(atlas.idx(0, INTERIOR - 1, ty), 0), 0);
         assert_eq!(fill.channel(atlas.idx(0, 0, ty), 0), 255);
     }
-    let interior: Vec<u32> = (0..16).map(|n| atlas.idx(0, n % 4, n / 4)).collect();
-    for idx in atlas.padded(0) {
-        if !interior.contains(&idx) {
-            assert_eq!(fill.channel(idx, 0), 0, "padding texel {idx}");
+    let grid = fill.rect(atlas.width, 0, CHART, CHART, 0);
+    // Rows beside the occluded edge; the corner rows also border the lit top
+    // and bottom edges' padding, so the dilation blends there (checked against
+    // the reference below).
+    let edge_rows = PAD as usize..(PAD + INTERIOR) as usize;
+    for (y, row) in grid
+        .iter()
+        .enumerate()
+        .take(edge_rows.end)
+        .skip(edge_rows.start)
+    {
+        for (x, &value) in row.iter().enumerate().skip((PAD + INTERIOR) as usize) {
+            assert_eq!(value, 0, "padding ({x}, {y}) past the occluded edge");
         }
+    }
+    let interior: Vec<Vec<u8>> = (0..INTERIOR)
+        .map(|_| {
+            (0..INTERIOR)
+                .map(|tx| if tx == INTERIOR - 1 { 0 } else { 255 })
+                .collect()
+        })
+        .collect();
+    assert_eq!(grid, dilated_reference(&interior));
+    assert_eq!(
+        grid[(PAD + 1) as usize][0],
+        255,
+        "the lit edge's outer ring"
+    );
+    for idx in atlas.padded(0) {
         for channel in 1..4 {
             assert_eq!(fill.channel(idx, channel), 0, "unowned channel {channel}");
         }
+    }
+}
+
+// A lit owner's padding repeats its own interior edge the way the lightmap's
+// edge dilation fills its padding: ring 1 from the interior, ring 2 from ring
+// 1, each an 8-neighbour mean rounded half up.
+#[test]
+fn a_lit_owners_padding_repeats_its_edge_as_the_lightmap_dilates() {
+    let atlas = Atlas::new(1);
+    let light = light_over(0, 2.0);
+    let owner = eligible(&light, 0, false);
+    let (pad, edge) = (PAD as usize, CHART as usize - 1);
+
+    // Uniform: ring 1, ring 2 and the corners all read the interior value.
+    let uniform = run(
+        &atlas,
+        &[(&owner, partition(&atlas, atlas.lit(0, 16, 0.6)))],
+    );
+    let grid = uniform.rect(atlas.width, 0, CHART, CHART, 0);
+    assert!(grid.iter().flatten().all(|&value| value == 153), "{grid:?}");
+    assert_eq!(grid[pad - 1][pad + 1], 153, "ring 1");
+    assert_eq!(grid[0][pad + 1], 153, "ring 2");
+    assert_eq!(grid[0][0], 153, "ring-2 corner");
+    assert_eq!(grid[edge][edge], 153, "far ring-2 corner");
+
+    // A column ramp quantizing to 51, 102, 153, 204.
+    let ramp = [0.2, 0.4, 0.6, 0.8];
+    let texels: Vec<(u32, f32)> = (0..16)
+        .map(|n| {
+            let tx = n % INTERIOR;
+            (atlas.idx(0, tx, n / INTERIOR), ramp[tx as usize])
+        })
+        .collect();
+    let fill = run(&atlas, &[(&owner, partition(&atlas, texels))]);
+    let grid = fill.rect(atlas.width, 0, CHART, CHART, 0);
+    let interior: Vec<Vec<u8>> = (0..INTERIOR).map(|_| vec![51, 102, 153, 204]).collect();
+    assert_eq!(grid, dilated_reference(&interior));
+    // Ring 1 above column 1: (51 + 102 + 153) / 3.
+    assert_eq!(grid[pad - 1][pad + 1], 102);
+    // Ring 1 above column 0: (51 + 102) / 2 = 76.5, rounded up.
+    assert_eq!(grid[pad - 1][pad], 77);
+    // Ring 2 above column 1 reads ring 1: (77 + 102 + 153) / 3 = 110.7.
+    assert_eq!(grid[0][pad + 1], 111);
+    // The corners repeat the corner texel.
+    assert_eq!(grid[0][0], 51);
+    assert_eq!(grid[edge][edge], 204);
+    for channel in 1..4 {
+        assert!(
+            fill.rect(atlas.width, 0, CHART, CHART, channel)
+                .iter()
+                .flatten()
+                .all(|&value| value == 0),
+            "unowned channel {channel}"
+        );
+    }
+}
+
+// Two abutting charts on one layer, each owned in channel 0 by a different
+// light: each chart's padding repeats only its own owner's values.
+#[test]
+fn abutting_charts_padding_never_takes_the_neighbours_owner() {
+    let atlas = Atlas::new(2);
+    let a = light_over(0, 2.0);
+    let b = light_over(1, 2.0);
+    let a_e = eligible(&a, 0, false);
+    let b_e = eligible(&b, 1, false);
+    let fill = run(
+        &atlas,
+        &[
+            (&a_e, partition(&atlas, atlas.lit(0, 16, 1.0))),
+            (&b_e, partition(&atlas, atlas.lit(1, 16, 0.2))),
+        ],
+    );
+    assert_eq!(fill.owners(0), [0, E, E, E]);
+    assert_eq!(fill.owners(1), [1, E, E, E]);
+    for (face, expected) in [(0u32, 255u8), (1, 51)] {
+        let grid = fill.rect(atlas.width, face * CHART, CHART, CHART, 0);
+        assert!(
+            grid.iter().flatten().all(|&value| value == expected),
+            "face {face}: {grid:?}"
+        );
+    }
+    // The two padded rects meet between these columns.
+    for y in 0..CHART {
+        assert_eq!(fill.channel(y * atlas.width + CHART - 1, 0), 255);
+        assert_eq!(fill.channel(y * atlas.width + CHART, 0), 51);
     }
 }
 
@@ -453,13 +621,11 @@ fn a_below_floor_promoted_incumbent_is_evicted_by_four_above_floor_arrivals() {
     let fill = run(&atlas, &arrivals);
     assert_eq!(fill.owners(0), [1, 2, 3, 4]);
     assert!(fill.report.drops.is_empty());
-    // Its eight texels were cleared from the channel it lost.
+    // Every channel holds its final owner's whole-face values, and the padding
+    // repeats them.
     for idx in atlas.padded(0) {
-        let row = idx / atlas.width;
-        let col = idx % atlas.width;
-        let interior = (PAD..PAD + INTERIOR).contains(&row) && (PAD..PAD + INTERIOR).contains(&col);
         let held: Vec<u8> = (0..4).map(|c| fill.channel(idx, c)).collect();
-        assert_eq!(held, if interior { vec![255; 4] } else { vec![0; 4] });
+        assert_eq!(held, vec![255; 4], "texel {idx}");
     }
 }
 
@@ -1073,8 +1239,8 @@ fn an_estimated_owner_that_bakes_nothing_is_cleared_after_the_walk() {
 }
 
 // A cut face's owner that lights only one of its sub-faces reads
-// zero across the other, padding included; no sub-face keeps an unwritten value
-// in an owned channel.
+// zero across the other, padding included; on the sub-face it lights, its
+// padding repeats that sub-face's own edge, zero past the unlit side.
 #[test]
 fn a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other() {
     let cut = CutAtlas::new();
@@ -1098,6 +1264,30 @@ fn a_cut_owner_lighting_one_sub_face_reads_zero_across_the_other() {
     assert_eq!(fill.channel(cut.idx(0, 5, 2), 1), 128);
     assert_eq!(fill.channel(cut.idx(1, 5, 2), 1), 128);
     assert_eq!(fill.channel(cut.idx(1, 11, 2), 1), 128);
+
+    // Sub-face 0 shows parent columns 0..8; the left owner lit 0..4 of them.
+    let width = cut.atlas.width;
+    let lit_side = fill.rect(width, 0, SUB_CHART, CHART, 0);
+    let interior: Vec<Vec<u8>> = (0..INTERIOR)
+        .map(|_| (0..SUB_W).map(|gx| if gx < 4 { 255 } else { 0 }).collect())
+        .collect();
+    assert_eq!(lit_side, dilated_reference(&interior));
+    for row in &lit_side {
+        assert_eq!(row[..PAD as usize], [255; PAD as usize], "lit edge padding");
+        assert_eq!(
+            row[(PAD + SUB_W) as usize..],
+            [0; PAD as usize],
+            "unlit edge padding"
+        );
+    }
+    // The owner lighting both sub-faces fills both sub-faces' padding.
+    for k in 0..2 {
+        let grid = fill.rect(width, k * SUB_CHART, SUB_CHART, CHART, 1);
+        assert!(
+            grid.iter().flatten().all(|&value| value == 128),
+            "sub-face {k}"
+        );
+    }
 }
 
 // The estimate's stride, sampling mode and cut map all reach the memo key; a

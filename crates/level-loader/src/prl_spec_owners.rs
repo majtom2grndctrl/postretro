@@ -39,9 +39,11 @@ pub(crate) fn build_vertex_spec_owners(
     let Some(face_owners) = face_owners else {
         return stream;
     };
-    // The face that stamped each vertex, so a second face can be compared
-    // against the entry already there.
-    let mut stamped_by: Vec<Option<usize>> = vec![None; vertex_count];
+    // The face that stamped each vertex (`UNSTAMPED` until one does), so a
+    // second face can be compared against the entry already there. Id 42's face
+    // count is a u32, so every face index fits.
+    const UNSTAMPED: u32 = u32::MAX;
+    let mut stamped_by = vec![UNSTAMPED; vertex_count];
     let stamped = face_index_ranges(leaves, face_owners.len(), indices.len()).and_then(|ranges| {
         for (face, (range, owners)) in ranges.into_iter().zip(face_owners).enumerate() {
             for &index in &indices[range] {
@@ -53,14 +55,16 @@ pub(crate) fn build_vertex_spec_owners(
                         "face {face} names vertex {index} past the {vertex_count}-vertex Geometry"
                     ));
                 };
-                if let Some(other) = (*first).filter(|&other| other != face && *slot != *owners) {
+                let face_id = face as u32;
+                if *first != UNSTAMPED && *first != face_id && *slot != *owners {
                     return Err(format!(
-                        "faces {other} and {face} share vertex {index} but their owner \
-                         entries differ"
+                        "faces {} and {face} share vertex {index} but their owner \
+                         entries differ",
+                        *first
                     ));
                 }
                 *slot = *owners;
-                *first = Some(face);
+                *first = face_id;
             }
         }
         Ok(())
@@ -239,7 +243,8 @@ mod tests {
         );
     }
 
-    // Face 1's second triangle reuses vertex 3, which face 0 already stamped.
+    // Face 1's one triangle, [4, 5, 3], reuses vertex 3, which face 0 already
+    // stamped.
     fn faces_sharing_vertex_3() -> Vec<u32> {
         vec![0, 1, 2, 0, 2, 3, 4, 5, 3, 7, 8, 9, 7, 9, 10]
     }

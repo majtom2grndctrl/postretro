@@ -71,7 +71,7 @@ pub(super) struct CutEstimate {
 
 /// Parent-grid coordinates one own segment is sampled at on one axis: its
 /// stride-lattice coordinates, ascending. A segment too thin to hold one (a
-/// sub-face a texel or two across) is sampled at its centre instead, so it
+/// sub-face one to three texels across) is sampled at its centre instead, so it
 /// still gets samples, and they stay inside its own segment.
 fn axis_samples(segment: &Range<u32>) -> Vec<u32> {
     let half = ESTIMATE_STRIDE / 2;

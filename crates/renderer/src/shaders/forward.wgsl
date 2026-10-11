@@ -819,8 +819,9 @@ fn world_static_light_specular(
 // its position names, plus the fragment's SDF selection at its SDF visibility.
 // No other static light adds world specular, so a light the bake found
 // occluded can never shine through a wall (rendering_pipeline.md §4, Static
-// specular ownership). `owners_readable` is false on a block miss and when no
-// usable mask is bound; owners then add nothing.
+// specular ownership). `owners_readable` is false on a block miss, for the
+// no-lightmap entry (a face with no lightmap block), and when no usable mask is
+// bound; owners then add nothing.
 fn world_static_specular(
     world_pos: vec3<f32>,
     N: vec3<f32>,

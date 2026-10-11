@@ -1,20 +1,4 @@
-// Shared headless GPU harness for the renderer's offscreen readback tests.
-//
-// The UI goldens all need the same three things: a `pollster`
-// headless `wgpu::Device`/`Queue` that self-skips when no adapter is present, an
-// offscreen-texture readback that copies to a mappable buffer (256-byte row
-// alignment), maps, and de-pads to a tight RGBA8 grid, and a `Readback` accessor
-// over that grid. These were duplicated across the test modules (with two
-// divergent `Readback` shapes); per testing_guide §4 ("Multiple test modules
-// need the same builders" → extract into a `#[cfg(test)]` sibling) they live
-// here once, at the `render/` root so any pass's tests can reach it.
-//
-// No GPU context in CI is the norm (testing_guide §3): `try_init_gpu` returns
-// `None` so each test self-skips rather than failing for adapter absence;
-// `gpu_or_skip` adds the `POSTRETRO_REQUIRE_GPU` override for runs that must
-// prove something on an adapter. The WGSL text extractors at the bottom serve
-// the harnesses that splice production shader functions into a test shader.
-//
+// Shared headless GPU harness (device, skip policy, RGBA8 readback) and WGSL text extractors.
 // See: context/lib/testing_guide.md §3, §4
 
 use super::uploads::UploadQueue;
@@ -27,8 +11,9 @@ pub(crate) struct GpuCtx {
 }
 
 /// Build a headless device, or `None` when no adapter is available (the
-/// headless-CI case). Every caller self-skips on `None` so adapter absence
-/// can never be the thing that fails CI.
+/// headless-CI case, testing_guide §3). Every caller self-skips on `None` so
+/// adapter absence can never be the thing that fails CI; `gpu_or_skip` adds the
+/// `POSTRETRO_REQUIRE_GPU` override.
 pub(crate) fn try_init_gpu() -> Option<GpuCtx> {
     try_init_gpu_with_features(wgpu::Features::empty())
 }
@@ -241,7 +226,8 @@ fn read_texture_rgba8_with_submit(
 }
 
 /// The text of `header` (`fn name(` or `struct Name {`) through the brace that
-/// closes it in `source`. A struct keeps its trailing `;`.
+/// closes it in `source`. A struct keeps its trailing `;`. The WGSL extractors
+/// serve harnesses that splice production shader functions into a test shader.
 pub(crate) fn wgsl_item<'a>(source: &'a str, header: &str) -> &'a str {
     let start = source
         .find(header)

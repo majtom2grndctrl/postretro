@@ -392,7 +392,7 @@ Load rejects: another version; an unknown irradiance format or mode; a direction
 
   The result never depends on arrival order, worker count, window size or cache state.
 - **When ownership is decided.** For uncut faces, during the fused walk from exact per-face sums. All sub-faces of one cut face share one owner set. It is fixed just before the walk from a sparse shadowed estimate whose spacing follows the floor, because sub-faces span bake layers. An estimated owner that bakes nothing is cleared after the walk.
-- **Owned channels.** An owned channel reads zero wherever its owner wrote nothing, padding included.
+- **Owned channels.** An owned channel reads zero on interior texels its owner did not reach. Its chart padding repeats the owner's dilated edge, by the lightmap's dilation rule, so an occluded edge pads with zero.
 - **Memory bound.** The walk keeps its bound: no retained per-(light, texel) visibility, and no second trace of any texel.
 - **Presence.** Id 42 exists whenever any face admits an owner, whatever id 40 holds, and load never drops it with id 40.
 - **Cache key.** The memo key covers every eligible light, and the estimate's parameters.

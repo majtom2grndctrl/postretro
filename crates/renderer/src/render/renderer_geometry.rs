@@ -51,8 +51,9 @@ pub(crate) fn cast_world_vertices_to_bytes(
 /// vertex, at least one entry so the buffer is never empty. An `owners` slice
 /// that does not match `vertex_count` packs all-empty, so a vertex never reads
 /// another vertex's owners. An empty slice is the normal no-owner case
-/// (hand-built geometry, a level without id 42); a non-empty mismatch means
-/// the loader's stream disagrees with the geometry, so it warns.
+/// (hand-built geometry only: the loader always delivers a full-length stream,
+/// all-empty for a level without id 42); a non-empty mismatch means the
+/// loader's stream disagrees with the geometry, so it warns.
 pub(crate) fn cast_spec_owners_to_bytes(
     owners: &[postretro_level_format::shadowmask_atlas::FaceOwners],
     vertex_count: usize,
@@ -207,5 +208,28 @@ mod tests {
                 "{vertices} vertices"
             );
         }
+    }
+
+    #[test]
+    fn spec_owner_stream_warns_once_only_on_a_non_empty_length_mismatch() {
+        // The capture sees only this thread; the cast runs inline on it.
+        let owners = [[1, 2, 0xFFFF, 0xFFFF], [7, 0xFFFF, 0xFFFF, 0xFFFF]];
+        let capture = postretro_test_log_capture::LogCapture::start();
+
+        cast_spec_owners_to_bytes(&owners[..1], 3);
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "[Renderer] spec owner stream holds 1 entries for 3 vertices",
+        );
+        assert_eq!(capture.records().len(), 1, "one warning, nothing else");
+
+        capture.clear();
+        cast_spec_owners_to_bytes(&[], 3);
+        cast_spec_owners_to_bytes(&owners, 2);
+        assert!(
+            capture.records().is_empty(),
+            "an empty slice and a matching stream log nothing: {:?}",
+            capture.records()
+        );
     }
 }

@@ -226,7 +226,7 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
 
 /// The `DescriptorProvenance` a real net-slot pawn carries, so the host snapshot
 /// production (`produce_owned_snapshots` -> `descriptor_entity_class`) stamps
-/// `entity_class = Some("player")` on the owned snapshot — exactly as
+/// `entity_class = Some("pawn:player")` on the owned snapshot — exactly as
 /// `spawn_net_slot_pawn` does in production.
 fn net_slot_provenance() -> DescriptorProvenance {
     DescriptorProvenance {
@@ -458,7 +458,7 @@ impl LoopbackHarness {
         });
         host_registry.set_component(host_pawn, component()).unwrap();
         // Stamp net-slot provenance so the REAL host snapshot production stamps
-        // `entity_class = Some("player")` on the owned snapshot (the production path
+        // `entity_class = Some("pawn:player")` on the owned snapshot (the production path
         // reads `DescriptorProvenance` with `spawn_path == NetworkSlot`).
         host_registry
             .set_component(host_pawn, net_slot_provenance())
@@ -537,11 +537,21 @@ impl LoopbackHarness {
     }
 
     pub(crate) fn with_moving_platform(link: LinkConfig) -> Self {
+        Self::with_platform_initial_phase(link, false)
+    }
+
+    /// Shared authored motion for the steady prediction/drift gate. Host-only
+    /// trigger transitions use the stopped `with_moving_platform` fixture instead.
+    pub(crate) fn with_started_moving_platform(link: LinkConfig) -> Self {
+        Self::with_platform_initial_phase(link, true)
+    }
+
+    fn with_platform_initial_phase(link: LinkConfig, started: bool) -> Self {
         let mut h = Self::new(link);
         h.world = CollisionWorld::new();
 
-        let host_mover = spawn_platform_mover(&mut h.host_registry);
-        let client_mover = spawn_platform_mover(&mut h.client_registry);
+        let host_mover = spawn_platform_mover(&mut h.host_registry, started);
+        let client_mover = spawn_platform_mover(&mut h.client_registry, started);
         h.host_registry
             .set_tags(host_mover, vec!["harness-platform".into()])
             .expect("tag host mover");
@@ -1186,7 +1196,7 @@ impl LoopbackHarness {
     }
 }
 
-fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
+fn spawn_platform_mover(registry: &mut EntityRegistry, started: bool) -> EntityId {
     let id = registry.spawn(Transform::default());
     let mover = KinematicMoverComponent::new(
         MOVING_PLATFORM_ID,
@@ -1196,7 +1206,7 @@ fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
             speed_mps: MOVING_PLATFORM_SPEED_MPS,
             wait_ms: 0.0,
             mode: KinematicMoverMode::PingPong,
-            started: false,
+            started,
             spin_axis: Vec3::ZERO,
             initial_spin_rate_rad_s: 0.0,
             spin_accel_rad_s2: 0.0,

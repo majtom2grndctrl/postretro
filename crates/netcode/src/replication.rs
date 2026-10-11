@@ -1,4 +1,4 @@
-// Engine-side replication ownership for registered authoritative gameplay entities.
+// Engine-side replication ownership for registered gameplay and presentation records.
 // Produces owned snapshots for the registry-blind net-crate boundary.
 // See: context/lib/networking.md
 
@@ -10,7 +10,7 @@ use postretro_entities::presentation_binding::PresentationBindingResolver;
 use postretro_entities::presentation_overrides::{
     PresentationComponent, PresentationOverride, PresentationOverrides,
 };
-use postretro_entities::provenance::DescriptorMapOverride;
+use postretro_entities::provenance::{DescriptorMapOverride, DescriptorSpawnPath};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::wire::WirePresentationBinding;
 use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
@@ -29,15 +29,15 @@ use super::{
     transform_to_wire,
 };
 
-/// The Phase 2 replicable set: entities `postretro-netcode` has explicitly registered
-/// as authoritative networked gameplay objects — slot-owned movement pawns, the
-/// host's own pawn, networked AI enemies, and host world items. This set is the
-/// registration mechanism the predicate consults.
+/// The Phase 2 replicable set: entities `postretro-netcode` explicitly registered
+/// for replication. This includes authoritative gameplay objects (pawns, AI enemies,
+/// world items, loaded movers, and projectile visuals) and client-local presentation
+/// entities bound after a captured override. This set is the producer's allow-list.
 ///
-/// Membership is by `EntityId`. The predicate ([`is_replicable`]) is the authority
-/// on what crosses the wire — this set is its allow-list, layered over the
-/// component-kind exclusions below. An entity not in this set does not replicate,
-/// even if it carries a `Transform` (the Phase 1 all-`Transform` walk is gone).
+/// Membership is by `EntityId`. Registration is the producer's allow-list: an entity
+/// outside it is never considered, even if it carries a `Transform` (the Phase 1
+/// all-`Transform` walk is gone). The producer also requires usable payloads for bound
+/// presentation records.
 #[derive(Debug, Default)]
 pub struct ReplicableSet {
     registered: HashSet<EntityId>,
@@ -51,10 +51,9 @@ impl ReplicableSet {
         Self::default()
     }
 
-    // The register/unregister/contains surface is the registration mechanism for
-    // authoritative networked entities: lifecycle glue registers slot-owned movement
-    // pawns and the host pawn, while registry sweeps register AI enemies and world items.
-    /// Register an entity as an authoritative networked gameplay object. Idempotent.
+    // Lifecycle glue and registry sweeps register authoritative entities; the
+    // presentation sweep registers keyable client-local entities with captured state.
+    /// Register an entity for replication. Idempotent.
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
     }
@@ -92,19 +91,21 @@ impl ReplicableSet {
     }
 }
 
-/// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
-/// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
-/// networked AI enemies, and world items — the authoritative networked gameplay objects
-/// `postretro-netcode` registers). The Phase 1 all-`Transform` walk is deliberately
+/// Phase 2 replicable-set predicate. An entity is eligible for snapshot production
+/// only when explicitly registered in [`ReplicableSet`]. Gameplay lifecycle and
+/// descriptor sweeps register authoritative entities; the presentation sweep can
+/// register a keyable local presentation entity when it has an override.
+/// Inventory-owned entities are excluded from both descriptor registration and
+/// presentation binding until drop. The Phase 1 all-`Transform` walk is deliberately
 /// *not* reused.
 ///
-/// Registration is the allow-list, so deterministic client-local / baked
-/// presentation entities (`BillboardEmitter`, `ParticleState`, `SpriteVisual`,
-/// `Light`, `FogVolume`) and ordinary static map transforms stay off the wire by
-/// default — they are simply never registered. The exclusion is also enforced
-/// structurally on the payload side: [`collect_payloads`] only pulls wire-bound
-/// gameplay state plus current mesh animation state. Baked/cosmetic payloads stay
-/// local.
+/// Presentation is not eagerly replicated: unmodified client-local or baked
+/// components (`BillboardEmitter`, `ParticleState`, `SpriteVisual`, `Light`,
+/// `FogVolume`) and ordinary static map transforms remain local. For registered
+/// entities, captured `Light`, `FogVolume`, and `BillboardEmitter` overrides are
+/// appended as validated state payloads; a bound presentation record is produced
+/// only with valid or cached state and carries no `Transform`. [`collect_payloads`]
+/// separately collects gameplay state and current mesh animation state.
 ///
 /// `produce_owned_snapshots` consults the set directly via `iter`; this standalone
 /// single-entity predicate is exercised only by this module's tests.
@@ -238,8 +239,9 @@ pub fn produce_owned_snapshots_with_host_aim(
 
 /// Collect the wire-mirror payloads for one replicable entity, in a stable order:
 /// `Transform` first, then `PlayerMovementState` and mesh animation state if
-/// present. Descriptor-owned presentation data is never collected; the mesh
-/// payload carries only the current authoritative animation state.
+/// present. Descriptor-owned presentation data is not collected here; the producer
+/// appends validated presentation overrides separately. Mesh payload carries only
+/// the current authoritative animation state.
 fn collect_payloads(
     registry: &EntityRegistry,
     id: EntityId,
@@ -461,6 +463,30 @@ pub fn host_register_presentation_overrides(
                 }
                 replicable.unregister(id);
                 allocator.forget(id);
+            }
+        } else if registry
+            .get_component::<DescriptorProvenance>(id)
+            .is_ok_and(|provenance| {
+                matches!(
+                    provenance.spawn_path,
+                    DescriptorSpawnPath::PlayerSpawn
+                        | DescriptorSpawnPath::NetworkSlot
+                        | DescriptorSpawnPath::ProjectilePresentation
+                )
+            })
+            || replicable.projectile_presentations.contains_key(&id)
+        {
+            // Even a stale/incorrect resolver identity cannot replace these
+            // dedicated records with a presentation-only binding. Keep their
+            // existing registration and NetworkId intact.
+            overrides.remove_entity(id);
+            replicable.bound_identities.remove(&id);
+            replicable
+                .last_valid_payloads
+                .get_mut()
+                .retain(|(entity, _), _| *entity != id);
+            if overrides.warned_unresolvable.insert(id) {
+                log::warn!("[Net] cannot bind presentation override for entity {id:?}");
             }
         } else if is_host_replicated_descriptor_entity(registry, id)
             || registry.is_inventory_owned(id)

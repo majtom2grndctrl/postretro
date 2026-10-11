@@ -189,6 +189,7 @@ struct Peer {
     commands: Vec<SystemReactionCommand>,
     rtt: Option<f64>,
     clock: f64,
+    clock_origin: f64,
 }
 impl Peer {
     fn new(
@@ -231,6 +232,7 @@ impl Peer {
             commands: Vec::new(),
             rtt: Some(RTT),
             clock: 0.0,
+            clock_origin: 0.0,
         }
     }
     fn receive(&mut self, world: &postretro_level_loader::LevelWorld) {
@@ -257,7 +259,7 @@ impl Peer {
             &mut self.replication,
             &mut self.state,
             &mut self.prediction,
-            &descriptors(),
+            &ctx.data_registry.borrow().entities,
             &session.hit_zone_store,
             None,
             &self.app.collision_world,
@@ -408,19 +410,25 @@ fn sample(app: &mut App, clock: f64) -> Vec<f32> {
     sample_delta(app, clock, DT as f32)
 }
 fn sample_delta(app: &mut App, clock: f64, delta: f32) -> Vec<f32> {
+    sample_deltas(app, clock, delta, delta)
+}
+fn sample_deltas(app: &mut App, clock: f64, delta: f32, spin_delta: f32) -> Vec<f32> {
     let ctx = script_ctx(app);
     let session = app.session.as_mut().unwrap();
     let mut registry = ctx.registry.borrow_mut();
-    session.light_bridge.absorb_dynamic_lights(&registry);
     let brightness = session
         .light_bridge
         .update(&mut registry, clock as f32, 0.0)
         .map(|u| u.effective_brightness.to_vec())
         .unwrap_or_default();
     session.fog_volume_bridge.tick(&mut registry, clock);
-    session
-        .emitter_bridge
-        .update(&mut registry, delta, clock as f32, &HashMap::new());
+    session.emitter_bridge.update(
+        &mut registry,
+        delta,
+        spin_delta,
+        clock as f32,
+        &HashMap::new(),
+    );
     brightness
 }
 struct Harness {
@@ -522,6 +530,10 @@ impl Harness {
         }
     }
     fn connect_late(&mut self) {
+        // The late peer starts advancing its level clock from zero. The harness
+        // clock remains the shared instant used to compare completion times.
+        self.peers[1].clock_origin = self.clock;
+        self.peers[1].clock = 0.0;
         self.peers[1].active = true;
         postretro_net::harness::reveal_both(
             &mut self.server,
@@ -614,12 +626,13 @@ impl Harness {
     }
     fn step(&mut self) {
         self.tick += 1;
-        self.clock = self.tick as f64 * DT;
+        // Script time keeps elapsed frame time even when a stall costs ticks.
+        self.clock += DT;
         self.publish();
         self.transport();
         for peer in &mut self.peers {
             if peer.active {
-                peer.clock = self.clock;
+                peer.clock = self.clock - peer.clock_origin;
                 peer.receive(&self.world);
                 peer.sample();
             }
@@ -647,12 +660,11 @@ impl Harness {
         ctx.presentation_script_time.set(self.clock);
         ctx.presentation_overrides.borrow_mut().begin_frame();
         for (index, player) in self.players.iter().enumerate() {
-            let mut t = ctx
+            let mut t = *ctx
                 .registry
                 .borrow()
                 .get_component::<Transform>(player.pawn)
-                .unwrap()
-                .clone();
+                .unwrap();
             t.position = Vec3::new(
                 if participants.contains(&index) {
                     x

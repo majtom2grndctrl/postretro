@@ -413,10 +413,8 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
                             .borrow_mut()
                             .insert((context.source.clone(), parsed.sound.clone()))
                         {
-                            // A trigger residual fires with
-                            // `SystemCommandFireContext::default()`, whose `source`
-                            // is empty; the dedup key above is unaffected, only
-                            // this display text.
+                            // Trigger residuals carry their trigger source; this
+                            // fallback labels other contexts with no source.
                             let source = if context.source.is_empty() {
                                 "an unnamed source".to_string()
                             } else {
@@ -1819,7 +1817,7 @@ mod tests {
                 .dispatch("playSound", &anchored_play_sound(), &queue)
                 .expect("a skipped playSound is not an error");
         }
-        // A contextless drain (trigger residual, death, follow-up) sees the default.
+        // This fixture explicitly resets to the default context, which has no emitter.
         queue.replace_fire_context(postretro_entities::SystemCommandFireContext::default());
         registry
             .dispatch("playSound", &anchored_play_sound(), &queue)

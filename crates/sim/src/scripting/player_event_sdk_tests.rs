@@ -189,8 +189,8 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
         set_per_seat(&world, XP, Seat(1), 20.0);
         set_per_seat(&world, XP, Seat(2), 140.0);
         world.tick();
-        // The fanfare and gold flash present on the crossing player's machine,
-        // in listed order.
+        // The fanfare, gold flash, and screen shake present on the crossing
+        // player's machine, in listed order.
         let mut system = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut system);
         let sequence = SequencedPrimitiveRegistry::new();
@@ -213,7 +213,7 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
             |_, _| None,
         );
         let routed = world.script_ctx.system_commands.take_routed();
-        assert_eq!(routed.len(), 2, "{script}: fanfare and goldFlash route");
+        assert_eq!(routed.len(), 3, "{script}: milestone effects route");
         assert_eq!(
             routed[0].0,
             postretro_entities::Recipients::Seats(vec![Seat(2)]),
@@ -237,6 +237,26 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
             ),
             "{script}: goldFlash second: {:?}",
             routed[1].1
+        );
+        assert_eq!(
+            routed[2].0,
+            postretro_entities::Recipients::Seats(vec![Seat(2)]),
+            "{script}: screen shake seat"
+        );
+        assert!(
+            matches!(
+                &routed[2].1,
+                SystemReactionCommand::ScreenShake {
+                    amplitude,
+                    duration_ms,
+                    frequency: Some(frequency),
+                    ..
+                } if (*amplitude - 6.0).abs() <= f32::EPSILON
+                    && (*duration_ms - 350.0).abs() <= f32::EPSILON
+                    && (*frequency - 18.0).abs() <= f32::EPSILON
+            ),
+            "{script}: screen shake third: {:?}",
+            routed[2].1
         );
         assert_eq!(
             global(&world, LAST_LEVEL_UP_XP),

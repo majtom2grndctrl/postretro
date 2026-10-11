@@ -422,9 +422,9 @@ fn duplicate_input_at_drain_seam_is_inert() {
     assert!(h.bystanders_alive());
 }
 
-// --- Stale authoritative snapshot: an out-of-order older snapshot delivered after
-// a newer one is rejected wholesale by apply_snapshot (sequence guard), so it never
-// regresses the reconciled pawn or mutates unrelated entities. ---
+// --- Stale authoritative snapshot: an out-of-order older snapshot carrying this
+// local-pawn Delta/known-state fixture is rejected wholesale by apply_snapshot
+// (sequence guard), so it never regresses the pawn or mutates unrelated entities. ---
 #[test]
 fn stale_snapshot_is_rejected_and_does_not_regress() {
     let mut h = LoopbackHarness::new(light_link());
@@ -439,14 +439,15 @@ fn stale_snapshot_is_rejected_and_does_not_regress() {
 
     // Capture the current latest sequence, then synthesize a STALE raw snapshot
     // (an older sequence) carrying a wildly different pose and feed it through the
-    // real apply path. The sequence guard must reject it.
+    // real apply path. The sequence guard must reject this old local-pawn
+    // Delta/known-state fixture.
     let stale = stale_snapshot_for(&h);
     let outcome = h
         .client_replication
         .apply_snapshot(&mut h.client_registry, &stale);
     assert!(
         outcome.ack.is_none(),
-        "a stale (old-sequence) snapshot is rejected wholesale — no ack"
+        "an old-sequence local-pawn Delta/known-state fixture is rejected wholesale — no ack"
     );
     assert!(
         outcome.local_reconcile.is_none(),
@@ -1190,7 +1191,29 @@ fn local_pawn_interpolated_render_eye_is_coherent_each_tick() {
 
 #[test]
 fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift() {
-    let mut h = LoopbackHarness::with_moving_platform(mandated_link());
+    // Measure steady mover prediction from matching authored initial phase. A
+    // stopped client's first authoritative catch-up after a host-only Start is a
+    // separate transition; the remote Use test retains the stopped fixture.
+    let mut h = LoopbackHarness::with_started_moving_platform(mandated_link());
+    let host_initial_phase = h
+        .host_registry
+        .get_component::<KinematicMoverComponent>(h.host_mover.expect("host mover"))
+        .expect("host mover phase");
+    let client_initial_phase = h
+        .client_registry
+        .get_component::<KinematicMoverComponent>(h.client_mover.expect("client mover"))
+        .expect("client mover phase");
+    assert!(host_initial_phase.started && client_initial_phase.started);
+    assert_eq!(
+        host_initial_phase.segment_index,
+        client_initial_phase.segment_index
+    );
+    assert!(
+        (host_initial_phase.segment_elapsed_ms - client_initial_phase.segment_elapsed_ms).abs()
+            < f32::EPSILON
+            && h.mover_position_error() < f32::EPSILON,
+        "both peers must start from the same authored mover phase and pose"
+    );
     const MOVER_TOLERANCE_M: f32 = 0.16;
     const RIDER_TOLERANCE_M: f32 = 0.35;
     const RELEASE_VELOCITY_TOLERANCE_MPS: f32 = 0.08;
@@ -1909,9 +1932,9 @@ fn run_resolve(
     h.command_queues.resolve_tick(client_id)
 }
 
-/// Synthesize a STALE raw snapshot: an older sequence than the client's latest,
-/// carrying a far-off pose for the host pawn. The real apply path's sequence guard
-/// must reject it wholesale.
+/// Synthesize an older-sequence raw snapshot carrying this far-off local-pawn
+/// Delta/known-state fixture. The real apply path's sequence guard must reject
+/// this fixture wholesale.
 fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessage {
     use postretro_net::wire::{ComponentPayload, EntityRecord};
 
@@ -1938,8 +1961,8 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             )],
             local_player: true,
             last_processed_client_tick: Some(0),
-            // A synthetic STALE fixture rejected by the sequence guard before apply;
-            // it never exercises client materialization, so no class is stamped.
+            // This synthetic older-sequence local-pawn Delta/known-state fixture is
+            // rejected by the sequence guard before apply, so no class is stamped.
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,

@@ -12,7 +12,7 @@ use super::{EntityState, JOIN_BASELINE_BUDGET_BYTES, ServerReplication, raw_from
 
 /// Per-client replication state the server tracks: how far this client has acked,
 /// which baseline it holds per entity, which despawn tombstones it has applied, and
-/// any pending baseline-refresh requests to satisfy in its next snapshot.
+/// any pending baseline-refresh requests to process during its next encoding pass.
 #[derive(Debug, Default)]
 pub(super) struct ClientReplicationState {
     /// Highest snapshot sequence this client has acked (diagnostic; the per-entity
@@ -25,8 +25,9 @@ pub(super) struct ClientReplicationState {
     /// appears here.
     pub(super) acked_tombstones: HashMap<u32, u32>,
     /// Pending baseline-refresh requests, keyed by `(network_id,
-    /// missing_baseline_ref)` so a duplicate request collapses to one queued
-    /// `FullBaseline`. Cleared once the refresh is emitted.
+    /// missing_baseline_ref)` so duplicates collapse to one forced `FullBaseline`.
+    /// Consumed when encoding starts; only entities with an acknowledged baseline
+    /// emit that refresh immediately. Initial-baseline flights use ack/repair flow.
     pub(super) pending_refreshes: HashSet<(u32, u32)>,
     /// Entity ids this recipient must never receive. This is host-local
     /// presentation routing, not snapshot metadata: the omitted record has no

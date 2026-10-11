@@ -1,5 +1,5 @@
-// Descriptor classification and connected-client placement suppression for
-// entities whose authoritative state arrives through host snapshots.
+// Host descriptor classification and connected-client placement suppression.
+// See: context/lib/networking.md
 
 use std::collections::HashSet;
 
@@ -28,22 +28,11 @@ pub(super) fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> boo
     descriptor.behavior.is_some()
 }
 
-/// Whether materializing this descriptor would attach the engine-owned AI pair
-/// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
-/// descriptor carries a brain block. This is the *pre-materialization* mirror of
-/// the live-component predicate
-/// `postretro-netcode`'s live networked-enemy predicate,
-/// which can only inspect those components AFTER an entity exists: a brain block
-/// is the sole thing `attach_descriptor_components` keys the `Brain` + `Agent`
-/// attachment on, so [`descriptor_carries_brain`] holds exactly when that
-/// predicate would later return `true` for an eligible descriptor spawn of this
-/// descriptor.
-///
-/// Used by the AI-only spawner resolver. Generic connected-client placement
-/// suppression uses [`descriptor_is_host_replicated`] instead.
-/// Keying on the brain block (not classname strings, not
-/// `DescriptorProvenance.owned_components`, which never tracks AI) keeps the same
-/// single definition of "AI map enemy" the live predicate enforces.
+/// Whether this descriptor's behavior block causes the engine-owned AI pair
+/// (`Brain` + `Agent`) to be attached. The AI-only spawner resolver uses this
+/// pre-materialization gate; generic host replication also includes descriptors
+/// declaring `Mesh`, `Health`, or `Touchable` and uses
+/// [`descriptor_is_host_replicated`].
 pub fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor) -> bool {
     descriptor_carries_brain(descriptor)
 }
@@ -515,11 +504,8 @@ mod tests {
 
     #[test]
     fn behavior_descriptor_materialization_yields_live_brain_and_agent() {
-        // Invariant the suppression mechanism rests on: a brain descriptor
-        // materialization attaches BOTH live `Brain` and `Agent` columns.
-        // Without this, `is_networked_ai_enemy` (which reads those live columns)
-        // and the pre-materialization `descriptor_materializes_ai_enemy` could
-        // disagree.
+        // The AI-only descriptor gate must match materialization: a behavior
+        // block attaches both live `Brain` and `Agent` components.
         let mut descriptor = behavior_enemy_descriptor("grunt");
         descriptor.behavior.as_mut().unwrap().knockback.scale = 0.25;
         let descriptors = vec![descriptor];

@@ -91,10 +91,12 @@ fn write_variant(
     blocks: GroupPlanes,
     path: &Path,
 ) {
-    assert!(
-        SHADOWMASK_GROUP_COUNT == 2,
-        "a block carries group A and group B"
-    );
+    const {
+        assert!(
+            SHADOWMASK_GROUP_COUNT == 2,
+            "a block carries group A and group B"
+        );
+    }
     let variant = ShadowmaskAtlasSection { channels, blocks };
     let blobs: Vec<_> = sections
         .iter()

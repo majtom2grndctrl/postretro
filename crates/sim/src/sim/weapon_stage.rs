@@ -1724,7 +1724,12 @@ mod tests {
     fn despawned_pawn_id_is_pawnless_for_reload_entry_and_expiry() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+        // Keep the weapon live so this regression isolates stale pawn lookup.
+        // Despawning a holder retires its current Inventory children.
+        registry.remove_component::<Inventory>(pawn).unwrap();
         registry.despawn(pawn).unwrap();
+        assert_eq!(registry.inventory_owner(weapon), None);
+        assert!(registry.exists(weapon));
 
         // Regression: Option presence treated a stale pawn id as live ownership,
         // emitting blocked-empty on entry.
@@ -2333,7 +2338,12 @@ mod tests {
             component.state_remaining_ms = 50;
             component.state_total_ms = 100;
             registry.set_component(weapon, component.clone()).unwrap();
+            // Preserve an independent live weapon while exercising stale-pawn
+            // command rejection; holder despawn retires owned inventory items.
+            registry.remove_component::<Inventory>(pawn).unwrap();
             registry.despawn(pawn).unwrap();
+            assert_eq!(registry.inventory_owner(weapon), None);
+            assert!(registry.exists(weapon));
             (pawn, weapon, component)
         };
 

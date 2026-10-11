@@ -704,7 +704,11 @@ pub(super) fn spawn_descriptor_instance(
     };
 
     let id = registry.try_spawn(transform, &entity.tags)?;
-    if let Some(ordinal) = entity.map_ordinal {
+    // A player start is an authored placement, but the pawn it produces uses
+    // its own replication path rather than a client-local map binding.
+    if spawn_path == DescriptorSpawnPath::MapPlacement
+        && let Some(ordinal) = entity.map_ordinal
+    {
         let _ = registry.set_component(
             id,
             postretro_entities::components::map_ordinal::MapOrdinal(ordinal),

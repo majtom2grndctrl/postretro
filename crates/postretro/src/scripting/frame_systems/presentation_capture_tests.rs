@@ -548,6 +548,163 @@ fn real_light_sequence_captures_component_and_start() {
     );
 }
 
+// Regression: authored tag clears became {} before the registered light handler.
+#[test]
+fn sdk_light_animation_tag_clears_match_member_clear_and_capture_in_both_runtimes() {
+    use postretro_level_format::data_script::DataScriptSection;
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+    use postretro_test_log_capture::LogCapture;
+
+    for luau in [false, true] {
+        let mut fixture = Fixture::new();
+        let id = fixture
+            .ctx
+            .registry
+            .borrow_mut()
+            .spawn(Transform::default());
+        let component: LightComponent = serde_json::from_value(json!({
+            "origin":[0.0,0.0,0.0],"lightType":"Point","intensity":1.0,"color":[1.0,1.0,1.0],
+            "falloffModel":"InverseSquared","falloffRange":10.0,"coneAngleInner":null,
+            "coneAngleOuter":null,"coneDirection":null,"isDynamic":true,
+        }))
+        .unwrap();
+        {
+            let mut registry = fixture.ctx.registry.borrow_mut();
+            registry.set_component(id, component).unwrap();
+            registry.set_tags(id, vec!["alarm".into()]).unwrap();
+        }
+        let source = if luau {
+            r#"
+                local P = require("postretro")
+                function setupLevel()
+                  return { reactions = {
+                    P.defineReaction("start", { primitive = "setLightAnimation", tag = "alarm", args = { periodMs = 5000, playCount = 1, brightness = { 0.2, 0.8 } } }),
+                    P.defineReaction("clear", { primitive = "setLightAnimation", tag = "alarm", args = nil }),
+                    P.defineReaction("clearMissing", { primitive = "setLightAnimation", tag = "alarm" }),
+                    P.defineReaction("clearUndefined", { primitive = "setLightAnimation", tag = "alarm", args = nil }),
+                    P.defineReaction("memberClear", { sequence = { { id = __MEMBER_ID__, primitive = "setLightAnimation", args = nil } } }),
+                    P.defineReaction("invalid", { primitive = "setLightAnimation", tag = "alarm", args = {} }),
+                  } }
+                end
+            "#
+        } else {
+            r#"
+                import { defineReaction } from "postretro";
+                export function setupLevel() {
+                  return { reactions: [
+                    defineReaction("start", { primitive: "setLightAnimation", tag: "alarm", args: { periodMs: 5000, playCount: 1, brightness: [0.2, 0.8] } }),
+                    defineReaction("clear", { primitive: "setLightAnimation", tag: "alarm", args: null }),
+                    defineReaction("clearMissing", { primitive: "setLightAnimation", tag: "alarm" }),
+                    defineReaction("clearUndefined", { primitive: "setLightAnimation", tag: "alarm", args: undefined }),
+                    defineReaction("memberClear", { sequence: [{ id: __MEMBER_ID__, primitive: "setLightAnimation", args: null }] }),
+                    defineReaction("invalid", { primitive: "setLightAnimation", tag: "alarm", args: {} }),
+                  ] };
+                }
+            "#
+        }
+        .replace("__MEMBER_ID__", &id.to_raw().to_string());
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir
+            .path()
+            .join(if luau { "level.luau" } else { "level.ts" });
+        std::fs::write(&entry, &source).unwrap();
+        let compiled = if luau {
+            source
+        } else {
+            postretro_script_compiler::bundle_entry(&entry).expect("TS fixture bundles")
+        };
+        let runtime = ScriptRuntime::new(
+            &PrimitiveRegistry::new(),
+            &ScriptRuntimeConfig::default(),
+            &fixture.ctx,
+        )
+        .unwrap();
+        let manifest = runtime.run_data_script(
+            &DataScriptSection {
+                compiled_bytes: compiled.into_bytes(),
+                source_path: entry.to_string_lossy().into_owned(),
+            },
+            dir.path(),
+        );
+        assert_eq!(manifest.reactions.len(), 6, "luau={luau}");
+        for reaction in &manifest.reactions[1..4] {
+            let ReactionDescriptor::Primitive(descriptor) = &reaction.descriptor else {
+                panic!("tag clear")
+            };
+            assert!(descriptor.args.is_null(), "{}: luau={luau}", reaction.name);
+        }
+        fixture.install(manifest.reactions);
+
+        let capture = LogCapture::start();
+        let mut member_clear = None;
+        for clear in ["memberClear", "clear", "clearMissing", "clearUndefined"] {
+            fixture.frame(8.0);
+            fixture.fire("start", host());
+            let running = fixture.record(id, ComponentKind::Light);
+            let PresentationComponent::Light(light) = &running.component else {
+                panic!("light")
+            };
+            let animation = light
+                .animation
+                .as_ref()
+                .expect("valid tag animation installs");
+            assert!((animation.period_ms - 5000.0).abs() < 1e-5);
+            assert_eq!(animation.play_count, Some(1));
+            assert_eq!(animation.brightness.as_ref().unwrap().len(), 2);
+
+            fixture.frame(8.5);
+            capture.clear();
+            fixture.fire("invalid", host());
+            capture.assert_logged_once(log::Level::Warn, "failed to deserialize args");
+            assert_eq!(fixture.record(id, ComponentKind::Light), running);
+            assert_eq!(
+                fixture
+                    .ctx
+                    .registry
+                    .borrow()
+                    .get_component::<LightComponent>(id)
+                    .unwrap(),
+                light,
+                "invalid object must preserve the running component"
+            );
+
+            fixture.frame(9.0);
+            capture.clear();
+            fixture.fire(clear, host());
+            capture.assert_not_logged(log::Level::Warn, "setLightAnimation");
+            assert!(
+                fixture
+                    .ctx
+                    .registry
+                    .borrow()
+                    .get_component::<LightComponent>(id)
+                    .unwrap()
+                    .animation
+                    .is_none(),
+                "{clear}: luau={luau}"
+            );
+            let cleared = fixture.record(id, ComponentKind::Light);
+            let PresentationComponent::Light(light) = &cleared.component else {
+                panic!("light")
+            };
+            assert!(
+                light.animation.is_none(),
+                "clear is captured under the host origin"
+            );
+            assert!((cleared.anim_start.unwrap() - 9.0).abs() < 1e-9);
+            if let Some(expected) = &member_clear {
+                assert_eq!(
+                    &cleared, expected,
+                    "tag/member parity: {clear}, luau={luau}"
+                );
+            } else {
+                member_clear = Some(cleared);
+            }
+        }
+    }
+}
+
 #[test]
 fn actual_cpu_install_starts_level_load_and_already_met_progress_at_zero_clock() {
     use crate::startup::lifecycle::tests::{
@@ -654,6 +811,7 @@ fn actual_cpu_install_starts_level_load_and_already_met_progress_at_zero_clock()
         &mut ctx.registry.borrow_mut(),
         0.5,
         0.5,
+        0.5,
         &Default::default(),
     );
     for id in ids {
@@ -699,6 +857,7 @@ fn emitter_rate_and_identical_tween_keep_start_and_bridge_samples_do_not_mutate_
     assert!(bridge.seed_replicated_state(&fixture.ctx.registry.borrow(), id, Some(2.0)));
     bridge.update(
         &mut fixture.ctx.registry.borrow_mut(),
+        0.1,
         0.1,
         3.0,
         &Default::default(),

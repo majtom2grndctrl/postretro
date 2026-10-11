@@ -129,7 +129,7 @@
     kind?: GroupKind;
     tag?: string;
     target?: SubjectTokenTarget;
-    args?: Record<string, unknown>;
+    args?: Record<string, unknown> | null;
     onComplete?: string;
   };
 

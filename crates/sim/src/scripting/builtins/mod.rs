@@ -187,7 +187,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut dispatch = ClassnameDispatch::new();
         register_builtins(&mut dispatch);
-        let mut placements = vec![
+        let mut placements = [
             data_archetype_test_fixtures::placement("billboard_emitter", &[]),
             data_archetype_test_fixtures::placement("billboard_emitter", &[]),
         ];

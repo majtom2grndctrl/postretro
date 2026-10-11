@@ -838,14 +838,14 @@ pub fn client_receive_and_apply(
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
         // whole batch against the local schema, then committed all-or-nothing through
         // the engine store-write path (type/range/enum/finite checks run). Runs only on
-        // a snapshot the entity apply accepted (a stale/duplicate sequence yields no
-        // `ack`, so the state batch is skipped too — it carries the same superseded
-        // frame). Applied BEFORE the UI read snapshot is built (the receive path runs in
+        // a new highest-sequence snapshot. A late first entity baseline can produce
+        // an additive ack, but its superseded state/faction batch must stay skipped.
+        // Applied BEFORE the UI read snapshot is built (the receive path runs in
         // the Game-logic stage, well before render), so the UI sees the authoritative
         // value next frame. The state acks ride back in the SAME `AckMessage` as the
         // entity acks (one ack per snapshot); refresh requests go out as their own
         // `ClientMessage::StateBaselineRefresh`.
-        if outcome.ack.is_some() {
+        if outcome.accepted_newest_snapshot {
             let state_outcome = state_slots.apply_snapshot_state(
                 slot_table,
                 replication_identity,
@@ -910,13 +910,14 @@ pub fn client_receive_and_apply(
                     hit_zone_store,
                 );
         }
-        // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
-        // its presentation materialized here, where the shared descriptor table is in scope
-        // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
-        // durable player-type signal; names are author-controlled. These paths attach ONLY
-        // descriptor presentation — a mesh or projectile body/trail — and never
-        // Brain/Agent/Health/Weapon/PlayerMovement. They are idempotent and
-        // unknown-class-tolerant, so failed presentation still interpolates transform.
+        // Each non-local descriptor entity needing materialization is handled here, where
+        // the shared descriptor table is in scope (the net-facing apply is descriptor-blind).
+        // The host-stamped class distinguishes pawn paths from descriptor-world copies,
+        // even when both descriptors author Movement. A display copy receives Mesh, Light,
+        // Emitter, and query-only HitVolume, but never authority components. The local
+        // pawn's weapon attachment above and retired-projectile flashes below use separate
+        // paths. Materialization is idempotent and unknown-class-tolerant, so failed
+        // presentation still interpolates transform.
         frame_outcome.materialized_remote_entity_presentation |=
             snapshot_apply::materialize_remote_entities(
                 &outcome.remote_entities,
@@ -7138,7 +7139,7 @@ mod tests {
         );
         assert_eq!(
             entity_class.as_deref(),
-            Some("descriptor:player"),
+            Some("pawn:player"),
             "the host boot pawn carries the descriptor class needed for remote presentation"
         );
 
@@ -7160,12 +7161,15 @@ mod tests {
             .remote_entities
             .first()
             .expect("host pawn baseline asks the client to materialize its remote presentation");
-        assert_eq!(remote.entity_class, "descriptor:player");
-        assert!(remote_materialize::materialize_armed_remote_player(
-            remote,
+        assert_eq!(remote.entity_class, "pawn:player");
+        assert!(snapshot_apply::materialize_remote_entities(
+            &client_outcome.remote_entities,
             &[host_player_descriptor()],
             &mut client_registry,
+            &mut client_replication,
+            1,
             None,
+            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
         ));
         let mesh = client_registry
             .get_component::<MeshComponent>(remote.entity_id)

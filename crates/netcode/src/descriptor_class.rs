@@ -9,18 +9,20 @@ use postretro_entities::provenance::{
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
 const DESCRIPTOR_CLASS_PREFIX: &str = "descriptor:";
+const PAWN_CLASS_PREFIX: &str = "pawn:";
 const PROJECTILE_CLASS_PREFIX: &str = "projectile:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReplicatedDescriptorClass<'a> {
     Descriptor(&'a str),
+    Pawn(&'a str),
     Projectile(&'a str),
 }
 
 impl<'a> ReplicatedDescriptorClass<'a> {
     pub(super) fn canonical_name(self) -> &'a str {
         match self {
-            Self::Descriptor(name) | Self::Projectile(name) => name,
+            Self::Descriptor(name) | Self::Pawn(name) | Self::Projectile(name) => name,
         }
     }
 }
@@ -28,11 +30,13 @@ impl<'a> ReplicatedDescriptorClass<'a> {
 pub(super) fn decode_replicated_descriptor_class(value: &str) -> ReplicatedDescriptorClass<'_> {
     if let Some(name) = value.strip_prefix(PROJECTILE_CLASS_PREFIX) {
         ReplicatedDescriptorClass::Projectile(name)
+    } else if let Some(name) = value.strip_prefix(PAWN_CLASS_PREFIX) {
+        ReplicatedDescriptorClass::Pawn(name)
     } else if let Some(name) = value.strip_prefix(DESCRIPTOR_CLASS_PREFIX) {
         ReplicatedDescriptorClass::Descriptor(name)
     } else {
-        // Untagged values remain readable for local fixtures and older in-memory
-        // producers. Canonical-name consumers must always pass through this decoder;
+        // Untagged values remain descriptor-world classes for local fixtures and
+        // older in-memory world producers. Canonical-name consumers use this decoder;
         // the replicated value is a presentation classifier, not a descriptor key.
         ReplicatedDescriptorClass::Descriptor(value)
     }
@@ -95,7 +99,9 @@ pub(super) fn descriptor_entity_class(
             DescriptorSpawnPath::NetworkSlot | DescriptorSpawnPath::PlayerSpawn
         )
     {
-        return Some(descriptor_class(&provenance.canonical_name));
+        // Capability alone cannot identify a pawn: a directly placed descriptor
+        // may also author Movement alongside its world presentation and Health.
+        return Some(format!("{PAWN_CLASS_PREFIX}{}", provenance.canonical_name));
     }
 
     // Projectile observer copies deliberately carry no gameplay component. Their

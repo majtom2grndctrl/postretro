@@ -619,7 +619,9 @@ mod activation_epoch_tests {
 
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert!(WIRE_VERSION >= 26);
+        const {
+            assert!(WIRE_VERSION >= 26);
+        }
         assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
@@ -680,7 +682,9 @@ mod switch_tick_epoch_tests {
 
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
-        assert!(WIRE_VERSION >= 26);
+        const {
+            assert!(WIRE_VERSION >= 26);
+        }
         assert_eq!(
             PROTOCOL_ID, 0x5052_4c42,
             "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"

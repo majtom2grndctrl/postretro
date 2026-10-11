@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(ts, lua);
         let bodies = ts["reactions"][0]["args"]["bodies"].as_array().unwrap();
         assert_eq!(bodies.len(), 56);
-        for (batch, audience) in bodies.chunks_exact(8).zip([
+        for (batch, audience) in bodies.as_chunks::<8>().0.iter().zip([
             "@activators",
             "@trigger",
             "@player",

@@ -558,46 +558,19 @@ pub(crate) fn warn_hosted_trigger_machine_local(
     if !hosted {
         return;
     }
-    let registry = script_ctx.registry.borrow();
     let data = script_ctx.data_registry.borrow();
-    let mut roots = Vec::new();
-    for (trigger, _) in registry.iter_with_kind(ComponentKind::TriggerVolume) {
-        if let Ok(volume) = registry.get_component::<TriggerVolumeComponent>(trigger) {
-            for (edge, address) in [
-                (TriggerEventEdge::Enter, &volume.on_fire),
-                (TriggerEventEdge::Exit, &volume.on_exit),
-            ] {
-                if !address.is_empty() {
-                    roots.push((trigger, edge, address.clone()));
-                }
-            }
-        }
-    }
-    roots.extend(
-        resolve_manifest_trigger_events(&registry, &data, ResolutionDiagnostics::Silent)
-            .into_iter()
-            .map(|binding| (binding.trigger, binding.edge, binding.reaction)),
-    );
-    roots.sort_by(|a, b| {
-        (a.0, matches!(a.1, TriggerEventEdge::Exit), &a.2).cmp(&(
-            b.0,
-            matches!(b.1, TriggerEventEdge::Exit),
-            &b.2,
-        ))
-    });
-    let mut warned = HashSet::new();
-    for (trigger, edge, address) in roots {
-        if !bindings.bound_edges().contains(&(trigger, edge)) {
-            continue;
-        }
+    let mut installed: Vec<_> = bindings.residual_bindings().collect();
+    installed.sort_by_key(|(trigger, edge, _)| (*trigger, matches!(edge, TriggerEventEdge::Exit)));
+    for (trigger, edge, residual) in installed {
         for reaction in
-            postretro_sim::player_events::reachable_machine_local_reactions(&address, &data)
+            postretro_sim::player_events::reachable_machine_local_reactions_from_residual(
+                residual.steps(),
+                &data,
+            )
         {
-            if warned.insert((trigger, edge, reaction.clone())) {
-                log::warn!(
-                    "[Scripting] hosted trigger {trigger} {edge:?} reaches machine-local reaction `{reaction}`; UI-stack and text effects present only on the host"
-                );
-            }
+            log::warn!(
+                "[Scripting] hosted trigger {trigger} {edge:?} reaches machine-local reaction `{reaction}`; UI-stack and text effects present only on the host"
+            );
         }
     }
 }
@@ -2142,6 +2115,72 @@ mod tests {
         validate_reaction_bodies_pass_a(&ctx);
         run_pass_b(&ctx);
         assert!(!is_dropped(&ctx, "caller"));
+    }
+
+    // Regression: rejected roots borrowed another accepted address's trigger edge.
+    #[test]
+    fn hosted_trigger_ui_warning_uses_only_accepted_residual_bodies_after_recompose() {
+        let menu = |name: &str, target| NamedReaction {
+            name: name.into(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "openMenu".into(),
+                target,
+                kind: None,
+                tag: None,
+                on_complete: None,
+                args: json!({"tree":"menu"}),
+            }),
+        };
+        let mut wrong_player = play_sound("rejected", None, false);
+        if let ReactionDescriptor::Primitive(p) = &mut wrong_player.descriptor {
+            p.args["audience"] = json!("@player");
+        }
+        let ctx = ctx_with_reactions(vec![
+            menu("rejected", None),
+            wrong_player,
+            play_sound("partlyAccepted", None, false),
+            menu("partlyAccepted", Some("@trigger".into())),
+            menu("accepted", None),
+        ]);
+        let trigger = spawn_trigger(&ctx, "rejected", "", TriggerFireMode::Multiple, &[]);
+        let reactions = ctx.data_registry.borrow().reactions.clone();
+        ctx.data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                reactions,
+                Vec::new(),
+                vec![member_enter(
+                    trigger,
+                    &["partlyAccepted", "accepted", "accepted"],
+                )],
+                Vec::new(),
+                &[],
+            );
+        for _ in 0..2 {
+            ctx.data_registry.borrow_mut().recompose_active_sets(&[]);
+            let bindings = validated_bindings(&ctx);
+            let (_, residual) = enter_execution(&bindings, &ctx, trigger);
+            assert!(residual.as_ref().is_some_and(|steps| steps.iter().any(|step| {
+                matches!(step, PrepartitionedReactionStep::Descriptor(name, _, _) if name == "accepted")
+            })));
+            let capture = LogCapture::start();
+            warn_hosted_trigger_machine_local(&ctx, &bindings, true);
+            let warnings: Vec<_> = capture
+                .records()
+                .into_iter()
+                .filter(|record| {
+                    record.level == log::Level::Warn
+                        && record.message.contains("reaches machine-local reaction")
+                })
+                .collect();
+            assert_eq!(warnings.len(), 1, "only the accepted UI body warns");
+            assert!(warnings[0].message.contains("reaction `accepted`"));
+            assert!(
+                warnings[0]
+                    .message
+                    .contains(&format!("trigger {trigger} Enter"))
+            );
+        }
     }
 
     #[test]

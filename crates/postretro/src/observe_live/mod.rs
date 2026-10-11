@@ -193,7 +193,12 @@ mod tests {
             match TcpStream::connect_timeout(&address, Duration::from_millis(50)) {
                 Ok(stream) => return stream,
                 Err(error) if Instant::now() < deadline => {
-                    if error.kind() != io::ErrorKind::ConnectionRefused {
+                    // One short connect attempt can time out while the overall
+                    // readiness budget still has time for the daemon to start.
+                    if !matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+                    ) {
                         panic!("connect to transport: {error}");
                     }
                 }

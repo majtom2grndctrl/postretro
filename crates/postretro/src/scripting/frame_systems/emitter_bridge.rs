@@ -171,6 +171,9 @@ impl EmitterBridge {
     /// Walk every entity with a `BillboardEmitterComponent`, fire bursts +
     /// rate-based emission + spin animation, and spawn particle entities.
     ///
+    /// `delta` advances emission; `spin_delta` is this frame's script-clock
+    /// advance. Developer animation freeze holds tweens while particles keep running.
+    ///
     /// `current_time` is seconds since level load (matches the engine frame
     /// clock). Used for rate-limited cap warnings.
     ///
@@ -186,6 +189,7 @@ impl EmitterBridge {
         &mut self,
         registry: &mut EntityRegistry,
         delta: f32,
+        spin_delta: f32,
         current_time: f32,
         live_counts: &HashMap<EntityId, usize>,
     ) {
@@ -318,7 +322,7 @@ impl EmitterBridge {
             }
             if let Some(anim) = component.spin_animation.clone() {
                 if !std::mem::take(&mut state.skip_next_spin_advance) {
-                    state.spin_elapsed += delta;
+                    state.spin_elapsed += spin_delta;
                 }
                 let duration = anim.duration.max(f32::EPSILON);
                 let t = (state.spin_elapsed / duration).clamp(0.0, 1.0);
@@ -498,7 +502,7 @@ mod tests {
                 *live_counts.entry(parent).or_insert(0) += 1;
             }
         }
-        bridge.update(registry, delta, current_time, &live_counts);
+        bridge.update(registry, delta, delta, current_time, &live_counts);
     }
 
     fn base_component(rate: f32) -> BillboardEmitterComponent {
@@ -1180,6 +1184,79 @@ mod tests {
         assert_eq!(component.spin_rate, 1.0);
         bridge.clear();
         assert!(bridge.states.is_empty());
+    }
+
+    // Regression: raw particle time advanced a tween while its replicated script clock held.
+    #[test]
+    fn frozen_spin_clock_preserves_seed_and_particles_advance_until_resume() {
+        let mut registry = EntityRegistry::new();
+        let mut component = base_component(2.0);
+        component.spin_animation = Some(SpinAnimation {
+            duration: 5.0,
+            rate_curve: vec![0.0, 10.0],
+        });
+        let id = spawn_emitter(&mut registry, component);
+        let mut bridge = EmitterBridge::new();
+        let mut live_counts = HashMap::new();
+        assert!(bridge.seed_replicated_state(&registry, id, Some(1.0)));
+        for _ in 0..6 {
+            bridge.update(&mut registry, 0.5, 0.0, 11.0, &live_counts);
+            crate::scripting_systems::particle_sim::tick(&mut registry, 0.5, 0.0, &mut live_counts);
+            let emitter = registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap();
+            assert!((emitter.spin_rate - 2.0).abs() < 1e-5);
+            assert!(emitter.spin_animation.is_some());
+            assert!((bridge.states[&id].spin_elapsed - 1.0).abs() < 1e-5);
+        }
+        assert_eq!(
+            live_counts[&id], 6,
+            "emission still consumes raw frame time"
+        );
+        let oldest_age = registry
+            .iter_with_kind(ComponentKind::ParticleState)
+            .filter_map(|(_, value)| match value {
+                ComponentValue::ParticleState(particle) => Some(particle.age),
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            (oldest_age - 3.0).abs() < 1e-5,
+            "particle simulation also keeps running"
+        );
+        bridge.update(&mut registry, 0.5, 0.5, 11.5, &live_counts);
+        assert!(
+            (registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .spin_rate
+                - 3.0)
+                .abs()
+                < 1e-5
+        );
+
+        // A write while frozen samples age zero, then consumes the first resumed step.
+        let mut replacement = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap()
+            .clone();
+        replacement.spin_animation = Some(SpinAnimation {
+            duration: 1.0,
+            rate_curve: vec![0.0, 4.0],
+        });
+        registry.set_component(id, replacement).unwrap();
+        for (time, spin_delta, expected, complete) in [
+            (11.5, 0.0, 0.0, false),
+            (12.0, 0.5, 2.0, false),
+            (12.5, 0.5, 4.0, true),
+        ] {
+            bridge.update(&mut registry, 0.5, spin_delta, time, &live_counts);
+            let emitter = registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap();
+            assert!((emitter.spin_rate - expected).abs() < 1e-5);
+            assert_eq!(emitter.spin_animation.is_none(), complete);
+        }
     }
 
     #[test]

@@ -724,7 +724,7 @@ mod tests {
         // (default `"player"`) so the client materializes the matching component.
         assert_eq!(
             owned[0].entity_class,
-            Some("descriptor:player".to_string()),
+            Some("pawn:player".to_string()),
             "descriptor net-slot pawn stamps its entity_class for the wire"
         );
     }

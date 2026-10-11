@@ -158,7 +158,7 @@ pub(crate) struct LightBridge {
     staged_compose_descriptor_writes: Vec<(u32, [u8; ANIMATION_DESCRIPTOR_SIZE])>,
     runtime_capacity_warned: bool,
     /// Last Light-column membership stamp examined by enrollment. Existing light
-    /// mutations do not change it, so connected-client render frames with no spawn
+    /// mutations do not change it, so render frames with no spawn
     /// or removal skip the registry-wide discovery scan.
     observed_light_membership_generation: u64,
     #[cfg(test)]
@@ -555,6 +555,17 @@ impl LightBridge {
             return;
         }
 
+        // Replicated state may be seeded before reserve admission. Those lights
+        // never enter entity_ids when capacity is full, so tracked-slot cleanup
+        // cannot retire their snapshots. Keep live pending seeds (and their
+        // clocks), checking generation-valid Light membership only when it changes.
+        let previous_snapshot_count = self.snapshots.len();
+        self.snapshots
+            .retain(|id, _| registry.get_component::<LightComponent>(*id).is_ok());
+        // Authored removals still need their forward/compose tombstone upload
+        // even though the sampling loop will no longer find the old snapshot.
+        self.dirty |= self.snapshots.len() != previous_snapshot_count;
+
         // Reclaim missing tracked lights before checking capacity. A contact can
         // remove its travel light and spawn a short impact flash in one frame; the
         // replacement may safely overwrite that slot in the same full repack.
@@ -666,6 +677,10 @@ impl LightBridge {
         current_time: f32,
         alpha: f32,
     ) -> Option<LightBridgeUpdate<'_>> {
+        // Frame-end reactions can spawn lights after the last fixed-tick enrollment.
+        // Enroll before sampling on every role, including frames without a tick, so
+        // a finite animation starts at the same frame clock captured for replication.
+        self.absorb_dynamic_lights(registry);
         if self.entity_ids.is_empty() {
             return None;
         }
@@ -775,7 +790,8 @@ impl LightBridge {
                     && (changed || lazy_start)
                 {
                     // Record start time so completion can fire on a future frame.
-                    // Any mutation resets the clock ("last call wins").
+                    // An observed component change starts at this sample;
+                    // identical writes or same-frame restoration retain the start.
                     new_start = Some(current_time);
                 }
                 self.snapshots.insert(
@@ -3480,6 +3496,7 @@ mod tests {
         assert!(update.has_dirty_data);
         assert_eq!(update.lights_bytes.len(), 2 * GPU_LIGHT_SIZE);
         assert_eq!(update.descriptor_bytes.len(), 2 * ANIMATION_DESCRIPTOR_SIZE,);
+        assert_eq!(bridge.enrollment_scan_count, scans_after_enrollment);
     }
 
     #[test]
@@ -4248,16 +4265,149 @@ mod tests {
         assert!(!bridge.entity_ids.contains(&overflow));
 
         registry.despawn(ids[0]).unwrap();
-        let _ = bridge.update(&mut registry, 0.2, 0.0);
+        // Sampling now enrolls as well as reclaims: the previously refused
+        // light fills the freed slot in this frame, without growing the reserve.
+        let update = bridge.update(&mut registry, 0.2, 0.0).unwrap();
         assert_eq!(
-            live_runtime_count(&bridge),
-            RUNTIME_DYNAMIC_LIGHT_RESERVE - 1
+            update.lights_bytes.len(),
+            RUNTIME_DYNAMIC_LIGHT_RESERVE * GPU_LIGHT_SIZE
         );
-        assert_eq!(bridge.free_slots.len(), 1);
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert!(bridge.free_slots.is_empty());
+        assert_eq!(
+            bridge.light_count(),
+            bridge.authored_light_count + RUNTIME_DYNAMIC_LIGHT_RESERVE
+        );
+        assert_eq!(bridge.entity_ids[bridge.authored_light_count], overflow);
+        assert_eq!(
+            &bridge.entity_ids[bridge.authored_light_count + 1..],
+            &ids[1..]
+        );
 
         bridge.absorb_dynamic_lights(&registry);
         assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
         assert!(bridge.entity_ids.contains(&overflow));
+    }
+
+    // Regression: seeded lights refused by the reserve retained snapshots after despawn.
+    #[test]
+    fn replicated_overflow_churn_releases_snapshots_and_preserves_pending_age() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        let ids: Vec<_> = (0..RUNTIME_DYNAMIC_LIGHT_RESERVE)
+            .map(|index| {
+                spawn_runtime_light(
+                    &mut registry,
+                    runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+                )
+            })
+            .collect();
+        let _ = bridge.update(&mut registry, 10.0, 0.0);
+        assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+
+        let mut animation = sample_animation();
+        animation.period_ms = 5000.0;
+        animation.play_count = Some(1);
+        animation.brightness = Some(vec![0.0, 1.0]);
+        let pending = spawn_runtime_light(
+            &mut registry,
+            runtime_component([999.0, 0.0, 0.0], 4.0, Some(animation.clone())),
+        );
+        assert!(bridge.seed_replicated_state(&registry, pending, Some(8.0)));
+        let _ = bridge.update(&mut registry, 10.0, 0.0);
+        assert!(!bridge.entity_ids.contains(&pending));
+
+        animation.brightness = Some(vec![0.5; 64]);
+        for _ in 0..RUNTIME_DYNAMIC_LIGHT_RESERVE * 2 {
+            let overflow = spawn_runtime_light(
+                &mut registry,
+                runtime_component([1000.0, 0.0, 0.0], 4.0, Some(animation.clone())),
+            );
+            assert!(bridge.seed_replicated_state(&registry, overflow, Some(8.0)));
+            let _ = bridge.update(&mut registry, 10.0, 0.0);
+            assert!(!bridge.entity_ids.contains(&overflow));
+            assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE + 2);
+
+            registry.despawn(overflow).unwrap();
+            let _ = bridge.update(&mut registry, 10.0, 0.0);
+            assert!(!bridge.snapshots.contains_key(&overflow));
+            assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE + 1);
+            assert!(bridge.snapshots.contains_key(&pending));
+            assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        }
+
+        let scans = bridge.enrollment_scan_count;
+        let _ = bridge.update(&mut registry, 10.5, 0.0);
+        assert_eq!(bridge.enrollment_scan_count, scans);
+
+        registry.despawn(ids[0]).unwrap();
+        let update = bridge.update(&mut registry, 11.0, 0.0).unwrap();
+        assert_eq!(
+            update.lights_bytes.len(),
+            RUNTIME_DYNAMIC_LIGHT_RESERVE * GPU_LIGHT_SIZE
+        );
+        assert!(
+            (update.effective_brightness[0] - sample_brightness_at_open(&[0.0, 1.0], 0.6)).abs()
+                < 1e-5
+        );
+        assert_eq!(bridge.entity_ids[0], pending);
+        assert_eq!(live_runtime_count(&bridge), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE);
+        assert!((bridge.snapshots[&pending].animation_start_time.unwrap() - 8.0).abs() < 1e-5);
+
+        let _ = bridge.update(&mut registry, 13.0, 0.0);
+        assert!(
+            registry
+                .get_component::<LightComponent>(pending)
+                .unwrap()
+                .animation
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn replicated_overflow_cleanup_checks_generation_and_light_component_membership() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        for index in 0..RUNTIME_DYNAMIC_LIGHT_RESERVE {
+            spawn_runtime_light(
+                &mut registry,
+                runtime_component([index as f32, 0.0, 0.0], 4.0, None),
+            );
+        }
+        let _ = bridge.update(&mut registry, 0.0, 0.0);
+
+        let retired = spawn_runtime_light(
+            &mut registry,
+            runtime_component([999.0, 0.0, 0.0], 4.0, Some(sample_animation())),
+        );
+        assert!(bridge.seed_replicated_state(&registry, retired, None));
+        let _ = bridge.update(&mut registry, 0.1, 0.0);
+        registry.despawn(retired).unwrap();
+        let replacement = spawn_runtime_light(
+            &mut registry,
+            runtime_component([1000.0, 0.0, 0.0], 4.0, Some(sample_animation())),
+        );
+        // `EntityId::to_raw` packs the slot index into the low 16 bits and
+        // the generation into the high 16 bits.
+        assert_eq!(
+            replacement.to_raw() & u32::from(u16::MAX),
+            retired.to_raw() & u32::from(u16::MAX)
+        );
+        assert_ne!(replacement, retired);
+        assert!(bridge.seed_replicated_state(&registry, replacement, None));
+        let _ = bridge.update(&mut registry, 0.2, 0.0);
+        assert!(!bridge.snapshots.contains_key(&retired));
+        assert!(bridge.snapshots.contains_key(&replacement));
+        assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE + 1);
+
+        registry
+            .remove_component::<LightComponent>(replacement)
+            .unwrap();
+        let _ = bridge.update(&mut registry, 0.3, 0.0);
+        assert!(registry.exists(replacement));
+        assert!(!bridge.snapshots.contains_key(&replacement));
+        assert_eq!(bridge.snapshots.len(), RUNTIME_DYNAMIC_LIGHT_RESERVE);
     }
 
     #[test]

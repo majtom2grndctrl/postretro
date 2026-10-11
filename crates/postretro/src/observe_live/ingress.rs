@@ -37,7 +37,7 @@ pub(crate) enum ObserveRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ObserveResponse {
-    Ok { dump: OutputDocument },
+    Ok { dump: Box<OutputDocument> },
     Error { message: String },
 }
 
@@ -125,7 +125,9 @@ struct IngressContext<'a> {
 fn service_payload(payload: &[u8], context: IngressContext<'_>) -> Vec<u8> {
     let response = match serde_json::from_slice(payload) {
         Ok(ObserveRequest::Dump { spec }) => match build_live_document(context, &spec) {
-            Ok(dump) => ObserveResponse::Ok { dump },
+            Ok(dump) => ObserveResponse::Ok {
+                dump: Box::new(dump),
+            },
             Err(error) => ObserveResponse::Error {
                 message: error.to_string(),
             },
@@ -324,7 +326,7 @@ mod tests {
             .out_of_frame
             .present_not_dumped
             .push("events".to_string());
-        assert_eq!(dump, expected);
+        assert_eq!(*dump, expected);
     }
 
     #[test]
@@ -408,7 +410,7 @@ mod tests {
         let ObserveResponse::Ok { dump } = decode_response(&response) else {
             panic!("valid dump request must return an OK response");
         };
-        assert_eq!(dump, no_world_document());
+        assert_eq!(*dump, no_world_document());
     }
 
     // Regression: an unknown component filter bypassed validation while no world existed.

@@ -484,7 +484,7 @@ mod tests {
                 &format!(
                     "\"output\": \"capture.png\", \"measurement\": {{ \"report\": \"capture.json\", \"{field}\": {value}, \"{}\": {} }}",
                     if field == "warmup_frames" { "sample_frames" } else { "warmup_frames" },
-                    if field == "warmup_frames" { "1" } else { "1" },
+                    "1",
                 ),
             );
             assert!(parse_scene(&json).is_err(), "{field}={value} must fail");

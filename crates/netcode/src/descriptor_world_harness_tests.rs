@@ -1,5 +1,5 @@
 // Descriptor-world combat and canonical ownership through the replication harness.
-// See: context/plans/in-progress/coop--networked-by-default/index.md
+// See: context/lib/networking.md
 
 use super::*;
 use crate::scripting_systems::hit_zones::HitZoneStore;
@@ -116,11 +116,7 @@ fn held_default_weapon_retains_health_and_networks_only_after_release() {
     h.host_registry
         .set_component(holder, Inventory::default())
         .unwrap();
-    let mut dropped_pose = h
-        .host_registry
-        .get_component::<Transform>(item)
-        .unwrap()
-        .clone();
+    let mut dropped_pose = *h.host_registry.get_component::<Transform>(item).unwrap();
     dropped_pose.position = Vec3::new(7.0, 0.0, 0.0);
     h.host_registry.set_component(item, dropped_pose).unwrap();
     h.host_register_descriptors();

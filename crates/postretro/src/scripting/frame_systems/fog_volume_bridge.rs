@@ -225,8 +225,9 @@ impl FogVolumeBridge {
     /// Called once per frame, immediately before `update_volumes`, so the GPU
     /// pack picks up the freshly evaluated density unchanged.
     ///
-    /// `time_seconds` is engine wall-clock time; sampling is done in
-    /// milliseconds because `FogAnimation.period_ms` is millisecond-keyed.
+    /// `time_seconds` is the freeze-aware, level-relative script sample clock;
+    /// sampling is done in milliseconds because `FogAnimation.period_ms` is
+    /// millisecond-keyed.
     ///
     /// Taken as `f64` so `(now_ms - start_ms)` retains sub-second precision
     /// after long uptimes — at ~30 minutes an `f32` ms count loses enough

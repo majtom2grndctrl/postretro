@@ -41,6 +41,16 @@ pub use crate::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
 const MAX_TRIGGER_POOL_CONTAINER_ENTRIES: usize = 4_096;
 const MAX_IMPACT_EVENT_CONTAINER_ENTRIES: usize = 4_096;
 
+fn nullish_primitive_args(primitive: &str) -> serde_json::Value {
+    // Light animation uses null/nil to clear. Other primitives retain their
+    // empty-object default so argument-free handlers still deserialize.
+    if primitive == "setLightAnimation" {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(Default::default())
+    }
+}
+
 // Sibling scripting modules referenced by the converters. Re-exported so the
 // nested converter files reach them via `use super::super::*`.
 pub use super::components::mesh::DEFAULT_CROSSFADE_MS;

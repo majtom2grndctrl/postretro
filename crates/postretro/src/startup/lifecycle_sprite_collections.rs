@@ -6,12 +6,18 @@ use std::path::Path;
 
 use crate::render;
 use crate::scripting::builtins::data_archetype::ProjectileSpriteCollection;
+use crate::scripting::builtins::data_archetype::find_descriptor;
+use crate::scripting::builtins::{PLAYER_START_CLASSNAME, descriptor_is_host_replicated};
 use crate::scripting_systems::particle_render::ParticleRenderCollector;
 use crate::sprite_collection::{
     DEFAULT_SPRITE_SPECULAR_EXPONENT, DEFAULT_SPRITE_SPECULAR_INTENSITY, derive_collection_id,
 };
 use crate::weapon;
+use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry};
+use postretro_level_format::map_entity::MapEntityRecord;
+use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 pub(super) fn weapon_impact_sprite_registration() -> render::SpriteCollectionRegistration {
     render::SpriteCollectionRegistration {
@@ -36,6 +42,18 @@ pub(super) struct SpriteCollectionCandidate {
 }
 
 impl SpriteCollectionCandidate {
+    fn emitter(component: &BillboardEmitterComponent, source: String) -> Self {
+        Self {
+            asset: component.sprite.clone(),
+            lifetime: Some(component.lifetime),
+            emissive: 0.0,
+            spec_intensity: None,
+            spec_exponent: None,
+            frame_duration_ms: None,
+            source,
+        }
+    }
+
     fn collection_id(&self) -> String {
         derive_collection_id(
             &self.asset,
@@ -146,33 +164,75 @@ pub(super) fn map_billboard_sprite_collections(
         .collect()
 }
 
+/// Discover the contracts needed before deferred descriptor presentation exists.
+/// `suppressed_placements` is empty outside connected-client installs. Resolved
+/// spawners contribute only archetypes this level can actually spawn; unused mod
+/// descriptors never expand the emitter upload set.
+pub(super) fn discover_sprite_collection_candidates(
+    registry: &EntityRegistry,
+    projectile_sprites: Vec<ProjectileSpriteCollection>,
+    suppressed_placements: &[MapEntityRecord],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<SpriteCollectionCandidate> {
+    let mut candidates = Vec::new();
+    for (id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
+        let ComponentValue::BillboardEmitter(component) = value else {
+            continue;
+        };
+        candidates.push(SpriteCollectionCandidate::emitter(
+            component,
+            format!("billboard emitter {id}"),
+        ));
+    }
+    candidates.extend(projectile_sprites.into_iter().map(Into::into));
+
+    for placement in suppressed_placements {
+        // World install partitions pawn starts before its descriptor filter.
+        if placement.classname == PLAYER_START_CLASSNAME {
+            continue;
+        }
+        let Some(descriptor) = find_descriptor(descriptors, &placement.classname) else {
+            continue;
+        };
+        if descriptor_is_host_replicated(descriptor)
+            && let Some(emitter) = descriptor.emitter.as_ref()
+        {
+            candidates.push(SpriteCollectionCandidate::emitter(
+                emitter,
+                format!("suppressed descriptor {}", placement.classname),
+            ));
+        }
+    }
+    for (id, value) in registry.iter_with_kind(ComponentKind::Spawner) {
+        let ComponentValue::Spawner(SpawnerComponent {
+            archetype_name,
+            resolved: true,
+            ..
+        }) = value
+        else {
+            continue;
+        };
+        if let Some(descriptor) = find_descriptor(descriptors, archetype_name)
+            && let Some(emitter) = descriptor.emitter.as_ref()
+        {
+            candidates.push(SpriteCollectionCandidate::emitter(
+                emitter,
+                format!("resolved spawner {id} ({archetype_name})"),
+            ));
+        }
+    }
+    candidates
+}
+
 /// Register every level-owned sprite collection in discovery order.
 pub(super) fn install_sprite_collections(
     renderer: &mut render::Renderer,
     particle_render: &mut ParticleRenderCollector,
     texture_root: &Path,
     prm_cache_root: &Path,
-    registry: &EntityRegistry,
-    projectile_sprites: Vec<ProjectileSpriteCollection>,
+    candidates: Vec<SpriteCollectionCandidate>,
     map_billboard_collections: &HashSet<String>,
 ) {
-    let mut candidates = Vec::new();
-    for (id, value) in registry.iter_with_kind(ComponentKind::BillboardEmitter) {
-        let ComponentValue::BillboardEmitter(component) = value else {
-            continue;
-        };
-        candidates.push(SpriteCollectionCandidate {
-            asset: component.sprite.clone(),
-            lifetime: Some(component.lifetime),
-            emissive: 0.0,
-            spec_intensity: None,
-            spec_exponent: None,
-            frame_duration_ms: None,
-            source: format!("billboard emitter {id}"),
-        });
-    }
-    candidates.extend(projectile_sprites.into_iter().map(Into::into));
-
     for (collection_id, candidates) in group_candidates_by_collection_id(candidates) {
         // Candidates with one id are bit-identical by construction, so the
         // first is also the exact draw contract for this registration.
@@ -219,6 +279,216 @@ pub(super) fn install_sprite_collections(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn emitter(sprite: &str, lifetime: f32) -> BillboardEmitterComponent {
+        BillboardEmitterComponent {
+            rate: 0.0,
+            burst: Some(1),
+            spread: 0.0,
+            lifetime,
+            velocity: [0.0; 3],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![1.0].into(),
+            opacity_over_lifetime: vec![1.0].into(),
+            color: [1.0; 3],
+            sprite: sprite.to_string(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        }
+    }
+
+    // Regression: suppressed Health/Mesh+Emitter placements registered no sprite
+    // contract before their display copies emitted, so particles drew the fallback.
+    #[test]
+    fn suppressed_descriptor_emitters_collect_the_discovered_contract_without_fallback() {
+        use crate::scripting::builtins::data_archetype::apply_data_archetype_dispatch;
+        use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
+        use crate::scripting::builtins::filter_out_client_host_replicated_placements;
+        use crate::scripting::builtins::net_descriptor::materialize_net_descriptor_presentation;
+        use crate::scripting::map_entity::MapEntity;
+        use crate::scripting_systems::emitter_bridge::EmitterBridge;
+        use postretro_entities::Transform;
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_entities::components::sprite_visual::SpriteVisual;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+        use postretro_test_log_capture::LogCapture;
+        use postretro_visibility::VisibleCells;
+
+        let capture = LogCapture::start();
+        for health_only in [true, false] {
+            let mut descriptor = mesh_descriptor("networked_plume", false);
+            if health_only {
+                descriptor.mesh = None;
+                descriptor.health = Some(HealthDescriptor {
+                    max: 30.0,
+                    hitbox: None,
+                    zone_multipliers: Default::default(),
+                });
+            }
+            descriptor.emitter = Some(emitter("unique_plume", 0.45));
+            let descriptors = vec![descriptor];
+            let records = vec![MapEntityRecord {
+                classname: "networked_plume".to_string(),
+                ..Default::default()
+            }];
+            let placements: Vec<MapEntity> = records.iter().cloned().map(Into::into).collect();
+            let kept = filter_out_client_host_replicated_placements(&placements, &descriptors);
+            assert!(
+                kept.is_empty(),
+                "the real connected-client filter suppresses this placement"
+            );
+            let mut registry = EntityRegistry::new();
+            apply_data_archetype_dispatch(
+                &kept,
+                &descriptors,
+                &HashSet::new(),
+                &mut registry,
+                None,
+            );
+            assert_eq!(
+                registry
+                    .iter_with_kind(ComponentKind::BillboardEmitter)
+                    .count(),
+                0
+            );
+
+            // Sharing the texture at a different lifetime does not make the
+            // suppressed descriptor's collection ready.
+            let local = registry.spawn(Transform::default());
+            let mut local_emitter = emitter("unique_plume", 1.75);
+            local_emitter.burst = None;
+            registry.set_component(local, local_emitter).unwrap();
+            let groups = group_candidates_by_collection_id(discover_sprite_collection_candidates(
+                &registry,
+                vec![],
+                &records,
+                &descriptors,
+            ));
+            assert_eq!(groups.len(), 2, "lifetime is part of the draw contract");
+            let mut collector = ParticleRenderCollector::new();
+            collector.register_sprite("first-fallback-collection");
+            for (collection, _) in &groups {
+                collector.register_sprite(collection);
+            }
+
+            let display = registry.spawn(Transform::default());
+            assert!(materialize_net_descriptor_presentation(
+                "networked_plume",
+                &descriptors,
+                &mut registry,
+                display,
+                None,
+            ));
+            assert!(registry.get_component::<HealthComponent>(display).is_err());
+            let component = registry
+                .get_component::<BillboardEmitterComponent>(display)
+                .unwrap();
+            let expected = derive_collection_id(
+                &component.sprite,
+                Some(component.lifetime),
+                None,
+                0.0,
+                None,
+                None,
+            );
+            let mut bridge = EmitterBridge::new();
+            bridge.update(
+                &mut registry,
+                1.0 / 60.0,
+                1.0 / 60.0,
+                0.0,
+                &Default::default(),
+            );
+            let particle = registry
+                .iter_with_kind(ComponentKind::ParticleState)
+                .map(|(id, _)| id)
+                .next()
+                .expect("display copy emits its authored burst");
+            assert_eq!(
+                registry
+                    .get_component::<SpriteVisual>(particle)
+                    .unwrap()
+                    .collection,
+                expected
+            );
+            collector.collect(&registry, None, &VisibleCells::DrawAll);
+            assert_eq!(
+                collector
+                    .iter_collections()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>(),
+                vec![expected.as_str()],
+            );
+        }
+        capture.assert_not_logged(log::Level::Warn, "falling back to default collection");
+    }
+
+    #[test]
+    fn sprite_discovery_keeps_local_and_projectile_contracts_and_only_resolved_spawner_emitters() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::{
+            behavior_enemy_descriptor, mesh_descriptor,
+        };
+        use postretro_entities::Transform;
+
+        let mut registry = EntityRegistry::new();
+        let local = registry.spawn(Transform::default());
+        registry
+            .set_component(local, emitter("local", 0.3))
+            .unwrap();
+        let mut resolved = behavior_enemy_descriptor("spawned_plume");
+        resolved.emitter = Some(emitter("spawned", 0.4));
+        let mut unused = mesh_descriptor("unused_plume", false);
+        unused.emitter = Some(emitter("unused", 0.5));
+        let mut unplaced = behavior_enemy_descriptor("unplaced_plume");
+        unplaced.emitter = Some(emitter("unplaced", 0.7));
+        let descriptors = vec![resolved, unused, unplaced];
+        for name in ["spawned_plume", "unused_plume", "missing"] {
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    SpawnerComponent {
+                        archetype_name: name.to_string(),
+                        count: 1,
+                        spawned_tags: vec![],
+                        resolved: false,
+                    },
+                )
+                .unwrap();
+        }
+        // Use install's actual resolver, including its AI-only gate. The
+        // non-AI descriptor is deliberately present and referenced but inert.
+        super::super::resolve_spawners_for_level(
+            &mut registry,
+            &descriptors,
+            None,
+            &crate::spawner::SpawnContext::default(),
+        );
+        let projectile = ProjectileSpriteCollection {
+            collection: "projectile".to_string(),
+            lifetime: Some(0.6),
+            emissive: 1.0,
+            frame_duration_ms: Some(50.0),
+            source: "projectile body".to_string(),
+        };
+        let projectile_id = SpriteCollectionCandidate::from(projectile.clone()).collection_id();
+        let groups = group_candidates_by_collection_id(discover_sprite_collection_candidates(
+            &registry,
+            vec![projectile],
+            &[],
+            &descriptors,
+        ));
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[1].0, projectile_id);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|(_, candidates)| candidates[0].asset.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "projectile", "spawned"]
+        );
+    }
 
     fn sprite_candidate(
         source: &str,

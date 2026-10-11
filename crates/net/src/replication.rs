@@ -10,13 +10,13 @@
 // replication state and encoding.
 //
 // Delta granularity is **per entity**: an unacked or lost packet only affects that
-// entity's next encoding. A newly dirty/unacked entity gets a `Delta` (or a
-// `FullBaseline` when the client holds no acked baseline for it); an entity whose
-// acked baseline already matches the current one is omitted. Despawn tombstones
-// resend until the client acks them. Acks advance per-client state monotonically:
-// a newer baseline-id advances, an older one is ignored, and an omitted entry
-// leaves prior state unchanged. None of this path panics on a stale or malformed
-// ack/refresh — a `NetworkId` the server does not know is simply ignored.
+// entity. A dirty entity with an acked baseline emits a `Delta`; one needing a
+// `FullBaseline` waits for the pending-byte budget, then stays in flight until a
+// qualifying snapshot ack. An entity whose acked baseline matches the current one
+// is omitted. Despawn tombstones resend until acked. Acks advance per-client state
+// monotonically: newer baseline ids advance, older ones are ignored, and omitted
+// entries leave prior state unchanged. Stale or malformed ack/refresh ids are
+// ignored without panicking.
 
 use std::collections::{HashMap, HashSet};
 
@@ -268,10 +268,10 @@ impl ServerReplication {
     }
 
     /// Register a client so it is replicated to. Idempotent — re-registering an
-    /// existing client leaves its ack state intact. A newly registered client holds
-    /// no acked baselines, so its first snapshot is all `FullBaseline` records for
-    /// live entities. It is marked as having acked tombstones that were active
-    /// before it joined, since it never had mappings for those despawned entities.
+    /// existing client leaves its ack state intact. A new client has no acked
+    /// baselines, so live entities need `FullBaseline` records; the pending-byte
+    /// budget may defer some. Tombstones active before it joined are pre-acked,
+    /// since it never mapped those despawned entities.
     pub fn register_client(&mut self, client_id: u64) {
         if self.clients.contains_key(&client_id) {
             return;
@@ -1192,8 +1192,7 @@ mod tests {
         else {
             panic!("fb");
         };
-        // Client acks b0 so the next change is a Delta (an unacked client would get
-        // another FullBaseline instead).
+        // Ack b0 before changing state so the next record can be a Delta.
         server.apply_ack(CLIENT_A, snap1.sequence, &[(1, b0)], &[]);
         // Move -> baseline 1.
         server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);

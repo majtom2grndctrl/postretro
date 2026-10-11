@@ -10,6 +10,9 @@ mod lifecycle_net;
 #[cfg(test)]
 #[path = "lifecycle_progress_install_tests.rs"]
 mod lifecycle_progress_install_tests;
+#[cfg(test)]
+#[path = "lifecycle_reaction_install_tests.rs"]
+mod lifecycle_reaction_install_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
@@ -775,8 +778,9 @@ impl App {
         // injected as the `upload_mesh_models` hook so it stays windowed; a
         // headless caller passes a no-op and its clip tables stay empty (the
         // documented headless shape).
-        // `suppress` gates the connected-client spawn / AI-enemy suppression
-        // (`false` off a connected client — single-player, listen host, headless).
+        // `suppress` gates connected-client suppression of host-replicated world
+        // placements and the boot pawn (`false` for single-player, listen host,
+        // and headless installs).
         let suppress = self.is_connected_client();
         // Cloned so the segment-B handles do not alias a `self.content_root`
         // borrow held across the call.
@@ -1032,9 +1036,9 @@ impl App {
 
         // Register sprite collections for every distinct emitter `sprite` in the
         // registry — map-spawned and descriptor-spawned alike — plus descriptor
-        // projectile bodies/trails and the weapon impact collection. A projectile
-        // materializes only after a fire command, so descriptor discovery is the
-        // required level-install path that keeps GPU uploads renderer-owned.
+        // projectile bodies/trails, suppressed descriptor emitters, resolved
+        // spawner emitters and the weapon impact collection. Deferred presentation
+        // must have its assets ready before gameplay; uploads stay renderer-owned.
         if let Some(renderer) = self.renderer.as_mut() {
             let texture_root = self.content_root.join("textures");
             let map_billboard_collections = self
@@ -1046,14 +1050,26 @@ impl App {
                     )
                 })
                 .unwrap_or_default();
-            let projectile_sprites = {
+            let registry = script_ctx.registry.borrow();
+            let sprite_candidates = {
                 let data_registry = script_ctx.data_registry.borrow();
-                crate::scripting::builtins::data_archetype::projectile_presentation_assets(
+                let projectile_sprites =
+                    crate::scripting::builtins::data_archetype::projectile_presentation_assets(
+                        &data_registry.entities,
+                    )
+                    .1;
+                let suppressed_placements = self
+                    .level
+                    .as_ref()
+                    .filter(|_| suppress)
+                    .map_or(&[][..], |world| world.map_entities.as_slice());
+                lifecycle_sprite_collections::discover_sprite_collection_candidates(
+                    &registry,
+                    projectile_sprites,
+                    suppressed_placements,
                     &data_registry.entities,
                 )
-                .1
             };
-            let registry = script_ctx.registry.borrow();
             let particle_render = &mut self
                 .session
                 .as_mut()
@@ -1064,8 +1080,7 @@ impl App {
                 particle_render,
                 &texture_root,
                 &prm_cache_root,
-                &registry,
-                projectile_sprites,
+                sprite_candidates,
                 &map_billboard_collections,
             );
         }
@@ -1143,14 +1158,13 @@ fn rebuild_reaction_subscribers(
 ) -> Vec<String> {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
-        // Group reactions by dispatch address (name). Addressing is many-to-one
-        // (scripting.md §12): one address may hold several reactions, and firing
-        // it runs all of them. An address is incompatible with crossing dispatch
-        // only when EVERY reaction there needs trigger-fire context; if one
-        // sibling is sentinel-free, the runtime dispatch path skips just the
-        // incompatible commands, so the compatible reactions must keep their
-        // crossing subscription. Stripping the whole address by name would
-        // silence those benign siblings.
+        // Group reactions by dispatch address (name). For the existing
+        // command-target sentinel rule, an address is incompatible with crossing
+        // dispatch only when EVERY reaction there needs trigger-fire context; a
+        // sentinel-free sibling keeps the address subscribed. Audience tokens
+        // and `on.player` have a separate whole-address rejection below: any
+        // sibling using either is enough to reject that address, since crossing
+        // dispatch cannot supply that context.
         let (fully_sentinel_bound, level_load_has_sentinel): (
             std::collections::HashSet<String>,
             bool,

@@ -214,16 +214,16 @@ pub fn route_player_presentation(
             }
             Recipients::Local | Recipients::Skip => unreachable!("handled above"),
         };
-        if !clients.is_empty() {
-            if let Some(wire) = presentation_command_to_wire(&command) {
-                for client in clients {
-                    let _ = server.send_presentation(
-                        client,
-                        ServerPresentationMessage {
-                            payload: ServerPresentationPayload::Command(wire.clone()),
-                        },
-                    );
-                }
+        if !clients.is_empty()
+            && let Some(wire) = presentation_command_to_wire(&command)
+        {
+            for client in clients {
+                let _ = server.send_presentation(
+                    client,
+                    ServerPresentationMessage {
+                        payload: ServerPresentationPayload::Command(wire.clone()),
+                    },
+                );
             }
         }
         if local {

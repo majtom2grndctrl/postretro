@@ -441,7 +441,7 @@ mod tests {
             registry.get_component::<LightComponent>(id).unwrap(),
             &before
         );
-        let mut cases = vec![wire_binding(); 4];
+        let mut cases = [wire_binding(); 4];
         cases[0].index = 99;
         cases[1].kind = 1;
         cases[2].origin[0] += 0.011;

@@ -146,7 +146,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         App::frame_anim_time(app.anim_time, frame_dt as f64, app.anim_time_scale, frozen);
     // Clear the dispatch baseline before Input can fire a UI reaction. Capture,
     // serialization and bridge sampling share this advanced, unclamped clock.
-    let frame_script_time = app.script_time + if frozen { 0.0 } else { f64::from(frame_dt) };
+    let frame_script_delta = if frozen { 0.0 } else { frame_dt };
+    let frame_script_time = app.script_time + f64::from(frame_script_delta);
     if let Some(session) = app.session.as_ref() {
         let ctx = &session.scripting.script_ctx;
         ctx.presentation_overrides.borrow_mut().begin_frame();
@@ -1613,8 +1614,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // desync this branch fixed. Read the freeze flag from the
     // renderer — it owns the toggle (driven by the debug panel) — and
     // skip the increment while frozen so both sides hold one phase.
+    app.script_time = frame_script_time;
     if !frozen {
-        app.script_time += frame_dt as f64;
         // Animation clock accumulates scaled dt at the same site,
         // under the same freeze gate. Accumulation (not absolute-time
         // scaling) keeps a mid-fade scale change from jumping poses;
@@ -1708,7 +1709,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         .map(|renderer| renderer.render_extents().upscaled_scene())
         .map(|span| [span.width, span.height])
         .unwrap_or([0, 0]);
-    let is_connected_client = app.is_connected_client();
 
     if let Some(renderer) = app.renderer.as_mut() {
         // The render-stage bridges + collectors live on `Session`;
@@ -1757,6 +1757,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session.emitter_bridge.update(
                 &mut registry,
                 frame_dt,
+                frame_script_delta,
                 app.script_time as f32,
                 &app.particle_live_counts,
             );
@@ -1782,13 +1783,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // allocates slots, so scripted lights reflect their new state.
         {
             let mut registry = script_ctx.registry.borrow_mut();
-            // Connected clients materialize predicted and remote
-            // projectile lights locally from shared descriptors. They
-            // skip the host tick's enrollment path, so absorb before
-            // this render-frame update makes those lights visible.
-            if is_connected_client {
-                session.light_bridge.absorb_dynamic_lights(&registry);
-            }
             if let Some(update) = session.light_bridge.update(
                 &mut registry,
                 app.script_time as f32,

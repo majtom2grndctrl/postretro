@@ -101,7 +101,7 @@ export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   kind?: "npc" | "player";
   tag?: string;
   target?: "@activators" | "@trigger" | "@player";
-  args?: Record<string, unknown>;
+  args?: Record<string, unknown> | null;
   onComplete?: string;
 };
 

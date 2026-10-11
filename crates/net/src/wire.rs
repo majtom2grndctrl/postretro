@@ -68,7 +68,7 @@ pub enum PresentationFact {
 }
 
 /// One host-to-client presentation message: a passive presentation event, or a
-/// presentation command a player event addressed to this client's player.
+/// host presentation command routed to this client by audience.
 ///
 /// This family rides the dedicated unreliable `Channel::Presentation`; it is
 /// intentionally separate from [`ServerMessage`], whose envelope belongs to
@@ -104,9 +104,8 @@ pub enum ServerPresentationPayload {
         has_shield: bool,
         alive: bool,
     },
-    /// A presentation command a player event fired for this client's player.
-    /// The client turns it into the same local command a local reaction
-    /// enqueues.
+    /// A host presentation command routed to this client by audience. The client
+    /// turns it into the same local command a local reaction enqueues.
     Command(PresentationCommand),
 }
 
@@ -526,8 +525,8 @@ pub enum ValidationError {
     MalformedTickMetadata {
         last_processed_client_tick: u32,
     },
-    /// A despawn record carried movement-authority metadata, an `entity_class`, or
-    /// active-weapon metadata. A tombstone has no pawn state or presentation identity.
+    /// A despawn record carried metadata. Tombstones carry no movement authority,
+    /// descriptor/weapon metadata, or projectile/presentation metadata.
     MetadataOnDespawn,
     /// A despawn record carried component payloads. Despawns are tombstone-only and
     /// never carry replicated component state.
@@ -621,10 +620,7 @@ impl std::fmt::Display for ValidationError {
                 "has_last_processed_client_tick=false but last_processed_client_tick={last_processed_client_tick} is nonzero"
             ),
             ValidationError::MetadataOnDespawn => {
-                write!(
-                    f,
-                    "movement-authority, entity_class, or active-weapon metadata on a despawn record"
-                )
+                write!(f, "forbidden metadata on a despawn record")
             }
             ValidationError::ComponentsOnDespawn => {
                 write!(f, "component payloads on a despawn record")
@@ -2537,11 +2533,9 @@ mod tests {
     }
 
     #[test]
-    fn metadata_on_despawn_display_mentions_entity_class() {
+    fn metadata_on_despawn_display_describes_forbidden_metadata() {
         let text = ValidationError::MetadataOnDespawn.to_string();
-        assert!(text.contains("movement-authority"));
-        assert!(text.contains("entity_class"));
-        assert!(text.contains("active-weapon"));
+        assert!(text.contains("forbidden metadata"));
         assert!(text.contains("despawn"));
     }
 

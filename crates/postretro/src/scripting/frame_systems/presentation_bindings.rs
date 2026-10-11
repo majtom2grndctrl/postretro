@@ -8,6 +8,7 @@ use postretro_entities::{
     presentation_binding::{
         PresentationBindingKey, PresentationBindingKind, PresentationBindingResolver,
     },
+    provenance::{DescriptorProvenance, DescriptorSpawnPath},
 };
 use postretro_level_format::map_entity::MapEntityRecord;
 
@@ -31,8 +32,9 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
                     .iter_with_kind(MapOrdinal::KIND)
                     .map(|(id, _)| id)
                     .find(|id| {
-                        registry.get_component::<MapOrdinal>(*id).ok()
-                            == Some(&MapOrdinal(key.index))
+                        is_map_placement(registry, *id)
+                            && registry.get_component::<MapOrdinal>(*id).ok()
+                                == Some(&MapOrdinal(key.index))
                     })?;
                 (id, origin)
             }
@@ -53,7 +55,7 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
         registry: &EntityRegistry,
         entity: EntityId,
     ) -> Option<(PresentationBindingKey, Vec3)> {
-        if !registry.exists(entity) {
+        if !registry.exists(entity) || !is_map_placement(registry, entity) {
             return None;
         }
         let (kind, index, origin) =
@@ -79,6 +81,17 @@ impl PresentationBindingResolver for PresentationBindings<'_> {
             };
         Some((PresentationBindingKey { kind, index }, origin))
     }
+}
+
+// Built-in placements have no descriptor provenance. Descriptor-created pawns,
+// projectiles and runtime siblings cannot identify a client-local map placement,
+// even if an obsolete or malformed component gives them the same ordinal.
+fn is_map_placement(registry: &EntityRegistry, entity: EntityId) -> bool {
+    registry
+        .get_component::<DescriptorProvenance>(entity)
+        .map_or(true, |provenance| {
+            provenance.spawn_path == DescriptorSpawnPath::MapPlacement
+        })
 }
 
 /// Mutable receive adapter also seeds the presentation bridges before their
@@ -312,5 +325,76 @@ mod tests {
         let bad_ordinal = registry.spawn(Transform::default());
         registry.set_component(bad_ordinal, MapOrdinal(4)).unwrap();
         assert!(resolver.key_for_entity(&registry, bad_ordinal).is_none());
+    }
+
+    #[test]
+    fn presentation_binding_map_ordinal_excludes_pawn_and_projectile_spawn_paths() {
+        let mut registry = EntityRegistry::new();
+        let lights = LightBridge::new();
+        let fog = FogVolumeBridge::new();
+        let map_entities = [MapEntityRecord {
+            classname: "presentation".into(),
+            origin: [1.0, 2.0, 3.0],
+            ..Default::default()
+        }];
+        let resolver = PresentationBindings {
+            lights: &lights,
+            fog: &fog,
+            map_entities: &map_entities,
+        };
+        let key = PresentationBindingKey {
+            kind: PresentationBindingKind::MapEntity,
+            index: 0,
+        };
+        for spawn_path in [
+            DescriptorSpawnPath::PlayerSpawn,
+            DescriptorSpawnPath::NetworkSlot,
+            DescriptorSpawnPath::ProjectilePresentation,
+            DescriptorSpawnPath::RuntimeSpawn,
+            DescriptorSpawnPath::DefaultWeapon,
+        ] {
+            let id = registry.spawn(Transform::default());
+            registry.set_component(id, MapOrdinal(0)).unwrap();
+            registry
+                .set_component(
+                    id,
+                    DescriptorProvenance {
+                        canonical_name: "presentation".into(),
+                        spawn_path,
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                    },
+                )
+                .unwrap();
+            assert!(
+                resolver.key_for_entity(&registry, id).is_none(),
+                "{spawn_path:?}"
+            );
+            assert!(resolver.resolve(&registry, key).is_none(), "{spawn_path:?}");
+        }
+        // Movement capability does not turn a genuine descriptor placement
+        // into a pawn. Wrong-path ordinal collisions must not shadow this one.
+        let map_id = registry.spawn(Transform::default());
+        registry.set_component(map_id, MapOrdinal(0)).unwrap();
+        registry
+            .set_component(
+                map_id,
+                DescriptorProvenance {
+                    canonical_name: "presentation".into(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                    owned_components: [
+                        postretro_entities::provenance::DescriptorComponentKind::Movement,
+                    ]
+                    .into(),
+                    map_overrides: Default::default(),
+                },
+            )
+            .unwrap();
+        let origin = Vec3::from(map_entities[0].origin);
+        assert_eq!(
+            resolver.key_for_entity(&registry, map_id),
+            Some((key, origin))
+        );
+        assert_eq!(resolver.resolve(&registry, key), Some((map_id, origin)));
     }
 }

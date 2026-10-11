@@ -681,9 +681,10 @@ fn max_abs_component(value: Vec3) -> f32 {
 //
 // A standalone, weapon-agnostic ray query: given ANY origin / direction / range
 // it walks every TARGETABLE entity and returns the nearest hit. "Targetable"
-// walks the union of Health-bearing damage targets and Mesh-only presentation
-// targets with zone-bearing skinned models. The weapon's hitscan delegates here;
-// so can any future system (no weapon/camera type in the signature). The
+// walks Health-bearing damage targets, HitVolume presentation targets, and
+// Mesh-only presentation targets with zone-bearing skinned models. The
+// weapon's hitscan delegates here; so can any future system (no weapon/camera
+// type in the signature). The
 // narrow phase crosses into physics through its glam-only query boundary.
 // ---------------------------------------------------------------------------
 

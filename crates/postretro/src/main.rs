@@ -4720,11 +4720,10 @@ impl App {
             // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
             // `host_replicate` can collect this frame's replicated-state source values
             // and splice the per-client state records into the snapshot envelope. The
-            // two RefCells are disjoint, so both borrows coexist. Game logic has settled
-            // the live components by this post-tick point, but host HUD slot publication
-            // occurs later in the frame. Owner-private projections read the live components
-            // directly, so replication observes this frame's settled authoritative state
-            // without depending on those later HUD slot writes.
+            // two RefCells are disjoint, so both borrows coexist. HUD slot publication
+            // and crossing reactions have settled before this point. Owner-private
+            // projections read the live components directly, so replication observes
+            // this frame's settled authoritative state.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
             let faction_sentiment = script_ctx.faction_sentiment.borrow();

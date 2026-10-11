@@ -2946,6 +2946,36 @@ mod tests {
                 .iter()
                 .any(|record| record.network_id == network_id.0)
         );
+        let observer_snapshot = observer_snapshot
+            .validate()
+            .expect("held short-shot endpoint snapshot validates");
+        let mut observer_registry = EntityRegistry::new();
+        let mut observer_replication = ClientReplication::new();
+        let observer_outcome =
+            observer_replication.apply_snapshot(&mut observer_registry, &observer_snapshot);
+        let observer_visual = observer_replication
+            .entity_for_network_id(network_id)
+            .expect("observer maps the held short-shot endpoint");
+        assert!(
+            observer_registry
+                .get_component::<Transform>(observer_visual)
+                .expect("observer receives the contact endpoint transform")
+                .position
+                .distance(contact_point)
+                <= 1.0e-6
+        );
+        let observer_ack = observer_outcome
+            .ack
+            .expect("applied short-shot endpoint produces an ack");
+        let endpoint_baseline = replication
+            .current_baseline_id(network_id.0)
+            .expect("held short-shot endpoint has an ingested baseline");
+        assert!(
+            observer_ack
+                .entity_baselines
+                .contains(&(network_id.0, endpoint_baseline)),
+            "the observer acknowledges the current contact endpoint baseline"
+        );
 
         presentations.advance(
             &mut registry,
@@ -2959,7 +2989,23 @@ mod tests {
             registry.exists(visual),
             "sending one endpoint snapshot does not prove recipient delivery"
         );
-        ack_current_entity_baseline(&mut replication, OBSERVING_CLIENT, network_id.0, 3);
+        let pending_sequence = replication.begin_batch();
+        let pending_snapshot = replication
+            .encode_in_batch(OBSERVING_CLIENT, 3, pending_sequence)
+            .expect("observer remains registered while its endpoint ack is withheld");
+        assert!(
+            pending_snapshot
+                .records
+                .iter()
+                .all(|record| record.network_id != network_id.0),
+            "the endpoint baseline is not resent while its original snapshot is in flight"
+        );
+        replication.apply_ack(
+            OBSERVING_CLIENT,
+            observer_ack.latest_snapshot_sequence,
+            &observer_ack.entity_baselines,
+            &observer_ack.despawn_tombstones,
+        );
         presentations.advance(
             &mut registry,
             &mut allocator,

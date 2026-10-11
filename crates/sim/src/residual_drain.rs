@@ -103,7 +103,7 @@ pub fn drain_frame_residuals(
         // the same reaction for that player while its tail is parked does not
         // park another (the scheduler's non-interruptible re-fire rule).
         let _origin = scheduler.begin_origin(residual.pawn, PlayerId::Local(residual.pawn), false);
-        // Presentation in this fire list plays on the event player's machine;
+        // By default, presentation in this fire list plays on the event player's machine;
         // the app routes it. The marked local pawn with no seat presents here.
         let previous = script_ctx
             .system_commands

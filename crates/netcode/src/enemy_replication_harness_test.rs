@@ -874,11 +874,7 @@ fn world_item_baseline_acquire_despawn_and_drop_rebaseline_materialize_one_mesh(
             postretro_entities::components::inventory::Inventory::default(),
         )
         .unwrap();
-    let mut dropped_pose = h
-        .host_registry
-        .get_component::<Transform>(item)
-        .unwrap()
-        .clone();
+    let mut dropped_pose = *h.host_registry.get_component::<Transform>(item).unwrap();
     dropped_pose.position = Vec3::new(7.0, 0.0, 0.0);
     h.host_registry.set_component(item, dropped_pose).unwrap();
     h.host_registry
@@ -1538,12 +1534,10 @@ fn host_despawned_enemy_is_removed_and_interp_forgotten_on_client() {
     );
 }
 
-// Host-side cleanup: a dead enemy's id does NOT get re-registered. `descriptor_entities` may
-// hold a stale id until the next reload sweep (it drains there), but the re-sweep never
-// re-registers the dead enemy — a despawned id is not in the registry's Brain column,
-// so `host_register_descriptor_entities` cannot pick it up. A reused slot is a distinct
-// generation-stamped EntityId. We prove the stale registration is harmless: the
-// producer emits nothing for it and a re-sweep does not resurrect it.
+// Host-side cleanup: each authoritative host tick runs the descriptor registration sweep.
+// It prunes dead or generation-stale tracked ids through the live descriptor classifier,
+// then enumerates DescriptorProvenance to register eligible entities. This test calls that
+// sweep directly to prove a dead enemy is not re-registered and a stale registration is harmless.
 #[test]
 fn host_descriptor_entities_does_not_leak_or_re_register_a_dead_enemy() {
     let mut h = EnemyReplicationHarness::new(perfect_link());

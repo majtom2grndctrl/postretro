@@ -208,7 +208,7 @@ pub(super) fn materialize_armed_local_pawn(
 }
 
 /// Materialize a remote descriptor-backed player as presentation only. The player
-/// type signal is selected by the caller from the descriptor's `movement` block;
+/// identity is selected by the caller from the host-stamped pawn class;
 /// this seam deliberately attaches only the descriptor mesh. A remote client never
 /// gains a simulation copy of another player's movement, weapon, or health state.
 /// Unknown classes and meshless descriptors remain transform-only, while a repeated
@@ -984,7 +984,7 @@ mod tests {
             &ArmedLocalPawn {
                 network_id: postretro_net::wire::NetworkId(10),
                 entity_id: id,
-                entity_class: Some("descriptor:co_op_avatar".to_string()),
+                entity_class: Some("pawn:co_op_avatar".to_string()),
             },
             &descriptors,
             &mut reg,

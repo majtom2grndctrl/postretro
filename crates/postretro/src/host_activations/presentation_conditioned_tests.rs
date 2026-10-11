@@ -84,6 +84,176 @@ fn install_changes(h: &mut Harness) {
     h.install_reactions(reactions);
 }
 
+// Regression: a wait landing spawned a light after the host's final tick enrollment,
+// so its finite animation started a later frame than the captured client start.
+#[test]
+fn conditioned_wait_spawned_light_starts_at_capture_without_another_fixed_tick() {
+    use postretro_entities::{GroupKind, GroupTarget, components::spawner::SpawnerComponent};
+    use postretro_sim::spawner::{SpawnContext, register_sequenced_spawner_primitives};
+
+    let mut h = Harness::new();
+    h.advance(40);
+    h.tick = 600;
+    h.clock = 10.0;
+    let ctx = script_ctx(&h.host);
+    let mut descriptor = descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some("lit_prop"))
+        .unwrap();
+    descriptor.canonical_name = Some("late_lit_npc".into());
+    descriptor.emitter = None;
+    descriptor.behavior =
+        crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
+            "late_lit_npc",
+        )
+        .behavior;
+    for app in std::iter::once(&h.host).chain(h.peers.iter().map(|peer| &peer.app)) {
+        script_ctx(app)
+            .data_registry
+            .borrow_mut()
+            .entities
+            .push(descriptor.clone());
+    }
+    let spawn_context = SpawnContext::default();
+    spawn_context.replace_level_data(
+        [("late_lit_npc".into(), descriptor)].into_iter().collect(),
+        None,
+    );
+    let spawner = {
+        let mut registry = ctx.registry.borrow_mut();
+        let spawner = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                spawner,
+                SpawnerComponent {
+                    archetype_name: "late_lit_npc".into(),
+                    count: 1,
+                    spawned_tags: vec!["late_light".into()],
+                    resolved: true,
+                },
+            )
+            .unwrap();
+        spawner
+    };
+    register_sequenced_spawner_primitives(
+        &mut h.host.session.as_mut().unwrap().scripting.sequence_registry,
+        ctx.clone(),
+        spawn_context,
+    );
+    h.install_reactions(vec![NamedReaction {
+        name: "plate".into(),
+        descriptor: ReactionDescriptor::Sequence(vec![
+            SequenceStep {
+                id: SequenceTarget::Wait,
+                primitive: "wait".into(),
+                args: json!({"durationMs":30}),
+            },
+            SequenceStep {
+                id: SequenceTarget::Entity(spawner),
+                primitive: "spawnFromSpawner".into(),
+                args: json!({}),
+            },
+            SequenceStep {
+                id: SequenceTarget::Group(GroupTarget {
+                    kind: GroupKind::Npc,
+                    tag: Some("late_light".into()),
+                }),
+                primitive: "setLightAnimation".into(),
+                args: animation(1000.0, true),
+            },
+        ]),
+    }]);
+    h.fire_plate(100.0, &[0]);
+    let session = h.host.session.as_mut().unwrap();
+    assert_eq!(session.scripting.scheduler.pending_len(), 1);
+    for _ in 0..3 {
+        session.scripting.scheduler.begin_frame();
+        session.scripting.scheduler.evaluate(&[]);
+    }
+    // The final fixed tick sees no spawned light. Only the frame-end landing
+    // below creates it, exactly as in the production frame loop.
+    session
+        .light_bridge
+        .absorb_dynamic_lights(&ctx.registry.borrow());
+    let enrolled_before = session.light_bridge.light_count();
+    session.scripting.scheduler.drain_landings(
+        &ctx.data_registry.borrow(),
+        &session.scripting.sequence_registry,
+        &session.scripting.reaction_registry,
+        &session.scripting.system_registry,
+        &ctx,
+    );
+    assert_eq!(session.light_bridge.light_count(), enrolled_before);
+    let host_light = tagged(&ctx, "late_light");
+    let captured =
+        ctx.presentation_overrides.borrow().records[&(host_light, ComponentKind::Light)].clone();
+    assert!((captured.anim_start.unwrap() - h.clock).abs() < 1e-9);
+    h.publish();
+    let network_id = h.allocator.stamp_for_test(host_light);
+    // No enrollment helper here: the same bridge boundary the frame loop calls
+    // must both discover this entity and start its finite clock now.
+    let first = sample(&mut h.host, h.clock);
+    assert_eq!(
+        h.host.session.as_ref().unwrap().light_bridge.light_count(),
+        enrolled_before + 1
+    );
+    assert!((first.last().copied().unwrap() - 0.2).abs() < 1e-5);
+
+    // Render again without advancing fixed ticks, after a 100 ms delay. A lazy
+    // start here would exceed the one-snapshot completion tolerance below.
+    h.clock += 0.1;
+    let delayed = sample(&mut h.host, h.clock);
+    assert!(delayed.last().unwrap() > first.last().unwrap());
+    h.advance(18);
+    let client_light = client_entity(&h.peers[0], network_id);
+    let client_ctx = script_ctx(&h.peers[0].app);
+    assert!(
+        client_ctx
+            .registry
+            .borrow()
+            .get_component::<LightComponent>(client_light)
+            .expect("the installed runtime-spawn descriptor materializes its light")
+            .animation
+            .is_some(),
+        "the captured finite animation reached the materialized client light"
+    );
+    let mut host_finish = None;
+    let mut client_finish = None;
+    for _ in 0..60 {
+        h.step();
+        for (context, id, finish) in [
+            (&ctx, host_light, &mut host_finish),
+            (&client_ctx, client_light, &mut client_finish),
+        ] {
+            if context
+                .registry
+                .borrow()
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .animation
+                .is_none()
+            {
+                finish.get_or_insert(h.clock);
+            }
+        }
+    }
+    assert!((host_finish.unwrap() - 11.0).abs() <= DT + 1e-6);
+    assert!((client_finish.unwrap() - host_finish.unwrap()).abs() <= 2.0 * DT + 1e-6);
+    let host_final = ctx
+        .registry
+        .borrow()
+        .get_component::<LightComponent>(host_light)
+        .unwrap()
+        .clone();
+    let client_final = client_ctx
+        .registry
+        .borrow()
+        .get_component::<LightComponent>(client_light)
+        .unwrap()
+        .clone();
+    assert!((host_final.intensity - client_final.intensity).abs() < 1e-5);
+}
+
 // Regression: a shorter replacement settled on the host using the previous light's start.
 #[test]
 fn conditioned_bridge_finite_replacement_keeps_capture_and_client_finish_aligned() {
@@ -300,6 +470,78 @@ fn conditioned_bridge_changed_spin_tween_keeps_capture_and_client_finish_aligned
     assert!((client_finish.unwrap() - host_finish.unwrap()).abs() <= 2.0 * DT + 1e-6);
     assert!((rate(&host_ctx, host_id) - 1.0).abs() < 1e-5);
     assert!((rate(&client_ctx, client_id) - 1.0).abs() < 1e-5);
+}
+
+// Regression: frozen host spin used wall time while a late baseline advertised held script time.
+#[test]
+fn conditioned_frozen_spin_clock_keeps_late_join_and_resumed_completion_aligned() {
+    let mut h = Harness::new();
+    h.advance(40);
+    h.tick = 600;
+    h.clock = 10.0;
+    h.install_reactions(vec![primitive(
+        "changes",
+        "setSpinRate",
+        Some("emitter_only"),
+        json!({"animation":{"duration":5.0,"rate_curve":[0.0,10.0]}}),
+    )]);
+    h.fire_plate(200.0, &[1]);
+    sample_delta(&mut h.host, h.clock, 0.5);
+    let host_ctx = script_ctx(&h.host);
+    let host_id = tagged(&host_ctx, "emitter_only");
+    let recorded = host_ctx.presentation_overrides.borrow().records
+        [&(host_id, ComponentKind::BillboardEmitter)]
+        .clone();
+    assert!((recorded.anim_start.unwrap() - 10.0).abs() < 1e-9);
+    let state = |ctx: &ScriptCtx, id| {
+        let registry = ctx.registry.borrow();
+        let emitter = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap();
+        (emitter.spin_rate, emitter.spin_animation.is_some())
+    };
+    assert!(state(&host_ctx, host_id).0.abs() < 1e-5);
+    h.advance(60);
+    assert!((h.clock - 11.0).abs() < 1e-9);
+    for _ in 0..6 {
+        // Six positive raw half-second frames; the published script clock holds at 11.
+        sample_deltas(&mut h.host, h.clock, 0.5, 0.0);
+        assert!((state(&host_ctx, host_id).0 - 2.0).abs() < 1e-5);
+        assert!(state(&host_ctx, host_id).1);
+    }
+    assert_eq!(
+        host_ctx.presentation_overrides.borrow().records
+            [&(host_id, ComponentKind::BillboardEmitter)],
+        recorded
+    );
+    h.connect_late();
+    // Publish the late baseline with the held clock, before resuming. Ordinary
+    // clocks then advance during transport; the local freeze switch is not sent.
+    h.last = None;
+    h.publish();
+    h.advance(12);
+    let client_ctx = script_ctx(&h.peers[1].app);
+    let client_id = tagged(&client_ctx, "emitter_only");
+    let host = state(&host_ctx, host_id);
+    let client = state(&client_ctx, client_id);
+    assert!(host.1 && client.1);
+    assert!((host.0 - 2.4).abs() < 1e-5);
+    assert!((host.0 - client.0).abs() < 0.08);
+    let mut host_finish = None;
+    let mut client_finish = None;
+    for _ in 0..240 {
+        h.step();
+        if !state(&host_ctx, host_id).1 {
+            host_finish.get_or_insert(h.clock);
+        }
+        if !state(&client_ctx, client_id).1 {
+            client_finish.get_or_insert(h.clock);
+        }
+    }
+    assert!((host_finish.unwrap() - 15.0).abs() <= DT + 1e-6);
+    assert!((host_finish.unwrap() - client_finish.unwrap()).abs() <= 2.0 * DT + 1e-6);
+    assert!((state(&host_ctx, host_id).0 - 10.0).abs() < 1e-5);
+    assert!((state(&client_ctx, client_id).0 - 10.0).abs() < 1e-5);
 }
 
 // Regression: install captured start zero, but all three bridges started at the first render.
@@ -588,12 +830,47 @@ fn conditioned_overrides_late_join_sample_finite_loop_fog_spin_and_display_copy_
             assert!(emitter.spin_rate > 0.5);
         }
     }
-    let host_brightness = sample(&mut h.host, h.clock);
+    // Regression: shared local origins hid a missing loop-phase rebase; equal
+    // brightness also admitted distinct phases on the closed two-key curve.
+    assert!(h.clock - h.peers[1].clock > 2.0);
+    let loop_phase = |app: &App, clock: f64| {
+        let ctx = script_ctx(app);
+        let registry = ctx.registry.borrow();
+        let id = app
+            .session
+            .as_ref()
+            .unwrap()
+            .light_bridge
+            .entity_for_map_index(1)
+            .unwrap();
+        let animation = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        let period = animation.period_ms / 1000.0;
+        // The bridge/GPU samples a looping light against its local script time.
+        let phase = (clock as f32 / period + animation.phase.unwrap_or(0.0)).rem_euclid(1.0);
+        (f64::from(phase), f64::from(period))
+    };
+    let (host_phase, period) = loop_phase(&h.host, h.clock);
+    // Probe the actual evaluator without advancing the spin bridges a second time.
+    let host_brightness = sample_delta(&mut h.host, h.clock, 0.0);
     for peer in &mut h.peers {
-        let sampled = peer.sample();
+        let (client_phase, client_period) = loop_phase(&peer.app, peer.clock);
+        assert!((client_period - period).abs() < 1e-6);
+        let phase_difference = (host_phase - client_phase).abs();
+        let phase_time = phase_difference.min(1.0 - phase_difference) * period;
+        assert!(
+            phase_time <= 2.0 * DT + 1e-6,
+            "loop phase differs by {phase_time}s at shared time {}: host {host_phase}, client {client_phase}",
+            h.clock
+        );
+        let sampled = sample_delta(&mut peer.app, peer.clock, 0.0);
         assert!(
             (host_brightness[1] - sampled[1]).abs() < 0.05,
-            "loop phase agrees at shared instant: host {:?} client {:?}",
+            "loop evaluator agrees at shared instant: host {:?} client {:?}",
             host_brightness,
             sampled
         );
@@ -929,7 +1206,7 @@ fn conditioned_trigger_audiences_player_residual_wait_and_positioned_mover_sound
     );
 
     // The production named mover drain freezes its emitter before the source
-    // entity vanishes, and the real reliable presentation intake retains it.
+    // entity vanishes, and the real presentation intake retains it.
     let door = ctx.registry.borrow_mut().spawn(Transform {
         position: Vec3::new(3.0, 4.0, 5.0),
         ..Default::default()
@@ -1060,76 +1337,166 @@ fn conditioned_state_waits_for_clock_empty_release_and_unchanged_baseline_preser
             .intensity,
         7.0
     );
-    // The host stalls in virtual time. Receive first anchors its older clock,
-    // then a later resumed snapshot rebases to the highest accepted host clock.
+    // Regression: equal opposite stalls in one harness cancelled spin drift,
+    // while an unchanged payload never exercised the stalled-batch rebase.
+    assert_host_stall_spin_alignment();
+    assert_client_stall_batch_age_and_completion();
+}
+
+fn spin_state(ctx: &ScriptCtx, id: EntityId) -> (f32, bool) {
+    let registry = ctx.registry.borrow();
+    let emitter = registry
+        .get_component::<BillboardEmitterComponent>(id)
+        .unwrap();
+    (emitter.spin_rate, emitter.spin_animation.is_some())
+}
+
+fn assert_host_stall_spin_alignment() {
+    let mut h = Harness::new();
+    h.advance(40);
+    h.install_reactions(vec![primitive(
+        "changes",
+        "setSpinRate",
+        Some("emitter_only"),
+        json!({"animation":{"duration":2.0,"rate_curve":[0.0,2.0]}}),
+    )]);
+    h.fire_plate(200.0, &[1]);
+    let start = h.clock;
+    sample(&mut h.host, h.clock);
+    h.advance(12);
+    let host_ctx = script_ctx(&h.host);
+    let host_emitter = tagged(&host_ctx, "emitter_only");
+    let client_ctx = script_ctx(&h.peers[0].app);
+    let client_emitter = tagged(&client_ctx, "emitter_only");
+    let last_host_sample = h.clock;
+    let before_stall = spin_state(&host_ctx, host_emitter);
+    assert!(before_stall.1);
+    assert!(spin_state(&client_ctx, client_emitter).1);
+    // Transport and client frames continue while the host produces no frame.
     for _ in 0..30 {
         h.clock += DT;
         h.transport();
         let peer = &mut h.peers[0];
-        peer.clock = h.clock;
+        peer.clock = h.clock - peer.clock_origin;
         peer.receive(&h.world);
         peer.sample();
     }
-    h.tick = (h.clock / DT).round() as u32;
+    assert!((spin_state(&host_ctx, host_emitter).0 - before_stall.0).abs() < 1e-6);
+    // Resume with the elapsed script delta, even though fixed ticks lag behind.
+    h.tick += 1;
+    h.clock += DT;
+    let resumed_delta = h.clock - last_host_sample;
+    assert!(resumed_delta > 0.5);
+    h.publish();
+    h.transport();
+    sample_delta(&mut h.host, h.clock, resumed_delta as f32);
+    let peer = &mut h.peers[0];
+    peer.clock = h.clock - peer.clock_origin;
+    peer.receive(&h.world);
+    peer.sample();
+    let host = spin_state(&host_ctx, host_emitter);
+    let client = spin_state(&client_ctx, client_emitter);
+    assert!(host.1 && client.1);
+    // This linear curve makes the sampled rate an injective age in seconds.
+    assert!((f64::from(host.0) - (h.clock - start)).abs() < 1e-5);
+    assert!(
+        f64::from((host.0 - client.0).abs()) <= 2.0 * DT + 1e-6,
+        "host resume age aligns immediately: host {}, client {}",
+        host.0,
+        client.0
+    );
+    let mut host_finish = None;
+    let mut client_finish = None;
+    for _ in 0..100 {
+        h.step();
+        if !spin_state(&host_ctx, host_emitter).1 {
+            host_finish.get_or_insert(h.clock);
+        }
+        if !spin_state(&client_ctx, client_emitter).1 {
+            client_finish.get_or_insert(h.clock);
+        }
+    }
+    assert!((host_finish.unwrap() - (start + 2.0)).abs() <= DT + 1e-6);
+    assert!((host_finish.unwrap() - client_finish.unwrap()).abs() <= 2.0 * DT + 1e-6);
+}
+
+fn assert_client_stall_batch_age_and_completion() {
+    // Independent initial clocks prevent a preceding host stall hiding drift.
+    let mut h = Harness::new();
+    install_changes(&mut h);
+    h.advance(40);
+    h.fire_plate(200.0, &[1]);
+    sample(&mut h.host, h.clock);
     h.advance(12);
-    // A stalled client frame keeps receiving opaque transport packets, but does
-    // not drain snapshots or sample bridges. Resume consumes the retained batch
-    // against its newest host clock instead of replaying the oldest arrival age.
-    let before_stall = ctx
-        .registry
-        .borrow()
-        .get_component::<BillboardEmitterComponent>(emitter)
-        .unwrap()
-        .spin_rate;
-    for _ in 0..30 {
+    let host_ctx = script_ctx(&h.host);
+    let host_emitter = tagged(&host_ctx, "emitter_only");
+    let host_short = tagged(&host_ctx, "billboard_emitter");
+    let client_ctx = script_ctx(&h.peers[0].app);
+    let client_emitter = tagged(&client_ctx, "emitter_only");
+    let client_short = tagged(&client_ctx, "billboard_emitter");
+    let last_client_sample = h.peers[0].clock;
+    let before_stall = spin_state(&client_ctx, client_emitter);
+    assert!(before_stall.1);
+    h.install_reactions(vec![
+        primitive(
+            "changes",
+            "setSpinRate",
+            Some("emitter_only"),
+            json!({"animation":{"duration":1.0,"rate_curve":[0.0,1.0]}}),
+        ),
+        primitive(
+            "changes",
+            "setSpinRate",
+            Some("billboard_emitter"),
+            json!({"animation":{"duration":0.25,"rate_curve":[0.0,1.0]}}),
+        ),
+    ]);
+    let mut changed_start = None;
+    for frame in 0..30 {
         h.tick += 1;
-        h.clock = h.tick as f64 * DT;
+        h.clock += DT;
+        if frame == 0 {
+            h.fire_plate(-100.0, &[]);
+            h.fire_plate(200.0, &[1]);
+            changed_start = Some(h.clock);
+        }
+        // The changed value rides an early snapshot. Later headers advance
+        // throughout the stall, even after the short host tween has settled.
         h.publish();
         h.transport();
         sample(&mut h.host, h.clock);
     }
-    assert_eq!(
-        ctx.registry
-            .borrow()
-            .get_component::<BillboardEmitterComponent>(emitter)
-            .unwrap()
-            .spin_rate,
-        before_stall,
+    assert!(
+        (spin_state(&client_ctx, client_emitter).0 - before_stall.0).abs() < 1e-6,
         "no client frame sampled during the stall"
     );
-    h.peers[0].clock = h.clock;
+    let expected_age = h.clock - changed_start.unwrap();
+    assert!(expected_age > 0.4 && expected_age < 1.0);
+    let host = spin_state(&host_ctx, host_emitter);
+    assert!(host.1);
+    assert!((f64::from(host.0) - expected_age).abs() < 1e-5);
+    assert!(!spin_state(&host_ctx, host_short).1);
+    h.peers[0].clock = h.clock - h.peers[0].clock_origin;
     h.peers[0].receive(&h.world);
-    h.peers[0].sample();
-    let host_ctx = script_ctx(&h.host);
-    let host_emitter = tagged(&host_ctx, "emitter_only");
-    let expected_rate = host_ctx
-        .registry
-        .borrow()
-        .get_component::<BillboardEmitterComponent>(host_emitter)
-        .unwrap()
-        .spin_rate;
-    let resumed_rate = ctx
-        .registry
-        .borrow()
-        .get_component::<BillboardEmitterComponent>(emitter)
-        .unwrap()
-        .spin_rate;
-    assert!(
-        resumed_rate > before_stall,
-        "resumed bridge catches up rather than replaying stalled age"
+    let peer = &mut h.peers[0];
+    sample_delta(
+        &mut peer.app,
+        peer.clock,
+        (peer.clock - last_client_sample) as f32,
     );
+    let resumed = spin_state(&client_ctx, client_emitter);
+    assert!(resumed.1);
     assert!(
-        (resumed_rate - expected_rate).abs() < 0.05,
-        "client stall rebases to current host phase: {resumed_rate} vs {expected_rate}"
+        (f64::from(resumed.0) - expected_age).abs() <= 2.0 * DT + 1e-6,
+        "first resumed sample uses the newest batch clock: age {}, expected {expected_age}",
+        resumed.0
     );
+    let short = spin_state(&client_ctx, client_short);
     assert!(
-        ctx.registry
-            .borrow()
-            .get_component::<BillboardEmitterComponent>(emitter)
-            .unwrap()
-            .spin_rate
-            > 0.0
+        !short.1,
+        "the short tween is already complete on the first resumed sample"
     );
+    assert!((short.0 - 1.0).abs() < 1e-5);
 }
 
 #[test]
@@ -1402,7 +1769,7 @@ fn conditioned_client_dummy_hit_commits_host_damage_owner_credit_and_despawn() {
     let weapon;
     {
         let mut registry = ctx.registry.borrow_mut();
-        let mut transform = registry.get_component::<Transform>(pawn).unwrap().clone();
+        let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
         transform.position = Vec3::ZERO;
         registry.set_component(pawn, transform).unwrap();
         weapon = registry.spawn(Transform::default());

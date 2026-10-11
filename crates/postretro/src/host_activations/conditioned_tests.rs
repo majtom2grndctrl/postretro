@@ -3028,7 +3028,7 @@ fn conditioned_late_admitted_start_fires_along_its_own_aim_while_the_pawn_faces_
 /// Where [`hand_weapon`] puts the client's slot-0 host weapon.
 #[derive(Clone, Copy)]
 enum WeaponLocation {
-    /// Back in the client pawn's slot 0. A holder's inventory is left as it was.
+    /// Back in the client pawn's slot 0, released from any other holder.
     Pawn,
     /// Out of the client pawn's inventory, as when dropped into the world: its
     /// cooldown freezes.
@@ -3041,6 +3041,20 @@ enum WeaponLocation {
 fn hand_weapon(fixture: &Fixture, to: WeaponLocation) {
     let mut registry = fixture.host.borrow_mut();
     let weapon = fixture.host_actors.weapon;
+    // Release canonical ownership without advancing a tick or clearing the
+    // client's network cadence record or the weapon's recovery.
+    if let Some((holder, slot)) = registry.inventory_owner(weapon)
+        && holder != fixture.host_actors.pawn
+    {
+        let mut inventory = registry
+            .get_component::<Inventory>(holder)
+            .expect("current holder has an inventory")
+            .clone();
+        inventory.wieldables[slot] = None;
+        registry
+            .set_component(holder, inventory)
+            .expect("current holder releases the weapon");
+    }
     let mut inventory = registry
         .get_component::<Inventory>(fixture.host_actors.pawn)
         .expect("client pawn holds an inventory")
@@ -3056,6 +3070,12 @@ fn hand_weapon(fixture: &Fixture, to: WeaponLocation) {
             .set_component(holder, holder_inventory)
             .expect("holder inventory attaches");
     }
+    let expected_owner = match to {
+        WeaponLocation::Pawn => Some((fixture.host_actors.pawn, 0)),
+        WeaponLocation::World => None,
+        WeaponLocation::Holder(holder) => Some((holder, 0)),
+    };
+    assert_eq!(registry.inventory_owner(weapon), expected_owner);
 }
 
 // A stamping client that lets its weapon go between starts, dropped to the

@@ -369,7 +369,9 @@ impl WireFogAnimation {
     }
 
     fn has_valid_bounds(&self) -> bool {
+        // Fog's CPU evaluator requires positive finite counts; light uses zero to loop.
         self.period_ms > 0.0
+            && self.play_count != Some(0)
             && [
                 &self.density,
                 &self.saturation,
@@ -952,6 +954,29 @@ mod tests {
                 );
             }
         }
+        // Regression: zero fog play counts passed receive validation and panicked at sampling.
+        for play_count in [Some(0), Some(1), None] {
+            let mut state = fog_state();
+            state.animation.as_mut().unwrap().play_count = play_count;
+            let mut raw = empty_raw(COMPONENT_KIND_FOG_VOLUME);
+            raw.fog = Some(state.clone());
+            if play_count == Some(0) {
+                assert_eq!(
+                    raw.validate(),
+                    Err(ValidationError::InvalidPresentationState(
+                        COMPONENT_KIND_FOG_VOLUME
+                    ))
+                );
+            } else {
+                roundtrip(raw, ComponentPayload::FogState(state));
+            }
+        }
+        let mut light = light_state();
+        light.animation.as_mut().unwrap().play_count = Some(0);
+        let mut raw = empty_raw(COMPONENT_KIND_LIGHT);
+        raw.light = Some(light.clone());
+        roundtrip(raw, ComponentPayload::LightState(light));
+
         let mut state = fog_state();
         let animation = state.animation.as_mut().unwrap();
         animation.phase = None;

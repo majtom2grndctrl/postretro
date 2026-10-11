@@ -511,6 +511,69 @@ mod tests {
     }
 
     #[test]
+    fn presentation_state_zero_fog_play_count_is_refused_without_mutation_or_seed() {
+        // Regression: validated wire fog could install zero and panic in the CPU bridge.
+        let mut registry = EntityRegistry::new();
+        let id = spawn(&mut registry);
+        let original = fog();
+        registry.set_component(id, original.clone()).unwrap();
+        let mut seeds = Seeds::default();
+        let source = record(PresentationComponent::Fog(fog()), Some(8.0));
+        let ComponentPayload::FogState(mut invalid) =
+            presentation_override_payload(&source).unwrap()
+        else {
+            unreachable!()
+        };
+        invalid.density = 0.9;
+        invalid.animation.as_mut().unwrap().play_count = Some(0);
+        assert!(!apply_presentation_payload(
+            &mut registry,
+            id,
+            &ComponentPayload::FogState(invalid),
+            20.0,
+            10.0,
+            &mut seeds
+        ));
+        assert_eq!(
+            registry.get_component::<FogVolumeComponent>(id).unwrap(),
+            &original
+        );
+        assert!(seeds.0.is_empty());
+
+        let mut invalid_producer = original.clone();
+        invalid_producer.animation.as_mut().unwrap().play_count = Some(0);
+        assert!(
+            presentation_override_payload(&record(
+                PresentationComponent::Fog(invalid_producer),
+                Some(8.0)
+            ))
+            .is_none()
+        );
+
+        for count in [Some(1), None] {
+            let mut valid = fog();
+            valid.density = 0.7;
+            valid.animation.as_mut().unwrap().play_count = count;
+            assert!(apply(
+                &mut registry,
+                id,
+                &record(PresentationComponent::Fog(valid.clone()), Some(8.0)),
+                20.0,
+                10.0,
+                &mut seeds
+            ));
+            assert_eq!(
+                registry.get_component::<FogVolumeComponent>(id).unwrap(),
+                &valid
+            );
+            assert_eq!(
+                seeds.0.last(),
+                Some(&(ComponentKind::FogVolume, id, Some(18.0)))
+            );
+        }
+    }
+
+    #[test]
     fn presentation_state_inactive_finite_light_does_not_seed_start() {
         let mut registry = EntityRegistry::new();
         let id = spawn(&mut registry);

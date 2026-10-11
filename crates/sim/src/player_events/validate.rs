@@ -15,6 +15,7 @@ use postretro_scripting_core::player_event_scope::{
     EVENT_PLAYER_TOKEN, audience_token, is_local_player_slot, plain_per_player_read,
     reaction_uses_event_player, reads_dispatch_input,
 };
+use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 
 /// The trigger-fire occupancy input. A player-event fire binds against a scope
 /// that publishes it, seeded zero, so a read would silently see 0.
@@ -149,9 +150,39 @@ pub fn reachable_machine_local_reactions(
     address: &str,
     data_registry: &DataRegistry,
 ) -> Vec<String> {
-    let mut pending = vec![address.to_string()];
-    let mut visited = HashSet::new();
+    walk_machine_local_routes(vec![address.to_string()], Vec::new(), data_registry)
+}
+
+/// Start from the bodies and deferred routes the trigger binder actually kept.
+/// Same-address siblings rejected during partitioning are not direct roots.
+pub fn reachable_machine_local_reactions_from_residual(
+    steps: &[PrepartitionedReactionStep],
+    data_registry: &DataRegistry,
+) -> Vec<String> {
+    let mut pending = Vec::new();
     let mut reached = Vec::new();
+    let mut direct = HashSet::new();
+    for step in steps {
+        match step {
+            PrepartitionedReactionStep::Descriptor(name, _, descriptor) => {
+                if descriptor_has_machine_local_effect(descriptor) && direct.insert(name.clone()) {
+                    reached.push(name.clone());
+                }
+                pending.extend(context_free_routes(descriptor));
+            }
+            PrepartitionedReactionStep::DeferredEvent(address) => pending.push(address.clone()),
+        }
+    }
+    walk_machine_local_routes(pending, reached, data_registry)
+}
+
+fn walk_machine_local_routes(
+    mut pending: Vec<String>,
+    mut reached: Vec<String>,
+    data_registry: &DataRegistry,
+) -> Vec<String> {
+    let mut visited = HashSet::new();
+    let mut warned: HashSet<String> = reached.iter().cloned().collect();
     while let Some(address) = pending.pop() {
         if !visited.insert(address.clone()) {
             continue;
@@ -165,7 +196,7 @@ pub fn reachable_machine_local_reactions(
             machine_local |= descriptor_has_machine_local_effect(&reaction.descriptor);
             pending.extend(context_free_routes(&reaction.descriptor));
         }
-        if machine_local {
+        if machine_local && warned.insert(address.clone()) {
             reached.push(address);
         }
     }

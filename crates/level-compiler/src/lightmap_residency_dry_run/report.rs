@@ -72,8 +72,6 @@ pub(crate) struct ClusterRow {
 pub(crate) struct DryRunReport {
     pub input_summary: String,
     pub shadowmask_policy: String,
-    /// Id 42 was omitted for width; the floor gains restored-mask columns.
-    pub omitted_mask: bool,
     pub attribution: Attribution,
     pub layouts: Vec<Layout>,
     pub repack: RepackCheck,
@@ -177,7 +175,6 @@ pub(crate) fn run_dry_run(input: &DryRunInput) -> DryRunReport {
     DryRunReport {
         input_summary: input_summary(input),
         shadowmask_policy: shadowmask_policy(&input.formats),
-        omitted_mask: input.formats.omitted_shadowmask_bytes_per_texel().is_some(),
         cluster_rows: cluster_rows(input, &attribution, &layouts, &chart_clusters),
         attribution,
         stored_total_texels: layouts[0].total_layer_texels(),

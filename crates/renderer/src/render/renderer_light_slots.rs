@@ -605,8 +605,6 @@ impl Renderer {
                 &full.promoted_baked_records,
                 &full.promoted_baked_cache_layers,
                 &full.entity_shadow_spec_light_indices,
-                &full.shadowmask_channels,
-                full.shadowmask_present,
                 &mut full.forward_shadowmask_metadata_scratch,
             );
             influence_bytes.extend_from_slice(&full.forward_shadowmask_metadata_scratch);

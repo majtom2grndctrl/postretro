@@ -370,10 +370,7 @@ pub(crate) fn build_lighting_bind_group(
     // Specular-only static lights; 1-record dummy avoids zero-size storage binding.
     let spec_lights_data = {
         let packed = geometry
-            .map(|g| {
-                let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(g);
-                pack_spec_lights(g.lights, &shadowmask_channels)
-            })
+            .map(|g| pack_spec_lights(g.lights))
             .unwrap_or_default();
         if packed.is_empty() {
             vec![0u8; SPEC_LIGHT_SIZE]
@@ -387,16 +384,20 @@ pub(crate) fn build_lighting_bind_group(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Absent → fallback payload with has_chunk_grid=0; shader iterates full spec buffer.
+    // Absent → fallback payload with has_chunk_grid=0: SDF selection scans the
+    // full spec buffer and billboard specular skips its static lights. World
+    // specular does not read the grid.
     let chunk_grid = match geometry.and_then(|g| g.chunk_light_list) {
         Some(sec) => ChunkGrid::from_section(sec),
         None => ChunkGrid::fallback(),
     };
     if chunk_grid.present {
-        log::info!("[Renderer] ChunkLightList active (spec-only path is spatially partitioned)");
+        log::info!(
+            "[Renderer] ChunkLightList active (SDF selection and billboard specular are spatially partitioned)"
+        );
     } else {
         log::info!(
-            "[Renderer] ChunkLightList absent — specular path iterates the full spec buffer"
+            "[Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off"
         );
     }
     let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -648,6 +649,8 @@ pub(crate) fn build_initial_uniform_data(
         has_direct: false,
         animated_baked_light_count: 0,
         spec_shadowmask_force_one: false,
+        // No mask pool before a level installs.
+        static_spec_mask_present: false,
     })
 }
 

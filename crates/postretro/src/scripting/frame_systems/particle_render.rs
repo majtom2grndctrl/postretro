@@ -384,6 +384,7 @@ mod tests {
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
+            vertex_spec_owners: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,

@@ -229,6 +229,7 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         };
         let geometry = crate::render::LevelGeometry {
             vertices: &[],
+            vertex_spec_owners: &[],
             indices: &[],
             bvh: &empty_bvh,
             lights: &[],

@@ -896,15 +896,19 @@ fn run_pre_atlas_and_fused_cache_fixture(
         &static_lights,
         &alpha_lights,
         Some(&selection),
+        &[],
         &bvh,
         &primitives,
         &config,
         prepared,
     )
     .expect("fixture fused lighting stage");
+    // The fixture's one vertical triangle faces away from its lights, so no
+    // face admits an owner and id 42 is absent; the memo still resolves.
+    assert!(output.shadowmask.is_none());
     assert!(
-        output.shadowmask.is_some(),
-        "fixture must traverse fused shadowmask packing"
+        cache.test_access("shadowmask_atlas").read_attempts > 0,
+        "fixture must traverse the fused shadowmask memo"
     );
 }
 

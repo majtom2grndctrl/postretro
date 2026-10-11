@@ -564,47 +564,8 @@ fn shadowmask_charges_follow_the_bake_width_rule() {
     assert_eq!(formats.layer_bytes_at(4096, 4096), with_mask(4096));
     assert_eq!(formats.layer_bytes_at(8192, 8192), lightmap_only(8192));
 
-    // Omitted for width: the floor and the stored layers carry none, but a
-    // simulated layer narrow enough to double is charged.
-    formats.shadowmask = ShadowmaskState::OmittedForWidth;
-    assert_eq!(formats.shadowmask_bytes_per_texel(), 0.0);
-    assert_eq!(formats.stored_block_bytes(0), lightmap_only(8192));
-    assert_eq!(formats.layer_bytes_at(1024, 1024), with_mask(1024));
-    assert_eq!(formats.layer_bytes_at(8192, 8192), lightmap_only(8192));
-
     formats.shadowmask = ShadowmaskState::Absent;
     assert_eq!(formats.layer_bytes_at(1024, 1024), lightmap_only(1024));
-}
-
-#[test]
-fn omitted_for_width_shadowmask_adds_a_restored_floor_column() {
-    let mut fixture = corridor_input();
-    let report = run_dry_run(&fixture);
-    let (_, stored) = &report.sources[0].bounds[0].cells[0];
-    assert!(stored.with_omitted_mask.is_none());
-    assert!(!report.render().contains("omitted id42"));
-
-    fixture.formats.shadowmask = ShadowmaskState::OmittedForWidth;
-    let report = run_dry_run(&fixture);
-    for source in &report.sources {
-        for bound in &source.bounds {
-            for (cell, bytes) in &bound.cells {
-                let (texel_exact, half_res) = bytes.with_omitted_mask.expect("restored column");
-                // Id 22 alone is 1.5 B/texel; the restored mask adds 2.
-                let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
-                assert!(
-                    close(texel_exact * 1.5, bytes.texel_exact * 3.5),
-                    "cell {cell}"
-                );
-                assert!(close(half_res * 1.5, bytes.half_res * 3.5), "cell {cell}");
-            }
-        }
-    }
-    let rendered = report.render();
-    assert!(rendered.contains("texel-exact + omitted id42"));
-    assert!(rendered.contains("half-res + omitted id42"));
-    assert!(report.csv().contains("texel_exact_with_omitted_id42_bytes"));
-    assert!(report.csv().contains("half_res_with_omitted_id42_bytes"));
 }
 
 /// Two portal components: cells 0–3 are 20 m cubes chained along X, cells 4

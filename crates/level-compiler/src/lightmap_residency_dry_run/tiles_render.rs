@@ -103,11 +103,6 @@ impl DryRunReport {
             "tile/exact = tile texels over chart texels, whole map; shared t/e = the same for \
              charts that fit a tile, excluding oversize charts and their dedicated tiles\n",
         );
-        if self.omitted_mask {
-            out.push_str(
-                "exact max includes the omitted id 42 restored, as every tile charges it\n",
-            );
-        }
         let _ = writeln!(
             out,
             "{:<8} {:>4} {:<5} {:>9} {:>7} {:>9} {:>10} {:>11} {:>11} {:>13}  worst cell",
@@ -139,7 +134,7 @@ impl DryRunReport {
                 let exact_max = lead
                     .cells
                     .iter()
-                    .map(|(_, bytes)| bytes.texel_exact_charging_mask())
+                    .map(|(_, bytes)| bytes.texel_exact)
                     .fold(0.0, f64::max);
                 let worst = sorted.first().map_or(String::new(), |&(_, cell)| {
                     format!("{cell}@{}", self.format_center(cell))

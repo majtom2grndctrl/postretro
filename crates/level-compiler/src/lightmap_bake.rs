@@ -43,6 +43,7 @@ pub(crate) use cell_blocks::{
 };
 pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
+pub use face_cut::CutParent;
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
 
@@ -308,6 +309,7 @@ pub fn bake_lightmap_controlled(
         inputs.geometry,
         inputs.lights,
         cut.charts,
+        cut.cut_parents,
         BlockOrdering::by_cell_id(DIRECTION_TEXEL_SCALE),
         LIGHTMAP_POOL_LAYER_EDGE,
         &BakeControl::unrestricted(),
@@ -625,15 +627,16 @@ pub(crate) fn light_contribution_and_direction(
     }
 }
 
-/// The direct-contribution floor shared by the lightmap bake and analytic
-/// shadowmask coverage. Keeping the comparison in one helper prevents graph
-/// membership from drifting away from the bake's `Option` boundary.
+/// The direct-contribution floor that gates the bake's `None` result in
+/// `light_texel_contribution_and_visibility_with`. `light_texel_is_covered`
+/// (test-only) reuses it as a coverage oracle, so tests agree with the bake.
 pub(crate) const LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED: f32 = 1.0e-12;
 
 pub(crate) fn contribution_covers_shadowmask(contribution_squared: f32) -> bool {
     contribution_squared > LIGHT_TEXEL_CONTRIBUTION_EPSILON_SQUARED
 }
 
+#[cfg(test)]
 /// Whether a light geometrically covers a texel before any visibility ray.
 pub(crate) fn light_texel_is_covered(
     light: &MapLight,

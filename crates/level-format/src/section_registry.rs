@@ -177,9 +177,10 @@ pub enum SectionId {
     /// cell. See `direct_sh_delta_volumes::DirectShDeltaVolumesSection`.
     DirectShDeltaVolumes = 41,
 
-    /// Per-selected-light baked world-visibility masks for up to four
-    /// overlapping selected lights, stored per id-22 cell block as two BC5
-    /// `.rg` group planes (slot `s` in group `s / 2`, channel `s % 2`).
+    /// Per-face owner lights (up to four per id-17 face, compact static
+    /// spec-light indices) and their baked world-visibility masks, stored per
+    /// id-22 cell block as two BC5 `.rg` group planes (owner position `s` in
+    /// group `s / 2`, channel `s % 2`). Independent of ids 40 and 41.
     /// See `shadowmask_atlas::ShadowmaskAtlasSection`.
     ShadowmaskAtlas = 42,
 

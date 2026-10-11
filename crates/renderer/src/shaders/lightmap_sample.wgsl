@@ -50,7 +50,8 @@ fn lightmap_block_resident(layer_flags: u32) -> bool {
     return ((layer_flags >> 16u) & LIGHTMAP_BLOCK_RESIDENT) != 0u;
 }
 
-// A real block whose texels are not in the pool: a transient miss.
+// A real block whose texels are not in the pool: a transient miss. No
+// production caller; kept as a test probe for the block-flag states.
 fn lightmap_block_missing(layer_flags: u32) -> bool {
     return ((layer_flags >> 16u) & (LIGHTMAP_BLOCK_RESIDENT | LIGHTMAP_BLOCK_NONE)) == 0u;
 }
@@ -147,13 +148,14 @@ fn animated_block_uv(block_texel: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
     return out;
 }
 
-// Each pool layer holds two BC5 mask groups side by side: slots 0/1 in the
+// Each pool layer holds two BC5 mask groups side by side: channels 0/1 in the
 // left half, 2/3 in the right, a block's group B at `edge + x`. Returns the
-// four slots in one vector. The no-lightmap entry reads all-visible; a missed
-// block reads zero, so the union subtracts nothing (and shadowmask-gated
-// specular drops, see `shadowmask_visibility_for_spec_light`). A rejected or
-// absent shadowmask binds a one-layer, two-texel white texture; clamping the
-// pool layer keeps that fallback on its fully-visible layer.
+// four channels in one vector. The no-lightmap entry reads all-visible and a
+// missed block reads zero; world specular reads neither, since both drop
+// every owner (`static_spec_owners_readable` in forward.wgsl), and a miss
+// leaves the union nothing to subtract. A rejected or absent shadowmask binds
+// a one-layer, two-texel white texture; clamping the pool layer keeps that
+// fallback on its fully-visible layer.
 fn sample_shadowmask_atlas(texel: vec2<f32>, layer_flags: u32, rect: vec4<u32>) -> vec4<f32> {
     let flags = layer_flags >> 16u;
     if (flags & LIGHTMAP_BLOCK_NONE) != 0u {

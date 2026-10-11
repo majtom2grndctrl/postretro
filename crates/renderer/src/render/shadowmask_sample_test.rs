@@ -1,12 +1,12 @@
 // GPU readback of the forward shader's shadowmask sampling helper and both
-// decode paths' slot selects, against hand-built BC5 cell blocks placed in the
-// shadowmask pool and against the 2×1 placeholder, uploaded through the
+// consumers' owner-channel selects, against hand-built BC5 cell blocks placed
+// in the shadowmask pool and against the 2×1 placeholder, uploaded through the
 // renderer's own pool upload and resolved through the real block table.
 // The WGSL helpers it calls are extracted verbatim from forward.wgsl and
 // lightmap_sample.wgsl; its own entry point repeats the union path's
-// skip-then-select order, which the shader_tests grep gate pins in
+// find-skip-select order, which the shader_tests grep gate pins in
 // `shadowmask_union_subtraction` itself.
-// See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
+// See: context/lib/rendering_pipeline.md §4 (Static specular ownership)
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
 // helper is WGSL, so verifying it means running it. `textureSample` needs a
@@ -16,19 +16,18 @@
 // `POSTRETRO_REQUIRE_GPU` to any non-empty value other than `0` to make a
 // missing adapter fail the test instead of skipping it.
 
-use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT,
-};
-use postretro_lighting::spec_buffer::SPEC_LIGHT_SHADOWMASK_NONE;
+use postretro_level_format::shadowmask_atlas::{SHADOWMASK_GROUP_COUNT, SHADOWMASK_OWNER_CHANNELS};
+use postretro_render_cpu::frame_uniforms::SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
 use postretro_render_cpu::lightmap_pool::{
     AllResidentPool, BlockPlacement, block_table_bytes, placeholder_block_table,
 };
+
+use super::gpu_test_harness::{GpuCtx, bc_gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
 
 use crate::lighting::lightmap::test_fixtures::{FixtureTexels, block_fixture};
 use crate::lighting::lightmap::{
     StaticPoolPlan, filtering_sampler_descriptor, upload_placeholder_shadowmask, upload_static_pool,
 };
-use crate::render::shadowmask::metadata_channel_value;
 
 /// Two 8×8 cell blocks, one per pool layer, at non-zero pool offsets.
 const BLOCK_EDGE: u32 = 8;
@@ -45,7 +44,7 @@ const PLACEMENTS: [BlockPlacement; 2] = [
         y: 20,
     },
 ];
-const PROBE_BYTES: usize = 32;
+const PROBE_BYTES: usize = 16;
 const OUTPUT_TEXEL_BYTES: u32 = 16;
 /// Render targets: the sampled mask, then the two paths' selects (even pixel)
 /// or the union attenuation at entity visibility 1 and 0 (odd pixel). Two
@@ -56,135 +55,24 @@ const PIXELS_PER_PROBE: u32 = 2;
 const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
 const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../shaders/lightmap_sample.wgsl");
 
-struct GpuCtx {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-}
-
-fn try_init_gpu() -> Option<GpuCtx> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))
-    .ok()?;
-    if !adapter
-        .features()
-        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
-    {
-        return None;
-    }
-    eprintln!(
-        "[shadowmask_sample_test] running on {:?}",
-        adapter.get_info().name
-    );
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("shadowmask_sample_test Device"),
-        required_features: wgpu::Features::TEXTURE_COMPRESSION_BC,
-        required_limits: wgpu::Limits::default(),
-        ..Default::default()
-    }))
-    .ok()?;
-    Some(GpuCtx { device, queue })
-}
-
-/// A BC-capable GPU, or `None` after saying the test skipped. Under
-/// `POSTRETRO_REQUIRE_GPU` a missing adapter panics, so a run that must
-/// prove something on an adapter cannot pass by skipping.
-fn gpu_or_skip(test: &str) -> Option<GpuCtx> {
-    if let Some(ctx) = try_init_gpu() {
-        return Some(ctx);
-    }
-    let required =
-        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
-    assert!(
-        !required,
-        "[shadowmask_sample_test] {test}: POSTRETRO_REQUIRE_GPU is set but no BC-capable GPU \
-         adapter is available"
-    );
-    eprintln!("[shadowmask_sample_test] skipping {test}: no BC-capable GPU adapter available");
-    None
-}
-
-/// The text of `fn name(` through its matching closing brace in `source`.
-fn wgsl_function<'a>(source: &'a str, name: &str) -> &'a str {
-    let start = source
-        .find(&format!("fn {name}("))
-        .unwrap_or_else(|| panic!("the WGSL source must declare `{name}`"));
-    let open = start + source[start..].find('{').expect("function body");
-    let mut depth = 0usize;
-    for (offset, ch) in source[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &source[start..=open + offset];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{name}` body never closes");
-}
-
-/// The module-scope `const NAME…;` line of forward.wgsl or lightmap_sample.wgsl.
-fn wgsl_const_line(name: &str) -> &'static str {
-    [FORWARD_WGSL, LIGHTMAP_SAMPLE_WGSL]
-        .into_iter()
-        .flat_map(str::lines)
-        .find(|line| line.starts_with(&format!("const {name}:")))
-        .unwrap_or_else(|| panic!("the WGSL sources must declare `{name}`"))
-}
-
-/// The text of `struct name {` through its closing brace in lightmap_sample.wgsl.
-fn wgsl_struct(name: &str) -> &'static str {
-    let header = format!("struct {name} {{");
-    let start = LIGHTMAP_SAMPLE_WGSL
-        .find(&header)
-        .unwrap_or_else(|| panic!("lightmap_sample.wgsl must declare `{name}`"));
-    let end = start
-        + LIGHTMAP_SAMPLE_WGSL[start..]
-            .find("};")
-            .expect("struct closes")
-        + 2;
-    &LIGHTMAP_SAMPLE_WGSL[start..end]
-}
-
-/// The union's skip sentinel, read from forward.wgsl so the harness asserts
-/// against the shader's own value.
-fn union_channel_none() -> u32 {
-    let line = wgsl_const_line("SHADOWMASK_UNION_CHANNEL_NONE");
-    line.split_once('=')
-        .and_then(|(_, value)| value.trim().strip_suffix("u;"))
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| panic!("unparsed skip sentinel: {line}"))
-}
+/// Owner position the harness uses for a light that does not own the face:
+/// the union's not-found value, `SPEC_OWNER_CHANNELS` in forward.wgsl.
+const NOT_AN_OWNER: u32 = SHADOWMASK_OWNER_CHANNELS as u32;
 
 fn shader_source() -> String {
     let consts = [
-        wgsl_const_line("SHADOWMASK_CHANNEL_DROPPED"),
-        wgsl_const_line("SHADOWMASK_UNION_CHANNEL_NONE"),
-        wgsl_const_line("LIGHTMAP_POOL_LAYER_EDGE"),
-        wgsl_const_line("LIGHTMAP_BLOCK_RESIDENT"),
-        wgsl_const_line("LIGHTMAP_BLOCK_NONE"),
-        wgsl_struct("LightmapBlockVaryings"),
+        wgsl_const_line(FORWARD_WGSL, "SPEC_OWNER_EMPTY"),
+        wgsl_const_line(FORWARD_WGSL, "SPEC_OWNER_CHANNELS"),
+        wgsl_const_line(FORWARD_WGSL, "SPEC_SHADOWMASK_FLAG_MASK_PRESENT"),
+        wgsl_const_line(LIGHTMAP_SAMPLE_WGSL, "LIGHTMAP_POOL_LAYER_EDGE"),
+        wgsl_const_line(LIGHTMAP_SAMPLE_WGSL, "LIGHTMAP_BLOCK_RESIDENT"),
+        wgsl_const_line(LIGHTMAP_SAMPLE_WGSL, "LIGHTMAP_BLOCK_NONE"),
+        wgsl_item(LIGHTMAP_SAMPLE_WGSL, "struct LightmapBlockVaryings {"),
     ]
     .join("\n");
     let prelude = r#"
-struct SpecLight {
-    position_and_range: vec4<f32>,
-    color_and_pad:      vec4<f32>,
-    cone_dir_and_type:  vec4<f32>,
-    cone_cos:           vec4<f32>,
-};
 struct HarnessUniforms {
-    spec_shadowmask_force_one: u32,
+    spec_shadowmask_flags: u32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
@@ -192,11 +80,7 @@ struct HarnessUniforms {
 struct Probe {
     uv: vec2<f32>,
     block: u32,
-    union_channel: f32,
-    spec_channel: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    position: u32,
 };
 @group(0) @binding(0) var shadowmask_atlas: texture_2d_array<f32>;
 @group(0) @binding(1) var lightmap_filtering_sampler: sampler;
@@ -224,23 +108,23 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
     let probe = probes[pixel / 2u];
     let block = resolve_lightmap_block(probe.block, probe.uv);
     let mask = sample_shadowmask_atlas(block.texel, block.layer_flags, block.rect);
-    var spec: SpecLight;
-    spec.cone_cos = vec4<f32>(0.0, 0.0, probe.spec_channel, 0.0);
-    // `shadowmask_union_subtraction`'s own sequence: resolve the metadata
-    // float through its guard, skip NONE, then select from the hoisted mask.
-    let union_channel = shadowmask_union_channel(probe.union_channel);
-    var selects = vec4<f32>(
-        shadowmask_visibility_for_spec_light(
-            spec,
-            mask,
-            lightmap_block_missing(block.layer_flags),
-        ),
-        f32(union_channel),
-        0.0,
-        0.0,
-    );
+    // A face owned by spec lights 10..13 at positions 0..3. The probe's light
+    // is the owner at `position`, or spec light 99, which owns nothing.
+    let owners = vec4<u32>(10u, 11u, 12u, 13u);
+    let spec_idx = select(99u, 10u + probe.position, probe.position < SPEC_OWNER_CHANNELS);
+    // World static specular: owner position s reads channel s, gated as
+    // fs_main gates it.
+    let readable = static_spec_owners_readable(block.layer_flags);
+    var spec_visibility = 0.0;
+    if readable && probe.position < SPEC_OWNER_CHANNELS {
+        spec_visibility = shadowmask_channel_value(mask, probe.position);
+    }
+    // `shadowmask_union_subtraction`'s own sequence: find the light among the
+    // face's owners, skip a non-owner, then select from the hoisted mask.
+    let union_channel = shadowmask_owner_channel(owners, spec_idx);
+    var selects = vec4<f32>(spec_visibility, f32(union_channel), 0.0, 0.0);
     var attenuations = vec4<f32>(0.0);
-    if union_channel != SHADOWMASK_UNION_CHANNEL_NONE {
+    if union_channel != SPEC_OWNER_CHANNELS {
         let baked_vis = shadowmask_channel_value(mask, union_channel);
         selects.z = baked_vis;
         attenuations = vec4<f32>(
@@ -260,12 +144,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
         ("shadowmask_channel_value", FORWARD_WGSL),
         ("resolve_lightmap_block", LIGHTMAP_SAMPLE_WGSL),
         ("lightmap_block_layer", LIGHTMAP_SAMPLE_WGSL),
-        ("lightmap_block_missing", LIGHTMAP_SAMPLE_WGSL),
+        ("lightmap_block_resident", LIGHTMAP_SAMPLE_WGSL),
         ("lightmap_pool_uv", LIGHTMAP_SAMPLE_WGSL),
         ("sample_shadowmask_atlas", LIGHTMAP_SAMPLE_WGSL),
-        ("shadowmask_visibility_for_spec_light", FORWARD_WGSL),
+        ("static_spec_mask_present", FORWARD_WGSL),
+        ("static_spec_owners_readable", FORWARD_WGSL),
+        ("shadowmask_owner_channel", FORWARD_WGSL),
         ("shadowmask_attenuation", FORWARD_WGSL),
-        ("shadowmask_union_channel", FORWARD_WGSL),
     ]
     .into_iter()
     .map(|(name, source)| wgsl_function(source, name))
@@ -279,38 +164,25 @@ struct Probe {
     uv: [f32; 2],
     /// Cell block id + 1, as `WorldVertex::lightmap_block` names it.
     block: u32,
-    /// Mask slot `0..3`, or `SHADOWMASK_CHANNEL_DROPPED`. Drives the
-    /// world-specular channel.
-    slot: u8,
-    /// The promoted-union metadata channel float, as the CPU uploads it.
-    union_channel: f32,
+    /// The light's owner position `0..3` on the face, or [`NOT_AN_OWNER`].
+    position: u32,
 }
 
 impl Probe {
-    fn new(uv: [f32; 2], block: u32, slot: u8) -> Self {
+    fn new(uv: [f32; 2], block: u32, position: u32) -> Self {
         Self {
             uv,
             block,
-            slot,
-            union_channel: metadata_channel_value(slot),
+            position,
         }
     }
 
     fn bytes(self) -> [u8; PROBE_BYTES] {
-        let spec_channel = if self.slot == SHADOWMASK_CHANNEL_DROPPED {
-            SPEC_LIGHT_SHADOWMASK_NONE
-        } else {
-            f32::from(self.slot)
-        };
         let words = [
             self.uv[0].to_bits(),
             self.uv[1].to_bits(),
             self.block,
-            self.union_channel.to_bits(),
-            spec_channel.to_bits(),
-            0,
-            0,
-            0,
+            self.position,
         ];
         let mut out = [0u8; PROBE_BYTES];
         for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
@@ -322,9 +194,10 @@ impl Probe {
 
 struct ProbeResult {
     mask: [f32; 4],
+    /// The visibility world static specular gives the probe's owner.
     spec_visibility: f32,
-    /// `shadowmask_union_channel`'s result; the union skips the light when it
-    /// is `union_channel_none()`.
+    /// `shadowmask_owner_channel`'s result; the union skips the light when it
+    /// is [`NOT_AN_OWNER`].
     union_channel: u32,
     /// The union's selected mask value; meaningful only for a real channel.
     union_visibility: f32,
@@ -332,11 +205,14 @@ struct ProbeResult {
     union_attenuation_at_entity_visibility_zero: f32,
 }
 
+/// `mask_present` is the frame uniforms' bit: set for a real id-42 pool,
+/// clear for the placeholder.
 fn run_probes(
     ctx: &GpuCtx,
     texture: &wgpu::Texture,
     block_table: &[u8],
     probes: &[Probe],
+    mask_present: bool,
 ) -> Vec<ProbeResult> {
     use wgpu::util::DeviceExt;
 
@@ -350,9 +226,13 @@ fn run_probes(
         ..Default::default()
     });
     let sampler = device.create_sampler(&filtering_sampler_descriptor());
+    let mut uniform_bytes = [0u8; 16];
+    if mask_present {
+        uniform_bytes[..4].copy_from_slice(&SPEC_SHADOWMASK_FLAG_MASK_PRESENT.to_ne_bytes());
+    }
     let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("harness uniforms"),
-        contents: &[0u8; 16],
+        contents: &uniform_bytes,
         usage: wgpu::BufferUsages::UNIFORM,
     });
     let probe_bytes: Vec<u8> = probes.iter().flat_map(|probe| probe.bytes()).collect();
@@ -608,19 +488,20 @@ fn run_probes(
         .collect()
 }
 
-/// The raw byte slot `slot` holds in BC block (`bx`, `by`) of cell `block`.
-/// Distinct per slot, BC block and cell block, and constant within a BC
-/// block, so BC4 reproduces it exactly and any misrouted read shows as a wrong
-/// value.
-fn mask_byte(slot: u32, bx: u32, by: u32, block: u32) -> u8 {
-    (10 + slot * 50 + bx * 20 + by * 7 + block * 3) as u8
+/// The raw byte channel `channel` holds in BC block (`bx`, `by`) of cell
+/// `block`. Distinct per channel, BC block and cell block, and constant within
+/// a BC block, so BC4 reproduces it exactly and any misrouted read shows as a
+/// wrong value.
+fn mask_byte(channel: u32, bx: u32, by: u32, block: u32) -> u8 {
+    (10 + channel * 50 + bx * 20 + by * 7 + block * 3) as u8
 }
 
-/// The two cell blocks in the shadowmask pool, group 0 holding slots 0/1 and
-/// group 1 slots 2/3, and the block table naming their placements.
+/// The two cell blocks in the shadowmask pool, group 0 holding channels 0/1
+/// and group 1 channels 2/3, and the block table naming their placements.
 fn fixture_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
     let extents = [(BLOCK_EDGE, BLOCK_EDGE); BLOCK_COUNT as usize];
-    let mask = |block: usize, slot: u32, bx: u32, by: u32| mask_byte(slot, bx, by, block as u32);
+    let mask =
+        |block: usize, channel: u32, bx: u32, by: u32| mask_byte(channel, bx, by, block as u32);
     let fixture = block_fixture(
         &extents,
         2,
@@ -648,8 +529,8 @@ fn fixture_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
 }
 
 fn expected_mask(texel_x: u32, texel_y: u32, block: u32) -> [f32; 4] {
-    std::array::from_fn(|slot| {
-        f32::from(mask_byte(slot as u32, texel_x / 4, texel_y / 4, block)) / 255.0
+    std::array::from_fn(|channel| {
+        f32::from(mask_byte(channel as u32, texel_x / 4, texel_y / 4, block)) / 255.0
     })
 }
 
@@ -664,32 +545,32 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
     );
 }
 
-/// Both decode paths select slot `slot`'s own mask, or read fully lit / skip
-/// for the dropped sentinel. For a real slot, the union's attenuation is wired
-/// to that slot's mask: all of it at entity visibility 0, none at 1.
-fn assert_selects(result: &ProbeResult, slot: u8, what: &str) {
-    if slot == SHADOWMASK_CHANNEL_DROPPED {
-        assert_near(
-            result.spec_visibility,
-            1.0,
-            &format!("{what}: world specular reads a dropped slot fully lit"),
+/// Both consumers select owner position `position`'s own mask channel; a
+/// light that owns nothing reads no channel and the union skips it. For an
+/// owner, the union's attenuation is wired to that channel: all of it at
+/// entity visibility 0, none at 1. Where owners are unreadable (the
+/// no-lightmap entry), world specular gives every owner zero visibility.
+fn assert_selects(result: &ProbeResult, position: u32, owners_readable: bool, what: &str) {
+    if position == NOT_AN_OWNER {
+        assert_eq!(
+            result.spec_visibility, 0.0,
+            "{what}: a non-owner adds no specular"
         );
         assert_eq!(
-            result.union_channel,
-            union_channel_none(),
-            "{what}: the promoted union must skip a dropped slot"
+            result.union_channel, NOT_AN_OWNER,
+            "{what}: the promoted union must skip a light that does not own the face"
         );
         return;
     }
-    let baked_vis = result.mask[slot as usize];
+    let baked_vis = result.mask[position as usize];
+    let spec_visibility = if owners_readable { baked_vis } else { 0.0 };
     assert_near(
         result.spec_visibility,
-        baked_vis,
+        spec_visibility,
         &format!("{what}: world specular"),
     );
     assert_eq!(
-        result.union_channel,
-        u32::from(slot),
+        result.union_channel, position,
         "{what}: promoted union channel"
     );
     assert_near(
@@ -708,7 +589,7 @@ fn assert_selects(result: &ProbeResult, slot: u8, what: &str) {
     assert_near(
         result.union_attenuation_at_entity_visibility_zero,
         baked_vis,
-        &format!("{what}: a fully occluded entity attenuates by the slot's own mask"),
+        &format!("{what}: a fully occluded entity attenuates by the channel's own mask"),
     );
 }
 
@@ -717,10 +598,10 @@ fn assert_selects(result: &ProbeResult, slot: u8, what: &str) {
 // probes against groups that differ at the seam; the block clamp also keeps
 // them off the empty pool texels beside each block.
 #[test]
-fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
-    let Some(ctx) =
-        gpu_or_skip("every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv")
-    else {
+fn every_owner_position_reads_its_own_channel_at_centers_block_edges_and_outer_uv() {
+    let Some(ctx) = bc_gpu_or_skip(
+        "every_owner_position_reads_its_own_channel_at_centers_block_edges_and_outer_uv",
+    ) else {
         return;
     };
     let (texture, table) = fixture_pool(&ctx);
@@ -735,6 +616,7 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
                 let u = texel_center(texel_x, BLOCK_EDGE);
                 expectations.push((
                     expected_mask(texel_x, texel_y, block),
+                    true,
                     format!("texel ({texel_x}, {texel_y}) block {block}"),
                 ));
                 probes.push(([u, v], block + 1));
@@ -752,18 +634,21 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
             ] {
                 expectations.push((
                     expected_mask(texel_x, texel_y, block),
+                    true,
                     format!("u = {u}, row {texel_y}, block {block}"),
                 ));
                 probes.push(([u, v], block + 1));
             }
         }
     }
-    // A block id past the table resolves to the no-lightmap entry: all visible.
+    // A block id past the table resolves to the no-lightmap entry: it reads
+    // all visible, and that read is no owner's baked visibility, so world
+    // specular drops every owner there.
     probes.push((
         [texel_center(1, BLOCK_EDGE), texel_center(1, BLOCK_EDGE)],
         BLOCK_COUNT + 7,
     ));
-    expectations.push(([1.0; 4], "id past the table".to_string()));
+    expectations.push(([1.0; 4], false, "id past the table".to_string()));
 
     // The seam really differs: group 0's last column against group 1's first.
     let seam_left = expected_mask(BLOCK_EDGE - 1, 0, 0);
@@ -771,29 +656,42 @@ fn every_slot_reads_its_own_group_at_centers_block_edges_and_outer_uv() {
     assert_ne!(seam_left[0], seam_right[2]);
     assert_ne!(seam_left[1], seam_right[3]);
 
-    let slots = [0u8, 1, 2, 3, SHADOWMASK_CHANNEL_DROPPED];
+    let positions = [0u32, 1, 2, 3, NOT_AN_OWNER];
     let expanded: Vec<Probe> = probes
         .iter()
-        .flat_map(|&(uv, block)| slots.iter().map(move |&slot| Probe::new(uv, block, slot)))
+        .flat_map(|&(uv, block)| {
+            positions
+                .iter()
+                .map(move |&position| Probe::new(uv, block, position))
+        })
         .collect();
-    let results = run_probes(&ctx, &texture, &table, &expanded);
+    let results = run_probes(&ctx, &texture, &table, &expanded, true);
 
     for (index, result) in results.iter().enumerate() {
-        let (expected, what) = &expectations[index / slots.len()];
-        let slot = slots[index % slots.len()];
+        let (expected, owners_readable, what) = &expectations[index / positions.len()];
+        let position = positions[index % positions.len()];
         for (component, (&actual, &want)) in result.mask.iter().zip(expected).enumerate() {
-            assert_near(actual, want, &format!("{what}: slot {component} mask"));
+            assert_near(actual, want, &format!("{what}: channel {component} mask"));
         }
-        assert_selects(result, slot, &format!("{what}, slot {slot}"));
+        assert_selects(
+            result,
+            position,
+            *owners_readable,
+            &format!("{what}, position {position}"),
+        );
     }
 }
 
-// Pin: placeholder-second-group. A second-group slot against the 2×1 white
+// Pin: placeholder-second-group. A second-group channel against the 2×1 white
 // placeholder reads a real, fully visible texel at any UV and for any block
-// id, through placeholder mode's one-entry table.
+// id, through placeholder mode's one-entry table. That texel is no mask: the
+// mask-present bit is clear, so world specular gives no owner a visibility,
+// and only the union's bit gate (pinned by shader_tests) keeps it from
+// subtracting.
 #[test]
-fn placeholder_reads_fully_lit_for_every_slot_and_block() {
-    let Some(ctx) = gpu_or_skip("placeholder_reads_fully_lit_for_every_slot_and_block") else {
+fn placeholder_reads_fully_lit_for_every_channel_and_block() {
+    let Some(ctx) = bc_gpu_or_skip("placeholder_reads_fully_lit_for_every_channel_and_block")
+    else {
         return;
     };
     let texture = upload_placeholder_shadowmask(&ctx.device, &ctx.queue);
@@ -807,68 +705,27 @@ fn placeholder_reads_fully_lit_for_every_slot_and_block() {
         .into_iter()
         .flat_map(|uv| {
             [0u32, 3].into_iter().flat_map(move |block| {
-                [0u8, 1, 2, 3, SHADOWMASK_CHANNEL_DROPPED]
+                [0u32, 1, 2, 3]
                     .into_iter()
-                    .map(move |slot| Probe::new(uv, block, slot))
+                    .map(move |position| Probe::new(uv, block, position))
             })
         })
         .collect();
-    let results = run_probes(&ctx, &texture, &table, &probes);
+    let results = run_probes(&ctx, &texture, &table, &probes, false);
     for (probe, result) in probes.iter().zip(&results) {
         let what = format!(
-            "placeholder uv {:?} block {} slot {}",
-            probe.uv, probe.block, probe.slot
+            "placeholder uv {:?} block {} position {}",
+            probe.uv, probe.block, probe.position
         );
         assert!(
             result.mask.iter().all(|&m| m == 1.0),
             "{what}: mask {:?}",
             result.mask
         );
-        assert_selects(result, probe.slot, &what);
-        assert_eq!(result.spec_visibility, 1.0, "{what}");
-    }
-}
-
-// M1 (union half): the union's real channel guard, run on an adapter. Every
-// metadata float the CPU never emits for a live slot — negative, fractional,
-// at or past the dropped sentinel — resolves to the skip sentinel, and the
-// union path (order pinned by shader_tests) skips the light instead of
-// selecting a mask. NaN is left out:
-// WGSL lets implementations assume it never occurs.
-#[test]
-fn union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata() {
-    let Some(ctx) =
-        gpu_or_skip("union_channel_skips_dropped_negative_fractional_and_out_of_range_metadata")
-    else {
-        return;
-    };
-    let (texture, table) = fixture_pool(&ctx);
-    let uv = [texel_center(1, BLOCK_EDGE), texel_center(1, BLOCK_EDGE)];
-    let invalid = [
-        metadata_channel_value(SHADOWMASK_CHANNEL_DROPPED),
-        -1.0,
-        -0.5,
-        0.5,
-        2.25,
-        3.999,
-        4.0,
-        5.0,
-        255.0,
-    ];
-    let probes: Vec<Probe> = invalid
-        .iter()
-        .map(|&union_channel| Probe {
-            union_channel,
-            ..Probe::new(uv, 1, SHADOWMASK_CHANNEL_DROPPED)
-        })
-        .collect();
-    let results = run_probes(&ctx, &texture, &table, &probes);
-    for (probe, result) in probes.iter().zip(&results) {
         assert_eq!(
-            result.union_channel,
-            union_channel_none(),
-            "union channel metadata {} must skip the light",
-            probe.union_channel
+            result.spec_visibility, 0.0,
+            "{what}: no mask present, so no owner reads the placeholder"
         );
+        assert_eq!(result.union_channel, probe.position, "{what}");
     }
 }

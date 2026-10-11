@@ -47,6 +47,44 @@ pub(crate) fn cast_world_vertices_to_bytes(
     bytes
 }
 
+/// The forward pass's owner vertex stream as bytes: one `Uint16x4` per
+/// vertex, at least one entry so the buffer is never empty. An `owners` slice
+/// that does not match `vertex_count` packs all-empty, so a vertex never reads
+/// another vertex's owners. An empty slice is the normal no-owner case
+/// (hand-built geometry only: the loader always delivers a full-length stream,
+/// all-empty for a level without id 42); a non-empty mismatch means the
+/// loader's stream disagrees with the geometry, so it warns.
+pub(crate) fn cast_spec_owners_to_bytes(
+    owners: &[postretro_level_format::shadowmask_atlas::FaceOwners],
+    vertex_count: usize,
+) -> Vec<u8> {
+    use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+    let count = vertex_count.max(1);
+    let owners = if owners.len() == vertex_count {
+        owners
+    } else {
+        if !owners.is_empty() {
+            log::warn!(
+                "[Renderer] spec owner stream holds {} entries for {vertex_count} vertices; \
+                 world static specular adds nothing from face owners",
+                owners.len()
+            );
+        }
+        &[]
+    };
+    let mut bytes = Vec::with_capacity(count * SPEC_OWNER_STRIDE);
+    for index in 0..count {
+        for owner in owners.get(index).unwrap_or(&NO_FACE_OWNERS) {
+            bytes.extend_from_slice(&owner.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
+/// Bytes per owner-stream vertex: one face's four u16 owners.
+pub(crate) const SPEC_OWNER_STRIDE: usize =
+    std::mem::size_of::<postretro_level_format::shadowmask_atlas::FaceOwners>();
+
 // Each triangle [a, b, c] → three line pairs [a,b, b,c, c,a].
 // Shared edges are emitted multiple times; fine for a debug overlay.
 pub(crate) fn build_line_indices_from_triangles(tri_indices: &[u32]) -> Vec<u32> {
@@ -84,6 +122,7 @@ pub fn level_world_to_geometry<'a>(
     };
     LevelGeometry {
         vertices: &world.vertices,
+        vertex_spec_owners: &world.vertex_spec_owners,
         indices: &world.indices,
         bvh: &world.bvh,
         lights: &world.lights,
@@ -143,5 +182,54 @@ mod tests {
         );
         assert_eq!(u16::from_ne_bytes([bytes[32], bytes[33]]), 0x1234);
         assert_eq!(u16::from_ne_bytes([bytes[34], bytes[35]]), 0xBEEF);
+    }
+
+    #[test]
+    fn spec_owner_stream_packs_one_uint16x4_per_vertex_and_never_short() {
+        use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+        let owners = [[1, 2, 0xFFFF, 0xFFFF], [7, 0xFFFF, 0xFFFF, 0xFFFF]];
+        let bytes = cast_spec_owners_to_bytes(&owners, 2);
+        assert_eq!(bytes.len(), 2 * SPEC_OWNER_STRIDE);
+        let read = |at: usize| u16::from_ne_bytes([bytes[at], bytes[at + 1]]);
+        assert_eq!([read(0), read(2), read(4), read(6)], owners[0]);
+        assert_eq!([read(8), read(10), read(12), read(14)], owners[1]);
+
+        // A stream that does not match the vertices installs all-empty at
+        // the vertex count, never short.
+        for (stream, vertices) in [(&owners[..1], 3), (&[][..], 2), (&owners[..], 0)] {
+            let bytes = cast_spec_owners_to_bytes(stream, vertices);
+            assert_eq!(bytes.len(), vertices.max(1) * SPEC_OWNER_STRIDE);
+            assert!(
+                bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .all(|owner| u16::from_ne_bytes(*owner) == NO_FACE_OWNERS[0]),
+                "{vertices} vertices"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_owner_stream_warns_once_only_on_a_non_empty_length_mismatch() {
+        // The capture sees only this thread; the cast runs inline on it.
+        let owners = [[1, 2, 0xFFFF, 0xFFFF], [7, 0xFFFF, 0xFFFF, 0xFFFF]];
+        let capture = postretro_test_log_capture::LogCapture::start();
+
+        cast_spec_owners_to_bytes(&owners[..1], 3);
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "[Renderer] spec owner stream holds 1 entries for 3 vertices",
+        );
+        assert_eq!(capture.records().len(), 1, "one warning, nothing else");
+
+        capture.clear();
+        cast_spec_owners_to_bytes(&[], 3);
+        cast_spec_owners_to_bytes(&owners, 2);
+        assert!(
+            capture.records().is_empty(),
+            "an empty slice and a matching stream log nothing: {:?}",
+            capture.records()
+        );
     }
 }

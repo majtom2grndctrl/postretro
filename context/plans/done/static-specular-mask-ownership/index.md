@@ -54,7 +54,9 @@ a light lost a highlight to capacity.
     `plans/done/specular-shadowmask-occlusion`. That exclusion existed because a sun
     cost a map-wide slot.
 - **A directional highlight follows the light's direction,** as its bake does, rather
-  than aiming at the entity origin.
+  than aiming at the entity origin. An SDF directional light has no bake to follow, so
+  its highlight stays keyed on its origin, where its SDF diffuse and visibility trace
+  place it (owner, 2026-10-10).
 - **Admission by shadowed contribution.** A light is a candidate on a face only where
   its quantized baked visibility is non-zero on a chart-interior texel. Padding never
   admits.
@@ -87,8 +89,11 @@ a light lost a highlight to capacity.
   - For ranking, a cut face's floor comes from the estimate scaled to area. For the
     report, it comes from the parent's exact lit-texel count after the walk.
   - Faces that were not cut rank on exact per-face sums.
-- **An owned channel reads occluded wherever its owner wrote nothing,** including
-  padding and texels another owner held before.
+- **An owned channel holds only its owner's values.** Interior texels its owner did not
+  reach, and texels another owner held before, read occluded. Chart padding repeats the
+  owner's own edge values, as the lightmap's padding does, so a bilinear tap at a face
+  edge reads that edge rather than half of it; an occluded edge pads with zero
+  (owner, 2026-10-10).
 - **Walk resource bounds stay.**
   - No per-(light, texel) visibility is retained, and no texel's visibility is traced
     twice, cold or warm.
@@ -154,7 +159,7 @@ No leak, both sides of ownership:
       an occluded texel, full on a lit one.
 - [ ] An SDF light outside the fragment's selection adds zero specular. One inside it
       adds specular at its SDF visibility.
-- [ ] A directional light's highlight lies along its baked direction. Moving its entity
+- [ ] A directional owner's highlight lies along its baked direction. Moving its entity
       origin without changing its direction leaves the highlight unchanged.
 - [ ] Missing data adds no static non-SDF specular, and SDF specular is unchanged. This
       holds for:

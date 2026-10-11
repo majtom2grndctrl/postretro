@@ -186,7 +186,7 @@ fn evaluate_lead(
             (
                 set.len(),
                 inputs.cell_blocks.set_bytes(&set),
-                exact.texel_exact_charging_mask(),
+                exact.texel_exact,
                 shelf_layers_from_scratch(inputs.cell_blocks, &set),
             )
         })

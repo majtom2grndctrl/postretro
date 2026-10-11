@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use postretro_level_format::lightmap::{LIGHTMAP_HEADER_BYTES, LightmapBlockIndex, LightmapHeader};
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, shadowmask_block_count_offset,
-    shadowmask_prefix_len_through_block_count,
+    SHADOWMASK_BLOCK_RECORD_BYTES, ShadowmaskBlockIndex, ShadowmaskOwnerBounds,
+    shadowmask_block_count_offset, shadowmask_prefix_len_through_block_count,
 };
 use postretro_level_format::{ContainerMeta, SectionEntry, SectionId};
 
@@ -87,26 +87,28 @@ fn residency_read(mode: LightmapStreamingMode, lightmap_prefix: Vec<u8>) -> Ligh
 
 impl LightmapResidencyRead {
     /// Read id 42 to match: its index prefix only when the level streams.
+    /// The owner table is part of that prefix, so it loads whole either way.
     pub(crate) fn read_shadowmask(
         &mut self,
         container: &PrlContainer,
         lightmap: Option<&LightmapBlockIndex>,
+        bounds: ShadowmaskOwnerBounds,
     ) -> Result<Option<LoadedShadowmask>, PrlLoadError> {
         let (LightmapStreamingMode::Stream, Some(file), Some(lightmap)) =
             (self.mode, container.retained_file(), lightmap)
         else {
-            return crate::prl_lightmap::read_shadowmask_atlas(container, lightmap);
+            return crate::prl_lightmap::read_shadowmask_atlas(container, lightmap, bounds);
         };
         let Some((index, prefix)) =
-            read_shadowmask_index_prefix(file, container.metadata(), lightmap)?
+            read_shadowmask_index_prefix(file, container.metadata(), lightmap, bounds)?
         else {
             return Ok(None);
         };
         container.settle_section(SectionId::ShadowmaskAtlas as u32, prefix.len() as u64);
         log::info!(
-            "[PRL] ShadowmaskAtlas: {} cell block(s), {} selected channel entr(y/ies), index only ({} B read)",
+            "[PRL] ShadowmaskAtlas: {} cell block(s), {} face owner entr(y/ies), index only ({} B read)",
             index.records.len(),
-            index.channels.len(),
+            index.owners.len(),
             prefix.len(),
         );
         self.shadowmask_prefix = Some(prefix);
@@ -116,8 +118,7 @@ impl LightmapResidencyRead {
         }))
     }
 
-    /// The level's storage once the load has settled which indexes it keeps
-    /// (id 42 may have been dropped against EntityShadowLights). The manifest
+    /// The level's storage over the indexes the load kept. The manifest
     /// reuses the SH manifest's content tag when SH streams from id 50.
     pub(crate) fn into_storage(
         self,
@@ -187,14 +188,16 @@ fn read_lightmap_index_prefix(
     Ok(Some((index, prefix)))
 }
 
-/// Id 42's fixed header, then its slot table through the block count, then
+/// Id 42's fixed header, then its owner table through the block count, then
 /// its records, each step reading only the bytes the last one proved needed.
-/// The slot table's length is bounded against the section before it is read,
-/// so a bogus selected light count cannot pull in the blobs.
+/// The header's face count is checked against id 17's before the owner table
+/// is sized or read, and the table's length is then bounded against the
+/// section, so a bogus face count cannot pull in the table or the blobs.
 fn read_shadowmask_index_prefix(
     file: &PrlFile,
     meta: &ContainerMeta,
     lightmap: &LightmapBlockIndex,
+    bounds: ShadowmaskOwnerBounds,
 ) -> Result<Option<(ShadowmaskBlockIndex, Vec<u8>)>, PrlLoadError> {
     let Some(entry) = meta.find_section(SectionId::ShadowmaskAtlas as u32) else {
         return Ok(None);
@@ -203,6 +206,18 @@ fn read_shadowmask_index_prefix(
     let invalid = |err| section_validation_from_error("ShadowmaskAtlas", err);
     let mut prefix = Vec::new();
     extend_prefix(file, entry, &mut prefix, 8)?;
+    // Same check, same wording, and same position as `from_prefix`: a face
+    // count that disagrees with id 17's fails here, before any size bound.
+    let header_bounds = ShadowmaskOwnerBounds::from_section_header(&prefix).map_err(invalid)?;
+    if header_bounds.face_count != bounds.face_count {
+        return Err(section_validation(
+            "ShadowmaskAtlas",
+            format!(
+                "shadowmask face count {} does not match id 17's {}",
+                header_bounds.face_count, bounds.face_count
+            ),
+        ));
+    }
     let bound = |block_count| {
         shadowmask_prefix_len_through_block_count(&prefix, entry.size, lightmap, block_count)
     };
@@ -236,8 +251,8 @@ fn read_shadowmask_index_prefix(
             extend_prefix(file, entry, &mut prefix, index_len)?;
         }
     }
-    let index =
-        ShadowmaskBlockIndex::from_prefix(&prefix, entry.size, lightmap).map_err(invalid)?;
+    let index = ShadowmaskBlockIndex::from_prefix(&prefix, entry.size, lightmap, bounds)
+        .map_err(invalid)?;
     Ok(Some((index, prefix)))
 }
 

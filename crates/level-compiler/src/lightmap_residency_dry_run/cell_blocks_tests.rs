@@ -12,7 +12,7 @@ use super::cell_blocks::{BlockDims, CellBlocks};
 use super::dry_run_test_fixtures::{bc6h_formats, chart, input, multi_block_input};
 use super::mandatory::Granularity;
 use super::visible_set_tests::u_turn_input;
-use super::{ChartRect, ShadowmaskState, run_dry_run};
+use super::{ChartRect, run_dry_run};
 use crate::cell_residency_bake::portal_distance::{HubCell, HubPortal, PortalGraphInput};
 use crate::lightmap_bake::{PackedBlock, pack_cell_block as pack_sizes};
 
@@ -299,29 +299,6 @@ fn cell_block_residency_covers_every_lead_and_never_undercuts_texel_exact() {
     assert!(rendered.contains("cell-block pool walks"));
     assert!(rendered.contains("1 portal components"));
     assert_eq!(rendered, run_dry_run(&u_turn_input()).render());
-}
-
-#[test]
-fn block_bytes_and_their_exact_floor_both_charge_an_omitted_for_width_shadowmask() {
-    let mut fixture = u_turn_input();
-    fixture.formats.shadowmask = ShadowmaskState::OmittedForWidth;
-    let report = run_dry_run(&fixture);
-    let visible = report.visible_set.as_ref().unwrap();
-    let exact = &visible.dense[0];
-    assert_eq!(exact.granularity, Granularity::Cell);
-    for (lead, exact_lead) in visible.cell_blocks.leads.iter().zip(&exact.leads) {
-        for (&bytes, (cell, exact)) in lead.bytes.iter().zip(&exact_lead.cells) {
-            // Blocks this narrow carry id 42, so the matching floor must too.
-            let floor = exact.texel_exact_charging_mask();
-            assert!(floor > exact.texel_exact, "cell {cell}");
-            assert!(bytes as f64 >= floor, "cell {cell}");
-        }
-    }
-    assert!(
-        report
-            .render()
-            .contains("exact columns include the omitted id 42")
-    );
 }
 
 #[test]

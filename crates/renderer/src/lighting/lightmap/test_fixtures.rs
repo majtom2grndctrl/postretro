@@ -102,8 +102,10 @@ pub(crate) fn block_fixture(
             .collect()
     });
     let shadowmask = groups.as_ref().map(|groups| {
+        // The pool plans on id 42's presence and blocks; owners ride the
+        // vertex stream, so a face-free table serves every pool fixture.
         ShadowmaskAtlasSection {
-            channels: vec![0, 1, 2, 3],
+            owners: Vec::new(),
             blocks: groups.clone(),
         }
         .index()

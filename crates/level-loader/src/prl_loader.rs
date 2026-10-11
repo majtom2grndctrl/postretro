@@ -1933,7 +1933,12 @@ pub(crate) fn load_prl_from_container(
     )?;
     let lightmap_index = lightmap.as_ref().map(|lightmap| &lightmap.index);
     crate::prl_lightmap::validate_vertex_lightmap_blocks(&vertices, lightmap_index)?;
-    let mut shadowmask_atlas = lightmap_residency.read_shadowmask(&container, lightmap_index)?;
+    // Id 42 validates against id 17 and the static spec lights, never id 40.
+    let shadowmask_atlas = lightmap_residency.read_shadowmask(
+        &container,
+        lightmap_index,
+        crate::prl_lightmap::shadowmask_owner_bounds(face_meta.len(), &lights),
+    )?;
 
     // Optional — absent → no static-occluder SDF; runtime shadow pass disabled.
     // An empty-geometry section (zero grid dims) is also a valid "no SDF"
@@ -2496,11 +2501,6 @@ pub(crate) fn load_prl_from_container(
         }
     };
 
-    crate::prl_lightmap::reconcile_shadowmask_with_shadow_lights(
-        &mut shadowmask_atlas,
-        &entity_shadow_lights,
-    );
-
     // Optional — absent when map has no `data_script` worldspawn KVP.
     let data_script: Option<DataScriptSection> = match read_section(SectionId::DataScript)? {
         Some(data) => {
@@ -2946,6 +2946,14 @@ pub(crate) fn load_prl_from_container(
         shadowmask_atlas.as_ref(),
         stream_manifest.as_deref(),
     )?;
+    let vertex_spec_owners = crate::prl_spec_owners::build_vertex_spec_owners(
+        vertices.len(),
+        &indices,
+        &bvh.leaves,
+        shadowmask_atlas
+            .as_ref()
+            .map(|index| index.owners.as_slice()),
+    );
     let prl_read_counters = container.read_counters().cloned();
     Ok(LevelWorld {
         vertices,
@@ -2983,6 +2991,7 @@ pub(crate) fn load_prl_from_container(
             .animated_billboard_direct_scatter_delta_volumes,
         entity_shadow_lights: lighting.entity_shadow_lights,
         shadowmask_atlas,
+        vertex_spec_owners,
         gpu_lighting_payloads,
         lightmap_storage,
         data_script,

@@ -17,11 +17,10 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_HINT_FLAG_PINNED, ClusterDirectorySection, ClusterHintRecord,
 };
-use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::{DIRECTION_TEXEL_BYTES, LightmapBlockIndex};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
-use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
+use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskOwnerBounds};
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
 
@@ -52,8 +51,11 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
     drop(lightmap_bytes);
     let shadowmask = match optional(SectionId::ShadowmaskAtlas)? {
         Some(bytes) => {
-            let index = ShadowmaskBlockIndex::from_prefix(&bytes, bytes.len() as u64, &lightmap)
-                .context("parse ShadowmaskAtlas")?;
+            let bounds = ShadowmaskOwnerBounds::from_section_header(&bytes)
+                .context("parse ShadowmaskAtlas header")?;
+            let index =
+                ShadowmaskBlockIndex::from_prefix(&bytes, bytes.len() as u64, &lightmap, bounds)
+                    .context("parse ShadowmaskAtlas")?;
             let block_bytes: Vec<u64> = index
                 .records
                 .iter()
@@ -64,21 +66,8 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
                 block_bytes,
             })
         }
-        None => {
-            // The bake emits id 42 for every usable id-40 selection.
-            let selected = match optional(SectionId::EntityShadowLights)? {
-                Some(bytes) => !EntityShadowLightsSection::from_bytes(&bytes)
-                    .map_err(|error| anyhow::anyhow!("parse EntityShadowLights: {error:?}"))?
-                    .light_indices
-                    .is_empty(),
-                None => false,
-            };
-            if selected {
-                ShadowmaskState::OmittedForWidth
-            } else {
-                ShadowmaskState::Absent
-            }
-        }
+        // The bake emits id 42 whenever any face admits a mask owner.
+        None => ShadowmaskState::Absent,
     };
     let formats = AtlasFormats {
         irr_format: lightmap.header.irradiance_format,

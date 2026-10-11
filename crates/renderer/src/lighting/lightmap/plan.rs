@@ -60,6 +60,18 @@ pub(crate) struct StreamingPoolPlan {
 }
 
 impl StaticPool {
+    /// Whether static world specular has a mask to read: id 42's pool is
+    /// planned for real. False without id 42, for a refused mask pool, and in
+    /// placeholder mode, whose all-visible placeholder must never read as an
+    /// owner's mask. Loaded into the frame uniforms' mask-present bit.
+    pub(crate) fn static_specular_mask_present(&self) -> bool {
+        match self {
+            Self::Blocks(plan) => plan.with_shadowmask,
+            Self::Streaming(plan) => plan.with_shadowmask,
+            Self::Absent | Self::Empty | Self::Rejected => false,
+        }
+    }
+
     /// The installed cell blocks' extents, which the animated atlas keys on.
     /// `None` in placeholder mode: the animated atlas has no block frame.
     pub(crate) fn static_block_extents(&self) -> Option<&[(u32, u32)]> {
@@ -75,7 +87,8 @@ impl StaticPool {
 /// Degrades to placeholder mode, logging once, when the payloads disagree with
 /// the index (hand-built geometry), or when the device cannot hold a pool
 /// layer or the layer count the shelf allocator needs. The shadowmask drops
-/// to its all-visible placeholder alone when only its groups are unusable.
+/// to its placeholder alone when only its groups are unusable; the level then
+/// draws no static non-SDF world specular.
 pub(crate) fn plan_static_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
@@ -112,8 +125,7 @@ pub(crate) fn plan_static_pool(
             .inspect_err(|reason| {
                 log::error!(
                     "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
-                     static-light shadowmask; static world specular falls back to fully lit for \
-                     this level"
+                     static-light shadowmask; this level gets no static non-SDF world specular"
                 )
             })
             .is_ok()
@@ -132,8 +144,8 @@ pub(crate) fn plan_static_pool(
 /// plus the spare. A level whose every block at once would not fit the device
 /// still streams, since streaming holds only a subset: the pool model defers
 /// a pair rather than grow past the device's layers. The shadowmask drops to
-/// its all-visible placeholder alone when the device cannot hold its
-/// two-group width.
+/// its placeholder alone when the device cannot hold its two-group width; the
+/// level then draws no static non-SDF world specular.
 pub(crate) fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
@@ -180,8 +192,8 @@ pub(crate) fn plan_streaming_pool(
         shadowmask_width_fits(max_texture_dimension_2d)
             .inspect_err(|reason| {
                 log::error!(
-                    "[Renderer] ShadowmaskAtlas rejected: {reason}; static world specular falls \
-                     back to fully lit for this level"
+                    "[Renderer] ShadowmaskAtlas rejected: {reason}; disabling entity-to-world \
+                     static-light shadowmask; this level gets no static non-SDF world specular"
                 )
             })
             .is_ok()

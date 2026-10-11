@@ -81,6 +81,7 @@ impl Renderer {
         };
         let empty_geometry = LevelGeometry {
             vertices: &[],
+            vertex_spec_owners: &[],
             indices: &[],
             bvh: &empty_bvh,
             lights: &[],
@@ -213,6 +214,14 @@ impl Renderer {
             contents: &vertex_data,
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // The forward pass's owner stream, written once here and never per frame.
+        let spec_owner_data =
+            cast_spec_owners_to_bytes(geometry.vertex_spec_owners, geometry.vertices.len());
+        full.spec_owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("World Spec Owner Buffer"),
+            contents: &spec_owner_data,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         // Indirect slots copy only these checked leaves' baked ranges, and all
         // world indirect passes bind this complete array. Recreate every cull
         // owner below before drawing; no slot may survive an index-buffer swap.
@@ -301,10 +310,6 @@ impl Renderer {
             geometry.lights,
             geometry.entity_shadow_lights,
         );
-        full.shadowmask_channels = geometry
-            .shadowmask_atlas
-            .map(|section| section.channels.clone())
-            .unwrap_or_default();
         full.shadowmask_present = false;
         full.forward_shadowmask_metadata_scratch.clear();
         full.promoted_static_states =
@@ -386,8 +391,7 @@ impl Renderer {
         full.level_light_influences = dynamic_influences;
 
         let spec_lights_data = {
-            let shadowmask_channels = shadowmask::build_spec_light_shadowmask_channels(geometry);
-            let packed = pack_spec_lights(geometry.lights, &shadowmask_channels);
+            let packed = pack_spec_lights(geometry.lights);
             if packed.is_empty() {
                 vec![0u8; SPEC_LIGHT_SIZE]
             } else {

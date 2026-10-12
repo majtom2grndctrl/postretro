@@ -1,10 +1,12 @@
 # coop--networked-by-default — plan of record
 
 mode: resumable
-status: test-ready
+status: done
 read at: bd94e4e3f (source unchanged from fe1881a35 / research 221fdaf4a)
 
 ## Session state
+
+- **P28 landed on 2026-10-11.** Owner says “Great work, let's land the plane!” All acceptance proof is satisfied: M1/M2/M4 owner-reported passes, M3 owner-accepted automated integration proof, and client alternate fire confirmed. Durable entity/networking/scripting contracts now describe shipped behavior; roadmap marks the brief done. Brief moved to `context/plans/done/coop--networked-by-default/`. Final code gates remain P24 (10,680 passed, zero failed, 59 ignored; format/lint/build pass; zero open review findings). Closeout changes only documentation; no tests, build or bakes repeated. Cleanup removes session temporary files/handoff and cleans heavily changed packages; unrelated worktree and map bakes stay intact. No PR or merge is part of this landing. Earlier pending/blocked notes below are historical and superseded by P27/P28.
 
 - **P27 manual gates complete on 2026-10-11.** Owner corrects P26: the `coop-presentation` playtest passed all of M2. All M4 tests also passed, explicitly including OS Reduce Motion. These full-row confirmations supersede the partial P25/P26 readings. M1 is owner-reported pass; M3 has owner-accepted passing automated integration proof; client rifle burst/plasma charge are confirmed working. All acceptance proof is satisfied. Keep `test-ready` while awaiting the owner's landing instruction; no remaining blocking test result. No new code, builds or bakes. Exact running revision and per-step measurements were not supplied.
 
@@ -85,7 +87,7 @@ Reads completed against the unchanged source baseline. Paths below are current p
 
 ## AC-to-proof
 
-The proof column names shipped tests and suites; execution counts and final gates are recorded below. P22 closes the P19 participation-isolation gap. P23/P24 shared-roster focused verification, independent repair closure and final gates pass. M1, M2 and M4 are owner-reported passes; M4 explicitly includes OS Reduce Motion. M3 uses owner-accepted passing automated integration proof. Client alternate fire also passes. All acceptance proof is satisfied; await the owner's landing instruction.
+The proof column names shipped tests and suites; execution counts and final gates are recorded below. P22 closes the P19 participation-isolation gap. P23/P24 shared-roster focused verification, independent repair closure and final gates pass. M1, M2 and M4 are owner-reported passes; M4 explicitly includes OS Reduce Motion. M3 uses owner-accepted passing automated integration proof. Client alternate fire also passes. All acceptance proof is satisfied; owner authorized landing on 2026-10-11.
 
 | AC | Proof | Status | Result |
 |---|---|---|---|
@@ -151,7 +153,8 @@ Task names refer to the original brief; P numbers are execution/checkpoint order
 | P25 | Record owner combat/XP/alternate-fire passes, ambient-loop clarification and M3 automated-proof choice | integrator | P24; owner playtest report | complete; this checkpoint records evidence and remaining manual gaps |
 | P26 | Record owner fixture light-animation synchronization pass | integrator | P25; owner playtest report | complete; M2 light timing confirmed, other manual gaps retained |
 | P27 | Record corrected full M2 and M4 passes, including OS Reduce Motion | integrator | P26; owner correction | complete; acceptance proof satisfied, awaiting landing instruction |
-| P17 | External proof; record owner evidence and wait for land-the-plane instruction | owner; integrator records | P16,P18,P20,P24 | proof complete; M1/M2/M4 and alternate fire reported pass, M3 automated accepted; awaiting landing instruction |
+| P17 | External proof; record owner evidence and wait for land-the-plane instruction | owner; integrator records | P16,P18,P20,P24 | complete; proof satisfied and owner authorized landing |
+| P28 | Land brief, update durable contracts/roadmap, clean session artifacts and publish | integrator | P27; owner landing instruction | complete; documentation-only closeout |
 
 ### Execution evidence
 
@@ -352,7 +355,7 @@ Resource measurement pins 1,324 real-shaped records, budget subtotal, whole-enve
 
 ## External runbook (proof complete)
 
-Current owner results are in P25–P27 above and the report below. M1, full M2 and full M4 pass; OS Reduce Motion is explicitly confirmed. M3 uses owner-accepted passing automated integration proof. No external test result remains blocking. This runbook is retained for reproducibility; await the owner's landing instruction.
+Current owner results are in P25–P27 above and the report below. M1, full M2 and full M4 pass; OS Reduce Motion is explicitly confirmed. M3 uses owner-accepted passing automated integration proof. No external test result remains blocking. This runbook is retained for reproducibility; owner authorized landing on 2026-10-11.
 
 The fixture stations, retained-state setup, TS/Luau variant instructions and SDK/checkout commands are in `content/dev/maps/coop-presentation-test.README.md`. Owner-reported manual results and accepted automated proof are recorded above.
 
@@ -364,7 +367,7 @@ Preparation: same branch/build/content on Mac and Windows. From the checkout roo
 - **M3 (optional manual run; automated proof accepted by owner):** Client enters pressure plate: only client flashes, both hear alarm; reverse with host as activator. With both inside, on.trigger shake reaches both; activator click remains local. No double playback.
 - **M4:** Start with fresh or backed-up dev progression so the guarded XP>=100 and level<2 milestone can fire (never delete personal saves implicitly). Ten dummy kills reach the threshold; only that player gets fanfare/flash/shake. Use `coop_heat_test` at `(128,384)`: four shots overheat it, dealing 5 scald damage and playing a hiss only for its owner; about five seconds cool it (overheated lockout ignores the delay), including while holstered. Repeat to cross Health below 25 and observe the local no-delay vignette (sixteen scalds take 100 HP to 20 HP). On the client enable flash limiter and reduce motion, repeat the blue plate and enemy global flash, and record accommodation values/results. TS/Luau install parity is automated separately; external visual/audio proof remains owner-run.
 
-P16, P18, the P20 bounded weapon repair and P21–P24 approved shared-bar/wire amendment are complete. The owner approved the amendment on 2026-10-11. Automated proof, independent review/fix closure and final checks pass. P25–P27 record M1, full M2, full M4 (including OS Reduce Motion), alternate-fire passes and acceptance of M3 automated proof. All acceptance proof is satisfied; status stays `test-ready` pending **land the plane**. Exact running revision and per-step measurements were not supplied. On the owner's landing instruction, update remaining durable contracts, move to done/roadmap, and clean session-owned artifacts. Existing feature-branch publication authorization does not authorize landing, a PR or merging.
+P16, P18, the P20 weapon repair and P21–P24 approved parity amendment are complete. Automated proof, independent review/fix closure and final checks pass. P25–P27 record full manual acceptance and the M3 automated-proof choice. Owner authorized landing on 2026-10-11; durable contracts, roadmap and brief status now record completion. No PR or merge is included.
 
 ### Owner playtest observations — 2026-10-11
 
@@ -386,7 +389,9 @@ P16, P18, the P20 bounded weapon repair and P21–P24 approved shared-bar/wire a
 - **Grounded explanation:** `ImpactPolicyRuntime::apply_presentation_spawn` records the impact source as presenter. `route_host_presentation_spawns` sends only to that source's remote pawn owner; absent/non-pawn presenters remain host-local. Thus NPC-origin damage numbers have no remote recipient. This matches the existing earned-feedback contract in `networking.md`, rather than showing that enemy damage failed to replicate. Observer attack sounds and impact bursts have separate cue paths; their visible/audible parity remains unverified here.
 - **Approved direction:** owner said to proceed on 2026-10-11. Show impact-policy damage numbers from shared combat on every participating peer by default, with personal display preferences deferred. Decision 13 / AC 23 now record this audience change explicitly; preserve owner-only XP/rewards and existing overlay selection. No broader effect mismatch is inferred from this observation.
 
-### Local source handoff
+### Historical local source handoff
+
+Landing retires the ignored source bundle/README and session temporary logs/review scratch files. The committed execution summaries above retain proof results, measurements and review closure; `/private/tmp/` paths below identify historical logs removed during cleanup. Existing playtest map bakes remain reusable.
 
 The initial P16 bundle was verified at `f05d8c4d2d2d31782f882c6a37dd2dc5b08eb065`, and the owner authorized pushing that branch for playtesting. Refresh `target/handoff/coop-networked-by-default.bundle` (`fe1881a35..codex/coop-networked-by-default`) and the ignored `target/handoff/README.md` after each checkpoint commit; that README records the actual SHA and bundle checksum, with direct-origin fetch first and bundle import as a fallback. Compare the running revision on both peers and rebuild executables. P18 itself changes no map, but the preceding compiler correction and `df0b1a575` splash-map edit are newer than P16. Both small Mac playtest maps have been refreshed with the current compiler; a Windows peer coming from P16 should likewise refresh both playtest maps. A fresh clone needs those same normal-settings fixture bakes. The stress bake is a completed measurement fixture and is not required for M1–M4. Landing still requires the blocking results and the owner's landing instruction.
 

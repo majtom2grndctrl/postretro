@@ -243,6 +243,42 @@ Engineering calls, made on precedent and recorded here:
 
 Strongest alternative: volumes as map members with replicated live state over a hashed baseline (the mover pattern), better only if runtime-mutable volumes were in scope; it stays additive through the load-time BVH.
 
+## Build-readiness review (2026-10-11)
+
+A targeted check, not a sixth direction review. Read at `cfd2d861d` on `codex/coop-networked-by-default`, the co-op brief in its final checks and unmerged, so the brief is anchored to the main it will build on. Branch base: main `92a54f9de`.
+
+**`E16--player-events` as built** (`plans/done/`):
+- The shared lookup landed in `scripting-core` (`player_slots`): it reads pawn components off the registry and returns `Option<SlotValue>`, with no callback. `PlayerMovementComponent` lives in `foundation`, which `scripting-core` already reads, so `player.swimming` is one `PlayerSlot` arm over the movement state.
+- A catalog entry is per-player when its replication scope is owner-private-player. The catalog-derived tests fail on an unmapped per-player entry and need a hand-written two-pawn fixture per slot; a new `PlayerSlot` variant does not compile without one. E24's "covers the new slots" row holds, at that cost.
+- First sight holds as built: an unremembered player counts as false, so a player first observed swimming fires `becomes` once. An absent lookup is unobserved, never false, and a later present-and-true value is a fresh first sight.
+- Player-event residuals drain right after trigger residuals in the frame-end drain, source-major.
+- **Stale premise:** "shipped engine slots are never per-owner." `slot_record` still writes `per_owner: false`, but E16 made 12 engine slots per-player through the lookup. The brief now says so.
+
+**Owner ruling: `player.fluid` is dropped.** The IR carries only numbers and bools; scope projection drops String slots, `read()` takes only number and bool refs, and E16's catalog test rejects a non-projectable per-player slot. No E24 use case needs fluid identity in a condition:
+- drowning and air meters need `player.swimming` and `player.immersion`;
+- fluid-specific damage belongs on the fluid's own data (a later field), or on a `trigger_volume` placed on the same brush today;
+- scriptable fluid effects are curves and reaction verbs aimed at a target fixed at install, with existing number and bool conditions deciding when;
+- lava cooling to stone is runtime-mutable volume state, the mover pattern this brief already defers, plus a kinematic brush for solidity.
+
+A HUD-only fluid name could take the local-publish route `player.weaponResource` uses (an enum slot, not replicated); nothing needs one yet.
+
+The identity seam (a compared name binds as an engine-interned number) is recorded in `scripting.md` §11 as not yet built; `E16--persistent-firing-modes` plans to use it. Fluids adopt it if a condition ever needs fluid identity; the host's fluid table in the tuning payload already supplies a session-stable index.
+
+Engineering calls, made on precedent:
+- **Immersion is its own output-only component, not a field on `PlayerMovementComponent`.** That struct passes through reconcile clones and the wire merge, which must never read immersion; a separate component makes that hold by construction.
+- **Tuning payload.** The host dedupes on whole-struct `PartialEq`, so a new field resends on change with no new logic. Delivery is per pawn: `tuning_payload_for_pawn` takes level gravity and the fluid table at its three call sites. The materialization send carries current values, which closes the fifth review's pawnless-client executor check.
+- **Digest.** Build volumes after `CollisionWorld::from_level` and before the endpoint's digest block; bump `FINGERPRINT_EPOCH`; mirror the renderer-less early return; clear in `unload_level`.
+- **Fluid pass.** It needs its own gate; smoke's (`has_any_sheet` plus live particles) skips when no particle is live. It draws after the skinned-mesh pass and before the pass labelled "Billboard Sprite Pass". FRAGMENT storage is pinned at 8/8, so the fluid material group holds textures and uniforms only.
+- **Surface culling** can reuse `convex_overlaps` and `convex_subtract` from `partition/face_extract.rs` (#584), made `pub(crate)`. They cover coplanar same-facing overlap; flush-against-solid and sibling-shared faces still need their own test.
+- **Wire.** Co-op moves `WIRE_VERSION` to 28 and `SNAPSHOT_VERSION` to 18; `Swim` takes the next wire version, and the snapshot version bumps too, as `Sliding` bumped both (`cb9bef401`: wire 19→20, snapshot 13→14). `TUNING_PAYLOAD_EPOCH` is 10 on both branches.
+- **Peer splash stays a follow-up.** `WeaponCue` impact contacts carry point and normal, not a fire origin, so a watching peer cannot rebuild the ray yet. Volumes are digest-identical on every peer, so a cue carrying the fire origin would let each peer derive splashes locally, under `networking.md`'s burst rule. A presentation-spawn splash would instead fan out to every participant.
+
+Premise corrections: a map without `initialGravity` compiles with the default gravity; the loader's `NoWorldspawnGravity` fires only when the FogVolumes section is missing. The movement and agent premises still hold: airborne-gated gravity in every intent, a single gravity scalar in reconcile, unclamped gravity in `collide_and_slide`, and a scalar in `particle_sim`.
+
+An independent read of the promotion diff found the library hunks accurate except where they stated unbuilt behavior as present; those now carry "decided, not yet built".
+
+**Particle pool:** `drafts/perf-particle-sim-cost` is unchanged. It has no recorded direction review and no code. Its `research.md` §E24 reconciliation still takes per-particle gravity and push. E24's build checkpoints before its particle rows unless the pool lands first.
+
 ## Ordering pins
 
 Added by `/review-brief` (2026-10-05). Each row is cited by an Acceptance row. P10 records the owner's ruling on fluid-jump re-entry.

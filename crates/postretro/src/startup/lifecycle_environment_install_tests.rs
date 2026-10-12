@@ -61,10 +61,15 @@ fn level_with_gravity_volume(name: &str, level_gravity: f32, min: Vec3) -> Level
     world
 }
 
-/// Resolve at `position` exactly as a tick call site does: the view is built
-/// from the script gravity register and the installed volumes.
+/// Resolve at `position` exactly as a host tick call site does: the view is
+/// built from the script gravity register, the installed volumes and the
+/// viscosities of the table they resolved against.
 fn resolve_at(app: &App, position: Vec3) -> ResolvedEnvironment {
-    let view = EnvironmentView::new(script_ctx(app).gravity.get(), &app.environment_volumes);
+    let view = EnvironmentView::new(
+        script_ctx(app).gravity.get(),
+        &app.environment_volumes,
+        app.environment_fluids.viscosities(),
+    );
     resolve_environment(
         view,
         &BodyProbe {
@@ -391,8 +396,235 @@ fn a_reload_that_leaves_the_fluid_table_unchanged_keeps_the_installed_volumes() 
     app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
         .expect("fixture installs");
     let capture = postretro_test_log_capture::LogCapture::start();
-    let names = app.environment_fluid_names();
-    app.refresh_environment_fluids(&names);
+    app.refresh_environment_fluids();
     capture.assert_not_logged(log::Level::Info, "[Loader] environment volumes:");
     assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(0));
+}
+
+fn fluid_with(
+    name: &str,
+    viscosity: f32,
+    view_tint: [f32; 4],
+) -> postretro_foundation::FluidDescriptor {
+    postretro_foundation::FluidDescriptor {
+        viscosity,
+        view_tint,
+        ..fluid(name)
+    }
+}
+
+/// Make this app a connected client, before any host tuning arrives, mid-load
+/// of the host's level.
+fn connect_as_client(app: &mut App) {
+    // A connected install publishes level parity for the in-flight load's source.
+    app.level_load = Some(crate::startup::InFlightLevelLoad {
+        map_path: PathBuf::from("content/dev/maps/fluid.prl"),
+        content_root: PathBuf::from("content/dev"),
+        entry: crate::startup::LevelLoadEntry {
+            catalog_id: Some("fluid".to_string()),
+            path: "maps/fluid.prl".to_string(),
+            name: "Fluid".to_string(),
+            tags: Vec::new(),
+            loading_tree: Vec::new(),
+        },
+    });
+    app.session
+        .as_mut()
+        .expect("test app session installed")
+        .net_endpoint = Some(
+        crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Connect {
+                addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint"),
+    );
+}
+
+/// Deliver a host tuning payload carrying `fluids` through the production
+/// client Control drain, as `net_poll_and_apply` does.
+fn deliver_host_fluids(app: &mut App, fluids: &[(&str, f32)]) {
+    use postretro_combat_model::{
+        EnvironmentTuning, FluidMovementTable, FluidMovementTuning, TuningPayload,
+    };
+    let fluids = FluidMovementTable::new(
+        fluids
+            .iter()
+            .map(|&(name, viscosity)| FluidMovementTuning {
+                name: name.to_string(),
+                viscosity,
+            })
+            .collect(),
+    )
+    .expect("valid host table");
+    let payload = TuningPayload::new(
+        None,
+        std::array::from_fn(|_| None),
+        EnvironmentTuning {
+            level_gravity: LEVEL_GRAVITY,
+            fluids,
+        },
+    );
+    crate::client_drain_control(
+        app,
+        vec![postretro_net::wire::ServerControlMessage::Tuning(
+            serde_json::to_vec(&payload).expect("payload serializes"),
+        )],
+    );
+}
+
+/// Resolve at `position` exactly as client prediction does: the installed
+/// volumes under the host's level gravity and fluid viscosities.
+fn client_resolve_at(app: &App, position: Vec3) -> Option<ResolvedEnvironment> {
+    let host = app
+        .session
+        .as_ref()?
+        .net_endpoint
+        .as_ref()?
+        .client_host_environment()?;
+    Some(resolve_environment(
+        EnvironmentView::new(
+            host.level_gravity,
+            &app.environment_volumes,
+            host.fluids.viscosities(),
+        ),
+        &BodyProbe {
+            position,
+            half_height: 0.5,
+            radius: 0.25,
+            eye_height: 0.6,
+        },
+    ))
+}
+
+// N7, N9 and N11 through the App: a connected client's volumes resolve dry
+// until the host's table arrives with tuning, then only against that table,
+// never the client's own manifest; a table without the fluid, or a demotion,
+// makes the volume dry again.
+#[test]
+fn a_connected_client_resolves_fluid_volumes_only_against_the_installed_host_table() {
+    let mut app = test_app();
+    // The client's own manifest declares water, at a different index.
+    declare_fluids(&app, &["sludge", "water"]);
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert!(app.active_environment_fluids().names().is_empty());
+    assert_eq!(
+        client_resolve_at(&app, SUBMERGED),
+        None,
+        "no host tuning yet"
+    );
+    assert_eq!(
+        resolve_at(&app, SUBMERGED).fluid,
+        None,
+        "dry before the host's table, despite the client's own water"
+    );
+
+    deliver_host_fluids(&mut app, &[("water", 3.5)]);
+    assert_eq!(app.active_environment_fluids().names(), ["water"]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 3.5));
+
+    // A viscosity-only resend keeps the installed volumes.
+    let capture = postretro_test_log_capture::LogCapture::start();
+    deliver_host_fluids(&mut app, &[("water", 1.25)]);
+    capture.assert_not_logged(log::Level::Info, "[Loader] environment volumes:");
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 1.25));
+
+    // N11: a host table without water leaves the volume dry on this client,
+    // though its own manifest declares water.
+    deliver_host_fluids(&mut app, &[("lava", 9.0)]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!((resolved.fluid, resolved.viscosity), (None, 0.0));
+
+    // N9 (client half): the host's reload adds water back; the volume follows.
+    deliver_host_fluids(&mut app, &[("lava", 9.0), ("water", 2.0)]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!((resolved.fluid, resolved.viscosity), (Some(1), 2.0));
+
+    // Demotion drops the host's tuning: dry until the next one installs.
+    crate::client_drain_control(
+        &mut app,
+        vec![postretro_net::wire::ServerControlMessage::Divergence(
+            postretro_net::wire::DivergenceReason::Holding(
+                postretro_net::wire::HoldingCause::HostLevelAbsent,
+            ),
+        )],
+    );
+    assert!(app.active_environment_fluids().names().is_empty());
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, None);
+}
+
+// N8 through the App: the presentation lookup maps the active table's index to
+// a name and the LOCAL manifest's declaration of it.
+#[test]
+fn fluid_presentation_resolves_the_active_fluid_against_the_local_manifest() {
+    const CLIENT_TINT: [f32; 4] = [0.9, 0.2, 0.5, 0.7];
+    let mut app = test_app();
+    script_ctx(&app).data_registry.borrow_mut().replace_fluids(
+        postretro_foundation::FluidRegistry::from_declarations(
+            "test",
+            [Ok(fluid_with("water", 8.0, CLIENT_TINT))],
+        ),
+    );
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert!(
+        app.fluid_presentation_for_volume(0).is_none(),
+        "dry: no table yet"
+    );
+
+    deliver_host_fluids(&mut app, &[("sludge", 6.0), ("water", 2.0)]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!(
+        (resolved.fluid, resolved.viscosity),
+        (Some(1), 2.0),
+        "movement takes the host's water"
+    );
+    let shown = app
+        .fluid_presentation(1)
+        .expect("the client declares water");
+    assert_eq!(
+        shown.view_tint, CLIENT_TINT,
+        "presentation is the client's own"
+    );
+    drop(shown);
+    assert_eq!(
+        app.fluid_presentation_for_volume(0)
+            .map(|fluid| fluid.view_tint),
+        Some(CLIENT_TINT)
+    );
+    assert!(
+        app.fluid_presentation(0).is_none(),
+        "no local sludge: that fluid shows nothing"
+    );
+
+    // A client whose manifest lacks water still resolves it, and shows nothing.
+    declare_fluids(&app, &["sludge"]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!(resolved.fluid, Some(1));
+    assert!(app.fluid_presentation(1).is_none());
+    assert!(app.fluid_presentation_for_volume(0).is_none());
+}
+
+// Offline or hosting, the active table is the machine's own registry, so the
+// presentation lookup returns its own declaration.
+#[test]
+fn a_host_presents_its_own_fluid_declaration() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    let resolved = resolve_at(&app, SUBMERGED);
+    assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 2.0));
+    assert_eq!(
+        app.fluid_presentation_for_volume(0)
+            .map(|fluid| fluid.name.clone()),
+        Some("water".to_string())
+    );
 }

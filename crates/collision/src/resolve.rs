@@ -9,30 +9,44 @@ use crate::volumes::EnvironmentVolumes;
 
 static NO_VOLUMES: EnvironmentVolumes = EnvironmentVolumes::empty();
 
-/// What a body resolves against on one step: the level default gravity and the
-/// installed volumes. Built at each call site per tick from the level gravity
-/// source, so a mid-level gravity change is seen on the next step.
+/// What a body resolves against on one step: the level default gravity, the
+/// installed volumes, and the movement half of the fluid table their fluid
+/// indices were resolved against. Built at each call site per tick from the
+/// level gravity source, so a mid-level gravity change is seen on the next step.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvironmentView<'a> {
     pub level_gravity: f32,
     pub volumes: &'a EnvironmentVolumes,
+    /// Drag per fluid index, 1/s: index `i` is fluid `i` of the table the
+    /// volumes were built against (the host's own registry, or on a connected
+    /// client the host's table from the installed tuning). Movement reads the
+    /// winner's entry through [`ResolvedEnvironment::viscosity`] and never
+    /// queries a registry.
+    pub fluid_viscosity: &'a [f32],
 }
 
 impl<'a> EnvironmentView<'a> {
-    pub const fn new(level_gravity: f32, volumes: &'a EnvironmentVolumes) -> Self {
+    pub const fn new(
+        level_gravity: f32,
+        volumes: &'a EnvironmentVolumes,
+        fluid_viscosity: &'a [f32],
+    ) -> Self {
         Self {
             level_gravity,
             volumes,
+            fluid_viscosity,
         }
     }
 }
 
 impl EnvironmentView<'static> {
-    /// A view with no volumes: every body resolves the level default.
+    /// A view with no volumes and an empty fluid table: every body resolves the
+    /// level default, dry.
     pub const fn level_only(level_gravity: f32) -> Self {
         Self {
             level_gravity,
             volumes: &NO_VOLUMES,
+            fluid_viscosity: &[],
         }
     }
 }
@@ -59,6 +73,10 @@ pub struct ResolvedEnvironment {
     pub push: Vec3,
     /// The winning fluid, if any. `None` exactly when `immersion` is 0.
     pub fluid: Option<u16>,
+    /// The winning fluid's drag while swimming, 1/s, from the view's fluid
+    /// table; 0 when dry. A fluid index past the table also reads 0, which a
+    /// production view never sees: it builds the volumes and the table together.
+    pub viscosity: f32,
     /// Fraction of the capsule's vertical segment, feet to head, covered by the
     /// union of the winning fluid volume's brushes, 0..=1.
     pub immersion: f32,
@@ -105,11 +123,17 @@ pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> Reso
         .and_then(|volume| volume.push)
         .unwrap_or(Vec3::ZERO);
     let fluid = resolve_fluid(view, probe);
+    let viscosity = fluid
+        .fluid
+        .and_then(|index| view.fluid_viscosity.get(usize::from(index)))
+        .copied()
+        .unwrap_or(0.0);
 
     ResolvedEnvironment {
         gravity,
         push,
         fluid: fluid.fluid,
+        viscosity,
         immersion: fluid.immersion,
         tick_eye_in_fluid: fluid.tick_eye_in_fluid,
     }
@@ -266,7 +290,7 @@ mod tests {
 
     fn resolve_at(volumes: &EnvironmentVolumes, point: Vec3) -> ResolvedEnvironment {
         resolve_environment(
-            EnvironmentView::new(LEVEL_GRAVITY, volumes),
+            EnvironmentView::new(LEVEL_GRAVITY, volumes, &[]),
             &probe_at(point),
         )
     }

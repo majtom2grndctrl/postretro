@@ -3868,7 +3868,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            postretro_collision::EnvironmentView::new(-9.81, &pool),
+            postretro_collision::EnvironmentView::new(-9.81, &pool, &[]),
             None,
             0.0,
             &mut progress,

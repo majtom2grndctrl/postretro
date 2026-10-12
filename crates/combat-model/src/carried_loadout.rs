@@ -10,6 +10,8 @@ use postretro_foundation::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::FluidMovementTable;
+
 /// State retained by a session seat when its current pawn leaves a level.
 ///
 /// A missing record deliberately seeds no defaults on a fresh seat.
@@ -177,6 +179,9 @@ pub struct EnvironmentTuning {
     /// The level default gravity, signed vertical m/s² (worldspawn
     /// `initialGravity`, then `setGravity`). Never a volume's gravity.
     pub level_gravity: f32,
+    /// The host's fluid table, movement fields only: a connected client
+    /// resolves level fluid names against this, never its own registry.
+    pub fluids: FluidMovementTable,
 }
 
 impl TuningPayload {
@@ -251,23 +256,45 @@ impl TuningPayload {
 mod tests {
     use super::*;
 
-    fn payload_with_level_gravity(level_gravity: f32) -> TuningPayload {
+    use crate::FluidMovementTuning;
+
+    fn payload_with(level_gravity: f32, fluids: &[(&str, f32)]) -> TuningPayload {
+        let fluids = FluidMovementTable::new(
+            fluids
+                .iter()
+                .map(|&(name, viscosity)| FluidMovementTuning {
+                    name: name.to_string(),
+                    viscosity,
+                })
+                .collect(),
+        )
+        .expect("valid fixture table");
         TuningPayload::new(
             None,
             std::array::from_fn(|_| None),
-            EnvironmentTuning { level_gravity },
+            EnvironmentTuning {
+                level_gravity,
+                fluids,
+            },
         )
     }
 
-    // The host resends on whole-struct inequality, so a level-gravity change
-    // alone must read as a new payload while leaving pawn tuning untouched.
+    // The host resends on whole-struct inequality, so a level-gravity or
+    // fluid-table change alone must read as a new payload while leaving pawn
+    // tuning untouched: the client applies it without rebuilding its pawn.
     #[test]
-    fn level_gravity_change_is_a_new_payload_with_the_same_pawn_tuning() {
-        let before = payload_with_level_gravity(-9.81);
-        let after = payload_with_level_gravity(-3.0);
-
-        assert_ne!(before, after, "host dedupe must resend a gravity change");
-        assert!(before.same_pawn_tuning(&after));
-        assert_eq!(before, payload_with_level_gravity(-9.81));
+    fn environment_change_is_a_new_payload_with_the_same_pawn_tuning() {
+        let water = [("water", 2.0)];
+        let before = payload_with(-9.81, &water);
+        for after in [
+            payload_with(-3.0, &water),
+            payload_with(-9.81, &[("water", 2.0), ("lava", 9.0)]),
+            payload_with(-9.81, &[("water", 4.0)]),
+            payload_with(-9.81, &[]),
+        ] {
+            assert_ne!(before, after, "host dedupe must resend the change");
+            assert!(before.same_pawn_tuning(&after));
+        }
+        assert_eq!(before, payload_with(-9.81, &water));
     }
 }

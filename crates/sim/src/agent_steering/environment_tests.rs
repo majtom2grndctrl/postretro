@@ -87,7 +87,7 @@ fn agent_falls_at_volume_gravity_inside_low_gravity_volume() {
         Vec3::splat(50.0),
         VOLUME_GRAVITY,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut registry = EntityRegistry::new();
     let agent = spawn_falling_agent(&mut registry, Vec3::new(0.0, 10.0, 0.0), 0.0);
     for _ in 0..30 {
@@ -107,7 +107,7 @@ fn agent_crossing_out_of_gravity_volume_integrates_volume_gravity_then_level_gra
         Vec3::new(50.0, 20.0, 50.0),
         VOLUME_GRAVITY,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut registry = EntityRegistry::new();
     let agent = spawn_falling_agent(&mut registry, Vec3::new(0.0, 0.05, 0.0), -6.0);
 
@@ -136,7 +136,7 @@ fn agent_in_upward_gravity_volume_keeps_vertical_velocity() {
         Vec3::splat(50.0),
         5.0,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut registry = EntityRegistry::new();
     let agent = spawn_falling_agent(&mut registry, Vec3::new(0.0, 10.0, 0.0), -1.0);
     for _ in 0..10 {
@@ -216,7 +216,7 @@ fn agent_in_push_volume_walks_its_path_unaffected() {
         push: Some(Vec3::new(8.0, 30.0, 0.0)),
         ..gravity_volume(Vec3::splat(-50.0), Vec3::splat(50.0), 0.0)
     }]);
-    let pushed = walk_path(EnvironmentView::new(LEVEL_GRAVITY, &volumes), 90);
+    let pushed = walk_path(EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]), 90);
     let calm = walk_path(EnvironmentView::level_only(LEVEL_GRAVITY), 90);
 
     for ((pushed_position, pushed_grounded), (calm_position, _)) in pushed.iter().zip(&calm) {
@@ -244,7 +244,7 @@ fn grounded_agent_in_upward_gravity_volume_stays_grounded() {
         Vec3::splat(50.0),
         5.0,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let world = floor_world();
     let mut registry = EntityRegistry::new();
     let (id, rest_y) = spawn_resting_agent(&mut registry, 0.0, 0.0);
@@ -299,9 +299,9 @@ fn environment_queries_perform_no_allocation() {
         list.push(small);
     }
     let volumes = EnvironmentVolumes::build(list);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let empty = EnvironmentVolumes::empty();
-    let empty_view = EnvironmentView::new(LEVEL_GRAVITY, &empty);
+    let empty_view = EnvironmentView::new(LEVEL_GRAVITY, &empty, &[]);
     let points = [
         Vec3::splat(1.5),
         Vec3::splat(3.0),

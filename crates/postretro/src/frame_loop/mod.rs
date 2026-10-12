@@ -856,6 +856,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let default_weapon_placement = data_registry.default_weapon_placement.as_ref();
             let collision_world = &app.collision_world;
             let environment_volumes = &app.environment_volumes;
+            let environment_fluid_viscosity = app.environment_fluids.viscosities();
             let session = app.session.as_mut().expect("running session installed");
             let net_endpoint = &mut session.net_endpoint;
             let hit_zone_store = &session.hit_zone_store;
@@ -900,6 +901,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 postretro_collision::EnvironmentView::new(
                     script_ctx.gravity.get(),
                     environment_volumes,
+                    environment_fluid_viscosity,
                 ),
                 app.switching.block_during_reload,
                 frame_anim_time,

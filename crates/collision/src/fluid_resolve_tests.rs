@@ -44,7 +44,7 @@ fn pool(y_min: f32, y_max: f32, fluid: u16) -> EnvironmentVolume {
 
 fn resolve(volumes: &EnvironmentVolumes, position: Vec3) -> ResolvedEnvironment {
     resolve_environment(
-        EnvironmentView::new(LEVEL_GRAVITY, volumes),
+        EnvironmentView::new(LEVEL_GRAVITY, volumes, &[]),
         &probe_at(position),
     )
 }
@@ -100,7 +100,7 @@ fn fluid_volume_is_reported_under_a_fluid_mask_and_never_under_a_gravity_only_ma
     assert_eq!(containing(&volumes, point, ContentsMask::FLUID), vec![0]);
 
     // The resolve's gravity-only entry ignores the fluid; the full resolve sees it.
-    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     assert!((resolve_gravity(view, point) - LEVEL_GRAVITY).abs() < EPS);
     assert_eq!(resolve(&volumes, point).fluid, Some(2));
 }
@@ -135,7 +135,7 @@ fn resolve_gravity_matches_the_full_resolve_gravity_at_every_point() {
         },
         pool(0.0, 2.0, 0),
     ]);
-    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     for point in [
         Vec3::ZERO,
         Vec3::splat(7.0),
@@ -289,7 +289,7 @@ fn tick_eye_in_fluid_tracks_the_tick_eye_against_the_winner_only() {
     };
     assert!(
         resolve_environment(
-            EnvironmentView::new(LEVEL_GRAVITY, &volumes),
+            EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]),
             &eye_on_surface
         )
         .tick_eye_in_fluid
@@ -315,7 +315,7 @@ fn body_with_no_vertical_extent_resolves_fluid_by_its_point() {
         radius: 0.0,
         eye_height: 0.0,
     };
-    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let inside = resolve_environment(view, &point_probe(1.0));
     assert_eq!(inside.fluid, Some(3));
     assert!((inside.immersion - 1.0).abs() < EPS);
@@ -323,4 +323,38 @@ fn body_with_no_vertical_extent_resolves_fluid_by_its_point() {
     let outside = resolve_environment(view, &point_probe(2.5));
     assert_eq!(outside.fluid, None);
     assert!(outside.immersion.abs() < EPS);
+}
+
+// Movement reads drag from the resolve, never from a registry: the winner's
+// entry in the view's fluid table while wet, 0 while dry or with no table.
+#[test]
+fn resolved_viscosity_is_the_winning_fluid_entry_of_the_view_table() {
+    // Fluid 0 is a large low-priority lake; fluid 1 a pool inside it that wins.
+    let volumes = EnvironmentVolumes::build(vec![
+        fluid_box(Vec3::splat(-20.0), Vec3::splat(20.0), 0, 0),
+        fluid_box(
+            Vec3::new(-2.0, -20.0, -2.0),
+            Vec3::new(2.0, 20.0, 2.0),
+            1,
+            3,
+        ),
+    ]);
+    let table = [2.0, 6.5];
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &table);
+
+    let in_pool = resolve_environment(view, &probe_at(Vec3::ZERO));
+    assert_eq!((in_pool.fluid, in_pool.viscosity), (Some(1), 6.5));
+    let in_lake = resolve_environment(view, &probe_at(Vec3::new(10.0, 0.0, 0.0)));
+    assert_eq!((in_lake.fluid, in_lake.viscosity), (Some(0), 2.0));
+    let dry = resolve_environment(view, &probe_at(Vec3::new(30.0, 0.0, 0.0)));
+    assert_eq!((dry.fluid, dry.viscosity), (None, 0.0));
+
+    // The same volumes under an empty table, or a level-only view, carry no drag.
+    let untabled = resolve(&volumes, Vec3::ZERO);
+    assert_eq!((untabled.fluid, untabled.viscosity), (Some(1), 0.0));
+    let level_only = resolve_environment(
+        EnvironmentView::level_only(LEVEL_GRAVITY),
+        &probe_at(Vec3::ZERO),
+    );
+    assert_eq!((level_only.fluid, level_only.viscosity), (None, 0.0));
 }

@@ -7,4 +7,7 @@ pub use shot_authority::*;
 mod carried_loadout;
 pub use carried_loadout::*;
 
+mod fluid_tuning;
+pub use fluid_tuning::*;
+
 pub mod activation;

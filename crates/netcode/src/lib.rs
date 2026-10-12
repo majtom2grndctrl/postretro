@@ -82,6 +82,9 @@ pub mod wire_convert;
 mod predict_reconcile_harness;
 #[cfg(test)]
 mod predict_reconcile_harness_test_fixtures;
+// E24 co-op fluid parity: host and client fluid tables through the tuning install.
+#[cfg(test)]
+mod predict_reconcile_harness_fluid_tables;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -189,8 +192,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use glam::{Quat, Vec3};
 use postretro_collision::{EnvironmentView, EnvironmentVolumes};
 use postretro_combat_model::{
-    AuthorizedShot, EnvironmentTuning, HIT_RANGE_TOLERANCE, ShotId, TuningPayload,
-    WieldableTuningPayload,
+    AuthorizedShot, EnvironmentTuning, FluidMovementTable, HIT_RANGE_TOLERANCE, ShotId,
+    TuningPayload, WieldableTuningPayload,
 };
 #[cfg(test)]
 use postretro_combat_model::{
@@ -521,16 +524,31 @@ fn replace_client_tuning(
 }
 
 /// The environment a connected client predicts and replays against: its own
-/// digest-bound volumes under the HOST's level gravity from the installed tuning
-/// payload. The client never reads its own level gravity (E24 Co-op parity), so
-/// there is no local fallback: `None` until a payload installs, and movement
-/// prediction and reconcile stay off until then, as movement tuning already
-/// gates them.
+/// digest-bound volumes, whose fluid names resolved against the HOST's fluid
+/// table ([`client_fluid_table`]), under the host's level gravity and fluid
+/// viscosities from the installed tuning payload. The client never reads its
+/// own level gravity or fluid registry (E24 Co-op parity), so there is no local
+/// fallback: `None` until a payload installs, and movement prediction and
+/// reconcile stay off until then, as movement tuning already gates them.
 pub fn client_environment_view<'a>(
-    host_tuning: Option<&TuningPayload>,
+    host_tuning: Option<&'a TuningPayload>,
     volumes: &'a EnvironmentVolumes,
 ) -> Option<EnvironmentView<'a>> {
-    host_tuning.map(|payload| EnvironmentView::new(payload.environment.level_gravity, volumes))
+    host_tuning.map(|payload| {
+        EnvironmentView::new(
+            payload.environment.level_gravity,
+            volumes,
+            payload.environment.fluids.viscosities(),
+        )
+    })
+}
+
+/// The fluid table a connected client resolves level fluid names against: the
+/// host's, from the installed tuning payload. `None` before one installs, when
+/// every fluid volume resolves dry. Never the client's own registry: admission
+/// gates on mod id, not version, so a client's fluid declarations may differ.
+pub fn client_fluid_table(host_tuning: Option<&TuningPayload>) -> Option<&FluidMovementTable> {
+    host_tuning.map(|payload| &payload.environment.fluids)
 }
 
 fn now() -> Duration {
@@ -1456,11 +1474,14 @@ pub fn tuning_payload_for_pawn(
 }
 
 /// The host's current level state for the tuning payload, read live at every
-/// send so a pawn materialized after a mid-level `setGravity` receives the
-/// current value. The one place host environment tuning is resolved.
+/// send so a pawn materialized after a mid-level `setGravity` or a manifest
+/// reload receives the current values. The fluid table is the host registry's
+/// movement half, the same table its own volumes resolve against. The one
+/// place host environment tuning is resolved.
 pub fn host_environment_tuning(script_ctx: &postretro_entities::ScriptCtx) -> EnvironmentTuning {
     EnvironmentTuning {
         level_gravity: script_ctx.gravity.get(),
+        fluids: FluidMovementTable::from_registry(&script_ctx.data_registry.borrow().fluids),
     }
 }
 
@@ -2810,9 +2831,25 @@ mod tests {
         }
     }
 
+    /// The host's fluid table in the test payloads: water, then sludge.
+    fn test_fluids() -> FluidMovementTable {
+        FluidMovementTable::new(vec![
+            postretro_combat_model::FluidMovementTuning {
+                name: "water".to_string(),
+                viscosity: 2.0,
+            },
+            postretro_combat_model::FluidMovementTuning {
+                name: "sludge".to_string(),
+                viscosity: 6.5,
+            },
+        ])
+        .expect("valid test fluid table")
+    }
+
     fn test_environment() -> EnvironmentTuning {
         EnvironmentTuning {
             level_gravity: -9.81,
+            fluids: test_fluids(),
         }
     }
 
@@ -3227,11 +3264,12 @@ mod tests {
         assert_ne!(generation, accepted_generation);
     }
 
-    // A host `setGravity` changes only the environment half of the payload. The
-    // client installs the host's value on arrival without bumping the pawn-tuning
-    // generation, so its live movement component is not rebuilt for it.
+    // A host `setGravity` or fluid-table reload changes only the environment half
+    // of the payload. The client installs the host's values on arrival without
+    // bumping the pawn-tuning generation, so its live movement component is not
+    // rebuilt for them.
     #[test]
-    fn environment_only_tuning_replacement_installs_host_gravity_and_keeps_generation() {
+    fn environment_only_tuning_replacement_installs_host_environment_and_keeps_generation() {
         let mut tuning = None;
         let mut generation = 0;
         let encoded = install_test_tuning(&mut tuning, &mut generation);
@@ -3244,6 +3282,7 @@ mod tests {
             installed.wieldables.clone(),
             EnvironmentTuning {
                 level_gravity: -3.0,
+                fluids: test_fluids(),
             },
         );
         let rebytes = tuning_payload::encode_tuning_payload(&regravitated);
@@ -3257,6 +3296,38 @@ mod tests {
             "the client installs the host's level gravity on arrival"
         );
 
+        // A host manifest reload that drops sludge and adds lava.
+        let refluided = TuningPayload::new(
+            installed.movement.clone(),
+            installed.wieldables.clone(),
+            EnvironmentTuning {
+                level_gravity: -3.0,
+                fluids: FluidMovementTable::new(vec![
+                    postretro_combat_model::FluidMovementTuning {
+                        name: "water".to_string(),
+                        viscosity: 2.0,
+                    },
+                    postretro_combat_model::FluidMovementTuning {
+                        name: "lava".to_string(),
+                        viscosity: 9.0,
+                    },
+                ])
+                .unwrap(),
+            },
+        );
+        replace_client_tuning(
+            &mut tuning,
+            &mut generation,
+            &tuning_payload::encode_tuning_payload(&refluided),
+        )
+        .expect("fluid-table-only payload installs");
+        assert_eq!(generation, accepted_generation);
+        assert_eq!(
+            tuning.as_deref().unwrap().environment.fluids.names(),
+            ["water", "lava"],
+            "the client installs the host's fluid table on arrival"
+        );
+
         let mut retuned_movement = installed.movement.clone().unwrap();
         retuned_movement.ground.speed.run += 1.0;
         let retuned = TuningPayload::new(
@@ -3264,6 +3335,7 @@ mod tests {
             installed.wieldables,
             EnvironmentTuning {
                 level_gravity: -3.0,
+                fluids: test_fluids(),
             },
         );
         replace_client_tuning(
@@ -3279,11 +3351,13 @@ mod tests {
     }
 
     // The client's prediction environment comes only from the host's installed
-    // payload: no view before install, and the host's gravity after it.
+    // payload: no view and no fluid table before install, and the host's gravity
+    // and fluid viscosities after it.
     #[test]
-    fn client_environment_view_reads_only_the_installed_host_gravity() {
+    fn client_environment_view_reads_only_the_installed_host_environment() {
         let volumes = postretro_collision::EnvironmentVolumes::empty();
         assert!(client_environment_view(None, &volumes).is_none());
+        assert!(client_fluid_table(None).is_none());
 
         let mut tuning = None;
         let mut generation = 0;
@@ -3291,6 +3365,11 @@ mod tests {
         let view = client_environment_view(tuning.as_deref(), &volumes)
             .expect("installed tuning yields a view");
         assert_eq!(view.level_gravity, -9.81);
+        assert_eq!(view.fluid_viscosity, [2.0, 6.5]);
+        assert_eq!(
+            client_fluid_table(tuning.as_deref()).map(FluidMovementTable::names),
+            Some(["water".to_string(), "sludge".to_string()].as_slice())
+        );
     }
 
     // Executor check (E24 research, fifth direction review): the per-poll resend
@@ -3320,7 +3399,10 @@ mod tests {
                 pawn,
                 &[],
                 None,
-                &EnvironmentTuning { level_gravity },
+                &EnvironmentTuning {
+                    level_gravity,
+                    fluids: test_fluids(),
+                },
             )
         };
 

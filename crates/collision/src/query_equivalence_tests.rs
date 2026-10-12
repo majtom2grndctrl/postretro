@@ -145,6 +145,8 @@ fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> Resolve
         gravity,
         push,
         fluid: fluid_volume.and_then(|v| v.fluid),
+        // The tree side resolves with an empty fluid table.
+        viscosity: 0.0,
         immersion,
         tick_eye_in_fluid: fluid_volume
             .is_some_and(|v| v.brushes.iter().any(|brush| brush.contains_point(eye))),
@@ -220,7 +222,7 @@ fn tree_crossings(
 ) -> Vec<FluidCrossing> {
     let mut out = Vec::new();
     visit_fluid_crossings(
-        EnvironmentView::new(LEVEL_GRAVITY, volumes),
+        EnvironmentView::new(LEVEL_GRAVITY, volumes, &[]),
         origin,
         dir,
         max_t,
@@ -362,7 +364,7 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
     runner
         .run(&strategy, |(volume_list, points, probes, rays)| {
             let volumes = EnvironmentVolumes::build(volume_list);
-            let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+            let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
             let all = ContentsMask::FLUID | ContentsMask::GRAVITY | ContentsMask::PUSH;
             for point in points {
                 for mask in [
@@ -438,7 +440,7 @@ fn tree_queries_match_brute_force_scan_over_a_dense_volume_field() {
     runner
         .run(&strategy, |(volume_list, probes, rays)| {
             let volumes = EnvironmentVolumes::build(volume_list);
-            let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+            let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
             for probe in probes {
                 assert_resolves_match(
                     &resolve_environment(view, &probe),
@@ -463,7 +465,7 @@ fn zero_volume_set_builds_an_empty_tree_and_every_query_returns_level_defaults()
     let volumes = EnvironmentVolumes::build(Vec::new());
     assert_eq!(volumes.leaf_count(), 0);
     assert_eq!(volumes, EnvironmentVolumes::empty());
-    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     for point in [Vec3::ZERO, Vec3::splat(1.0e4), Vec3::new(-3.0, 2.0, 7.5)] {
         let resolved = resolve_environment(
             view,
@@ -480,6 +482,7 @@ fn zero_volume_set_builds_an_empty_tree_and_every_query_returns_level_defaults()
                 gravity: LEVEL_GRAVITY,
                 push: Vec3::ZERO,
                 fluid: None,
+                viscosity: 0.0,
                 immersion: 0.0,
                 tick_eye_in_fluid: false,
             }

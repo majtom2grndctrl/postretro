@@ -81,7 +81,7 @@ mod tests {
             Vec3::new(5.0, 2.0, 5.0),
             3,
         )]);
-        let view = EnvironmentView::new(-9.81, &volumes);
+        let view = EnvironmentView::new(-9.81, &volumes, &[]);
 
         let under = fluid_at_eye(view, Vec3::new(0.0, 1.9, 0.0)).expect("eye under the surface");
         assert_eq!(under.fluid, 3);
@@ -105,7 +105,7 @@ mod tests {
             Vec3::new(5.0, 2.0, 5.0),
             0,
         )]);
-        let view = EnvironmentView::new(-9.81, &volumes);
+        let view = EnvironmentView::new(-9.81, &volumes, &[]);
         let toggles = |amplitude: f32| {
             let mut on: Option<usize> = None;
             let mut toggles = 0;
@@ -159,7 +159,7 @@ mod tests {
             ..volume(vec![wedge])
         };
         let volumes = EnvironmentVolumes::build(vec![two, wedge]);
-        let view = EnvironmentView::new(-9.81, &volumes);
+        let view = EnvironmentView::new(-9.81, &volumes, &[]);
 
         let seam = fluid_at_eye(view, Vec3::new(0.0, 2.0, 0.0)).unwrap();
         assert!(seam.signed_depth >= 0.0 && seam.signed_depth <= 2.0 + EPS);
@@ -179,7 +179,7 @@ mod tests {
             ..volume(vec![axis_box(Vec3::ZERO, Vec3::ONE)])
         };
         let volumes = EnvironmentVolumes::build(vec![gravity_only]);
-        let view = EnvironmentView::new(-9.81, &volumes);
+        let view = EnvironmentView::new(-9.81, &volumes, &[]);
         assert_eq!(fluid_at_eye(view, Vec3::splat(0.5)), None);
         assert_eq!(fluid_volume_signed_depth(view, 0, Vec3::splat(0.5)), None);
         assert_eq!(fluid_volume_signed_depth(view, 7, Vec3::splat(0.5)), None);

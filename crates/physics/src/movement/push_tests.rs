@@ -77,7 +77,7 @@ fn grounded_player_lifts_off_and_rises_in_updraft_stronger_than_gravity() {
     let world = floor_world();
     let push = Vec3::new(0.0, 30.0, 0.0);
     let volumes = push_field(push, 50.0);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
     let rest_y = position.y;
 
@@ -126,7 +126,7 @@ fn tall_updraft_caps_speed_along_push_at_fall_terminal_velocity() {
     let desc = descriptor();
     let terminal = desc.fall.terminal_velocity;
     let volumes = push_field(Vec3::new(0.0, 30.0, 0.0), 5_000.0);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let world = CollisionWorld::new();
     let mut component = PlayerMovementComponent::from_descriptor(&desc);
     // Speed across the push is never clamped: it must survive untouched.
@@ -168,7 +168,7 @@ fn tall_updraft_caps_speed_along_push_at_fall_terminal_velocity() {
 fn grounded_player_stays_grounded_under_upward_push_weaker_than_gravity() {
     let world = floor_world();
     let volumes = push_field(Vec3::new(0.0, 12.0, 0.0), 50.0);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
     let rest_y = position.y;
     for _ in 0..60 {
@@ -194,7 +194,7 @@ fn standing_player_drifts_with_sideways_push_and_settles_at_steady_speed() {
     let world = floor_world();
     let push = Vec3::new(8.0, 0.0, 0.0);
     let volumes = push_field(push, 50.0);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
     let start = position;
 
@@ -260,7 +260,7 @@ fn airborne_push_grows_past_air_cap_with_input_held_until_terminal_speed() {
         Vec3::splat(10_000.0),
         push,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let world = CollisionWorld::new();
     let mut component = PlayerMovementComponent::from_descriptor(&desc);
     let mut position = Vec3::new(0.0, 10.0, 0.0);
@@ -319,7 +319,7 @@ fn drift_carries_out_of_wind_until_landing_then_ground_friction_decays_it() {
         Vec3::new(500.0, 50.0, 500.0),
         push,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let world = floor_world();
     let mut component = PlayerMovementComponent::from_descriptor(&descriptor());
     let mut position = Vec3::new(0.0, 30.0, 0.0);
@@ -498,7 +498,7 @@ fn slide_in_push_volume_gets_no_slope_boost_from_push() {
     let volumes = push_field(push, 50.0);
     let ticks = 12;
     let (pushed_boosts, pushed) =
-        slide_through(EnvironmentView::new(LEVEL_GRAVITY, &volumes), ticks);
+        slide_through(EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]), ticks);
     let (calm_boosts, calm) = slide_through(LEVEL, ticks);
 
     // The two runs cross the floor's triangles at different ticks, so the

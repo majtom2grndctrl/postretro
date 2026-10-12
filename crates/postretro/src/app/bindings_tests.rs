@@ -123,6 +123,7 @@ fn tuning_with_dash() -> TuningPayload {
         std::array::from_fn(|_| None),
         EnvironmentTuning {
             level_gravity: -9.81,
+            fluids: Default::default(),
         },
     )
 }
@@ -171,6 +172,7 @@ fn host_tuning_wieldables_carry_magazine_and_secondary() {
         slots,
         EnvironmentTuning {
             level_gravity: -9.81,
+            fluids: Default::default(),
         },
     ));
     assert!(facts.magazine && facts.secondary && !facts.dash);

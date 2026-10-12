@@ -275,6 +275,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
                 app.observer_weapon_cues.clear();
+                // Demotion dropped the host's tuning: until the next one
+                // installs, this client resolves every fluid dry.
+                app.refresh_environment_fluids();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -291,6 +294,10 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
                     endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
                 }
+                // The host's fluid table rides this payload. Re-resolve the
+                // installed volumes against it before any prediction or replay
+                // this frame reads them with the payload's viscosities.
+                app.refresh_environment_fluids();
             }
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
@@ -975,6 +982,11 @@ pub(crate) struct App {
     /// a level installs volumes and after unload; every movement and agent step
     /// resolves against it beside the level gravity.
     environment_volumes: postretro_collision::EnvironmentVolumes,
+    /// The fluid table `environment_volumes` resolved its fluid names against:
+    /// the host's own registry offline or hosting, the host's table from the
+    /// installed tuning on a connected client (empty before one installs).
+    /// Fluid indices in the volumes, and every view's viscosities, index it.
+    environment_fluids: postretro_combat_model::FluidMovementTable,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes
@@ -7314,6 +7326,7 @@ mod tests {
             slots.clone(),
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
+                fluids: Default::default(),
             },
         );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -7340,6 +7353,7 @@ mod tests {
             slots,
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
+                fluids: Default::default(),
             },
         );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");

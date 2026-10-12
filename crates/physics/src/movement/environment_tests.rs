@@ -152,7 +152,7 @@ fn player_falls_at_volume_gravity_inside_low_gravity_volume() {
         Vec3::splat(50.0),
         VOLUME_GRAVITY,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut component = airborne_pawn(0.0);
     let mut position = Vec3::new(0.0, 10.0, 0.0);
     for _ in 0..30 {
@@ -173,7 +173,7 @@ fn player_keeps_vertical_velocity_inside_zero_gravity_volume() {
         Vec3::splat(50.0),
         0.0,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     for vy in [1.5, -2.0] {
         let mut component = airborne_pawn(vy);
         let mut position = Vec3::new(0.0, 10.0, 0.0);
@@ -198,7 +198,7 @@ fn player_crossing_out_of_gravity_volume_integrates_volume_gravity_then_level_gr
         Vec3::new(50.0, 20.0, 50.0),
         VOLUME_GRAVITY,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut component = airborne_pawn(-6.0);
     let start = Vec3::new(0.0, 0.05, 0.0);
 
@@ -226,7 +226,7 @@ fn player_entering_gravity_volume_takes_its_gravity_from_the_next_tick() {
         Vec3::new(50.0, 0.0, 50.0),
         VOLUME_GRAVITY,
     )]);
-    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
     let mut component = airborne_pawn(-6.0);
     let start = Vec3::new(0.0, 0.05, 0.0);
 

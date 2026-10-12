@@ -690,6 +690,7 @@ mod tests {
     fn test_environment() -> postretro_combat_model::EnvironmentTuning {
         postretro_combat_model::EnvironmentTuning {
             level_gravity: -9.81,
+            fluids: Default::default(),
         }
     }
 

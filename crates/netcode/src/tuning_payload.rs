@@ -82,12 +82,14 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use postretro_combat_model::{EnvironmentTuning, WieldableTuningPayload};
+    use postretro_combat_model::{
+        EnvironmentTuning, FluidMovementTable, FluidMovementTuning, WieldableTuningPayload,
+    };
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
-        AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
-        GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode, SlideParams,
-        SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
+        AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FluidRegistry,
+        ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode,
+        SlideParams, SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -235,9 +237,30 @@ mod tests {
     /// field cannot round-trip by accident.
     const HOST_LEVEL_GRAVITY: f32 = -7.25;
 
+    /// The host's fluid table: names and viscosities distinct from every
+    /// default, in an order a sorted encoding would change.
+    fn host_fluids() -> FluidMovementTable {
+        FluidMovementTable::new(vec![
+            FluidMovementTuning {
+                name: "water".to_string(),
+                viscosity: 2.25,
+            },
+            FluidMovementTuning {
+                name: "sludge".to_string(),
+                viscosity: 6.5,
+            },
+            FluidMovementTuning {
+                name: "aether".to_string(),
+                viscosity: 0.0,
+            },
+        ])
+        .expect("valid fixture table")
+    }
+
     fn host_environment() -> EnvironmentTuning {
         EnvironmentTuning {
             level_gravity: HOST_LEVEL_GRAVITY,
+            fluids: host_fluids(),
         }
     }
 
@@ -342,7 +365,10 @@ mod tests {
             let payload = TuningPayload::new(
                 None,
                 std::array::from_fn(|_| None),
-                EnvironmentTuning { level_gravity },
+                EnvironmentTuning {
+                    level_gravity,
+                    fluids: FluidMovementTable::default(),
+                },
             );
             let decoded = decode_tuning_payload(&encode_tuning_payload(&payload)).unwrap();
             assert_eq!(decoded.environment.level_gravity, level_gravity);
@@ -368,6 +394,114 @@ mod tests {
             decode_tuning_payload(&serde_json::to_vec(&null_gravity).unwrap()),
             Err(TuningPayloadError::Malformed { .. })
         ));
+    }
+
+    // The host's fluid table rides the payload in declaration order, movement
+    // fields only: index i on the client is the host's fluid i.
+    #[test]
+    fn payload_round_trips_host_fluid_table_in_declaration_order_without_presentation() {
+        let encoded = encode_tuning_payload(&full_payload());
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            json["environment"]["fluids"],
+            serde_json::json!([
+                {"name": "water", "viscosity": 2.25},
+                {"name": "sludge", "viscosity": 6.5},
+                {"name": "aether", "viscosity": 0.0},
+            ]),
+            "each entry carries only the name and the viscosity"
+        );
+
+        let decoded = decode_tuning_payload(&encoded).unwrap();
+        assert_eq!(decoded.environment.fluids, host_fluids());
+        assert_eq!(
+            decoded.environment.fluids.names(),
+            ["water", "sludge", "aether"]
+        );
+        assert_eq!(decoded.environment.fluids.viscosities(), [2.25, 6.5, 0.0]);
+
+        // A host with no fluids sends an empty table.
+        let dry = TuningPayload::new(
+            None,
+            std::array::from_fn(|_| None),
+            EnvironmentTuning {
+                level_gravity: HOST_LEVEL_GRAVITY,
+                fluids: FluidMovementTable::default(),
+            },
+        );
+        let decoded = decode_tuning_payload(&encode_tuning_payload(&dry)).unwrap();
+        assert!(decoded.environment.fluids.names().is_empty());
+    }
+
+    // A malformed table is refused whole: a client that kept part of it would
+    // resolve some fluid indices differently from the host.
+    #[test]
+    fn payload_rejects_a_malformed_fluid_table() {
+        let encoded = encode_tuning_payload(&full_payload());
+        let base: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        type Edit = fn(&mut serde_json::Value);
+        let edits: [(&str, Edit); 7] = [
+            ("missing table", |json| {
+                json["environment"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("fluids");
+            }),
+            ("negative viscosity", |json| {
+                json["environment"]["fluids"][1]["viscosity"] = serde_json::json!(-0.5);
+            }),
+            // JSON has no non-finite numbers; a NaN or infinity reaches the wire as null.
+            ("non-finite viscosity", |json| {
+                json["environment"]["fluids"][0]["viscosity"] = serde_json::Value::Null;
+            }),
+            ("empty name", |json| {
+                json["environment"]["fluids"][2]["name"] = serde_json::json!("");
+            }),
+            ("duplicate name", |json| {
+                json["environment"]["fluids"][2]["name"] = serde_json::json!("water");
+            }),
+            ("missing name", |json| {
+                json["environment"]["fluids"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("name");
+            }),
+            ("over the fluid index range", |json| {
+                let entry = serde_json::json!({"name": "x", "viscosity": 1.0});
+                let table: Vec<serde_json::Value> = (0..=FluidRegistry::MAX_FLUIDS)
+                    .map(|index| {
+                        let mut entry = entry.clone();
+                        entry["name"] = serde_json::json!(format!("fluid{index}"));
+                        entry
+                    })
+                    .collect();
+                json["environment"]["fluids"] = serde_json::Value::Array(table);
+            }),
+        ];
+        for (case, edit) in edits {
+            let mut json = base.clone();
+            edit(&mut json);
+            assert!(
+                matches!(
+                    decode_tuning_payload(&serde_json::to_vec(&json).unwrap()),
+                    Err(TuningPayloadError::Malformed { .. })
+                ),
+                "{case} must be rejected"
+            );
+        }
+
+        // Exactly the index range is accepted.
+        let mut at_limit = base;
+        at_limit["environment"]["fluids"] = serde_json::Value::Array(
+            (0..FluidRegistry::MAX_FLUIDS)
+                .map(|index| serde_json::json!({"name": format!("fluid{index}"), "viscosity": 1.0}))
+                .collect(),
+        );
+        let decoded = decode_tuning_payload(&serde_json::to_vec(&at_limit).unwrap()).unwrap();
+        assert_eq!(
+            decoded.environment.fluids.names().len(),
+            FluidRegistry::MAX_FLUIDS
+        );
     }
 
     #[test]

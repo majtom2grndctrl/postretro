@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(second.brushes[0].aabb_min, Vec3::new(10.0, 0.0, 0.0));
         assert_eq!(second.brushes[0].planes.len(), 6);
 
-        let view = EnvironmentView::new(world.environment_volumes.level_gravity, &volumes);
+        let view = EnvironmentView::new(world.environment_volumes.level_gravity, &volumes, &[]);
         let inside = resolve_environment(view, &probe(Vec3::splat(2.0)));
         assert_eq!(inside.gravity, -2.0);
         let outside = resolve_environment(view, &probe(Vec3::new(7.0, 2.0, 2.0)));

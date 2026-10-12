@@ -26,7 +26,7 @@ fn crossings(
 ) -> Vec<FluidCrossing> {
     let mut out = Vec::new();
     visit_fluid_crossings(
-        EnvironmentView::new(-9.81, volumes),
+        EnvironmentView::new(-9.81, volumes, &[]),
         origin,
         dir,
         max_t,

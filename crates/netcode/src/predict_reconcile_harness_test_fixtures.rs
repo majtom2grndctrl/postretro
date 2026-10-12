@@ -22,7 +22,7 @@ use std::time::Duration;
 use postretro_collision::{
     ConvexLeaf, EnvironmentView, EnvironmentVolume, EnvironmentVolumes, LeafPlane,
 };
-use postretro_combat_model::{EnvironmentTuning, TuningPayload};
+use postretro_combat_model::{EnvironmentTuning, FluidMovementTable, TuningPayload};
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::transport::NetServer;
@@ -42,8 +42,8 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::MovementInput;
 use crate::netcode::{
-    NetworkIdAllocator, client_environment_view, host_handle_client_message, replace_client_tuning,
-    tuning_control_if_changed, tuning_payload_for_pawn,
+    NetworkIdAllocator, client_environment_view, client_fluid_table, host_handle_client_message,
+    replace_client_tuning, tuning_control_if_changed, tuning_payload_for_pawn,
 };
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -59,9 +59,9 @@ use postretro_entities::{
     MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
-    AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, GroundRef, HealthDescriptor, NumberOrIr, PlayerMovementComponent,
-    PlayerMovementDescriptor, SlideParams, SpeedParams,
+    AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, FluidRegistry,
+    ForgivenessParams, GroundParams, GroundRef, HealthDescriptor, NumberOrIr,
+    PlayerMovementComponent, PlayerMovementDescriptor, SlideParams, SpeedParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -157,6 +157,37 @@ pub(crate) fn gravity_box_volume(min: Vec3, max: Vec3, gravity: f32) -> Environm
             aabb_max: max,
         }],
     }
+}
+
+/// One level volume record as every peer loads it from the level file: its
+/// fluid by NAME. `volume.fluid` is ignored; each peer resolves `fluid` against
+/// its own active fluid table ([`resolve_environment_records`]).
+#[derive(Debug, Clone)]
+pub(crate) struct NamedEnvironmentVolume {
+    pub(crate) volume: EnvironmentVolume,
+    pub(crate) fluid: Option<String>,
+}
+
+/// Resolve level records against a fluid table, as the binary's level install
+/// does: a fluid's index is its position in `fluid_names`, and a name the table
+/// lacks loads dry while the volume's gravity and push still apply.
+pub(crate) fn resolve_environment_records(
+    records: &[NamedEnvironmentVolume],
+    fluid_names: &[String],
+) -> EnvironmentVolumes {
+    EnvironmentVolumes::build(
+        records
+            .iter()
+            .map(|record| EnvironmentVolume {
+                fluid: record
+                    .fluid
+                    .as_deref()
+                    .and_then(|name| fluid_names.iter().position(|declared| declared == name))
+                    .and_then(|index| u16::try_from(index).ok()),
+                ..record.volume.clone()
+            })
+            .collect(),
+    )
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn
@@ -400,10 +431,23 @@ pub(crate) fn spawn_dead_bystander(registry: &mut EntityRegistry) -> EntityId {
 /// advances drives delivery; no wall-clock time is ever read.
 pub(crate) struct LoopbackHarness {
     pub(crate) world: CollisionWorld,
-    /// Each peer's installed environment volumes, built separately from the same
-    /// records as both peers build theirs from the same level. Empty by default.
+    /// The level's volume records, fluids by name, identical on both peers as
+    /// the digest-bound level file is. Empty by default.
+    pub(crate) environment_records: Vec<NamedEnvironmentVolume>,
+    /// Each peer's installed environment volumes, built separately from the
+    /// records against that peer's active fluid table.
     pub(crate) host_environment_volumes: EnvironmentVolumes,
     pub(crate) client_environment_volumes: EnvironmentVolumes,
+    /// The host's manifest fluids (its `DataRegistry.fluids`) and the movement
+    /// table its volumes resolved against and its tuning sends.
+    pub(crate) host_fluids: FluidRegistry,
+    pub(crate) host_fluid_table: FluidMovementTable,
+    /// The client's own manifest fluids. Only the local presentation lookup
+    /// reads them; volume resolution and movement never do.
+    pub(crate) client_fluids: FluidRegistry,
+    /// The fluid names the client's volumes last resolved against: the installed
+    /// host table's, empty before a payload installs.
+    pub(crate) client_volume_fluid_names: Vec<String>,
     /// The host's live level gravity (its `script_ctx.gravity`): the host pawn
     /// integrates it, and every tuning send reads it. A test may change it
     /// between steps, as a `setGravity` reaction would.
@@ -560,8 +604,13 @@ impl LoopbackHarness {
 
         Self {
             world,
+            environment_records: Vec::new(),
             host_environment_volumes: EnvironmentVolumes::empty(),
             client_environment_volumes: EnvironmentVolumes::empty(),
+            host_fluids: FluidRegistry::default(),
+            host_fluid_table: FluidMovementTable::default(),
+            client_fluids: FluidRegistry::default(),
+            client_volume_fluid_names: Vec::new(),
             host_level_gravity: GRAVITY,
             client_level_gravity: GRAVITY,
             host_registry,
@@ -612,16 +661,100 @@ impl LoopbackHarness {
         }
     }
 
-    /// Install the same environment volume records on both peers, each building
-    /// its own query set as each peer does from its own copy of the level.
+    /// Install the same fluidless environment volume records on both peers,
+    /// each building its own query set as each peer does from its own copy of
+    /// the level.
     pub(crate) fn with_environment_volumes(
         link: LinkConfig,
         volumes: Vec<EnvironmentVolume>,
     ) -> Self {
+        assert!(
+            volumes.iter().all(|volume| volume.fluid.is_none()),
+            "fluid volumes name their fluid: use `with_fluid_tables`"
+        );
+        let records = volumes
+            .into_iter()
+            .map(|volume| NamedEnvironmentVolume {
+                volume,
+                fluid: None,
+            })
+            .collect();
+        Self::with_fluid_tables(
+            link,
+            records,
+            FluidRegistry::default(),
+            FluidRegistry::default(),
+        )
+    }
+
+    /// Seed the host and the client with independent fluid declarations, as two
+    /// peers on the same mod id whose manifests differ, over the same level
+    /// records. The host's volumes resolve against its registry; the client's
+    /// resolve against nothing (dry) until the host's table arrives through the
+    /// tuning-payload install, and never against `client_fluids`.
+    pub(crate) fn with_fluid_tables(
+        link: LinkConfig,
+        records: Vec<NamedEnvironmentVolume>,
+        host_fluids: FluidRegistry,
+        client_fluids: FluidRegistry,
+    ) -> Self {
         let mut h = Self::new(link);
-        h.host_environment_volumes = EnvironmentVolumes::build(volumes.clone());
-        h.client_environment_volumes = EnvironmentVolumes::build(volumes);
+        h.environment_records = records;
+        h.client_fluids = client_fluids;
+        h.client_environment_volumes =
+            resolve_environment_records(&h.environment_records, &h.client_volume_fluid_names);
+        h.host_reload_fluids(host_fluids);
+        h.host_environment_volumes =
+            resolve_environment_records(&h.environment_records, h.host_fluid_table.names());
         h
+    }
+
+    /// HOST: commit a manifest whose fluids are `fluids`, as a host reload does:
+    /// the registry and its movement table are replaced, and the installed
+    /// volumes re-resolve when the table's names changed. The next host frame's
+    /// whole-struct tuning dedupe resends the new table.
+    pub(crate) fn host_reload_fluids(&mut self, fluids: FluidRegistry) {
+        let table = FluidMovementTable::from_registry(&fluids);
+        if table.names() != self.host_fluid_table.names() {
+            self.host_environment_volumes =
+                resolve_environment_records(&self.environment_records, table.names());
+        }
+        self.host_fluids = fluids;
+        self.host_fluid_table = table;
+    }
+
+    /// The host's tick view: its volumes under its live level gravity and the
+    /// viscosities of the table they resolved against.
+    pub(crate) fn host_environment_view(&self) -> EnvironmentView<'_> {
+        EnvironmentView::new(
+            self.host_level_gravity,
+            &self.host_environment_volumes,
+            self.host_fluid_table.viscosities(),
+        )
+    }
+
+    /// The client's prediction and replay view, through the production
+    /// `client_environment_view`. `None` before the host's tuning installs.
+    pub(crate) fn client_environment_view(&self) -> Option<EnvironmentView<'_>> {
+        client_environment_view(
+            self.client_tuning.as_deref(),
+            &self.client_environment_volumes,
+        )
+    }
+
+    /// CLIENT: after a tuning install, re-resolve the client's volumes when the
+    /// installed host table's names differ from the ones they last resolved
+    /// against, as the binary does after every install.
+    fn client_sync_fluid_table(&mut self) {
+        let names = client_fluid_table(self.client_tuning.as_deref())
+            .map(FluidMovementTable::names)
+            .unwrap_or_default();
+        if names == self.client_volume_fluid_names.as_slice() {
+            return;
+        }
+        self.client_volume_fluid_names = names.to_vec();
+        self.client_environment_volumes =
+            resolve_environment_records(&self.environment_records, &self.client_volume_fluid_names);
     }
 
     /// Seed the host and the client with independent level gravity, as two peers
@@ -873,7 +1006,11 @@ impl LoopbackHarness {
             crate::sim::run_host_movement_tick(
                 &mut self.host_registry,
                 &combined_collision,
-                EnvironmentView::new(self.host_level_gravity, &self.host_environment_volumes),
+                EnvironmentView::new(
+                    self.host_level_gravity,
+                    &self.host_environment_volumes,
+                    self.host_fluid_table.viscosities(),
+                ),
                 &pawn_inputs,
                 DT,
             );
@@ -1035,7 +1172,7 @@ impl LoopbackHarness {
     }
 
     /// HOST: build this slot's tuning payload from the host pawn and the host's live
-    /// level gravity, and enqueue it on the Control lane when it differs from the
+    /// level gravity and fluid table, and enqueue it on the Control lane when it differs from the
     /// last one sent (`tuning_control_if_changed`, shared with production).
     pub(crate) fn host_send_tuning_if_changed(&mut self) {
         let payload = tuning_payload_for_pawn(
@@ -1045,6 +1182,7 @@ impl LoopbackHarness {
             None,
             &EnvironmentTuning {
                 level_gravity: self.host_level_gravity,
+                fluids: self.host_fluid_table.clone(),
             },
         );
         if let Some(message) =
@@ -1068,6 +1206,7 @@ impl LoopbackHarness {
             )
             .expect("host tuning payload installs");
             self.client_tuning_installs += 1;
+            self.client_sync_fluid_table();
         }
     }
 

@@ -140,9 +140,13 @@ fn run_headless_inner(
         CollisionWorld::from_level(&world).context("static collision mesh rejected")?;
     // Built from the level's records exactly as the windowed install builds them,
     // resolving fluid names against the drained manifest's declarations.
-    let fluid_names = script_ctx.data_registry.borrow().fluids.names();
-    let environment_volumes =
-        crate::startup::environment_install::build_level_environment_volumes(&world, &fluid_names);
+    let environment_fluids = postretro_combat_model::FluidMovementTable::from_registry(
+        &script_ctx.data_registry.borrow().fluids,
+    );
+    let environment_volumes = crate::startup::environment_install::build_level_environment_volumes(
+        &world,
+        environment_fluids.names(),
+    );
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
@@ -241,6 +245,7 @@ fn run_headless_inner(
         let environment = postretro_collision::EnvironmentView::new(
             script_ctx.gravity.get(),
             &environment_volumes,
+            environment_fluids.viscosities(),
         );
 
         let facing_yaw = effective_aim

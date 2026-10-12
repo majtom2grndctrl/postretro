@@ -144,7 +144,10 @@ impl Fixture {
             pawn,
             &fixture.descriptors,
             None,
-            &postretro_combat_model::EnvironmentTuning { level_gravity: 0.0 },
+            &postretro_combat_model::EnvironmentTuning {
+                level_gravity: 0.0,
+                fluids: Default::default(),
+            },
         );
         netcode::host_send_tuning_if_changed(
             &mut fixture.server,

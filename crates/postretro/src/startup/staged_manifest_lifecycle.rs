@@ -206,7 +206,6 @@ impl App {
             None => return,
         };
         for result in staged {
-            let previous_fluid_names = self.environment_fluid_names();
             // `commit_staged_manifest_result` and the active-set recompose touch
             // the session-owned runtime/ctx/registry; the rebuild + UI commit are
             // App methods. Scope the session borrow to the commit call so the App
@@ -304,7 +303,7 @@ impl App {
             if committed {
                 // A reload that declares, drops or reorders fluids re-resolves
                 // the installed level's fluid volumes against the new table.
-                self.refresh_environment_fluids(&previous_fluid_names);
+                self.refresh_environment_fluids();
             }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile.

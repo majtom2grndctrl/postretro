@@ -627,6 +627,36 @@ pub(super) fn standup_clearance_probe(
     )
 }
 
+/// Stand-up clearance in the direction `anchor` grows the capsule: `Feet`
+/// raises the head by `2 × (standing_half_height − crouched_half_height)`, the
+/// upward sweep [`standup_clearance_probe`] runs; `Head` lowers the feet by the
+/// same distance, so the crouched capsule sweeps down instead. The swim seam
+/// stands a crouched pawn up with the anchor its crouch entered with, so an
+/// airborne pawn tests the floor below it, not the ceiling above. Returns
+/// `true` when the growth is CLEAR.
+pub(super) fn anchored_standup_clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    crouched_half_height: f32,
+    standing_half_height: f32,
+    anchor: ResizeAnchor,
+) -> bool {
+    let growth = 2.0 * (standing_half_height - crouched_half_height);
+    let direction = match anchor {
+        ResizeAnchor::Feet => Vec3::Y,
+        ResizeAnchor::Head => Vec3::NEG_Y,
+    };
+    clearance_probe(
+        component,
+        collision,
+        position,
+        crouched_half_height,
+        direction,
+        growth,
+    )
+}
+
 /// Upward headroom probe: can a capsule of `half_height` (the live radius)
 /// centred at `position` rise `rise` metres straight up without hitting
 /// anything? Sweeps that capsule up by `rise`; a hit strictly within it blocks.
@@ -640,16 +670,31 @@ pub(super) fn upward_clearance_probe(
     half_height: f32,
     rise: f32,
 ) -> bool {
-    if rise <= 0.0 {
+    clearance_probe(component, collision, position, half_height, Vec3::Y, rise)
+}
+
+/// Can a capsule of `half_height` (the live radius) centred at `position`
+/// sweep `distance` metres along the unit vertical `direction` without hitting
+/// anything? A hit strictly within the distance blocks; a distance of zero or
+/// less needs nothing cleared.
+fn clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    half_height: f32,
+    direction: Vec3,
+    distance: f32,
+) -> bool {
+    if distance <= 0.0 {
         return true;
     }
     // The parry shape stays inside this collision-boundary call; the result
     // crosses back as a plain bool.
     let capsule = Capsule::new_y(half_height, component.capsule.radius);
-    let hit = cast_capsule_query(collision, position, &capsule, Vec3::Y, rise);
-    // `None` (nothing within range) or a hit at/after the full rise is clear.
+    let hit = cast_capsule_query(collision, position, &capsule, direction, distance);
+    // `None` (nothing within range) or a hit at/after the full distance is clear.
     match hit {
-        Some(h) => h.time_of_impact >= rise,
+        Some(h) => h.time_of_impact >= distance,
         None => true,
     }
 }

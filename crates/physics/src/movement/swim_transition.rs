@@ -8,7 +8,9 @@ use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::stand_up_resize;
 use crate::movement::environment::resolve_standing;
 use crate::movement::intents::{fluid_jump_input, leave_swim};
-use crate::movement::substrate::{ResizeAnchor, standup_clearance_probe, upward_clearance_probe};
+use crate::movement::substrate::{
+    ResizeAnchor, anchored_standup_clearance_probe, upward_clearance_probe,
+};
 use crate::movement::{MovementInput, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -57,12 +59,16 @@ impl SwimSeam {
 ///   immersion is at or above `enter_depth`, the component has a `swim` block,
 ///   and the latch is clear. Between the two thresholds nothing toggles.
 /// - **Standing capsule.** A crouched capsule (crouch or slide) stands up on
-///   entry, feet planted, through the same headroom probe and resize crouch
-///   stand-up uses; entry is tested against the STANDING capsule's immersion,
-///   and on entry `resolved` is replaced by that resolve so the swim intent
-///   reads the eye it will swim with. Blocked headroom (a flooded crawlspace
-///   lower than the standing capsule) keeps the current state: the pawn wades
-///   crouched under gravity and retries every tick.
+///   entry through the resize crouch stand-up uses, about the anchor its crouch
+///   entered with: feet planted when grounded, head pinned when airborne (D4).
+///   Feet-anchoring an airborne crouch would lift the standing capsule by twice
+///   the crouch shrink, so a diver crouching out of the bottom of a floating
+///   block would stand straight back up into it. Entry is tested against that
+///   STANDING capsule's immersion, after a clearance sweep in the direction it
+///   grows, and on entry `resolved` is replaced by that resolve so the swim
+///   intent reads the eye it will swim with. A blocked growth (a flooded
+///   crawlspace lower than the standing capsule) keeps the current state: the
+///   pawn wades crouched under gravity and retries every tick.
 /// - **No swim block.** The pawn never swims and walks fluid floors; a hot swap
 ///   that removes the block mid-swim leaves to `Normal`.
 pub(super) fn environment_transition(
@@ -122,22 +128,27 @@ pub(super) fn environment_transition(
         };
     }
 
-    if !standup_clearance_probe(
+    // Mirror the crouch-entry anchor, read at tick start like crouch stand-up's.
+    let anchor = if component.is_grounded() {
+        ResizeAnchor::Feet
+    } else {
+        ResizeAnchor::Head
+    };
+    if !anchored_standup_clearance_probe(
         component,
         collision,
         *position,
         crouched_half_height,
         standing_half_height,
+        anchor,
     ) {
         return SwimSeam::NONE;
     }
-    let standing = resolve_standing(component, view, *position);
+    let standing = resolve_standing(component, view, *position, anchor);
     if standing.immersion < enter_depth {
         return SwimSeam::NONE;
     }
-    // Feet-anchored: the probe above cleared exactly that growth, and a
-    // swimmer's crouch-entry anchor has no gameplay meaning to mirror.
-    stand_up_resize(component, position, ResizeAnchor::Feet);
+    stand_up_resize(component, position, anchor);
     let fluid = standing.fluid.unwrap_or(fluid);
     *resolved = standing;
     SwimSeam {

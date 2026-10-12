@@ -223,6 +223,10 @@ Loop stopped: round 3 findings were narrow edge cases, now fixed.
 - ✓ `cargo check --release --workspace`
 - ✓ `cargo run -p xtask -- crate-graph --check`
 
+## Owner playtest fixes (2026-10-12)
+- **Diving out of a floating block with crouch held bobbed back in.** Leaving swim through the bottom with crouch held entered an airborne crouch, head pinned and feet raised. The next tick's swim seam stood the crouched pawn up feet-anchored, which lifted the standing capsule by `2 × (standing − crouched)` half-height, back above `enter_depth`. The same D4 mismatch `dispatch::stand_up_resize` documents. Fix: the swim seam stands up about the crouch-entry anchor read at tick start (grounded `Feet`, airborne `Head`). The clearance sweep runs in the direction the capsule grows (`substrate::anchored_standup_clearance_probe`), and `resolve_standing` takes the anchor. Proof: `diving_out_of_a_floating_block_with_crouch_held_falls_clear_and_never_re_enters` (failed before the fix, re-entering on the first tick after leaving) and `airborne_crouched_pawn_falling_into_water_enters_swim_with_its_head_pinned`; physics lib 274 → 276 passing, netcode swim harness 10, clippy clean.
+- Follow-up outside E24: crouch and slide stand-up use the upward headroom sweep even when airborne-anchored at `Head`, where the capsule grows downward.
+
 ## Trial notes
 - mode: resumable
 - sessions used: 1

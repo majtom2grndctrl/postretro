@@ -1000,6 +1000,85 @@ fn swimming_down_out_of_a_floating_block_leaves_swim_and_level_gravity_applies()
     assert!((component.velocity.y - vy_before - LEVEL_GRAVITY * DT).abs() < VEL_EPS);
 }
 
+// A diver holding crouch past the bottom of a floating block crouches in the
+// air, head pinned, and the swim seam's standing re-test must stand it back up
+// about that same head: anchoring the feet instead lifts the standing capsule by
+// twice the crouch shrink, back into the block, and the pawn bobs in and out.
+#[test]
+fn diving_out_of_a_floating_block_with_crouch_held_falls_clear_and_never_re_enters() {
+    let volumes = floating_block();
+    let view = water_view(&volumes);
+    let world = CollisionWorld::new();
+    let mut component = swimming(&full_descriptor());
+    let mut position = Vec3::new(0.0, 7.5, 0.0);
+    let dive = input(|i| i.crouch_intent = true);
+    let mut left = false;
+    for _ in 0..240 {
+        step(&mut component, &world, view, &dive, &mut position);
+        if component.movement_state.kind() != MovementStateKind::Swim {
+            left = true;
+            break;
+        }
+    }
+    assert!(left, "the diver must leave through the bottom");
+    let mut head = position.y + component.capsule.half_height + component.capsule.radius;
+    for tick in 0..60 {
+        step(&mut component, &world, view, &dive, &mut position);
+        assert_ne!(
+            component.movement_state.kind(),
+            MovementStateKind::Swim,
+            "tick {tick}: the falling diver re-entered swim"
+        );
+        let next_head = position.y + component.capsule.half_height + component.capsule.radius;
+        assert!(
+            next_head <= head + 1e-4,
+            "tick {tick}: the head rose from {head} to {next_head}"
+        );
+        head = next_head;
+    }
+}
+
+// The airborne counterpart of the grounded stand-up on entry: a pawn that
+// crouched in the air (head pinned, feet raised) and falls into deep water
+// stands up about its head, so entry drops the feet back rather than lifting
+// the head.
+#[test]
+fn airborne_crouched_pawn_falling_into_water_enters_swim_with_its_head_pinned() {
+    let volumes = open_water(0.0);
+    let view = water_view(&volumes);
+    let world = CollisionWorld::new();
+    let level = EnvironmentView::level_only(LEVEL_GRAVITY);
+    let mut component = PlayerMovementComponent::from_descriptor(&full_descriptor());
+    let crouch = input(|i| i.crouch_intent = true);
+    let mut position = Vec3::new(0.0, 3.0, 0.0);
+    step(&mut component, &world, level, &crouch, &mut position);
+    assert_eq!(
+        component.movement_state.kind(),
+        MovementStateKind::Crouch,
+        "fixture: crouched in the air"
+    );
+    position.y = center_at_immersion(0.0, 0.5) + 0.3;
+    let head = position.y + component.capsule.half_height + component.capsule.radius;
+    let start_vy = component.velocity.y;
+    let mut previous_head = head;
+    let mut entered = false;
+    for _ in 0..60 {
+        step(&mut component, &world, view, &crouch, &mut position);
+        if component.movement_state.kind() == MovementStateKind::Swim {
+            let new_head = position.y + component.capsule.half_height + component.capsule.radius;
+            assert!((component.capsule.half_height - 0.8).abs() < 1e-6);
+            assert!(
+                new_head <= previous_head + 1e-4,
+                "the stand-up keeps the head pinned: {new_head} vs {previous_head}"
+            );
+            entered = true;
+            break;
+        }
+        previous_head = position.y + component.capsule.half_height + component.capsule.radius;
+    }
+    assert!(entered, "the falling pawn must enter swim (vy {start_vy})");
+}
+
 // M12: up into the bottom of a floating block.
 #[test]
 fn jumping_up_into_a_floating_block_enters_swim_once_immersion_reaches_enter_depth() {

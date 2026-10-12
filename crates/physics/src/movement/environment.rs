@@ -3,6 +3,7 @@
 
 use glam::Vec3;
 
+use crate::movement::substrate::ResizeAnchor;
 use postretro_collision::{BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment};
 use postretro_foundation::PlayerMovementComponent;
 
@@ -28,18 +29,23 @@ pub(super) fn resolve_at_tick_start(
 }
 
 /// Resolve the environment the pawn would have this tick after standing up from
-/// a crouched capsule with its feet planted: the standing capsule, centred where
-/// `dispatch::stand_up_resize` with `ResizeAnchor::Feet` would put it. Swim entry
-/// tests immersion against the capsule the pawn will swim in, so a crouch in
-/// water shallower than the standing capsule's `enter_depth` never toggles
-/// between crouching and swimming.
+/// a crouched capsule about `anchor`: the standing capsule, centred where
+/// `dispatch::stand_up_resize` with that anchor would put it. Swim entry tests
+/// immersion against the capsule the pawn will swim in, so a crouch in water
+/// shallower than the standing capsule's `enter_depth` never toggles between
+/// crouching and swimming.
 pub(super) fn resolve_standing(
     component: &PlayerMovementComponent,
     environment: EnvironmentView<'_>,
     position: Vec3,
+    anchor: ResizeAnchor,
 ) -> ResolvedEnvironment {
     let standing_half_height = component.standing_half_height;
-    let delta = standing_half_height - component.capsule.half_height;
+    let growth = standing_half_height - component.capsule.half_height;
+    let delta = match anchor {
+        ResizeAnchor::Feet => growth,
+        ResizeAnchor::Head => -growth,
+    };
     resolve_environment(
         environment,
         &BodyProbe {

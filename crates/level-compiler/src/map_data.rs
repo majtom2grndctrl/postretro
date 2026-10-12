@@ -230,7 +230,7 @@ pub struct MapTriggerVolume {
 /// no downstream stage sees which source entity kind produced it. Like
 /// [`MapTriggerVolume`], it retains no [`BrushVolume`], so the static BSP,
 /// collision, lightmap, SDF and navmesh inputs never see it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct MapEnvironmentVolume {
     /// Source map entity index, so every diagnostic can name the entity.
     pub source_entity: u32,
@@ -247,13 +247,16 @@ pub struct MapEnvironmentVolume {
 }
 
 /// One convex environment-volume leaf in engine space (Y-up, meters).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct MapEnvironmentBrush {
     pub min: [f32; 3],
     pub max: [f32; 3],
     /// Convex hull planes `[nx, ny, nz, d]`. A point `p` is inside when
     /// `dot(p, n) - d <= 0` for every plane.
     pub planes: Vec<[f32; 4]>,
+    /// Textured sides, the input to the fluid surface. Only a fluid volume
+    /// draws a surface, so a dry volume's brushes carry none.
+    pub sides: Vec<BrushSide>,
 }
 
 /// Light shape. Governs which fields of `MapLight` are meaningful.

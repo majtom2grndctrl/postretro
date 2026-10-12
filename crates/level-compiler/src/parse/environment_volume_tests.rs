@@ -1,6 +1,7 @@
 //! Parser contracts for the purpose-named environment-volume entities.
 
 use glam::Vec3;
+use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::map_data::{MapData, MapEnvironmentVolume};
 use crate::map_format::MapFormat;
@@ -268,9 +269,12 @@ fn environment_volumes_keep_map_order_and_one_leaf_per_brush_outside_the_static_
 #[test]
 fn environment_section_always_carries_the_level_gravity() {
     let map = parse_inline_map(&volume_map(&[])).unwrap();
+    let mut texture_names = TextureNamesSection { names: Vec::new() };
     let section = crate::environment_volumes::encode_environment_volumes_section(
         &map.environment_volumes,
         map.initial_gravity,
+        &map.brush_volumes,
+        &mut texture_names,
     );
     assert!(section.volumes.is_empty());
     assert_eq!(section.level_gravity, map.initial_gravity);
@@ -279,6 +283,8 @@ fn environment_section_always_carries_the_level_gravity() {
     let section = crate::environment_volumes::encode_environment_volumes_section(
         std::slice::from_ref(&volume),
         -2.0,
+        &[],
+        &mut texture_names,
     );
     let record = &section.volumes[0];
     assert_eq!(section.level_gravity, -2.0);
@@ -286,8 +292,9 @@ fn environment_section_always_carries_the_level_gravity() {
     assert_eq!(record.fluid, "water");
     assert_eq!((record.gravity, record.push), (None, None));
     assert_eq!(record.brushes[0].planes.len(), 6);
-    assert!(
-        record.surface_faces.is_empty(),
-        "surfaces are not built yet"
+    assert_eq!(
+        record.surface_faces.len(),
+        6,
+        "a fluid box in open space draws every face"
     );
 }

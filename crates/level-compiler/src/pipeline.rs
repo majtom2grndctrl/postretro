@@ -1883,10 +1883,6 @@ fn run_after_parsing(
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
     let fog_volumes_section =
         pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
-    let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
-        &map_data.environment_volumes,
-        map_data.initial_gravity,
-    );
     let fog_cell_masks_section =
         fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
 
@@ -2044,6 +2040,16 @@ fn run_after_parsing(
     // Stamp animated block ids. The SDF key above reads no block ids, so this
     // order is not load-bearing for its cache.
     animated_atlas_stage::stamp_animated_blocks(&mut geo_result, animated_face_blocks.as_ref());
+
+    // Fluid surfaces intern their textures here, after geometry and movers and
+    // just before the mip bake reads the table: a fluid-only texture appends
+    // past every world entry, and no earlier stage's cache key sees it.
+    let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
+        &map_data.environment_volumes,
+        map_data.initial_gravity,
+        &map_data.brush_volumes,
+        &mut geo_result.texture_names,
+    );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());

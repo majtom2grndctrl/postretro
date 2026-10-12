@@ -8,7 +8,7 @@ use glam::{DVec3, Vec3};
 use shambler::GeoMap;
 use shambler::brush::BrushId;
 
-use crate::map_data::{MapEnvironmentBrush, MapEnvironmentVolume};
+use crate::map_data::{BrushSide, MapEnvironmentBrush, MapEnvironmentVolume};
 
 use super::authoring_regions::resolve_brush_region_bounds_with_empty_policy;
 use super::quake_to_engine;
@@ -194,5 +194,44 @@ fn resolve_leaf(
         min,
         max,
         planes: bounds.planes,
+        sides: Vec::new(),
     })
+}
+
+/// Give every fluid volume's brushes their textured sides, the surface
+/// stage's input. `brush_ids[i]` holds volume `i`'s authored brushes, in the
+/// order its leaves were resolved. One hull build covers every fluid brush:
+/// the build walks the whole map's face planes, so a call per entity would
+/// repeat that walk once per pool.
+pub(super) fn attach_fluid_surface_sides(
+    geo_map: &GeoMap,
+    volumes: &mut [MapEnvironmentVolume],
+    brush_ids: &[Vec<BrushId>],
+    scale: f64,
+) {
+    debug_assert_eq!(volumes.len(), brush_ids.len());
+    let fluid_brush_ids: Vec<BrushId> = volumes
+        .iter()
+        .zip(brush_ids)
+        .filter(|(volume, _)| volume.fluid.is_some())
+        .flat_map(|(_, ids)| ids.iter().copied())
+        .collect();
+    if fluid_brush_ids.is_empty() {
+        return;
+    }
+    let mut sides_by_brush: HashMap<BrushId, Vec<BrushSide>> =
+        super::build_brush_volumes_with_ids(geo_map, &fluid_brush_ids, scale)
+            .into_iter()
+            .map(|(brush_id, hull)| (brush_id, hull.sides))
+            .collect();
+    for (volume, ids) in volumes.iter_mut().zip(brush_ids) {
+        if volume.fluid.is_none() {
+            continue;
+        }
+        // `resolve_leaf` already failed the build on a brush without a hull,
+        // so every id has sides here.
+        for (leaf, brush_id) in volume.brushes.iter_mut().zip(ids) {
+            leaf.sides = sides_by_brush.remove(brush_id).unwrap_or_default();
+        }
+    }
 }

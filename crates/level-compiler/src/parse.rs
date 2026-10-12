@@ -839,6 +839,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut environment_volumes = Vec::new();
+    // Parallel to `environment_volumes`: each volume's authored brush ids, kept
+    // until the fluid volumes' textured sides are built in one pass.
+    let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1112,6 +1115,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 &classname,
                 entities.len() - 1,
             )?);
+            environment_volume_brush_ids.push(brush_ids);
             continue;
         }
 
@@ -1504,6 +1508,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             ))
     );
 
+    environment_volumes::attach_fluid_surface_sides(
+        &geo_map,
+        &mut environment_volumes,
+        &environment_volume_brush_ids,
+        scale,
+    );
     let world_hulls = build_brush_volumes_with_ids(&geo_map, &world_brush_ids, scale);
     // Kinematic mover brushes never reach the world set, but a switch mounted on a
     // door or lift must still clamp against its mount. Their hulls exist only for

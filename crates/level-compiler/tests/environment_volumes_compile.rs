@@ -1,4 +1,4 @@
-//! Environment volumes are non-solid: a volume spanning a doorway changes no PRL section but its own.
+//! Environment volumes are non-solid: a volume changes only its own section and the texture tables.
 //! See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::BTreeMap;
@@ -11,9 +11,13 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
+/// A texture the two-room world never uses.
+const FLUID_TEXTURE: &str = "test/concrete_grimey";
 /// Quake map units to engine meters.
 const UNIT: f32 = 0.0254;
 /// Authored worldspawn gravity, distinct from the default so the section
@@ -286,6 +290,103 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
             assert!((brush.aabb_max[axis] - expected_max[axis]).abs() < 1e-5);
         }
         assert_eq!(brush.planes.len(), 6);
-        assert!(record.surface_faces.is_empty());
+        if classname == "fluid_volume" {
+            // The fluid shares the world's texture, so TextureNames and
+            // TextureCacheKeys stayed byte-identical above, and its faces
+            // index the world's existing entry.
+            let names =
+                TextureNamesSection::from_bytes(section(&with_volume, SectionId::TextureNames))
+                    .unwrap();
+            assert!(
+                !record.surface_faces.is_empty(),
+                "the fluid draws a surface"
+            );
+            for face in &record.surface_faces {
+                assert_eq!(names.names[face.texture_index as usize], TEXTURE);
+            }
+        } else {
+            assert!(
+                record.surface_faces.is_empty(),
+                "{classname} draws no surface"
+            );
+        }
+    }
+}
+
+/// C3 restated: a fluid whose surface texture the world does not use changes
+/// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
+/// texture, appended after every world entry.
+#[test]
+fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section() {
+    let temp = TempBuildDir::new();
+    // A real PNG, so the appended cache key is a baked bundle, not the
+    // missing-texture zero key.
+    let texture_dir = temp.0.join("textures").join("test");
+    std::fs::create_dir_all(&texture_dir).expect("create fixture texture dir");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/textures")
+        .join(format!("{FLUID_TEXTURE}.png"));
+    std::fs::copy(&source, texture_dir.join("concrete_grimey.png"))
+        .unwrap_or_else(|error| panic!("copy {}: {error}", source.display()));
+
+    let base = sections(&compile(&temp, "base", &two_room_map(&[])));
+    let fluid = format!(
+        "{{\n\"classname\" \"fluid_volume\"\n\"fluid\" \"water\"\n{}\n}}",
+        box_brush([-64, -48, 0], [64, 48, 80]).replace(TEXTURE, FLUID_TEXTURE)
+    );
+    let with_fluid = sections(&compile(&temp, "fluid", &two_room_map(&[fluid])));
+
+    assert_eq!(
+        with_fluid.keys().collect::<Vec<_>>(),
+        base.keys().collect::<Vec<_>>(),
+        "the same sections are emitted"
+    );
+    let tables = [
+        SectionId::EnvironmentVolumes as u32,
+        SectionId::TextureNames as u32,
+        SectionId::TextureCacheKeys as u32,
+    ];
+    for (id, payload) in &base {
+        if !tables.contains(id) {
+            assert!(
+                with_fluid[id] == *payload,
+                "section {id} ({:?}) differs from the map without the volume",
+                SectionId::from_u32(*id)
+            );
+        }
+    }
+
+    let base_names =
+        TextureNamesSection::from_bytes(section(&base, SectionId::TextureNames)).unwrap();
+    let names =
+        TextureNamesSection::from_bytes(section(&with_fluid, SectionId::TextureNames)).unwrap();
+    let mut expected_names = base_names.names.clone();
+    expected_names.push(FLUID_TEXTURE.to_string());
+    assert_eq!(
+        names.names, expected_names,
+        "only the fluid texture is appended"
+    );
+
+    let base_keys =
+        TextureCacheKeysSection::from_bytes(section(&base, SectionId::TextureCacheKeys)).unwrap();
+    let keys =
+        TextureCacheKeysSection::from_bytes(section(&with_fluid, SectionId::TextureCacheKeys))
+            .unwrap();
+    assert_eq!(keys.keys.len(), base_keys.keys.len() + 1);
+    assert_eq!(keys.keys[..base_keys.keys.len()], base_keys.keys[..]);
+    assert_ne!(
+        keys.keys[base_keys.keys.len()],
+        [0u8; 32],
+        "the appended key names the baked fluid texture"
+    );
+
+    let environment = environment(&with_fluid);
+    let record = &environment.volumes[0];
+    assert!(
+        !record.surface_faces.is_empty(),
+        "the fluid draws a surface"
+    );
+    for face in &record.surface_faces {
+        assert_eq!(face.texture_index as usize, base_names.names.len());
     }
 }

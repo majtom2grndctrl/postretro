@@ -187,6 +187,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
+use postretro_collision::EnvironmentView;
 use postretro_combat_model::{
     AuthorizedShot, HIT_RANGE_TOLERANCE, ShotId, TuningPayload, WieldableTuningPayload,
 };
@@ -781,7 +782,7 @@ pub fn client_receive_and_apply(
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     agent_params: Option<NavAgentParams>,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     tick_dt: f32,
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
@@ -948,7 +949,7 @@ pub fn client_receive_and_apply(
                 local.server_tick,
                 Some(replication.mover_history()),
                 collision,
-                gravity,
+                environment,
                 tick_dt,
             );
         }
@@ -1026,7 +1027,7 @@ pub struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
     pub command: &'a SimCommand,
     pub aim_pitch: f32,
     pub collision: &'a C,
-    pub gravity: f32,
+    pub environment: EnvironmentView<'a>,
     pub tick_dt: f32,
 }
 
@@ -1048,7 +1049,7 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
         command,
         aim_pitch,
         collision,
-        gravity,
+        environment,
         tick_dt,
     } = context;
     // 1. Send exactly one Input command for this predicted tick, stamped with the
@@ -1086,7 +1087,7 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 4. Advance the local pawn one predicted tick through the movement-only helper
     //    and record it in the history ring.
     let Some((transform, movement, movement_events)) =
-        prediction.predict_tick_with_events(input, prev, collision, gravity, tick_dt)
+        prediction.predict_tick_with_events(input, prev, collision, environment, tick_dt)
     else {
         return ClientPredictionTickResult {
             client_tick,

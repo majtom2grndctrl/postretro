@@ -23,6 +23,7 @@ use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
     ArmedPawn, ClientPrediction, CorrectionClass, classify_correction,
 };
+use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::PlayerMovementComponent;
 
@@ -57,7 +58,7 @@ pub(crate) fn reconcile_local_pawn(
     movement: Option<&WirePlayerMovementState>,
     acked_tick: Option<u32>,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> Option<CorrectionClass> {
     reconcile_local_pawn_with_mover_history(
@@ -70,7 +71,7 @@ pub(crate) fn reconcile_local_pawn(
         0,
         None,
         collision,
-        gravity,
+        environment,
         dt,
     )
 }
@@ -90,7 +91,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     authoritative_server_tick: u32,
     mover_history: Option<&MoverHistoryBuffer>,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> Option<CorrectionClass> {
     // Only reconcile the armed local pawn, and only the entity it maps to. A record
@@ -144,8 +145,10 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     }
 
     // 4. Replay the remaining (unacked) commands on top of the authoritative baseline.
-    //    Skipped on a reset (history was cleared). Threads collision/gravity/dt through
-    //    the movement-only replay so the reconciled tail matches the forward prediction.
+    //    Skipped on a reset (history was cleared). Threads collision/environment/dt
+    //    through the movement-only replay so the reconciled tail matches the forward
+    //    prediction; each replayed tick resolves the environment at its own replayed
+    //    position inside `movement::tick`.
     if !is_reset {
         let base_collision = collision.combined_collision();
         for (index, entry) in prediction.history().iter().enumerate() {
@@ -161,7 +164,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 component,
                 sim.movement,
                 &replay_collision,
-                gravity,
+                environment,
                 dt,
             );
             reconciled_transform = next_transform;
@@ -455,7 +458,7 @@ mod tests {
                     forward_command(tick, false),
                     prev.clone(),
                     &world,
-                    GRAVITY,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
                     DT,
                 )
                 .unwrap();
@@ -483,7 +486,7 @@ mod tests {
             Some(&auth_move),
             Some(1),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .expect("armed pawn reconciles");
@@ -531,7 +534,13 @@ mod tests {
             component(),
         );
         let (t, m) = prediction
-            .predict_tick(forward_command(0, false), prev, &world, GRAVITY, DT)
+            .predict_tick(
+                forward_command(0, false),
+                prev,
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .unwrap();
         registry.set_component(id, t).unwrap();
         registry.set_component(id, m).unwrap();
@@ -554,7 +563,7 @@ mod tests {
             Some(&authoritative_movement()),
             Some(0),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -607,7 +616,13 @@ mod tests {
             component(),
         );
         let (t, m) = prediction
-            .predict_tick(forward_command(5, true), prev, &world, GRAVITY, DT)
+            .predict_tick(
+                forward_command(5, true),
+                prev,
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .unwrap();
         registry.set_component(id, t).unwrap();
         registry.set_component(id, m).unwrap();
@@ -630,7 +645,7 @@ mod tests {
             Some(&authoritative_movement()),
             Some(4),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -667,12 +682,24 @@ mod tests {
             component(),
         );
         let (t, m) = prediction
-            .predict_tick(forward_command(0, false), prev.clone(), &world, GRAVITY, DT)
+            .predict_tick(
+                forward_command(0, false),
+                prev.clone(),
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .unwrap();
         registry.set_component(id, t).unwrap();
         registry.set_component(id, m.clone()).unwrap();
         prediction
-            .predict_tick(forward_command(1, false), (t, m), &world, GRAVITY, DT)
+            .predict_tick(
+                forward_command(1, false),
+                (t, m),
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .unwrap();
         prediction.seed_presentation_offset(Vec3::new(0.1, 0.0, 0.0));
         let predicted = predicted_position(&registry, id);
@@ -691,7 +718,7 @@ mod tests {
             Some(&authoritative_movement()),
             Some(1),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -737,7 +764,7 @@ mod tests {
                     forward_command(tick, false),
                     prev.clone(),
                     &world,
-                    GRAVITY,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
                     DT,
                 )
                 .unwrap();
@@ -760,7 +787,7 @@ mod tests {
             Some(&authoritative_movement()),
             None,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -802,7 +829,7 @@ mod tests {
             Some(&authoritative_movement()),
             None,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -837,7 +864,7 @@ mod tests {
                     start_component,
                 ),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .unwrap();
@@ -893,7 +920,7 @@ mod tests {
             10,
             Some(&history),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -925,7 +952,7 @@ mod tests {
                     start_component,
                 ),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .unwrap();
@@ -998,7 +1025,7 @@ mod tests {
             10,
             Some(&history),
             &live_collision,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .unwrap();
@@ -1051,7 +1078,7 @@ mod tests {
             Some(&authoritative),
             Some(0),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
 
@@ -1091,7 +1118,7 @@ mod tests {
                     forward_command(tick, false),
                     prev.clone(),
                     &world,
-                    GRAVITY,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
                     DT,
                 )
                 .unwrap();
@@ -1117,7 +1144,7 @@ mod tests {
             Some(&authoritative_movement()),
             Some(1),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         )
         .expect("armed pawn reconciles");
@@ -1141,7 +1168,13 @@ mod tests {
                 .clone(),
         );
         let (t, m) = prediction
-            .predict_tick(forward_command(4, false), prev_next, &world, GRAVITY, DT)
+            .predict_tick(
+                forward_command(4, false),
+                prev_next,
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .unwrap();
         registry.set_component(id, t).unwrap();
         registry.set_component(id, m).unwrap();
@@ -1189,7 +1222,7 @@ mod tests {
                 Some(&authoritative_movement()),
                 Some(0),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .is_none(),
@@ -1208,7 +1241,7 @@ mod tests {
                 Some(&authoritative_movement()),
                 Some(0),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .is_none(),

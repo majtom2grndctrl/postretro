@@ -25,8 +25,8 @@ use super::movement_state::movement_state_to_wire;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
     ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
-    faceted_floor_height, faceted_slope_world, forward_command, idle_command, input_at,
-    use_command,
+    faceted_floor_height, faceted_slope_world, forward_command, gravity_box_volume, idle_command,
+    input_at, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -492,7 +492,7 @@ fn unknown_local_mapping_reconcile_is_no_op() {
         None,
         Some(0),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
     assert!(
@@ -535,7 +535,13 @@ fn dash_correction_classifies_as_dash_and_smooths() {
     );
     let (t, m) = h
         .prediction
-        .predict_tick(dash_input, prev, &h.world, GRAVITY, DT)
+        .predict_tick(
+            dash_input,
+            prev,
+            &h.world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        )
         .expect("armed dash predicts");
     h.client_registry.set_component(pawn, t).unwrap();
     h.client_registry.set_component(pawn, m).unwrap();
@@ -566,7 +572,7 @@ fn dash_correction_classifies_as_dash_and_smooths() {
         None,
         Some(dash_tick.saturating_sub(1)),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     )
     .expect("armed pawn reconciles");
@@ -625,7 +631,13 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
         );
         let (transform, movement) = h
             .prediction
-            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .predict_tick(
+                input,
+                prev,
+                &h.world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .expect("armed pawn predicts pending movement");
         h.client_registry.set_component(pawn, transform).unwrap();
         h.client_registry.set_component(pawn, movement).unwrap();
@@ -641,7 +653,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
             expected_movement,
             command.movement.clone(),
             &h.world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         expected_transform = replayed.0;
@@ -661,7 +673,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
                 Some(&wire),
                 Some(ticks[0] - 1),
                 &h.world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .is_some()
@@ -726,7 +738,13 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
     );
     let (predicted_transform, predicted_movement) = h
         .prediction
-        .predict_tick(input, predicted_prev, &h.world, GRAVITY, DT)
+        .predict_tick(
+            input,
+            predicted_prev,
+            &h.world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        )
         .expect("armed slide predicts");
     h.client_registry
         .set_component(pawn, predicted_transform)
@@ -756,7 +774,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
         authoritative_movement,
         slide.movement.clone(),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
     let class = reconcile_local_pawn(
@@ -767,7 +785,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
         Some(&wire),
         Some(slide_tick - 1),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
 
@@ -825,7 +843,13 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
         );
         let (next_transform, next_movement) = h
             .prediction
-            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .predict_tick(
+                input,
+                prev,
+                &h.world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .expect("armed slide-entry tick predicts");
         h.client_registry
             .set_component(pawn, next_transform)
@@ -861,7 +885,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
             expected_movement,
             slide.movement.clone(),
             &h.world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         expected_transform = replayed.0;
@@ -880,7 +904,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
         Some(&wire),
         Some(inputs[0] - 1),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
 
@@ -940,7 +964,7 @@ fn teleport_correction_snaps_without_smoothing() {
         None,
         ack,
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     )
     .expect("armed pawn reconciles");
@@ -1341,6 +1365,139 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
         host_release_velocity.x
     );
     assert!(h.bystanders_alive());
+}
+
+/// Low-gravity volume for the N1 crossing scenario: a slab across the forward
+/// (-Z) path from 16 m to 24 m ahead of the start, tall enough to hold every
+/// jump. The pawn runs up on the ground, then bunny-hops through it, so it
+/// crosses the far face mid-air.
+const LOW_GRAVITY: f32 = -8.0;
+const LOW_GRAVITY_MIN: Vec3 = Vec3::new(-50.0, -1.0, -24.0);
+const LOW_GRAVITY_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
+/// "No corrections" (brief Co-op Decision): every recorded correction is at most
+/// this many metres under `light_link`.
+const NO_CORRECTION_M: f32 = 1.0e-4;
+
+fn in_low_gravity_volume(position: Vec3) -> bool {
+    position.cmpge(LOW_GRAVITY_MIN).all() && position.cmple(LOW_GRAVITY_MAX).all()
+}
+
+fn jumping_forward_command() -> SimCommand {
+    let mut command = forward_command(false);
+    command.movement.jump_pressed = true;
+    command
+}
+
+struct GravityCrossingRun {
+    final_host_position: Vec3,
+    corrections: Vec<f32>,
+    reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
+    /// Client ticks whose predicted pose first lies inside / first lies outside
+    /// the volume after being on the other side.
+    entry_ticks: Vec<u32>,
+    exit_ticks: Vec<u32>,
+    host_was_inside: bool,
+}
+
+fn run_gravity_crossing(
+    volumes: Vec<postretro_collision::EnvironmentVolume>,
+) -> GravityCrossingRun {
+    let mut h = LoopbackHarness::with_environment_volumes(light_link(), volumes);
+    h.step_until_armed(&idle_command());
+    let mut run = GravityCrossingRun {
+        final_host_position: Vec3::ZERO,
+        corrections: Vec::new(),
+        reconcile_windows: Vec::new(),
+        entry_ticks: Vec::new(),
+        exit_ticks: Vec::new(),
+        host_was_inside: false,
+    };
+    let mut client_inside = h.client_position().is_some_and(in_low_gravity_volume);
+    for step in 0..180 {
+        // Run up on the ground first: jumping from rest keeps the pawn slow,
+        // since air control barely accelerates it.
+        let command = if step < 60 {
+            forward_command(false)
+        } else {
+            jumping_forward_command()
+        };
+        h.step(&command);
+        run.corrections
+            .extend(h.latest_local_corrections.iter().copied());
+        run.reconcile_windows
+            .extend(h.latest_reconcile_windows.iter().copied());
+        run.host_was_inside |= in_low_gravity_volume(h.host_position());
+        let inside = h.client_position().is_some_and(in_low_gravity_volume);
+        if inside != client_inside {
+            let tick = h
+                .last_sent_client_tick
+                .expect("client sent this step's command");
+            if inside {
+                run.entry_ticks.push(tick);
+            } else {
+                run.exit_ticks.push(tick);
+            }
+            client_inside = inside;
+        }
+    }
+    run.final_host_position = h.host_position();
+    run
+}
+
+fn some_replay_spans(windows: &[(Option<u32>, Option<u32>)], tick: u32) -> bool {
+    windows.iter().any(|window| {
+        matches!(*window, (Some(acked), Some(last_sent)) if acked < tick && tick <= last_sent)
+    })
+}
+
+// N1, gravity half: per-tick resolution keeps host and client identical across a
+// low-gravity volume, so crossing in and out costs no reconciliation correction,
+// including reconciles whose replay window spans a crossing.
+#[test]
+fn low_gravity_volume_crossings_reconcile_without_correction_under_light_link() {
+    let volume_run = run_gravity_crossing(vec![gravity_box_volume(
+        LOW_GRAVITY_MIN,
+        LOW_GRAVITY_MAX,
+        LOW_GRAVITY,
+    )]);
+    let baseline_run = run_gravity_crossing(Vec::new());
+
+    assert!(
+        volume_run.host_was_inside,
+        "fixture: the host pawn must pass through the volume"
+    );
+    assert!(
+        (volume_run.final_host_position - baseline_run.final_host_position).length() > 0.05,
+        "the volume must change the trajectory: with {:?}, without {:?}",
+        volume_run.final_host_position,
+        baseline_run.final_host_position
+    );
+    assert!(
+        !volume_run.entry_ticks.is_empty() && !volume_run.exit_ticks.is_empty(),
+        "the client must cross into and out of the volume: entries {:?}, exits {:?}",
+        volume_run.entry_ticks,
+        volume_run.exit_ticks
+    );
+    assert!(
+        volume_run.corrections.len() > 30,
+        "reconciles must run throughout the scenario; saw {}",
+        volume_run.corrections.len()
+    );
+    let worst = volume_run
+        .corrections
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+    assert!(
+        worst <= NO_CORRECTION_M,
+        "every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+    );
+    for tick in volume_run.entry_ticks.iter().chain(&volume_run.exit_ticks) {
+        assert!(
+            some_replay_spans(&volume_run.reconcile_windows, *tick),
+            "some reconcile's replay window must span crossing tick {tick}"
+        );
+    }
 }
 
 #[test]
@@ -2027,7 +2184,7 @@ impl LoopbackHarness {
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
                     &self.world,
-                    GRAVITY,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
                     DT,
                 );
                 match class {

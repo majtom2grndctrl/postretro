@@ -4404,6 +4404,7 @@ dependencies = [
  "notify-debouncer-full",
  "postretro-ai",
  "postretro-audio",
+ "postretro-collision",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -4443,6 +4444,7 @@ dependencies = [
  "glam 0.33.12",
  "log",
  "mlua",
+ "postretro-collision",
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-format",
@@ -4462,6 +4464,13 @@ dependencies = [
  "kira",
  "log",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "postretro-collision"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
 ]
 
 [[package]]
@@ -4621,6 +4630,7 @@ dependencies = [
  "glam 0.33.12",
  "log",
  "postretro-ai",
+ "postretro-collision",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
@@ -4642,6 +4652,7 @@ dependencies = [
  "glam 0.33.12",
  "log",
  "parry3d",
+ "postretro-collision",
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-format",
@@ -4764,6 +4775,7 @@ dependencies = [
  "log",
  "mlua",
  "postretro-ai",
+ "postretro-collision",
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",

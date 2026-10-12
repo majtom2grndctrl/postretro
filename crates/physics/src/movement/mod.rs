@@ -5,6 +5,7 @@ use glam::{Vec2, Vec3};
 
 mod carry;
 mod dispatch;
+mod environment;
 mod intents;
 pub mod knockback;
 mod mover_carry;
@@ -15,7 +16,9 @@ pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::dispatch_state_intent;
+use crate::movement::environment::resolve_at_tick_start;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
+use postretro_collision::EnvironmentView;
 use postretro_foundation::{MovementState, MovementStateKind, PlayerMovementComponent};
 
 #[cfg(test)]
@@ -167,14 +170,18 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
     }
 }
 
+/// Advance one pawn one fixed tick. `environment` is the level gravity plus the
+/// installed volumes; the tick resolves it once, at the tick-start `position`,
+/// and hands the result to the state intent, which never queries it.
 pub fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
     position: Vec3,
 ) -> (Vec3, MovementEvents) {
+    let resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;
     let knockback_launch = component.is_grounded()
@@ -218,7 +225,7 @@ pub fn tick(
         component,
         input,
         jump_edges,
-        gravity,
+        &resolved_environment,
         dt,
         &collision,
         &mut position,
@@ -316,6 +323,9 @@ pub fn tick(
 }
 
 #[cfg(test)]
+mod environment_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::collision::CollisionWorld;
@@ -337,6 +347,7 @@ mod tests {
     const VEL_EPS: f32 = 1.0e-3;
     const DT: f32 = 1.0 / 60.0;
     const GRAVITY: f32 = -20.0;
+    const ENV: EnvironmentView<'static> = EnvironmentView::level_only(GRAVITY);
 
     /// Canonical player descriptor mirroring `content/dev/scripts/player.ts`.
     fn canonical_descriptor() -> PlayerMovementDescriptor {
@@ -520,7 +531,7 @@ mod tests {
     ) -> MovementEvents {
         let mut last = MovementEvents::default();
         for _ in 0..ticks {
-            let (next, ev) = tick(comp, input, world, GRAVITY, DT, *position);
+            let (next, ev) = tick(comp, input, world, ENV, DT, *position);
             *position = next;
             last = ev;
         }
@@ -621,7 +632,7 @@ mod tests {
         poses: &TestMoverPoses,
     ) -> MovementEvents {
         let collision = CombinedCollisionWorld::new(world, movers, poses);
-        let (next, events) = tick(comp, &idle_input(), &collision, GRAVITY, DT, *pos);
+        let (next, events) = tick(comp, &idle_input(), &collision, ENV, DT, *pos);
         *pos = next;
         events
     }
@@ -677,7 +688,7 @@ mod tests {
         let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
 
         for _ in 0..20 {
-            let (next, _) = tick(&mut comp, &input, &collision, GRAVITY, DT, pos);
+            let (next, _) = tick(&mut comp, &input, &collision, ENV, DT, pos);
             pos = next;
         }
 
@@ -896,7 +907,7 @@ mod tests {
             &mut component,
             &idle_input(),
             &collision,
-            GRAVITY,
+            ENV,
             DT,
             start_position,
         );
@@ -910,14 +921,7 @@ mod tests {
         );
 
         let release_velocity = component.velocity;
-        let (_, _) = tick(
-            &mut component,
-            &idle_input(),
-            &collision,
-            GRAVITY,
-            DT,
-            position,
-        );
+        let (_, _) = tick(&mut component, &idle_input(), &collision, ENV, DT, position);
         assert!(
             (component.velocity.x - release_velocity.x).abs() <= VEL_EPS
                 && (component.velocity.z - release_velocity.z).abs() <= VEL_EPS,
@@ -1238,7 +1242,7 @@ mod tests {
         let mut jumped = false;
         for _ in 0..60 {
             if comp.is_grounded() {
-                let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+                let (next, ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
                 assert!(
@@ -1259,7 +1263,7 @@ mod tests {
                 jumped = true;
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
         }
         assert!(jumped, "expected a grounded tick within 60 attempts");
@@ -1267,7 +1271,7 @@ mod tests {
         // Continue one tick airborne with jump still held — air.jumps=0 so no
         // double-jump; gravity decelerates the upward arc.
         let vy_before = comp.velocity.y;
-        let (next, _ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
         pos = next;
         assert!(
             comp.velocity.y < vy_before,
@@ -1280,7 +1284,7 @@ mod tests {
         // Burn enough ticks to land and traverse the ~5 m floor + 10 m ledge.
         // At ground.speed=7, that's ~2.15 s ≈ 130 ticks. Cap generously.
         for _ in 0..200 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x > 6.0 && pos.y > ledge_y - 0.05 {
                 break;
@@ -1306,7 +1310,7 @@ mod tests {
 
         // ---- Phase 4: walk into the wall at x=15. Wall slide. ----
         for _ in 0..200 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
         }
         // The capsule's leading face sits radius beyond pos.x; with the wall at
@@ -1321,7 +1325,7 @@ mod tests {
         );
         let x_pinned = pos.x;
         for _ in 0..10 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
         }
         // Wall-unstick nudge is `NORMAL_NUDGE` (1e-4) — well under the skin
@@ -1427,7 +1431,7 @@ mod tests {
             &mut component,
             &idle_input(),
             &world,
-            GRAVITY,
+            ENV,
             DT,
             Vec3::new(0.0, 20.0, 0.0),
         );
@@ -1469,7 +1473,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..300 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
                 break;
@@ -1484,7 +1488,7 @@ mod tests {
         let mut y_samples = Vec::with_capacity(60);
         let mut grounded_after_settle = Vec::with_capacity(60);
         for i in 0..60 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             y_samples.push(pos.y);
             if i >= 5 {
@@ -1539,7 +1543,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..300 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
                 break;
@@ -1558,7 +1562,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..120 {
-            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &diag, &world, ENV, DT, pos);
             pos = next;
         }
         let z_advance = (pos.z - z_start).abs();
@@ -1608,7 +1612,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..300 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x > 14.0 && pos.y > ledge_y - 0.05 {
                 break;
@@ -1619,7 +1623,7 @@ mod tests {
         let mut prev_y = pos.y;
         let mut in_contact = false;
         for _ in 0..60 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x >= wall_contact_x {
                 in_contact = true;
@@ -1761,7 +1765,7 @@ mod tests {
         let wall_contact_x = 5.0 - desc.capsule.radius - 0.05;
         let mut in_contact = false;
         for _ in 0..120 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             if pos.x >= wall_contact_x {
                 in_contact = true;
@@ -1821,7 +1825,7 @@ mod tests {
         // post-stabilisation wall-pinned regime.
         let mut ys = Vec::with_capacity(120);
         for _ in 0..120 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
             ys.push(pos.y);
         }
@@ -1881,7 +1885,7 @@ mod tests {
         };
 
         for _ in 0..200 {
-            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &diag, &world, ENV, DT, pos);
             pos = next;
             if pos.x >= 5.0 - desc.capsule.radius - 0.05 {
                 break;
@@ -1902,7 +1906,7 @@ mod tests {
 
         let z_before = pos.z;
         for _ in 0..30 {
-            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &diag, &world, ENV, DT, pos);
             pos = next;
         }
         // facing_yaw=0 makes forward=-Z, so diagonal input (right+forward)
@@ -1989,7 +1993,7 @@ mod tests {
         };
         // Approach and reach the corner.
         for _ in 0..240 {
-            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            let (next, _ev) = tick(comp, &toward_corner, world, ENV, DT, *pos);
             *pos = next;
             if pos.x >= 5.0 - desc.capsule.radius - 0.05
                 && pos.z >= 5.0 - desc.capsule.radius - 0.05
@@ -1999,13 +2003,13 @@ mod tests {
         }
         // Press into the corner for 50 ticks so any pinned pattern stabilises.
         for _ in 0..50 {
-            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            let (next, _ev) = tick(comp, &toward_corner, world, ENV, DT, *pos);
             *pos = next;
         }
         // Sample the last 10 tick-boundary positions.
         let mut samples = Vec::with_capacity(10);
         for _ in 0..10 {
-            let (next, _ev) = tick(comp, &toward_corner, world, GRAVITY, DT, *pos);
+            let (next, _ev) = tick(comp, &toward_corner, world, ENV, DT, *pos);
             *pos = next;
             samples.push((pos.x, pos.z));
         }
@@ -2113,7 +2117,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..200 {
-            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &diag, &world, ENV, DT, pos);
             pos = next;
             if pos.x >= 5.0 - desc.capsule.radius - 0.05 {
                 break;
@@ -2123,7 +2127,7 @@ mod tests {
         // (+X, 0, -Z). Wall projects out +X but -Z slide must remain.
         let z_before = pos.z;
         for _ in 0..60 {
-            let (next, _ev) = tick(&mut comp, &diag, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &diag, &world, ENV, DT, pos);
             pos = next;
         }
         let z_advance = z_before - pos.z;
@@ -2168,7 +2172,7 @@ mod tests {
         let x_start = pos.x;
         // 30 ticks (0.5 s) at 7 m/s ⇒ comfortably >1.5 m on open floor.
         for _ in 0..30 {
-            let (next, _ev) = tick(&mut comp, &walk, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, &world, ENV, DT, pos);
             pos = next;
         }
         let advance = pos.x - x_start;
@@ -2311,13 +2315,13 @@ mod tests {
         let mut jumped = false;
         for _ in 0..60 {
             if comp.is_grounded() {
-                let (next, ev) = tick(&mut comp, &run_jump, &world, GRAVITY, DT, pos);
+                let (next, ev) = tick(&mut comp, &run_jump, &world, ENV, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "grounded + jump should emit jumped");
                 jumped = true;
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &run, &world, ENV, DT, pos);
             pos = next;
         }
         assert!(jumped, "setup: should have jumped from a grounded tick");
@@ -2325,7 +2329,7 @@ mod tests {
         // A few airborne ticks with sprint held; jump_pressed released so we
         // don't re-trigger (air.jumps = 0 anyway).
         for _ in 0..5 {
-            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &run, &world, ENV, DT, pos);
             pos = next;
         }
         let h_air = (comp.velocity.x.powi(2) + comp.velocity.z.powi(2)).sqrt();
@@ -2371,12 +2375,12 @@ mod tests {
         };
         for _ in 0..60 {
             if comp.is_grounded() {
-                let (next, ev) = tick(comp, &jump, world, GRAVITY, DT, *pos);
+                let (next, ev) = tick(comp, &jump, world, ENV, DT, *pos);
                 *pos = next;
                 assert!(ev.jumped, "grounded + jump_pressed should emit jumped");
                 return;
             }
-            let (next, _ev) = tick(comp, &idle, world, GRAVITY, DT, *pos);
+            let (next, _ev) = tick(comp, &idle, world, ENV, DT, *pos);
             *pos = next;
         }
         panic!("expected a grounded tick within 60 attempts");
@@ -2426,7 +2430,7 @@ mod tests {
         };
         // While vy is still above the ceiling, holding jump must not consume a
         // charge (the ceiling gate blocks it).
-        let blocked = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+        let blocked = tick(&mut comp, &jump, &world, ENV, DT, pos);
         pos = blocked.0;
         assert!(
             comp.velocity.y > desc.air.jump_ceiling,
@@ -2444,7 +2448,7 @@ mod tests {
             if comp.velocity.y <= desc.air.jump_ceiling {
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle, &world, ENV, DT, pos);
             pos = next;
         }
         assert!(
@@ -2456,7 +2460,7 @@ mod tests {
 
         // Now the air-jump fires: a charge is consumed and vy relaunches to the
         // jump velocity.
-        let (_next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+        let (_next, ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
         assert!(ev.jumped, "air-jump under the ceiling should emit jumped");
         assert_eq!(
             comp.air_jumps_remaining,
@@ -2505,11 +2509,11 @@ mod tests {
         };
         for _ in 0..60 {
             if comp.velocity.y <= desc.air.jump_ceiling {
-                let (next, _ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+                let (next, _ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
                 pos = next;
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle, &world, ENV, DT, pos);
             pos = next;
         }
         assert_eq!(
@@ -2519,7 +2523,7 @@ mod tests {
 
         // Fall and land; the landing-refresh point restores the budget.
         for _ in 0..120 {
-            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle, &world, ENV, DT, pos);
             pos = next;
             if comp.is_grounded() {
                 break;
@@ -2569,13 +2573,13 @@ mod tests {
         let mut spent = false;
         for _ in 0..60 {
             if comp.velocity.y <= desc.air.jump_ceiling {
-                let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+                let (next, ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
                 pos = next;
                 assert!(ev.jumped, "first air-jump should fire");
                 spent = true;
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &idle, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle, &world, ENV, DT, pos);
             pos = next;
         }
         assert!(spent, "setup: should have spent the air charge");
@@ -2588,7 +2592,7 @@ mod tests {
                 break;
             }
             let vy_before = comp.velocity.y;
-            let (next, ev) = tick(&mut comp, &jump, &world, GRAVITY, DT, pos);
+            let (next, ev) = tick(&mut comp, &jump, &world, ENV, DT, pos);
             pos = next;
             assert!(
                 !ev.jumped,
@@ -2704,7 +2708,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let _ = tick(&mut standing, &dash_in_place, &world, GRAVITY, DT, spos);
+        let _ = tick(&mut standing, &dash_in_place, &world, ENV, DT, spos);
         let standing_peak = horiz_speed(&standing);
 
         // Running dash: build up to the run cap, then dash forward.
@@ -2714,7 +2718,7 @@ mod tests {
             pre_dash > desc.ground.speed.walk,
             "setup: should be running above walk speed, got {pre_dash}"
         );
-        let (next, _ev) = tick(&mut comp, &dash_in_place, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_in_place, &world, ENV, DT, pos);
         pos = next;
         let running_peak = horiz_speed(&comp);
         assert!(
@@ -2730,7 +2734,7 @@ mod tests {
         // the run-speed band, at which point control returns to Normal.
         let mut returned = false;
         for _ in 0..30 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 returned = true;
@@ -2769,7 +2773,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash_held, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_held, &world, ENV, DT, pos);
         pos = next;
         let peak = horiz_speed(&comp);
         assert!(
@@ -2796,7 +2800,7 @@ mod tests {
         // the airborne cap if the player later runs off the floor edge.
         let mut grounded_in_band = false;
         for _ in 0..120 {
-            let (next, _ev) = tick(&mut comp, &hold, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &hold, &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal)
                 && comp.is_grounded()
@@ -2842,11 +2846,11 @@ mod tests {
         let (mut standing, mut spos) = settle_player(&desc);
         run_ticks(&mut standing, &world, &mut spos, 10, &idle_input());
         let mut standing_curve = Vec::new();
-        let (next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, spos);
+        let (next, _ev) = tick(&mut standing, &dash, &world, ENV, DT, spos);
         spos = next;
         standing_curve.push(horiz_speed(&standing));
         for _ in 0..10 {
-            let (next, _ev) = tick(&mut standing, &idle_input(), &world, GRAVITY, DT, spos);
+            let (next, _ev) = tick(&mut standing, &idle_input(), &world, ENV, DT, spos);
             spos = next;
             standing_curve.push(horiz_speed(&standing));
         }
@@ -2854,11 +2858,11 @@ mod tests {
         // Capture the same curve from a fast running entry.
         let (mut running, mut rpos) = settle_and_run(&desc, &world, 60);
         let mut running_curve = Vec::new();
-        let (next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rpos);
+        let (next, _ev) = tick(&mut running, &dash, &world, ENV, DT, rpos);
         rpos = next;
         running_curve.push(horiz_speed(&running));
         for _ in 0..10 {
-            let (next, _ev) = tick(&mut running, &idle_input(), &world, GRAVITY, DT, rpos);
+            let (next, _ev) = tick(&mut running, &idle_input(), &world, ENV, DT, rpos);
             rpos = next;
             running_curve.push(horiz_speed(&running));
         }
@@ -2908,10 +2912,10 @@ mod tests {
         let committed_desc = dash_descriptor(dash_params(15.0, 0.0, 0.0, 20.0, 0.0, 0, false));
         let (mut c, mut cpos) = settle_player(&committed_desc);
         run_ticks(&mut c, &world, &mut cpos, 10, &idle_input());
-        let (next, _ev) = tick(&mut c, &dash_forward, &world, GRAVITY, DT, cpos);
+        let (next, _ev) = tick(&mut c, &dash_forward, &world, ENV, DT, cpos);
         cpos = next;
         for _ in 0..4 {
-            let (next, _ev) = tick(&mut c, &steer_input, &world, GRAVITY, DT, cpos);
+            let (next, _ev) = tick(&mut c, &steer_input, &world, ENV, DT, cpos);
             cpos = next;
         }
         let committed_vx = c.velocity.x;
@@ -2921,10 +2925,10 @@ mod tests {
         let steer_desc = dash_descriptor(dash_params(15.0, 0.0, 1.0, 20.0, 0.0, 0, false));
         let (mut s, mut spos) = settle_player(&steer_desc);
         run_ticks(&mut s, &world, &mut spos, 10, &idle_input());
-        let (next, _ev) = tick(&mut s, &dash_forward, &world, GRAVITY, DT, spos);
+        let (next, _ev) = tick(&mut s, &dash_forward, &world, ENV, DT, spos);
         spos = next;
         for _ in 0..4 {
-            let (next, _ev) = tick(&mut s, &steer_input, &world, GRAVITY, DT, spos);
+            let (next, _ev) = tick(&mut s, &steer_input, &world, ENV, DT, spos);
             spos = next;
         }
         let steered_vx = s.velocity.x;
@@ -2961,11 +2965,11 @@ mod tests {
         let replace_desc = dash_descriptor(dash_params(8.0, 0.0, 0.0, 20.0, 0.0, 0, false));
         let (mut standing, mut sp) = settle_player(&replace_desc);
         run_ticks(&mut standing, &world, &mut sp, 10, &idle_input());
-        let (_next, _ev) = tick(&mut standing, &dash, &world, GRAVITY, DT, sp);
+        let (_next, _ev) = tick(&mut standing, &dash, &world, ENV, DT, sp);
         let replace_standing = horiz_speed(&standing);
 
         let (mut running, rp) = settle_and_run(&replace_desc, &world, 60);
-        let (_next, _ev) = tick(&mut running, &dash, &world, GRAVITY, DT, rp);
+        let (_next, _ev) = tick(&mut running, &dash, &world, ENV, DT, rp);
         let replace_running = horiz_speed(&running);
         assert!(
             approx_eq(replace_standing, replace_running, VEL_EPS),
@@ -2980,7 +2984,7 @@ mod tests {
         let add_desc = dash_descriptor(dash_params(8.0, 1.0, 0.0, 20.0, 0.0, 0, false));
         let (mut running2, mut rp2) = settle_and_run(&add_desc, &world, 60);
         let pre = horiz_speed(&running2);
-        let (next, _ev) = tick(&mut running2, &dash, &world, GRAVITY, DT, rp2);
+        let (next, _ev) = tick(&mut running2, &dash, &world, ENV, DT, rp2);
         rp2 = next;
         let _ = rp2;
         let add_running = horiz_speed(&running2);
@@ -3014,7 +3018,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_run, &world, ENV, DT, pos);
         pos = next;
         let peak = horiz_speed(&comp);
         assert!(
@@ -3036,7 +3040,7 @@ mod tests {
         };
         let mut returned = false;
         for _ in 0..30 {
-            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &run, &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 returned = true;
@@ -3072,7 +3076,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash_run, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_run, &world, ENV, DT, pos);
         pos = next;
         assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
 
@@ -3090,7 +3094,7 @@ mod tests {
             drop_pressed: false,
         };
         for i in 0..(max_ticks + 5) {
-            let (next, _ev) = tick(&mut comp, &run, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &run, &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 exited_by = Some(i + 1);
@@ -3130,13 +3134,13 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash, &world, ENV, DT, pos);
         pos = next;
         assert!(comp.dash_cooldown_ms > 0.0, "cooldown should be armed");
 
         // Let the first dash decay back to Normal (drag is strong).
         for _ in 0..20 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 break;
@@ -3150,7 +3154,7 @@ mod tests {
 
         // Request a dash while the cooldown is active: suppressed.
         let speed_before = horiz_speed(&comp);
-        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash, &world, ENV, DT, pos);
         pos = next;
         assert!(
             matches!(comp.movement_state, MovementState::Normal),
@@ -3166,11 +3170,11 @@ mod tests {
             if comp.dash_cooldown_ms <= 0.0 {
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
         }
         assert!(comp.dash_cooldown_ms <= 0.0, "cooldown should have elapsed");
-        let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash, &world, ENV, DT, pos);
         pos = next;
         let _ = pos;
         assert!(
@@ -3203,7 +3207,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &press, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &press, &world, ENV, DT, pos);
         pos = next;
         assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
 
@@ -3222,7 +3226,7 @@ mod tests {
         };
         let mut redashed = false;
         for _ in 0..60 {
-            let (next, _ev) = tick(&mut comp, &held, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &held, &world, ENV, DT, pos);
             pos = next;
             if comp.dash_cooldown_ms <= 0.0
                 && matches!(comp.movement_state, MovementState::Dash { .. })
@@ -3241,7 +3245,7 @@ mod tests {
         );
 
         // A fresh press now fires again.
-        let (next, _ev) = tick(&mut comp, &press, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &press, &world, ENV, DT, pos);
         pos = next;
         let _ = pos;
         assert!(
@@ -3294,7 +3298,7 @@ mod tests {
         };
 
         // First airborne dash consumes one charge.
-        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
         pos = next;
         assert!(matches!(comp.movement_state, MovementState::Dash { .. }));
         assert_eq!(
@@ -3305,7 +3309,7 @@ mod tests {
         // Return to Normal (drag bleeds the dash) so the next press is a fresh
         // Normal→Dash transition, still airborne.
         for _ in 0..20 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 break;
@@ -3317,7 +3321,7 @@ mod tests {
         );
 
         // Second airborne dash consumes the last charge.
-        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
         pos = next;
         assert_eq!(
             comp.air_dashes_remaining, 0,
@@ -3325,7 +3329,7 @@ mod tests {
         );
 
         for _ in 0..20 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 break;
@@ -3337,7 +3341,7 @@ mod tests {
         );
 
         // Third attempt while exhausted: suppressed.
-        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
         pos = next;
         assert!(
             matches!(comp.movement_state, MovementState::Normal),
@@ -3346,7 +3350,7 @@ mod tests {
 
         // Fall and land; the budget is restored through refresh_on_landing.
         for _ in 0..180 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if comp.is_grounded() {
                 break;
@@ -3389,7 +3393,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (_next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
 
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
@@ -3446,7 +3450,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (_next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (_next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
 
         assert!(
             comp.is_grounded(),
@@ -3489,7 +3493,7 @@ mod tests {
             drop_pressed: false,
         };
         for _ in 0..10 {
-            let (next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &dash, &world, ENV, DT, pos);
             pos = next;
             assert!(
                 matches!(comp.movement_state, MovementState::Normal),
@@ -3534,7 +3538,7 @@ mod tests {
             "setup: should have a clearly-nonzero downward vy aloft, got {}",
             z.velocity.y
         );
-        let (znext, _ev) = tick(&mut z, &air_dash, &world, GRAVITY, DT, zpos);
+        let (znext, _ev) = tick(&mut z, &air_dash, &world, ENV, DT, zpos);
         assert!(
             matches!(z.movement_state, MovementState::Dash { .. }),
             "setup: airborne dash should have fired"
@@ -3546,7 +3550,7 @@ mod tests {
             z.velocity.y
         );
         // Gravity resumes the next (in-Dash) tick: vy goes negative again.
-        let (_n, _e) = tick(&mut z, &idle_input(), &world, GRAVITY, DT, znext);
+        let (_n, _e) = tick(&mut z, &idle_input(), &world, ENV, DT, znext);
         assert!(
             z.velocity.y < -VEL_EPS,
             "gravity should resume after a zeroed-vertical dash entry, got {}",
@@ -3561,7 +3565,7 @@ mod tests {
             vy_before < -1.0,
             "setup: downward vy aloft, got {vy_before}"
         );
-        let (_knext, _ev) = tick(&mut k, &air_dash, &world, GRAVITY, DT, kpos);
+        let (_knext, _ev) = tick(&mut k, &air_dash, &world, ENV, DT, kpos);
         // The entry runs inside `Normal`'s intent step, so Normal's gravity for
         // this tick already advanced vy before the keep; the retained value is
         // therefore `vy_before + g*dt`, clearly distinct from the false case's 0.
@@ -3594,7 +3598,7 @@ mod tests {
         // Walk toward +X until close to the wall but still clear of the capsule
         // standoff (radius 0.4 ⇒ center stops near x≈4.6).
         for _ in 0..200 {
-            let (next, _ev) = tick(&mut comp, &walk, world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &walk, world, ENV, DT, pos);
             pos = next;
             if pos.x > 3.5 {
                 break;
@@ -3627,7 +3631,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, ENV, DT, pos);
         pos = next;
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
@@ -3643,7 +3647,7 @@ mod tests {
         // must run after each tick rather than only at the top of the loop.
         let mut returned_to_normal = false;
         for _ in 0..40 {
-            let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &dash_into_wall, &world, ENV, DT, pos);
             pos = next;
             assert!(
                 comp.velocity.x > -VEL_EPS,
@@ -3687,7 +3691,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &dash_diag, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_diag, &world, ENV, DT, pos);
         pos = next;
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
@@ -3696,7 +3700,7 @@ mod tests {
 
         // The tick after entry, collision has clipped the +X component but the
         // tangential -Z slide must remain (clearly negative, not stuck/reversed).
-        let (next, _ev) = tick(&mut comp, &dash_diag, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_diag, &world, ENV, DT, pos);
         pos = next;
         assert!(
             comp.velocity.z < -1.0,
@@ -3742,7 +3746,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (_next, _ev) = tick(&mut comp, &dash, &world, GRAVITY, DT, pos);
+        let (_next, _ev) = tick(&mut comp, &dash, &world, ENV, DT, pos);
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
             "setup: grounded dash should have fired"
@@ -3773,7 +3777,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (pos, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (pos, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
             "setup: airborne dash should have entered"
@@ -3791,7 +3795,7 @@ mod tests {
             drop_pressed: false,
         };
         let vy_before = comp.velocity.y;
-        let (_next, _ev) = tick(&mut comp, &dash_with_jump, &world, GRAVITY, DT, pos);
+        let (_next, _ev) = tick(&mut comp, &dash_with_jump, &world, ENV, DT, pos);
         let expected = vy_before + GRAVITY * DT;
         assert!(
             approx_eq(comp.velocity.y, expected, VEL_EPS),
@@ -3821,7 +3825,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &air_dash, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &air_dash, &world, ENV, DT, pos);
         pos = next;
         let peak = horiz_speed(&comp);
         assert!(
@@ -3833,7 +3837,7 @@ mod tests {
         // DASH_MAX_MS guard would force the exit.
         let mut settled = false;
         for _ in 0..40 {
-            let (next, _ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if matches!(comp.movement_state, MovementState::Normal) {
                 settled = true;
@@ -3889,7 +3893,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (_next, _ev) = tick(&mut comp, &dash_input, world, GRAVITY, DT, pos);
+        let (_next, _ev) = tick(&mut comp, &dash_input, world, ENV, DT, pos);
         let speed = horiz_speed(&comp);
         (comp, speed)
     }
@@ -3933,7 +3937,7 @@ mod tests {
             drop_pressed: false,
         };
         let prior = horiz_speed(&comp);
-        let (next, _ev) = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &dash_input, &world, ENV, DT, pos);
         pos = next;
         let _ = pos;
         let airborne_peak = horiz_speed(&comp);
@@ -3980,7 +3984,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &enter, &world, ENV, DT, pos);
         pos = next;
         assert!(
             matches!(comp.movement_state, MovementState::Dash { .. }),
@@ -4005,7 +4009,7 @@ mod tests {
             if !matches!(comp.movement_state, MovementState::Dash { .. }) {
                 break;
             }
-            let (next, _ev) = tick(&mut comp, &steer, &world, GRAVITY, DT, pos);
+            let (next, _ev) = tick(&mut comp, &steer, &world, ENV, DT, pos);
             pos = next;
             gains.push(comp.velocity.x - prev_vx);
             prev_vx = comp.velocity.x;
@@ -4096,7 +4100,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let _ = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        let _ = tick(&mut comp, &dash_input, &world, ENV, DT, pos);
         // One charge spent before the snapshot ⇒ chargesRemaining read as 1 ⇒
         // boost_speed = 4. Horizontal speed at entry ≈ 4 (pure boost, no prior
         // horizontal velocity), NOT 8 (which a pre-spend read of 2 would give).
@@ -4130,7 +4134,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &enter, &world, ENV, DT, pos);
         pos = next;
         // On the entry tick the dash intent runs with elapsed_ms = 0 at its top,
         // so dash_drag resolves to 0 — the boost is not decayed on entry. The dash
@@ -4152,7 +4156,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &hold, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &hold, &world, ENV, DT, pos);
         pos = next;
         let _ = pos;
         assert!(
@@ -4185,7 +4189,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let _ = tick(&mut comp, &dash_input, &world, GRAVITY, DT, pos);
+        let _ = tick(&mut comp, &dash_input, &world, ENV, DT, pos);
         assert!(
             horiz_speed(&comp) < VEL_EPS,
             "an expression boostSpeed of 0 yields a zero-boost dash, got {}",
@@ -4274,7 +4278,7 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         };
-        let (next, _ev) = tick(&mut comp, &enter, &world, GRAVITY, DT, pos);
+        let (next, _ev) = tick(&mut comp, &enter, &world, ENV, DT, pos);
         pos = next;
         let _ = pos;
         assert!(
@@ -4516,7 +4520,7 @@ mod tests {
         // descent + landing window.
         let mut launches = 0;
         for _ in 0..60 {
-            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if ev.jumped {
                 launches += 1;
@@ -4545,7 +4549,7 @@ mod tests {
             launches += 1;
         }
         for _ in 0..60 {
-            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if ev.jumped {
                 launches += 1;
@@ -4576,7 +4580,7 @@ mod tests {
 
         let mut launches = 0;
         for _ in 0..60 {
-            let (next, ev) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, ev) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
             if ev.jumped {
                 launches += 1;
@@ -6185,7 +6189,14 @@ mod tests {
         comp.add_knockback(Vec3::NEG_Y * 100.0);
         let mut pos = Vec3::Y * 100.0;
         for _ in 0..30 {
-            let (next, _) = tick(&mut comp, &idle_input(), &world, 0.0, DT, pos);
+            let (next, _) = tick(
+                &mut comp,
+                &idle_input(),
+                &world,
+                EnvironmentView::level_only(0.0),
+                DT,
+                pos,
+            );
             pos = next;
             assert!(
                 comp.velocity.y <= VEL_EPS,
@@ -6198,7 +6209,7 @@ mod tests {
         let mut comp = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
         comp.add_knockback(Vec3::Y * 5.0);
         for _ in 0..240 {
-            let (next, _) = tick(&mut comp, &idle_input(), &world, GRAVITY, DT, pos);
+            let (next, _) = tick(&mut comp, &idle_input(), &world, ENV, DT, pos);
             pos = next;
         }
         assert!((comp.velocity.y + comp.fall.terminal_velocity).abs() < VEL_EPS);
@@ -6228,12 +6239,26 @@ mod tests {
             dash_pressed: true,
             ..idle_input()
         };
-        let (pos, _) = tick(&mut comp, &input, &world, 0.0, DT, Vec3::Y * 20.0);
+        let (pos, _) = tick(
+            &mut comp,
+            &input,
+            &world,
+            EnvironmentView::level_only(0.0),
+            DT,
+            Vec3::Y * 20.0,
+        );
         let MovementState::Dash { boost, .. } = comp.movement_state else {
             panic!("dash entry must use the physical horizontal speed")
         };
         assert!((boost.length() - 30.0).abs() < VEL_EPS);
-        tick(&mut comp, &idle_input(), &world, 0.0, DT, pos);
+        tick(
+            &mut comp,
+            &idle_input(),
+            &world,
+            EnvironmentView::level_only(0.0),
+            DT,
+            pos,
+        );
         let MovementState::Dash { boost, .. } = comp.movement_state else {
             panic!("dash remains active")
         };

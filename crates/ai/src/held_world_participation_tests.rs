@@ -63,7 +63,7 @@ fn held_world_participation_suspends_mixed_actor_and_retains_private_execution()
             &mut registry,
             &CollisionWorld::new(),
             None,
-            -20.0,
+            postretro_collision::EnvironmentView::level_only(-20.0),
             1.0 / 60.0,
         );
     }

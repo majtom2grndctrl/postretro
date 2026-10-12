@@ -17,6 +17,7 @@ use glam::Vec3;
 use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
@@ -314,8 +315,9 @@ struct AgentSnapshot {
 /// harness, advance the waypoint cursor on arrival, and set arrived/blocked.
 ///
 /// `nav_graph` is `None` when the loaded map has no navmesh bake; agents then
-/// cannot plan (every destination resolves to blocked). `gravity` is the world
-/// gravity scalar (negative); `dt` is the fixed tick delta.
+/// cannot plan (every destination resolves to blocked). `environment` is the level
+/// gravity plus installed volumes; each agent resolves its own gravity from it at
+/// its tick-start position. `dt` is the fixed tick delta.
 ///
 /// Returns the count of agents that recomputed a path this tick — bounded by
 /// [`REPLAN_BUDGET_PER_TICK`].
@@ -324,10 +326,10 @@ pub fn tick(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     nav_graph: Option<&NavGraph>,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
-    tick_impl(registry, collision_world, nav_graph, gravity, dt)
+    tick_impl(registry, collision_world, nav_graph, environment, dt)
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -335,17 +337,17 @@ pub(crate) fn tick(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     nav_graph: Option<&NavGraph>,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
-    tick_impl(registry, collision_world, nav_graph, gravity, dt)
+    tick_impl(registry, collision_world, nav_graph, environment, dt)
 }
 
 fn tick_impl(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
     nav_graph: Option<&NavGraph>,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> AgentTickResult {
     // Start-of-tick position snapshot for separation. Built once, read by every
@@ -440,7 +442,7 @@ fn tick_impl(
                 agent.knockback_velocity,
                 agent.velocity.y,
                 &mut agent.knockback_velocity,
-                gravity,
+                environment,
                 dt,
             );
             agent.velocity = result.velocity;
@@ -589,7 +591,7 @@ fn tick_impl(
             Vec3::new(desired.x, 0.0, desired.z),
             agent.velocity.y,
             &mut agent.knockback_velocity,
-            gravity,
+            environment,
             dt,
         );
 
@@ -1139,6 +1141,9 @@ fn separation_preserving_goal_progress(steer_velocity: Vec3, separation: Vec3) -
 mod tests;
 
 #[cfg(test)]
+mod environment_tests;
+
+#[cfg(test)]
 mod held_world_participation {
     use super::*;
     use postretro_entities::Transform;
@@ -1170,7 +1175,13 @@ mod held_world_participation {
                 .get_component::<Transform>(neighbor)
                 .unwrap()
                 .position;
-            tick(&mut registry, &CollisionWorld::new(), None, 0.0, 1.0 / 60.0);
+            tick(
+                &mut registry,
+                &CollisionWorld::new(),
+                None,
+                postretro_collision::EnvironmentView::level_only(0.0),
+                1.0 / 60.0,
+            );
             let walker_position = registry
                 .get_component::<Transform>(walker)
                 .unwrap()
@@ -1190,7 +1201,13 @@ mod held_world_participation {
                 registry
                     .set_component(holder, Inventory::default())
                     .unwrap();
-                tick(&mut registry, &CollisionWorld::new(), None, 0.0, 1.0 / 60.0);
+                tick(
+                    &mut registry,
+                    &CollisionWorld::new(),
+                    None,
+                    postretro_collision::EnvironmentView::level_only(0.0),
+                    1.0 / 60.0,
+                );
             }
             (
                 walker_position,

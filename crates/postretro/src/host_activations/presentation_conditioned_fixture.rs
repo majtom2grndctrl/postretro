@@ -263,7 +263,7 @@ impl Peer {
             &session.hit_zone_store,
             None,
             &self.app.collision_world,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             DT as f32,
             Duration::from_secs_f64(DT),
             None,

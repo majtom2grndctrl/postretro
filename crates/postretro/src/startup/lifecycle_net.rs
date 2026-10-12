@@ -184,6 +184,9 @@ impl App {
         self.level = None;
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
+        // No volume of this level may resolve after it unloads; the next install
+        // supplies its own set.
+        self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();
         // The registry is cleared below, retiring the chase agent's entity slot;
         // drop the handle so a stale id is never re-targeted after unload.
         #[cfg(feature = "dev-tools")]

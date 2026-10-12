@@ -135,7 +135,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     let _ = postretro_sim::sim::run_host_movement_tick(
         &mut registry,
         &floor,
-        -20.0,
+        postretro_collision::EnvironmentView::level_only(-20.0),
         &[(pawn, idle.clone())],
         dt,
     );
@@ -146,7 +146,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     let movement_ticks = postretro_sim::sim::run_host_movement_tick(
         &mut registry,
         &floor,
-        -20.0,
+        postretro_collision::EnvironmentView::level_only(-20.0),
         &[(pawn, input)],
         dt,
     );

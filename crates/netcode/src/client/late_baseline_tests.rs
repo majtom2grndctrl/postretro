@@ -725,7 +725,7 @@ fn late_baseline_receive_keeps_newer_slots_factions_and_presentation_clock() {
             &hit_zones,
             None,
             &collision,
-            -20.0,
+            postretro_collision::EnvironmentView::level_only(-20.0),
             1.0 / 60.0,
             dt,
             None,

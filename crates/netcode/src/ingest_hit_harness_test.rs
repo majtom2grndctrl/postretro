@@ -97,7 +97,7 @@ impl HostSimulation {
             &self.world,
             &self.hit_zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             false,
             0.0,
             (0.0, 0.0),

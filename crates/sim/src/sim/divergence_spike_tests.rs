@@ -188,7 +188,7 @@ impl SimHarness {
             &self.world,
             &self.hit_zones,
             None,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,

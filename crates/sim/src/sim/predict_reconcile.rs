@@ -153,7 +153,7 @@ impl PrototypeHarness {
             &self.world,
             &self.hit_zones,
             None,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             None,
             0.0,
             &mut self.progress,

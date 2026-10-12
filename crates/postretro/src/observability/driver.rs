@@ -138,6 +138,9 @@ fn run_headless_inner(
 
     let collision_world =
         CollisionWorld::from_level(&world).context("static collision mesh rejected")?;
+    // Volumes arrive with the level section; until then headless resolves the
+    // level gravity alone, exactly as the windowed install's empty set does.
+    let environment_volumes = postretro_collision::EnvironmentVolumes::empty();
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
@@ -233,7 +236,10 @@ fn run_headless_inner(
         // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `setGravity`
         // reaction is observed the same tick as the windowed loop (`main.rs`),
         // rather than only at level-load time.
-        let gravity = script_ctx.gravity.get();
+        let environment = postretro_collision::EnvironmentView::new(
+            script_ctx.gravity.get(),
+            &environment_volumes,
+        );
 
         let facing_yaw = effective_aim
             .map(|aim| yaw_from_direction(aim.direction))
@@ -288,7 +294,7 @@ fn run_headless_inner(
             &collision_world,
             &hit_zone_store,
             nav_graph.as_ref(),
-            gravity,
+            environment,
             None,
             anim_time,
             &mut progress_tracker,

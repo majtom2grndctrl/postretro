@@ -678,7 +678,7 @@ impl Fixture {
                     command,
                     aim_pitch: self.aim_pitch,
                     collision: &self.world,
-                    gravity: 0.0,
+                    environment: postretro_collision::EnvironmentView::level_only(0.0),
                     tick_dt: DT,
                 },
             );
@@ -965,7 +965,7 @@ impl Fixture {
             &self.world,
             &self.zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             false,
             0.0,
             (0.0, 0.0),

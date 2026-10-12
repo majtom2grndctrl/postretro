@@ -20,6 +20,7 @@ postretro-sim.workspace = true
 
 [dev-dependencies]
 mlua.workspace = true
+postretro-collision.workspace = true
 postretro-level-format.workspace = true
 postretro-net.workspace = true
 postretro-physics = { workspace = true, features = ["test-support"] }

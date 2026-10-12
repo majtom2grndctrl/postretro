@@ -3839,7 +3839,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             Some(weapon),
             0.0,
             &mut progress,

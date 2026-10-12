@@ -15,6 +15,7 @@
 use glam::Vec3;
 
 use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
+use postretro_collision::{BodyProbe, EnvironmentView, resolve_environment};
 
 /// Iteration cap for the slide loop — bounds work when a capsule wedges into a
 /// corner. Matches the player substrate's budget; four projections resolve any
@@ -88,9 +89,9 @@ pub(crate) struct SlideResult {
 ///
 /// `desired_horizontal` is the steering velocity (XZ; any Y is ignored). The
 /// vertical channel is owned by the harness: `vertical_velocity` carries the
-/// fall speed in from the previous tick (0 when freshly grounded). `gravity` is
-/// the world gravity scalar (negative — points down), supplied by the caller
-/// (matching the player substrate, which takes gravity from the script ctx).
+/// fall speed in from the previous tick (0 when freshly grounded). Gravity is
+/// resolved from `environment` once, at the tick-start `position`
+/// ([`agent_gravity`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collide_and_slide(
     world: &CollisionWorld,
@@ -99,10 +100,11 @@ pub(crate) fn collide_and_slide(
     desired_horizontal: Vec3,
     vertical_velocity: f32,
     knockback_velocity: &mut Vec3,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> SlideResult {
     let collision_shape = capsule.collision_shape();
+    let gravity = agent_gravity(environment, capsule, position);
 
     // Compose the tick velocity: steering horizontal + integrated gravity. The
     // horizontal Y is dropped — steering never authors vertical motion.
@@ -206,6 +208,24 @@ pub(crate) fn collide_and_slide(
         grounded,
         velocity,
     }
+}
+
+/// The gravity an agent integrates this tick: the environment's gravity at the
+/// agent's own tick-start position, downward part only. The slide below adds it
+/// every tick, grounded included, with no clamp, so upward gravity would lift the
+/// agent off the navmesh; in an upward-gravity volume the agent behaves as in zero
+/// gravity. Agents ignore push.
+fn agent_gravity(environment: EnvironmentView<'_>, capsule: &AgentCapsule, position: Vec3) -> f32 {
+    let resolved = resolve_environment(
+        environment,
+        &BodyProbe {
+            position,
+            half_height: capsule.half_height,
+            radius: capsule.radius,
+            eye_height: 0.0,
+        },
+    );
+    resolved.gravity.min(0.0)
 }
 
 /// Step-up probe: returns the lifted position when horizontal motion is blocked
@@ -401,7 +421,7 @@ mod tests {
                 desired,
                 vertical,
                 &mut knockback,
-                gravity,
+                postretro_collision::EnvironmentView::level_only(gravity),
                 dt,
             );
             pos = result.position;
@@ -457,7 +477,7 @@ mod tests {
                 Vec3::ZERO,
                 vertical,
                 &mut knockback,
-                gravity,
+                postretro_collision::EnvironmentView::level_only(gravity),
                 dt,
             );
             pos = result.position;

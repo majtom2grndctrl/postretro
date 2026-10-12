@@ -331,6 +331,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         ui_focused_id: None,
         particle_live_counts: std::collections::HashMap::new(),
         collision_world: collision::CollisionWorld::new(),
+        environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
         mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,

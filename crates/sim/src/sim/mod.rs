@@ -44,6 +44,7 @@ use crate::weapon;
 use crate::weapon::FireButtonState;
 pub use descriptor_health::install_descriptor_player_health_range;
 pub use mesh_bindings::{resolve_mesh_entity_bindings, resolve_mesh_entity_bindings_for_entities};
+use postretro_collision::EnvironmentView;
 use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
@@ -426,7 +427,7 @@ pub fn simulate_tick<AiResult>(
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     _legacy_active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
@@ -452,7 +453,7 @@ where
         collision_world,
         hit_zone_store,
         nav_graph,
-        gravity,
+        environment,
         false,
         anim_time,
         (0.0, 0.0),
@@ -488,7 +489,7 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
     nav_graph: Option<&NavGraph>,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     mod_block_during_reload: bool,
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
@@ -566,7 +567,7 @@ where
         host_movement::run_host_movement_tick(
             &mut registry,
             &combined_collision,
-            gravity,
+            environment,
             &remote_pawn_inputs,
             tick_dt,
         )
@@ -576,7 +577,7 @@ where
     let movement = run_movement_tick(
         &registry,
         &combined_collision,
-        gravity,
+        environment,
         &command.movement,
         tick_dt,
     );
@@ -792,7 +793,13 @@ where
         let mut registry = registry.borrow_mut();
         let substage = cpu.scope(SimStage::SteerAgents);
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
-        let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
+        let _ = agent_steering::tick(
+            &mut registry,
+            collision_world,
+            nav_graph,
+            environment,
+            tick_dt,
+        );
         drop(substage);
         let substage = cpu.scope(SimStage::SteerPose);
         update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);
@@ -1629,7 +1636,7 @@ struct LocalMovementTickEvents {
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision: &impl crate::movement::MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     input: &MovementInput,
     tick_dt: f32,
 ) -> LocalMovementTickEvents {
@@ -1649,7 +1656,7 @@ fn run_movement_tick(
     let events = host_movement::run_host_movement_tick(
         &mut registry,
         collision,
-        gravity,
+        environment,
         &pawn_inputs,
         tick_dt,
     );
@@ -2161,7 +2168,7 @@ mod tests {
                     &world,
                     &hit_zones,
                     None,
-                    0.0,
+                    postretro_collision::EnvironmentView::level_only(0.0),
                     None,
                     0.0,
                     &mut progress,
@@ -2418,7 +2425,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             None,
             0.0,
             &mut progress,
@@ -2457,7 +2464,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             false,
             0.0,
             (0.0, 0.0),
@@ -2574,7 +2581,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             false,
             0.0,
             (0.0, 0.0),
@@ -2697,7 +2704,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             false,
             0.0,
             (0.0, 0.0),
@@ -2819,7 +2826,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             Some(weapon),
             0.0,
             &mut progress,
@@ -2939,7 +2946,7 @@ mod tests {
                 &world,
                 &hit_zones,
                 None,
-                0.0,
+                postretro_collision::EnvironmentView::level_only(0.0),
                 None,
                 0.0,
                 &mut progress,
@@ -3237,7 +3244,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             None,
             0.0,
             &mut progress,
@@ -3359,7 +3366,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             None,
             0.0,
             &mut progress,
@@ -3498,7 +3505,7 @@ mod tests {
                 &CollisionWorld::new(),
                 &HitZoneStore::new(),
                 None,
-                -9.81,
+                postretro_collision::EnvironmentView::level_only(-9.81),
                 None,
                 0.0,
                 &mut progress,
@@ -3586,7 +3593,7 @@ mod tests {
                 &world,
                 &hit_zones,
                 None,
-                -9.81,
+                postretro_collision::EnvironmentView::level_only(-9.81),
                 None,
                 0.0,
                 &mut progress,
@@ -3674,7 +3681,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             None,
             0.0,
             &mut progress,

@@ -971,6 +971,10 @@ pub(crate) struct App {
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
+    /// The level's environment volumes (gravity, push, fluid regions). Empty until
+    /// a level installs volumes and after unload; every movement and agent step
+    /// resolves against it beside the level gravity.
+    environment_volumes: postretro_collision::EnvironmentVolumes,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes
@@ -3806,11 +3810,15 @@ impl App {
         client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
-        // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
-        // through `client_receive_and_apply`. Capture the gravity scalar before the
-        // endpoint borrow (a `Cell` copy); the collision world is read by-reference
-        // inside the client arm (a disjoint `self` field from `self.session`).
-        let gravity = script_ctx.gravity.get();
+        // M15 Phase 3 Task 5: the client reconcile replay threads collision and the
+        // environment through `client_receive_and_apply`. Capture the level gravity
+        // before the endpoint borrow (a `Cell` copy); the collision world and the
+        // environment volumes are read by-reference inside the client arm (disjoint
+        // `self` fields from `self.session`).
+        let environment = postretro_collision::EnvironmentView::new(
+            script_ctx.gravity.get(),
+            &self.environment_volumes,
+        );
         let collision_world = &self.collision_world;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
@@ -4357,7 +4365,7 @@ impl App {
                         hit_zone_store,
                         host_agent_params,
                         &combined_collision,
-                        gravity,
+                        environment,
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
                         mover_target_tick,
@@ -5592,7 +5600,10 @@ impl App {
         else {
             return None;
         };
-        let gravity = script_ctx.gravity.get();
+        let environment = postretro_collision::EnvironmentView::new(
+            script_ctx.gravity.get(),
+            &self.environment_volumes,
+        );
         let mut registry = script_ctx.registry.borrow_mut();
         let mut command = command.clone();
         command.firing_slot = registry
@@ -5617,7 +5628,7 @@ impl App {
                 command: &command,
                 aim_pitch,
                 collision: &combined_collision,
-                gravity,
+                environment,
                 tick_dt,
             },
         ))
@@ -8237,7 +8248,7 @@ mod tests {
                 &world,
                 &hit_zones,
                 None,
-                -9.81,
+                postretro_collision::EnvironmentView::level_only(-9.81),
                 None,
                 0.0,
                 &mut progress,
@@ -9411,7 +9422,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             None,
             0.0,
             &mut progress,

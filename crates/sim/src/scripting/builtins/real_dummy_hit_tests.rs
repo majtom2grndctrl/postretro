@@ -357,7 +357,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
             &mut component,
             &input,
             &floor,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             1.0 / 60.0,
             transform.position,
         )

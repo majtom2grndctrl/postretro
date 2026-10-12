@@ -259,7 +259,7 @@ impl Fixture {
             &self.zones,
             None,
             &self.world,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             DT,
             Duration::from_secs_f32(DT),
             None,

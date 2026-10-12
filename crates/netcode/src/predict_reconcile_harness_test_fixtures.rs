@@ -19,6 +19,9 @@ use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
+use postretro_collision::{
+    ConvexLeaf, EnvironmentView, EnvironmentVolume, EnvironmentVolumes, LeafPlane,
+};
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::transport::NetServer;
@@ -125,6 +128,31 @@ pub(crate) fn faceted_floor_height(slope: f32, z: f32) -> f32 {
 
 pub(crate) fn downhill_facet_normal(slope: f32) -> Vec3 {
     Vec3::new(0.0, 1.0, -slope).normalize()
+}
+
+/// An axis-aligned box environment volume that sets only gravity, as the level
+/// loader would hand both peers.
+pub(crate) fn gravity_box_volume(min: Vec3, max: Vec3, gravity: f32) -> EnvironmentVolume {
+    let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
+    EnvironmentVolume {
+        source_entity: 1,
+        priority: 0,
+        gravity: Some(gravity),
+        push: None,
+        fluid: None,
+        brushes: vec![ConvexLeaf {
+            planes: vec![
+                plane(Vec3::X, max.x),
+                plane(Vec3::NEG_X, -min.x),
+                plane(Vec3::Y, max.y),
+                plane(Vec3::NEG_Y, -min.y),
+                plane(Vec3::Z, max.z),
+                plane(Vec3::NEG_Z, -min.z),
+            ],
+            aabb_min: min,
+            aabb_max: max,
+        }],
+    }
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn
@@ -366,6 +394,10 @@ pub(crate) fn spawn_dead_bystander(registry: &mut EntityRegistry) -> EntityId {
 /// advances drives delivery; no wall-clock time is ever read.
 pub(crate) struct LoopbackHarness {
     pub(crate) world: CollisionWorld,
+    /// Each peer's installed environment volumes, built separately from the same
+    /// records as both peers build theirs from the same level. Empty by default.
+    pub(crate) host_environment_volumes: EnvironmentVolumes,
+    pub(crate) client_environment_volumes: EnvironmentVolumes,
 
     // --- Host side (authoritative) ---
     pub(crate) host_registry: EntityRegistry,
@@ -413,6 +445,10 @@ pub(crate) struct LoopbackHarness {
     pub(crate) client_mover_states: MoverTickStateTable,
     pub(crate) latest_mover_corrections: Vec<MoverCorrection>,
     pub(crate) latest_local_corrections: Vec<f32>,
+    /// One `(acked_tick, last_sent_client_tick)` pair per local reconcile in the
+    /// latest `client_receive`: the replay window is the client ticks after the
+    /// ack up to the last one sent.
+    pub(crate) latest_reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
 
     // --- Bystander death-sweep guards (one per registry) ---
     pub(crate) host_bystander: EntityId,
@@ -494,6 +530,8 @@ impl LoopbackHarness {
 
         Self {
             world,
+            host_environment_volumes: EnvironmentVolumes::empty(),
+            client_environment_volumes: EnvironmentVolumes::empty(),
             host_registry,
             host_pawn,
             server,
@@ -524,6 +562,7 @@ impl LoopbackHarness {
             client_mover_states: MoverTickStateTable::default(),
             latest_mover_corrections: Vec::new(),
             latest_local_corrections: Vec::new(),
+            latest_reconcile_windows: Vec::new(),
             host_bystander,
             client_bystander,
             to_server: PacketConditioner::new(link),
@@ -534,6 +573,18 @@ impl LoopbackHarness {
             drain_target_tick: None,
             ticks_since_cursor_caught: 0,
         }
+    }
+
+    /// Install the same environment volume records on both peers, each building
+    /// its own query set as each peer does from its own copy of the level.
+    pub(crate) fn with_environment_volumes(
+        link: LinkConfig,
+        volumes: Vec<EnvironmentVolume>,
+    ) -> Self {
+        let mut h = Self::new(link);
+        h.host_environment_volumes = EnvironmentVolumes::build(volumes.clone());
+        h.client_environment_volumes = EnvironmentVolumes::build(volumes);
+        h
     }
 
     pub(crate) fn with_moving_platform(link: LinkConfig) -> Self {
@@ -642,9 +693,10 @@ impl LoopbackHarness {
                 &self.mover_colliders,
                 &self.client_mover_states,
             );
+            let environment = EnvironmentView::new(GRAVITY, &self.client_environment_volumes);
             if let Some((t, m)) =
                 self.prediction
-                    .predict_tick(input, prev, &combined_collision, GRAVITY, DT)
+                    .predict_tick(input, prev, &combined_collision, environment, DT)
             {
                 // Mirror production `client_predict_tick`: stamp previous = current for
                 // the local pawn BEFORE writing the new predicted pose, so its
@@ -734,7 +786,7 @@ impl LoopbackHarness {
             crate::sim::run_host_movement_tick(
                 &mut self.host_registry,
                 &combined_collision,
-                GRAVITY,
+                EnvironmentView::new(GRAVITY, &self.host_environment_volumes),
                 &pawn_inputs,
                 DT,
             );
@@ -794,6 +846,7 @@ impl LoopbackHarness {
     pub(crate) fn client_receive(&mut self) -> Vec<wire::AckMessage> {
         self.latest_mover_corrections.clear();
         self.latest_local_corrections.clear();
+        self.latest_reconcile_windows.clear();
         let mut acks = Vec::new();
         for packet in self.to_client.take_ready() {
             let Ok(raw) = wire::decode::<RawSnapshotMessage>(&packet) else {
@@ -855,9 +908,11 @@ impl LoopbackHarness {
                     reconcile.server_tick,
                     Some(self.client_replication.mover_history()),
                     &combined_collision,
-                    GRAVITY,
+                    EnvironmentView::new(GRAVITY, &self.client_environment_volumes),
                     DT,
                 );
+                self.latest_reconcile_windows
+                    .push((reconcile.acked_tick, self.last_sent_client_tick));
                 if class.is_some()
                     && let (Some(before), Ok(after)) = (
                         before,

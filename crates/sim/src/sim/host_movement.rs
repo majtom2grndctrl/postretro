@@ -19,6 +19,7 @@ use glam::{Quat, Vec3};
 use crate::movement::{
     MovementCollisionSource, MovementEvents, MovementInput, tick as movement_tick,
 };
+use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::PlayerMovementComponent;
 
@@ -45,7 +46,7 @@ use postretro_foundation::PlayerMovementComponent;
 pub fn run_host_movement_tick(
     registry: &mut EntityRegistry,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     pawn_inputs: &[(EntityId, MovementInput)],
     tick_dt: f32,
 ) -> Vec<(EntityId, MovementEvents)> {
@@ -70,7 +71,7 @@ pub fn run_host_movement_tick(
             &mut component,
             &input,
             collision,
-            gravity,
+            environment,
             tick_dt,
             position,
         );
@@ -222,12 +223,18 @@ mod tests {
         let _ = run_host_movement_tick(
             &mut registry,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             &[(driven, idle_input())],
             DT,
         );
         let inputs = vec![(driven, forward_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &inputs, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &inputs,
+            DT,
+        );
 
         // The driven pawn moved along -Z (facing 0 looks down -Z) and its movement
         // component reflects a grounded tick (Transform + component both written).
@@ -261,7 +268,13 @@ mod tests {
         let mut input = idle_input();
         input.facing_yaw = 0.8;
 
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(pawn, input)], DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(pawn, input)],
+            DT,
+        );
 
         let transform = registry.get_component::<Transform>(pawn).unwrap();
         let (yaw, _, _) = transform.rotation.to_euler(glam::EulerRot::YXZ);
@@ -280,13 +293,25 @@ mod tests {
         // forward input only gets air control: 9.7e-5 of travel, under
         // `EPSILON`.
         let settle = vec![(mover, idle_input()), (idler, idle_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &settle, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &settle,
+            DT,
+        );
 
         let mover_before = registry.get_component::<Transform>(mover).unwrap().position;
         let idler_before = registry.get_component::<Transform>(idler).unwrap().position;
 
         let inputs = vec![(mover, forward_input()), (idler, idle_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &inputs, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &inputs,
+            DT,
+        );
 
         let mover_after = registry.get_component::<Transform>(mover).unwrap().position;
         let idler_after = registry.get_component::<Transform>(idler).unwrap().position;
@@ -324,14 +349,26 @@ mod tests {
             .unwrap();
 
         // First tick: settle grounded.
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(id, idle_input())], DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(id, idle_input())],
+            DT,
+        );
 
         // Second tick: jump.
         let jump = MovementInput {
             jump_pressed: true,
             ..idle_input()
         };
-        let events = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(id, jump)], DT);
+        let events = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(id, jump)],
+            DT,
+        );
         assert!(
             events
                 .iter()
@@ -351,7 +388,7 @@ mod tests {
         let events = run_host_movement_tick(
             &mut registry,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             &[(bare, forward_input())],
             DT,
         );

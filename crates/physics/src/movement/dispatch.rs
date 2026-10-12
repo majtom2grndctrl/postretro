@@ -8,6 +8,7 @@ use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{crouching_intent, dash_intent, normal_intent, sliding_intent};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
 use crate::movement::{MovementEvents, MovementInput, Transition};
+use postretro_collision::ResolvedEnvironment;
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 /// Resize the live capsule from the crouched size back to the configured
@@ -105,6 +106,11 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
 /// application will come up empty by design — it lives here. Velocity carry is
 /// owned by this dispatch point, never by a state intent (D6).
 ///
+/// `environment` is the tick's resolved environment, computed once by `tick` at
+/// the tick-start position. Intents receive its values and never query volumes;
+/// every existing state integrates `environment.gravity` exactly as it did the
+/// level scalar.
+///
 /// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
 /// before dispatch; both `normal_intent` and `crouching_intent` consume them
 /// (the `Dash` state drops jump input by design).
@@ -119,7 +125,7 @@ pub(super) fn dispatch_state_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     jump_edges: JumpEdges,
-    gravity: f32,
+    environment: &ResolvedEnvironment,
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
@@ -128,6 +134,7 @@ pub(super) fn dispatch_state_intent(
     // Resolve the borrow once: move the live state into a local so its data can
     // be borrowed `&mut` independently of `&mut component`. The `Normal`
     // placeholder left behind is overwritten below (write-back or transition).
+    let gravity = environment.gravity;
     let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
     let transition = match &mut state {
         MovementState::Normal => {

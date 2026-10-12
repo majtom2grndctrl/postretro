@@ -17,6 +17,10 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 - Movers: the world is built as `CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states)` in sim. `ground_ref_from_hit` maps a mover hit to `GroundRef::Mover`.
 - NPCs: `crates/sim/src/agent` has its own static-only `collide_and_slide` and `step_up_lift`.
 
+## Mover-relative target
+
+- Replay reads mover poses by server tick (`MoverHistoryBuffer::pose_at_tick` through `ReplayCollisionSource`). Live prediction reads the client's mover tick states, and the host reads its own. A mover-local target resolved through the tick's pose therefore needs only the mover id and the local point on the wire.
+
 ## Swim facts
 
 - `environment_transition` (`swim_transition.rs`) handles both swim entry and exit at the seam:
@@ -45,7 +49,14 @@ Client prediction builds its own `CombinedCollisionWorld` (`client_predict_movem
 - Host-local: `checked_command.can_fire &= pawn_alive` in `sim/src/sim/weapon_stage/commands/local.rs`.
 - Host-remote: the `can_fire` expression in `sim/src/sim/weapon_stage/commands/remote.rs`. It already reads pawn components from the registry, and `PlayerMovementComponent` is a registry component (`trigger_system.rs` reads it).
 - Client-predicted: the client's own fire command path. `weapon/client_resolution.rs` resolves an accepted shot with `can_fire: true`. Confirm where the client refuses a predicted start before resolution.
-- Ordering: movement is update order 1 (`entity_model.md` §5), before the weapon stage. Confirm the host applies a remote command's movement before that command's fire.
+- Ordering: movement is update order 1 (`entity_model.md` §5), before the weapon stage. Starts can be delivered after their stamped tick (`networking.md` §Combat authority, "Starts survive playout"), so "movement state after this command's movement step" is not enough. The gate needs the movement state at the stamped client tick. Not verified: whether the host retains it.
+- Cancel precedent: the local and remote paths call `weapon_component.cancel_activation()` when the pawn is not alive. Vault entry uses the same cancel. Not verified: whether a held trigger re-arms a start after a cancel without a re-press. The executor maps "fires after exit without re-press" onto the activation semantics.
+
+## Viewmodel presentation (why the dip is out of scope)
+
+- `MeshRenderCollector::collect_viewmodel` renders the viewmodel rigid (`MeshSampleParams::rigid()`, no pose inputs), so no clip is ever sampled.
+- `viewmodel_camera_space_transform` composes the view-feel offsets with `WeaponPlacementDescriptor` and never reads `Lowering`/`Raising`.
+- `WeaponDescriptor` has `lowerMs`/`raiseMs` durations and sound slots, but no animation slots. A weapon switch therefore shows no lower or raise today.
 
 ## Descriptor and presentation sites
 

@@ -456,7 +456,7 @@
 // Spawn in the pool room, facing the pool (east).
 {
 "classname" "player_spawn"
-"origin" "64 256 24"
+"origin" "64 256 48"
 "angles" "0 0 0"
 "_tags" "player"
 }

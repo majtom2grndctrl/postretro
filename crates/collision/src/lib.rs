@@ -9,6 +9,7 @@ mod eye;
 mod leaf;
 mod line;
 mod polytope;
+mod query_timer;
 mod resolve;
 #[cfg(test)]
 mod test_fixtures;
@@ -26,6 +27,7 @@ pub use crossings::{
 };
 pub use eye::{EyeFluid, fluid_at_eye, fluid_volume_signed_depth};
 pub use leaf::{ContentsMask, ConvexLeaf, LeafPlane};
+pub use query_timer::EnvironmentQueryTimer;
 pub use resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
 };

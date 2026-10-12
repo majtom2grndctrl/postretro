@@ -5,6 +5,7 @@ use glam::Vec3;
 
 use crate::leaf::ContentsMask;
 use crate::line::{clip_line, union_length};
+use crate::query_timer::{EnvironmentQueryTimer, QueryFamily, timed};
 use crate::volumes::EnvironmentVolumes;
 
 static NO_VOLUMES: EnvironmentVolumes = EnvironmentVolumes::empty();
@@ -23,6 +24,9 @@ pub struct EnvironmentView<'a> {
     /// winner's entry through [`ResolvedEnvironment::viscosity`] and never
     /// queries a registry.
     pub fluid_viscosity: &'a [f32],
+    /// CPU-time accumulator for stage timing; `None` unless the caller's
+    /// timing gate is on. Never changes a query's result.
+    pub timer: Option<&'a EnvironmentQueryTimer>,
 }
 
 impl<'a> EnvironmentView<'a> {
@@ -35,6 +39,21 @@ impl<'a> EnvironmentView<'a> {
             level_gravity,
             volumes,
             fluid_viscosity,
+            timer: None,
+        }
+    }
+
+    /// This view, with its body resolves and fluid-crossing queries timed into
+    /// `timer`. Attach only while CPU stage timing is on.
+    pub fn timed<'t>(self, timer: &'t EnvironmentQueryTimer) -> EnvironmentView<'t>
+    where
+        'a: 't,
+    {
+        EnvironmentView {
+            level_gravity: self.level_gravity,
+            volumes: self.volumes,
+            fluid_viscosity: self.fluid_viscosity,
+            timer: Some(timer),
         }
     }
 }
@@ -47,6 +66,7 @@ impl EnvironmentView<'static> {
             level_gravity,
             volumes: &NO_VOLUMES,
             fluid_viscosity: &[],
+            timer: None,
         }
     }
 }
@@ -95,6 +115,15 @@ pub struct ResolvedEnvironment {
 /// total and every reduction is order-independent, so the result never depends
 /// on tree shape or visit order.
 pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> ResolvedEnvironment {
+    timed(view.timer, QueryFamily::BodyResolve, || {
+        resolve_environment_untimed(view, probe)
+    })
+}
+
+fn resolve_environment_untimed(
+    view: EnvironmentView<'_>,
+    probe: &BodyProbe,
+) -> ResolvedEnvironment {
     let volumes = view.volumes;
     let mut gravity_winner: Option<usize> = None;
     let mut push_winner: Option<usize> = None;
@@ -143,6 +172,12 @@ pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> Reso
 /// For bodies that read only gravity (AI agents), so they never pay for the push
 /// reduction or the fluid's segment query.
 pub fn resolve_gravity(view: EnvironmentView<'_>, position: Vec3) -> f32 {
+    timed(view.timer, QueryFamily::BodyResolve, || {
+        resolve_gravity_untimed(view, position)
+    })
+}
+
+fn resolve_gravity_untimed(view: EnvironmentView<'_>, position: Vec3) -> f32 {
     let volumes = view.volumes;
     let mut winner: Option<usize> = None;
     volumes.visit_volumes_containing_point(position, ContentsMask::GRAVITY, |index| {

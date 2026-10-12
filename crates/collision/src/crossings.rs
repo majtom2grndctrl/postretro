@@ -5,6 +5,7 @@ use glam::Vec3;
 
 use crate::leaf::ContentsMask;
 use crate::line::{Run, clip_line, for_each_run};
+use crate::query_timer::{QueryFamily, timed};
 use crate::resolve::EnvironmentView;
 use crate::volumes::EnvironmentVolumes;
 
@@ -52,6 +53,18 @@ pub struct FluidCrossing {
 /// Order: increasing `t` within one volume; across volumes unspecified (the
 /// same on every peer, since the tree build is deterministic). Allocation-free.
 pub fn visit_fluid_crossings(
+    view: EnvironmentView<'_>,
+    origin: Vec3,
+    dir: Vec3,
+    max_t: f32,
+    visit: impl FnMut(FluidCrossing),
+) {
+    timed(view.timer, QueryFamily::FluidCrossing, || {
+        visit_fluid_crossings_untimed(view, origin, dir, max_t, visit)
+    })
+}
+
+fn visit_fluid_crossings_untimed(
     view: EnvironmentView<'_>,
     origin: Vec3,
     dir: Vec3,

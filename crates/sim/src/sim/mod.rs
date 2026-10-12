@@ -524,6 +524,15 @@ where
     use cpu_stages::SimStage;
     let cpu = postretro_stage_timing::StageFrame::new(timing);
     let tick_scope = cpu.scope(SimStage::Tick);
+    // Every environment query this tick goes through `environment`, so a timer
+    // attached here sees the player and agent resolves and the hitscan
+    // crossings wherever they run. Off, the view carries none and reads no clock.
+    let environment_timer = postretro_collision::EnvironmentQueryTimer::new();
+    let environment = if timing.is_enabled() {
+        environment.timed(&environment_timer)
+    } else {
+        environment
+    };
     registry.borrow_mut().snapshot_transforms();
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
@@ -911,6 +920,9 @@ where
             .map(|spawn| spawn.projectile)
             .chain(local_result.projectile_spawns.iter().copied()),
     );
+    if let Some(nanos) = environment_timer.fluid_crossing_nanos() {
+        cpu.add_nanos(SimStage::WeaponFluidCrossings, nanos);
+    }
     drop(stage);
     let death = run_death_sweep(&registry);
 
@@ -920,6 +932,9 @@ where
     }
     repointed_pawns.sort_unstable();
     repointed_pawns.dedup();
+    if let Some(nanos) = environment_timer.body_resolve_nanos() {
+        cpu.add_nanos(SimStage::Environment, nanos);
+    }
     drop(tick_scope);
 
     TickEvents {
@@ -2506,16 +2521,22 @@ mod tests {
             .value(cpu_stages::SimStage::Tick)
             .expect("tick timed");
         // `PlayerEvents` runs after the tick returns, in the frame loop.
-        for &stage in cpu_stages::SimStage::ALL[1..]
-            .iter()
-            .filter(|stage| stage.parent().is_some())
-        {
+        // `WeaponFluidCrossings` runs only in a tick that fires a hitscan;
+        // `timed_hitscan_tick_reports_fluid_crossings_inside_weapons` covers it.
+        for &stage in cpu_stages::SimStage::ALL[1..].iter().filter(|stage| {
+            stage.parent().is_some() && **stage != cpu_stages::SimStage::WeaponFluidCrossings
+        }) {
             let value = events
                 .cpu
                 .value(stage)
                 .unwrap_or_else(|| panic!("{stage:?} ran"));
             assert!(value <= tick, "{stage:?} {value} ns exceeds tick {tick} ns");
         }
+        assert_eq!(
+            events.cpu.value(cpu_stages::SimStage::WeaponFluidCrossings),
+            None,
+            "no hitscan fired, so no crossing stage"
+        );
     }
 
     #[test]

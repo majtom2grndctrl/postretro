@@ -3822,10 +3822,9 @@ mod tests {
         );
     }
 
-    // The host weapon stage carries the local shooter's hitscan fluid splashes
-    // out of the tick beside its impact emission.
-    #[test]
-    fn local_hitscan_into_a_pool_surfaces_its_fluid_splash_in_tick_events() {
+    /// One host tick in which the local shooter fires a hitscan straight down
+    /// into a pool from above its surface.
+    fn local_hitscan_into_a_pool_tick(timing: crate::sim::TimingGate) -> crate::sim::TickEvents {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         {
             let mut registry = registry.borrow_mut();
@@ -3862,15 +3861,18 @@ mod tests {
         let mut progress = ProgressTracker::new();
         let mut ai_runtime = postretro_ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = crate::sim::touch::TouchSystem::default();
+        let edges = std::collections::HashMap::new();
 
-        let events = simulate_tick(
-            registry.clone(),
+        crate::sim::simulate_tick_with_presentation_aim(
+            registry,
             &world,
             &hit_zones,
             None,
             postretro_collision::EnvironmentView::new(-9.81, &pool, &[]),
-            None,
+            false,
             0.0,
+            (0.0, 0.0),
             &mut progress,
             postretro_ai::test_tick_runner!(&mut ai_runtime),
             &[],
@@ -3882,9 +3884,26 @@ mod tests {
                 aim_direction: Vec3::NEG_Y,
             },
             0.016,
+            &mut touch_system,
+            &[],
+            0,
+            &postretro_entities::FactionRegistry::default(),
+            &RefCell::new(postretro_entities::FactionSentimentState::default()),
             None,
+            &edges,
+            &edges,
+            None,
+            |_, _| {},
             |_| {},
-        );
+            timing,
+        )
+    }
+
+    // The host weapon stage carries the local shooter's hitscan fluid splashes
+    // out of the tick beside its impact emission.
+    #[test]
+    fn local_hitscan_into_a_pool_surfaces_its_fluid_splash_in_tick_events() {
+        let events = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::OFF);
 
         assert_eq!(
             crate::emission::weapon_addresses(&events.weapon),
@@ -3899,6 +3918,41 @@ mod tests {
                 fluid: 4,
             }]
         );
+    }
+
+    // Stress-run instrumentation (rendering_pipeline.md §12): the hitscan's
+    // fluid-crossing query reports inside `sim_weapons`, and the pawn's
+    // environment resolve inside `sim_tick`; untimed, neither appears.
+    #[test]
+    fn timed_hitscan_tick_reports_fluid_crossings_inside_weapons() {
+        use crate::sim::cpu_stages::SimStage;
+
+        let events = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::ON);
+        assert_eq!(events.weapon_fluid_splashes.len(), 1, "the shot crossed");
+        let value = |stage| {
+            events
+                .cpu
+                .value(stage)
+                .unwrap_or_else(|| panic!("{stage:?} ran"))
+        };
+        let tick = value(SimStage::Tick);
+        let weapons = value(SimStage::Weapons);
+        let crossings = value(SimStage::WeaponFluidCrossings);
+        let environment = value(SimStage::Environment);
+        assert!(
+            crossings <= weapons,
+            "{crossings} ns exceeds weapons {weapons} ns"
+        );
+        assert!(weapons <= tick);
+        assert!(
+            environment <= tick,
+            "{environment} ns exceeds tick {tick} ns"
+        );
+
+        let untimed = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::OFF);
+        assert_eq!(untimed.weapon_fluid_splashes, events.weapon_fluid_splashes);
+        assert_eq!(untimed.cpu.value(SimStage::WeaponFluidCrossings), None);
+        assert_eq!(untimed.cpu.value(SimStage::Environment), None);
     }
 
     #[test]

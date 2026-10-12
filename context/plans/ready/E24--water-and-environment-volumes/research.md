@@ -254,16 +254,18 @@ A targeted check, not a sixth direction review. Read at `cfd2d861d` on `codex/co
 - Player-event residuals drain right after trigger residuals in the frame-end drain, source-major.
 - **Stale premise:** "shipped engine slots are never per-owner." `slot_record` still writes `per_owner: false`, but E16 made 12 engine slots per-player through the lookup. The brief now says so.
 
-**Owner ruling: `player.fluid` is dropped.** The IR carries only numbers and bools; scope projection drops String slots, `read()` takes only number and bool refs, and E16's catalog test rejects a non-projectable per-player slot. A HUD-only fluid name could take the local-publish route `player.weaponResource` uses (an enum slot, not replicated); nothing needs it. No E24 use case needs fluid identity in a condition:
+**Owner ruling: `player.fluid` is dropped.** The IR carries only numbers and bools; scope projection drops String slots, `read()` takes only number and bool refs, and E16's catalog test rejects a non-projectable per-player slot. No E24 use case needs fluid identity in a condition:
 - drowning and air meters need `player.swimming` and `player.immersion`;
 - fluid-specific damage belongs on the fluid's own data (a later field), or on a `trigger_volume` placed on the same brush today;
 - scriptable fluid effects are curves and reaction verbs aimed at a target fixed at install, with existing number and bool conditions deciding when;
 - lava cooling to stone is runtime-mutable volume state, the mover pattern this brief already defers, plus a kinematic brush for solidity.
 
+A HUD-only fluid name could take the local-publish route `player.weaponResource` uses (an enum slot, not replicated); nothing needs one yet.
+
 The identity seam (a compared name binds as an engine-interned number) is recorded in `scripting.md` §11 as not yet built; `E16--persistent-firing-modes` plans to use it. Fluids adopt it if a condition ever needs fluid identity; the host's fluid table in the tuning payload already supplies a session-stable index.
 
 Engineering calls, made on precedent:
-- **The output-only record is its own component, not a field on `PlayerMovementComponent`.** That struct passes through reconcile clones and the wire merge, which must never read the record; a separate component makes that hold by construction.
+- **Immersion is its own output-only component, not a field on `PlayerMovementComponent`.** That struct passes through reconcile clones and the wire merge, which must never read immersion; a separate component makes that hold by construction.
 - **Tuning payload.** The host dedupes on whole-struct `PartialEq`, so a new field resends on change with no new logic. Delivery is per pawn: `tuning_payload_for_pawn` takes level gravity and the fluid table at its three call sites. The materialization send carries current values, which closes the fifth review's pawnless-client executor check.
 - **Digest.** Build volumes after `CollisionWorld::from_level` and before the endpoint's digest block; bump `FINGERPRINT_EPOCH`; mirror the renderer-less early return; clear in `unload_level`.
 - **Fluid pass.** It needs its own gate; smoke's (`has_any_sheet` plus live particles) skips when no particle is live. It draws after the skinned-mesh pass and before the pass labelled "Billboard Sprite Pass". FRAGMENT storage is pinned at 8/8, so the fluid material group holds textures and uniforms only.

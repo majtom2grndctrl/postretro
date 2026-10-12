@@ -565,6 +565,8 @@ start, mints nothing and is not reported; the client's predicted shot stands unt
 HIT is denied. Reaching 64 takes seconds of total stall, so the gap is accepted rather
 than given its own refusal slot.
 
+**Pawn-state gates judge the stamped tick.** A gate that refuses a start because of the shooter's own state, such as a movement state that blocks fire, reads that state at the start's client tick, never at the tick the host delivers it. A retained start can be delivered after the state changed, and judging it late would refuse a shot the client already predicted.
+
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,
 `ceil(recovery_ms / tick_ms)`, after the client tick at which the previous execution's

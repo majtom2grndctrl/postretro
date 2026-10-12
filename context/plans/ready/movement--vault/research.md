@@ -6,7 +6,7 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 
 - Forwarded contact has a replay cost. `WireMovementState::Sliding` carries `floor_normal` because replay needs the authoritative slope on its first replayed tick. Last tick's contact lives on `PlayerMovementComponent.last_floor_normal`, which is not on the outer wire state.
 - A ledge result forwarded from tick T to tick T+1 would need the same treatment: an outer-state field paid on every snapshot, in every state. Otherwise an ack landing between probe and entry replays T+1 with no ledge and mispredicts entry.
-- A pre-intent probe has no such cost. It is a pure function of tick-start pose and the collision world, as `resolve_at_tick_start` is for the environment. Replay recomputes it, and host and client agree by construction against static geometry.
+- A pre-intent probe has no such cost. It is a pure function of tick-start pose and the collision world, like the swim edge's entry-clearance and headroom casts (`anchored_standup_clearance_probe`, `upward_clearance_probe` in `swim_transition.rs`). Replay recomputes it, so host and client agree by construction against static geometry.
 - After entry, the vault state's payload carries the target, so the probe no longer drives the vault.
 
 ## Substrate facts
@@ -17,9 +17,14 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 - Movers: the world is built as `CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states)` in sim. `ground_ref_from_hit` maps a mover hit to `GroundRef::Mover`.
 - NPCs: `crates/sim/src/agent` has its own static-only `collide_and_slide` and `step_up_lift`.
 
+## Probe cost
+
+- `cast_capsule_combined_parry` and `cast_ray_combined_parry` run a narrow-phase cast against every mover collider, with no bounds rejection. Each probe cast therefore costs O(level movers), as every substrate cast already does. Client replay repeats it per replayed tick. The broad-phase cull is a separate queued item. This brief only bounds how many casts the probe adds.
+
 ## Mover-relative target
 
-- Replay reads mover poses by server tick (`MoverHistoryBuffer::pose_at_tick` through `ReplayCollisionSource`). Live prediction reads the client's mover tick states, and the host reads its own. A mover-local target resolved through the tick's pose therefore needs only the mover id and the local point on the wire.
+- Replay reads mover poses by server tick (`MoverHistoryBuffer::pose_at_tick` through `ReplayCollisionSource`). Live prediction reads the client's mover tick states (`client_predict_movement_tick`), and the host reads its own. A mover-local target resolved through the tick's pose therefore needs only the mover id and the local point on the wire.
+- Client mover poses advance to `estimated_server_tick` while the pawn predicts on `client_tick`, so a vault onto a moving mover may mispredict and be corrected. The clock alignment was not verified.
 
 ## Swim facts
 
@@ -42,14 +47,12 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 9. A new predict/reconcile harness file, beside `predict_reconcile_harness_swim.rs`.
 10. Hand-built `WirePlayerMovementState` literals in tests, if the outer struct changes. This brief adds no outer field.
 
-Client prediction builds its own `CombinedCollisionWorld` (`client_predict_movement_tick`). Replay reads mover poses by server tick (`ReplayCollisionSource`, `MoverHistoryBuffer::pose_at_tick`). Client mover poses advance to `estimated_server_tick`, while the pawn predicts on `client_tick`, so mover-ledge vaults may mispredict and get corrected. The clock alignment was not verified.
-
 ## Fire-gate sites
 
 - Host-local: `checked_command.can_fire &= pawn_alive` in `sim/src/sim/weapon_stage/commands/local.rs`.
 - Host-remote: the `can_fire` expression in `sim/src/sim/weapon_stage/commands/remote.rs`. It already reads pawn components from the registry, and `PlayerMovementComponent` is a registry component (`trigger_system.rs` reads it).
 - Client-predicted: the client's own fire command path. `weapon/client_resolution.rs` resolves an accepted shot with `can_fire: true`. Confirm where the client refuses a predicted start before resolution.
-- Ordering: movement is update order 1 (`entity_model.md` §5), before the weapon stage. Starts can be delivered after their stamped tick (`networking.md` §Combat authority, "Starts survive playout"), so "movement state after this command's movement step" is not enough. The gate needs the movement state at the stamped client tick. Not verified: whether the host retains it.
+- Stamped tick: intake retains a start and delivers it once its command tick has resolved (`networking.md` §Combat authority, "Starts survive playout"). The host may have moved on by delivery, so the gate needs the shooter's movement state at the stamped client tick. Not verified: whether the host retains it.
 - Cancel precedent: the local and remote paths call `weapon_component.cancel_activation()` when the pawn is not alive. Vault entry uses the same cancel. Not verified: whether a held trigger re-arms a start after a cancel without a re-press. The executor maps "fires after exit without re-press" onto the activation semantics.
 
 ## Viewmodel presentation (why the dip is out of scope)

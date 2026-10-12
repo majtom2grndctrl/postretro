@@ -9,6 +9,7 @@ use postretro_level_format::cell_locator::{
 };
 use postretro_level_format::cell_residency_set::{CellResidencySetSection, ResidencyEntry};
 use postretro_level_format::cells::{CellRecord, CellsSection};
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::{
@@ -127,6 +128,11 @@ fn sections() -> Vec<SectionBlob> {
             SectionId::FogVolumes,
             1,
             FogVolumesSection::default().to_bytes(),
+        ),
+        blob(
+            SectionId::EnvironmentVolumes,
+            1,
+            EnvironmentVolumesSection::default().to_bytes(),
         ),
         blob(SectionId::CellResidencySet, 1, residency_set().to_bytes()),
         blob(SectionId::Lightmap, 1, lightmap().to_bytes()),

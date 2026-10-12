@@ -20,9 +20,8 @@ use crate::map_data::{
     MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
-use postretro_level_format::fog_volumes::{
-    DEFAULT_WORLD_GRAVITY_MPS2, MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME,
-};
+use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
+use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 #[path = "parse/authoring_regions.rs"]
@@ -6788,7 +6787,7 @@ mod tests {
         // Compose with pack.rs to confirm `inv_half_ext` lands at
         // `1 / ((max - min) * 0.5)`. This locks the end-to-end contract that
         // the ellipsoid shader path depends on.
-        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1, -9.81);
+        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1);
         assert_eq!(section.volumes.len(), 1);
         let rec = &section.volumes[0];
         for i in 0..3 {

@@ -232,14 +232,13 @@ pub fn encode_map_entities(
     Some(MapEntitySection { entries })
 }
 
-/// Encode the resolved fog volume entities and the worldspawn-scoped scalars
-/// (`fog_pixel_scale` and `initial_gravity`) into a `FogVolumesSection`.
-/// Always produces a section so the worldspawn data is honoured at runtime,
-/// even when the map carries no fog brushes.
+/// Encode the resolved fog volume entities and the worldspawn
+/// `fog_pixel_scale` into a `FogVolumesSection`. Always produces a section so
+/// the pixel scale is honoured at runtime, even when the map carries no fog
+/// brushes.
 pub fn encode_fog_volumes(
     fog_volumes: &[crate::map_data::MapFogVolume],
     fog_pixel_scale: u32,
-    initial_gravity: f32,
 ) -> FogVolumesSection {
     let volumes = fog_volumes
         .iter()
@@ -301,7 +300,6 @@ pub fn encode_fog_volumes(
         .collect();
     FogVolumesSection {
         pixel_scale: fog_pixel_scale,
-        initial_gravity,
         volumes,
     }
 }
@@ -451,11 +449,8 @@ pub fn pack_and_write_portals_with_billboard_scatter(
     >,
 ) -> anyhow::Result<()> {
     // This standalone helper has no parsed map, so it writes the always-present
-    // environment section with no volumes at the gravity FogVolumes carries.
-    let environment_volumes = EnvironmentVolumesSection {
-        level_gravity: fog_volumes.initial_gravity,
-        volumes: Vec::new(),
-    };
+    // environment section with no volumes at the default level gravity.
+    let environment_volumes = EnvironmentVolumesSection::default();
     pack_and_write_portals_with_billboard_scatter_finalized(
         output,
         geo_result,

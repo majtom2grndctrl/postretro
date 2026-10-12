@@ -36,6 +36,8 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 #[cfg(feature = "load-prl")]
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::geometry::Vertex as PrlVertex;
@@ -171,10 +173,6 @@ pub enum PrlLoadError {
         "AnimatedLightWeightMaps (id 25): {message} — recompile the .prl with the current `prl-build`"
     )]
     AnimatedAtlasLayout { message: String },
-    #[error(
-        "PRL file is missing the worldspawn `initialGravity` value (carried in the FogVolumes section, required since M7); recompile with `prl-build`"
-    )]
-    NoWorldspawnGravity,
     #[error(
         "PRL file has no TextureCacheKeys section (section 32) — file is corrupt or was produced by a writer that omits the section; recompile with `prl-build`"
     )]
@@ -726,9 +724,11 @@ pub struct LevelWorld {
     /// Downscale factor (1=full-res, 8=coarsest). Defaults to 4 when absent.
     #[cfg(feature = "load-prl")]
     pub fog_pixel_scale: u32,
-    /// Seeds `App::current_gravity` so `getGravity()` sees the authored value before scripts run.
+    /// Level default gravity (header, seeds the script gravity register before
+    /// scripts run) and every static environment volume record in map order
+    /// (PRL section 52). Always present in a loaded level.
     #[cfg(feature = "load-prl")]
-    pub initial_gravity: f32,
+    pub environment_volumes: EnvironmentVolumesSection,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
     /// `None` only when the map has no canonical fog volumes.
     #[cfg(feature = "load-prl")]
@@ -872,7 +872,7 @@ impl LevelWorld {
             #[cfg(feature = "load-prl")]
             fog_pixel_scale: 4,
             #[cfg(feature = "load-prl")]
-            initial_gravity: -9.81,
+            environment_volumes: EnvironmentVolumesSection::default(),
             #[cfg(feature = "load-prl")]
             fog_cell_masks: None,
             #[cfg(feature = "load-prl")]
@@ -1969,7 +1969,7 @@ mod tests {
             trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
-            initial_gravity: -9.81,
+            environment_volumes: EnvironmentVolumesSection::default(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2072,7 +2072,7 @@ mod tests {
             trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
-            initial_gravity: -9.81,
+            environment_volumes: EnvironmentVolumesSection::default(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2129,7 +2129,7 @@ mod tests {
             trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
-            initial_gravity: -9.81,
+            environment_volumes: EnvironmentVolumesSection::default(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2259,10 +2259,23 @@ mod tests {
         tmp
     }
 
-    fn write_prl_fixture(
+    fn write_prl_fixture(sections: Vec<prl_format::SectionBlob>, name: &str) -> std::path::PathBuf {
+        write_prl_fixture_raw(complete_prl_fixture_sections(sections), name)
+    }
+
+    /// Fill in every section a current PRL always carries and the fixture
+    /// did not supply.
+    fn complete_prl_fixture_sections(
         mut sections: Vec<prl_format::SectionBlob>,
-        name: &str,
-    ) -> std::path::PathBuf {
+    ) -> Vec<prl_format::SectionBlob> {
+        if !sections
+            .iter()
+            .any(|section| section.section_id == SectionId::EnvironmentVolumes as u32)
+        {
+            sections.push(environment_volumes_blob(
+                &EnvironmentVolumesSection::default(),
+            ));
+        }
         if !sections
             .iter()
             .any(|section| section.section_id == SectionId::Cells as u32)
@@ -2303,7 +2316,15 @@ mod tests {
                 sections.push(default_octahedral_sh_volume_blob());
             }
         }
-        write_prl_fixture_raw(sections, name)
+        sections
+    }
+
+    fn environment_volumes_blob(section: &EnvironmentVolumesSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::EnvironmentVolumes as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
     }
 
     fn geometry_blob(section: GeometrySection) -> prl_format::SectionBlob {
@@ -2607,7 +2628,6 @@ mod tests {
             version: 1,
             data: FogVolumesSection {
                 pixel_scale: 4,
-                initial_gravity: -9.81,
                 volumes: vec![FogVolumeRecord::default(); count],
             }
             .to_bytes(),
@@ -2632,6 +2652,93 @@ mod tests {
                 back: FormatCellLocatorChild::Cell(1),
             }],
         }
+    }
+
+    #[test]
+    fn load_prl_takes_level_gravity_and_volume_records_from_environment_section() {
+        use postretro_level_format::environment_volumes::{
+            EnvironmentBrush, EnvironmentPlane, EnvironmentVolumeRecord,
+        };
+        let plane = |normal: [f32; 3], distance: f32| EnvironmentPlane { normal, distance };
+        let environment = EnvironmentVolumesSection {
+            level_gravity: 4.0,
+            volumes: vec![EnvironmentVolumeRecord {
+                source_entity: 3,
+                priority: 2,
+                gravity: Some(-2.0),
+                push: None,
+                fluid: "water".to_string(),
+                brushes: vec![EnvironmentBrush {
+                    aabb_min: [0.0; 3],
+                    aabb_max: [1.0; 3],
+                    planes: vec![
+                        plane([1.0, 0.0, 0.0], 1.0),
+                        plane([-1.0, 0.0, 0.0], 0.0),
+                        plane([0.0, 1.0, 0.0], 1.0),
+                        plane([0.0, -1.0, 0.0], 0.0),
+                        plane([0.0, 0.0, 1.0], 1.0),
+                        plane([0.0, 0.0, -1.0], 0.0),
+                    ],
+                }],
+                surface_faces: Vec::new(),
+            }],
+        };
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            environment_volumes_blob(&environment),
+        ];
+        let tmp = write_prl_fixture(sections, "postretro_test_environment_volumes_section.prl");
+
+        let world = load_prl(tmp.to_str().unwrap()).expect("a current PRL loads");
+
+        assert_eq!(world.environment_volumes, environment);
+        assert_eq!(world.environment_volumes.level_gravity, 4.0);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // A PRL built before level gravity left FogVolumes carries no
+    // EnvironmentVolumes section and the unversioned FogVolumes layout
+    // (`u32 pixel_scale, f32 initial_gravity, u32 count`).
+    #[test]
+    fn load_prl_without_environment_section_fails_with_recompile_message() {
+        let mut legacy_fog = Vec::new();
+        legacy_fog.extend_from_slice(&4u32.to_le_bytes());
+        legacy_fog.extend_from_slice(&(-9.81f32).to_le_bytes());
+        legacy_fog.extend_from_slice(&0u32.to_le_bytes());
+        let mut sections = complete_prl_fixture_sections(vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            prl_format::SectionBlob {
+                section_id: SectionId::FogVolumes as u32,
+                version: 1,
+                data: legacy_fog,
+            },
+        ]);
+        sections.retain(|section| section.section_id != SectionId::EnvironmentVolumes as u32);
+        let tmp = write_prl_fixture_raw(sections, "postretro_test_pre_environment_prl.prl");
+
+        let err = load_prl(tmp.to_str().unwrap()).expect_err("a pre-environment PRL is stale");
+
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "EnvironmentVolumes",
+                    id: 52,
+                }
+            ),
+            "{err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("recompile with `prl-build`"),
+            "message must tell the user to recompile: {message}"
+        );
+        let _ = std::fs::remove_file(&tmp);
     }
 
     // Regression: version-1 navmesh portals used the wrong handedness at runtime.
@@ -4227,6 +4334,7 @@ mod tests {
             },
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
+            environment_volumes_blob(&EnvironmentVolumesSection::default()),
             default_octahedral_sh_volume_blob(),
         ];
         let tmp = write_prl_fixture_raw(sections, "postretro_test_ambiguous_bsp_nodes.prl");
@@ -4262,6 +4370,7 @@ mod tests {
             },
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
+            environment_volumes_blob(&EnvironmentVolumesSection::default()),
             default_octahedral_sh_volume_blob(),
         ];
         let tmp = write_prl_fixture_raw(sections, "postretro_test_ambiguous_bsp_leaves.prl");
@@ -7578,6 +7687,7 @@ mod tests {
             default_cell_locator_blob(),
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
+            environment_volumes_blob(&EnvironmentVolumesSection::default()),
         ]
     }
 

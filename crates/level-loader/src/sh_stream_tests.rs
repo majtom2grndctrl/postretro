@@ -35,6 +35,7 @@ use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSe
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
@@ -461,6 +462,11 @@ fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
             SectionId::FogVolumes,
             1,
             FogVolumesSection::default().to_bytes(),
+        ),
+        blob(
+            SectionId::EnvironmentVolumes,
+            1,
+            EnvironmentVolumesSection::default().to_bytes(),
         ),
     ];
 

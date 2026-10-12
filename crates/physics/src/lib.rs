@@ -4,5 +4,6 @@
 #![deny(unsafe_code)]
 
 pub mod collision;
+pub mod environment_volumes;
 pub mod kinematic_mover;
 pub mod movement;

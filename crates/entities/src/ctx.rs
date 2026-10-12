@@ -47,7 +47,8 @@ pub struct ScriptCtx {
     pub frame: Rc<Cell<u64>>,
     /// Runtime world gravity in m/s² (negative = downward; Earth = -9.81).
     /// Sole owner — `App` does not hold a parallel handle. Seeded from the
-    /// worldspawn `initialGravity` PRL field on every level load via
+    /// level default gravity (worldspawn `initialGravity`, carried in the
+    /// EnvironmentVolumes PRL header) on every level load via
     /// `self.script_ctx.gravity.set(...)`, mutated by the `worldSetGravity`
     /// primitive through the captured `ScriptCtx` clone, and read each frame
     /// by `App` (`script_ctx.gravity.get()`) to pass into `particle_sim::tick`
@@ -87,7 +88,7 @@ impl ScriptCtx {
             // Seeded to NaN so any code path that constructs `ScriptCtx`
             // without going through the level-install startup lifecycle
             // surfaces immediately. That lifecycle seeds from
-            // `LevelWorld.initial_gravity` before the first frame. NaN
+            // the EnvironmentVolumes header gravity before the first frame. NaN
             // propagates through `particle_sim::tick` and is visually
             // obvious. The `worldSetGravity` primitive rejects non-finite
             // writes, so scripts cannot reintroduce this sentinel.

@@ -3,6 +3,9 @@
 
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
+#[cfg(test)]
+#[path = "lifecycle_environment_install_tests.rs"]
+mod lifecycle_environment_install_tests;
 #[path = "lifecycle_model_sweep.rs"]
 mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]
@@ -545,6 +548,13 @@ impl App {
         // Committed just before segment B.
         let static_collision = crate::collision::CollisionWorld::from_level(&world)?;
         self.level_timings.record("static_collision");
+        // Before the parity digest is published and before any tick: a peer
+        // admitted on this level's digest, and the first tick, resolve against
+        // this level's volumes, never an empty or stale set. Assigned whole, so
+        // no earlier level's volume survives; the renderer-less return below
+        // keeps it installed.
+        self.environment_volumes =
+            crate::startup::environment_install::build_level_environment_volumes(&world);
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
@@ -1124,7 +1134,9 @@ pub(crate) fn install_world_gravity_and_nav(
     world: &postretro_level_loader::LevelWorld,
     script_ctx: &postretro_entities::ScriptCtx,
 ) -> Option<crate::nav::NavGraph> {
-    script_ctx.gravity.set(world.initial_gravity);
+    script_ctx
+        .gravity
+        .set(world.environment_volumes.level_gravity);
     world
         .navmesh
         .as_ref()
@@ -2278,7 +2290,7 @@ pub(crate) mod tests {
             trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
-            initial_gravity: -9.8,
+            environment_volumes: Default::default(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

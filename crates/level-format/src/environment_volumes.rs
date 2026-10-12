@@ -6,6 +6,10 @@ use crate::FormatError;
 
 pub const ENVIRONMENT_VOLUMES_VERSION: u16 = 1;
 
+/// Level default gravity when worldspawn `initialGravity` is absent, m/s².
+/// Negative values accelerate downward in engine space.
+pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -9.81_f32;
+
 /// Fixed bytes of one volume record with zero brushes, zero faces and an empty
 /// fluid name: entity, priority, gravity flag + value, push flag + vector,
 /// fluid length, brush count, face count.
@@ -82,6 +86,16 @@ pub struct EnvironmentSurfaceFace {
 pub struct EnvironmentSurfaceVertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
+}
+
+impl Default for EnvironmentVolumesSection {
+    /// The section a map with no volumes and no `initialGravity` compiles to.
+    fn default() -> Self {
+        Self {
+            level_gravity: DEFAULT_WORLD_GRAVITY_MPS2,
+            volumes: Vec::new(),
+        }
+    }
 }
 
 impl EnvironmentVolumesSection {

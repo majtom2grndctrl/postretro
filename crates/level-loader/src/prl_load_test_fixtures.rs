@@ -6,6 +6,7 @@ use postretro_level_format::cell_locator::{
     CellLocatorChild as FormatCellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
 use postretro_level_format::cells::{CellRecord, CellsSection};
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
@@ -176,6 +177,16 @@ fn write_fixture(
         },
     ];
     sections.extend(additional_sections);
+    if !sections
+        .iter()
+        .any(|section| section.section_id == SectionId::EnvironmentVolumes as u32)
+    {
+        sections.push(SectionBlob {
+            section_id: SectionId::EnvironmentVolumes as u32,
+            version: 1,
+            data: EnvironmentVolumesSection::default().to_bytes(),
+        });
+    }
 
     let path = std::env::temp_dir().join(name);
     let mut file = std::fs::File::create(&path).unwrap();

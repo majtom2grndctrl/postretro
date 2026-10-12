@@ -10,6 +10,8 @@ mod prl_animated_atlas;
 #[cfg(feature = "load-prl")]
 mod prl_container;
 #[cfg(feature = "load-prl")]
+mod prl_environment;
+#[cfg(feature = "load-prl")]
 mod prl_file;
 #[cfg(feature = "load-prl")]
 mod prl_lighting;

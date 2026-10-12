@@ -138,9 +138,9 @@ fn run_headless_inner(
 
     let collision_world =
         CollisionWorld::from_level(&world).context("static collision mesh rejected")?;
-    // Volumes arrive with the level section; until then headless resolves the
-    // level gravity alone, exactly as the windowed install's empty set does.
-    let environment_volumes = postretro_collision::EnvironmentVolumes::empty();
+    // Built from the level's records exactly as the windowed install builds them.
+    let environment_volumes =
+        crate::startup::environment_install::build_level_environment_volumes(&world);
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger

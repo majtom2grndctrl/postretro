@@ -12,6 +12,8 @@ Entities are component-tagged bags in a central registry. Every entity carries a
 
 This is not a full ECS. There is no archetype storage, no query planner, no system scheduler. Component iteration is straightforward: iterate all entities carrying a given component kind and act on them. Favor readability and simplicity over maximum flexibility.
 
+**Registry versus pool.** The registry holds what something must address individually: a hit, a replication update, an interpolation target, a script handle. Anonymous, disposable presentation lives outside it, so it never adds to tick cost or competes for registry slots. Particles are the case (§8).
+
 **Component ownership.** The component vocabulary is engine-closed, for two reasons: hardware- and loop-level concerns (storage layout, per-tick systems a script VM can't drive at scale) and the engine's opinionated genre vocabulary — a retro shooter owns health, shields, and ammo as first-class nouns. Modders extend through declared data (descriptors, store slots, reactions), never new component kinds. Whether a capability is a dedicated component kind or a generic parameterized one (e.g. a shared scalar-stat kind serving both health and shields) is an internal storage choice — invisible to the script surface, which composes and queries components by name.
 
 ---
@@ -35,7 +37,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Immersion | Output-only: the fraction of the pawn's capsule its winning fluid covered on the last authoritative movement tick. Written by host movement; read only by the `player.immersion` slot (§7b). Never replicated |
 | Light | Dynamic point-light parameters |
 | BillboardEmitter | Particle emitter configuration |
-| ParticleState | Per-particle simulation state for registry-managed presentation entities |
+| ParticleState | Per-particle state while particles are registry entities; retires with the particle pool (§8) |
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Descriptor-authored actions and tuning plus one live resource, shared recovery, reload, charging/execution, and input-edge state |
@@ -89,7 +91,7 @@ Entities enter the world through two paths:
 | Source | When | Examples |
 |--------|------|----------|
 | Level entity data | Level load | Player spawn, enemies, doors, pickups, triggers, lights |
-| Runtime spawning | During gameplay | Projectiles, particles, explosion effects |
+| Runtime spawning | During gameplay | Projectiles, explosion effects |
 
 Level-load entities are created once when the level is parsed. Runtime entities are created by game logic in response to player actions or game events.
 
@@ -101,7 +103,7 @@ All entities participate in applicable fixed-timestep game logic stages each tic
 
 Entities are destroyed when:
 
-- A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
+- A scripted or engine bridge condition fires (emitter despawn, level unload).
 - A scripted `despawn` effect reaches the end-of-frame removal pass. Health reaching zero only latches the entity and freezes non-player kill credit; it neither removes nor reports the entity. Successful scripted removal reports that frozen credit, while the player pawn instead remains present and emits one `playerDied` event at its first zero-HP latch.
 - Level unloads (all entities destroyed).
 
@@ -160,7 +162,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 10 | Projectile launch finalization | Closes spawn grace for projectiles launched after the flight stage without moving them. They begin flight on the next fixed tick. |
 | 11 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
-Scripting bridges run later, outside the core simulation seam. Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities.
+Scripting bridges run later, outside the core simulation seam. Emitter, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities. The particle sim steps the particle pool (§8) and touches no entity.
 
 The host camera follows the player pawn after movement and AI resolve. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
 
@@ -235,7 +237,7 @@ Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` 
 | Player pawn | The full environment (`movement.md` §4, §6) |
 | AI agent | Gravity only, clamped to its downward part. Agent collide-and-slide adds gravity every tick, grounded included, so upward gravity would lift it off the navmesh; in an upward-gravity volume it behaves as in zero gravity. Agents ignore push, never swim, and walk fluid floors |
 | Projectile | Nothing; projectiles apply no gravity |
-| Particle | Level gravity only; volumes are planned (§8) |
+| Particle | Gravity and push at its post-step position, never fluid (§8; not built yet) |
 
 **Hitscan splash facts.** A hitscan pellet reports each fluid-surface crossing strictly before its blocking hit as a fact: point, outward normal of the crossed face, fluid. A ray starting on a face never splashes there, a face shared by two brushes of one volume is no crossing, and two adjacent fluid entities give two. The fact is presentation: never replicated or hashed. Nothing consumes it yet.
 
@@ -286,11 +288,19 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 ## 8. Particles
 
-Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns particles each rendered frame; the simulation expires them. Scripts never observe or manipulate individual particles.
+Particles are anonymous presentation in a pool outside the registry. A particle has no entity id, no components and no script visibility, and is never replicated. Particle count never changes gameplay tick cost or gameplay spawn capacity.
 
-The particle simulation runs in Rust once per rendered frame, on frame time: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. Particles take only the level gravity today. Particle gravity and push from environment volumes are planned and wait on the pooled particle step: each step will resolve gravity and push at the particle's post-step position from the same pure resolve as bodies (§7), with buoyancy scaling gravity and push unscaled. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
+> **Not built yet.** Today each particle is a registry entity carrying `Transform`, `ParticleState` and `SpriteVisual`, and takes level gravity only. This section is the contract the pool lands against.
 
-The parent emitter entity carries `BillboardEmitterComponent`. Particles back-reference their parent via `ParticleState.emitter` (for spin-rate lookup); orphaned particles (emitter despawned) complete their lifetime at their last rotation angle.
+**Producers.** The emitter bridge, a frame-time owner, writes the pool directly. Producers in the fixed tick or network ingest (impact bursts) queue plain-data requests on registry intake, drained into the pool at frame time. They never touch the pool, and the queue never reaches transport: each peer spawns its own bursts (`networking.md` §Presentation events vs. replicated state).
+
+**Simulation.** Rust, once per rendered frame on frame time, after the emitter bridge and before the light bridge: velocity, buoyancy and drag, curve-evaluated size and opacity, spin. Particles stay off the fixed tick; no per-particle script callbacks. Each step integrates position first, then takes gravity and push at the post-step position under the bodies' overlap rule (§7), never fluid. Buoyancy scales gravity; push is unscaled. A particle leaves on the step its lifetime ends, and every survivor steps exactly once. Pool order carries no meaning: the billboard pass is order-independent (`rendering_pipeline.md` §7.4).
+
+**Emitter parameters.** A particle takes its emitter's curves, drag, buoyancy, sprite collection and tint at spawn and keeps them for life; a later emitter change reaches only later spawns. Parameters live in shared immutable blocks a particle references by index, never copied per particle. Spin is the one live value: a live emitter's spin rate refreshes its particles, so spin reactions turn existing smoke, and an orphan (emitter despawned) keeps rotating at the last rate.
+
+**Capacity.** A per-emitter cap and a global live budget. Past either, new spawns drop with a rate-limited warning; live particles are never evicted.
+
+**Render collect.** Each rendered frame the collector culls each particle by its own position against the visible cells, buckets by sprite collection, and hands packed instances to the billboard pass.
 
 ---
 

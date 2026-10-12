@@ -14,6 +14,15 @@ pub const TOTAL_LIGHT_COUNT_OFFSET: u64 = 120;
 /// `slice_for_visibility`; they are not individually flag-gated.
 pub const SDF_SHADOW_FLAG_ATLAS_PRESENT: u32 = 1 << 0;
 
+/// Bit 0 of `Uniforms.spec_shadowmask_flags` (bytes 124..128): the dev toggle
+/// forcing every static specular owner's mask visibility to 1.0.
+pub const SPEC_SHADOWMASK_FLAG_FORCE_ONE: u32 = 1 << 0;
+/// Bit 1 of `Uniforms.spec_shadowmask_flags`: id 42's mask pool is bound, so
+/// face owners have a mask to read. Load-fixed. Clear for a level without id
+/// 42, a mask pool the renderer refused, and placeholder mode; the forward
+/// pass then adds no static non-SDF world specular and no union subtraction.
+pub const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 1 << 1;
+
 /// Debug selector for the SDF shadow path: panel-only dropdown, encoded into
 /// the per-frame uniform.
 ///
@@ -239,10 +248,13 @@ pub struct FrameUniforms {
     /// `AnimatedBakedLights` tail, and selected-static suffix.
     pub total_light_count: u32,
     /// Dev toggle: force static-light shadowmask visibility to 1.0 in the
-    /// forward shader. Encoded as a u32 (0 = normal, non-zero = forced) in
-    /// the trailing 124..128 uniform slot. It affects only world static
-    /// specular; SDF and dynamic/mover paths have independent visibility.
+    /// forward shader. Encoded as [`SPEC_SHADOWMASK_FLAG_FORCE_ONE`] in the
+    /// trailing 124..128 uniform word. It affects only world static specular
+    /// owners; SDF and dynamic/mover paths have independent visibility.
     pub spec_shadowmask_force_one: bool,
+    /// Whether the level's id-42 mask pool is bound. Encoded as
+    /// [`SPEC_SHADOWMASK_FLAG_MASK_PRESENT`] in the same word.
+    pub static_spec_mask_present: bool,
 }
 
 pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
@@ -274,8 +286,14 @@ pub fn build_uniform_data(u: &FrameUniforms) -> [u8; UNIFORM_SIZE] {
     bytes[116..120].copy_from_slice(&has_direct_and_animated_tail.to_ne_bytes());
     let total_off = TOTAL_LIGHT_COUNT_OFFSET as usize;
     bytes[total_off..total_off + 4].copy_from_slice(&u.total_light_count.to_ne_bytes());
-    let spec_shadowmask_force_one: u32 = u.spec_shadowmask_force_one as u32;
-    bytes[124..128].copy_from_slice(&spec_shadowmask_force_one.to_ne_bytes());
+    let mut spec_shadowmask_flags = 0u32;
+    if u.spec_shadowmask_force_one {
+        spec_shadowmask_flags |= SPEC_SHADOWMASK_FLAG_FORCE_ONE;
+    }
+    if u.static_spec_mask_present {
+        spec_shadowmask_flags |= SPEC_SHADOWMASK_FLAG_MASK_PRESENT;
+    }
+    bytes[124..128].copy_from_slice(&spec_shadowmask_flags.to_ne_bytes());
     bytes
 }
 
@@ -303,6 +321,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
         assert_eq!(data.len(), UNIFORM_SIZE);
     }
@@ -376,6 +395,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         };
         assert_eq!(
             u32::from_ne_bytes(build_uniform_data(&uniforms)[112..116].try_into().unwrap()),
@@ -412,6 +432,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
         let flags = u32::from_ne_bytes(data[96..100].try_into().unwrap());
         assert_eq!(flags, SDF_SHADOW_FLAG_ATLAS_PRESENT);
@@ -442,6 +463,7 @@ mod tests {
                 animated_baked_light_count: 0,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
+                static_spec_mask_present: false,
             });
             assert_eq!(
                 u32::from_ne_bytes(data[104..108].try_into().unwrap()),
@@ -470,9 +492,59 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: true,
+            static_spec_mask_present: false,
         });
 
-        assert_eq!(u32::from_ne_bytes(data[124..128].try_into().unwrap()), 1,);
+        assert_eq!(
+            u32::from_ne_bytes(data[124..128].try_into().unwrap()),
+            SPEC_SHADOWMASK_FLAG_FORCE_ONE,
+        );
+    }
+
+    #[test]
+    fn uniform_data_encodes_the_static_spec_mask_present_bit_beside_force_one() {
+        let uniforms = |force: bool, present: bool| FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            light_term_mask: LightTermMask::ALL,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::On,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            has_scatter: BillboardScatterMode::Unavailable,
+            has_direct: false,
+            animated_baked_light_count: 0,
+            total_light_count: 0,
+            spec_shadowmask_force_one: force,
+            static_spec_mask_present: present,
+        };
+        let baseline = build_uniform_data(&uniforms(false, false));
+        for (force, present, expected) in [
+            (false, false, 0),
+            (true, false, SPEC_SHADOWMASK_FLAG_FORCE_ONE),
+            (false, true, SPEC_SHADOWMASK_FLAG_MASK_PRESENT),
+            (
+                true,
+                true,
+                SPEC_SHADOWMASK_FLAG_FORCE_ONE | SPEC_SHADOWMASK_FLAG_MASK_PRESENT,
+            ),
+        ] {
+            let data = build_uniform_data(&uniforms(force, present));
+            assert_eq!(
+                u32::from_ne_bytes(data[124..128].try_into().unwrap()),
+                expected,
+                "force {force}, present {present}"
+            );
+            assert_eq!(
+                data[..124],
+                baseline[..124],
+                "the mask word owns only bytes 124..128"
+            );
+        }
     }
 
     #[test]
@@ -495,6 +567,7 @@ mod tests {
                 animated_baked_light_count: 0,
                 total_light_count: 0,
                 spec_shadowmask_force_one: false,
+                static_spec_mask_present: false,
             });
             let decoded = u32::from_ne_bytes(data[100..104].try_into().unwrap());
             assert_eq!(decoded, mode as u32);
@@ -521,6 +594,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
 
         assert_eq!(SdfShadowMode::ShadowmaskRawPoolVisibility as u32, 6);
@@ -548,6 +622,7 @@ mod tests {
             animated_baked_light_count: 3,
             total_light_count: 11,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
         let scale = f32::from_ne_bytes(data[108..112].try_into().unwrap());
         assert!((scale - 0.25).abs() < 1e-6);
@@ -589,6 +664,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: light_count,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
 
         let mut floats = Vec::new();
@@ -641,6 +717,7 @@ mod tests {
             animated_baked_light_count: 0,
             total_light_count: 0,
             spec_shadowmask_force_one: false,
+            static_spec_mask_present: false,
         });
         let t = f32::from_ne_bytes(data[84..88].try_into().unwrap());
         assert!((t - script_time).abs() < 1e-6);

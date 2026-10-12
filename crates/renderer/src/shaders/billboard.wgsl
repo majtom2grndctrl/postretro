@@ -34,9 +34,9 @@ struct Uniforms {
     has_direct: u32,
     // Dynamic tier, then mover-only animated-baked tail, then promoted static.
     total_light_count: u32,
-    // `spec_shadowmask_force_one` in forward.wgsl (offset 124..128), inert
+    // `spec_shadowmask_flags` in forward.wgsl (offset 124..128), inert
     // here so the shared group-0 Uniforms layout remains 128 bytes.
-    _spec_shadowmask_force_one_inert: u32,
+    _spec_shadowmask_flags_inert: u32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -71,9 +71,10 @@ struct GpuLight {
 struct SpecLight {
     position_and_range: vec4<f32>,
     color_and_pad: vec4<f32>, // xyz = color × intensity, w = sdf flag (>0.5 ⇒ _shadow_type sdf)
-    cone_dir_and_type: vec4<f32>, // xyz = normalized aim, w = light type (1.0 ⇒ spot)
-    // x = cos(inner), y = cos(outer), z = shadowmask channel (0..3) or
-    // none sentinel (4); z is inert and unread in the billboard path.
+    // xyz = normalized aim (spot cone, or a directional light's direction),
+    // w = light type (0 point, 1 spot, 2 directional).
+    cone_dir_and_type: vec4<f32>,
+    // x = cos(inner), y = cos(outer), z = unused, w = falloff model.
     // Non-spot lights carry 1/-1 in x/y.
     cone_cos: vec4<f32>,
 };
@@ -364,7 +365,7 @@ fn vs_main(@builtin(vertex_index) vidx: u32) -> VertexOutput {
                 }
                 let L = to_light / max(dist, 0.0001);
                 let atten = select(1.0, max(1.0 - dist / max(range, 0.001), 0.0), range > 0.0);
-                let cone = cone_attenuation_cos(L, sl.cone_dir_and_type.xyz, sl.cone_cos.x, sl.cone_cos.y);
+                let cone = cone_attenuation_cos(L, billboard_cone_aim(sl), sl.cone_cos.x, sl.cone_cos.y);
                 let contribution = blinn_phong(
                     L,
                     V,
@@ -537,6 +538,12 @@ fn cone_attenuation(L: vec3<f32>, aim: vec3<f32>, inner_angle: f32, outer_angle:
 fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer: f32) -> f32 {
     let cos_angle = dot(-L, aim);
     return smoothstep(cos_outer, cos_inner, cos_angle);
+}
+
+// Billboard specular places every light at its origin, so a directional
+// light keeps the zero aim it always read here; its packed aim is world-only.
+fn billboard_cone_aim(sl: SpecLight) -> vec3<f32> {
+    return select(sl.cone_dir_and_type.xyz, vec3<f32>(0.0), u32(round(sl.cone_dir_and_type.w)) == 2u);
 }
 
 // The depth-aware octahedral irradiance sampler lives in `sh_sample.wgsl`,
@@ -735,7 +742,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     );
                     let cone = cone_attenuation_cos(
                         L,
-                        sl.cone_dir_and_type.xyz,
+                        billboard_cone_aim(sl),
                         sl.cone_cos.x,
                         sl.cone_cos.y,
                     );

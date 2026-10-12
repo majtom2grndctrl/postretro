@@ -721,7 +721,7 @@ pub struct Args {
     sh_density_fidelity: Option<f32>,
     /// Soft-shadow area-sample count (penumbra escalation target). Raising it
     /// invalidates cached lightmap layers, any shadowmask memo keyed through
-    /// selected layer hashes, and the cached animated weight-map stage,
+    /// eligible layer hashes, and the cached animated weight-map stage,
     /// triggering a re-bake/rebuild of each affected stage. Default
     /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     soft_shadow_samples: u32,

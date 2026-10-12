@@ -104,6 +104,7 @@ pub(super) fn prepare_atlas_stage(
         geometry,
         inputs.static_lights,
         cut.charts,
+        cut.cut_parents,
         BlockOrdering {
             direction_texel_scale: inputs.config.direction_texel_scale,
             cell_clusters: &partition.cell_clusters(),

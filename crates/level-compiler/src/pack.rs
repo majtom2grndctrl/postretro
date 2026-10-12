@@ -1141,10 +1141,15 @@ mod tests {
         section
     }
 
-    /// Fully visible groups for each of `lightmap`'s blocks.
+    /// Fully visible groups for each of `lightmap`'s blocks, and one unowned
+    /// entry per face of [`sample_geo_result`], the geometry every shadowmask
+    /// pack fixture writes beside it.
     fn shadowmask_for(lightmap: &LightmapSection) -> ShadowmaskAtlasSection {
         ShadowmaskAtlasSection {
-            channels: vec![0],
+            owners: vec![
+                postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+                sample_geo_result().geometry.faces.len()
+            ],
             blocks: lightmap
                 .blocks
                 .iter()
@@ -1707,7 +1712,7 @@ mod tests {
             .iter()
             .map(|[a, b]| a.len() + b.len())
             .sum();
-        let header_and_slots = shadowmask.byte_len() - blob_bytes;
+        let header_and_owner_table = shadowmask.byte_len() - blob_bytes;
         let output = std::env::temp_dir().join(format!(
             "postretro_test_pack_shadowmask_footprint_{}.prl",
             std::process::id()
@@ -1733,7 +1738,7 @@ mod tests {
             log::Level::Info,
             &format!(
                 "[Compiler] PRL section footprint: id 42 (ShadowmaskAtlas), {} payload bytes",
-                header_and_slots + expected_payload
+                header_and_owner_table + expected_payload
             ),
         );
         let _ = std::fs::remove_file(&output);
@@ -1764,10 +1769,31 @@ mod tests {
         direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
         shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
     ) {
+        try_pack_with_geometry(
+            output,
+            &sample_geo_result(),
+            lightmap,
+            direct_sh_volume,
+            entity_shadow_lights,
+            direct_sh_delta_volumes,
+            shadowmask_atlas,
+        )
+        .expect("pack should succeed");
+    }
+
+    fn try_pack_with_geometry(
+        output: &Path,
+        geo_result: &GeometryResult,
+        lightmap: &LightmapSection,
+        direct_sh_volume: Option<&DirectShVolumeSection>,
+        entity_shadow_lights: Option<&EntityShadowLightsSection>,
+        direct_sh_delta_volumes: Option<&DirectShDeltaVolumesSection>,
+        shadowmask_atlas: Option<&ShadowmaskAtlasSection>,
+    ) -> anyhow::Result<()> {
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         pack_and_write_portals(
             output,
-            &sample_geo_result(),
+            geo_result,
             &texture_cache_keys,
             &sample_leaves(),
             &sample_tree(),
@@ -1803,11 +1829,80 @@ mod tests {
             None,
             None,
         )
-        .expect("pack should succeed");
     }
 
+    // The runtime reaches a face's vertices through its one BVH leaf, so a
+    // level with id 42 refuses a face with no triangle.
     #[test]
-    fn pack_write_emits_shadowmask_only_with_usable_entity_shadow_selection() {
+    fn pack_refuses_shadowmask_owners_when_a_face_has_no_triangle() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut geo = sample_geo_result();
+        geo.face_index_ranges[0].index_count = 0;
+        let error = try_pack_with_geometry(
+            &dir.join("test_pack_shadowmask_empty_face.prl"),
+            &geo,
+            &lightmap_with_blocks(&[(4, 4)]),
+            None,
+            None,
+            None,
+            Some(&minimal_shadowmask_atlas()),
+        )
+        .expect_err("a face with no triangle must refuse id 42");
+        assert!(error.to_string().contains("but face 0 has none"), "{error}");
+    }
+
+    // The loader rejects an owner table whose length differs from id 17's face
+    // count or whose entries name no static spec light, so pack refuses to
+    // write either.
+    #[test]
+    fn pack_refuses_an_owner_table_the_loader_would_reject() {
+        let dir = std::env::temp_dir().join("postretro_test_pack");
+        let _ = std::fs::create_dir_all(&dir);
+        let lightmap = lightmap_with_blocks(&[(4, 4)]);
+        let pack = |name: &str, shadowmask: &ShadowmaskAtlasSection| {
+            try_pack_with_geometry(
+                &dir.join(name),
+                &sample_geo_result(),
+                &lightmap,
+                None,
+                None,
+                None,
+                Some(shadowmask),
+            )
+        };
+
+        let mut extra_entry = shadowmask_for(&lightmap);
+        extra_entry
+            .owners
+            .push(postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS);
+        let error = pack("test_pack_shadowmask_owner_count.prl", &extra_entry)
+            .expect_err("an owner entry per face, no more, must be enforced");
+        assert!(
+            error
+                .to_string()
+                .contains("owner-entry count is 2 but Geometry's face count is 1"),
+            "{error}"
+        );
+
+        // The fixture's AlphaLights is empty, so no owner index names a light.
+        let mut unknown_owner = shadowmask_for(&lightmap);
+        unknown_owner.owners[0][0] = 0;
+        let error = pack("test_pack_shadowmask_owner_index.prl", &unknown_owner)
+            .expect_err("an owner past the static spec-light count must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("ShadowmaskAtlas owner table is invalid"),
+            "{error}"
+        );
+        let _ = std::fs::remove_file(dir.join("test_pack_shadowmask_owner_count.prl"));
+        let _ = std::fs::remove_file(dir.join("test_pack_shadowmask_owner_index.prl"));
+    }
+
+    // Id 42 carries per-face owners and is written whatever ids 40 and 41 hold.
+    #[test]
+    fn pack_write_emits_shadowmask_whatever_the_entity_shadow_sections_hold() {
         let dir = std::env::temp_dir().join("postretro_test_pack");
         let _ = std::fs::create_dir_all(&dir);
         let direct = minimal_direct_sh_volume();
@@ -1837,7 +1932,7 @@ mod tests {
         write_pack_with_shadowmask(
             &output_no_delta,
             Some(&direct),
-            Some(&selected),
+            None,
             None,
             Some(&shadowmask),
         );
@@ -1846,6 +1941,10 @@ mod tests {
         let meta = read_container(&mut cursor).expect("should read container");
         assert!(
             meta.find_section(SectionId::ShadowmaskAtlas as u32)
+                .is_some()
+        );
+        assert!(
+            meta.find_section(SectionId::EntityShadowLights as u32)
                 .is_none()
         );
 

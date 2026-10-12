@@ -1,13 +1,11 @@
-// GPU-backed proof that the BC5 shadowmask groups of every cell block route
-// each selected light to its own mask slot in the world-specular decode path.
-// See: context/lib/rendering_pipeline.md §4 (World specular shadowmask)
+// GPU-backed proofs over the compiled shadowmask fixture: lightmap payloads
+// install through capture with and without id 42.
+// See: context/lib/rendering_pipeline.md §4 (Static specular ownership)
 //
-// The fixture's four coloured static lights overlap, so the bake gives them
-// all four slots: two per BC5 group. Each variant rewrites every cell block's
-// id-42 group planes in the compiled PRL with constant per-slot planes (exact
-// under BC5) and a chosen slot table, so the only thing that differs between
-// captures is which slot gates which light. Captures are compared on one
-// adapter; no golden images.
+// Variants rewrite every cell block's id-42 group planes in the compiled PRL
+// with constant per-channel planes (exact under BC5), keeping its owner
+// table, so the only thing that differs between captures is what the masks
+// hold. Captures are compared on one adapter; no golden images.
 
 use std::fs;
 use std::path::Path;
@@ -15,9 +13,11 @@ use std::path::Path;
 use image::RgbaImage;
 use postretro_level_format as prl_format;
 use postretro_level_format::SectionId;
+use postretro_level_format::alpha_lights::AlphaLightsSection;
+use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::{
-    SHADOWMASK_CHANNEL_DROPPED, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection,
+    FaceOwners, SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
 };
 
 mod capture_support;
@@ -26,7 +26,6 @@ use capture_support::{capture_command, compile_dev_map, load_capture_rgba, works
 
 const CAPTURE_WIDTH: u32 = 160;
 const CAPTURE_HEIGHT: u32 = 120;
-const SLOT_COUNT: u8 = 4;
 
 fn read_sections(path: &Path) -> Vec<prl_format::SectionBlob> {
     let mut file = fs::File::open(path).expect("open compiled fixture");
@@ -43,7 +42,8 @@ fn read_sections(path: &Path) -> Vec<prl_format::SectionBlob> {
         .collect()
 }
 
-/// Id 42 parsed against the id-22 block index it pairs with.
+/// Id 42 parsed against the id-22 block index it pairs with and the owner
+/// bounds ids 17 and 18 set.
 fn shadowmask_of(sections: &[prl_format::SectionBlob]) -> ShadowmaskAtlasSection {
     let section = |id: SectionId| {
         sections
@@ -54,26 +54,40 @@ fn shadowmask_of(sections: &[prl_format::SectionBlob]) -> ShadowmaskAtlasSection
     let lightmap = section(SectionId::Lightmap);
     let index = LightmapBlockIndex::from_prefix(&lightmap.data, lightmap.data.len() as u64)
         .expect("fixture Lightmap index must parse");
-    ShadowmaskAtlasSection::from_bytes(&section(SectionId::ShadowmaskAtlas).data, &index)
+    let faces = GeometrySection::from_bytes(&section(SectionId::Geometry).data)
+        .expect("fixture Geometry must parse")
+        .faces
+        .len();
+    let static_lights = AlphaLightsSection::from_bytes(&section(SectionId::AlphaLights).data)
+        .expect("fixture AlphaLights must parse")
+        .lights
+        .iter()
+        .filter(|light| !light.is_dynamic)
+        .count();
+    let bounds = ShadowmaskOwnerBounds {
+        face_count: faces as u32,
+        static_spec_light_count: static_lights as u32,
+    };
+    ShadowmaskAtlasSection::from_bytes(&section(SectionId::ShadowmaskAtlas).data, &index, bounds)
         .expect("fixture ShadowmaskAtlas must parse")
 }
 
 /// Per cell block, the group A then group B BC5 planes.
 type GroupPlanes = Vec<[Vec<u8>; 2]>;
 
-/// Group planes whose every texel holds `slots[s]` in slot `s`, block for
-/// block at the baked lengths. A constant BC4 block is
+/// Group planes whose every texel holds `channels[c]` in channel `c`, block
+/// for block at the baked lengths. A constant BC4 block is
 /// `[v, v, 0, 0, 0, 0, 0, 0]`, which decodes to exactly `v`.
-fn constant_payload(section: &ShadowmaskAtlasSection, slots: [u8; 4]) -> GroupPlanes {
+fn constant_payload(section: &ShadowmaskAtlasSection, channels: [u8; 4]) -> GroupPlanes {
     let bc4 = |value: u8| [value, value, 0, 0, 0, 0, 0, 0];
     section
         .blocks
         .iter()
         .map(|groups| {
             std::array::from_fn(|group| {
-                let bc5: Vec<u8> = bc4(slots[group * 2])
+                let bc5: Vec<u8> = bc4(channels[group * 2])
                     .into_iter()
-                    .chain(bc4(slots[group * 2 + 1]))
+                    .chain(bc4(channels[group * 2 + 1]))
                     .collect();
                 let plane = bc5.repeat(groups[group].len() / 16);
                 assert_eq!(plane.len(), groups[group].len());
@@ -83,11 +97,11 @@ fn constant_payload(section: &ShadowmaskAtlasSection, slots: [u8; 4]) -> GroupPl
         .collect()
 }
 
-/// Write a copy of the fixture whose id 42 carries `channels` and `blocks`.
+/// Write a copy of the fixture whose id 42 carries `owners` and `blocks`.
 /// Both keep their original lengths, so no other section moves.
 fn write_variant(
     sections: &[prl_format::SectionBlob],
-    channels: Vec<u8>,
+    owners: Vec<FaceOwners>,
     blocks: GroupPlanes,
     path: &Path,
 ) {
@@ -97,7 +111,7 @@ fn write_variant(
             "a block carries group A and group B"
         );
     }
-    let variant = ShadowmaskAtlasSection { channels, blocks };
+    let variant = ShadowmaskAtlasSection { owners, blocks };
     let blobs: Vec<_> = sections
         .iter()
         .map(|blob| prl_format::SectionBlob {
@@ -124,14 +138,9 @@ fn north_wall_camera() -> serde_json::Value {
     })
 }
 
-/// Capture `map` looking at the north wall. Fails rather than skips without
-/// an adapter: this proof does not count unless it ran.
-fn capture(workspace: &Path, scratch: &Path, map: &Path, label: &str) -> RgbaImage {
-    capture_scene(workspace, scratch, map, label, north_wall_camera(), None).0
-}
-
-/// Run one capture and return its image and stderr. `force_active` is the
-/// scene's optional forced-animation list.
+/// Run one capture and return its image and stderr. Fails rather than skips
+/// without an adapter: this proof does not count unless it ran.
+/// `force_active` is the scene's optional forced-animation list.
 fn capture_scene(
     workspace: &Path,
     scratch: &Path,
@@ -164,257 +173,6 @@ fn capture_scene(
         String::from_utf8_lossy(&result.stdout),
     );
     (load_capture_rgba(&output_path), stderr)
-}
-
-/// Per-channel light added over `base`; negative where `image` is darker.
-fn added_light(image: &RgbaImage, base: &RgbaImage) -> Vec<[i32; 3]> {
-    image
-        .pixels()
-        .zip(base.pixels())
-        .map(|(a, b)| std::array::from_fn(|c| i32::from(a[c]) - i32::from(b[c])))
-        .collect()
-}
-
-fn total(light: &[[i32; 3]]) -> i64 {
-    light.iter().flatten().map(|&v| i64::from(v)).sum()
-}
-
-/// The slot table for "light `light` in slot `slot`": the other lights take
-/// the remaining slots in ascending order.
-fn table_with(light: usize, slot: u8, light_count: usize) -> Vec<u8> {
-    let mut others = (0..SLOT_COUNT).filter(|&s| s != slot);
-    (0..light_count)
-        .map(|index| {
-            if index == light {
-                slot
-            } else {
-                others.next().expect("four slots seat four lights")
-            }
-        })
-        .collect()
-}
-
-fn open_only(slot: u8) -> [u8; 4] {
-    std::array::from_fn(|s| if s as u8 == slot { 255 } else { 0 })
-}
-
-#[test]
-#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
-fn every_selected_light_reads_its_own_slot_in_either_group() {
-    let workspace = workspace_root();
-    let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
-    let sections = read_sections(&compiled);
-    let baked = shadowmask_of(&sections);
-
-    let light_count = baked.channels.len();
-    assert_eq!(light_count, 4, "fixture must select four static lights");
-    let mut baked_slots = baked.channels.clone();
-    baked_slots.sort_unstable();
-    assert_eq!(
-        baked_slots,
-        [0, 1, 2, 3],
-        "four overlapping lights must fill all four slots, none dropped"
-    );
-    assert!(!baked.channels.contains(&SHADOWMASK_CHANNEL_DROPPED));
-
-    // Variants sit beside the compiled fixture for the material-tree layout;
-    // their temp paths delete themselves even when an assertion fails.
-    let maps_dir = compiled
-        .parent()
-        .expect("fixture has a parent")
-        .to_path_buf();
-    let mut written = Vec::new();
-    let mut capture_variant = |label: &str, channels: Vec<u8>, blocks: GroupPlanes| {
-        let path = tempfile::Builder::new()
-            .prefix(&format!(".shadowmask-groups-{label}-"))
-            .suffix(".prl")
-            .tempfile_in(&maps_dir)
-            .expect("reserve variant PRL path")
-            .into_temp_path();
-        write_variant(&sections, channels, blocks, &path);
-        let image = capture(&workspace, scratch.path(), &path, label);
-        written.push(path);
-        image
-    };
-
-    let closed = capture_variant(
-        "closed",
-        baked.channels.clone(),
-        constant_payload(&baked, [0; 4]),
-    );
-    let open = capture_variant(
-        "open",
-        baked.channels.clone(),
-        constant_payload(&baked, [255; 4]),
-    );
-    let baked_masks = capture(&workspace, scratch.path(), &compiled, "baked");
-
-    // Stay under the soft-knee tonemap, so added specular stays per-channel.
-    let peak = open.pixels().flat_map(|p| p.0[..3].to_vec()).max().unwrap();
-    assert!(
-        peak < 250,
-        "fixture must stay below the tonemap knee; peak {peak}"
-    );
-
-    let all_specular = added_light(&open, &closed);
-    assert!(
-        total(&all_specular) > 0,
-        "opening every slot must add specular"
-    );
-    let baked_specular = added_light(&baked_masks, &closed);
-    assert!(
-        baked_specular
-            .iter()
-            .zip(&all_specular)
-            .all(|(baked, all)| (0..3).all(|c| baked[c] <= all[c] + 1)),
-        "baked masks may only remove specular relative to fully open masks"
-    );
-    assert!(
-        total(&baked_specular) < total(&all_specular),
-        "baked masks must shadow some visible specular"
-    );
-
-    let mut light_images = Vec::new();
-    for light in 0..light_count {
-        let per_slot: Vec<_> = (0..SLOT_COUNT)
-            .map(|slot| {
-                capture_variant(
-                    &format!("light{light}-slot{slot}"),
-                    table_with(light, slot, light_count),
-                    constant_payload(&baked, open_only(slot)),
-                )
-            })
-            .collect();
-        let own = added_light(&per_slot[0], &closed);
-        assert!(
-            total(&own) > 0,
-            "light {light} must add specular through slot 0"
-        );
-        for (slot, image) in per_slot.iter().enumerate().skip(1) {
-            assert_eq!(
-                image.as_raw(),
-                per_slot[0].as_raw(),
-                "light {light} must read the same mask through slot {slot} as through slot 0"
-            );
-        }
-        light_images.push(per_slot.into_iter().next().unwrap());
-    }
-    for (a, first) in light_images.iter().enumerate() {
-        for (b, second) in light_images.iter().enumerate().skip(a + 1) {
-            assert_ne!(
-                first.as_raw(),
-                second.as_raw(),
-                "lights {a} and {b} must add different specular"
-            );
-        }
-    }
-}
-
-/// Swap the BC4 sub-blocks of slots `a` and `b` (in different groups)
-/// everywhere in every cell block: slot `s` is group `s / 2`'s R
-/// (`s % 2 == 0`) or G sub-block of each 16-byte BC5 block.
-fn swap_slot_blocks(blocks: &GroupPlanes, a: u8, b: u8) -> GroupPlanes {
-    let (group_a, group_b) = (a as usize / 2, b as usize / 2);
-    assert_ne!(group_a, group_b, "the swap crosses the group seam");
-    let (offset_a, offset_b) = ((a as usize % 2) * 8, (b as usize % 2) * 8);
-    blocks
-        .iter()
-        .map(|groups| {
-            let mut groups = groups.clone();
-            for bc5 in 0..groups[0].len() / 16 {
-                for byte in 0..8 {
-                    let x = bc5 * 16 + offset_a + byte;
-                    let y = bc5 * 16 + offset_b + byte;
-                    let held = groups[group_a][x];
-                    groups[group_a][x] = groups[group_b][y];
-                    groups[group_b][y] = held;
-                }
-            }
-            groups
-        })
-        .collect()
-}
-
-// Pins: seam-bleed and M4. Group placement must not change what any light
-// reads: swapping which half holds the open and closed groups, or moving a
-// light's baked mask from group 0 to group 1, renders byte-identically.
-// Each block's half-texel clamp keeps taps inside its own texels in each
-// half, so this proves routing and placement in a real frame. Driven edge
-// texels are proven by the renderer's `shadowmask_sample_test` readback.
-#[test]
-#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
-fn group_placement_never_changes_what_a_light_reads() {
-    let workspace = workspace_root();
-    let scratch = tempfile::tempdir().expect("scratch dir");
-    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
-    let sections = read_sections(&compiled);
-    let baked = shadowmask_of(&sections);
-    let maps_dir = compiled
-        .parent()
-        .expect("fixture has a parent")
-        .to_path_buf();
-    let mut written = Vec::new();
-    let mut capture_variant = |label: &str, channels: Vec<u8>, blocks: GroupPlanes| {
-        let path = tempfile::Builder::new()
-            .prefix(&format!(".shadowmask-groups-{label}-"))
-            .suffix(".prl")
-            .tempfile_in(&maps_dir)
-            .expect("reserve variant PRL path")
-            .into_temp_path();
-        write_variant(&sections, channels, blocks, &path);
-        let image = capture(&workspace, scratch.path(), &path, label);
-        written.push(path);
-        image
-    };
-
-    // Seam: the two halves differ everywhere (255 against 0). Lights 0 and 1
-    // stay open whether their group sits left or right of the seam.
-    let open_left = capture_variant(
-        "open-left",
-        vec![0, 1, 2, 3],
-        constant_payload(&baked, [255, 255, 0, 0]),
-    );
-    let open_right = capture_variant(
-        "open-right",
-        vec![2, 3, 0, 1],
-        constant_payload(&baked, [0, 0, 255, 255]),
-    );
-    let closed = capture_variant(
-        "all-closed",
-        vec![0, 1, 2, 3],
-        constant_payload(&baked, [0; 4]),
-    );
-    assert!(
-        total(&added_light(&open_left, &closed)) > 0,
-        "open lights must add specular"
-    );
-    assert_eq!(
-        open_left.as_raw(),
-        open_right.as_raw(),
-        "which half holds the open group must not change the frame"
-    );
-
-    // Group move: every group-0 light's baked mask moves into group 1 and the
-    // group-1 masks move into group 0, with the slot table following.
-    let baked_frame = capture(&workspace, scratch.path(), &compiled, "baked-placement");
-    let moved_table: Vec<u8> = baked
-        .channels
-        .iter()
-        .map(|&slot| (slot + 2) % SLOT_COUNT)
-        .collect();
-    let moved_masks = swap_slot_blocks(&baked.blocks, 0, 2);
-    let moved_masks = swap_slot_blocks(&moved_masks, 1, 3);
-    assert!(
-        moved_masks != baked.blocks,
-        "the group move must change the payload, or the frame comparison proves nothing"
-    );
-    let moved = capture_variant("groups-moved", moved_table, moved_masks);
-    assert_eq!(
-        moved.as_raw(),
-        baked_frame.as_raw(),
-        "moving lights between groups must leave world specular unchanged"
-    );
 }
 
 // Pins: animated-after-take and capture-install. The animated contribution
@@ -541,31 +299,31 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
     );
     assert_no_renderer_errors(&stderr);
 
-    // Without id 42 every mask reads the all-visible placeholder, so the frame
-    // must equal the same level with every baked mask fully open: the lightmap
-    // and everything else installed intact, and nothing reads the absent atlas.
+    // Without id 42 no owner has a mask to read, so the frame must equal the
+    // same level with every baked mask fully closed: the lightmap and
+    // everything else installed intact, and no static non-SDF specular.
     let baked = shadowmask_of(&sections);
-    let open_masks = tempfile::Builder::new()
-        .prefix(".shadowmask-groups-open-masks-")
+    let closed_masks = tempfile::Builder::new()
+        .prefix(".shadowmask-groups-closed-masks-")
         .suffix(".prl")
         .tempfile_in(compiled.parent().expect("fixture has a parent"))
-        .expect("reserve open-mask PRL path")
+        .expect("reserve closed-mask PRL path")
         .into_temp_path();
     write_variant(
         &sections,
-        baked.channels.clone(),
-        constant_payload(&baked, [255; 4]),
-        &open_masks,
+        baked.owners.clone(),
+        constant_payload(&baked, [0; 4]),
+        &closed_masks,
     );
-    let (open_image, open_stderr) = capture_scene(
+    let (closed_image, closed_stderr) = capture_scene(
         &workspace,
         scratch.path(),
-        &open_masks,
-        "open-masks",
+        &closed_masks,
+        "closed-masks",
         north_wall_camera(),
         None,
     );
-    assert_no_renderer_errors(&open_stderr);
+    assert_no_renderer_errors(&closed_stderr);
     assert!(
         image
             .pixels()
@@ -574,7 +332,219 @@ fn level_with_a_lightmap_but_no_shadowmask_captures_cleanly() {
     );
     assert_eq!(
         image.as_raw(),
-        open_image.as_raw(),
-        "a level without a shadowmask must render as if every mask were fully visible"
+        closed_image.as_raw(),
+        "a level without a shadowmask must render as if every mask were fully occluded"
+    );
+}
+
+// End to end, each owner position reads its own channel in either mask
+// group. The fixture's lights overlap on the north wall, so faces there carry
+// owners in both groups. Opening one group alone brightens the frame, the two
+// groups brighten it differently, and opening both is at least as bright as
+// either, texel for texel. Swapping owners with their planes is proven by
+// `world_specular_test`; an owner table out of ascending order fails the load.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
+fn owners_in_either_mask_group_reach_the_frame_through_their_own_channels() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let compiled = compile_dev_map(&workspace, "shadowmask-groups-capture");
+    let sections = read_sections(&compiled);
+    let baked = shadowmask_of(&sections);
+    let owned_positions = baked
+        .owners
+        .iter()
+        .map(|owners| owners.iter().filter(|&&owner| owner != u16::MAX).count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        owned_positions >= 3,
+        "the fixture must put owners in group B; most owners on one face: {owned_positions}"
+    );
+
+    let mut images = Vec::new();
+    for (label, channels) in [
+        ("closed", [0u8, 0, 0, 0]),
+        ("group-a", [255, 255, 0, 0]),
+        ("group-b", [0, 0, 255, 255]),
+        ("open", [255, 255, 255, 255]),
+    ] {
+        let path = tempfile::Builder::new()
+            .prefix(&format!(".shadowmask-groups-{label}-"))
+            .suffix(".prl")
+            .tempfile_in(compiled.parent().expect("fixture has a parent"))
+            .expect("reserve variant PRL path")
+            .into_temp_path();
+        write_variant(
+            &sections,
+            baked.owners.clone(),
+            constant_payload(&baked, channels),
+            &path,
+        );
+        let (image, stderr) = capture_scene(
+            &workspace,
+            scratch.path(),
+            &path,
+            label,
+            north_wall_camera(),
+            None,
+        );
+        assert_no_renderer_errors(&stderr);
+        images.push(image);
+    }
+    let [closed, group_a, group_b, open] = [&images[0], &images[1], &images[2], &images[3]];
+    assert_ne!(
+        closed.as_raw(),
+        group_a.as_raw(),
+        "group A owners must reach the frame"
+    );
+    assert_ne!(
+        closed.as_raw(),
+        group_b.as_raw(),
+        "group B owners must reach the frame"
+    );
+    assert_ne!(
+        group_a.as_raw(),
+        group_b.as_raw(),
+        "the groups hold different owners"
+    );
+    for ((open, a), b) in open.pixels().zip(group_a.pixels()).zip(group_b.pixels()) {
+        for c in 0..3 {
+            assert!(
+                open.0[c].saturating_add(1) >= a.0[c].max(b.0[c]),
+                "opening every channel cannot darken a texel: {open:?} vs {a:?} / {b:?}"
+            );
+        }
+    }
+}
+
+/// The specular term alone (`LightTermMask::SPECULAR`) of the
+/// specular-shadowmask fixture, looking across the north-wall receiver at a
+/// grazing angle around the blocker.
+fn capture_specular_only(workspace: &Path, scratch: &Path, map: &Path, label: &str) -> RgbaImage {
+    let scene_path = scratch.join(format!("{label}.scene.json"));
+    let output_path = scratch.join(format!("{label}.png"));
+    let scene = serde_json::json!({
+        "map": map.display().to_string(),
+        "camera": {
+            "position": [-4.064, 4.064, -1.626],
+            "yaw_deg": 45.0,
+            "pitch_deg": 5.0,
+            "fov_deg": 80.0
+        },
+        "resolution": [CAPTURE_WIDTH, CAPTURE_HEIGHT],
+        "light_term_mask": 0x40,
+        "output": output_path.display().to_string()
+    });
+    fs::write(&scene_path, serde_json::to_vec_pretty(&scene).unwrap()).unwrap();
+    let result = capture_command(workspace, &scene_path)
+        .env("RUST_LOG", "warn")
+        .output()
+        .expect("launch postretro capture");
+    let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+    assert!(
+        result.status.success(),
+        "capture `{label}` failed\nstderr:\n{stderr}"
+    );
+    assert_no_renderer_errors(&stderr);
+    load_capture_rgba(&output_path)
+}
+
+fn lit_pixels(image: &RgbaImage) -> usize {
+    image
+        .pixels()
+        .filter(|pixel| pixel.0[..3].iter().any(|&c| c > 0))
+        .count()
+}
+
+// End to end, a static light adds world specular only where it owns the
+// face, through its baked mask. With every owner entry emptied (the light
+// walled off from every face) or every mask closed, the specular term is
+// black, and the baked mask darkens part of the fully open highlight (the
+// blocker's shadow). Keeping id 42 when id 40 is cleared at load is proven
+// on the loader: a hand-stripped id 40 here would orphan the cluster
+// directory's id-41 resource.
+#[test]
+#[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_shadowmask_groups -- --ignored`"]
+fn static_specular_comes_only_from_face_owners_through_their_baked_masks() {
+    let workspace = workspace_root();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let compiled = compile_dev_map(&workspace, "specular-shadowmask-capture");
+    let sections = read_sections(&compiled);
+    let baked = shadowmask_of(&sections);
+    assert!(
+        baked.owners.iter().any(|owners| owners[0] != u16::MAX),
+        "the fixture's static light must own a face"
+    );
+    let variant_path = |label: &str| {
+        tempfile::Builder::new()
+            .prefix(&format!(".specular-shadowmask-{label}-"))
+            .suffix(".prl")
+            .tempfile_in(compiled.parent().expect("fixture has a parent"))
+            .expect("reserve variant PRL path")
+            .into_temp_path()
+    };
+
+    let real = capture_specular_only(&workspace, scratch.path(), &compiled, "baked");
+    assert!(
+        lit_pixels(&real) > 0,
+        "the owner's highlight must reach the frame"
+    );
+
+    let unowned = variant_path("unowned");
+    write_variant(
+        &sections,
+        vec![[u16::MAX; 4]; baked.owners.len()],
+        baked.blocks.clone(),
+        &unowned,
+    );
+    let unowned_image = capture_specular_only(&workspace, scratch.path(), &unowned, "unowned");
+    assert_eq!(
+        lit_pixels(&unowned_image),
+        0,
+        "a light owning no face adds no specular"
+    );
+
+    let closed = variant_path("closed");
+    write_variant(
+        &sections,
+        baked.owners.clone(),
+        constant_payload(&baked, [0; 4]),
+        &closed,
+    );
+    let closed_image = capture_specular_only(&workspace, scratch.path(), &closed, "closed");
+    assert_eq!(
+        lit_pixels(&closed_image),
+        0,
+        "an occluded owner adds no specular"
+    );
+
+    let open = variant_path("open");
+    write_variant(
+        &sections,
+        baked.owners.clone(),
+        constant_payload(&baked, [255; 4]),
+        &open,
+    );
+    let open_image = capture_specular_only(&workspace, scratch.path(), &open, "open");
+    let mut darkened = 0;
+    for (open, real) in open_image.pixels().zip(real.pixels()) {
+        for c in 0..3 {
+            assert!(
+                open.0[c].saturating_add(1) >= real.0[c],
+                "a fully open mask cannot be darker than the baked one"
+            );
+        }
+        if open.0[..3]
+            .iter()
+            .zip(&real.0[..3])
+            .any(|(o, r)| *o > r.saturating_add(4))
+        {
+            darkened += 1;
+        }
+    }
+    assert!(
+        darkened > 0,
+        "the baked mask must shadow part of the highlight"
     );
 }

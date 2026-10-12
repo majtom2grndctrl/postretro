@@ -527,6 +527,7 @@ impl Renderer {
                     &[],
                 );
                 render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.full().spec_owner_buffer.slice(..));
                 render_pass.set_index_buffer(
                     self.full().index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,

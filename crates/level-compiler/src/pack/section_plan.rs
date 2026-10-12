@@ -209,22 +209,58 @@ pub(super) fn build_finalized_section_plan<'a>(
                 || Ok(section.to_bytes()),
             ));
         }
-        if let Some(section) = shadowmask_atlas.filter(|section| !section.channels.is_empty()) {
-            // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
-            // count mismatch, so refuse to write one.
-            anyhow::ensure!(
-                section.blocks.len() == lightmap.blocks.len(),
-                "ShadowmaskAtlas has {} blocks but Lightmap has {}",
-                section.blocks.len(),
-                lightmap.blocks.len()
+    }
+    // Id 42 carries per-face owners, independent of ids 40 and 41.
+    if let Some(section) = shadowmask_atlas {
+        // The runtime finds each face's vertices through its one BVH leaf, and
+        // a face with no triangle has none, so every owned level must have a
+        // triangle on every face.
+        if let Some(face) = geo_result
+            .face_index_ranges
+            .iter()
+            .position(|range| range.index_count == 0)
+        {
+            anyhow::bail!(
+                "ShadowmaskAtlas owners need a triangle on every Geometry face, but face {face} has none"
             );
-            sections.push(PlannedSection::new(
-                SectionId::ShadowmaskAtlas as u32,
-                2,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
-            ));
         }
+        // Id 42 block `i` pairs with id 22 block `i`; the loader rejects a
+        // count mismatch, so refuse to write one.
+        anyhow::ensure!(
+            section.blocks.len() == lightmap.blocks.len(),
+            "ShadowmaskAtlas has {} blocks but Lightmap has {}",
+            section.blocks.len(),
+            lightmap.blocks.len()
+        );
+        // The loader validates the owner table against id 17's face count and
+        // the static spec-light count (`!is_dynamic` id-18 records, the index
+        // space an owner names), so refuse to write a table it would reject.
+        anyhow::ensure!(
+            section.owners.len() == geo_result.geometry.faces.len(),
+            "ShadowmaskAtlas's owner-entry count is {} but Geometry's face count is {}",
+            section.owners.len(),
+            geo_result.geometry.faces.len()
+        );
+        let static_spec_light_count = alpha_lights
+            .lights
+            .iter()
+            .filter(|light| !light.is_dynamic)
+            .count();
+        let static_spec_light_count = u32::try_from(static_spec_light_count).unwrap_or(u32::MAX);
+        for (face, owners) in section.owners.iter().enumerate() {
+            postretro_level_format::shadowmask_atlas::validate_face_owners(
+                face,
+                owners,
+                static_spec_light_count,
+            )
+            .map_err(|error| anyhow::anyhow!("ShadowmaskAtlas owner table is invalid: {error}"))?;
+        }
+        sections.push(PlannedSection::new(
+            SectionId::ShadowmaskAtlas as u32,
+            2,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
     }
     if let Some(section) = animated_light_chunks {
         sections.push(PlannedSection::new(

@@ -109,12 +109,6 @@ impl DryRunReport {
              greedy MaxRects, area-descending: the no-fragmentation reference (greedy MaxRects) \
              for packing quality; the walks below measure against the shelf allocator instead"
         );
-        if self.omitted_mask {
-            out.push_str(
-                "exact columns include the omitted id 42 restored, as every block narrow enough \
-                 to double charges it\n",
-            );
-        }
         let _ = writeln!(
             out,
             "{:<5} {:>9} {:>7} {:>9} {:>10} {:>10} {:>12} {:>11} {:>10} {:>13} {:>12}  worst cell",
@@ -141,7 +135,7 @@ impl DryRunReport {
                 exact_lead
                     .cells
                     .iter()
-                    .map(|(cell, bytes)| (bytes.texel_exact_charging_mask(), *cell)),
+                    .map(|(cell, bytes)| (bytes.texel_exact, *cell)),
             );
             let layers = sorted_desc(
                 lead.static_layers

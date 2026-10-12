@@ -73,26 +73,6 @@ impl Governor {
         }
     }
 
-    /// Park while paused and report once the paused condition is observed.
-    ///
-    /// Tests use this rendezvous to prove a specific cooperative checkpoint
-    /// blocks. The observer runs while the gate lock is held, immediately
-    /// before the condition-variable wait releases it.
-    #[cfg(test)]
-    pub(crate) fn checkpoint_with_wait_observer(&self, observer: impl FnOnce()) {
-        let mut observer = Some(observer);
-        let mut state = self.lock();
-        while state.paused {
-            if let Some(observer) = observer.take() {
-                observer();
-            }
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-    }
-
     /// Park while paused or at the concurrency limit, then acquire one permit.
     pub fn enter(&self) -> Permit<'_> {
         let mut state = self.lock();

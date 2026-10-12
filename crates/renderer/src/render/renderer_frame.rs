@@ -244,6 +244,7 @@ impl Renderer {
             has_direct: full.sh_volume_resources.direct.has_direct,
             animated_baked_light_count: full.animated_baked_light_count as u32,
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
+            static_spec_mask_present: full.shadowmask_present,
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.last_camera_position = camera_position;

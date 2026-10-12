@@ -8,7 +8,7 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 ///   0..12   grid_origin     (f32x3)
 ///   12..16  cell_size       (f32)
 ///   16..28  dims            (u32x3)
-///   28..32  has_chunk_grid  (u32) — 0 = fall back to full spec buffer
+///   28..32  has_chunk_grid  (u32) — 0 = no chunk list (see `ChunkGrid::present`)
 pub const CHUNK_GRID_UNIFORM_SIZE: usize = 32;
 
 /// CPU-side metadata and payload, ready for GPU upload.
@@ -22,8 +22,10 @@ pub struct ChunkGrid {
     /// the storage binding is never empty.
     pub index_list: Vec<u8>,
     /// True when the PRL section was present and used. False when the
-    /// fallback dummy payload is in effect — the shader reads
-    /// `has_chunk_grid == 0` and iterates the full spec buffer.
+    /// fallback dummy payload is in effect: the readers see
+    /// `has_chunk_grid == 0`, so SDF light selection scans the full spec
+    /// buffer and billboard specular skips its static lights. World specular
+    /// never reads the grid.
     pub present: bool,
 }
 

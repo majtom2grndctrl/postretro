@@ -65,51 +65,65 @@ pub(crate) fn build_renderer_pipelines(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                    as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    // position: vec3<f32> at offset 0
-                    wgpu::VertexAttribute {
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                        as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        // position: vec3<f32> at offset 0
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        // base_uv: vec2<f32> at offset 12
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                        // normal_oct: u16x2 at offset 20
+                        wgpu::VertexAttribute {
+                            offset: 20,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        // tangent_packed: u16x2 at offset 24
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        // lightmap_uv: u16x2 at offset 28 (block-local unorm UV)
+                        wgpu::VertexAttribute {
+                            offset: 28,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                        // (lightmap_block, animated_block): u16x2 at offset 32 —
+                        // the vertex's lightmap cell block id + 1 and the face's
+                        // animated block id + 1 (0 = none for both).
+                        wgpu::VertexAttribute {
+                            offset: 32,
+                            shader_location: 5,
+                            format: wgpu::VertexFormat::Uint16x2,
+                        },
+                    ],
+                }),
+                // Slot 1: the forward-only owner stream, one entry per world
+                // vertex (`spec_owner_buffer`). Its own buffer leaves the 36-byte
+                // world vertex, and every other pipeline reading it, unchanged.
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: SPEC_OWNER_STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
                         offset: 0,
-                        shader_location: 0,
-                        format: wgpu::VertexFormat::Float32x3,
-                    },
-                    // base_uv: vec2<f32> at offset 12
-                    wgpu::VertexAttribute {
-                        offset: 12,
-                        shader_location: 1,
-                        format: wgpu::VertexFormat::Float32x2,
-                    },
-                    // normal_oct: u16x2 at offset 20
-                    wgpu::VertexAttribute {
-                        offset: 20,
-                        shader_location: 2,
-                        format: wgpu::VertexFormat::Uint16x2,
-                    },
-                    // tangent_packed: u16x2 at offset 24
-                    wgpu::VertexAttribute {
-                        offset: 24,
-                        shader_location: 3,
-                        format: wgpu::VertexFormat::Uint16x2,
-                    },
-                    // lightmap_uv: u16x2 at offset 28 (block-local unorm UV)
-                    wgpu::VertexAttribute {
-                        offset: 28,
-                        shader_location: 4,
-                        format: wgpu::VertexFormat::Uint16x2,
-                    },
-                    // (lightmap_block, animated_block): u16x2 at offset 32 —
-                    // the vertex's lightmap cell block id + 1 and the face's
-                    // animated block id + 1 (0 = none for both).
-                    wgpu::VertexAttribute {
-                        offset: 32,
-                        shader_location: 5,
-                        format: wgpu::VertexFormat::Uint16x2,
-                    },
-                ],
-            })],
+                        shader_location: 6,
+                        format: wgpu::VertexFormat::Uint16x4,
+                    }],
+                }),
+            ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         primitive: wgpu::PrimitiveState {
@@ -462,6 +476,7 @@ pub(crate) fn build_renderer_pipelines(
 
 pub(crate) struct WorldVertexBuffers {
     pub vertex_buffer: wgpu::Buffer,
+    pub spec_owner_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
     pub wireframe_index_buffer: wgpu::Buffer,
@@ -493,6 +508,15 @@ pub(crate) fn build_world_vertex_buffers(
         contents: &vertex_data,
         usage: wgpu::BufferUsages::VERTEX,
     });
+    let spec_owner_data = match geometry {
+        Some(geom) => cast_spec_owners_to_bytes(geom.vertex_spec_owners, geom.vertices.len()),
+        None => cast_spec_owners_to_bytes(&[], 0),
+    };
+    let spec_owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("World Spec Owner Buffer"),
+        contents: &spec_owner_data,
+        usage: wgpu::BufferUsages::VERTEX,
+    });
 
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Index Buffer"),
@@ -520,6 +544,7 @@ pub(crate) fn build_world_vertex_buffers(
 
     WorldVertexBuffers {
         vertex_buffer,
+        spec_owner_buffer,
         index_buffer,
         index_count,
         wireframe_index_buffer,

@@ -55,9 +55,10 @@ pub struct LightmapResources {
     pub bind_group: wgpu::BindGroup,
     /// Group 6: the vertex-stage block table.
     pub block_table_bind_group: wgpu::BindGroup,
-    /// Whether the shadowmask pool is bound (false = 2x1x1 fully-visible
-    /// placeholder). Rejected or absent shadowmask data uses this all-visible
-    /// fallback so static specular remains fully lit.
+    /// Whether the shadowmask pool is bound (false = the 2x1x1 placeholder).
+    /// Rejected or absent shadowmask data, and placeholder mode, clear it, and
+    /// the forward pass then reads no owner mask: no static non-SDF world
+    /// specular, no union subtraction.
     pub shadowmask_present: bool,
     /// Static irradiance, static direction and shadowmask meter rows, read
     /// from the textures this set actually binds.
@@ -204,11 +205,7 @@ impl LightmapResources {
         };
         // The pool now holds every all-resident texel; the payloads end here.
         drop(payloads);
-        let shadowmask_present = match pool {
-            StaticPool::Blocks(plan) => plan.with_shadowmask,
-            StaticPool::Streaming(plan) => plan.with_shadowmask,
-            _ => false,
-        };
+        let shadowmask_present = pool.static_specular_mask_present();
 
         let lightmap_state = match pool {
             StaticPool::Blocks(_) | StaticPool::Streaming(_) => ResidencyAllocationState::Data,

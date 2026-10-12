@@ -32,6 +32,7 @@ pub(crate) fn build_full_renderer(
 
     let WorldVertexBuffers {
         vertex_buffer,
+        spec_owner_buffer,
         index_buffer,
         index_count,
         wireframe_index_buffer,
@@ -586,6 +587,7 @@ pub(crate) fn build_full_renderer(
         depth_prepass_pipeline,
         frame_timing,
         vertex_buffer,
+        spec_owner_buffer,
         index_buffer,
         index_count,
         uniform_buffer,
@@ -641,10 +643,6 @@ pub(crate) fn build_full_renderer(
             full_lights,
             entity_shadow_indices,
         ),
-        shadowmask_channels: geometry
-            .and_then(|g| g.shadowmask_atlas)
-            .map(|section| section.channels.clone())
-            .unwrap_or_default(),
         shadowmask_present,
         forward_shadowmask_metadata_scratch: Vec::new(),
         shadow_candidate_lights,

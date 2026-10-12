@@ -171,6 +171,7 @@ impl World {
         renderer.install_level_geometry(
             &LevelGeometry {
                 vertices: &self.vertices,
+                vertex_spec_owners: &[],
                 indices: &self.indices,
                 bvh: &self.bvh,
                 lights: &self.lights,

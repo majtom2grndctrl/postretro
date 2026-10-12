@@ -132,7 +132,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (decided, not yet built); any further regional field needs its own amendment, and gas and haze stay with fog volumes. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 ---
 
@@ -223,7 +223,7 @@ World collision resolves inline during each entity's movement — the entity sli
 
 The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining, active movement-state variant, air-dashes remaining, dash cooldown timer).
 
-Movement is purely engine-internal. No script surface reads or writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
+Movement is engine-internal. No script surface writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. Scripts read one readonly projection per player (decided, not yet built): whether the pawn swims, from this component, and how deep, from a separate output-only component. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
 
 Movement design intent — the custom-kinematic foundation, the declarative author surface, the state-machine seam, and the FPS-flexibility band — lives in `movement.md`. This section covers only the component's place in the entity model.
 
@@ -264,9 +264,9 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 ## 8. Particles
 
-Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick; scripts never observe or manipulate individual particles.
+Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns particles each rendered frame; the simulation expires them. Scripts never observe or manipulate individual particles.
 
-The particle simulation runs in Rust every game-logic tick: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
+The particle simulation runs in Rust once per rendered frame, on frame time: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
 
 The parent emitter entity carries `BillboardEmitterComponent`. Particles back-reference their parent via `ParticleState.emitter` (for spin-rate lookup); orphaned particles (emitter despawned) complete their lifetime at their last rotation angle.
 

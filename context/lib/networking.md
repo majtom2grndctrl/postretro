@@ -147,7 +147,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 ## What gates, and what replicates instead
 
-**Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — at the participation transition the host resolves that slot's pawn tuning and the client installs it instead of reading its own registry.
+**Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — the host resolves that slot's pawn tuning at the participation transition and resends it whenever it changes, and the client installs it instead of reading its own registry.
 
 The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
 

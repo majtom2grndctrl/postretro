@@ -9,6 +9,7 @@ fn geometry<'a>(
 ) -> crate::render::LevelGeometry<'a> {
     crate::render::LevelGeometry {
         vertices: &[],
+        vertex_spec_owners: &[],
         indices: &[],
         bvh,
         lights: &[],

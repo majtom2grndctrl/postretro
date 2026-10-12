@@ -154,12 +154,11 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     );
     let mut movement = Vec::new();
     for (pawn, events) in movement_ticks {
-        let mut addresses = Vec::new();
-        events.append_named_events(&mut addresses);
-        movement.extend(addresses.into_iter().map(|address| MovementEmission {
-            address,
-            emitter: postretro_sim::emission::entity_emitter(&registry, pawn),
-        }));
+        postretro_sim::emission::append_movement_emissions(
+            &events,
+            &postretro_sim::emission::entity_emitter(&registry, pawn),
+            &mut movement,
+        );
     }
     assert!(movement.iter().any(|event| event.address == "jumped"));
     let activity = |on_enter| BehaviorActivityDescriptor {

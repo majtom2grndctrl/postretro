@@ -88,6 +88,10 @@ mod predict_reconcile_harness_fluid_tables;
 // E24 co-op swim parity: swim entry, exit, fluid jump and its latch through reconcile.
 #[cfg(test)]
 mod predict_reconcile_harness_swim;
+// E24 swim slots: the output-only immersion component is never read by prediction,
+// replay or the wire merge.
+#[cfg(test)]
+mod predict_reconcile_harness_immersion;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -687,6 +691,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Projectile => 21,
         ComponentKind::HitVolume => 22,
         ComponentKind::MapOrdinal => 23,
+        ComponentKind::Immersion => 24,
     }
 }
 
@@ -6926,7 +6931,8 @@ mod tests {
                 ComponentKind::Touchable => Some(ComponentKind::Projectile),
                 ComponentKind::Projectile => Some(ComponentKind::HitVolume),
                 ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
-                ComponentKind::MapOrdinal => None,
+                ComponentKind::MapOrdinal => Some(ComponentKind::Immersion),
+                ComponentKind::Immersion => None,
             }
         }
 

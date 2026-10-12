@@ -13,7 +13,7 @@ use postretro_foundation::{
 };
 
 use super::environment_tests::{box_leaf, descriptor, idle_input, push_box};
-use super::{MovementEvents, MovementInput, MovementStateEdge, tick};
+use super::{MovementEvents, MovementInput, MovementStateEdge, tick, tick_with_immersion};
 use crate::collision::CollisionWorld;
 
 const DT: f32 = 1.0 / 60.0;
@@ -883,4 +883,68 @@ fn swim_edges_name_their_fluid_even_when_the_exit_tick_starts_dry() {
     let (_, left) = tick(&mut component, &idle_input(), &world, view, DT, beside);
     assert_eq!(component.movement_state, MovementState::Normal);
     assert_eq!(left.swim_fluid, Some(1));
+}
+
+// Swim slots: the immersion a tick reports for `player.immersion` is the
+// resolve its intent used. A crouched pawn entering swim reports the standing
+// capsule's immersion it swims with, not the crouched capsule's.
+#[test]
+fn reported_immersion_is_the_standing_resolve_on_a_crouched_swim_entry() {
+    let world = floor_world();
+    let pool = EnvironmentVolumes::build(vec![floor_pool(2.0)]);
+    let view = water_view(&pool);
+    let level = EnvironmentView::level_only(LEVEL_GRAVITY);
+    let crouch = input(|i| i.crouch_intent = true);
+    let (mut component, mut position) = grounded_pawn(&full_descriptor(), &world);
+    step(&mut component, &world, level, &crouch, &mut position);
+    position.x = 30.0;
+    let crouched = resolve_at(view, &component, position).immersion;
+    let standing = resolve_environment(
+        view,
+        &BodyProbe {
+            position: Vec3::new(
+                position.x,
+                position.y + component.standing_half_height - component.capsule.half_height,
+                position.z,
+            ),
+            half_height: component.standing_half_height,
+            radius: component.capsule.radius,
+            eye_height: component.standing_eye_height,
+        },
+    )
+    .immersion;
+    assert!(
+        (crouched - standing).abs() > 0.1,
+        "fixture: the two capsules differ: {crouched} vs {standing}"
+    );
+
+    let (_, _, reported) = tick_with_immersion(&mut component, &crouch, &world, view, DT, position);
+    assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+    assert!(
+        (reported - standing).abs() < 1e-6,
+        "reported {reported}, standing {standing}"
+    );
+}
+
+// Swim slots: the reported immersion is the tick-start resolve, never the
+// tick-end position's. A pawn falling into a pool from just above its surface
+// reports dry on the tick its feet break the surface.
+#[test]
+fn reported_immersion_is_the_tick_start_resolve_not_the_tick_end_position() {
+    let world = floor_world();
+    let pool = EnvironmentVolumes::build(vec![floor_pool(2.0)]);
+    let view = water_view(&pool);
+    let mut component = PlayerMovementComponent::from_descriptor(&swim_descriptor());
+    component.velocity = Vec3::new(0.0, -30.0, 0.0);
+    let start = Vec3::new(30.0, 2.0 + 0.1 + REACH, 0.0);
+    assert_eq!(resolve_at(view, &component, start).immersion, 0.0);
+
+    let (end, _, reported) =
+        tick_with_immersion(&mut component, &idle_input(), &world, view, DT, start);
+    let at_end = resolve_at(view, &component, end).immersion;
+    assert!(
+        at_end > 0.05,
+        "fixture: the feet end the tick under: {at_end}"
+    );
+    assert_eq!(reported, 0.0, "the tick-start resolve was dry");
 }

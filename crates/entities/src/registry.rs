@@ -19,6 +19,7 @@ use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
 use crate::components::hit_volume::HitVolumeComponent;
+use crate::components::immersion::ImmersionComponent;
 use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
@@ -151,6 +152,9 @@ pub enum ComponentKind {
     /// Query-only display-copy geometry, never authoritative Health.
     HitVolume = 22,
     MapOrdinal = 23,
+    /// Output-only resolved immersion from the pawn's last authoritative
+    /// movement tick (engine-internal; read only by `player.immersion`).
+    Immersion = 24,
 }
 
 impl ComponentKind {
@@ -184,6 +188,7 @@ impl ComponentKind {
             ComponentKind::Projectile,
             ComponentKind::HitVolume,
             ComponentKind::MapOrdinal,
+            ComponentKind::Immersion,
         ];
         VARIANTS.len()
     };
@@ -257,6 +262,7 @@ pub enum ComponentValue {
     Projectile(ProjectileComponent),
     HitVolume(HitVolumeComponent),
     MapOrdinal(MapOrdinal),
+    Immersion(ImmersionComponent),
 }
 
 impl ComponentValue {
@@ -286,6 +292,7 @@ impl ComponentValue {
             ComponentValue::Projectile(_) => ComponentKind::Projectile,
             ComponentValue::HitVolume(_) => ComponentKind::HitVolume,
             ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
+            ComponentValue::Immersion(_) => ComponentKind::Immersion,
         }
     }
 }
@@ -698,6 +705,19 @@ impl Component for MapOrdinal {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::MapOrdinal(self)
+    }
+}
+
+impl Component for ImmersionComponent {
+    const KIND: ComponentKind = ComponentKind::Immersion;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Immersion(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Immersion(self)
     }
 }
 

@@ -692,6 +692,29 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.swimming",
+        sdk_path: &["player", "swimming"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Whether the pawn's movement state is `Swim`; host-authoritative.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.immersion",
+        sdk_path: &["player", "immersion"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // The last authoritative movement tick's resolved immersion, from the
+        // pawn's output-only immersion component; 0 when dry.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weapon.current",
         sdk_path: &["player", "weapon", "current"],
         value_type: EngineStateValueType::String,
@@ -1389,12 +1412,14 @@ mod tests {
                 "player.cellCapacity",
                 "player.health",
                 "player.heat",
+                "player.immersion",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
                 "player.spread",
+                "player.swimming",
                 "player.weapon.current",
                 "player.weapon.pending",
                 "player.weapon.switching",
@@ -1774,6 +1799,8 @@ mod tests {
             "player.overheated",
             "player.cell",
             "player.cellCapacity",
+            "player.swimming",
+            "player.immersion",
         ] {
             let entry = entries
                 .iter()
@@ -1820,6 +1847,8 @@ mod tests {
                 "player.overheated",
                 "player.cell",
                 "player.cellCapacity",
+                "player.swimming",
+                "player.immersion",
             ]
             .contains(&entry.wire_name)
             {
@@ -1830,6 +1859,32 @@ mod tests {
                     entry.wire_name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn swim_slots_are_readonly_per_player_and_read_dry_by_default() {
+        let catalog = engine_state_catalog().unwrap();
+        let find = |wire_name: &str| {
+            *catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap_or_else(|| panic!("{wire_name} declared"))
+        };
+        let swimming = find("player.swimming");
+        assert_eq!(swimming.value_type, EngineStateValueType::Boolean);
+        assert_eq!(swimming.default, EngineStateDefault::Boolean(false));
+        assert_eq!(swimming.range, None);
+        let immersion = find("player.immersion");
+        assert_eq!(immersion.value_type, EngineStateValueType::Number);
+        assert_eq!(immersion.default, EngineStateDefault::Number(0.0));
+        assert_eq!(immersion.range, Some(NumericRange { min: 0.0, max: 1.0 }));
+        for entry in [swimming, immersion] {
+            assert_eq!(entry.sdk_path.join("."), entry.wire_name);
+            assert_eq!(entry.capability, EngineStateCapability::Readonly);
+            assert!(!entry.persist, "{}", entry.wire_name);
+            assert!(entry.is_per_player(), "{}", entry.wire_name);
         }
     }
 

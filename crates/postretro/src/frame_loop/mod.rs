@@ -731,23 +731,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     app.client_predict_movement_tick(&command, tick_dt)
                 };
                 if let Some(prediction_tick) = prediction_tick {
-                    let mut addresses = Vec::new();
-                    prediction_tick
-                        .movement_events
-                        .append_named_events(&mut addresses);
-                    // Predicted movement sounds from the local pawn.
+                    // Predicted movement sounds from the local pawn, swim
+                    // entry and exit included. Forward prediction is the
+                    // client's only route here; reconcile replay emits none.
                     if let Some(emitter) = app.session.as_ref().and_then(|session| {
                         let registry = session.scripting.script_ctx.registry.borrow();
                         registry
                             .local_player_movement_pawn()
                             .map(|pawn| postretro_sim::emission::entity_emitter(&registry, pawn))
                     }) {
-                        pending_movement_events.extend(addresses.into_iter().map(|address| {
-                            postretro_sim::emission::MovementEmission {
-                                address,
-                                emitter: emitter.clone(),
-                            }
-                        }));
+                        postretro_sim::emission::append_movement_emissions(
+                            &prediction_tick.movement_events,
+                            &emitter,
+                            &mut pending_movement_events,
+                        );
                     }
                     pending_movement_edges.extend(
                         prediction_tick
@@ -1189,11 +1186,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .collect();
         if let Some(session) = app.session.as_ref() {
             let table = &session.scripting.descriptor_sounds;
-            requests.extend(
-                pending_movement_events
-                    .iter()
-                    .filter_map(|emission| sound_events::movement_sound(emission, &mut scene)),
-            );
+            // Swim edges resolve their fluid by name in this machine's own
+            // manifest, through the active (host, on a client) table.
+            let data_registry = session.scripting.script_ctx.data_registry.borrow();
+            let fluids = sound_events::LocalFluids {
+                active: &app.environment_fluids,
+                local: &data_registry.fluids,
+            };
+            for emission in &pending_movement_events {
+                requests.extend(sound_events::movement_sound(emission, fluids, &mut scene));
+            }
+            drop(data_registry);
             for emission in &pending_ai_events {
                 requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
             }

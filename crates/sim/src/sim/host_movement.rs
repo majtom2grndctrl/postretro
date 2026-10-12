@@ -1,7 +1,8 @@
 // Host-side multi-pawn movement seam (M15 Phase 3 Task 4). Advances an explicit
 // set of `(EntityId, MovementInput)` pairs through `movement::tick`, writing each
-// resulting `Transform` + `PlayerMovementComponent` back to the registry and
-// retaining per-pawn movement events for the caller to scope.
+// resulting `Transform` + `PlayerMovementComponent` (and the output-only
+// `ImmersionComponent`) back to the registry and retaining per-pawn movement
+// events for the caller to scope.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // This is the authoritative-host counterpart to `simulate_tick`'s single-pawn
@@ -17,15 +18,17 @@
 use glam::{Quat, Vec3};
 
 use crate::movement::{
-    MovementCollisionSource, MovementEvents, MovementInput, tick as movement_tick,
+    MovementCollisionSource, MovementEvents, MovementInput, tick_with_immersion,
 };
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{ImmersionComponent, PlayerMovementComponent};
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
-/// the resulting `Transform` plus movement component back, and returns one
+/// the resulting `Transform` plus movement component back, stores the tick's resolved
+/// immersion in the pawn's output-only `ImmersionComponent` (the `player.immersion`
+/// slot's source; this authoritative seam is its only writer), and returns one
 /// pawn-identified event record per successfully advanced pawn in input order. The
 /// caller owns event scope: host gameplay selects only its local pawn, while client
 /// prediction advances exactly one local pawn. Reading all pawns before writing any
@@ -67,7 +70,7 @@ pub fn run_host_movement_tick(
 
     let mut events_out = Vec::with_capacity(snapshots.len());
     for (id, mut component, position, input) in snapshots {
-        let (new_pos, events) = movement_tick(
+        let (new_pos, events, immersion) = tick_with_immersion(
             &mut component,
             &input,
             collision,
@@ -90,6 +93,7 @@ pub fn run_host_movement_tick(
             let _ = registry.set_component(id, t);
         }
         let _ = registry.set_component(id, component);
+        let _ = registry.set_component(id, ImmersionComponent { immersion });
         events_out.push((id, events));
     }
 

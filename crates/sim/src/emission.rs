@@ -19,6 +19,29 @@ pub fn entity_emitter(registry: &EntityRegistry, id: EntityId) -> Emitter {
     Emitter::Entity { id, origin }
 }
 
+/// Append one movement tick's emissions on its pawn, in dispatch order. Each
+/// swim edge carries the tick's swim fluid; one tick's swim edges always share
+/// it, since a swim state never changes fluid. Shared by the host or offline
+/// local tick and a client's forward prediction, the only two routes into the
+/// movement drain, so a reconcile replay can never emit.
+pub fn append_movement_emissions(
+    events: &crate::movement::MovementEvents,
+    emitter: &Emitter,
+    out: &mut Vec<MovementEmission>,
+) {
+    let mut addresses = Vec::new();
+    events.append_named_events(&mut addresses);
+    out.extend(addresses.into_iter().map(|address| {
+        MovementEmission {
+            address,
+            emitter: emitter.clone(),
+            fluid: matches!(address, "swim_started" | "swim_ended")
+                .then_some(events.swim_fluid)
+                .flatten(),
+        }
+    }));
+}
+
 /// Canonical name of the descriptor a spawned entity came from, if it has one.
 /// For a weapon instance this is the weapon descriptor its sounds resolve by.
 pub fn descriptor_name(registry: &EntityRegistry, id: EntityId) -> Option<String> {

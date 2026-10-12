@@ -39,7 +39,7 @@ pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_impulse};
 pub use ir::*;
 pub use movement::{
-    DashPrograms, GroundRef, MovementScope, MovementState, MovementStateKind,
+    DashPrograms, GroundRef, ImmersionComponent, MovementScope, MovementState, MovementStateKind,
     PlayerMovementComponent,
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};

@@ -40,7 +40,7 @@ use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
-use crate::movement::MovementInput;
+use crate::movement::{MovementEvents, MovementInput};
 use crate::netcode::{
     NetworkIdAllocator, client_environment_view, client_fluid_table, host_handle_client_message,
     replace_client_tuning, tuning_control_if_changed, tuning_payload_for_pawn,
@@ -516,6 +516,10 @@ pub(crate) struct LoopbackHarness {
     /// latest `client_receive`: the replay window is the client ticks after the
     /// ack up to the last one sent.
     pub(crate) latest_reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
+    /// The latest client step's forward-predicted movement events, as
+    /// production `client_predict_tick` hands them to the frame drain; default
+    /// when nothing was predicted. Reconcile replay never writes here.
+    pub(crate) latest_predicted_movement_events: MovementEvents,
 
     // --- Bystander death-sweep guards (one per registry) ---
     pub(crate) host_bystander: EntityId,
@@ -650,6 +654,7 @@ impl LoopbackHarness {
             latest_mover_corrections: Vec::new(),
             latest_local_corrections: Vec::new(),
             latest_reconcile_windows: Vec::new(),
+            latest_predicted_movement_events: MovementEvents::default(),
             host_bystander,
             client_bystander,
             to_server: PacketConditioner::new(link),
@@ -888,6 +893,7 @@ impl LoopbackHarness {
 
         self.client_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
+        self.latest_predicted_movement_events = MovementEvents::default();
 
         // Drive prediction if armed and the host's tuning has installed (writing the
         // predicted pose back to the registry exactly as `client_predict_tick` does).
@@ -912,10 +918,14 @@ impl LoopbackHarness {
                 &self.mover_colliders,
                 &self.client_mover_states,
             );
-            if let Some((t, m)) =
-                self.prediction
-                    .predict_tick(input, prev, &combined_collision, environment, DT)
-            {
+            if let Some((t, m, events)) = self.prediction.predict_tick_with_events(
+                input,
+                prev,
+                &combined_collision,
+                environment,
+                DT,
+            ) {
+                self.latest_predicted_movement_events = events;
                 // Mirror production `client_predict_tick`: stamp previous = current for
                 // the local pawn BEFORE writing the new predicted pose, so its
                 // transform-history stays coherent each predicted tick (the connected

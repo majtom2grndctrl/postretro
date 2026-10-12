@@ -1667,23 +1667,17 @@ fn run_movement_tick(
         &pawn_inputs,
         tick_dt,
     );
-    let mut addresses = Vec::new();
+    let emitter = crate::emission::entity_emitter(&registry, id);
+    let mut emissions = Vec::new();
     let mut state_edges = Vec::new();
     for (pawn, movement_events) in events {
         if pawn == id {
-            movement_events.append_named_events(&mut addresses);
+            crate::emission::append_movement_emissions(&movement_events, &emitter, &mut emissions);
             state_edges = movement_events.state_edges;
         }
     }
-    let emitter = crate::emission::entity_emitter(&registry, id);
     LocalMovementTickEvents {
-        emissions: addresses
-            .into_iter()
-            .map(|address| crate::emission::MovementEmission {
-                address,
-                emitter: emitter.clone(),
-            })
-            .collect(),
+        emissions,
         state_edges,
     }
 }

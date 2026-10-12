@@ -1616,12 +1616,14 @@ declare module "postretro" {
       readonly cellCapacity: PlayerComputedRef<number>;
       readonly health: PlayerComputedRef<number>;
       readonly heat: PlayerComputedRef<number>;
+      readonly immersion: PlayerComputedRef<number>;
       readonly maxHealth: PlayerComputedRef<number>;
       readonly overheatAt: PlayerComputedRef<number>;
       readonly overheated: PlayerComputedRef<boolean>;
       readonly reloadActive: PlayerComputedRef<boolean>;
       readonly reloadProgress: PlayerComputedRef<number>;
       readonly spread: ComputedRef<number>;
+      readonly swimming: PlayerComputedRef<boolean>;
       readonly weapon: {
         readonly current: ComputedRef<string>;
         readonly pending: ComputedRef<string>;

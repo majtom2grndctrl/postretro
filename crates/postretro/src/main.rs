@@ -12139,6 +12139,17 @@ mod tests {
             Some(&SlotValue::Boolean(false)),
             "engine-owned player.overheated defaults false and is cloned",
         );
+        // The swim slots default dry, so both are value-bearing.
+        assert_eq!(
+            snapshot.get("player.swimming"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.swimming defaults false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.immersion"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.immersion defaults 0 and is cloned",
+        );
         assert!(
             !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
@@ -12167,7 +12178,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            60,
+            62,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

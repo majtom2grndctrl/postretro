@@ -13,6 +13,7 @@ use postretro_net::harness::LinkConfig;
 use super::predict_reconcile_harness_test_fixtures::{
     LoopbackHarness, NamedEnvironmentVolume, forward_command, gravity_box_volume, idle_command,
 };
+use crate::emission;
 use crate::sim::SimCommand;
 
 /// "No corrections" (brief Co-op Decision): every recorded correction is at most
@@ -110,6 +111,9 @@ struct SwimRun {
     corrections: Vec<f32>,
     windows: Vec<(Option<u32>, Option<u32>)>,
     ticks: Vec<ClientTick>,
+    /// Every swim-edge emission the client's frame drain received, by client
+    /// tick: `(tick, address, fluid)`.
+    swim_emissions: Vec<(u32, &'static str, Option<u16>)>,
     host_swam: bool,
     host_reached_low_gravity: bool,
 }
@@ -129,6 +133,7 @@ fn run_course(
         corrections: Vec::new(),
         windows: Vec::new(),
         ticks: Vec::new(),
+        swim_emissions: Vec::new(),
         host_swam: false,
         host_reached_low_gravity: false,
     };
@@ -152,6 +157,21 @@ fn run_course(
             .expect("client pawn movement")
             .clone();
         let position = h.client_position().expect("armed");
+        // The client's movement drain input, built from forward prediction as
+        // the frame loop builds it. Reconcile replay has no route here.
+        let mut emissions = Vec::new();
+        emission::append_movement_emissions(
+            &h.latest_predicted_movement_events,
+            &emission::entity_emitter(&h.client_registry, pawn),
+            &mut emissions,
+        );
+        let tick = h.last_sent_client_tick.expect("sent this step");
+        run.swim_emissions.extend(
+            emissions
+                .iter()
+                .filter(|emission| emission.address.starts_with("swim_"))
+                .map(|emission| (tick, emission.address, emission.fluid)),
+        );
         let view = h.client_environment_view().expect("tuning installed");
         let resolved = resolve_environment(
             view,
@@ -295,6 +315,35 @@ fn swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link(
             .iter()
             .any(|record| record.in_low_gravity && record.state == MovementStateKind::Normal),
         "the client must move through the room after leaving the pool"
+    );
+}
+
+// P5, replay half: the client's movement drain receives exactly one swim
+// entry and one swim exit, each from the forward-predicted tick that crossed,
+// naming the host's `water` (index 0). Reconciles replay across both crossings
+// (from a `Normal` baseline into swim, from a `Swim` baseline out of it) and
+// through the between-threshold shallows, yet add no emission: the drain's only
+// client input is forward prediction, so no replay can reach a sound request.
+#[test]
+fn reconcile_replay_across_swim_edges_adds_no_swim_emission() {
+    let run = run_course(host_fluids(), 300, swim_through_then_hop);
+    assert_no_correction(&run);
+    let swim_entry = first_edge_into(&run, MovementStateKind::Swim);
+    let swim_exit = first_edge_out_of(&run, MovementStateKind::Swim);
+    let replays_into_swim = windows_spanning(&run, &[swim_entry], MovementStateKind::Normal);
+    let replays_out_of_swim = windows_spanning(&run, &[swim_exit], MovementStateKind::Swim);
+    assert!(
+        replays_into_swim > 0 && replays_out_of_swim > 0,
+        "fixture: replays must re-run entry {swim_entry} ({replays_into_swim}) and exit \
+         {swim_exit} ({replays_out_of_swim})"
+    );
+    assert_eq!(
+        run.swim_emissions,
+        [
+            (swim_entry, "swim_started", Some(0)),
+            (swim_exit, "swim_ended", Some(0)),
+        ],
+        "one emission per crossing, from forward prediction only"
     );
 }
 

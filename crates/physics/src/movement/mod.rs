@@ -185,6 +185,9 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
 /// Advance one pawn one fixed tick. `environment` is the level gravity plus the
 /// installed volumes; the tick resolves it once, at the tick-start `position`,
 /// and hands the result to the state intent, which never queries it.
+///
+/// Prediction and reconcile replay call this form: it reports nothing they
+/// could carry into a later tick beyond the pose, the component and events.
 pub fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -193,6 +196,25 @@ pub fn tick(
     dt: f32,
     position: Vec3,
 ) -> (Vec3, MovementEvents) {
+    let (position, events, _immersion) =
+        tick_with_immersion(component, input, collision, environment, dt, position);
+    (position, events)
+}
+
+/// [`tick`], also reporting the tick's resolved immersion (0..=1): the
+/// tick-start resolve the state intent used, after any swim entry re-resolved
+/// it for the standing capsule. Authoritative host movement stores it in the
+/// pawn's output-only `ImmersionComponent` for the `player.immersion` slot.
+/// Nothing feeds it back into a tick: the next tick resolves afresh from its
+/// own position.
+pub fn tick_with_immersion(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+    position: Vec3,
+) -> (Vec3, MovementEvents, f32) {
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;
@@ -355,7 +377,7 @@ pub fn tick(
     // jump buffer down toward a silent drop if it expires before landing.
     advance_forgiveness(component, dt);
 
-    (current_pos, events)
+    (current_pos, events, resolved_environment.immersion)
 }
 
 #[cfg(test)]

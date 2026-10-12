@@ -657,7 +657,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly ammo: PlayerComputedRef<number>;\n      readonly ammoReserve: PlayerComputedRef<number>;\n      readonly cell: PlayerComputedRef<number>;\n      readonly cellCapacity: PlayerComputedRef<number>;\n      readonly health: PlayerComputedRef<number>;\n      readonly heat: PlayerComputedRef<number>;\n      readonly maxHealth: PlayerComputedRef<number>;")
+        ts.contains("readonly player: {\n      readonly ammo: PlayerComputedRef<number>;\n      readonly ammoReserve: PlayerComputedRef<number>;\n      readonly cell: PlayerComputedRef<number>;\n      readonly cellCapacity: PlayerComputedRef<number>;\n      readonly health: PlayerComputedRef<number>;\n      readonly heat: PlayerComputedRef<number>;\n      readonly immersion: PlayerComputedRef<number>;\n      readonly maxHealth: PlayerComputedRef<number>;")
             && ts.contains("readonly textEntry: Ref<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );

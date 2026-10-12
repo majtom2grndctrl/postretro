@@ -1008,7 +1008,7 @@ pub fn client_receive_and_apply(
                 local.movement.as_ref(),
                 local.acked_tick,
                 local.server_tick,
-                Some(replication.mover_history()),
+                Some(replication.mover_history_mut()),
                 collision,
                 environment,
                 tick_dt,

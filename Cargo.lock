@@ -4659,6 +4659,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-sim",
+ "proptest",
 ]
 
 [[package]]

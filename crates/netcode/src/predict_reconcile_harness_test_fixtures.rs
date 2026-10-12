@@ -1196,7 +1196,7 @@ impl LoopbackHarness {
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
                     reconcile.server_tick,
-                    Some(self.client_replication.mover_history()),
+                    Some(self.client_replication.mover_history_mut()),
                     &combined_collision,
                     environment,
                     DT,

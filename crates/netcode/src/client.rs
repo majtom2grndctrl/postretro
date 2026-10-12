@@ -60,6 +60,7 @@ mod late_baseline_tests;
 mod late_baselines;
 #[cfg(test)]
 mod presentation_tests;
+mod replay_poses;
 use bindings::{ClientBindings, is_presentation_payload};
 use late_baselines::LateBaselineHistory;
 use postretro_entities::presentation_binding::PresentationBindingResolver;
@@ -294,14 +295,20 @@ pub(crate) struct MoverHistorySample {
 #[derive(Debug, Default)]
 pub(crate) struct MoverHistoryBuffer {
     samples: HashMap<u32, VecDeque<MoverHistorySample>>,
+    /// Bumped by every change to `samples`; keys the replay memo's working phases.
+    generation: u64,
+    replay: replay_poses::ReplayPoseMemo,
 }
 
 impl MoverHistoryBuffer {
     fn clear(&mut self) {
         self.samples.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.replay = replay_poses::ReplayPoseMemo::default();
     }
 
     pub(crate) fn record(&mut self, mover_id: u32, sample: MoverHistorySample) {
+        self.generation = self.generation.wrapping_add(1);
         let samples = self.samples.entry(mover_id).or_default();
         if samples
             .back()
@@ -320,6 +327,9 @@ impl MoverHistoryBuffer {
         self.samples.get(&mover_id).map_or(0, VecDeque::len)
     }
 
+    /// Reference extrapolation the replay memo must reproduce exactly; see
+    /// `replay_poses`. Production replay reads `replay_pose` instead.
+    #[cfg(test)]
     pub(crate) fn pose_at_tick(
         &self,
         mover_id: u32,
@@ -2421,8 +2431,14 @@ impl ClientReplication {
         self.mover_history.sample_count(mover_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn mover_history(&self) -> &MoverHistoryBuffer {
         &self.mover_history
+    }
+
+    /// Mutable for reconcile, whose replay memo lives beside the samples.
+    pub(crate) fn mover_history_mut(&mut self) -> &mut MoverHistoryBuffer {
+        &mut self.mover_history
     }
 
     /// Server tick carried by the latest accepted snapshot. Presentation clocks

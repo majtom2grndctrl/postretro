@@ -19,7 +19,7 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 
 ## Probe cost
 
-- `cast_capsule_combined_parry` and `cast_ray_combined_parry` run a narrow-phase cast against every mover collider, with no bounds rejection. Each probe cast therefore costs O(level movers), as every substrate cast already does. Client replay repeats it per replayed tick. The broad-phase cull is a separate queued item. This brief only bounds how many casts the probe adds.
+- `cast_capsule_combined_parry` and `cast_ray_combined_parry` visit every mover collider, so each probe cast costs O(level movers), as every substrate cast already does. Client replay repeats it per replayed tick. A far mover is cheap: each mover's mesh-centred bounding sphere rejects it before the narrow phase, and parry's BVH root test rejected it before that (`perf/mover-replay-pose-cull`). This brief only bounds how many casts the probe adds.
 
 ## Mover-relative target
 

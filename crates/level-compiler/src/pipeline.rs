@@ -34,10 +34,10 @@ use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_residency_bake,
     cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
-    entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
-    lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze,
-    sh_bake, sh_coarsen, sh_density, sh_group, texture_mips, texture_validation, trigger_volumes,
-    visibility,
+    entity_shadow_select, environment_volumes, fog_cell_masks, geometry, kinematic_geometry,
+    light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals,
+    sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group, texture_mips,
+    texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -1886,6 +1886,10 @@ fn run_after_parsing(
         map_data.fog_pixel_scale,
         map_data.initial_gravity,
     );
+    let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
+        &map_data.environment_volumes,
+        map_data.initial_gravity,
+    );
     let fog_cell_masks_section =
         fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
 
@@ -2138,6 +2142,7 @@ fn run_after_parsing(
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),
         trigger_volumes: trigger_volumes_section.as_ref(),
+        environment_volumes: &environment_volumes_section,
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
         cell_residency_set: cell_residency_set_section.as_ref(),

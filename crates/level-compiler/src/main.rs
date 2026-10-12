@@ -27,6 +27,7 @@ pub mod delta_sh_bake;
 pub mod delta_sh_cache;
 pub mod direct_sh_bake;
 pub mod entity_shadow_select;
+pub mod environment_volumes;
 #[cfg(test)]
 pub mod fixture_pipeline;
 pub mod fog_cell_masks;

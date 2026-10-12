@@ -27,6 +27,11 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 
 #[path = "parse/authoring_regions.rs"]
 mod authoring_regions;
+#[cfg(test)]
+#[path = "parse/environment_volume_tests.rs"]
+mod environment_volume_tests;
+#[path = "parse/environment_volumes.rs"]
+mod environment_volumes;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
@@ -834,6 +839,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut stream_resident_regions: Vec<MapStreamingHintRegion> = Vec::new();
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
+    let mut environment_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1094,6 +1100,21 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // Semantic brush entities are resolved by dedicated compiler/runtime
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
+
+        // Environment volumes are non-solid: their brushes never join the
+        // static world set, so they seal no cell and reach no bake.
+        if environment_volumes::is_environment_volume_classname(&classname) {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            environment_volumes.push(environment_volumes::resolve_environment_volume(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                &classname,
+                entities.len() - 1,
+            )?);
+            continue;
+        }
 
         // Streaming hints are compiler-only brush entities. Reject a point
         // entity before the generic `has_brushes` branch so it cannot fall
@@ -1545,6 +1566,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Entity classnames: {}", entity_classnames.join(", "));
     log::info!("Lights: {}", lights.len());
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
+    log::info!("Environment volumes: {}", environment_volumes.len());
 
     Ok(MapData {
         brush_volumes,
@@ -1561,6 +1583,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_movers,
         kinematic_waypoints,
         trigger_volumes,
+        environment_volumes,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,

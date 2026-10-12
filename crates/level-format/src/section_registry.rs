@@ -225,6 +225,11 @@ pub enum SectionId {
     /// map these cells to their own residency units.
     /// See `cell_residency_set::CellResidencySetSection`.
     CellResidencySet = 51,
+
+    /// Level default gravity plus static regional environment volumes
+    /// (gravity, push, fluid) as convex brush leaves. Always emitted.
+    /// See `environment_volumes::EnvironmentVolumesSection`.
+    EnvironmentVolumes = 52,
 }
 
 impl SectionId {
@@ -269,6 +274,7 @@ impl SectionId {
             49 => Some(Self::ClusterDirectory),
             50 => Some(Self::ClusterShPayloads),
             51 => Some(Self::CellResidencySet),
+            52 => Some(Self::EnvironmentVolumes),
             _ => None,
         }
     }
@@ -320,6 +326,7 @@ mod tests {
             SectionId::ClusterDirectory,
             SectionId::ClusterShPayloads,
             SectionId::CellResidencySet,
+            SectionId::EnvironmentVolumes,
         ];
 
         for section_id in registered {
@@ -327,6 +334,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(52), None);
+        assert_eq!(SectionId::from_u32(53), None);
     }
 }

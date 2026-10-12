@@ -23,6 +23,7 @@ use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
@@ -147,6 +148,7 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
+    pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     /// CellResidencySet (id 51), or `None` when the level has no usable portals.
@@ -190,6 +192,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         navmesh,
         kinematic_geometry,
         trigger_volumes,
+        environment_volumes,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
@@ -235,6 +238,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         navmesh,
         kinematic_geometry,
         trigger_volumes,
+        environment_volumes,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,

@@ -7,6 +7,10 @@ use super::*;
 /// payload's own version (`CELL_RESIDENCY_SET_VERSION`) rejects a stale section.
 const CELL_RESIDENCY_SET_CONTAINER_VERSION: u16 = 1;
 
+/// Id 52's PRL table entry version. The payload's own leading version
+/// (`ENVIRONMENT_VOLUMES_VERSION`) is the epoch a loader checks.
+const ENVIRONMENT_VOLUMES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -45,6 +49,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
+    pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
@@ -87,6 +92,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         navmesh,
         kinematic_geometry,
         trigger_volumes,
+        environment_volumes,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
@@ -409,6 +415,13 @@ pub(super) fn build_finalized_section_plan<'a>(
             || Ok(section.to_bytes()),
         ));
     }
+    // Always written: it carries the level default gravity even with no volumes.
+    sections.push(PlannedSection::new(
+        SectionId::EnvironmentVolumes as u32,
+        ENVIRONMENT_VOLUMES_CONTAINER_VERSION,
+        environment_volumes.byte_len(),
+        || Ok(environment_volumes.to_bytes()),
+    ));
     if let Some(section) = cell_draw_index {
         sections.push(PlannedSection::new(
             SectionId::CellDrawIndex as u32,

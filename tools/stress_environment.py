@@ -18,8 +18,8 @@ Both are pure functions of their inputs plus a dedicated RNG stream, so turning
 volumes on never perturbs any other placement: a zero-volume map is the volume
 map minus its volume entities (the baseline the stress run compares against).
 
-Map axes throughout (Quake units, Z-up). Gravity vectors are m/s^2 in map axes
-and are only ever straight down or zero.
+Map axes throughout (Quake units, Z-up). Gravity is one signed vertical number
+in m/s^2, like worldspawn `initialGravity`: here only ever downward or zero.
 """
 
 import math
@@ -31,9 +31,9 @@ VOLUME_STREAM = 0xF1D0
 EMITTER_STREAM = 0xE3177E
 
 FLUIDS = ("water", "sludge")
-# Straight-down or zero, m/s^2 in map axes. Zero gravity is a valid authored
+# Signed vertical m/s^2, downward or zero. Zero gravity is a valid authored
 # value; the mix keeps several distinct values so resolution results differ.
-GRAVITIES = ("0 0 -3", "0 0 0", "0 0 -1.62", "0 0 -6", "0 0 -14")
+GRAVITIES = ("-3", "0", "-1.62", "-6", "-14")
 # A small priority range forces frequent ties, which resolve by map order.
 PRIORITIES = (0, 1, 2)
 # Every Nth explicit-0 volume omits `priority` instead, exercising the
@@ -158,7 +158,7 @@ def ramp_top(footprint, yaw_deg, z_lo, z_hi):
 
 def volume_entity(kind, value, priority, brushes):
     """A `fluid_volume` (value = fluid name) or `gravity_volume` (value = a
-    straight-down gravity vector string) owning one or more brushes."""
+    signed vertical gravity string) owning one or more brushes."""
     if kind == "fluid":
         head = ['"classname" "fluid_volume"', f'"fluid" "{value}"']
     elif kind == "gravity":
@@ -302,7 +302,7 @@ def low_gravity_room(rng, room):
     """The whole room at lunar gravity: the brief's low-gravity playtest room."""
     zf, zc, x0, x1, y0, y1 = room
     fp = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-    return volume_entity("gravity", "0 0 -1.62", 0,
+    return volume_entity("gravity", "-1.62", 0,
                          [prism_brush(fp, zf, flat_top(zc), GRAVITY_TEX)])
 
 
@@ -336,7 +336,7 @@ def anchored_volumes(rng, room, anchor):
             _anchored_box("fluid", fluid, 1, x, y, 160, 160, zf - 32, z + 48),
             _anchored_box("fluid", rng.choice(FLUIDS), 1, x, y, 192, 192,
                           zf + 256, zf + 352),
-            _anchored_box("gravity", "0 0 0", 1, x, y, 256, 256, zf, zf + 200),
+            _anchored_box("gravity", "0", 1, x, y, 256, 256, zf, zf + 200),
         ]
     if tag == "emit_fall":          # falls out of a block into a pool below
         return [

@@ -628,3 +628,118 @@ fn a_host_presents_its_own_fluid_declaration() {
         Some("water".to_string())
     );
 }
+
+/// Spawn the local player pawn with `swim` on its movement descriptor, as the
+/// boot spawn from a `player_spawn` would, under descriptor `canonical_name`.
+fn spawn_local_pawn(
+    app: &App,
+    canonical_name: &str,
+    swim: Option<postretro_foundation::SwimParams>,
+) {
+    use postretro_entities::Transform;
+    use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+    let mut descriptor = crate::tests::minimal_player_descriptor();
+    descriptor.swim = swim;
+    let ctx = script_ctx(app);
+    let mut registry = ctx.registry.borrow_mut();
+    let pawn = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            pawn,
+            postretro_foundation::PlayerMovementComponent::from_descriptor(&descriptor),
+        )
+        .unwrap();
+    registry
+        .set_component(
+            pawn,
+            DescriptorProvenance {
+                canonical_name: canonical_name.to_string(),
+                owned_components: Default::default(),
+                map_overrides: Default::default(),
+                spawn_path: DescriptorSpawnPath::PlayerSpawn,
+            },
+        )
+        .unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+}
+
+fn swim_block() -> postretro_foundation::SwimParams {
+    postretro_foundation::SwimParams {
+        speed: 4.5,
+        accel: 6.0,
+        sink_speed: 0.8,
+        enter_depth: 0.5,
+        exit_depth: 0.35,
+        fluid_jump_velocity: 6.5,
+    }
+}
+
+const WADE_ONLY_WARNING: &str = "has no movement.swim block; this level has fluid volumes";
+
+// AC M9: a level with fluid volumes, loaded for a player whose descriptor has
+// no swim block, warns once naming the descriptor.
+#[test]
+fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descriptor() {
+    // The warning runs once per install, right after the boot pawn spawns.
+    let source = include_str!("lifecycle.rs")
+        .split("#[cfg(test)]\npub(crate) mod tests")
+        .next()
+        .unwrap();
+    let install = source
+        .split("fn install_level_payload(")
+        .nth(1)
+        .unwrap()
+        .split("\n    fn ")
+        .next()
+        .unwrap();
+    let spawn = install
+        .find("install_world_cpu(")
+        .expect("install spawns the boot pawn");
+    let warn = install
+        .find("self.warn_if_local_player_cannot_swim();")
+        .expect("install warns about a wade-only player");
+    assert!(spawn < warn, "the warning reads the spawned pawn");
+    assert_eq!(
+        install.matches("warn_if_local_player_cannot_swim").count(),
+        1,
+        "once per install"
+    );
+
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    spawn_local_pawn(&app, "wader", None);
+
+    let capture = postretro_test_log_capture::LogCapture::start();
+    app.warn_if_local_player_cannot_swim();
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "[Movement] player descriptor 'wader' has no movement.swim block; this level has fluid volumes, so the player wades through them and cannot swim",
+    );
+}
+
+#[test]
+fn a_swimming_player_or_a_dry_level_never_warns_about_the_swim_block() {
+    // A swimmer in a fluid level.
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    spawn_local_pawn(&app, "swimmer", Some(swim_block()));
+    {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        app.warn_if_local_player_cannot_swim();
+        capture.assert_not_logged(log::Level::Warn, WADE_ONLY_WARNING);
+    }
+
+    // A wader in a level whose only fluid volume loads dry.
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "lava"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    spawn_local_pawn(&app, "wader", None);
+    let capture = postretro_test_log_capture::LogCapture::start();
+    app.warn_if_local_player_cannot_swim();
+    capture.assert_not_logged(log::Level::Warn, WADE_ONLY_WARNING);
+}

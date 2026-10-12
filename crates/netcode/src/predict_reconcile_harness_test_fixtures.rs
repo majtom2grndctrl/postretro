@@ -61,7 +61,7 @@ use postretro_entities::{
 use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, FluidRegistry,
     ForgivenessParams, GroundParams, GroundRef, HealthDescriptor, NumberOrIr,
-    PlayerMovementComponent, PlayerMovementDescriptor, SlideParams, SpeedParams,
+    PlayerMovementComponent, PlayerMovementDescriptor, SlideParams, SpeedParams, SwimParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -319,6 +319,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -349,6 +350,7 @@ pub(crate) fn idle_command() -> SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -709,6 +711,28 @@ impl LoopbackHarness {
         h
     }
 
+    /// Give both peers' shared player descriptor a swim block, as a mod whose
+    /// player can swim, and rematerialize the host pawn from it. Call before the
+    /// client arms: the client materializes its pawn from the host's tuning.
+    pub(crate) fn with_player_swim(mut self, swim: SwimParams) -> Self {
+        for descriptor in &mut self.descriptors {
+            if let Some(movement) = descriptor.movement.as_mut() {
+                movement.swim = Some(swim.clone());
+            }
+        }
+        let movement = self.descriptors[0]
+            .movement
+            .as_ref()
+            .expect("the shared player descriptor has movement");
+        self.host_registry
+            .set_component(
+                self.host_pawn,
+                PlayerMovementComponent::from_descriptor(movement),
+            )
+            .unwrap();
+        self
+    }
+
     /// HOST: commit a manifest whose fluids are `fluids`, as a host reload does:
     /// the registry and its movement table are replaced, and the installed
     /// volumes re-resolve when the table's names changed. The next host frame's
@@ -860,7 +884,7 @@ impl LoopbackHarness {
     /// send-then-predict order without needing a live `NetClient`.
     pub(crate) fn client_predict_and_send(&mut self, command: &SimCommand) {
         let client_tick = self.prediction.next_client_tick();
-        let input = sim_command_to_input(command, client_tick, 0.0);
+        let input = sim_command_to_input(command, client_tick);
 
         self.client_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);

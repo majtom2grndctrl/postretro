@@ -2,8 +2,8 @@
 // frame and never skipped at rest.
 //
 // Upscales the scene by nearest integer replication, tonemaps it, applies the
-// screen effects (flash / vignette / shake), then composites the native-res UI
-// layer over it. The UI layer is not tonemapped. Each effect reaches the UI
+// screen effects (flash / vignette / fluid tint / shake), then composites the
+// native-res UI layer over it. The UI layer is not tonemapped. Each effect reaches the UI
 // layer only when its covers-HUD switch is on; all are off by default.
 //
 // `scene_color` is linear Rgba16Float at the scene extent. The UI layer is a
@@ -17,12 +17,14 @@
 // Mirrors `EffectUniform` in render-cpu/src/screen_effects.rs.
 //   flash         — rgba; `flash.a` is the over-blend weight (0 at rest → no-op).
 //   vignette      — `xyz` linear tint + `w` strength (0 at rest → no edge tint).
+//   fluid_tint    — engine-owned eye-in-fluid tint: `xyz` + `w` blend (0 dry).
 //   shake         — screen-fraction offset; (0,0) at rest.
 //   covers_hud    — flash, vignette, shake: nonzero = also reaches the UI layer.
 //   scene_divisor — surface pixels per scene pixel on each axis.
 struct EffectUniform {
     flash: vec4<f32>,
     vignette: vec4<f32>,
+    fluid_tint: vec4<f32>,
     shake: vec2<f32>,
     _pad: vec2<f32>,
     covers_hud: vec3<u32>,
@@ -91,6 +93,14 @@ fn apply_flash(color: vec3<f32>) -> vec3<f32> {
     return mix(color, effect.flash.xyz, clamp(effect.flash.a, 0.0, 1.0));
 }
 
+// Fluid tint: over-blend toward the fluid's color while the camera eye is in
+// it. Composed after the mod's scene flash and vignette, so entering a fluid
+// tints over the mod's tint and leaving restores it; 0 when dry is an exact
+// no-op. Scene-only: the HUD stays readable underwater.
+fn apply_fluid_tint(color: vec3<f32>) -> vec3<f32> {
+    return mix(color, effect.fluid_tint.xyz, clamp(effect.fluid_tint.w, 0.0, 1.0));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Nearest integer upscale: surface pixel p shows scene pixel
@@ -119,6 +129,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if !covers_flash {
         color = apply_flash(color);
     }
+    color = apply_fluid_tint(color);
 
     // Composite the premultiplied UI layer 1:1 at native resolution.
     var ui_coord = in.clip.xy;

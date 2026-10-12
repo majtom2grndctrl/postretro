@@ -129,6 +129,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     };

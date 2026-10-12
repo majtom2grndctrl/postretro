@@ -790,6 +790,7 @@ mod tests {
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
+            swim_reentry_latched: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
             aim_pitch: 0.0,

@@ -557,6 +557,11 @@ fn plan_movement_replace(
     // is what makes an authored change to `air.jumps` (or the dash budget) take
     // effect immediately on save instead of only after the next landing.
     refreshed.movement_state = MovementState::Normal;
+    // A swimmer reloads as `Normal` and re-enters swim on its next tick if still
+    // deep enough (one reconcile correction on a client, accepted). The fluid-jump
+    // re-entry latch is live position history, not a budget: it carries, so a
+    // reload mid-leap cannot drop the pawn straight back into swim.
+    refreshed.swim_reentry_latched = live.swim_reentry_latched;
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
 }
 
@@ -1565,6 +1570,38 @@ mod tests {
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded());
         assert_eq!(component.air_ticks, 7);
+    }
+
+    #[test]
+    fn movement_refresh_drops_swim_to_normal_and_keeps_the_reentry_latch() {
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.velocity = Vec3::new(0.5, -0.8, 0.0);
+        live.movement_state = MovementState::Swim { fluid: 0 };
+        live.swim_reentry_latched = true;
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement");
+        };
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert!(component.swim_reentry_latched);
+        assert_eq!(component.velocity, Vec3::new(0.5, -0.8, 0.0));
     }
 
     // Regression: movement hot reload reset gameplay state without invalidating its presentation impulses.

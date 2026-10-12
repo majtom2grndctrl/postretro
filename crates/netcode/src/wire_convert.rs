@@ -13,15 +13,11 @@ use crate::weapon::FireButtonState;
 
 /// Convert a `SimCommand` plus the issuing client's command-frame tick into the
 /// wire `InputCommand`. `wish_dir` mirrors the engine `Vec2` (`x = right,
-/// y = forward`) into the wire's `[right, forward]` array; the buttons and
-/// `facing_yaw` carries through verbatim; `aim_pitch` is sampled from the camera at
-/// the command send seam because movement simulation deliberately has no pitch
-/// field. Fire/reload intent is preserved for downstream simulation.
-pub(crate) fn sim_command_to_input(
-    cmd: &SimCommand,
-    client_tick: u32,
-    aim_pitch: f32,
-) -> InputCommand {
+/// y = forward`) into the wire's `[right, forward]` array; the buttons,
+/// `facing_yaw` and `facing_pitch` (as `aim_pitch`) carry through verbatim, so the
+/// one pitch the client sends is the one host movement, prediction and replay all
+/// read. Fire/reload intent is preserved for downstream simulation.
+pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputCommand {
     InputCommand {
         secondary_button: WireFireButtonState {
             pressed: cmd.secondary_button.pressed,
@@ -38,7 +34,7 @@ pub(crate) fn sim_command_to_input(
             facing_yaw: cmd.movement.facing_yaw,
             use_pressed: cmd.use_pressed,
             drop_pressed: cmd.drop_pressed,
-            aim_pitch,
+            aim_pitch: cmd.movement.facing_pitch,
             firing_slot: cmd.firing_slot,
         },
         fire_button: WireFireButtonState {
@@ -73,6 +69,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             running: input.movement.running,
             crouch_intent: input.movement.crouch_intent,
             facing_yaw: input.movement.facing_yaw,
+            facing_pitch: input.movement.aim_pitch,
             use_pressed: input.movement.use_pressed,
             drop_pressed: input.movement.drop_pressed,
         },
@@ -161,6 +158,7 @@ mod tests {
                 running: true,
                 crouch_intent: true,
                 facing_yaw: 1.234_5,
+                facing_pitch: -0.3,
                 use_pressed: true,
                 drop_pressed: true,
             },
@@ -184,6 +182,7 @@ mod tests {
         assert_eq!(a.movement.running, b.movement.running);
         assert_eq!(a.movement.crouch_intent, b.movement.crouch_intent);
         assert!((a.movement.facing_yaw - b.movement.facing_yaw).abs() < EPSILON);
+        assert!((a.movement.facing_pitch - b.movement.facing_pitch).abs() < EPSILON);
         assert_eq!(a.movement.use_pressed, b.movement.use_pressed);
         assert_eq!(a.movement.drop_pressed, b.movement.drop_pressed);
         assert_eq!(a.fire_button.pressed, b.fire_button.pressed);
@@ -197,7 +196,7 @@ mod tests {
     #[test]
     fn sim_command_round_trips_through_input_command() {
         let original = sample_sim_command();
-        let input = sim_command_to_input(&original, 4_242, -0.3);
+        let input = sim_command_to_input(&original, 4_242);
         assert_eq!(input.client_tick, 4_242);
         assert!((input.movement.aim_pitch - (-0.3)).abs() < EPSILON);
         let rebuilt = input_command_to_sim(&input);
@@ -207,7 +206,7 @@ mod tests {
     #[test]
     fn sim_command_to_input_maps_wish_dir_right_forward_order() {
         let cmd = sample_sim_command();
-        let input = sim_command_to_input(&cmd, 0, -0.3);
+        let input = sim_command_to_input(&cmd, 0);
         // Engine Vec2 (x = right, y = forward) -> wire [right, forward].
         assert!((input.movement.wish_dir[0] - cmd.movement.wish_dir.x).abs() < EPSILON);
         assert!((input.movement.wish_dir[1] - cmd.movement.wish_dir.y).abs() < EPSILON);
@@ -216,10 +215,10 @@ mod tests {
     #[test]
     fn sanitize_rejects_non_finite_wish_dir_component() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
             cmd.movement.wish_dir[0] = bad;
             assert!(sanitize_input_command(&cmd).is_none());
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
             cmd.movement.wish_dir[1] = bad;
             assert!(sanitize_input_command(&cmd).is_none());
         }
@@ -228,7 +227,7 @@ mod tests {
     #[test]
     fn sanitize_rejects_non_finite_facing_yaw() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
             cmd.movement.facing_yaw = bad;
             assert!(sanitize_input_command(&cmd).is_none());
         }
@@ -237,14 +236,15 @@ mod tests {
     #[test]
     fn sanitize_rejects_non_finite_aim_pitch() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let cmd = sim_command_to_input(&sample_sim_command(), 1, bad);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
+            cmd.movement.aim_pitch = bad;
             assert!(sanitize_input_command(&cmd).is_none());
         }
     }
 
     #[test]
     fn sanitize_clamps_out_of_range_finite_wish_dir() {
-        let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
+        let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
         cmd.movement.wish_dir = [5.0, -3.0];
         let sanitized = sanitize_input_command(&cmd).expect("finite wish_dir is accepted");
         assert!((sanitized.movement.wish_dir[0] - 1.0).abs() < EPSILON);
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn sanitize_preserves_in_range_wish_dir_and_facing_yaw() {
-        let cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
+        let cmd = sim_command_to_input(&sample_sim_command(), 1);
         let sanitized = sanitize_input_command(&cmd).expect("finite in-range command is accepted");
         assert!((sanitized.movement.wish_dir[0] - cmd.movement.wish_dir[0]).abs() < EPSILON);
         assert!((sanitized.movement.wish_dir[1] - cmd.movement.wish_dir[1]).abs() < EPSILON);
@@ -336,7 +336,7 @@ mod activation_tests {
     use super::*;
     #[test]
     fn activation_wire_rejects_unknown_lane_and_mismatched_initiation_tick() {
-        let mut input = sim_command_to_input(&super::tests::sample_sim_command(), 4, 0.0);
+        let mut input = sim_command_to_input(&super::tests::sample_sim_command(), 4);
         input.activation.initiation = Some(postretro_net::wire::WireActivationToken {
             start_tick: 4,
             lane: 2,

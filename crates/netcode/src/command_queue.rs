@@ -904,6 +904,7 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },

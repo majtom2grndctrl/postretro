@@ -446,11 +446,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
             );
             command.activation.cancel = Some(token);
-            let _ = netcode::client_send_input_command(
-                session.net_endpoint.as_mut(),
-                &command,
-                app.camera.pitch,
-            );
+            let _ = netcode::client_send_input_command(session.net_endpoint.as_mut(), &command);
         }
     }
 
@@ -1588,6 +1584,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
 
+    // Camera-eye fluid tint and muffle key on this same effective render eye,
+    // advanced once per presented frame, ahead of the audio step.
+    app.update_fluid_eye(render_eye_position, frame_dt);
+
     // Audio step — third in frame order (Input → Game logic →
     // Audio → Render → Present, development_guide.md §4.3). Runs after
     // game logic settles every entity and before render. The listener
@@ -1616,6 +1616,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             world: app.level.as_ref(),
             movers: &mut app.kinematic_mover_render,
         };
+        if let Some(muffle) = app.fluid_eye.take_muffle_change() {
+            audio.set_world_muffle(muffle);
+        }
         audio.update(listener, frame_dt, |key| {
             scene.presented_point(key, frame_result.alpha)
         });
@@ -2069,6 +2072,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.kinematic_mover_render.shadow_instances(),
             );
             renderer.set_mover_occluder_aabbs(app.kinematic_mover_render.occluder_aabbs());
+            let local = script_ctx.data_registry.borrow();
+            renderer.set_fluid_surface_draws(crate::fluid_presentation::collect_fluid_surface_draws(
+                &mut app.fluid_surface_render,
+                world,
+                &visible_cells,
+                render_eye_position,
+                &app.environment_volumes,
+                &app.environment_fluids,
+                &local.fluids,
+            ));
+        } else {
+            renderer.set_fluid_surface_draws(&[]);
         }
 
         #[cfg(feature = "dev-tools")]
@@ -2387,6 +2402,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         renderer.set_ui_snapshot(ui_snapshot);
         let limiter_frame = App::next_limiter_frame(&mut app.last_resolve_at, now);
         renderer.set_limiter_frame(limiter_frame);
+        // Rewritten every frame with the effect uniform it rides, so a
+        // recreated renderer picks it up on its first frame.
+        renderer.set_fluid_view_tint(app.fluid_eye.tint());
 
         drop(stage_scope.take());
         let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);

@@ -27,7 +27,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Frozen projectile facts and reliable observer cues advance this to 25.
 /// The weapon-switch declaration's client tick advances it to 26.
 /// Shared enemy overlay rosters and participation-framed Presentation advance it to 28.
-/// The protected push-drift layer in player movement state advances it to 29.
+/// The protected push-drift layer in player movement state advances it to 29;
+/// `WireMovementState::Swim` and the swim re-entry latch share that bump.
 pub const WIRE_VERSION: u32 = 29;
 
 #[must_use]

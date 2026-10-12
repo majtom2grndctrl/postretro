@@ -9,6 +9,7 @@ mod app;
 mod camera;
 #[cfg(test)]
 mod coop_fixture_tests;
+mod fluid_presentation;
 mod frame_eye;
 mod frame_loop;
 mod host_activations;
@@ -998,6 +999,10 @@ pub(crate) struct App {
     mover_yaw_carry_ground: postretro_foundation::GroundRef,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
+    /// Render-stage CPU collector for the level's visible fluid surfaces.
+    fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
+    /// The camera eye's fluid presentation: view tint and world muffle.
+    fluid_eye: fluid_presentation::FluidEye,
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
@@ -1473,6 +1478,7 @@ fn build_sim_command(
             running: sprint,
             crouch_intent,
             facing_yaw: camera.yaw,
+            facing_pitch: camera.pitch,
             use_pressed,
             drop_pressed,
         },
@@ -5593,7 +5599,6 @@ impl App {
         command: &sim::SimCommand,
         tick_dt: f32,
     ) -> Option<netcode::ClientPredictionTickResult> {
-        let aim_pitch = self.camera.pitch;
         let script_ctx = self
             .session
             .as_ref()
@@ -5632,7 +5637,6 @@ impl App {
             prediction,
             netcode::ClientPredictionTickContext {
                 command: &command,
-                aim_pitch,
                 collision: &combined_collision,
                 environment_volumes: &self.environment_volumes,
                 host_tuning: tuning.as_deref(),
@@ -8246,6 +8250,7 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -9425,6 +9430,7 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },

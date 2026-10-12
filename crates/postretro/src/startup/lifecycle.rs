@@ -726,6 +726,9 @@ impl App {
             let geometry = render::level_world_to_geometry(&world, &texture_materials);
             renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
             self.level_timings.record("geometry_upload");
+            // Fluid surfaces after textures (their UVs normalize by the
+            // installed dimensions) and geometry (which drops the last level's).
+            renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
 
             // Reseed the SH diagnostic per-light visibility bitmap to match the
             // freshly-installed level's animated-light count. Reset `seeded` so the
@@ -930,6 +933,7 @@ impl App {
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         self.warn_hosted_trigger_machine_local();
+        self.warn_if_local_player_cannot_swim();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -1912,6 +1916,9 @@ pub(crate) mod tests {
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
+            fluid_surface_render:
+                postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
+            fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),

@@ -4,7 +4,7 @@
 use glam::{Vec2, Vec3};
 
 use postretro_collision::ResolvedEnvironment;
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 use super::intents::GROUND_STOP_FRICTION;
 
@@ -31,8 +31,13 @@ pub(super) fn lifts_off(environment: &ResolvedEnvironment) -> bool {
 /// While the body stays grounded the floor bears the vertical part, exactly as
 /// every intent gates gravity on airborne; a push strong enough to lift has
 /// already cleared grounded through [`lifts_off`].
-pub(super) fn apply(component: &mut PlayerMovementComponent, push: Vec3, dt: f32) {
-    decay_drift(component, dt);
+pub(super) fn apply(
+    component: &mut PlayerMovementComponent,
+    environment: &ResolvedEnvironment,
+    dt: f32,
+) {
+    let push = environment.push;
+    decay_drift(component, environment.viscosity, dt);
     component.push_velocity += Vec3::new(push.x, 0.0, push.z) * dt;
     if !component.is_grounded() {
         component.velocity.y += push.y * dt;
@@ -41,15 +46,23 @@ pub(super) fn apply(component: &mut PlayerMovementComponent, push: Vec3, dt: f32
 
 /// The medium a body's drift decays in this tick.
 enum DriftMedium {
+    /// Swimming: the fluid's viscosity drags the drift, so a current settles
+    /// near push / viscosity. A swimmer touching the pool floor still counts
+    /// as swimming here: the fluid, not floor friction, is the medium.
+    Fluid { viscosity: f32 },
     /// Grounded: friction bleeds the drift.
     Ground,
     /// Airborne: nothing resists, so drift carries out of a wind until landing.
     Air,
 }
 
-/// Read after the intent, so a jump or a launch this tick counts as airborne.
-fn drift_medium(component: &PlayerMovementComponent) -> DriftMedium {
-    if component.is_grounded() {
+/// Read after the intent, so a jump or a launch this tick counts as airborne,
+/// and a fluid jump this tick (which left swim) counts as airborne too.
+/// `viscosity` is the tick's resolved fluid drag.
+fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMedium {
+    if matches!(component.movement_state, MovementState::Swim { .. }) {
+        DriftMedium::Fluid { viscosity }
+    } else if component.is_grounded() {
         DriftMedium::Ground
     } else {
         DriftMedium::Air
@@ -60,11 +73,18 @@ fn drift_medium(component: &PlayerMovementComponent) -> DriftMedium {
 /// push accrues. Ground friction is the intents' stop-friction model on
 /// locomotion, applied whether or not input is held because drift is never
 /// voluntary; with a steady push the drift settles at push /
-/// `GROUND_STOP_FRICTION`.
-fn decay_drift(component: &mut PlayerMovementComponent, dt: f32) {
-    let medium = drift_medium(component);
+/// `GROUND_STOP_FRICTION`. A fluid removes the same linear fraction per tick as
+/// the swim intent's drag on locomotion (`max(0, 1 - viscosity * dt)`).
+fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32) {
+    let medium = drift_medium(component, viscosity);
     let drift = &mut component.push_velocity;
     match medium {
+        DriftMedium::Fluid { viscosity } => {
+            *drift *= (1.0 - viscosity * dt).max(0.0);
+            if drift.length_squared() < DRIFT_STOP_SPEED_SQ {
+                *drift = Vec3::ZERO;
+            }
+        }
         DriftMedium::Ground => {
             let speed = Vec2::new(drift.x, drift.z).length();
             if speed > 0.0 {

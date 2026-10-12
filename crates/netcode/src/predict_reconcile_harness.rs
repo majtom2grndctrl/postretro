@@ -524,8 +524,7 @@ fn dash_correction_classifies_as_dash_and_smooths() {
     // Predict a dash tick locally WITHOUT delivering its ack yet, so the dash entry
     // stays unacked and replays during reconcile (the unacked window crosses a dash).
     let dash_tick = h.prediction.next_client_tick();
-    let dash_input =
-        super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick, 0.0);
+    let dash_input = super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick);
     let prev = (
         *h.client_registry.get_component::<Transform>(pawn).unwrap(),
         h.client_registry
@@ -621,7 +620,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
     let mut ticks = Vec::new();
     for _ in 0..3 {
         let tick = h.prediction.next_client_tick();
-        let input = super::wire_convert::sim_command_to_input(&command, tick, 0.0);
+        let input = super::wire_convert::sim_command_to_input(&command, tick);
         let prev = (
             *h.client_registry.get_component::<Transform>(pawn).unwrap(),
             h.client_registry
@@ -728,7 +727,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
     slide.movement.crouch_intent = true;
     let _ = h.prediction.next_client_tick();
     let slide_tick = h.prediction.next_client_tick();
-    let input = super::wire_convert::sim_command_to_input(&slide, slide_tick, 0.0);
+    let input = super::wire_convert::sim_command_to_input(&slide, slide_tick);
     let predicted_prev = (
         *h.client_registry.get_component::<Transform>(pawn).unwrap(),
         h.client_registry
@@ -833,7 +832,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
     let mut inputs = Vec::new();
     for _ in 0..3 {
         let tick = h.prediction.next_client_tick();
-        let input = super::wire_convert::sim_command_to_input(&slide, tick, 0.0);
+        let input = super::wire_convert::sim_command_to_input(&slide, tick);
         let prev = (
             *h.client_registry.get_component::<Transform>(pawn).unwrap(),
             h.client_registry
@@ -2316,6 +2315,7 @@ fn scripted_command(tick: u32) -> SimCommand {
             running: phase < 100,
             crouch_intent: false,
             facing_yaw,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },

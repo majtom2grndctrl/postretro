@@ -337,6 +337,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
         mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
+        fluid_surface_render:
+            postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
+        fluid_eye: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         player_events: Default::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),

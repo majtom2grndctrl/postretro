@@ -1,5 +1,6 @@
 // Repository grep gates for environment volumes: projectile flight makes no
-// environment query, and no volume FGD key authors swim tuning. Run by
+// environment query, no volume FGD key authors swim tuning, and the audio
+// crate's public API (the muffle included) names no kira type. Run by
 // preflight's `cargo test`, beside the scripting surface gates.
 // See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions
 
@@ -34,6 +35,10 @@ const SWIM_FIELDS: &[&str] = &[
     "exitDepth",
     "fluidJumpVelocity",
 ];
+
+/// The audio crate's sources. Its public API carries primitives only, so the
+/// muffle and every other control cross the boundary without kira.
+const AUDIO_CRATE_SRC: &str = "crates/audio/src";
 
 fn workspace_root() -> PathBuf {
     crate::workspace_root().expect("workspace root")
@@ -160,6 +165,41 @@ fn fgd_class_keys(fgd: &str, class: &str) -> Option<Vec<String>> {
     None
 }
 
+/// Each unrestricted `pub` declaration in `code` (`pub(crate)`, `pub(super)`
+/// and `pub(in …)` are skipped), with its 1-based line: the text from `pub`
+/// through its signature, ending at the first `{`, `;` or `,` outside
+/// brackets, so a multi-line signature, a field's type and a `pub use` path
+/// are all read whole.
+fn public_declarations(code: &str) -> Vec<(usize, String)> {
+    let mut declarations = Vec::new();
+    for (at, _) in code.match_indices("pub") {
+        let before = code[..at].chars().next_back();
+        let after = code[at + 3..].chars().next();
+        if before.is_some_and(is_identifier_char) || !after.is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut previous = ' ';
+        let mut end = code.len();
+        for (offset, c) in code[at..].char_indices() {
+            match c {
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '>' if previous != '-' && previous != '=' => depth -= 1,
+                '{' | ';' | ',' if depth <= 0 => {
+                    end = at + offset;
+                    break;
+                }
+                _ => {}
+            }
+            previous = c;
+        }
+        let line = code[..at].matches('\n').count() + 1;
+        declarations.push((line, code[at..end].to_string()));
+    }
+    declarations
+}
+
 // Projectiles apply no environment: their flight code never resolves
 // gravity, push or fluid, and never walks fluid crossings.
 #[test]
@@ -219,6 +259,58 @@ fn volume_fgd_keys_name_no_swim_field() {
         "volume FGD keys name a movement.swim field:\n{}",
         violations.join("\n")
     );
+}
+
+// The audio crate is the only crate that names kira, and its public API
+// carries primitives only: `Audio` is concrete over the default backend.
+#[test]
+fn audio_public_api_names_no_kira_type() {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+    let mut declarations = 0;
+    for path in rust_files(&root.join(AUDIO_CRATE_SRC)) {
+        // In-crate test modules drive the core on capturing and mock backends.
+        if path.components().any(|part| part.as_os_str() == "tests") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("audio source reads");
+        let code = strip_line_comments(&source);
+        let file = path.strip_prefix(&root).unwrap_or(&path).display();
+        for (line, declaration) in public_declarations(&code) {
+            declarations += 1;
+            if !identifier_lines(&declaration, "kira").is_empty() {
+                violations.push(format!("{file}:{line}: `{}`", declaration.trim()));
+            }
+        }
+    }
+    assert!(
+        declarations >= 20,
+        "{AUDIO_CRATE_SRC} moved or the scan found only {declarations} public declarations"
+    );
+    assert!(
+        violations.is_empty(),
+        "the audio crate's public API names a kira type:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn public_declaration_scan_reads_whole_signatures_and_skips_restricted_items() {
+    let code = "pub struct Audio<B: kira::backend::Backend = DefaultBackend> {\n\
+                    core: Core,\n\
+                }\n\
+                pub(crate) struct AudioCore<B: kira::backend::Backend> {}\n\
+                pub fn update(\n    &mut self,\n    resolve: impl FnMut(u64) -> Option<[f32; 3]>,\n    track: &kira::Track,\n) {}\n\
+                pub use kira::Tween;\n\
+                pub field: [f32; 3],\n";
+    let declarations = public_declarations(code);
+    let texts: Vec<&str> = declarations.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(texts.len(), 4, "{texts:?}");
+    assert!(texts[0].contains("kira::backend::Backend"));
+    assert_eq!(declarations[1].0, 5);
+    assert!(texts[1].contains("track: &kira::Track"), "{}", texts[1]);
+    assert_eq!(texts[2], "pub use kira::Tween");
+    assert_eq!(texts[3], "pub field: [f32; 3]");
 }
 
 #[test]

@@ -124,10 +124,11 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Four states exist today:
+/// applies any transition the intent returns. Five states exist today:
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
 /// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
-/// shrunk collision capsule), and `Sliding` (speed-preserving crouched motion).
+/// shrunk collision capsule), `Sliding` (speed-preserving crouched motion) and
+/// `Swim` (3D fluid locomotion, entered by immersion rather than input).
 /// Later states (wall-run, vault) plug in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
@@ -140,6 +141,7 @@ pub enum MovementStateKind {
     Dash,
     Crouch,
     Slide,
+    Swim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -180,6 +182,16 @@ pub enum MovementState {
         boost: Vec3,
         eye_current: f32,
     },
+    /// Swimming in a fluid volume. Entered from any state when the tick's
+    /// resolved immersion reaches the descriptor's `swim.enter_depth`, left when
+    /// it falls below `swim.exit_depth` or on a fluid jump. `fluid` is the fluid
+    /// index (into the active fluid table: the host's on a connected client) the
+    /// swimmer is in, set on entry and followed while it swims, so the exit edge
+    /// still names the fluid left after the pawn is already dry. Presentation
+    /// reads it; movement never does (drag comes from each tick's resolve). The
+    /// capsule is always standing size, and the re-entry latch outlives the
+    /// state, so it lives on the component.
+    Swim { fluid: u16 },
 }
 
 impl MovementState {
@@ -190,6 +202,7 @@ impl MovementState {
             Self::Dash { .. } => MovementStateKind::Dash,
             Self::Crouching { .. } => MovementStateKind::Crouch,
             Self::Sliding { .. } => MovementStateKind::Slide,
+            Self::Swim { .. } => MovementStateKind::Swim,
         }
     }
 }
@@ -332,6 +345,11 @@ pub struct PlayerMovementComponent {
     /// the landing-refresh point. Gates coyote so it cannot re-arm once a jump
     /// has been spent for the current airborne stretch.
     pub jump_spent: bool,
+    /// Set by a fluid jump: swim cannot re-enter until the tick's immersion
+    /// first falls below `swim.exit_depth`, which clears it. Predicted state,
+    /// replicated and restored by the reconcile merge like `jump_spent`.
+    #[serde(default)]
+    pub swim_reentry_latched: bool,
 }
 
 impl PlayerMovementComponent {
@@ -419,6 +437,7 @@ impl PlayerMovementComponent {
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
+            swim_reentry_latched: false,
         }
     }
 

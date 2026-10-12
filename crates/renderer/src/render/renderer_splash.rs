@@ -157,6 +157,14 @@ impl Renderer {
         self.full_mut().limiter_frame.set(frame);
     }
 
+    /// Store the engine-owned fluid view tint (rgb + blend strength) the
+    /// resolve packs beside the `screen.*` slots and limits as its own channel.
+    /// Held until replaced; `[0.0; 4]` is dry. The App sets it from the camera
+    /// eye's fluid presentation, never through a slot.
+    pub fn set_fluid_view_tint(&mut self, tint: [f32; 4]) {
+        self.full_mut().screen_effects.set_fluid_tint(tint);
+    }
+
     /// Store this frame's app-produced passive presentation instances. The
     /// renderer resolves their template draw data later, where it owns the
     /// `FontSystem`, UI theme, and image registry. They never enter the retained

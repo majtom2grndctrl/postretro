@@ -1,6 +1,6 @@
-// Channel clamp: the photosensitivity limiter. `screen.flash` and
-// `screen.vignette` are limited as they pack into the resolve's effect uniform,
-// each channel judged as a full-screen change.
+// Channel clamp: the photosensitivity limiter. `screen.flash`,
+// `screen.vignette` and the engine's fluid view tint are limited as they pack
+// into the resolve's effect uniform, each channel judged as a full-screen change.
 // See: context/lib/rendering_pipeline.md §7.8 (Photosensitivity limiter)
 
 use crate::flash_limiter::{LimiterFrameInput, LimiterFrameUniform, pack_limiter_frame};
@@ -231,8 +231,9 @@ fn decide(
     }
 }
 
-/// One effect channel: its strength (flash alpha, vignette strength) and its
-/// redness share one flash window, so red transitions spend the same budget.
+/// One effect channel: its strength (flash alpha, vignette strength, fluid
+/// tint blend) and its redness share one flash window, so red transitions spend
+/// the same budget.
 #[derive(Clone, Copy, Debug, Default)]
 struct EffectChannel {
     window: FlashWindow,
@@ -310,6 +311,17 @@ impl EffectChannel {
         self.red.restart(strength * redness(rgb));
         self.was_saturated_red = redness(rgb) >= RED_SATURATED;
     }
+
+    /// Limit one packed `[r, g, b, strength]` channel in place, starting
+    /// fresh first on the frame that turns the clamp on.
+    fn apply(&mut self, rgba: &mut [f32; 4], frame: &LimiterFrameUniform) {
+        let rgb = [rgba[0], rgba[1], rgba[2]];
+        if frame.init {
+            self.restart(rgba[3], rgb);
+        }
+        let (strength, rgb) = self.limit(rgba[3], rgb, frame);
+        *rgba = [rgb[0], rgb[1], rgb[2], strength];
+    }
 }
 
 /// The channel clamp's state across frames. Off, it passes the uniform through
@@ -320,6 +332,7 @@ impl EffectChannel {
 pub struct ChannelClamp {
     flash: EffectChannel,
     vignette: EffectChannel,
+    fluid_tint: EffectChannel,
     /// Whether the previous frame ran with the clamp on. The first enabled
     /// frame after an off one, or of a new clamp, starts fresh.
     history_live: bool,
@@ -335,32 +348,15 @@ impl ChannelClamp {
         pack_limiter_frame(input, enabled, fresh)
     }
 
-    /// Limit `uniform`'s flash and vignette in place for one presented frame.
+    /// Limit `uniform`'s flash, vignette and fluid tint in place for one
+    /// presented frame, each on its own channel.
     pub fn apply(&mut self, uniform: &mut EffectUniform, frame: &LimiterFrameUniform) {
         if !frame.enabled {
             return;
         }
-        let flash_rgb = [uniform.flash[0], uniform.flash[1], uniform.flash[2]];
-        let vignette_rgb = [
-            uniform.vignette[0],
-            uniform.vignette[1],
-            uniform.vignette[2],
-        ];
-        if frame.init {
-            self.flash.restart(uniform.flash[3], flash_rgb);
-            self.vignette.restart(uniform.vignette[3], vignette_rgb);
-        }
-        let (flash_a, flash_rgb) = self.flash.limit(uniform.flash[3], flash_rgb, frame);
-        uniform.flash = [flash_rgb[0], flash_rgb[1], flash_rgb[2], flash_a];
-        let (vignette_w, vignette_rgb) =
-            self.vignette
-                .limit(uniform.vignette[3], vignette_rgb, frame);
-        uniform.vignette = [
-            vignette_rgb[0],
-            vignette_rgb[1],
-            vignette_rgb[2],
-            vignette_w,
-        ];
+        self.flash.apply(&mut uniform.flash, frame);
+        self.vignette.apply(&mut uniform.vignette, frame);
+        self.fluid_tint.apply(&mut uniform.fluid_tint, frame);
     }
 }
 
@@ -769,6 +765,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_fluid_tint_strobe_is_limited_on_its_own_channel_and_passes_when_off() {
+        let fps = 60.0;
+        let dt = 1.0 / fps;
+        let water = |strength: f32| [0.1, 0.3, 0.4, strength];
+        // The fluid tint strobes at 5 Hz beside a steady mod flash.
+        let run = |enabled: bool| {
+            let mut clamp = ChannelClamp::default();
+            (0..(2.0 * fps) as usize)
+                .map(|n| {
+                    let mut uniform = EffectUniform {
+                        fluid_tint: water(square_5hz(n as f32 * dt)),
+                        ..flash([0.8, 0.2, 0.1], 0.3)
+                    };
+                    let frame = clamp.begin_frame(elapsed(dt), enabled);
+                    clamp.apply(&mut uniform, &frame);
+                    uniform
+                })
+                .collect::<Vec<_>>()
+        };
+        let limited = run(true);
+        let strengths: Vec<f32> = limited.iter().map(|u| u.fluid_tint[3]).collect();
+        let worst = worst_transitions(&strengths, dt);
+        assert!((4..=6).contains(&worst), "{worst} fluid tint transitions");
+        for u in &limited {
+            assert_eq!(
+                u.flash,
+                [0.8, 0.2, 0.1, 0.3],
+                "the flash channel is untouched"
+            );
+        }
+        for (n, u) in run(false).iter().enumerate() {
+            assert_eq!(
+                u.fluid_tint,
+                water(square_5hz(n as f32 * dt)),
+                "off passes through"
+            );
+        }
+    }
+
     /// Pack a red flash and vignette strobe through the resolve's own path:
     /// the slots pack, the enable flag is read fail-safe, and the clamp
     /// limits. Returns what was authored and what packed, frame by frame.
@@ -791,7 +827,7 @@ mod tests {
                 if let Some(flag) = &flag {
                     slots.insert(FLASH_LIMITER_SLOT.to_string(), flag.clone());
                 }
-                let authored = pack_effect_uniform(&slots);
+                let authored = pack_effect_uniform(&slots, [0.0; 4]);
                 let frame = clamp.begin_frame(elapsed(dt), flash_limiter_enabled(&slots));
                 let mut packed = authored;
                 clamp.apply(&mut packed, &frame);

@@ -183,6 +183,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -196,6 +197,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }

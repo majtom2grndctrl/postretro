@@ -45,6 +45,7 @@ pub(crate) fn movement_state_to_wire(
         coyote_timer_ms: component.coyote_timer_ms,
         jump_buffer_timer_ms: component.jump_buffer_timer_ms,
         jump_spent: component.jump_spent,
+        swim_reentry_latched: component.swim_reentry_latched,
         capsule_half_height: component.capsule.half_height,
         capsule_eye_height: component.capsule.eye_height,
         aim_pitch,
@@ -85,6 +86,7 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     component.coyote_timer_ms = wire.coyote_timer_ms;
     component.jump_buffer_timer_ms = wire.jump_buffer_timer_ms;
     component.jump_spent = wire.jump_spent;
+    component.swim_reentry_latched = wire.swim_reentry_latched;
     // The live capsule dimensions are mutable tick state (the crouch intent
     // shrinks them); the standing reference dimensions are descriptor-owned and
     // deliberately not touched.
@@ -117,6 +119,7 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
             // enum-only mirror total for the engine variant drift guard.
             floor_normal: None,
         },
+        MovementState::Swim { fluid } => WireMovementState::Swim { fluid },
     }
 }
 
@@ -140,6 +143,7 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             boost: Vec3::new(boost[0], boost[1], boost[2]),
             eye_current,
         },
+        WireMovementState::Swim { fluid } => MovementState::Swim { fluid },
     }
 }
 
@@ -267,6 +271,7 @@ mod tests {
             coyote_timer_ms: 12.0,
             jump_buffer_timer_ms: 8.0,
             jump_spent: true,
+            swim_reentry_latched: true,
             capsule_half_height: 0.4,
             capsule_eye_height: 0.25,
             aim_pitch: 0.75,
@@ -295,6 +300,7 @@ mod tests {
         component.coyote_timer_ms = 50.0;
         component.jump_buffer_timer_ms = 20.0;
         component.jump_spent = true;
+        component.swim_reentry_latched = true;
         component.capsule.half_height = 0.4;
         component.capsule.eye_height = 0.25;
 
@@ -319,6 +325,7 @@ mod tests {
         assert!((rebuilt.coyote_timer_ms - component.coyote_timer_ms).abs() < EPSILON);
         assert!((rebuilt.jump_buffer_timer_ms - component.jump_buffer_timer_ms).abs() < EPSILON);
         assert_eq!(rebuilt.jump_spent, component.jump_spent);
+        assert_eq!(rebuilt.swim_reentry_latched, component.swim_reentry_latched);
         assert!((rebuilt.capsule.half_height - component.capsule.half_height).abs() < EPSILON);
         assert!((rebuilt.capsule.eye_height - component.capsule.eye_height).abs() < EPSILON);
     }
@@ -367,6 +374,7 @@ mod tests {
         assert!((component.coyote_timer_ms - 12.0).abs() < EPSILON);
         assert!((component.jump_buffer_timer_ms - 8.0).abs() < EPSILON);
         assert!(component.jump_spent);
+        assert!(component.swim_reentry_latched);
         assert!((component.capsule.half_height - 0.4).abs() < EPSILON);
         assert!((component.capsule.eye_height - 0.25).abs() < EPSILON);
 
@@ -407,7 +415,7 @@ mod tests {
         assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
-    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding) through the
+    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim) through the
     /// wire enum. Constructed from the source enum via an exhaustive list so a new
     /// variant must be added here to compile-cover it.
     #[test]
@@ -424,6 +432,7 @@ mod tests {
                 boost: Vec3::new(4.0, 0.0, -2.0),
                 eye_current: 0.75,
             },
+            MovementState::Swim { fluid: 2 },
         ];
         for state in variants {
             let wire = movement_state_enum_to_wire(state);

@@ -85,6 +85,9 @@ mod predict_reconcile_harness_test_fixtures;
 // E24 co-op fluid parity: host and client fluid tables through the tuning install.
 #[cfg(test)]
 mod predict_reconcile_harness_fluid_tables;
+// E24 co-op swim parity: swim entry, exit, fluid jump and its latch through reconcile.
+#[cfg(test)]
+mod predict_reconcile_harness_swim;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -761,7 +764,7 @@ fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
 /// wire guard `wire_transform_is_finite` applies to poses.
 fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
     let state_finite = match m.movement_state {
-        WireMovementState::Normal => true,
+        WireMovementState::Normal | WireMovementState::Swim { .. } => true,
         WireMovementState::Dash { elapsed_ms, boost } => {
             elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
         }
@@ -1077,7 +1080,6 @@ fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
 /// this module never reaches into `App`.
 pub struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
     pub command: &'a SimCommand,
-    pub aim_pitch: f32,
     pub collision: &'a C,
     /// This client's own environment volumes; the level gravity comes from
     /// `host_tuning` through [`client_environment_view`].
@@ -1102,7 +1104,6 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
 ) -> ClientPredictionTickResult {
     let ClientPredictionTickContext {
         command,
-        aim_pitch,
         collision,
         environment_volumes,
         host_tuning,
@@ -1112,7 +1113,7 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick, aim_pitch);
+    let input = sim_command_to_input(command, client_tick);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_predict_send();
 
@@ -1200,7 +1201,6 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
 pub fn client_send_input_command(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,
-    aim_pitch: f32,
 ) -> Option<u32> {
     let Some(NetEndpoint::Client {
         client, prediction, ..
@@ -1209,7 +1209,7 @@ pub fn client_send_input_command(
         return None;
     };
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick, aim_pitch);
+    let input = sim_command_to_input(command, client_tick);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_fire_send();
     Some(client_tick)
@@ -7130,6 +7130,7 @@ mod tests {
                 coyote_timer_ms: 0.0,
                 jump_buffer_timer_ms: 0.0,
                 jump_spent: false,
+                swim_reentry_latched: false,
                 capsule_half_height: 0.8,
                 capsule_eye_height: 1.5,
                 aim_pitch,
@@ -7743,6 +7744,7 @@ mod tests {
                                     coyote_timer_ms: 0.0,
                                     jump_buffer_timer_ms: 0.0,
                                     jump_spent: false,
+                                    swim_reentry_latched: false,
                                     capsule_half_height: 0.8,
                                     capsule_eye_height: 1.5,
                                     aim_pitch: 0.0,

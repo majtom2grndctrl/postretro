@@ -26,3 +26,27 @@ pub(super) fn resolve_at_tick_start(
         },
     )
 }
+
+/// Resolve the environment the pawn would have this tick after standing up from
+/// a crouched capsule with its feet planted: the standing capsule, centred where
+/// `dispatch::stand_up_resize` with `ResizeAnchor::Feet` would put it. Swim entry
+/// tests immersion against the capsule the pawn will swim in, so a crouch in
+/// water shallower than the standing capsule's `enter_depth` never toggles
+/// between crouching and swimming.
+pub(super) fn resolve_standing(
+    component: &PlayerMovementComponent,
+    environment: EnvironmentView<'_>,
+    position: Vec3,
+) -> ResolvedEnvironment {
+    let standing_half_height = component.standing_half_height;
+    let delta = standing_half_height - component.capsule.half_height;
+    resolve_environment(
+        environment,
+        &BodyProbe {
+            position: Vec3::new(position.x, position.y + delta, position.z),
+            half_height: standing_half_height,
+            radius: component.capsule.radius,
+            eye_height: component.standing_eye_height,
+        },
+    )
+}

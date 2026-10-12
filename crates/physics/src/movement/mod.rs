@@ -11,12 +11,13 @@ pub mod knockback;
 mod mover_carry;
 mod push;
 mod substrate;
+mod swim_transition;
 
 pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
-use crate::movement::dispatch::dispatch_state_intent;
+use crate::movement::dispatch::{apply_environment_transition, dispatch_state_intent};
 use crate::movement::environment::resolve_at_tick_start;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
 use postretro_collision::EnvironmentView;
@@ -57,6 +58,10 @@ pub struct MovementInput {
     /// "crouch active this tick" boolean and never reasons about toggle vs hold.
     pub crouch_intent: bool,
     pub facing_yaw: f32,
+    /// View pitch in radians, positive looking up; the input command carries it
+    /// as `aim_pitch`. Only `Swim` reads it: swimming forward follows the view
+    /// pitch. Every other state moves on `facing_yaw` alone.
+    pub facing_pitch: f32,
     /// Use rising edge for host-authoritative trigger volumes. Movement does not
     /// consume it; the fixed-tick trigger stage reads the same command bit.
     pub use_pressed: bool,
@@ -80,6 +85,10 @@ pub struct MovementEvents {
     pub landed: bool,
     pub jumped: bool,
     pub state_edges: Vec<MovementStateEdge>,
+    /// The fluid of this tick's swim edge (entered, or left), as an index into
+    /// the active fluid table; `None` on a tick with no swim edge. Lets the
+    /// swim enter and exit sounds name their fluid after the pawn is dry.
+    pub swim_fluid: Option<u16>,
 }
 
 impl MovementEvents {
@@ -109,6 +118,7 @@ const fn state_entry_address(state: MovementStateKind) -> Option<&'static str> {
         MovementStateKind::Dash => Some("dash_started"),
         MovementStateKind::Crouch => Some("crouch_started"),
         MovementStateKind::Slide => Some("slide_started"),
+        MovementStateKind::Swim => Some("swim_started"),
     }
 }
 
@@ -118,6 +128,7 @@ const fn state_exit_address(state: MovementStateKind) -> Option<&'static str> {
         MovementStateKind::Dash => Some("dash_ended"),
         MovementStateKind::Crouch => Some("crouch_ended"),
         MovementStateKind::Slide => Some("slide_ended"),
+        MovementStateKind::Swim => Some("swim_ended"),
     }
 }
 
@@ -182,7 +193,7 @@ pub fn tick(
     dt: f32,
     position: Vec3,
 ) -> (Vec3, MovementEvents) {
-    let resolved_environment = resolve_at_tick_start(component, environment, position);
+    let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;
     let knockback_launch = component.is_grounded()
@@ -224,6 +235,17 @@ pub fn tick(
     // Gravity still accumulates in that base; the protected knockback and push
     // drift layers are recomposed before the one shared collision sweep.
     component.velocity -= component.knockback_velocity + component.push_velocity;
+    // Swim entry and exit by immersion apply here, before the intent, so the
+    // entered state owns this tick (`swim_transition`).
+    apply_environment_transition(
+        component,
+        input,
+        environment,
+        &mut resolved_environment,
+        &collision,
+        &mut position,
+        &mut events,
+    );
     let state_before_dispatch = component.movement_state.kind();
     let transition = dispatch_state_intent(
         component,
@@ -235,11 +257,14 @@ pub fn tick(
         &mut position,
         &mut events,
     );
+    // An intent that cleared grounded launched the body: a jump, or a swimmer
+    // rising off the pool floor. The substrate must not clamp the rise.
+    let intent_left_ground = previous_ground.is_grounded() && !component.is_grounded();
 
     // Push lands after the intent: horizontal push in the protected drift layer,
     // vertical push in locomotion. Terminal speed along the push is held beside
     // the fall clamp.
-    push::apply(component, resolved_environment.push, dt);
+    push::apply(component, &resolved_environment, dt);
     knockback::decay(
         &mut component.knockback_velocity,
         &component.knockback,
@@ -262,9 +287,11 @@ pub fn tick(
     // live buffer on a held button would reset its countdown each tick,
     // extending the window indefinitely. The guard ensures the window counts
     // from the first press and re-arms only after full expiry or consumption.
+    // A swimmer's jump swims up or leaps out; it is never buffered.
     if input.jump_pressed
         && !previous_ground.is_grounded()
         && !events.jumped
+        && component.movement_state.kind() != MovementStateKind::Swim
         && component.jump_buffer_ms > 0.0
         && component.jump_buffer_timer_ms <= 0.0
     {
@@ -280,7 +307,7 @@ pub fn tick(
         dt,
         position,
         previous_ground,
-        events.jumped || launched,
+        events.jumped || launched || intent_left_ground,
     );
 
     // Contact flows forward through the tick seam: the active intent has
@@ -335,6 +362,8 @@ pub fn tick(
 mod environment_tests;
 #[cfg(test)]
 mod push_tests;
+#[cfg(test)]
+mod swim_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1169,6 +1198,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1191,6 +1221,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1245,6 +1276,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1469,6 +1501,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1481,6 +1514,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1539,6 +1573,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1551,6 +1586,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1570,6 +1606,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1608,6 +1645,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1620,6 +1658,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1752,6 +1791,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1771,6 +1811,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1816,6 +1857,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1828,6 +1870,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1880,6 +1923,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1892,6 +1936,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -1986,6 +2031,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2000,6 +2046,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2113,6 +2160,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2125,6 +2173,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2166,6 +2215,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2178,6 +2228,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2216,6 +2267,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2232,6 +2284,7 @@ mod tests {
             running,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2284,6 +2337,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2299,6 +2353,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2321,6 +2376,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2372,6 +2428,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2382,6 +2439,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2413,6 +2471,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2437,6 +2496,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2501,6 +2561,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2516,6 +2577,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2564,6 +2626,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2577,6 +2640,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2665,6 +2729,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -2690,6 +2755,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2717,6 +2783,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2782,6 +2849,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2802,6 +2870,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2850,6 +2919,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2905,6 +2975,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2915,6 +2986,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -2968,6 +3040,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3027,6 +3100,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3047,6 +3121,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3085,6 +3160,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3102,6 +3178,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3143,6 +3220,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3216,6 +3294,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3233,6 +3312,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3305,6 +3385,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3402,6 +3483,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3459,6 +3541,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3501,6 +3584,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3531,6 +3615,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3604,6 +3689,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3640,6 +3726,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3700,6 +3787,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3755,6 +3843,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3786,6 +3875,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3803,6 +3893,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3834,6 +3925,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3902,6 +3994,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3945,6 +4038,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -3993,6 +4087,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4012,6 +4107,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4109,6 +4205,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4143,6 +4240,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4165,6 +4263,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4198,6 +4297,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4287,6 +4387,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4308,6 +4409,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -4357,6 +4459,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -4873,6 +4976,7 @@ mod tests {
             running: false,
             crouch_intent: true,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -4933,6 +5037,7 @@ mod tests {
             running: false,
             crouch_intent: true,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -5050,6 +5155,7 @@ mod tests {
             running: false,
             crouch_intent: true, // crouch STILL held during the jump
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -5092,6 +5198,7 @@ mod tests {
             running: false,
             crouch_intent: true,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -5135,6 +5242,7 @@ mod tests {
             running: false,
             crouch_intent: true,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
@@ -5420,6 +5528,7 @@ mod tests {
                     to: MovementStateKind::Normal,
                 },
             ],
+            swim_fluid: None,
         };
         let mut addresses = Vec::new();
         events.append_named_events(&mut addresses);

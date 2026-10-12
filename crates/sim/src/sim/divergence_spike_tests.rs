@@ -70,6 +70,7 @@ impl RecordedCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },

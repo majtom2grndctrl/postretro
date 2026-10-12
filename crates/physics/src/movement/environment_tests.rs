@@ -80,13 +80,14 @@ pub(super) fn idle_input() -> MovementInput {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     }
 }
 
 /// An axis-aligned box leaf, as the level loader would hand movement.
-fn box_leaf(min: Vec3, max: Vec3) -> ConvexLeaf {
+pub(super) fn box_leaf(min: Vec3, max: Vec3) -> ConvexLeaf {
     let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
     ConvexLeaf {
         planes: vec![

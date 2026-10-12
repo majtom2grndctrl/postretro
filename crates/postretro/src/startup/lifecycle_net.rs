@@ -122,6 +122,7 @@ impl App {
         self.kinematic_mover_tick_states.clear();
         self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
+        self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
@@ -180,6 +181,8 @@ impl App {
         // No volume of this level may resolve after it unloads; the next install
         // supplies its own set.
         self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();
+        // Nor may its fluid tint or muffle.
+        self.clear_fluid_eye_presentation();
         // The registry is cleared below, retiring the chase agent's entity slot;
         // drop the handle so a stale id is never re-targeted after unload.
         #[cfg(feature = "dev-tools")]

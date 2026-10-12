@@ -1,4 +1,5 @@
-// Screen-effect uniform packing from UI-bound slot values.
+// Screen-effect uniform packing from UI-bound slot values and the engine-owned
+// fluid view tint.
 // See: context/lib/rendering_pipeline.md §7.8
 
 use std::collections::HashMap;
@@ -15,13 +16,18 @@ const SHAKE_REFERENCE_HEIGHT: f32 = 720.0;
 const REDUCE_MOTION_SLOT: &str = "accessibility.reduceMotion";
 const SCREEN_SHAKE_SCALE_SLOT: &str = "accessibility.screenShakeScale";
 
-/// The resolve's per-frame uniform. The effect channels pack from slots here;
-/// the renderer fills the layout fields (`covers_hud`, `scene_divisor`).
+/// The resolve's per-frame uniform. The script channels pack from slots here
+/// and the fluid tint from its engine-owned input; the renderer fills the
+/// layout fields (`covers_hud`, `scene_divisor`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct EffectUniform {
     pub flash: [f32; 4],
     pub vignette: [f32; 4],
+    /// The camera eye's fluid tint: rgb, then blend strength (the fluid's
+    /// strength times its ramp). Engine-owned, never a `screen.*` slot; the
+    /// shader composes it over the mod's flash and vignette.
+    pub fluid_tint: [f32; 4],
     pub shake: [f32; 2],
     pub _pad: [f32; 2],
     /// Per-effect covers-HUD switches, nonzero = the effect also reaches the
@@ -32,12 +38,15 @@ pub struct EffectUniform {
 }
 
 // Mirrors the `EffectUniform` struct in shaders/screen_effects.wgsl (flash @0,
-// vignette @16, shake @32, _pad @40, covers_hud @48, scene_divisor @60); wgpu
-// checks the size only at draw time, so pin the layout at compile time.
+// vignette @16, fluid_tint @32, shake @48, _pad @56, covers_hud @64,
+// scene_divisor @76); wgpu checks the size only at draw time, so pin the
+// layout at compile time.
 const _: () = {
-    assert!(std::mem::size_of::<EffectUniform>() == 64);
-    assert!(std::mem::offset_of!(EffectUniform, covers_hud) == 48);
-    assert!(std::mem::offset_of!(EffectUniform, scene_divisor) == 60);
+    assert!(std::mem::size_of::<EffectUniform>() == 80);
+    assert!(std::mem::offset_of!(EffectUniform, fluid_tint) == 32);
+    assert!(std::mem::offset_of!(EffectUniform, shake) == 48);
+    assert!(std::mem::offset_of!(EffectUniform, covers_hud) == 64);
+    assert!(std::mem::offset_of!(EffectUniform, scene_divisor) == 76);
 };
 
 /// Which screen effects reach the UI layer as well as the scene. The single
@@ -59,8 +68,18 @@ impl CoversHud {
     }
 }
 
-pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUniform {
-    let mut uniform = EffectUniform::default();
+/// Pack one frame's effects: the `screen.*` slots the mod writes, and the
+/// engine's `fluid_tint` (rgb + blend strength), a separate input that never
+/// reads or writes a slot. Each tint component is clamped to `[0, 1]`; a
+/// non-finite component reads as 0.
+pub fn pack_effect_uniform(
+    slot_values: &HashMap<String, SlotValue>,
+    fluid_tint: [f32; 4],
+) -> EffectUniform {
+    let mut uniform = EffectUniform {
+        fluid_tint: fluid_tint.map(unit_component),
+        ..EffectUniform::default()
+    };
     if let Some(v) = slot_vec4(slot_values.get("screen.flash")) {
         uniform.flash = v;
     }
@@ -77,6 +96,14 @@ pub fn pack_effect_uniform(slot_values: &HashMap<String, SlotValue>) -> EffectUn
         ];
     }
     uniform
+}
+
+fn unit_component(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Reduce motion suppresses shake fully; otherwise the screen-shake slider
@@ -128,7 +155,7 @@ mod tests {
     #[test]
     fn pack_effect_uniform_returns_identity_for_unbound_slots() {
         assert_eq!(
-            pack_effect_uniform(&HashMap::new()),
+            pack_effect_uniform(&HashMap::new(), [0.0; 4]),
             EffectUniform::default()
         );
     }
@@ -145,7 +172,10 @@ mod tests {
             ("screen.shake", SlotValue::Array(vec![0.0, 0.0])),
         ]);
 
-        assert_eq!(pack_effect_uniform(&snapshot), EffectUniform::default());
+        assert_eq!(
+            pack_effect_uniform(&snapshot, [0.0; 4]),
+            EffectUniform::default()
+        );
     }
 
     #[test]
@@ -159,7 +189,7 @@ mod tests {
             ("screen.shake", SlotValue::Array(vec![128.0, 72.0])),
         ]);
 
-        let uniform = pack_effect_uniform(&snapshot);
+        let uniform = pack_effect_uniform(&snapshot, [0.0; 4]);
 
         assert_eq!(uniform.flash, [1.0, 0.2, 0.3, 0.5]);
         assert_eq!(uniform.vignette, [0.1, 0.0, 0.4, 0.8]);
@@ -177,7 +207,7 @@ mod tests {
             for (name, value) in extra {
                 snapshot.insert(name.to_string(), value.clone());
             }
-            pack_effect_uniform(&snapshot).shake
+            pack_effect_uniform(&snapshot, [0.0; 4]).shake
         };
         let full = shaking(&[]);
         assert!((full[0] - 0.1).abs() < 1e-6);
@@ -196,6 +226,38 @@ mod tests {
         assert!((halved[1] - 0.05).abs() < 1e-6);
     }
 
+    // E24 P6, pack half: the fluid tint is its own input. It packs beside the
+    // mod's tint without changing it, a slot write still lands while it is
+    // on, and zeroing it restores exactly the slot-only uniform.
+    #[test]
+    fn fluid_tint_packs_beside_the_mod_tint_and_leaves_it_unchanged() {
+        let mod_tint = slots(&[("screen.flash", SlotValue::Array(vec![0.8, 0.2, 0.1, 0.3]))]);
+        let water = [0.1, 0.3, 0.4, 0.35];
+        let dry = pack_effect_uniform(&mod_tint, [0.0; 4]);
+        let wet = pack_effect_uniform(&mod_tint, water);
+        assert_eq!(wet.flash, [0.8, 0.2, 0.1, 0.3]);
+        assert_eq!(wet.fluid_tint, water);
+        assert_eq!(
+            EffectUniform {
+                fluid_tint: [0.0; 4],
+                ..wet
+            },
+            dry,
+            "the fluid tint touches no other field"
+        );
+
+        let rewritten = slots(&[("screen.flash", SlotValue::Array(vec![0.0, 0.0, 1.0, 0.6]))]);
+        let wet = pack_effect_uniform(&rewritten, water);
+        assert_eq!(wet.flash, [0.0, 0.0, 1.0, 0.6], "the script write lands");
+        assert_eq!(wet.fluid_tint, water, "and the fluid tint stays");
+    }
+
+    #[test]
+    fn fluid_tint_components_clamp_to_unit_and_non_finite_reads_as_zero() {
+        let uniform = pack_effect_uniform(&HashMap::new(), [f32::NAN, 2.0, -1.0, 0.5]);
+        assert_eq!(uniform.fluid_tint, [0.0, 1.0, 0.0, 0.5]);
+    }
+
     #[test]
     fn pack_effect_uniform_uses_identity_for_missing_or_malformed_slots() {
         let snapshot = slots(&[
@@ -204,7 +266,7 @@ mod tests {
             ("screen.shake", SlotValue::Array(vec![10.0])),
         ]);
 
-        let uniform = pack_effect_uniform(&snapshot);
+        let uniform = pack_effect_uniform(&snapshot, [0.0; 4]);
 
         assert_eq!(uniform.flash, [0.5, 0.5, 0.5, 0.25]);
         assert_eq!(uniform.vignette, [0.0, 0.0, 0.0, 0.0]);

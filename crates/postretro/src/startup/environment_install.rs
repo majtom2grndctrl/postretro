@@ -6,7 +6,8 @@ use std::time::Instant;
 
 use postretro_collision::EnvironmentVolumes;
 use postretro_combat_model::FluidMovementTable;
-use postretro_foundation::FluidDescriptor;
+use postretro_entities::provenance::DescriptorProvenance;
+use postretro_foundation::{FluidDescriptor, PlayerMovementComponent};
 use postretro_level_loader::LevelWorld;
 
 use crate::App;
@@ -138,5 +139,44 @@ impl App {
     ) -> Option<Ref<'_, FluidDescriptor>> {
         let fluid = self.environment_volumes.volume(volume)?.fluid?;
         self.fluid_presentation(fluid)
+    }
+
+    /// A level whose installed volumes include a fluid (one that resolved
+    /// against the active table, so not dry), installed for a local player
+    /// whose movement descriptor has no `movement.swim` block: warn once, at
+    /// install, naming the descriptor. That player wades, walking fluid floors
+    /// under gravity, which is a legitimate wade-only design. Runs after the boot
+    /// pawn spawns, so it covers single-player and the listen host; a connected
+    /// client's pawn arrives later from the host baseline and is not checked.
+    pub(crate) fn warn_if_local_player_cannot_swim(&self) {
+        let volumes = &self.environment_volumes;
+        let has_fluid = (0..volumes.len()).any(|index| {
+            volumes
+                .volume(index)
+                .is_some_and(|volume| volume.fluid.is_some())
+        });
+        if !has_fluid {
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let registry = session.scripting.script_ctx.registry.borrow();
+        let Some(pawn) = registry.local_player_pawn() else {
+            return;
+        };
+        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(pawn) else {
+            return;
+        };
+        if movement.swim.is_some() {
+            return;
+        }
+        let descriptor = registry
+            .get_component::<DescriptorProvenance>(pawn)
+            .map(|provenance| provenance.canonical_name.as_str())
+            .unwrap_or("player");
+        log::warn!(
+            "[Movement] player descriptor '{descriptor}' has no movement.swim block; this level has fluid volumes, so the player wades through them and cannot swim"
+        );
     }
 }

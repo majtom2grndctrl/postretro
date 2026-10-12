@@ -94,6 +94,7 @@ impl CommandEntry {
             use_pressed: false,
             drop_pressed: false,
             facing_yaw,
+            facing_pitch: 0.0,
         }
     }
 }

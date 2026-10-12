@@ -341,7 +341,8 @@ impl WeaponCuesMessage {
 ///
 /// Bumped to 16 for the protected knockback velocity in player movement state.
 /// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
-/// Bumped to 19 for the protected push-drift velocity in player movement state.
+/// Bumped to 19 for the protected push-drift velocity in player movement state;
+/// `WireMovementState::Swim` and the swim re-entry latch share that bump.
 pub const SNAPSHOT_VERSION: u16 = 19;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
@@ -1329,6 +1330,7 @@ mod tests {
             coyote_timer_ms: 80.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: true,
+            swim_reentry_latched: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
             aim_pitch: -0.45,
@@ -1595,12 +1597,16 @@ mod tests {
                 eye_current: 0.8,
                 floor_normal: None,
             },
+            WireMovementState::Swim { fluid: 2 },
         ] {
-            let movement = WirePlayerMovementState {
-                movement_state: state,
-                ..sample_movement()
-            };
-            assert!(round_trips(&movement));
+            for swim_reentry_latched in [false, true] {
+                let movement = WirePlayerMovementState {
+                    movement_state: state,
+                    swim_reentry_latched,
+                    ..sample_movement()
+                };
+                assert!(round_trips(&movement));
+            }
         }
     }
 

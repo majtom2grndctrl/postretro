@@ -443,6 +443,7 @@ fn neutral_movement(facing_yaw: f32) -> MovementInput {
         use_pressed: false,
         drop_pressed: false,
         facing_yaw,
+        facing_pitch: 0.0,
     }
 }
 

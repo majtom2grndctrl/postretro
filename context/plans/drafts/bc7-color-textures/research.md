@@ -64,6 +64,40 @@ Nearly all of the byte win sits in the 1024² sets. The aesthetic risk sits in t
 
 A 1024² RGBA8 chain with full mips is about 5.6 MB. The same chain in BC7 (8 bpp, tail-out at 4×4) is about 1.4 MB. That gives BC7 ≈ 25% of RGBA8 for block-aligned power-of-two textures. The ≤ 30% acceptance row leaves headroom for small and non-aligned textures that stay RGBA8.
 
+## Decision notes
+
+- **Who wins.** Dev content's baked materials total about 279 MB (2026-10-11), dominated by the 1024² photo sets. The engine's own low-res pixel art saves little, and the gate exists to keep it exact. The win goes to mods and content that ship hi-res textures.
+- **No shader change.** Hardware sRGB decode yields the same color the shader samples today, as `plans/done/emissive-surfaces-bloom` §Wire format anticipated. Upload maps format through one shared match.
+- **Old readers.** An unknown format tag returns `UnsupportedFormatTag` and the slot degrades to a placeholder. The `STAGE_VERSION` bump rejects old sidecars first anyway.
+- **Determinism and the gate.** A machine-dependent encoder would make the BC7-or-RGBA8 choice itself vary between machines, not just the bytes. That is why the in-tree encoder is load-bearing for the gate.
+- **Later encoder changes.** Any change that alters bytes bumps `STAGE_VERSION` again, because the key carries no encoder identity.
+- **Sprite warm builds.** `bake_sprite_collection` builds diffuse and BC5 normal chains before its cache check. World and model paths check first. With BC7 the sprite order would re-encode every warm build.
+- **Sprite normal gate.** `plan_baked_sprite_array` accepts only `Bc5RgUnorm` normals, and a test pins the rejection of `Rgba8Unorm`. `billboard.wgsl` reads the normal from `.rg`, so admitting the RGBA8 fallback is shader-safe.
+
+## Gate metric
+
+An absolute worst-block metric is biased against the win:
+- A 1024² texture has hundreds of times more blocks than a small one, so more chances for one bad block.
+- Noisy photo blocks (grass, bark, concrete) are the "many unrelated colours" case that modes 1, 5 and 6 reproduce worst. Yet noise hides their error.
+- The same error in a 3-colour pixel-art block is plainly visible.
+
+Candidates, all as integer scores in sRGB-encoded space with alpha weighted:
+- absolute max per-channel error, or block SSE
+- error normalised by the block's own contrast or variance
+- a deterministic distinct-colour class per block: a strict bound for low-palette blocks, a looser one for noisy blocks
+
+The first slice reports the photo-set pass share under each candidate at a pixel-art-safe threshold before picking.
+
+## Rivals not taken
+
+| Rival | Why not |
+|---|---|
+| FFI encoders (`intel_tex_2`, `ctt`) | See Encoder options: they break the SDK build or determinism |
+| Authored per-texture compression setting (Unreal, Godot) | A modder-facing one-way door with no consumer yet. The chokepoint keeps it additive |
+| BC1 for opaque world diffuse | Half of BC7's footprint again, but 565 endpoints and 4 colours per block fail far more blocks, so the gate would reject much more. Sprites need alpha, so BC7 ships anyway. Could later become a second format behind the chokepoint, tried first on opaque slots |
+| Minimum-size cutoff (no BC7 below, say, 256²) | The 128–256² weapon art and a mod's 512 px pixel art still need a gate, so the gate subsumes it. Small textures are cheap to encode |
+| Runtime top-mip drop | Complementary, not rival: a low-VRAM player option that costs crispness. A separate brief |
+
 ## Pin table
 
 Edges and orderings the Acceptance rows cite.

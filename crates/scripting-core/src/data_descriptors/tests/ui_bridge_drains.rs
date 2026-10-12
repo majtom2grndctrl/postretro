@@ -275,6 +275,29 @@ fn damaged_enemy_overlay_wire_matches_luau_factory_and_malformed_entries_degrade
     );
 }
 
+// Regression: presentation shield values accept signed numeric expressions in both VM bridges.
+#[test]
+fn negative_shield_overlay_expressions_pass_both_vm_bridges() {
+    let from_js = eval_js(
+        r#"({ over: { kind: "damagedEnemies", lingerMs: 500, hideAtFull: true,
+            shield: { value: { op: "const", value: -1 }, max: { op: "const", value: 100 } } },
+            template: "enemyStatus", maxVisible: 2 })"#,
+        |ctx, value| {
+            presentation_overlay_from_js(ctx, value).expect("signed numeric shield IR is accepted")
+        },
+    );
+    let from_lua = eval_lua(
+        r#"return { over = { kind = "damagedEnemies", lingerMs = 500, hideAtFull = true,
+            shield = { value = { op = "const", value = -1 }, max = { op = "const", value = 100 } } },
+            template = "enemyStatus", maxVisible = 2 }"#,
+        |value| presentation_overlay_from_lua(value).expect("signed numeric shield IR is accepted"),
+    );
+    assert_eq!(from_js, from_lua);
+    from_js
+        .validate()
+        .expect("authoring validation preserves signed expressions");
+}
+
 #[test]
 fn luau_presentation_factories_reject_storage_overflow_at_construction() {
     const PRESENTATION_SRC: &str = include_str!("../../../../../sdk/lib/ui/presentation.luau");

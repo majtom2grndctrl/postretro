@@ -81,6 +81,7 @@ pub(super) fn dispatch_primitive(
     );
 
     let mut reg = script_ctx.registry.borrow_mut();
+    super::presentation_capture::before_apply(script_ctx, &reg, &descriptor.primitive, &targets);
     match reaction_registry.dispatch_tagged(
         &descriptor.primitive,
         &mut reg,
@@ -88,7 +89,12 @@ pub(super) fn dispatch_primitive(
         &targets,
         &descriptor.args,
     ) {
-        Ok(true) => {}
+        Ok(true) => super::presentation_capture::after_apply(
+            script_ctx,
+            &reg,
+            &descriptor.primitive,
+            &targets,
+        ),
         Ok(false) => log::warn!(
             "[Scripting] primitive '{}' is not registered; reaction had no effect",
             descriptor.primitive,

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use postretro_combat_model::CarriedState;
 #[cfg(test)]
 use postretro_combat_model::{AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, ShotId};
+#[cfg(test)]
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{EntityId, EntityRegistry, EntityTypeDescriptor, Transform};
 use postretro_foundation::NavAgentParams;
@@ -29,12 +30,6 @@ use super::{NetworkIdAllocator, ReplicableSet};
 #[derive(Debug, Default)]
 pub struct SlotPawns {
     pawns: HashMap<u64, EntityId>,
-    /// Last materialized sibling ids for each slot pawn. Inventory remains the
-    /// authority while the pawn is live; this is only a teardown fallback when
-    /// another system has already despawned the pawn before its slot closes.
-    /// Keeping the ids with the slot, rather than in `WeaponOwners`, preserves
-    /// the latter as a presentation-only dirty attachment queue.
-    wieldables: HashMap<u64, Vec<EntityId>>,
 }
 
 impl SlotPawns {
@@ -49,11 +44,8 @@ impl SlotPawns {
         self.pawns.get(&client_id).copied()
     }
 
-    pub fn remove_client(&mut self, client_id: u64) -> Option<(EntityId, Vec<EntityId>)> {
-        self.pawns.remove(&client_id).map(|pawn| {
-            let wieldables = self.wieldables.remove(&client_id).unwrap_or_default();
-            (pawn, wieldables)
-        })
+    pub fn remove_client(&mut self, client_id: u64) -> Option<EntityId> {
+        self.pawns.remove(&client_id)
     }
 
     /// Number of live slot pawns. Test-only assertion helper.
@@ -158,13 +150,7 @@ pub(crate) fn on_slot_accepted(
     // Stamp the stable session-monotonic NetworkId and register for replication.
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
-    let wieldables = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
-        .unwrap_or_default();
     slot_pawns.pawns.insert(client_id, pawn);
-    slot_pawns.wieldables.insert(client_id, wieldables);
     log::info!("[Net] slot {client_id} accepted: spawned remote pawn {pawn:?} as {net_id:?}");
     Some((pawn, net_id))
 }
@@ -209,17 +195,6 @@ pub(crate) fn on_slot_closed_with_fallback(
 
     let mapped_pawn = slot_pawns.pawns.remove(&client_id);
     let pawn = mapped_pawn.or(fallback_pawn)?;
-    let retained_wieldables = mapped_pawn
-        .and_then(|_| slot_pawns.wieldables.remove(&client_id))
-        .unwrap_or_default();
-    // Inventory owns every sibling wieldable. Snapshot their ids before the pawn
-    // dies, then despawn every instance before clearing the owner; after pawn
-    // despawn its component column is inaccessible by design.
-    let wieldables: Vec<EntityId> = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
-        .unwrap_or(retained_wieldables);
     // Resolve the pawn's NetworkId BEFORE `allocator.forget(pawn)` below removes the
     // mapping. The caller forgets this id from the host's remote-presentation buffer.
     let network_id = allocator.network_id_for_entity(pawn);
@@ -230,14 +205,10 @@ pub(crate) fn on_slot_closed_with_fallback(
     // despawned id" true at every yield point.)
     replicable.unregister(pawn);
     allocator.forget(pawn);
-    for wieldable in wieldables {
-        replicable.unregister(wieldable);
-        allocator.forget(wieldable);
-        let _ = registry.despawn(wieldable);
-    }
     // `despawn` errors only on a stale id; the pawn may already be gone if game logic
     // despawned it. Either way the post-state is "gone", so the error is swallowed.
     let _ = registry.despawn(pawn);
+    allocator.forget_dead(registry, replicable);
     log::info!("[Net] slot {client_id} closed: despawned remote pawn {pawn:?}");
     Some(ClosedSlotPawn { pawn, network_id })
 }
@@ -664,6 +635,7 @@ mod tests {
     /// tests). Default `entity_class` resolves to the `"player"` descriptor.
     fn synthetic_placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::new(2.0, 1.0, -3.0),
             angles: glam::Vec3::ZERO,
@@ -752,7 +724,7 @@ mod tests {
         // (default `"player"`) so the client materializes the matching component.
         assert_eq!(
             owned[0].entity_class,
-            Some("descriptor:player".to_string()),
+            Some("pawn:player".to_string()),
             "descriptor net-slot pawn stamps its entity_class for the wire"
         );
     }
@@ -773,9 +745,18 @@ mod tests {
         let mut open_shots = crate::netcode::OpenAuthorizedShots::new();
         let mut pending_hit_declarations = crate::netcode::PendingHitDeclarations::new();
         let mut weaponless_fire_logged = std::collections::HashSet::new();
+        let mut weapon_descriptor = weapon_descriptor("reference_pistol");
+        weapon_descriptor.health = Some(postretro_foundation::HealthDescriptor {
+            max: 75.0,
+            hitbox: Some(postretro_foundation::HitboxDescriptor {
+                half_extents: [0.5; 3],
+                offset: None,
+            }),
+            zone_multipliers: Default::default(),
+        });
         let descriptors = [
             player_with_loadout(&["reference_pistol", "reference_pistol"]),
-            weapon_descriptor("reference_pistol"),
+            weapon_descriptor,
         ];
         let spawn_points = [synthetic_placement()];
 
@@ -810,6 +791,20 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(weapons.len(), 2, "fixture equips two inventory slots");
+        for (slot, &item) in weapons.iter().enumerate() {
+            assert_eq!(registry.inventory_owner(item), Some((pawn, slot)));
+            let mut health = registry
+                .get_component::<postretro_entities::components::health::HealthComponent>(item)
+                .unwrap()
+                .clone();
+            health.current = 29.0;
+            registry.set_component(item, health).unwrap();
+            assert!(
+                !postretro_sim::scripting_systems::health::is_damage_target_eligible(
+                    &registry, item
+                )
+            );
+        }
         let mut lowering = registry
             .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapons[0])
             .unwrap()
@@ -822,6 +817,16 @@ mod tests {
         switching_inventory.switch_target = Some(1);
         switching_inventory.switch_origin = Some(0);
         registry.set_component(pawn, switching_inventory).unwrap();
+        for &item in &weapons {
+            assert_eq!(
+                registry
+                    .get_component::<postretro_entities::components::health::HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            assert!(registry.is_inventory_owned(item));
+        }
         let weapon = weapons[0];
         let pawn_net = allocator
             .network_id_for_entity(pawn)
@@ -892,6 +897,7 @@ mod tests {
             &owners,
             &command_queues,
             None,
+            &Default::default(),
         );
         let pawn_snapshot = snapshots
             .iter()
@@ -911,6 +917,7 @@ mod tests {
                 &crate::netcode::MovementOwners::new(),
                 &command_queues,
                 Some((pawn, -0.37)),
+                &Default::default(),
             );
         let host_movement = host_pitch_snapshots
             .iter()
@@ -970,6 +977,9 @@ mod tests {
                         && !allocator.maps_network_id(*net_id)),
             "slot close clears allocator forward and reverse mappings"
         );
+        for &item in &weapons {
+            assert_eq!(registry.inventory_owner(item), None);
+        }
         assert!(!replicable.contains(pawn));
         assert!(weapons.iter().all(|&weapon| !replicable.contains(weapon)));
         assert_eq!(open_shots.len(), 0);
@@ -1015,6 +1025,38 @@ mod tests {
                 .all(|weapon| !weapons.contains(weapon)),
             "no pre-demotion instance or slot holder survives re-promotion"
         );
+        for (slot, item) in replacement_inventory.wieldables.iter().enumerate() {
+            let Some(item) = item else {
+                continue;
+            };
+            assert_eq!(registry.inventory_owner(*item), Some((replacement, slot)));
+            assert!(registry.is_inventory_owned(*item));
+            assert!(
+                !postretro_sim::scripting_systems::health::is_damage_target_eligible(
+                    &registry, *item
+                )
+            );
+            assert_eq!(
+                registry
+                    .get_component::<postretro_entities::components::health::HealthComponent>(*item)
+                    .unwrap()
+                    .current,
+                75.0
+            );
+        }
+        // Re-promotion reuses the retired generation-safe slots, never their ownership.
+        let retired = std::iter::once(pawn)
+            .chain(weapons.iter().copied())
+            .collect::<Vec<_>>();
+        for fresh in std::iter::once(replacement)
+            .chain(replacement_inventory.wieldables.iter().flatten().copied())
+        {
+            let old = retired
+                .iter()
+                .find(|old| old.to_raw() & 0xffff == fresh.to_raw() & 0xffff)
+                .unwrap();
+            assert_ne!(fresh.to_raw() >> 16, old.to_raw() >> 16);
+        }
     }
 
     #[test]
@@ -1071,8 +1113,76 @@ mod tests {
         );
         assert!(
             weapons.iter().all(|weapon| !registry.exists(*weapon)),
-            "the slot's retained teardown ids remove every sibling after the pawn is gone"
+            "holder destruction retires every current sibling before slot cleanup"
         );
+    }
+
+    // Regression: an initial-loadout fallback deleted a dropped/reacquired
+    // weapon after its original pawn had already been destroyed.
+    #[test]
+    fn held_descriptor_slot_cleanup_preserves_former_items_and_retires_later_pickups() {
+        for destroy_before_close in [false, true] {
+            let mut registry = EntityRegistry::new();
+            let mut slot_pawns = SlotPawns::new();
+            let mut allocator = NetworkIdAllocator::new();
+            let mut replicable = ReplicableSet::new();
+            let mut replication = ServerReplication::new();
+            let descriptors = [
+                player_with_default_weapon("reference_pistol"),
+                weapon_descriptor("reference_pistol"),
+            ];
+            let (pawn, _) = on_slot_accepted(
+                &mut registry,
+                &mut slot_pawns,
+                &mut allocator,
+                &mut replicable,
+                CLIENT_A,
+                SlotPawnSource::Descriptor {
+                    placement: &synthetic_placement(),
+                    descriptors: &descriptors,
+                    agent_params: None,
+                    carried_loadout: None,
+                },
+            )
+            .unwrap();
+            let former = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0]
+                .unwrap();
+            let later = registry.spawn(Transform::default());
+            let other = registry.spawn(Transform::default());
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            inventory.wieldables[0] = Some(later);
+            registry.set_component(pawn, inventory).unwrap();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[3] = Some(former);
+            registry.set_component(other, inventory).unwrap();
+            let former_id = allocator.stamp(former);
+            replicable.register(former);
+            let later_id = allocator.stamp(later);
+            replicable.register(later);
+            if destroy_before_close {
+                registry.despawn(pawn).unwrap();
+            }
+            on_slot_closed_with_fallback(
+                &mut registry,
+                &mut slot_pawns,
+                &mut allocator,
+                &mut replicable,
+                &mut replication,
+                CLIENT_A,
+                None,
+            )
+            .unwrap();
+            assert!(registry.exists(former));
+            assert_eq!(registry.inventory_owner(former), Some((other, 3)));
+            assert_eq!(allocator.network_id_for_entity(former), Some(former_id));
+            assert!(replicable.contains(former));
+            assert!(!registry.exists(later));
+            assert!(!allocator.maps_network_id(later_id));
+            assert!(!replicable.contains(later));
+        }
     }
 
     #[test]

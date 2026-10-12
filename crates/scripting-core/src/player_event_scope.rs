@@ -39,6 +39,15 @@ fn for_each_input<'a>(
     }
 }
 
+/// The scoped audience requested by a presentation builder. `everyone` has
+/// no source requirement; invalid spellings are rejected by install validation.
+pub fn audience_token(args: &serde_json::Value) -> Option<&str> {
+    match args.get("audience")?.as_str()? {
+        token @ ("@activators" | "@trigger" | "@player") => Some(token),
+        _ => None,
+    }
+}
+
 /// Whether `args` hold an IR read of the dispatch input `name` (`@occupancy`).
 pub fn reads_dispatch_input(args: &serde_json::Value, name: &str) -> bool {
     let mut found = false;
@@ -56,15 +65,18 @@ pub fn reads_event_player(args: &serde_json::Value) -> bool {
 }
 
 /// Whether a reaction body names `on.player` anywhere: as a target, a
-/// sequence step's subject, or a read owner.
+/// sequence step's subject, a read owner, or a presentation audience.
 pub fn reaction_uses_event_player(descriptor: &ReactionDescriptor) -> bool {
     match descriptor {
         ReactionDescriptor::Primitive(primitive) => {
             primitive.target.as_deref() == Some(EVENT_PLAYER_TOKEN)
                 || reads_event_player(&primitive.args)
+                || audience_token(&primitive.args) == Some(EVENT_PLAYER_TOKEN)
         }
         ReactionDescriptor::Sequence(steps) => steps.iter().any(|step| {
-            matches!(step.id, SequenceTarget::EventPlayer) || reads_event_player(&step.args)
+            matches!(step.id, SequenceTarget::EventPlayer)
+                || reads_event_player(&step.args)
+                || audience_token(&step.args) == Some(EVENT_PLAYER_TOKEN)
         }),
         ReactionDescriptor::Progress(_) => false,
     }

@@ -1,5 +1,6 @@
 import { defineFaction, defineMod, defineTriggerPool, sentiment } from "postretro";
 import { playerEntity } from "./scripts/player";
+import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceRifleEntity } from "./scripts/reference-rifle";
 import { referenceShotgunEntity } from "./scripts/reference-shotgun";
@@ -157,6 +158,8 @@ export default defineMod({
   // event.
   events: [
     combatDummyLifecycle,
+    coopDummyLifecycle,
+    coopWeaponLifecycle,
     enemyDeath,
     ammoOnKill,
     combatZombieLifecycle,
@@ -216,6 +219,7 @@ export default defineMod({
   ],
   entities: [
     playerEntity,
+    ...coopPresentationEntities,
     // DEV FIXTURE: positional sound events. Descriptor sounds on a weapon and
     // an enemy; see scripts/positional-sound.ts.
     positionalSoundShotgunEntity,

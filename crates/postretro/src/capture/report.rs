@@ -24,6 +24,10 @@ const CPU_COMPLETION_CADENCE: &str = "once-per-sample-frame";
 /// Build the schema-v3 report only after all sample frames have completed.
 /// The caller owns staging and publication so a previous successful report is
 /// never replaced until the final PNG is visible.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Assembles independent capture measurements at the report boundary."
+)]
 pub(super) fn measurement_report(
     scene: &CaptureScene,
     map_bytes: u64,

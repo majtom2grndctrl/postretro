@@ -182,7 +182,7 @@ fn run_headless_inner(
             mesh_clip_tables: &mut mesh_clip_tables,
             hit_zone_store: &mut hit_zone_store,
             trigger_pool_policy,
-            suppress_ai_enemies: false,
+            suppress_host_replicated: false,
             suppress_boot_pawn: false,
             local_carried_loadout: None,
         };

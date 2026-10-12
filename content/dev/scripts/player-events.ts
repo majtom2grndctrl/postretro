@@ -7,7 +7,7 @@
 
 import { players, becomes, ceases, read, defineReaction, getGameState } from "postretro";
 import type { PlayerEventParams } from "postretro";
-import { playSound, flashScreen, vignette, updateState, onStateCrossing } from "postretro/ui";
+import { playSound, flashScreen, screenShake, vignette, updateState, onStateCrossing } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
 import { leveling } from "./leveling";
 
@@ -22,14 +22,17 @@ const recordLevelUp = defineReaction("leveling.recordLevelUp", (on: PlayerEventP
 );
 const fanfare = defineReaction("leveling.fanfare", playSound("sfx/test_tone")); // on that player's machine
 const goldFlash = defineReaction("leveling.goldFlash", flashScreen([1, 0.9, 0.3, 0.4], 300));
+const levelShake = defineReaction("leveling.shake", screenShake(6, 350, 18));
 const scald = defineReaction("heat.scald", (on: PlayerEventParams) => on.player.damage(5));
 const scaldHiss = defineReaction("heat.scaldHiss", playSound("fixtures/bite"));
 const cooled = defineReaction("heat.cooled", playSound("movers/door_close"));
 const bleeding = defineReaction("health.bleeding", vignette(0.6, 800, [0.8, 0, 0]));
 
-export function setupLevel() {
+// Reusable declaration builder: keep its name distinct from the script-mode
+// global setupLevel handoff when another level entry imports it.
+export function setupPlayerEvents() {
   return {
-    reactions: [levelUp, recordLevelUp, fanfare, goldFlash, scald, scaldHiss, cooled, bleeding],
+    reactions: [levelUp, recordLevelUp, fanfare, goldFlash, levelShake, scald, scaldHiss, cooled, bleeding],
     playerEvents: [
       // Host decisions: run on the host, once per player. The guard
       // (`level < 2`) goes false once the fire raises the level, so the
@@ -39,6 +42,7 @@ export function setupLevel() {
         recordLevelUp,
         fanfare,
         goldFlash,
+        levelShake,
       ]),
       players().on(becomes(read(player.overheated)), [scald, scaldHiss]), // overheating burns the wielder
       players().on(ceases(read(player.overheated)), [cooled]),
@@ -48,4 +52,9 @@ export function setupLevel() {
       onStateCrossing(player.health, { below: 25 }, [bleeding]),
     ],
   };
+}
+
+// Standalone player-events map entry.
+export function setupLevel() {
+  return setupPlayerEvents();
 }

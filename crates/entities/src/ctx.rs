@@ -16,6 +16,10 @@ use crate::reactions::system_commands::SystemCommandQueue;
 use crate::registry::EntityRegistry;
 use crate::slot_table::SlotTable;
 
+pub type PresentationNetworkedPredicate = fn(&EntityRegistry, crate::EntityId) -> bool;
+pub type PresentationOverrideValidator =
+    fn(&crate::presentation_overrides::PresentationOverride) -> bool;
+
 /// Handle every primitive closure captures. Cloning is cheap — it bumps shared
 /// `Rc`s. The fields behind `Rc<RefCell<_>>` are the subsystems the scripting
 /// surface is allowed to touch. Extend by adding one field per subsystem.
@@ -63,6 +67,13 @@ pub struct ScriptCtx {
     /// services (audio/input/UI) out of the scripting surface — the queue is
     /// the seam. See: context/lib/scripting.md §10.4.
     pub system_commands: SystemCommandQueue,
+    /// Written state is independent of components rewritten by bridge sampling.
+    pub presentation_overrides: Rc<RefCell<crate::presentation_overrides::PresentationOverrides>>,
+    /// The level-relative clock the bridges will sample in this frame.
+    pub presentation_script_time: Rc<Cell<f64>>,
+    /// Injected by composition; scripting-core never depends upward on netcode.
+    pub presentation_networked_predicate: Rc<Cell<Option<PresentationNetworkedPredicate>>>,
+    pub presentation_override_validator: Rc<Cell<Option<PresentationOverrideValidator>>>,
 }
 
 impl ScriptCtx {
@@ -83,6 +94,10 @@ impl ScriptCtx {
             gravity: Rc::new(Cell::new(f32::NAN)),
             owner_slot_writes_enabled: Rc::new(Cell::new(true)),
             system_commands: SystemCommandQueue::new(),
+            presentation_overrides: Rc::new(RefCell::new(Default::default())),
+            presentation_script_time: Rc::new(Cell::new(0.0)),
+            presentation_networked_predicate: Rc::new(Cell::new(None)),
+            presentation_override_validator: Rc::new(Cell::new(None)),
         }
     }
 }

@@ -26,7 +26,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// The tuning-payload epoch remains independent.
 /// Frozen projectile facts and reliable observer cues advance this to 25.
 /// The weapon-switch declaration's client tick advances it to 26.
-pub const WIRE_VERSION: u32 = 26;
+/// Shared enemy overlay rosters and participation-framed Presentation advance it to 28.
+pub const WIRE_VERSION: u32 = 28;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -434,77 +435,6 @@ mod tests {
         ));
     }
 
-    /// `ServerPresentationPayload` as shipped before player-addressed commands.
-    #[derive(Debug, Clone, PartialEq, bitcode::Encode, bitcode::Decode)]
-    enum PreCommandPresentationPayload {
-        Spawn {
-            template_id: String,
-            anchor: [f32; 3],
-            value: f32,
-            facts: std::collections::BTreeMap<String, crate::wire::PresentationFact>,
-        },
-        OverlayFact {
-            enemy_id: crate::wire::NetworkId,
-            health_fraction: f32,
-            shield_fraction: f32,
-            has_shield: bool,
-            alive: bool,
-        },
-    }
-
-    // Appending the command variant leaves every shipped presentation payload
-    // byte-identical, so it needs no wire-version bump.
-    #[test]
-    fn appending_presentation_commands_keeps_existing_payload_bytes() {
-        use crate::wire::{NetworkId, PresentationFact, ServerPresentationPayload};
-        let facts = std::collections::BTreeMap::from([
-            ("value".to_string(), PresentationFact::Number(12.5)),
-            (
-                "label".to_string(),
-                PresentationFact::Text("crit".to_string()),
-            ),
-        ]);
-        let cases = [
-            (
-                PreCommandPresentationPayload::Spawn {
-                    template_id: "damage".to_string(),
-                    anchor: [1.0, 2.0, 3.0],
-                    value: 12.5,
-                    facts: facts.clone(),
-                },
-                ServerPresentationPayload::Spawn {
-                    template_id: "damage".to_string(),
-                    anchor: [1.0, 2.0, 3.0],
-                    value: 12.5,
-                    facts,
-                },
-            ),
-            (
-                PreCommandPresentationPayload::OverlayFact {
-                    enemy_id: NetworkId(7),
-                    health_fraction: 0.5,
-                    shield_fraction: 0.25,
-                    has_shield: true,
-                    alive: true,
-                },
-                ServerPresentationPayload::OverlayFact {
-                    enemy_id: NetworkId(7),
-                    health_fraction: 0.5,
-                    shield_fraction: 0.25,
-                    has_shield: true,
-                    alive: true,
-                },
-            ),
-        ];
-        for (before, after) in cases {
-            assert_eq!(
-                bitcode::encode(&before),
-                crate::wire::encode(&after),
-                "appending presentation commands changed a shipped encoding; bump WIRE_VERSION"
-            );
-        }
-    }
-
     // A previous-build peer cannot decode a presentation command, so gate 1
     // must refuse it before any decode.
     #[test]
@@ -517,8 +447,8 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 26,
-            "the byte layout of shipped messages is unchanged"
+            WIRE_VERSION, 28,
+            "shared rosters and framed presentation extend the shipped layout"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
@@ -619,7 +549,9 @@ mod activation_epoch_tests {
 
     #[test]
     fn activation_records_and_outcomes_reject_previous_layout_and_vocabulary() {
-        assert_eq!(WIRE_VERSION, 26);
+        const {
+            assert!(WIRE_VERSION >= 26);
+        }
         assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         for received in [
             ProtocolVersion {
@@ -644,6 +576,22 @@ mod switch_tick_epoch_tests {
     use super::*;
     use bitcode::{Decode, Encode};
 
+    #[test]
+    fn shared_overlay_roster_refuses_wire_27_without_changing_snapshot_layout() {
+        assert_eq!(WIRE_VERSION, 28);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 18);
+        assert_eq!(PROTOCOL_ID, 0x5052_4c42);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 27,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 27);
+    }
+
     /// The switch declaration as shipped at wire 25, before its client tick.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
     struct PreTickSwitchDeclaration {
@@ -664,15 +612,17 @@ mod switch_tick_epoch_tests {
 
     #[test]
     fn switch_tick_advances_only_the_wire_version_and_refuses_wire_25_peers() {
-        assert_eq!(WIRE_VERSION, 26);
+        const {
+            assert!(WIRE_VERSION >= 26);
+        }
         assert_eq!(
             PROTOCOL_ID, 0x5052_4c42,
             "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
         );
         assert_eq!(
             crate::wire::SNAPSHOT_VERSION,
-            17,
-            "no snapshot record changed"
+            18,
+            "presentation state later extended snapshot records"
         );
         assert!(matches!(
             validate_handshake(

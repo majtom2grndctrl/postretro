@@ -1875,7 +1875,14 @@ fn residual_hop_only_reactions_bind_and_run_the_chained_reaction() {
             &script_ctx,
             ResidualOrigin::TriggerBinding,
         );
-        assert_eq!(follow_ups, vec!["target".to_string()], "{shape}: follow-up");
+        assert_eq!(
+            follow_ups,
+            vec![(
+                "target".to_string(),
+                postretro_entities::FireOrigin::EveryMachine
+            )],
+            "{shape}: follow-up"
+        );
         dispatch_deferred_named_events_with_sequences(
             follow_ups,
             &data,

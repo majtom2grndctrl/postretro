@@ -1,10 +1,18 @@
-// Engine-side replication ownership for registered authoritative gameplay entities.
+// Engine-side replication ownership for registered gameplay and presentation records.
 // Produces owned snapshots for the registry-blind net-crate boundary.
 // See: context/lib/networking.md
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use postretro_net::replication::EntitySnapshot;
+use super::presentation_state::presentation_override_payload;
+use postretro_entities::presentation_binding::PresentationBindingResolver;
+use postretro_entities::presentation_overrides::{
+    PresentationComponent, PresentationOverride, PresentationOverrides,
+};
+use postretro_entities::provenance::{DescriptorMapOverride, DescriptorSpawnPath};
+use postretro_net::replication::{EntitySnapshot, ServerReplication};
+use postretro_net::wire::WirePresentationBinding;
 use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
 
 use postretro_entities::components::mesh::MeshComponent;
@@ -14,25 +22,27 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 
-use super::descriptor_class::{descriptor_entity_class, is_networked_ai_enemy};
+use super::descriptor_class::{descriptor_entity_class, is_host_replicated_descriptor_entity};
 use super::movement_state::movement_state_to_wire;
 use super::{
     HostCommandQueues, MovementOwners, NetworkIdAllocator, component_kind_discriminant,
     transform_to_wire,
 };
 
-/// The Phase 2 replicable set: entities `postretro-netcode` has explicitly registered
-/// as authoritative networked gameplay objects — slot-owned movement pawns, the
-/// host's own pawn, networked AI enemies, and host world items. This set is the
-/// registration mechanism the predicate consults.
+/// The Phase 2 replicable set: entities `postretro-netcode` explicitly registered
+/// for replication. This includes authoritative gameplay objects (pawns, AI enemies,
+/// world items, loaded movers, and projectile visuals) and client-local presentation
+/// entities bound after a captured override. This set is the producer's allow-list.
 ///
-/// Membership is by `EntityId`. The predicate ([`is_replicable`]) is the authority
-/// on what crosses the wire — this set is its allow-list, layered over the
-/// component-kind exclusions below. An entity not in this set does not replicate,
-/// even if it carries a `Transform` (the Phase 1 all-`Transform` walk is gone).
+/// Membership is by `EntityId`. Registration is the producer's allow-list: an entity
+/// outside it is never considered, even if it carries a `Transform` (the Phase 1
+/// all-`Transform` walk is gone). The producer also requires usable payloads for bound
+/// presentation records.
 #[derive(Debug, Default)]
 pub struct ReplicableSet {
     registered: HashSet<EntityId>,
+    bound_identities: HashMap<EntityId, WirePresentationBinding>,
+    last_valid_payloads: RefCell<HashMap<(EntityId, ComponentKind), ComponentPayload>>,
     projectile_presentations: HashMap<EntityId, postretro_net::wire::WireProjectilePresentation>,
 }
 
@@ -41,10 +51,9 @@ impl ReplicableSet {
         Self::default()
     }
 
-    // The register/unregister/contains surface is the registration mechanism for
-    // authoritative networked entities: lifecycle glue registers slot-owned movement
-    // pawns and the host pawn, while registry sweeps register AI enemies and world items.
-    /// Register an entity as an authoritative networked gameplay object. Idempotent.
+    // Lifecycle glue and registry sweeps register authoritative entities; the
+    // presentation sweep registers keyable client-local entities with captured state.
+    /// Register an entity for replication. Idempotent.
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
     }
@@ -53,6 +62,10 @@ impl ReplicableSet {
     pub(crate) fn unregister(&mut self, id: EntityId) {
         self.registered.remove(&id);
         self.projectile_presentations.remove(&id);
+        self.bound_identities.remove(&id);
+        self.last_valid_payloads
+            .get_mut()
+            .retain(|(entity, _), _| *entity != id);
     }
 
     pub(crate) fn register_projectile_presentation(
@@ -78,19 +91,21 @@ impl ReplicableSet {
     }
 }
 
-/// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
-/// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
-/// networked AI enemies, and world items — the authoritative networked gameplay objects
-/// `postretro-netcode` registers). The Phase 1 all-`Transform` walk is deliberately
+/// Phase 2 replicable-set predicate. An entity is eligible for snapshot production
+/// only when explicitly registered in [`ReplicableSet`]. Gameplay lifecycle and
+/// descriptor sweeps register authoritative entities; the presentation sweep can
+/// register a keyable local presentation entity when it has an override.
+/// Inventory-owned entities are excluded from both descriptor registration and
+/// presentation binding until drop. The Phase 1 all-`Transform` walk is deliberately
 /// *not* reused.
 ///
-/// Registration is the allow-list, so deterministic client-local / baked
-/// presentation entities (`BillboardEmitter`, `ParticleState`, `SpriteVisual`,
-/// `Light`, `FogVolume`) and ordinary static map transforms stay off the wire by
-/// default — they are simply never registered. The exclusion is also enforced
-/// structurally on the payload side: [`collect_payloads`] only pulls wire-bound
-/// gameplay state plus current mesh animation state. Baked/cosmetic payloads stay
-/// local.
+/// Presentation is not eagerly replicated: unmodified client-local or baked
+/// components (`BillboardEmitter`, `ParticleState`, `SpriteVisual`, `Light`,
+/// `FogVolume`) and ordinary static map transforms remain local. For registered
+/// entities, captured `Light`, `FogVolume`, and `BillboardEmitter` overrides are
+/// appended as validated state payloads; a bound presentation record is produced
+/// only with valid or cached state and carries no `Transform`. [`collect_payloads`]
+/// separately collects gameplay state and current mesh animation state.
 ///
 /// `produce_owned_snapshots` consults the set directly via `iter`; this standalone
 /// single-entity predicate is exercised only by this module's tests.
@@ -116,20 +131,29 @@ pub(crate) fn produce_owned_snapshots(
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
 ) -> Vec<EntitySnapshot> {
-    produce_owned_snapshots_with_host_aim(registry, set, allocator, owners, command_queues, None)
+    produce_owned_snapshots_with_host_aim(
+        registry,
+        set,
+        allocator,
+        owners,
+        command_queues,
+        None,
+        &PresentationOverrides::default(),
+    )
 }
 
 /// Production listen-host variant. Remote-owned pawn pitch comes from the resolved
 /// command queue; the host pawn has no `MovementOwners` entry and therefore receives
 /// its directly-authorized local camera pitch through this explicit source.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn produce_owned_snapshots_with_host_aim(
+pub fn produce_owned_snapshots_with_host_aim(
     registry: &EntityRegistry,
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
+    overrides: &PresentationOverrides,
 ) -> Vec<EntitySnapshot> {
     let mut snapshots = Vec::new();
     for id in set.iter() {
@@ -147,7 +171,43 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
                 .and_then(|client_id| command_queues.current_aim_pitch(client_id))
                 .unwrap_or(0.0)
         };
-        let components = collect_payloads(registry, id, aim_pitch);
+        let binding = set.bound_identities.get(&id).copied();
+        let mut components = if binding.is_some() {
+            Vec::new()
+        } else {
+            collect_payloads(registry, id, aim_pitch)
+        };
+        for kind in [
+            ComponentKind::Light,
+            ComponentKind::FogVolume,
+            ComponentKind::BillboardEmitter,
+        ] {
+            let key = (id, kind);
+            let Some(record) = overrides.records.get(&key) else {
+                if binding.is_some()
+                    && let Some(payload) = set.last_valid_payloads.borrow().get(&key).cloned()
+                {
+                    components.push(payload);
+                }
+                continue;
+            };
+            let payload = if let Some(payload) = presentation_override_payload(record) {
+                set.last_valid_payloads
+                    .borrow_mut()
+                    .insert(key, payload.clone());
+                Some(payload)
+            } else {
+                set.last_valid_payloads.borrow().get(&key).cloned()
+            };
+            if let Some(payload) = payload {
+                components.push(payload);
+            }
+        }
+        // A first invalid bound write has never entered the tracker. Once valid,
+        // the cached payload keeps it present even if defensive validation fails.
+        if binding.is_some() && components.is_empty() {
+            continue;
+        }
         let network_id = allocator.stamp(id).0;
         // Movement-authority metadata (M15 Phase 3): a pawn owned by a client carries
         // its owner id + resolved command cursor. Unowned entities (the Transform-only
@@ -171,6 +231,7 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
             entity_class,
             active_weapon_archetype,
             projectile_presentation: set.projectile_presentations.get(&id).copied(),
+            presentation_binding: binding,
         });
     }
     snapshots
@@ -178,8 +239,9 @@ pub(crate) fn produce_owned_snapshots_with_host_aim(
 
 /// Collect the wire-mirror payloads for one replicable entity, in a stable order:
 /// `Transform` first, then `PlayerMovementState` and mesh animation state if
-/// present. Descriptor-owned presentation data is never collected; the mesh
-/// payload carries only the current authoritative animation state.
+/// present. Descriptor-owned presentation data is not collected here; the producer
+/// appends validated presentation overrides separately. Mesh payload carries only
+/// the current authoritative animation state.
 fn collect_payloads(
     registry: &EntityRegistry,
     id: EntityId,
@@ -292,60 +354,184 @@ pub(crate) fn kinematic_mover_state_to_wire(
     }
 }
 
-/// Register the host's networked AI enemies for outbound replication (E10 Task 4): every
-/// entity carrying `Brain` + `Agent` from a `MapPlacement` or `RuntimeSpawn` descriptor spawn
-/// ([`is_networked_ai_enemy`]) enters the [`ReplicableSet`] and is stamped a stable `NetworkId`,
-/// so its authoritative `Transform` replicates to clients. Static descriptor props (a
-/// light/mesh/health placement without AI) stay unregistered.
-///
-/// Reload-safe and idempotent. `tracked` is the host endpoint's owning set of the
-/// previously-registered enemy ids: on a level reload the freshly-spawned enemies are
-/// distinct `EntityId`s, so every stale tracked id is unregistered (and dropped from
-/// `tracked`) before the new sweep registers this level's enemies. Re-running the sweep
-/// on the same level is a no-op (the set, the allocator, and `tracked` are all stable
-/// per `EntityId`). The host pawn's own registration lives in `host_register_own_pawn`;
-/// this is the enemy-only counterpart.
-///
-/// Host-gated by the caller (it only runs inside the `NetEndpoint::Host` arm). Reads the
-/// registry through the borrow the caller threads in and touches only the replication
-/// bookkeeping — it never reaches into `App`.
-pub fn host_register_map_enemies(
+/// Synchronize the host's descriptor-world membership with live components and
+/// canonical inventory ownership. Leaving the world forgets the old mapping, so
+/// a later drop receives a fresh session-monotonic NetworkId.
+pub fn host_register_descriptor_entities(
     registry: &EntityRegistry,
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     tracked: &mut HashSet<EntityId>,
+    overrides: &mut PresentationOverrides,
 ) {
     let stale_ids: Vec<EntityId> = tracked
         .iter()
         .copied()
-        .filter(|&id| !is_networked_ai_enemy(registry, id))
+        .filter(|&id| !is_host_replicated_descriptor_entity(registry, id))
         .collect();
     for stale in stale_ids {
         tracked.remove(&stale);
         replicable.unregister(stale);
-        // Prune the dead EntityId mapping so the allocator map does not accrue one
-        // entry per ever-spawned enemy. NetworkIds stay monotonic; only the stale
-        // mapping is dropped.
         allocator.forget(stale);
     }
-
-    let mut count = 0usize;
-    for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
-        if !is_networked_ai_enemy(registry, id) {
-            continue;
-        }
-        // Stamp the stable session-monotonic NetworkId and register for replication.
-        // No `MovementOwners` entry: an AI enemy is host-authoritative and unowned by any
-        // client, so its per-recipient `local_player` flag is false everywhere. Its class
-        // rides the finite-Transform snapshot via `descriptor_entity_class`.
-        allocator.stamp(id);
-        replicable.register(id);
-        if tracked.insert(id) {
+    let mut count = 0;
+    for (id, _) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
+        if host_register_descriptor_entity(registry, allocator, replicable, tracked, overrides, id)
+        {
             count += 1;
         }
     }
     if count > 0 {
-        log::info!("[Net] host registered {count} networked AI enemy/enemies for replication");
+        log::info!("[Net] host registered {count} descriptor entity/entities for replication");
+    }
+}
+
+/// Register a newly affected descriptor target without scanning the world.
+/// This closes the trigger-spawn → same-tick damage seam before the usual
+/// end-of-tick membership sweep. Returns whether membership was newly added.
+pub fn host_register_descriptor_entity(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+    overrides: &mut PresentationOverrides,
+    id: EntityId,
+) -> bool {
+    if !is_host_replicated_descriptor_entity(registry, id) {
+        return false;
+    }
+    allocator.stamp(id);
+    replicable.register(id);
+    if tracked.insert(id) {
+        capture_placement_overrides(registry, id, overrides);
+        true
+    } else {
+        false
+    }
+}
+
+/// Capture placement KVPs once, preserving authored snapshots across bridge sampling
+/// and pickup/drop. Other map fields remain descriptor-local presentation.
+fn capture_placement_overrides(
+    registry: &EntityRegistry,
+    id: EntityId,
+    overrides: &mut PresentationOverrides,
+) {
+    let Ok(provenance) = registry.get_component::<DescriptorProvenance>(id) else {
+        return;
+    };
+    for (kind, fields) in [
+        (
+            ComponentKind::Light,
+            [
+                DescriptorMapOverride::LightInitialIntensity,
+                DescriptorMapOverride::LightInitialColor,
+            ],
+        ),
+        (
+            ComponentKind::BillboardEmitter,
+            [
+                DescriptorMapOverride::EmitterInitialRate,
+                DescriptorMapOverride::EmitterInitialSpinRate,
+            ],
+        ),
+    ] {
+        if overrides.records.contains_key(&(id, kind))
+            || !fields
+                .iter()
+                .any(|field| provenance.map_overrides.contains(field))
+        {
+            continue;
+        }
+        let Some(component) = PresentationComponent::snapshot(registry, id, kind) else {
+            continue;
+        };
+        let record = PresentationOverride {
+            component,
+            anim_start: None,
+        };
+        if presentation_override_payload(&record).is_some() {
+            overrides.records.insert((id, kind), record);
+        } else if overrides.warned_writes.insert((id, "placement KVP".into())) {
+            log::warn!("[Net] invalid placement presentation override for entity {id:?}");
+        }
+    }
+}
+
+/// Bind recorded changes to client-local map presentation after gameplay drains.
+/// Sorting fixes NetworkId assignment and therefore baseline budget order.
+pub fn host_register_presentation_overrides(
+    registry: &EntityRegistry,
+    overrides: &mut PresentationOverrides,
+    resolver: &dyn PresentationBindingResolver,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracker: &mut ServerReplication,
+) {
+    let mut ids: Vec<_> = overrides.records.keys().map(|(id, _)| *id).collect();
+    // Include bound registrations defensively even if their records were removed.
+    ids.extend(replicable.bound_identities.keys().copied());
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        if !registry.exists(id) {
+            overrides.remove_entity(id);
+            if replicable.bound_identities.contains_key(&id) {
+                if let Some(network_id) = allocator.network_id_for_entity(id) {
+                    tracker.forget_entity_without_tombstone(network_id.0);
+                }
+                replicable.unregister(id);
+                allocator.forget(id);
+            }
+        } else if registry
+            .get_component::<DescriptorProvenance>(id)
+            .is_ok_and(|provenance| {
+                matches!(
+                    provenance.spawn_path,
+                    DescriptorSpawnPath::PlayerSpawn
+                        | DescriptorSpawnPath::NetworkSlot
+                        | DescriptorSpawnPath::ProjectilePresentation
+                )
+            })
+            || replicable.projectile_presentations.contains_key(&id)
+        {
+            // Even a stale/incorrect resolver identity cannot replace these
+            // dedicated records with a presentation-only binding. Keep their
+            // existing registration and NetworkId intact.
+            overrides.remove_entity(id);
+            replicable.bound_identities.remove(&id);
+            replicable
+                .last_valid_payloads
+                .get_mut()
+                .retain(|(entity, _), _| *entity != id);
+            if overrides.warned_unresolvable.insert(id) {
+                log::warn!("[Net] cannot bind presentation override for entity {id:?}");
+            }
+        } else if is_host_replicated_descriptor_entity(registry, id)
+            || registry.is_inventory_owned(id)
+            || replicable.bound_identities.contains_key(&id)
+        {
+            continue;
+        } else if let Some((key, origin)) = resolver
+            .key_for_entity(registry, id)
+            .filter(|(_, origin)| origin.is_finite())
+        {
+            allocator.stamp(id);
+            replicable.register(id);
+            replicable.bound_identities.insert(
+                id,
+                WirePresentationBinding {
+                    kind: key.kind as u8,
+                    index: key.index,
+                    origin: origin.to_array(),
+                },
+            );
+        } else {
+            overrides.remove_entity(id);
+            if overrides.warned_unresolvable.insert(id) {
+                log::warn!("[Net] cannot bind presentation override for entity {id:?}");
+            }
+        }
     }
 }
 
@@ -387,49 +573,6 @@ pub fn host_register_loaded_movers(
     }
     if count > 0 {
         log::info!("[Net] host registered {count} kinematic mover/movers for replication");
-    }
-}
-
-/// Register every host world item for outbound replication. World-item membership is
-/// defined exclusively by live `ComponentKind::Touchable` presence: acquisition
-/// removes that component, so the next sweep unregisters and forgets the item; a drop
-/// restores it, so the next sweep assigns a fresh session-monotonic `NetworkId`.
-///
-/// Reload-safe and idempotent. `tracked` owns the previously registered item ids; the
-/// stale-id prologue removes entries that no longer carry `TouchableComponent` before
-/// registering the current world-item set. Held wieldables have no touchable component
-/// and are therefore never registered by this path.
-pub fn host_register_world_items(
-    registry: &EntityRegistry,
-    allocator: &mut NetworkIdAllocator,
-    replicable: &mut ReplicableSet,
-    tracked: &mut HashSet<EntityId>,
-) {
-    let stale_ids: Vec<EntityId> = tracked
-        .iter()
-        .copied()
-        .filter(|&id| {
-            !registry
-                .has_component_kind(id, ComponentKind::Touchable)
-                .unwrap_or(false)
-        })
-        .collect();
-    for stale in stale_ids {
-        tracked.remove(&stale);
-        replicable.unregister(stale);
-        allocator.forget(stale);
-    }
-
-    let mut count = 0usize;
-    for (id, _) in registry.iter_with_kind(ComponentKind::Touchable) {
-        allocator.stamp(id);
-        replicable.register(id);
-        if tracked.insert(id) {
-            count += 1;
-        }
-    }
-    if count > 0 {
-        log::info!("[Net] host registered {count} world item/items for replication");
     }
 }
 
@@ -593,7 +736,10 @@ mod tests {
 
     /// Spawn a static (non-AI) map-placed descriptor prop: a Transform, a health/mesh
     /// component, and a `MapPlacement` provenance — but NO `Brain`/`Agent`.
-    fn spawn_static_descriptor_prop(registry: &mut EntityRegistry, class: &str) -> EntityId {
+    pub(super) fn spawn_static_descriptor_prop(
+        registry: &mut EntityRegistry,
+        class: &str,
+    ) -> EntityId {
         let id = registry.spawn(Transform {
             position: Vec3::new(7.0, 0.0, 0.0),
             ..Transform::default()
@@ -615,7 +761,7 @@ mod tests {
         id
     }
 
-    fn spawn_world_item(registry: &mut EntityRegistry, class: &str) -> EntityId {
+    pub(super) fn spawn_world_item(registry: &mut EntityRegistry, class: &str) -> EntityId {
         let id = registry.spawn(Transform {
             position: Vec3::new(9.0, 0.0, 0.0),
             ..Transform::default()
@@ -641,7 +787,13 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             set.contains(enemy),
@@ -666,10 +818,22 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let first_network_id = allocator.stamp(enemy);
 
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let second_network_id = allocator.stamp(enemy);
 
         assert_eq!(
@@ -681,23 +845,28 @@ mod tests {
         assert!(tracked.contains(&enemy));
     }
 
-    // E10 Task 4: a non-AI static descriptor prop (MapPlacement, no Brain/Agent) is NOT
-    // registered — only AI enemies cross the wire from this path.
+    // Mesh/Health props participate without an AI brain.
     #[test]
-    fn host_does_not_register_static_descriptor_prop() {
+    fn host_registers_static_descriptor_prop() {
         let mut registry = EntityRegistry::new();
         let prop = spawn_static_descriptor_prop(&mut registry, "barrel");
 
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
-            !set.contains(prop),
-            "a static descriptor prop without Brain+Agent stays off the wire"
+            set.contains(prop),
+            "a static descriptor prop participates through its live Mesh/Health"
         );
-        assert!(tracked.is_empty(), "no static prop is tracked");
+        assert!(tracked.contains(&prop), "the descriptor prop is tracked");
     }
 
     #[test]
@@ -708,7 +877,13 @@ mod tests {
         let mut set = ReplicableSet::new();
         let mut tracked = HashSet::new();
 
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let initial_network_id = allocator.stamp(item);
         assert!(set.contains(item), "a touchable item is registered");
         assert!(tracked.contains(&item), "the host tracks the world item");
@@ -736,10 +911,21 @@ mod tests {
             "TouchableComponent remains host-local; Transform is enough for client materialization"
         );
 
-        registry
-            .remove_component::<TouchableComponent>(item)
-            .expect("acquisition removes touchability");
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+        let holder = registry.spawn(Transform::default());
+        let mut inventory = postretro_entities::components::inventory::Inventory::default();
+        inventory.wieldables[4] = Some(item);
+        registry.set_component(holder, inventory).unwrap();
+        assert!(
+            registry.is_inventory_owned(item),
+            "holstered ownership counts"
+        );
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         assert!(!set.contains(item), "acquired item is unregistered");
         assert!(
             !tracked.contains(&item),
@@ -752,14 +938,17 @@ mod tests {
 
         registry
             .set_component(
-                item,
-                TouchableComponent {
-                    mode: TouchMode::Auto,
-                    radius: 32.0,
-                },
+                holder,
+                postretro_entities::components::inventory::Inventory::default(),
             )
-            .expect("drop restores touchability");
-        host_register_world_items(&registry, &mut allocator, &mut set, &mut tracked);
+            .unwrap();
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let dropped_network_id = allocator.stamp(item);
         assert!(set.contains(item), "dropped item is registered again");
         assert!(
@@ -780,7 +969,13 @@ mod tests {
 
         // Level 1: one enemy registered + tracked.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         assert!(set.contains(level1_enemy));
 
         // Reload: despawn the level-1 enemy and spawn a fresh level-2 enemy (a distinct
@@ -792,7 +987,13 @@ mod tests {
             "the reloaded enemy is a distinct entity"
         );
 
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             !set.contains(level1_enemy),
@@ -818,7 +1019,13 @@ mod tests {
 
         // Level 1: one enemy registered, stamped, and mapped in the allocator.
         let level1_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
         let level1_net_id = allocator.stamp(level1_enemy);
         assert!(
             allocator.maps_entity(level1_enemy),
@@ -828,7 +1035,13 @@ mod tests {
         // Reload: despawn the level-1 enemy and spawn a fresh, distinct level-2 enemy.
         registry.despawn(level1_enemy).expect("live enemy despawns");
         let level2_enemy = spawn_ai_map_enemy(&mut registry, "grunt");
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         assert!(
             !allocator.maps_entity(level1_enemy),
@@ -854,7 +1067,13 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut set = ReplicableSet::new();
         let mut tracked: HashSet<EntityId> = HashSet::new();
-        host_register_map_enemies(&registry, &mut allocator, &mut set, &mut tracked);
+        host_register_descriptor_entities(
+            &registry,
+            &mut allocator,
+            &mut set,
+            &mut tracked,
+            &mut PresentationOverrides::default(),
+        );
 
         let snaps = produce_owned_snapshots(
             &registry,
@@ -999,3 +1218,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "replication/presentation_tests.rs"]
+mod presentation_tests;

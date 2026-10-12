@@ -185,16 +185,15 @@ pub fn primitive_descriptor_from_lua(
         None
     };
 
-    // `args` carries the primitive's payload. Absent / nil defaults to an
-    // empty object so primitives that take no arguments still deserialize.
+    // Preserve the light-animation clear form and legacy no-argument defaults.
     let args = if table.contains_key("args").map_err(lua_err)? {
         let raw: LuaValue = table.get("args").map_err(lua_err)?;
         match raw {
-            LuaValue::Nil => serde_json::Value::Object(Default::default()),
+            LuaValue::Nil => nullish_primitive_args(&primitive),
             other => conv::lua_to_json(other).map_err(lua_err)?,
         }
     } else {
-        serde_json::Value::Object(Default::default())
+        nullish_primitive_args(&primitive)
     };
 
     validate_consequential_reaction(

@@ -32,7 +32,7 @@ enum Watcher {
     Predicate {
         source_id: usize,
         program: BoundProgram<StoreScope>,
-        scope: StoreScope,
+        scope: Box<StoreScope>,
         #[cfg(debug_assertions)]
         script_ctx: ScriptCtx,
         fire: Vec<String>,
@@ -142,7 +142,7 @@ impl CrossingDetector {
                     self.watchers.push(Watcher::Predicate {
                         source_id,
                         program,
-                        scope,
+                        scope: Box::new(scope),
                         #[cfg(debug_assertions)]
                         script_ctx: script_ctx.clone(),
                         fire: crossing.fire.clone(),
@@ -213,7 +213,8 @@ impl CrossingDetector {
                         uses_script_ctx_slot_table(slot_table, script_ctx),
                         "CrossingDetector predicate watchers must detect against the ScriptCtx slot table"
                     );
-                    let current = matches!(eval_value(program, scope), IrValue::Bool(true));
+                    let current =
+                        matches!(eval_value(program, scope.as_ref()), IrValue::Bool(true));
                     if (!*previous && current) || (*both_edges && *previous && !current) {
                         let rising = !*previous && current;
                         to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {

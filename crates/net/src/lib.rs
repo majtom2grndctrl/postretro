@@ -6,6 +6,7 @@
 
 pub mod handshake;
 pub mod replication;
+pub use replication::JOIN_BASELINE_BUDGET_BYTES;
 pub mod slots;
 pub mod state_replication;
 pub mod state_slots;

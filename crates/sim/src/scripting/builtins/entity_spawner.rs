@@ -105,6 +105,7 @@ mod tests {
             .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
             .collect::<HashMap<_, _>>();
         MapEntity {
+            map_ordinal: None,
             classname: CLASSNAME.to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
             angles: Vec3::ZERO,

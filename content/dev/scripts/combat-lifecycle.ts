@@ -8,7 +8,8 @@
 // policies build on. Reward behavior is reference content only: the engine has
 // no concept of a reward, so a mod replaces these policies wholesale.
 
-import { defineImpactEvent, defineStore, present, update } from "postretro";
+import { defineImpactEvent, defineStore, update } from "postretro";
+import { present } from "postretro/ui";
 import { damageNumber } from "./combat-presentation";
 
 // REFERENCE CONTENT — XP belongs to its earning player, while teamKills is one

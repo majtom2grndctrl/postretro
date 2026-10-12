@@ -695,10 +695,10 @@ fn convex_subtract(subject: &[DVec3], clip: &[DVec3], plane_normal: DVec3) -> Ve
     for (start, outward) in edge_outward_normals(clip, plane_normal) {
         let (outside, inside) =
             split_polygon(&remainder, outward, outward.dot(start), SUBTRACT_EPSILON);
-        if let Some(outside) = outside {
-            if polygon_area(&outside, plane_normal) > 1e-12 {
-                pieces.push(outside);
-            }
+        if let Some(outside) = outside
+            && polygon_area(&outside, plane_normal) > 1e-12
+        {
+            pieces.push(outside);
         }
         match inside {
             Some(inside) => remainder = inside,

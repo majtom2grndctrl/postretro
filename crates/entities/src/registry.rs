@@ -1,6 +1,8 @@
 // Entity/component registry: the scripting surface that scripts address.
 // See: context/lib/scripting.md
 
+mod inventory_ownership;
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -16,9 +18,11 @@ use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
+use crate::components::hit_volume::HitVolumeComponent;
 use crate::components::inventory::Inventory;
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
+use crate::components::map_ordinal::MapOrdinal;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
@@ -144,6 +148,9 @@ pub enum ComponentKind {
     Touchable = 20,
     /// Engine-owned direct-impact projectile flight state.
     Projectile = 21,
+    /// Query-only display-copy geometry, never authoritative Health.
+    HitVolume = 22,
+    MapOrdinal = 23,
 }
 
 impl ComponentKind {
@@ -175,6 +182,8 @@ impl ComponentKind {
             ComponentKind::Inventory,
             ComponentKind::Touchable,
             ComponentKind::Projectile,
+            ComponentKind::HitVolume,
+            ComponentKind::MapOrdinal,
         ];
         VARIANTS.len()
     };
@@ -246,6 +255,8 @@ pub enum ComponentValue {
     Inventory(Inventory),
     Touchable(TouchableComponent),
     Projectile(ProjectileComponent),
+    HitVolume(HitVolumeComponent),
+    MapOrdinal(MapOrdinal),
 }
 
 impl ComponentValue {
@@ -273,6 +284,8 @@ impl ComponentValue {
             ComponentValue::Inventory(_) => ComponentKind::Inventory,
             ComponentValue::Touchable(_) => ComponentKind::Touchable,
             ComponentValue::Projectile(_) => ComponentKind::Projectile,
+            ComponentValue::HitVolume(_) => ComponentKind::HitVolume,
+            ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
         }
     }
 }
@@ -675,6 +688,34 @@ impl Component for ProjectileComponent {
     }
 }
 
+impl Component for MapOrdinal {
+    const KIND: ComponentKind = ComponentKind::MapOrdinal;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::MapOrdinal(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::MapOrdinal(self)
+    }
+}
+
+impl Component for HitVolumeComponent {
+    const KIND: ComponentKind = ComponentKind::HitVolume;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::HitVolume(volume) => Some(volume),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::HitVolume(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -685,6 +726,10 @@ pub enum RegistryError {
     GenerationMismatch(EntityId),
     #[error("entity {id} has no projectile presentation age")]
     ProjectilePresentationAgeNotFound { id: EntityId },
+    #[error("inventory item {item} is already held by {holder}")]
+    InventoryOwnershipConflict { item: EntityId, holder: EntityId },
+    #[error("Inventory requires checked component replacement")]
+    InventoryRequiresReplacement,
 }
 
 /// Internal per-slot metadata. `generation` matches the generation a live
@@ -747,6 +792,8 @@ pub struct EntityRegistry {
     /// live pawn: `despawn` removes it, so a recycled slot never inherits one.
     /// See: context/lib/networking.md §Session-state ledger.
     pawn_seats: HashMap<EntityId, Seat>,
+    /// Derived from live Inventory slots; never a separate ownership authority.
+    inventory_owners: HashMap<EntityId, (EntityId, usize)>,
     /// Fires from the health chokepoint after each accepted damage call. The
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
@@ -756,6 +803,8 @@ pub struct EntityRegistry {
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
     /// state.
     presentation_spawns: Vec<PresentationSpawn>,
+    /// Prefix already offered to transport, retained until local frame intake.
+    routed_presentation_spawns: usize,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
     /// Ownership returns here after every tick so the allocation is reused.
     active_deferred_effects: Vec<EntityId>,
@@ -782,8 +831,10 @@ impl EntityRegistry {
             kvp_table: HashMap::new(),
             local_player_pawn: None,
             pawn_seats: HashMap::new(),
+            inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
+            routed_presentation_spawns: 0,
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -959,6 +1010,11 @@ impl EntityRegistry {
         kind: ComponentKind,
         mut visit: impl FnMut(EntityId, &mut ComponentValue),
     ) {
+        assert_ne!(
+            kind,
+            ComponentKind::Inventory,
+            "Inventory requires checked replacement"
+        );
         let column = &mut self.components[kind as usize];
         for (idx, slot) in self.slots.iter().enumerate() {
             if !slot.live || slot.retired {
@@ -1041,6 +1097,37 @@ impl EntityRegistry {
     }
 
     pub fn despawn(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        self.validate(id)?;
+        // Retire before following ownership so malformed self/cyclic membership
+        // terminates, without recursion or retaining stale initial-loadout ids.
+        let mut pending = Vec::new();
+        self.retire_with_inventory(id, &mut pending)?;
+        while let Some(child) = pending.pop() {
+            if self.exists(child) {
+                self.retire_with_inventory(child, &mut pending)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn retire_with_inventory(
+        &mut self,
+        id: EntityId,
+        pending: &mut Vec<EntityId>,
+    ) -> Result<(), RegistryError> {
+        self.validate(id)?;
+        if let Ok(inventory) = self.get_component::<Inventory>(id) {
+            for child in inventory.wieldables.iter().flatten() {
+                if self
+                    .inventory_owner(*child)
+                    .is_some_and(|(holder, _)| holder == id)
+                {
+                    pending.push(*child);
+                }
+            }
+        }
+        self.clear_inventory_ownership(id);
+        self.inventory_owners.remove(&id);
         let index = id.index() as usize;
         let had_light = self.components[ComponentKind::Light as usize]
             .get(index)
@@ -1143,6 +1230,7 @@ impl EntityRegistry {
     pub fn take_presentation_spawns(&mut self) -> Vec<PresentationSpawn> {
         let mut spawns = Vec::with_capacity(self.presentation_spawns.len());
         spawns.append(&mut self.presentation_spawns);
+        self.routed_presentation_spawns = 0;
         spawns
     }
 
@@ -1153,13 +1241,21 @@ impl EntityRegistry {
     pub fn drain_presentation_spawns_into(&mut self, out: &mut Vec<PresentationSpawn>) {
         out.clear();
         out.append(&mut self.presentation_spawns);
+        self.routed_presentation_spawns = 0;
     }
 
-    /// Retain selected queued presentation spawns in place. Host routing uses
-    /// this to remove addressed remote cosmetics while leaving host-local work
-    /// for the ordinary frame-pool drain without allocating a partition Vec.
-    pub fn retain_presentation_spawns(&mut self, mut keep: impl FnMut(&PresentationSpawn) -> bool) {
-        self.presentation_spawns.retain(|spawn| keep(spawn));
+    /// Offer newly queued spawns to transport once, keeping one local copy for
+    /// frame intake. Rendering may be skipped for several routing passes; the
+    /// prefix cursor prevents those retained cosmetics from being sent again.
+    /// A dropped send is still consumed: transient presentation has no replay.
+    pub fn visit_unrouted_presentation_spawns(
+        &mut self,
+        mut visit: impl FnMut(&PresentationSpawn),
+    ) {
+        for spawn in &self.presentation_spawns[self.routed_presentation_spawns..] {
+            visit(spawn);
+        }
+        self.routed_presentation_spawns = self.presentation_spawns.len();
     }
 
     /// Discard presentation work whose world anchors belong to the retiring
@@ -1167,6 +1263,7 @@ impl EntityRegistry {
     /// fixed-tick intake.
     pub fn clear_presentation_spawns(&mut self) {
         self.presentation_spawns.clear();
+        self.routed_presentation_spawns = 0;
     }
 
     /// Mutable access to the engine-managed deferred-effect storage.
@@ -1281,7 +1378,7 @@ impl EntityRegistry {
                 .map(|(idx, _)| idx as u16),
         );
         self.impact_dispatches.clear();
-        self.presentation_spawns.clear();
+        self.clear_presentation_spawns();
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1317,6 +1414,9 @@ impl EntityRegistry {
         kind: ComponentKind,
     ) -> Result<&mut ComponentValue, RegistryError> {
         let index = self.validate(id)?;
+        if kind == ComponentKind::Inventory {
+            return Err(RegistryError::InventoryRequiresReplacement);
+        }
         self.components[kind as usize][index]
             .as_mut()
             .ok_or(RegistryError::ComponentNotFound { id, kind })
@@ -1327,14 +1427,7 @@ impl EntityRegistry {
         id: EntityId,
         value: T,
     ) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
-        let adds_light =
-            T::KIND == ComponentKind::Light && self.components[T::KIND as usize][index].is_none();
-        self.components[T::KIND as usize][index] = Some(value.into_value());
-        if adds_light {
-            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
-        }
-        Ok(())
+        self.store_component(id, value.into_value())
     }
 
     pub fn set_component_value(
@@ -1342,9 +1435,20 @@ impl EntityRegistry {
         id: EntityId,
         mut value: ComponentValue,
     ) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
         if let ComponentValue::Weapon(weapon) = &mut value {
             weapon.ensure_activation_programs();
+        }
+        self.store_component(id, value)
+    }
+
+    fn store_component(
+        &mut self,
+        id: EntityId,
+        value: ComponentValue,
+    ) -> Result<(), RegistryError> {
+        let index = self.validate(id)?;
+        if let ComponentValue::Inventory(inventory) = &value {
+            self.replace_inventory_ownership(id, inventory)?;
         }
         let kind = value.kind();
         let adds_light =
@@ -1371,16 +1475,7 @@ impl EntityRegistry {
     }
 
     pub fn remove_component<T: Component>(&mut self, id: EntityId) -> Result<(), RegistryError> {
-        let index = self.validate(id)?;
-        let cell = &mut self.components[T::KIND as usize][index];
-        if cell.is_none() {
-            return Err(RegistryError::ComponentNotFound { id, kind: T::KIND });
-        }
-        *cell = None;
-        if T::KIND == ComponentKind::Light {
-            self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
-        }
-        Ok(())
+        self.remove_component_kind(id, T::KIND)
     }
 
     pub fn remove_component_kind(
@@ -1389,11 +1484,13 @@ impl EntityRegistry {
         kind: ComponentKind,
     ) -> Result<(), RegistryError> {
         let index = self.validate(id)?;
-        let cell = &mut self.components[kind as usize][index];
-        if cell.is_none() {
+        if self.components[kind as usize][index].is_none() {
             return Err(RegistryError::ComponentNotFound { id, kind });
         }
-        *cell = None;
+        if kind == ComponentKind::Inventory {
+            self.clear_inventory_ownership(id);
+        }
+        self.components[kind as usize][index] = None;
         if kind == ComponentKind::Light {
             self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }
@@ -1695,6 +1792,43 @@ mod tests {
             drained.last().unwrap().template.0,
             format!("template-{}", MAX_PENDING_PRESENTATION_SPAWNS - 1)
         );
+    }
+
+    // Regression: retaining shared numbers for local rendering must not carry
+    // the transport cursor into a later frame, demotion, or level's intake.
+    #[test]
+    fn presentation_spawn_routing_resets_after_every_intake_or_clear() {
+        for reset in ["take", "drain", "clear", "unload"] {
+            let mut registry = EntityRegistry::new();
+            let number = PresentationSpawn {
+                world_anchor: Vec3::ZERO,
+                template: "damage-number".into(),
+                facts: BTreeMap::new(),
+                presenter: None,
+                lifetime_seconds: 1.0,
+                motion: PresentationMotion::default(),
+                fade: PresentationFade::default(),
+                scatter_radius: 0.0,
+            };
+            registry.push_presentation_spawn(number.clone());
+            let mut routed = Vec::new();
+            registry.visit_unrouted_presentation_spawns(|spawn| routed.push(spawn.clone()));
+            registry.visit_unrouted_presentation_spawns(|_| panic!("retained spawn routed twice"));
+            assert_eq!(routed, vec![number.clone()]);
+            match reset {
+                "take" => {
+                    registry.take_presentation_spawns();
+                }
+                "drain" => registry.drain_presentation_spawns_into(&mut Vec::new()),
+                "clear" => registry.clear_presentation_spawns(),
+                "unload" => registry.clear_for_level_unload(),
+                _ => unreachable!(),
+            }
+            registry.push_presentation_spawn(number.clone());
+            routed.clear();
+            registry.visit_unrouted_presentation_spawns(|spawn| routed.push(spawn.clone()));
+            assert_eq!(routed, vec![number], "fresh work must route after {reset}");
+        }
     }
 
     // Regression: level unload left a fixed-tick presentation spawn queued for

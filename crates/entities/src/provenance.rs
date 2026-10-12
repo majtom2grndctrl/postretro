@@ -6,9 +6,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::ComponentKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DescriptorComponentKind {
+// Keep the enum and iteration inventory together: adding a kind must reach
+// every exhaustive consumer, including the replication-role classification.
+macro_rules! descriptor_component_kinds {
+    ($($kind:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum DescriptorComponentKind {
+            $($kind),+
+        }
+
+        impl DescriptorComponentKind {
+            pub const ALL: [Self; [$(stringify!($kind)),+].len()] = [$(Self::$kind),+];
+        }
+    };
+}
+
+descriptor_component_kinds! {
     Weapon,
     Movement,
     Light,
@@ -18,16 +32,27 @@ pub enum DescriptorComponentKind {
     Touchable,
 }
 
+/// How a descriptor component participates in entity replication.
+/// Behavior is classified separately because it is not a descriptor component kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicationRole {
+    NetworksEntity,
+    ClientLocalPresentation,
+    PawnPath,
+    HeldOrPawn,
+}
+
 impl DescriptorComponentKind {
-    pub const ALL: [Self; 7] = [
-        Self::Weapon,
-        Self::Movement,
-        Self::Light,
-        Self::Emitter,
-        Self::Mesh,
-        Self::Health,
-        Self::Touchable,
-    ];
+    /// One exhaustive policy shared by descriptor and live-entity classifiers.
+    #[deny(clippy::wildcard_enum_match_arm)]
+    pub fn replication_role(self) -> ReplicationRole {
+        match self {
+            Self::Mesh | Self::Health | Self::Touchable => ReplicationRole::NetworksEntity,
+            Self::Light | Self::Emitter => ReplicationRole::ClientLocalPresentation,
+            Self::Movement => ReplicationRole::PawnPath,
+            Self::Weapon => ReplicationRole::HeldOrPawn,
+        }
+    }
 
     pub fn component_kind(self) -> ComponentKind {
         match self {

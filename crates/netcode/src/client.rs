@@ -8,29 +8,31 @@
 // the `EntityRegistry`, tracks which `baseline_id` it holds per entity, and decides
 // when an unappliable record needs a full-baseline refresh. It also surfaces
 // authoritative local-pawn inputs for reconciliation and descriptor-class remote
-// requests for presentation materialization, including retries while a mapped remote
-// is still meshless. All registry mutation flows through the game-logic-owned apply
-// primitives (`spawn`, `set_component_value`, `despawn`) — the net crate never
-// touches the registry.
+// requests for presentation materialization, including retries while descriptor
+// presentation is incomplete. All registry mutation flows through the
+// game-logic-owned apply primitives (`spawn`, `set_component_value`, `despawn`) —
+// the net crate never touches the registry.
 //
 // State machine (per validated snapshot, applied in record order):
-//   - FullBaseline, unmapped: spawn (Transform required), apply present payloads,
-//     record the map + stored baseline, clear any pending repair, ack the baseline.
-//   - FullBaseline, mapped + live: replace the stored baseline and update the
-//     existing components in place (no respawn), clear pending repair, ack.
-//   - FullBaseline, mapped + stale entity: drop the stale mapping, add to pending
-//     repair, request a refresh. Not acked.
-//   - Delta, baseline_ref held: apply, advance the stored baseline to
-//     new_baseline_id, ack.
-//   - Delta, baseline_ref unknown: add to pending repair, request a refresh, leave
-//     state untouched. Not acked.
-//   - Despawn: despawn the mapped entity (idempotent), drop the mapping, ack the
-//     tombstone.
-//   - Old/duplicate snapshot sequence: the whole snapshot is ignored.
-
-use std::collections::{HashMap, VecDeque};
+//   - Bound FullBaseline: resolve the authored local entity; do not spawn or apply
+//     Transform. Map the identity, collect presentation state, and ack. A rejected
+//     binding is remembered and its record is acked without repair; later records for
+//     that rejected identity are also acked and skipped.
+//   - Ordinary FullBaseline, unmapped: spawn (Transform required), apply payloads,
+//     record the map + baseline, clear pending repair, ack.
+//   - FullBaseline, mapped + live: update in place, clear pending repair, ack.
+//   - FullBaseline, mapped + stale entity: drop the stale mapping, request refresh;
+//     do not ack the entity baseline.
+//   - Delta, baseline_ref held: apply, advance the stored baseline, ack.
+//   - Delta, baseline_ref unknown: request refresh, leave state untouched, and do
+//     not ack the entity baseline.
+//   - Despawn: retire the network identity and ack its tombstone. Despawn a
+//     replication-created copy; only unbind an authored presentation entity.
+//   - Older snapshot: only a first baseline for an unseen identity may apply.
+//     Duplicate snapshots and other older records are ignored; clocks stay newest.
 
 use glam::Vec3;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use postretro_net::wire::{
     AckMessage, BaselineRefreshRequest, COMPONENT_KIND_PLAYER_MOVEMENT_STATE, ClientMessage,
@@ -51,6 +53,33 @@ use super::interpolation::{PoseSource, RemoteInterpolationBuffer, TransformSampl
 use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
+
+mod bindings;
+#[cfg(test)]
+mod late_baseline_tests;
+mod late_baselines;
+#[cfg(test)]
+mod presentation_tests;
+use bindings::{ClientBindings, is_presentation_payload};
+use late_baselines::LateBaselineHistory;
+use postretro_entities::presentation_binding::PresentationBindingResolver;
+use postretro_entities::presentation_binding::{PresentationBindingKey, PresentationBindingKind};
+
+#[cfg(test)]
+pub(crate) struct NoPresentationBindings;
+#[cfg(test)]
+impl PresentationBindingResolver for NoPresentationBindings {
+    fn resolve(&self, _: &EntityRegistry, _: PresentationBindingKey) -> Option<(EntityId, Vec3)> {
+        None
+    }
+    fn key_for_entity(
+        &self,
+        _: &EntityRegistry,
+        _: EntityId,
+    ) -> Option<(PresentationBindingKey, Vec3)> {
+        None
+    }
+}
 
 const MOVER_HISTORY_LIMIT: usize = 128;
 #[cfg(test)]
@@ -181,8 +210,8 @@ struct PendingRepair {
 /// and the only client code that mutates the registry on replication's behalf.
 #[derive(Debug, Default)]
 pub struct ClientReplication {
-    /// `NetworkId -> EntityId` for every entity this client has spawned from a full
-    /// baseline and not yet despawned.
+    /// `NetworkId -> EntityId` for every live replication mapping, including authored
+    /// presentation entities resolved from a binding as well as spawned copies.
     map: HashMap<NetworkId, EntityId>,
     /// Reverse of `map`, maintained in lockstep so client-local hit records can name
     /// their target on the wire.
@@ -204,10 +233,10 @@ pub struct ClientReplication {
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
     pending_repairs: HashMap<NetworkId, PendingRepair>,
-    /// The highest snapshot sequence accepted so far. An older-or-equal sequence is a
-    /// stale/duplicate packet and the whole snapshot is ignored. `None` until the
-    /// first snapshot is accepted (sequence 0 is a valid first snapshot).
+    /// Highest accepted snapshot sequence. Late first entity baselines may apply
+    /// without advancing this cursor or any snapshot-wide state.
     latest_sequence: Option<u32>,
+    late_baselines: LateBaselineHistory,
     /// The `server_tick` of the latest accepted snapshot — echoed back in the ack.
     acked_server_tick: u32,
     /// Per-remote-entity interpolation buffers keyed by `NetworkId`. Each
@@ -222,6 +251,9 @@ pub struct ClientReplication {
     /// beside the interpolation buffers because it is consumed by the same
     /// per-frame client presentation step, but never crosses the wire.
     remote_enemy_walk_playback: HashMap<NetworkId, RemoteEnemyWalkPlayback>,
+    /// Descriptor-aware materialization reports completion independently of Mesh.
+    /// Kept only for live mappings; unknown/incomplete classes remain retryable.
+    remote_presentation_complete: HashSet<NetworkId>,
     /// Descriptor-derived player locomotion references keyed by remote identity.
     /// Presence is also the durable signal that a transform-only remote mesh is a
     /// player avatar rather than an AI presentation.
@@ -241,10 +273,8 @@ pub struct ClientReplication {
     /// can arrive after that record, so the independent Control drain retains this
     /// half of the materialization key for an immediate movement rebuild.
     local_pawn_entity_class: Option<String>,
-    /// Network ids bound to PRL-loaded local kinematic movers, with their stable
-    /// compile-time mover id. These entities are predicted/reconciled in place and
-    /// must never be remote-interpolated or materialized from a baseline.
-    mover_network_ids: HashMap<NetworkId, u32>,
+    /// Local identity bindings used by snapshot apply.
+    bindings: ClientBindings,
     /// Authoritative mover samples from host snapshots, keyed by stable PRL
     /// `mover_id`. This is distinct from the live per-tick side-table; replay can
     /// read it through the `MoverPoseSource` seam.
@@ -363,19 +393,24 @@ pub(crate) struct LocalReconcileInput {
 }
 
 /// A non-local, descriptor-class-bearing entity an `apply_snapshot` first spawned this
-/// snapshot, surfaced for the caller to materialize descriptor presentation. The
-/// `ClientReplication` spawns the entity Transform-only and maps its
-/// `NetworkId` (so it joins the remote interpolation path), but the descriptor tables
-/// are not in scope here — the net-facing apply is descriptor-blind. The caller
-/// (`client_receive_and_apply`, where the descriptor table is in scope) calls
-/// `materialize_net_mesh_presentation` to attach ONLY the descriptor's mesh.
+/// snapshot, surfaced for the caller to materialize its client-side presentation. The
+/// `ClientReplication` spawns the entity Transform-only and maps its `NetworkId` (so
+/// it joins the remote interpolation path), but descriptor tables are not in scope
+/// here — the net-facing apply is descriptor-blind. The caller
+/// (`client_receive_and_apply`, where the descriptor table is in scope) attaches the
+/// descriptor display set: Mesh, Light, Emitter, and query-only HitVolume when
+/// authored. This descriptor display materialization does not attach `Brain`,
+/// `Agent`, `Health`, `Weapon`, or `PlayerMovement`; HitVolume is query-only client
+/// presentation derived from authored hit data.
 ///
 /// Surfaced on the unmapped first-spawn of a non-local record carrying an
-/// `entity_class`, and on later descriptor-class records only while the mapped entity
-/// is still missing `Mesh`. The helper is idempotent, so retry repairs a
-/// transform-only remote without resetting an already-materialized mesh. The local
-/// predicted pawn is excluded: it has its own `armed_local_pawn` movement-path
-/// materialization and is never a remote presentation entity.
+/// `entity_class`, and on later records while descriptor presentation is incomplete.
+/// Completion is cached by `NetworkId`, so a successfully materialized meshless
+/// descriptor does not retry, while a missing or unknown descriptor remains
+/// retryable. Player and projectile copies retain their separate mesh-based
+/// completion rules. Active-weapon attachment changes can also request an update.
+/// The local predicted pawn is excluded: it has its own `armed_local_pawn`
+/// movement-path materialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteEntityMaterialize {
     /// Host-assigned identity for the mapped remote entity. The descriptor-aware
@@ -441,10 +476,16 @@ pub(crate) struct ArmedLocalPawn {
 /// `ClientMessage`s and sends them on `Channel::Input`.
 #[derive(Debug, Default)]
 pub(crate) struct ApplyOutcome {
-    /// The ack for this snapshot, or `None` if the snapshot was rejected (stale
-    /// sequence). Carries only the applied baselines and tombstones —
-    /// rejected/unknown-baseline records are never acked.
+    /// Whether snapshot-wide state and clocks may advance. A late first entity
+    /// baseline can produce an ack while this remains false.
+    pub(crate) accepted_newest_snapshot: bool,
+    /// The ack for accepted progress, or `None` for an ignored snapshot.
+    /// Per-entity entries acknowledge applied baselines, deliberately
+    /// rejected presentation bindings, and despawn tombstones. Unknown-baseline deltas
+    /// request repair without acknowledging their entity baseline.
     pub(crate) ack: Option<AckMessage>,
+    /// Written state applies after the entire frame batch has materialized.
+    pub(crate) presentation_payloads: Vec<(NetworkId, ComponentPayload)>,
     /// Refresh requests triggered by this snapshot (unknown-baseline deltas, stale
     /// mappings). Sent immediately; the pending set also resends them on cadence.
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
@@ -464,12 +505,14 @@ pub(crate) struct ApplyOutcome {
     /// full baseline or a delta), not only the arming one — reconcile runs on every
     /// authoritative local update; the arming case is just the first.
     pub(crate) local_reconcile: Option<LocalReconcileInput>,
-    /// Non-local, descriptor-class-bearing entities that need mesh
-    /// presentation. Usually one entry per spawn; mapped re-baselines or deltas can
-    /// surface another entry only while the entity is still meshless, so retry can
-    /// repair a failed materialization without duplicating an already-live mesh. The
-    /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
-    /// in scope in this descriptor-blind apply path.
+    /// Non-local, descriptor-class-bearing entities whose display presentation needs
+    /// materialization or an attachment update. Usually one entry per spawn; mapped
+    /// records surface another entry when descriptor presentation is incomplete.
+    /// Completion is identity-scoped and independent of Mesh presence, allowing a
+    /// complete meshless descriptor copy to stop retrying. Player and projectile
+    /// copies use their separate mesh completion rules. Descriptor lookup deliberately
+    /// does not happen here because tables are not in scope in this descriptor-blind
+    /// apply path.
     pub(crate) remote_entities: Vec<RemoteEntityMaterialize>,
     /// Active-weapon updates for the client-local pawn. Remote updates ride their
     /// corresponding [`remote_entities`](Self::remote_entities) entry so descriptor
@@ -494,6 +537,18 @@ pub struct MoverCorrection {
 }
 
 impl ClientReplication {
+    /// Estimate the host script clock from the accepted snapshot anchor and RTT.
+    /// Shared presentation state waits for the same clock readiness as bindings.
+    #[must_use]
+    pub fn presentation_host_time(
+        &self,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+    ) -> Option<f64> {
+        self.bindings
+            .presentation_host_time(local_script_time, rtt_micros)
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -504,6 +559,7 @@ impl ClientReplication {
     /// baselines for unchanged, already-acked entities after the client registry is
     /// cleared.
     pub(crate) fn reset_for_level_unload(&mut self) -> Vec<BaselineRefreshRequest> {
+        self.late_baselines.reset(self.latest_sequence);
         let snapshot_sequence = self.latest_sequence.unwrap_or(0);
         let known: Vec<(NetworkId, u32)> = self
             .map
@@ -526,11 +582,13 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
+        self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
-        self.mover_network_ids.clear();
+        self.bindings.mover_network_ids.clear();
+        self.bindings.clear_presentation();
         self.mover_history.clear();
 
         let mut requests = Vec::with_capacity(known.len());
@@ -546,9 +604,10 @@ impl ClientReplication {
         requests
     }
 
-    /// Despawn every entity still owned by the replication map. Used by content
-    /// demotion before the ordinary clear-only reset; unlike a level unload the
-    /// registry remains populated, so clearing maps alone would leave a tableau.
+    /// Retire every identity in the replication map during content demotion. This
+    /// despawns replication-created copies and only unbinds authored presentation
+    /// entities. Unlike a level unload the registry remains populated, so spawned
+    /// copies must be removed before the ordinary clear-only reset.
     pub(crate) fn despawn_all_mapped(&mut self, registry: &mut EntityRegistry) {
         let network_ids: Vec<NetworkId> = self.map.keys().copied().collect();
         for network_id in network_ids {
@@ -559,6 +618,7 @@ impl ClientReplication {
     /// Clear demoted-client replication bookkeeping without queueing baseline repair
     /// requests. The host intentionally sends no snapshots until participation returns.
     pub(crate) fn reset_for_demotion(&mut self) {
+        self.late_baselines.reset(self.latest_sequence);
         self.map.clear();
         self.reverse_map.clear();
         self.baselines.clear();
@@ -568,11 +628,13 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
+        self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
-        self.mover_network_ids.clear();
+        self.bindings.mover_network_ids.clear();
+        self.bindings.clear_presentation();
         self.mover_history.clear();
     }
 
@@ -667,10 +729,12 @@ impl ClientReplication {
         })
     }
 
-    /// Apply one validated snapshot. Rejects an old/duplicate sequence wholesale;
-    /// otherwise walks the records in order, mutating the registry through the
-    /// game-logic-owned primitives, and returns the ack + refresh requests + ignored
-    /// diagnostics this snapshot produced.
+    /// Apply one validated snapshot. Rejects equal-sequence duplicates. Older
+    /// snapshots may establish eligible first entity baselines; their other records
+    /// are skipped, with tombstones remembered to prevent resurrection. Only newer
+    /// snapshots advance the sequence, tick and presentation clock. Returns additive
+    /// progress acknowledgements at the newest cursor, refresh requests and ignored
+    /// diagnostics, mutating the registry through game-logic-owned primitives.
     #[cfg(test)]
     pub(crate) fn apply_snapshot(
         &mut self,
@@ -685,6 +749,7 @@ impl ClientReplication {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_snapshot_with_mover_target_tick(
         &mut self,
         registry: &mut EntityRegistry,
@@ -692,23 +757,82 @@ impl ClientReplication {
         mover_target_tick: u32,
         mover_tick_dt: f32,
     ) -> ApplyOutcome {
-        // Old or duplicate sequence: ignore the whole snapshot. The unreliable
-        // snapshot channel can deliver an older packet after a newer one; applying it
-        // would regress state. Sequence 0 is a valid first snapshot (None < Some(0)).
-        if let Some(latest) = self.latest_sequence
-            && snapshot.sequence <= latest
-        {
+        self.apply_snapshot_with_presentation(
+            registry,
+            snapshot,
+            mover_target_tick,
+            mover_tick_dt,
+            &mut NoPresentationBindings,
+            0.0,
+        )
+    }
+
+    pub(crate) fn apply_presentation_batch(
+        &mut self,
+        registry: &mut EntityRegistry,
+        collected: Vec<(NetworkId, ComponentPayload)>,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+        resolver: &mut dyn PresentationBindingResolver,
+    ) -> usize {
+        self.bindings.apply_presentation_batch(
+            registry,
+            &self.map,
+            collected,
+            local_script_time,
+            rtt_micros,
+            resolver,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_snapshot_with_presentation(
+        &mut self,
+        registry: &mut EntityRegistry,
+        snapshot: &SnapshotMessage,
+        mover_target_tick: u32,
+        mover_tick_dt: f32,
+        resolver: &mut dyn PresentationBindingResolver,
+        local_script_time: f64,
+    ) -> ApplyOutcome {
+        if self.latest_sequence == Some(snapshot.sequence) {
             return ApplyOutcome::default();
         }
-        self.latest_sequence = Some(snapshot.sequence);
-        self.acked_server_tick = snapshot.server_tick;
+        let accepted_newest_snapshot = self
+            .latest_sequence
+            .is_none_or(|latest| snapshot.sequence > latest);
+        if accepted_newest_snapshot {
+            self.latest_sequence = Some(snapshot.sequence);
+            self.acked_server_tick = snapshot.server_tick;
+            self.bindings
+                .accept_presentation_clock(snapshot.server_script_time, local_script_time);
+        }
 
-        let mut outcome = ApplyOutcome::default();
-        // Accumulate ackable progress; only applied records ack.
+        let mut outcome = ApplyOutcome {
+            accepted_newest_snapshot,
+            ..ApplyOutcome::default()
+        };
+        // Applied records and terminal tombstones are acked. Rejected presentation
+        // bindings are also acked so the host can retire them; unknown-baseline
+        // records request repair without an entity-baseline ack.
         let mut acked_baselines: Vec<(u32, u32)> = Vec::new();
         let mut acked_tombstones: Vec<(u32, u32)> = Vec::new();
 
         for record in &snapshot.records {
+            // A newer empty snapshot can overtake the sole in-flight baseline.
+            // Recover only first identities; never replay known state or let a
+            // different late identity displace an authored binding/local pawn.
+            if !accepted_newest_snapshot
+                && !self.can_apply_late_baseline(registry, snapshot.sequence, record, resolver)
+            {
+                if let EntityRecord::Despawn { network_id, .. } = record {
+                    // Even an overtaken tombstone proves this never-recycled id
+                    // retired. It cannot mutate newer state, but must prevent a
+                    // still-earlier first baseline from resurrecting an unseen id.
+                    self.remember_identity(NetworkId(*network_id));
+                }
+                continue;
+            }
             match record {
                 EntityRecord::FullBaseline {
                     network_id,
@@ -719,7 +843,37 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
+                    presentation_binding,
                 } => {
+                    let nid = NetworkId(*network_id);
+                    if self.bindings.is_presentation_rejected(nid) {
+                        acked_baselines.push((*network_id, *baseline_id));
+                        continue;
+                    }
+                    if let Some(binding) = presentation_binding {
+                        let resolved = self.bindings.resolve_presentation_baseline(
+                            registry, nid, binding, components, resolver,
+                        );
+                        if let Some(id) = resolved {
+                            if self.map.get(&nid).is_some_and(|existing| *existing != id) {
+                                self.clear_identity_state(nid);
+                                // Identity cleanup clears the just-resolved binding too.
+                                let _ = self.bindings.resolve_presentation_baseline(
+                                    registry, nid, binding, components, resolver,
+                                );
+                            }
+                            self.insert_mapping(nid, id);
+                            self.baselines.insert(nid, *baseline_id);
+                            self.pending_repairs.remove(&nid);
+                            collect_presentation_payloads(&mut outcome, nid, components);
+                        } else {
+                            // Rejection remains remembered until participation resets.
+                            self.clear_identity_state(nid);
+                            self.pending_repairs.remove(&nid);
+                        }
+                        acked_baselines.push((*network_id, *baseline_id));
+                        continue;
+                    }
                     if self.apply_full_baseline(
                         registry,
                         snapshot.sequence,
@@ -733,6 +887,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        collect_presentation_payloads(
+                            &mut outcome,
+                            NetworkId(*network_id),
+                            components,
+                        );
                         self.retain_projectile_presentation(
                             registry,
                             NetworkId(*network_id),
@@ -774,7 +933,44 @@ impl ClientReplication {
                     entity_class,
                     active_weapon_archetype,
                     projectile_presentation,
+                    presentation_binding,
                 } => {
+                    let nid = NetworkId(*network_id);
+                    if self.bindings.is_presentation_rejected(nid) {
+                        acked_baselines.push((*network_id, *new_baseline_id));
+                        continue;
+                    }
+                    if self.bindings.is_presentation_bound(nid) {
+                        if let Some(binding) = presentation_binding
+                            && self
+                                .bindings
+                                .resolve_presentation_baseline(
+                                    registry, nid, binding, components, resolver,
+                                )
+                                .is_none()
+                        {
+                            self.clear_identity_state(nid);
+                            self.pending_repairs.remove(&nid);
+                            acked_baselines.push((*network_id, *new_baseline_id));
+                            continue;
+                        }
+                        if self.baselines.get(&nid) == Some(baseline_ref)
+                            && self.map.get(&nid).is_some_and(|id| registry.exists(*id))
+                        {
+                            self.baselines.insert(nid, *new_baseline_id);
+                            collect_presentation_payloads(&mut outcome, nid, components);
+                            acked_baselines.push((*network_id, *new_baseline_id));
+                        } else {
+                            self.queue_repair(
+                                &mut outcome.refresh_requests,
+                                snapshot.sequence,
+                                nid,
+                                *baseline_ref,
+                                REFRESH_REASON_UNKNOWN_BASELINE,
+                            );
+                        }
+                        continue;
+                    }
                     if self.apply_delta(
                         registry,
                         snapshot.sequence,
@@ -789,6 +985,11 @@ impl ClientReplication {
                         entity_class.as_deref(),
                         &mut outcome,
                     ) {
+                        collect_presentation_payloads(
+                            &mut outcome,
+                            NetworkId(*network_id),
+                            components,
+                        );
                         self.retain_projectile_presentation(
                             registry,
                             NetworkId(*network_id),
@@ -831,23 +1032,25 @@ impl ClientReplication {
                     {
                         outcome.retired_projectile_presentations.push(retired);
                     }
-                    // A despawn always acks its tombstone: the despawn is idempotent
-                    // (unknown/already-gone is a no-op) and the client has, by the
-                    // time it returns, reached the despawned state the tombstone
-                    // names. Acking stops the server resending it.
+                    // A despawn always acks its tombstone after retiring the network
+                    // identity. The mapped registry entity may have been despawned
+                    // (replication-created copy) or preserved and unbound (authored
+                    // presentation entity); an unknown identity is already retired.
+                    // Acking stops the server resending the tombstone.
                     acked_tombstones.push((*network_id, *tombstone_id));
                 }
             }
         }
 
-        // An ack is produced whenever the snapshot was accepted (advanced the
-        // sequence) — even with no per-entity progress it carries the latest sequence
-        // and server tick, which is the join-in-progress / keep-alive signal the
-        // server reads. Refresh-only snapshots (no applied record) still ack the
-        // sequence so the server's `last_acked_sequence` advances.
+        if !accepted_newest_snapshot && acked_baselines.is_empty() {
+            return outcome;
+        }
+        // Late entity progress is additive, while the ack's snapshot cursor always
+        // names the highest accepted frame. Snapshot-wide lanes use the separate
+        // acceptance flag and never replay just because an entity needed this ack.
         outcome.ack = Some(AckMessage {
-            latest_snapshot_sequence: snapshot.sequence,
-            acked_server_tick: snapshot.server_tick,
+            latest_snapshot_sequence: self.latest_sequence.expect("a snapshot was accepted"),
+            acked_server_tick: self.acked_server_tick,
             entity_baselines: acked_baselines,
             despawn_tombstones: acked_tombstones,
             // State-slot baselines are acked by the Task 3 client apply path; this
@@ -858,6 +1061,62 @@ impl ClientReplication {
             faction_sentiment_baseline: None,
         });
         outcome
+    }
+
+    fn can_apply_late_baseline(
+        &self,
+        registry: &EntityRegistry,
+        sequence: u32,
+        record: &EntityRecord,
+        resolver: &dyn PresentationBindingResolver,
+    ) -> bool {
+        let EntityRecord::FullBaseline {
+            network_id,
+            components,
+            local_player,
+            presentation_binding,
+            ..
+        } = record
+        else {
+            return false;
+        };
+        let network_id = NetworkId(*network_id);
+        if !self.late_baselines.permits(sequence, network_id)
+            || self.map.contains_key(&network_id)
+            || self.bindings.is_presentation_rejected(network_id)
+            || (*local_player && self.local_pawn.is_some())
+        {
+            return false;
+        }
+        // Resolve without touching binding/rejection caches. The ordinary apply
+        // path still performs all identity, origin and component validation.
+        let target = if let Some(binding) = presentation_binding {
+            let kind = match binding.kind {
+                0 => PresentationBindingKind::MapLight,
+                1 => PresentationBindingKind::FogVolume,
+                2 => PresentationBindingKind::MapEntity,
+                _ => return false,
+            };
+            resolver
+                .resolve(
+                    registry,
+                    PresentationBindingKey {
+                        kind,
+                        index: binding.index,
+                    },
+                )
+                .map(|(entity, _)| entity)
+        } else {
+            first_mover_state(components)
+                .and_then(|state| bindings::find_loaded_mover_entity(registry, state.mover_id))
+        };
+        target.is_none_or(|entity| !self.reverse_map.contains_key(&entity))
+    }
+
+    fn remember_identity(&mut self, network_id: NetworkId) {
+        if let Some(sequence) = self.latest_sequence {
+            self.late_baselines.remember(network_id, sequence);
+        }
     }
 
     /// Apply a `FullBaseline`. Returns `true` if it applied (and should be acked),
@@ -896,7 +1155,6 @@ impl ClientReplication {
                     return false;
                 }
                 self.maybe_surface_remote_entity_materialize(
-                    registry,
                     existing,
                     local_player,
                     entity_class,
@@ -925,7 +1183,9 @@ impl ClientReplication {
             // without one is invalid and does not spawn.
             None => {
                 if let Some(mover_state) = first_mover_state(components) {
-                    let Some(id) = find_loaded_mover_entity(registry, mover_state.mover_id) else {
+                    let Some(id) =
+                        bindings::find_loaded_mover_entity(registry, mover_state.mover_id)
+                    else {
                         log::warn!(
                             "[Net] full baseline for {network_id:?} names unknown mover_id {}; not binding",
                             mover_state.mover_id
@@ -939,7 +1199,8 @@ impl ClientReplication {
                     self.insert_mapping(network_id, id);
                     self.baselines.insert(network_id, baseline_id);
                     self.pending_repairs.remove(&network_id);
-                    self.mover_network_ids
+                    self.bindings
+                        .mover_network_ids
                         .insert(network_id, mover_state.mover_id);
                     self.interp.forget(network_id);
                     if !self.apply_components_to(
@@ -954,7 +1215,7 @@ impl ClientReplication {
                     ) {
                         self.remove_mapping(network_id);
                         self.baselines.remove(&network_id);
-                        self.mover_network_ids.remove(&network_id);
+                        self.bindings.mover_network_ids.remove(&network_id);
                         return false;
                     }
                     return true;
@@ -988,10 +1249,11 @@ impl ClientReplication {
                 // E10 Task 6: a non-local baseline carrying a descriptor class is a
                 // remote entity. Surface a presentation-materialization request for the
                 // caller (descriptor tables are not in scope here). Later mapped
-                // descriptor records surface a retry only while the entity is still
-                // meshless. The local pawn is excluded: its descriptor presentation
-                // rides `armed_local_pawn` on the movement path, never the remote-entity
-                // mesh path.
+                // records retry while descriptor presentation is incomplete, as
+                // reported by the identity-scoped completion cache; this includes
+                // missing non-mesh components and unknown descriptors. The local pawn
+                // is excluded: its mesh presentation rides `armed_local_pawn` on the
+                // movement path.
                 if !local_player && let Some(class) = entity_class {
                     outcome.remote_entities.push(RemoteEntityMaterialize {
                         network_id,
@@ -1057,7 +1319,6 @@ impl ClientReplication {
             return false;
         }
         self.maybe_surface_remote_entity_materialize(
-            registry,
             id,
             local_player,
             entity_class,
@@ -1074,7 +1335,6 @@ impl ClientReplication {
 
     fn maybe_surface_remote_entity_materialize(
         &self,
-        registry: &EntityRegistry,
         entity_id: EntityId,
         local_player: bool,
         entity_class: Option<&str>,
@@ -1093,10 +1353,7 @@ impl ClientReplication {
         let Some(&network_id) = self.reverse_map.get(&entity_id) else {
             return;
         };
-        if registry
-            .has_component_kind(entity_id, ComponentKind::Mesh)
-            .unwrap_or(false)
-        {
+        if self.remote_presentation_complete.contains(&network_id) {
             return;
         }
         let cached_weapon = self.active_weapon_archetypes.get(&network_id).cloned();
@@ -1247,7 +1504,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
-        self.mover_network_ids.remove(&network_id);
+        self.bindings.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
             entity_id,
@@ -1305,9 +1562,9 @@ impl ClientReplication {
         });
     }
 
-    /// Despawn a mapped entity and drop its mapping + baseline. Idempotent: an unknown
-    /// or already-despawned `NetworkId` is a no-op (the registry `despawn` of a stale
-    /// id errors, which we swallow).
+    /// Retire a mapped network identity and drop its mapping + baseline. Despawn its
+    /// replication-created entity, or only unbind an authored presentation entity.
+    /// Idempotent: an unknown or already-retired `NetworkId` is a no-op.
     fn apply_despawn(
         &mut self,
         registry: &mut EntityRegistry,
@@ -1328,26 +1585,16 @@ impl ClientReplication {
                 transform,
             })
         });
-        let sibling_wieldables: Vec<EntityId> = self
-            .map
-            .get(&network_id)
-            .and_then(|pawn| {
-                registry
-                    .get_component::<postretro_entities::components::inventory::Inventory>(*pawn)
-                    .ok()
-            })
-            .map(|inventory| inventory.wieldables.iter().flatten().copied().collect())
-            .unwrap_or_default();
-        for wieldable in sibling_wieldables {
-            let _ = registry.despawn(wieldable);
-        }
-        if let Some(id) = self.clear_identity_state(network_id) {
+        let bound = self.bindings.is_presentation_bound(network_id);
+        if let Some(id) = self.clear_identity_state(network_id)
+            && !bound
+        {
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.
             let _ = registry.despawn(id);
         }
-        // A despawn also clears any pending repair for the entity: there is nothing
-        // to repair once it is gone.
+        // Retiring this identity also clears its pending repair; a later baseline can
+        // establish a fresh mapping if the identity returns.
         self.pending_repairs.remove(&network_id);
         retired_projectile
     }
@@ -1367,7 +1614,7 @@ impl ClientReplication {
         self.active_weapon_archetypes.remove(&network_id);
         self.remote_entity_classes.remove(&network_id);
         self.projectile_presentations.remove(&network_id);
-        self.mover_network_ids.remove(&network_id);
+        self.bindings.mover_network_ids.remove(&network_id);
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
             self.local_pawn_entity_class = None;
@@ -1376,23 +1623,32 @@ impl ClientReplication {
     }
 
     fn insert_mapping(&mut self, network_id: NetworkId, entity_id: EntityId) {
+        self.remember_identity(network_id);
         if let Some(previous_entity) = self.map.insert(network_id, entity_id) {
             self.reverse_map.remove(&previous_entity);
             if previous_entity != entity_id {
+                self.bindings.forget_presentation_identity(network_id);
+                self.remote_presentation_complete.remove(&network_id);
                 self.active_weapon_archetypes.remove(&network_id);
             }
         }
-        if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id) {
+        if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id)
+            && previous_network != network_id
+        {
+            self.remember_identity(previous_network);
             self.map.remove(&previous_network);
-            if previous_network != network_id {
-                self.active_weapon_archetypes.remove(&previous_network);
-                self.remote_entity_classes.remove(&previous_network);
-                self.projectile_presentations.remove(&previous_network);
-            }
+            self.bindings.forget_presentation_identity(previous_network);
+            self.remote_presentation_complete.remove(&previous_network);
+            self.active_weapon_archetypes.remove(&previous_network);
+            self.remote_entity_classes.remove(&previous_network);
+            self.projectile_presentations.remove(&previous_network);
         }
     }
 
     fn remove_mapping(&mut self, network_id: NetworkId) -> Option<EntityId> {
+        self.remember_identity(network_id);
+        self.bindings.forget_presentation_identity(network_id);
+        self.remote_presentation_complete.remove(&network_id);
         let entity_id = self.map.remove(&network_id)?;
         self.reverse_map.remove(&entity_id);
         self.active_weapon_archetypes.remove(&network_id);
@@ -1444,7 +1700,7 @@ impl ClientReplication {
         // after this): it may seed the spawn/baseline pose here, and then `forget`
         // drops the one interpolation sample.
         let is_local = self.local_pawn == Some(network_id);
-        let bound_mover_id = self.mover_network_ids.get(&network_id).copied();
+        let bound_mover_id = self.bindings.mover_network_ids.get(&network_id).copied();
         if let Some(mover_id) = unknown_ground_mover_id(registry, components) {
             outcome.ignored.push(IgnoredPayload::UnknownGroundMover {
                 network_id: network_id.0,
@@ -1497,7 +1753,9 @@ impl ClientReplication {
             }
             let _ = registry.set_component(id, plan.phase.clone());
             let _ = registry.set_component(id, plan.transform);
-            self.mover_network_ids.insert(network_id, plan.mover_id);
+            self.bindings
+                .mover_network_ids
+                .insert(network_id, plan.mover_id);
             self.interp.forget(network_id);
             for sample in &plan.history_samples {
                 self.mover_history.record(plan.mover_id, sample.clone());
@@ -1594,7 +1852,7 @@ impl ClientReplication {
                 }
                 ComponentPayload::KinematicMoverState(wire) => {
                     if mover_apply.is_none() {
-                        let _ = validate_kinematic_mover_state_binding(
+                        let _ = bindings::validate_kinematic_mover_state_binding(
                             registry,
                             id,
                             network_id,
@@ -1603,6 +1861,11 @@ impl ClientReplication {
                         );
                     }
                 }
+                // Presentation state applies after materialization, once the
+                // binding and bridge-clock path is installed.
+                ComponentPayload::LightState(_)
+                | ComponentPayload::FogState(_)
+                | ComponentPayload::EmitterState(_) => {}
             }
         }
         if !record_has_transform
@@ -1711,7 +1974,9 @@ impl ClientReplication {
             if self.local_pawn == Some(network_id) {
                 continue;
             }
-            if self.mover_network_ids.contains_key(&network_id) {
+            if self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
+            {
                 continue;
             }
             let Some(pose) = self.interp.presented_pose(network_id, render_server_tick) else {
@@ -1792,7 +2057,8 @@ impl ClientReplication {
         for (&network_id, &entity_id) in &self.map {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.mover_network_ids.contains_key(&network_id)
+                || self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
             {
                 continue;
             }
@@ -1820,7 +2086,8 @@ impl ClientReplication {
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id)
                 || self.local_pawn == Some(network_id)
-                || self.mover_network_ids.contains_key(&network_id)
+                || self.bindings.mover_network_ids.contains_key(&network_id)
+                || self.bindings.is_presentation_bound(network_id)
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
                 continue;
@@ -1837,6 +2104,18 @@ impl ClientReplication {
                 0.0,
                 frame_anim_time,
             );
+        }
+    }
+
+    pub(crate) fn cache_remote_presentation_complete(
+        &mut self,
+        network_id: NetworkId,
+        complete: bool,
+    ) {
+        if complete && self.map.contains_key(&network_id) {
+            self.remote_presentation_complete.insert(network_id);
+        } else {
+            self.remote_presentation_complete.remove(&network_id);
         }
     }
 
@@ -2189,7 +2468,7 @@ fn unknown_ground_mover_id(
         let WireGroundRef::Mover(mover_id) = wire.ground else {
             continue;
         };
-        if find_loaded_mover_entity(registry, mover_id).is_none() {
+        if bindings::find_loaded_mover_entity(registry, mover_id).is_none() {
             return Some(mover_id);
         }
     }
@@ -2201,17 +2480,6 @@ fn first_mesh_animation_state(components: &[ComponentPayload]) -> Option<String>
         ComponentPayload::MeshAnimationState(wire) => Some(wire.current_state.clone()),
         _ => None,
     })
-}
-
-fn find_loaded_mover_entity(registry: &EntityRegistry, mover_id: u32) -> Option<EntityId> {
-    registry
-        .iter_with_kind(ComponentKind::KinematicMover)
-        .find_map(|(id, value)| {
-            let ComponentValue::KinematicMover(mover) = value else {
-                return None;
-            };
-            (mover.mover_id == mover_id).then_some(id)
-        })
 }
 
 #[derive(Debug, Clone)]
@@ -2235,8 +2503,13 @@ fn prepare_mover_apply(
     anchor_transform: Transform,
     tick_dt: f32,
 ) -> Option<MoverApplyPlan> {
-    let mut phase =
-        validate_kinematic_mover_state_binding(registry, id, network_id, bound_mover_id, &wire)?;
+    let mut phase = bindings::validate_kinematic_mover_state_binding(
+        registry,
+        id,
+        network_id,
+        bound_mover_id,
+        &wire,
+    )?;
     seed_kinematic_mover_phase(&mut phase, &wire)?;
 
     let phase_pose = mover_pose_for_current_phase(anchor_transform, &phase, tick_dt);
@@ -2283,44 +2556,6 @@ fn prepare_mover_apply(
         pose: predicted_pose,
         history_samples,
     })
-}
-
-fn validate_kinematic_mover_state_binding(
-    registry: &EntityRegistry,
-    id: EntityId,
-    network_id: NetworkId,
-    bound_mover_id: Option<u32>,
-    wire: &WireKinematicMoverState,
-) -> Option<KinematicMoverComponent> {
-    let Ok(mover) = registry
-        .get_component::<KinematicMoverComponent>(id)
-        .cloned()
-    else {
-        log::warn!(
-            "[Net] KinematicMoverState for mover_id {} applied to entity without KinematicMover",
-            wire.mover_id
-        );
-        return None;
-    };
-    if let Some(bound) = bound_mover_id
-        && bound != wire.mover_id
-    {
-        log::warn!(
-            "[Net] KinematicMoverState mover_id {} would rebind {network_id:?} from mover_id {}; dropping phase",
-            wire.mover_id,
-            bound
-        );
-        return None;
-    }
-    if mover.mover_id != wire.mover_id {
-        log::warn!(
-            "[Net] KinematicMoverState mover_id {} does not match local mover_id {}; dropping phase",
-            wire.mover_id,
-            mover.mover_id
-        );
-        return None;
-    }
-    Some(mover)
 }
 
 fn seed_kinematic_mover_phase(
@@ -2412,6 +2647,20 @@ pub(crate) fn encode_client_messages(outcome: &ApplyOutcome) -> Vec<Vec<u8>> {
     buffers
 }
 
+fn collect_presentation_payloads(
+    outcome: &mut ApplyOutcome,
+    nid: NetworkId,
+    components: &[ComponentPayload],
+) {
+    outcome.presentation_payloads.extend(
+        components
+            .iter()
+            .filter(|payload| is_presentation_payload(payload))
+            .cloned()
+            .map(|payload| (nid, payload)),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2445,7 +2694,7 @@ mod tests {
         })
     }
 
-    fn movement_payload() -> ComponentPayload {
+    pub(super) fn movement_payload() -> ComponentPayload {
         movement_payload_with_velocity([1.0, 0.0, 0.0])
     }
 
@@ -2481,7 +2730,7 @@ mod tests {
         })
     }
 
-    fn mover_payload(mover_id: u32) -> ComponentPayload {
+    pub(super) fn mover_payload(mover_id: u32) -> ComponentPayload {
         ComponentPayload::KinematicMoverState(WireKinematicMoverState {
             mover_id,
             segment_index: 1,
@@ -2544,7 +2793,7 @@ mod tests {
         })
     }
 
-    fn spawn_loaded_mover(registry: &mut EntityRegistry, mover_id: u32) -> EntityId {
+    pub(super) fn spawn_loaded_mover(registry: &mut EntityRegistry, mover_id: u32) -> EntityId {
         let id = registry.spawn(Transform::default());
         registry
             .set_component(
@@ -2633,6 +2882,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -2654,6 +2904,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -2666,6 +2917,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         }
     }
 
@@ -3000,7 +3252,10 @@ mod tests {
 
         assert!(out.ack.unwrap().entity_baselines.is_empty());
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
-        assert_eq!(client.mover_network_ids.get(&NetworkId(7)), Some(&42));
+        assert_eq!(
+            client.bindings.mover_network_ids.get(&NetworkId(7)),
+            Some(&42)
+        );
         assert_eq!(client.mover_history_sample_count(99), 0);
         assert_eq!(client.mover_history_sample_count(42), 1);
         assert!(
@@ -3244,9 +3499,9 @@ mod tests {
         assert!(out2.ack.unwrap().entity_baselines.is_empty());
     }
 
-    // --- Old / duplicate sequence: the whole snapshot is ignored. ---
+    // Known identities never roll back; duplicate snapshots remain ignored.
     #[test]
-    fn old_and_duplicate_sequences_are_ignored() {
+    fn old_known_identity_and_duplicate_sequences_are_ignored() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -3259,7 +3514,7 @@ mod tests {
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
-        // A snapshot with an OLDER sequence (3 < 5): fully ignored, no mutation.
+        // An older baseline cannot change an already-known identity.
         let before = registry.exists(id);
         let mut count_before = client.map().len();
         let out_old = client.apply_snapshot(
@@ -3267,14 +3522,12 @@ mod tests {
             &snapshot(
                 3,
                 30,
-                vec![full_baseline(8, 2, vec![transform_payload(7.0)])],
+                vec![full_baseline(7, 2, vec![transform_payload(7.0)])],
             ),
         );
         assert!(out_old.ack.is_none(), "ignored snapshot produces no ack");
-        assert!(
-            !client.map().contains_key(&NetworkId(8)),
-            "old snapshot did not spawn"
-        );
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
+        assert!((entity_pos(&registry, id).x - 1.0).abs() < 1.0e-6);
         assert_eq!(client.map().len(), count_before);
         assert_eq!(registry.exists(id), before);
         assert_eq!(
@@ -3364,6 +3617,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: Some("reference_pistol".to_string()),
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![
                 transform_payload(x),
                 movement_payload_with_velocity_and_pitch([12.0, 0.0, 4.0], aim_pitch),
@@ -4663,6 +4917,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4683,6 +4938,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4842,6 +5098,7 @@ mod tests {
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -4862,6 +5119,7 @@ mod tests {
             entity_class: Some(entity_class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -5165,7 +5423,7 @@ mod tests {
     }
 
     #[test]
-    fn local_pawn_despawn_removes_every_inventory_sibling_before_pawn() {
+    fn local_pawn_despawn_retires_current_inventory_and_preserves_transferred_items() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -5186,7 +5444,22 @@ mod tests {
         let mut inventory = postretro_entities::components::inventory::Inventory::default();
         inventory.wieldables[0] = Some(first);
         inventory.wieldables[3] = Some(second);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert_eq!(registry.inventory_owner(first), Some((pawn, 0)));
+        assert_eq!(registry.inventory_owner(second), Some((pawn, 3)));
+        // Retirement follows current membership, including a later acquisition.
+        let other = registry.spawn(Transform::default());
+        let later = registry.spawn(Transform::default());
+        inventory.wieldables[3] = None;
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert_eq!(registry.inventory_owner(second), None);
+        let mut transferred = postretro_entities::components::inventory::Inventory::default();
+        transferred.wieldables[8] = Some(second);
+        registry.set_component(other, transferred).unwrap();
+        inventory.wieldables[9] = Some(later);
         registry.set_component(pawn, inventory).unwrap();
+        assert_eq!(registry.inventory_owner(second), Some((other, 8)));
+        assert_eq!(registry.inventory_owner(later), Some((pawn, 9)));
 
         client.apply_snapshot(
             &mut registry,
@@ -5202,8 +5475,24 @@ mod tests {
         );
 
         assert!(!registry.exists(first));
-        assert!(!registry.exists(second));
+        assert!(!registry.exists(later));
         assert!(!registry.exists(pawn));
+        assert_eq!(registry.inventory_owner(first), None);
+        assert_eq!(registry.inventory_owner(later), None);
+        assert!(registry.exists(second));
+        assert!(registry.exists(other));
+        assert_eq!(registry.inventory_owner(second), Some((other, 8)));
+        // Every recycled retired slot starts without inherited ownership.
+        let retired = [pawn, first, later];
+        for _ in retired {
+            let fresh = registry.spawn(Transform::default());
+            let prior = retired
+                .iter()
+                .find(|old| old.to_raw() & 0xffff == fresh.to_raw() & 0xffff)
+                .unwrap();
+            assert_ne!(fresh.to_raw() >> 16, prior.to_raw() >> 16);
+            assert_eq!(registry.inventory_owner(fresh), None);
+        }
     }
 
     // Regression: archetype identity can remain unchanged while the descriptor mesh
@@ -5307,6 +5596,7 @@ mod tests {
         registry
             .set_component(id, MeshComponent::stateless("remote_enemy".to_string()))
             .expect("test marks remote as already materialized");
+        client.cache_remote_presentation_complete(NetworkId(7), true);
 
         // A delta for the same (now mapped) id moves it but surfaces nothing.
         let delta_out = client.apply_snapshot(
@@ -5362,6 +5652,77 @@ mod tests {
     // materialization could not attach a mesh, a later re-baseline must retry instead
     // of leaving the mapped entity transform-only forever.
     #[test]
+    fn descriptor_presentation_completion_is_mesh_independent_and_clears_with_identity() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let record = |baseline| {
+            remote_entity_baseline(
+                7,
+                baseline,
+                "invisible_target",
+                vec![transform_payload(0.0)],
+            )
+        };
+        let first = client.apply_snapshot(&mut registry, &snapshot(1, 10, vec![record(1)]));
+        assert_eq!(first.remote_entities.len(), 1);
+        let old = first.remote_entities[0].entity_id;
+        // Even an attached mesh cannot stand in for a complete descriptor set.
+        registry
+            .set_component(old, MeshComponent::stateless("incomplete".into()))
+            .unwrap();
+        client.cache_remote_presentation_complete(NetworkId(7), false);
+        let retry = client.apply_snapshot(&mut registry, &snapshot(2, 11, vec![record(2)]));
+        assert_eq!(retry.remote_entities.len(), 1);
+        registry.remove_component::<MeshComponent>(old).unwrap();
+        client.cache_remote_presentation_complete(NetworkId(7), true);
+        let complete = client.apply_snapshot(&mut registry, &snapshot(3, 12, vec![record(3)]));
+        assert!(
+            complete.remote_entities.is_empty(),
+            "a complete meshless display copy does not reattach"
+        );
+
+        registry.despawn(old).unwrap();
+        let stale = client.apply_snapshot(&mut registry, &snapshot(4, 13, vec![record(4)]));
+        assert_eq!(stale.refresh_requests.len(), 1);
+        assert!(!client.remote_presentation_complete.contains(&NetworkId(7)));
+        let fresh = client.apply_snapshot(&mut registry, &snapshot(5, 14, vec![record(4)]));
+        assert_eq!(fresh.remote_entities.len(), 1);
+        assert_ne!(fresh.remote_entities[0].entity_id, old);
+        client.cache_remote_presentation_complete(NetworkId(7), true);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                6,
+                15,
+                vec![EntityRecord::Despawn {
+                    network_id: 7,
+                    tombstone_id: 1,
+                    reason: 0,
+                }],
+            ),
+        );
+        assert!(client.remote_presentation_complete.is_empty());
+        client.cache_remote_presentation_complete(NetworkId(99), true);
+        assert!(
+            client.remote_presentation_complete.is_empty(),
+            "unmapped identity cannot populate cache"
+        );
+        for demote in [false, true] {
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(7 + u32::from(demote), 16, vec![record(5)]),
+            );
+            client.cache_remote_presentation_complete(NetworkId(7), true);
+            if demote {
+                client.reset_for_demotion();
+            } else {
+                client.reset_for_level_unload();
+            }
+            assert!(client.remote_presentation_complete.is_empty());
+        }
+    }
+
+    #[test]
     fn remote_entity_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
@@ -5411,7 +5772,7 @@ mod tests {
                 active_weapon_archetype: None,
                 weapon_attachment_changed: false,
             }],
-            "mapped descriptor remotes without Mesh retry materialization"
+            "mapped descriptor remotes with incomplete presentation retry materialization"
         );
     }
 

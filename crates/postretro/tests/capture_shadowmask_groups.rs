@@ -109,8 +109,8 @@ fn write_variant(
         assert!(
             SHADOWMASK_GROUP_COUNT == 2,
             "a block carries group A and group B"
-        )
-    };
+        );
+    }
     let variant = ShadowmaskAtlasSection { owners, blocks };
     let blobs: Vec<_> = sections
         .iter()

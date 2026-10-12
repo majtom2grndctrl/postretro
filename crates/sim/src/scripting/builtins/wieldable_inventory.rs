@@ -138,10 +138,7 @@ fn compose_wieldable_inventory_slots<'a>(
 ) -> Option<EntityId> {
     let mut inventory = Inventory::default();
     let mut seeded_ammo_types = HashSet::new();
-
-    if let Some(carried_loadout) = carried_loadout {
-        restore_carried_reserve(registry, pawn, &carried_loadout.reserve);
-    }
+    let mut reserve_descriptors = Vec::new();
 
     for (slot, canonical_name) in slots {
         let Some(canonical_name) = canonical_name else {
@@ -162,6 +159,7 @@ fn compose_wieldable_inventory_slots<'a>(
             continue;
         };
         let weapon_entity = MapEntity {
+            map_ordinal: None,
             classname: canonical_name.to_string(),
             origin: placement.origin,
             angles: placement.angles,
@@ -191,7 +189,7 @@ fn compose_wieldable_inventory_slots<'a>(
             && let Some(WeaponResource::Ammo(ammo)) = weapon.resource.as_ref()
             && seeded_ammo_types.insert(ammo.ammo_type.clone())
         {
-            seed_weapon_reserve(registry, pawn, weapon_descriptor);
+            reserve_descriptors.push(weapon_descriptor);
         }
     }
 
@@ -225,7 +223,22 @@ fn compose_wieldable_inventory_slots<'a>(
     }
 
     let active_weapon = inventory.active_wieldable();
-    let _ = registry.set_component(pawn, inventory);
+    let spawned = inventory.wieldables;
+    if registry.set_component(pawn, inventory).is_err() {
+        for item in spawned.into_iter().flatten() {
+            let _ = registry.despawn(item);
+        }
+        return None;
+    }
+    // Reserve writes belong to successful composition, so a failed ownership
+    // commit cannot leave ammunition or newly spawned auxiliaries behind.
+    if let Some(carried_loadout) = carried_loadout {
+        restore_carried_reserve(registry, pawn, &carried_loadout.reserve);
+    } else {
+        for descriptor in reserve_descriptors {
+            seed_weapon_reserve(registry, pawn, descriptor);
+        }
+    }
     active_weapon
 }
 
@@ -295,7 +308,7 @@ pub(crate) fn release_wieldable(
     if inventory.switch_origin == Some(slot) {
         inventory.switch_origin = None;
     }
-    let _ = registry.set_component(pawn, inventory);
+    registry.set_component(pawn, inventory).ok()?;
     Some(item)
 }
 
@@ -389,6 +402,7 @@ mod tests {
 
     fn placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::ZERO,
             angles: glam::Vec3::ZERO,
@@ -477,6 +491,162 @@ mod tests {
     }
 
     #[test]
+    fn held_world_participation_acquire_conflict_and_release_preserve_state() {
+        use crate::scripting_systems::health::is_damage_target_eligible;
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        use glam::Vec3;
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_scripting_core::data_descriptors::{HealthDescriptor, HitboxDescriptor};
+
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        registry.set_component(first, Inventory::default()).unwrap();
+        registry
+            .set_component(second, Inventory::default())
+            .unwrap();
+        let item = wieldable(&mut registry);
+        let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max: 80.0,
+            hitbox: Some(HitboxDescriptor {
+                half_extents: [0.5; 3],
+                offset: None,
+            }),
+            zone_multipliers: Default::default(),
+        });
+        health.current = 37.0;
+        registry.set_component(item, health.clone()).unwrap();
+        let mut weapon = registry
+            .get_component::<WeaponComponent>(item)
+            .unwrap()
+            .clone();
+        weapon.magazine = 2;
+        weapon.cooldown_remaining_ms = 123.0;
+        registry.set_component(item, weapon.clone()).unwrap();
+        registry
+            .set_component(item, MeshComponent::stateless("item.gltf".into()))
+            .unwrap();
+        registry
+            .set_component(
+                item,
+                TouchableComponent {
+                    mode: TouchMode::Auto,
+                    radius: 1.0,
+                },
+            )
+            .unwrap();
+        let store = HitZoneStore::new();
+        let ray = |registry: &EntityRegistry| {
+            nearest_entity_hit(
+                registry,
+                &store,
+                0.0,
+                Vec3::new(0.0, 0.0, 5.0),
+                -Vec3::Z,
+                10.0,
+                0.0,
+            )
+        };
+        assert_eq!(ray(&registry).unwrap().target, item);
+        assert!(acquire_wieldable_at(&mut registry, first, 4, item));
+        assert_eq!(registry.inventory_owner(item), Some((first, 4)));
+        assert!(ray(&registry).is_none());
+        assert!(!is_damage_target_eligible(&registry, item));
+
+        // A retained authoritative component must not let another holder steal
+        // the item or partially edit either inventory.
+        let retained_mesh = MeshComponent::stateless("retained.gltf".into());
+        let retained_touchable = TouchableComponent {
+            mode: TouchMode::Auto,
+            radius: 1.5,
+        };
+        registry.set_component(item, retained_mesh.clone()).unwrap();
+        registry.set_component(item, retained_touchable).unwrap();
+        let first_inventory = registry.get_component::<Inventory>(first).unwrap().clone();
+        let second_inventory = registry.get_component::<Inventory>(second).unwrap().clone();
+        assert!(!acquire_wieldable_at(&mut registry, second, 0, item));
+        assert!(!acquire_wieldable_at(&mut registry, first, 0, item));
+        assert_eq!(
+            registry.get_component::<MeshComponent>(item).unwrap(),
+            &retained_mesh
+        );
+        assert_eq!(
+            registry.get_component::<TouchableComponent>(item).unwrap(),
+            &retained_touchable
+        );
+        assert_eq!(
+            registry.get_component::<Inventory>(first).unwrap(),
+            &first_inventory
+        );
+        assert_eq!(
+            registry.get_component::<Inventory>(second).unwrap(),
+            &second_inventory
+        );
+        assert_eq!(
+            registry.get_component::<HealthComponent>(item).unwrap(),
+            &health
+        );
+        assert_eq!(
+            registry.get_component::<WeaponComponent>(item).unwrap(),
+            &weapon
+        );
+
+        // Holstering changes selection, never world eligibility.
+        let other = wieldable(&mut registry);
+        assert!(acquire_wieldable_at(&mut registry, first, 1, other));
+        let mut inventory = registry.get_component::<Inventory>(first).unwrap().clone();
+        inventory.active_slot = 1;
+        registry.set_component(first, inventory).unwrap();
+        assert!(ray(&registry).is_none());
+        assert!(!is_damage_target_eligible(&registry, item));
+        assert_eq!(release_wieldable(&mut registry, first, 4), Some(item));
+        assert_eq!(registry.inventory_owner(item), None);
+        assert_eq!(ray(&registry).unwrap().target, item);
+        assert!(is_damage_target_eligible(&registry, item));
+        assert_eq!(
+            registry.get_component::<HealthComponent>(item).unwrap(),
+            &health
+        );
+        assert_eq!(
+            registry.get_component::<WeaponComponent>(item).unwrap(),
+            &weapon
+        );
+    }
+
+    #[test]
+    fn held_descriptor_lifecycle_failed_composition_retires_spawned_loadout() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.despawn(pawn).unwrap();
+        let mut descriptor = pawn_descriptor();
+        descriptor.inventory = Some(postretro_entities::InventoryDescriptor {
+            loadout: vec!["pistol".into(), "pistol".into()],
+        });
+        let weapons = [weapon_descriptor("pistol", "cells", 6, 20)];
+        assert_eq!(
+            compose_wieldable_inventory(
+                &mut registry,
+                pawn,
+                &descriptor,
+                &placement(),
+                &weapons,
+                None,
+            ),
+            None
+        );
+        assert_eq!(
+            registry
+                .iter_with_kind(postretro_entities::registry::ComponentKind::Weapon)
+                .count(),
+            0
+        );
+        assert!(!registry.exists(pawn));
+        // Reused child slots must not inherit ownership after rollback.
+        let next = wieldable(&mut registry);
+        assert!(!registry.is_inventory_owned(next));
+    }
+
+    #[test]
     fn acquire_refuses_occupied_out_of_range_and_weaponless_items() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -541,7 +711,10 @@ mod tests {
     fn authored_loadout_strips_world_item_components_from_held_wieldable() {
         let mut pawn_descriptor = pawn_descriptor();
         pawn_descriptor.inventory = Some(postretro_entities::InventoryDescriptor {
-            loadout: vec!["droppable_pistol".to_string()],
+            loadout: vec![
+                "droppable_pistol".to_string(),
+                "droppable_pistol".to_string(),
+            ],
         });
         let mut weapon_descriptor = weapon_descriptor("droppable_pistol", "cells", 6, 20);
         weapon_descriptor.touchable = Some(TouchableDescriptor {
@@ -557,6 +730,13 @@ mod tests {
             default_state: None,
             locomotion: None,
         });
+        weapon_descriptor.health = Some(
+            postretro_scripting_core::data_descriptors::HealthDescriptor {
+                max: 80.0,
+                hitbox: None,
+                zone_multipliers: Default::default(),
+            },
+        );
         let descriptors = [pawn_descriptor.clone(), weapon_descriptor];
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
@@ -575,6 +755,35 @@ mod tests {
             .unwrap()
             .wieldables[0]
             .expect("authored loadout materializes");
+        use postretro_entities::components::health::HealthComponent;
+        use postretro_entities::provenance::DescriptorProvenance;
+        for (slot, item) in registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, item)| item.map(|item| (slot, item)))
+        {
+            assert_eq!(registry.inventory_owner(item), Some((pawn, slot)));
+            assert_eq!(
+                registry
+                    .get_component::<DescriptorProvenance>(item)
+                    .unwrap()
+                    .spawn_path,
+                DescriptorSpawnPath::DefaultWeapon
+            );
+            assert!(
+                (registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current
+                    - 80.0)
+                    .abs()
+                    < f32::EPSILON
+            );
+            assert!(!crate::scripting_systems::health::is_damage_target_eligible(&registry, item));
+        }
         assert!(registry.get_component::<MeshComponent>(held).is_err());
         assert!(
             registry.get_component::<TouchableComponent>(held).is_err(),

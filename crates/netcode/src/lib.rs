@@ -36,6 +36,9 @@ use std::collections::VecDeque;
 mod client;
 mod command_queue;
 mod descriptor_class;
+pub use descriptor_class::is_host_replicated_descriptor_entity;
+mod presentation_state;
+pub use presentation_state::validate_presentation_override;
 mod endpoint;
 // The ordered frame stages of the replicated-state → presentation path (snapshot apply,
 // then state-crossing detection). Owns the order via a witness value so `App` and the
@@ -62,6 +65,7 @@ mod reconcile;
 mod remote_materialize;
 mod replication;
 mod seat;
+mod snapshot_apply;
 pub mod weapon_cues;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -139,13 +143,14 @@ pub(crate) use lifecycle::{
     SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed_with_fallback,
 };
 pub use prediction::ClientPrediction;
-#[cfg(feature = "test-support")]
-pub use presentation::{ClientOverlayFact, ingest_client_overlay_fact};
 pub use presentation::{
     ClientOverlayFactState, HostOverlayFactTracker, ingest_client_presentation_messages,
-    route_host_presentation_spawns, send_host_overlay_facts, update_client_overlay_anchors,
+    route_host_presentation_spawns, update_client_overlay_anchors, update_host_overlay_roster,
 };
 pub use seat::clear_released_seat_slot_values;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use state_slots::ClientStateApply;
 pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
@@ -161,9 +166,12 @@ pub(crate) use reconcile::reconcile_local_pawn;
 #[cfg(any(test, feature = "test-support"))]
 #[allow(unused_imports)]
 pub(crate) use replication::produce_owned_snapshots;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
-    ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
-    host_register_world_items,
+    ReplicableSet, host_register_descriptor_entities, host_register_descriptor_entity,
+    host_register_loaded_movers, host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -559,6 +567,20 @@ impl NetworkIdAllocator {
         }
     }
 
+    /// Retire mappings for entities game logic already destroyed, including
+    /// current inventory auxiliaries destroyed with a pawn before slot cleanup.
+    fn forget_dead(&mut self, registry: &EntityRegistry, replicable: &mut ReplicableSet) {
+        let reverse = &mut self.reverse;
+        self.map.retain(|id, network_id| {
+            if registry.exists(*id) {
+                return true;
+            }
+            reverse.remove(network_id);
+            replicable.unregister(*id);
+            false
+        });
+    }
+
     /// Resolve a host-side `EntityId` to its stable `NetworkId`, if it has been
     /// stamped.
     pub fn network_id_for_entity(&self, id: EntityId) -> Option<NetworkId> {
@@ -612,6 +634,8 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Inventory => 19,
         ComponentKind::Touchable => 20,
         ComponentKind::Projectile => 21,
+        ComponentKind::HitVolume => 22,
+        ComponentKind::MapOrdinal => 23,
     }
 }
 
@@ -655,7 +679,7 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
         && t.scale.iter().all(|c| c.is_finite())
 }
 
-/// A wire `ComponentPayload` is safe to apply: all f32 fields are finite. The
+/// A wire `ComponentPayload` is safe to apply: all numeric fields are finite. The
 /// exhaustive match (no `_` arm) means a new payload variant is a compile error
 /// here until its finite-check is written.
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
@@ -668,6 +692,10 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
         ComponentPayload::PlayerMovementState(m) => player_movement_is_finite(m),
         ComponentPayload::MeshAnimationState(_) => true,
         ComponentPayload::KinematicMoverState(m) => kinematic_mover_is_finite(m),
+        // Reuse the presentation producer/receive gate, including curve bounds.
+        ComponentPayload::LightState(state) => state.validate().is_ok(),
+        ComponentPayload::FogState(state) => state.validate().is_ok(),
+        ComponentPayload::EmitterState(state) => state.validate().is_ok(),
     }
 }
 
@@ -760,8 +788,12 @@ pub fn client_receive_and_apply(
     host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
     host_tuning: Option<&TuningPayload>,
     rebuild_movement_tuning: bool,
+    presentation_bindings: &mut dyn postretro_entities::presentation_binding::PresentationBindingResolver,
+    local_script_time: f64,
+    rtt_micros: Option<f64>,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
+    let mut presentation_payloads = Vec::new();
     for bytes in client.drain_snapshots() {
         let snapshot = match decode_snapshot(&bytes) {
             Ok(snapshot) => snapshot,
@@ -780,12 +812,15 @@ pub fn client_receive_and_apply(
         let target_tick = mover_target_tick
             .unwrap_or(snapshot.server_tick)
             .max(snapshot.server_tick);
-        let mut outcome = replication.apply_snapshot_with_mover_target_tick(
+        let mut outcome = replication.apply_snapshot_with_presentation(
             registry,
             &snapshot,
             target_tick,
             tick_dt,
+            presentation_bindings,
+            local_script_time,
         );
+        presentation_payloads.append(&mut outcome.presentation_payloads);
         for correction in &outcome.mover_corrections {
             if let Some(existing) = frame_outcome
                 .mover_corrections
@@ -801,14 +836,14 @@ pub fn client_receive_and_apply(
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
         // whole batch against the local schema, then committed all-or-nothing through
         // the engine store-write path (type/range/enum/finite checks run). Runs only on
-        // a snapshot the entity apply accepted (a stale/duplicate sequence yields no
-        // `ack`, so the state batch is skipped too — it carries the same superseded
-        // frame). Applied BEFORE the UI read snapshot is built (the receive path runs in
+        // a new highest-sequence snapshot. A late first entity baseline can produce
+        // an additive ack, but its superseded state/faction batch must stay skipped.
+        // Applied BEFORE the UI read snapshot is built (the receive path runs in
         // the Game-logic stage, well before render), so the UI sees the authoritative
         // value next frame. The state acks ride back in the SAME `AckMessage` as the
         // entity acks (one ack per snapshot); refresh requests go out as their own
         // `ClientMessage::StateBaselineRefresh`.
-        if outcome.ack.is_some() {
+        if outcome.accepted_newest_snapshot {
             let state_outcome = state_slots.apply_snapshot_state(
                 slot_table,
                 replication_identity,
@@ -873,128 +908,24 @@ pub fn client_receive_and_apply(
                     hit_zone_store,
                 );
         }
-        // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
-        // its presentation materialized here, where the shared descriptor table is in scope
-        // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
-        // durable player-type signal; names are author-controlled. These paths attach ONLY
-        // descriptor presentation — a mesh or projectile body/trail — and never
-        // Brain/Agent/Health/Weapon/PlayerMovement. They are idempotent and
-        // unknown-class-tolerant, so failed presentation still interpolates transform.
-        for remote in &outcome.remote_entities {
-            let representation =
-                descriptor_class::decode_replicated_descriptor_class(&remote.entity_class);
-            let entity_class = representation.canonical_name();
-            replication.cache_remote_entity_class(remote.network_id, &remote.entity_class);
-            let descriptor = descriptors
-                .iter()
-                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class));
-            let materialized = if matches!(
-                representation,
-                descriptor_class::ReplicatedDescriptorClass::Projectile(_)
-            ) {
-                remote_materialize::materialize_armed_remote_projectile(
-                    remote,
-                    descriptors,
-                    registry,
-                    snapshot.server_tick,
-                    replication.projectile_presentation(remote.network_id),
-                )
-            } else if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some()) {
-                let player_locomotion = descriptor.and_then(|descriptor| {
-                    let movement = descriptor.movement.as_ref()?;
-                    let mesh = descriptor.mesh.as_ref()?;
-                    let idle_state = mesh.default_state.clone()?;
-                    let walk_state = ["walk_forward", "walk"]
-                        .into_iter()
-                        .find(|state| mesh.animations.contains_key(*state))?
-                        .to_string();
-                    let run_state = mesh
-                        .animations
-                        .contains_key("run")
-                        .then(|| "run".to_string());
-                    let derived_travel_speed = |state_name: &str| {
-                        let state = mesh.animations.get(state_name)?;
-                        hit_zone_store
-                            .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
-                            .and_then(|model| {
-                                model
-                                    .clips
-                                    .iter()
-                                    .find(|clip| clip.name == state.clip)
-                                    .and_then(|clip| clip.travel_speed)
-                            })
-                    };
-                    Some(client::RemotePlayerLocomotionReference {
-                        idle_state,
-                        walk_derived_travel_speed: derived_travel_speed(&walk_state),
-                        run_derived_travel_speed: run_state
-                            .as_deref()
-                            .and_then(derived_travel_speed),
-                        walk_state,
-                        run_state,
-                        walk_speed: movement.ground.speed.walk,
-                        run_speed: movement.ground.speed.run,
-                    })
-                });
-                replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);
-                remote_materialize::materialize_armed_remote_player(
-                    remote,
-                    descriptors,
-                    registry,
-                    agent_params,
-                )
-            } else {
-                // Remote AI has no local AgentComponent, so derive its walk rate from
-                // exactly the motion this client presents. The shared descriptor supplies
-                // the immutable reference speed and the locomotion state; neither belongs
-                // on the snapshot wire format.
-                //
-                // "The walking state" is picked by the same rule the host tick's
-                // animation substitution uses: the graph's locomotion state, which chases
-                // without an action of its own. The brain's graph is the descriptor's
-                // authored `behavior` block, so both ends agree on what this enemy carries.
-                let walk_reference = descriptor.and_then(|descriptor| {
-                    let mesh = descriptor.mesh.as_ref()?;
-                    let graph = descriptor.behavior.as_ref()?;
-                    let locomotion = postretro_foundation::locomotion_animation(graph)?;
-                    let state = mesh.animations.get(locomotion)?;
-                    let derived_travel_speed = hit_zone_store
-                        .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
-                        .and_then(|model| {
-                            model
-                                .clips
-                                .iter()
-                                .find(|clip| clip.name == state.clip)
-                                .and_then(|clip| clip.travel_speed)
-                        });
-                    Some((
-                        graph.move_speed,
-                        locomotion.to_string(),
-                        derived_travel_speed,
-                    ))
-                });
-                replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
-                remote_materialize::materialize_armed_remote_enemy(
-                    remote,
-                    descriptors,
-                    registry,
-                    agent_params,
-                )
-            };
-            if materialized && let Some(state) = remote.initial_animation_state.as_deref() {
-                client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
-            }
-            let attachment_changed = remote.weapon_attachment_changed
-                && remote_materialize::update_active_weapon_attachment(
-                    registry,
-                    remote.entity_id,
-                    descriptors,
-                    remote.active_weapon_archetype.as_deref(),
-                    hit_zone_store,
-                );
-            frame_outcome.materialized_remote_entity_presentation |=
-                materialized || attachment_changed;
-        }
+        // Each non-local descriptor entity needing materialization is handled here, where
+        // the shared descriptor table is in scope (the net-facing apply is descriptor-blind).
+        // The host-stamped class distinguishes pawn paths from descriptor-world copies,
+        // even when both descriptors author Movement. A display copy receives Mesh, Light,
+        // Emitter, and query-only HitVolume, but never authority components. The local
+        // pawn's weapon attachment above and retired-projectile flashes below use separate
+        // paths. Materialization is idempotent and unknown-class-tolerant, so failed
+        // presentation still interpolates transform.
+        frame_outcome.materialized_remote_entity_presentation |=
+            snapshot_apply::materialize_remote_entities(
+                &outcome.remote_entities,
+                descriptors,
+                registry,
+                replication,
+                snapshot.server_tick,
+                agent_params,
+                hit_zone_store,
+            );
         spawn_retired_projectile_presentation_flashes(
             registry,
             descriptors,
@@ -1025,6 +956,16 @@ pub fn client_receive_and_apply(
             client.send_input(buffer);
         }
     }
+
+    // Apply once after every drained snapshot has materialized, using the newest
+    // accepted header clock. Empty drains still release pre-sync deferred state.
+    replication.apply_presentation_batch(
+        registry,
+        presentation_payloads,
+        local_script_time,
+        rtt_micros,
+        presentation_bindings,
+    );
 
     // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
     // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
@@ -1508,7 +1449,7 @@ fn cleanup_stale_slot_replacement(
         return;
     }
 
-    let Some((_removed_pawn, wieldables)) = slot_pawns.remove_client(client_id) else {
+    let Some(_removed_pawn) = slot_pawns.remove_client(client_id) else {
         return;
     };
     command_queues.remove_client(client_id);
@@ -1523,7 +1464,6 @@ fn cleanup_stale_slot_replacement(
         weaponless_fire_logged,
         client_id,
         pawn,
-        &wieldables,
     );
 }
 
@@ -1539,7 +1479,6 @@ fn cleanup_remote_pawn_owned_state(
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
     client_id: u64,
     pawn: EntityId,
-    wieldables: &[EntityId],
 ) {
     // Pawn and sibling weapon are one runtime ownership unit. Despawning both
     // prevents a non-cancellable reload from surviving without the reserve-owning
@@ -1552,12 +1491,8 @@ fn cleanup_remote_pawn_owned_state(
     weapon_owners.remove_pawn(pawn);
     replicable.unregister(pawn);
     allocator.forget(pawn);
-    for &wieldable in wieldables {
-        replicable.unregister(wieldable);
-        allocator.forget(wieldable);
-        let _ = registry.despawn(wieldable);
-    }
     let _ = registry.despawn(pawn);
+    allocator.forget_dead(registry, replicable);
 }
 
 /// Drain and apply one accepted client's reliable `Channel::Input` messages on the
@@ -2278,7 +2213,11 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
-    if crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target) {
+    // Touch acquisition precedes ready/pending HIT application; the registration
+    // sweep may not have forgotten this item's former NetworkId yet.
+    if registry.is_inventory_owned(target)
+        || crate::scripting_systems::health::is_terminally_committed_to_removal(registry, target)
+    {
         return false;
     }
     let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
@@ -3246,6 +3185,7 @@ mod tests {
             state_schema_fingerprint: [0u8; 32],
             state_records: Vec::new(),
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         }
     }
 
@@ -3350,6 +3290,7 @@ mod tests {
     #[test]
     fn host_catch_up_preserves_snapshot_cadence_and_zero_tick_ack_semantics() {
         const CLIENT_ID: u64 = 72;
+        const SERVER_SCRIPT_TIME: f64 = 12.5;
         let server_socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("bind relay server");
         let server_addr = server_socket.local_addr().expect("relay server address");
@@ -3445,8 +3386,10 @@ mod tests {
             &command_queues,
             None,
             tick,
+            SERVER_SCRIPT_TIME,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3479,8 +3422,10 @@ mod tests {
             &command_queues,
             None,
             tick,
+            0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert!(sampled.is_empty());
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3495,10 +3440,16 @@ mod tests {
         for packet in server.packets_to_send(CLIENT_ID) {
             client.process_packet(&packet);
         }
+        let snapshots = client.drain_snapshots();
         assert_eq!(
-            client.drain_snapshots().len(),
+            snapshots.len(),
             1,
             "one catch-up redraw emits one current snapshot batch"
+        );
+        let snapshot = decode_snapshot(&snapshots[0]).expect("host snapshot validates");
+        assert!(
+            (snapshot.server_script_time - SERVER_SCRIPT_TIME).abs() < f64::EPSILON,
+            "the host stamps the frame's bridge clock into its snapshot"
         );
 
         let next_tick = timing.accumulate(crate::frame_timing::TICK_DURATION);
@@ -3524,8 +3475,10 @@ mod tests {
             &command_queues,
             None,
             tick,
+            0.0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -6059,13 +6012,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            26,
-            "the switch declaration's client tick advances the wire version to 26"
+            28,
+            "participation-framed shared roster requires wire version 28"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            17,
-            "frozen observer projectile facts require snapshot version 17"
+            18,
+            "presentation state, bindings and clock require snapshot version 18"
         );
     }
 
@@ -6536,6 +6489,7 @@ mod tests {
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
@@ -6546,6 +6500,7 @@ mod tests {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
 
@@ -6568,6 +6523,24 @@ mod tests {
             ComponentKind::Transform as u16
         );
         assert_eq!(component_kind_discriminant(ComponentKind::Transform), 0);
+    }
+
+    #[test]
+    fn presentation_payload_discriminants_match_engine_components() {
+        use postretro_net::wire::{
+            COMPONENT_KIND_BILLBOARD_EMITTER, COMPONENT_KIND_FOG_VOLUME, COMPONENT_KIND_LIGHT,
+        };
+        for (kind, wire_kind) in [
+            (ComponentKind::Light, COMPONENT_KIND_LIGHT),
+            (
+                ComponentKind::BillboardEmitter,
+                COMPONENT_KIND_BILLBOARD_EMITTER,
+            ),
+            (ComponentKind::FogVolume, COMPONENT_KIND_FOG_VOLUME),
+        ] {
+            assert_eq!(component_kind_discriminant(kind), wire_kind);
+            assert_eq!(wire_kind, kind as u16);
+        }
     }
 
     #[test]
@@ -6603,7 +6576,9 @@ mod tests {
                 ComponentKind::DeferredEffect => Some(ComponentKind::Inventory),
                 ComponentKind::Inventory => Some(ComponentKind::Touchable),
                 ComponentKind::Touchable => Some(ComponentKind::Projectile),
-                ComponentKind::Projectile => None,
+                ComponentKind::Projectile => Some(ComponentKind::HitVolume),
+                ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
+                ComponentKind::MapOrdinal => None,
             }
         }
 
@@ -6718,6 +6693,7 @@ mod tests {
                     entity_class: None,
                     active_weapon_archetype: None,
                     projectile_presentation: None,
+                    presentation_binding: None,
                     components: vec![ComponentPayload::Transform(WireTransform {
                         position: [4.0, 0.0, 0.0],
                         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -6727,6 +6703,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         let id = *replication
@@ -6817,6 +6794,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
             components: vec![
                 ComponentPayload::Transform(WireTransform {
                     position: [transform_x, 0.0, 0.0],
@@ -6838,6 +6816,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         replication.apply_snapshot(
@@ -6849,6 +6828,7 @@ mod tests {
                 state_schema_fingerprint: [0; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         replication.cache_remote_player_locomotion(
@@ -6965,6 +6945,7 @@ mod tests {
 
     fn host_player_spawn_placement() -> MapEntity {
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: glam::Vec3::new(5.0, 1.0, -2.0),
             angles: glam::Vec3::ZERO,
@@ -7156,7 +7137,7 @@ mod tests {
         );
         assert_eq!(
             entity_class.as_deref(),
-            Some("descriptor:player"),
+            Some("pawn:player"),
             "the host boot pawn carries the descriptor class needed for remote presentation"
         );
 
@@ -7171,18 +7152,22 @@ mod tests {
                 state_schema_fingerprint: [0u8; 32],
                 state_records: Vec::new(),
                 faction_sentiment_record: None,
+                server_script_time: 0.0,
             },
         );
         let remote = client_outcome
             .remote_entities
             .first()
             .expect("host pawn baseline asks the client to materialize its remote presentation");
-        assert_eq!(remote.entity_class, "descriptor:player");
-        assert!(remote_materialize::materialize_armed_remote_player(
-            remote,
+        assert_eq!(remote.entity_class, "pawn:player");
+        assert!(snapshot_apply::materialize_remote_entities(
+            &client_outcome.remote_entities,
             &[host_player_descriptor()],
             &mut client_registry,
+            &mut client_replication,
+            1,
             None,
+            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
         ));
         let mesh = client_registry
             .get_component::<MeshComponent>(remote.entity_id)
@@ -7388,6 +7373,7 @@ mod tests {
                             entity_class: Some("player".to_string()),
                             active_weapon_archetype: None,
                             projectile_presentation: None,
+                            presentation_binding: None,
                             components: vec![
                                 ComponentPayload::Transform(WireTransform {
                                     position: [3.0, 0.0, 0.0],
@@ -7420,6 +7406,7 @@ mod tests {
                             entity_class: None,
                             active_weapon_archetype: None,
                             projectile_presentation: None,
+                            presentation_binding: None,
                             components: vec![ComponentPayload::Transform(WireTransform {
                                 position: [9.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0, 1.0],
@@ -7430,6 +7417,7 @@ mod tests {
                     state_schema_fingerprint: [0u8; 32],
                     state_records: Vec::new(),
                     faction_sentiment_record: None,
+                    server_script_time: 0.0,
                 },
             );
             replication

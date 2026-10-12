@@ -57,13 +57,14 @@ struct LivePresentationOverlay {
     facts: PresentationFacts,
     world_anchor: glam::Vec3,
     last_damaged_time_seconds: f64,
-    /// Stable producer identity used only when damage times tie. Remote
-    /// overlays use the host-assigned, non-recycled NetworkId, so packet
-    /// arrival order cannot change which target survives the cap.
+    /// Stable producer identity used only when local damage times tie.
+    /// Authoritative overlays are selected externally and never ranked here.
     eviction_order: u64,
     instance_id: u64,
     linger_seconds: f64,
     suppressed: bool,
+    /// The authoritative roster owns expiry/removal independently of drawing.
+    authoritative: bool,
 }
 
 impl PresentationPool {
@@ -106,7 +107,8 @@ impl PresentationPool {
             age_seconds_at(frame_time_seconds, live) < lifetime_seconds(&live.spawn)
         });
         self.overlays.retain(|_, overlay| {
-            frame_time_seconds - overlay.last_damaged_time_seconds < overlay.linger_seconds
+            overlay.authoritative
+                || frame_time_seconds - overlay.last_damaged_time_seconds < overlay.linger_seconds
         });
 
         self.collect_draw_inputs(view_projection, viewport_size, motion)
@@ -262,6 +264,7 @@ impl PresentationPool {
             overlay.linger_seconds = linger_seconds.max(0.0);
             overlay.last_damaged_time_seconds = self.frame_time_seconds;
             overlay.eviction_order = eviction_order;
+            overlay.authoritative = false;
             return;
         }
         if self.overlays.len() >= max_visible {
@@ -287,8 +290,52 @@ impl PresentationPool {
                 instance_id,
                 linger_seconds: linger_seconds.max(0.0),
                 suppressed: true,
+                authoritative: false,
             },
         );
+    }
+
+    /// Project an externally selected roster without ranking or restarting a
+    /// local linger clock. The caller removes outgoing members before adding
+    /// replacements, and owns host-time expiry even when rendering is skipped.
+    pub fn upsert_authoritative_overlay(
+        &mut self,
+        entity: EntityId,
+        template: PresentationTemplateHandle,
+        max_visible: usize,
+    ) -> bool {
+        if max_visible == 0 {
+            return false;
+        }
+        if let Some(overlay) = self.overlays.get_mut(&entity) {
+            overlay.template = template;
+            overlay.authoritative = true;
+            return true;
+        }
+        if self.overlays.len() >= max_visible {
+            return false;
+        }
+        if self.overlays.capacity() < max_visible {
+            self.overlays
+                .reserve(max_visible.saturating_sub(self.overlays.len()));
+        }
+        let instance_id = self.next_instance_id;
+        self.next_instance_id = self.next_instance_id.wrapping_add(1);
+        self.overlays.insert(
+            entity,
+            LivePresentationOverlay {
+                template,
+                facts: PresentationFacts::new(),
+                world_anchor: glam::Vec3::ZERO,
+                last_damaged_time_seconds: 0.0,
+                eviction_order: 0,
+                instance_id,
+                linger_seconds: 0.0,
+                suppressed: true,
+                authoritative: true,
+            },
+        );
+        true
     }
 
     /// Update the shipped damaged-enemy fact tuple in place. These three names
@@ -325,20 +372,6 @@ impl PresentationPool {
         overlay.suppressed = suppressed;
     }
 
-    /// Move one keyed overlay to a replacement local entity without changing
-    /// its facts or last-damage clock. Client baseline repair can replace the
-    /// local `EntityId` while retaining the host's stable `NetworkId`.
-    pub fn rekey_overlay(&mut self, previous: EntityId, current: EntityId) -> bool {
-        if previous == current {
-            return self.overlays.contains_key(&current);
-        }
-        let Some(overlay) = self.overlays.remove(&previous) else {
-            return false;
-        };
-        self.overlays.insert(current, overlay);
-        true
-    }
-
     /// Update only the moving world anchor and anchor-derived suppression.
     /// Value-only network facts must not reset the last-damage linger clock.
     pub fn update_overlay_anchor(
@@ -362,9 +395,13 @@ impl PresentationPool {
         self.overlays.remove(&entity);
     }
 
-    /// Whether this entity still owns a live keyed overlay after the pool's
-    /// frame-time linger eviction. Client network-id bookkeeping uses this to
-    /// discard its otherwise separate identity entry at the same boundary.
+    /// Prune the projected set in place to match its externally owned roster.
+    pub fn retain_overlays(&mut self, mut predicate: impl FnMut(EntityId) -> bool) {
+        self.overlays.retain(|entity, _| predicate(*entity));
+    }
+
+    /// Whether this entity owns a projected keyed overlay. Local overlays use
+    /// frame-time linger; authoritative overlays remain until explicit removal.
     pub fn has_overlay(&self, entity: EntityId) -> bool {
         self.overlays.contains_key(&entity)
     }
@@ -790,6 +827,110 @@ mod tests {
         assert_eq!(pool.live_template_names(), ["damage-number"]);
     }
 
+    #[test]
+    fn authoritative_overlay_survives_draw_stalls_and_preserves_instance_facts() {
+        let mut registry = EntityRegistry::new();
+        let target = registry.spawn(Transform::default());
+        let mut pool = PresentationPool::new(1);
+        assert!(pool.upsert_authoritative_overlay(
+            target,
+            PresentationTemplateHandle::from("status"),
+            1,
+        ));
+        pool.stamp_damaged_enemy_overlay(target, 0.5, 0.25, true, Vec3::new(0.0, 0.0, -2.0), false);
+        let first = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.0,
+            camera_view_projection(),
+            [800, 600],
+            MotionPreference::Full,
+        );
+        assert_eq!(first.len(), 1);
+        assert!(first[0].visible);
+        let instance_id = first[0].instance_id;
+        pool.recycle_draw_inputs(first);
+
+        // No draw calls occur while the external host roster advances. Its
+        // next draw may advance far beyond every local linger duration.
+        assert!(pool.upsert_authoritative_overlay(
+            target,
+            PresentationTemplateHandle::from("updated-status"),
+            1,
+        ));
+        let resumed = pool.advance_and_collect_inputs(
+            &mut registry,
+            120.0,
+            camera_view_projection(),
+            [800, 600],
+            MotionPreference::Reduced,
+        );
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].instance_id, instance_id);
+        assert_eq!(
+            resumed[0].template,
+            PresentationTemplateHandle::from("updated-status")
+        );
+        for (name, expected) in [("healthFraction", 0.5), ("shieldFraction", 0.25)] {
+            let Some(postretro_entities::PresentationFact::Number(value)) =
+                resumed[0].facts.get(name)
+            else {
+                panic!("missing numeric overlay fact {name}");
+            };
+            assert!((value - expected).abs() < EPSILON);
+        }
+        assert_eq!(
+            resumed[0].facts.get("hasShield"),
+            Some(&postretro_entities::PresentationFact::Bool(true))
+        );
+        assert!(resumed[0].visible);
+
+        // External removal applies immediately, without waiting for a draw.
+        pool.retain_overlays(|_| false);
+        assert!(!pool.has_overlay(target));
+        assert!(
+            pool.advance_and_collect_inputs(
+                &mut registry,
+                0.0,
+                camera_view_projection(),
+                [800, 600],
+                MotionPreference::Full,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn authoritative_overlay_requires_roster_removal_before_replacement_at_cap() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+        let third = registry.spawn(Transform::default());
+        let mut pool = PresentationPool::new(0);
+        let template = PresentationTemplateHandle::from("status");
+        assert!(!pool.upsert_authoritative_overlay(first, template.clone(), 0));
+        assert!(pool.upsert_authoritative_overlay(first, template.clone(), 2));
+        assert!(pool.upsert_authoritative_overlay(second, template.clone(), 2));
+        assert!(!pool.upsert_authoritative_overlay(third, template.clone(), 2));
+        assert_eq!(pool.overlay_ids(), [first, second]);
+        pool.retain_overlays(|entity| entity == second);
+        assert!(pool.upsert_authoritative_overlay(third, template.clone(), 2));
+        assert_eq!(pool.overlay_ids(), [second, third]);
+
+        // Returning an existing projection to the single-player path restores
+        // its ordinary local linger ownership.
+        pool.refresh_overlay(second, template, 0.1, 2, 2);
+        let _ = pool.advance_and_collect_inputs(
+            &mut registry,
+            0.11,
+            Mat4::IDENTITY,
+            [800, 600],
+            MotionPreference::Full,
+        );
+        assert_eq!(pool.overlay_ids(), [third]);
+        pool.evict_overlay(third);
+        assert!(pool.overlay_ids().is_empty());
+    }
+
     // Regression: returning to the frontend retained live world anchors from
     // the unloaded map in both independently-budgeted pools.
     #[test]
@@ -819,8 +960,8 @@ mod tests {
         assert!(pool.overlay_ids().is_empty());
     }
 
-    // Regression: unordered equal-time network facts made the client's FIFO
-    // cap retain a different target set from the host.
+    // Equal-time local selection is stable even if damage enumeration order
+    // differs. The authoritative roster has its own external selection policy.
     #[test]
     fn keyed_overlay_equal_time_cap_uses_stable_order_not_arrival_order() {
         let mut registry = EntityRegistry::new();

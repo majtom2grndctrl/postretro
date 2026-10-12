@@ -4,6 +4,64 @@ use super::super::*;
 use super::common::*;
 use crate::ir::IrNode;
 
+// Regression: raw null/nil light-animation clears became empty objects.
+#[test]
+fn raw_light_animation_nullish_args_preserve_clear_and_other_primitive_defaults() {
+    for (js_args, lua_args, expected) in [
+        ("", "", serde_json::Value::Null),
+        (", args: null", ", args = nil", serde_json::Value::Null),
+        (", args: undefined", ", args = nil", serde_json::Value::Null),
+        (", args: {}", ", args = {}", serde_json::json!({})),
+        (
+            ", args: { periodMs: 5000, brightness: [0, 1] }",
+            ", args = { periodMs = 5000, brightness = { 0, 1 } }",
+            serde_json::json!({"periodMs":5000,"brightness":[0,1]}),
+        ),
+    ] {
+        let js = eval_js(
+            &format!(
+                "({{ name: 'light', primitive: 'setLightAnimation', tag: 'alarm'{js_args} }})"
+            ),
+            |ctx, value| named_reaction_from_js(ctx, value).unwrap(),
+        );
+        let lua = eval_lua(
+            &format!(
+                "return {{ name = 'light', primitive = 'setLightAnimation', tag = 'alarm'{lua_args} }}"
+            ),
+            |value| named_reaction_from_lua(value).unwrap(),
+        );
+        for reaction in [js, lua] {
+            let ReactionDescriptor::Primitive(descriptor) = reaction.descriptor else {
+                panic!("raw primitive")
+            };
+            assert_eq!(descriptor.args, expected);
+        }
+    }
+
+    for (js_args, lua_args) in [
+        ("", ""),
+        (", args: null", ", args = nil"),
+        (", args: undefined", ", args = nil"),
+    ] {
+        let js = eval_js(
+            &format!("({{ name: 'arm', primitive: 'armTrigger', tag: 'plate'{js_args} }})"),
+            |ctx, value| named_reaction_from_js(ctx, value).unwrap(),
+        );
+        let lua = eval_lua(
+            &format!(
+                "return {{ name = 'arm', primitive = 'armTrigger', tag = 'plate'{lua_args} }}"
+            ),
+            |value| named_reaction_from_lua(value).unwrap(),
+        );
+        for reaction in [js, lua] {
+            let ReactionDescriptor::Primitive(descriptor) = reaction.descriptor else {
+                panic!("raw primitive")
+            };
+            assert_eq!(descriptor.args, serde_json::json!({}));
+        }
+    }
+}
+
 #[test]
 fn js_manifest_parses_progress_and_primitive_reactions() {
     let src = r#"({

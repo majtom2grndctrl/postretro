@@ -289,17 +289,12 @@ impl PreparedCapture {
                 }
                 return Ok(());
             }
-            loop {
-                match self
-                    .sh_streaming
-                    .as_mut()
-                    .expect("streaming capture was initialized")
-                    .read_one_sync()?
-                {
-                    SyncReadResult::Prepared(_) => {}
-                    SyncReadResult::NoTargetReady => break,
-                }
-            }
+            while let SyncReadResult::Prepared(_) = self
+                .sh_streaming
+                .as_mut()
+                .expect("streaming capture was initialized")
+                .read_one_sync()?
+            {}
             // Preload only warms SH residency. Pinning here would feed each
             // forced `w` back into the promotion ramp, which cannot advance at
             // capture's frozen instant, so a pinned zero would drop the row's
@@ -463,40 +458,6 @@ impl PreparedCapture {
     }
 }
 
-#[cfg(test)]
-mod measurement_animation_tests {
-    use super::*;
-    use crate::capture::scene::{MAX_MEASUREMENT_SAMPLE_FRAMES, MAX_MEASUREMENT_WARMUP_FRAMES};
-
-    #[test]
-    fn measurement_frames_advance_animation_without_vm() {
-        let mut clock = CaptureMeasurementAnimationClock::default();
-        assert_eq!(clock.time_seconds(), 0.0);
-
-        let first = clock.advance_frame();
-        let second = clock.advance_frame();
-
-        assert_eq!(first, measurement_animation_time_seconds(1));
-        assert_eq!(second, measurement_animation_time_seconds(2));
-        assert!(second > first);
-    }
-
-    // Regression: repeated f32 additions drifted at the accepted measurement maximum.
-    #[test]
-    fn maximum_measurement_tick_count_derives_one_stable_time_coordinate() {
-        let total =
-            u64::from(MAX_MEASUREMENT_WARMUP_FRAMES) + u64::from(MAX_MEASUREMENT_SAMPLE_FRAMES);
-        let mut clock = CaptureMeasurementAnimationClock { ticks: total - 1 };
-
-        let actual = clock.advance_frame();
-        let expected = (total as f64 / 60.0) as f32;
-
-        assert_eq!(clock.ticks, total);
-        assert_eq!(actual, expected);
-        assert_eq!(clock.time_seconds(), expected);
-    }
-}
-
 /// Materialize just the VM-free receivers capture can render at a loaded
 /// instant. This deliberately does not call `install_world_cpu`: that path
 /// also runs data scripts and fires `levelLoad`.
@@ -564,4 +525,38 @@ pub(super) fn collect_capture_receiver_draws(
         eye,
         &hit_zones,
     );
+}
+
+#[cfg(test)]
+mod measurement_animation_tests {
+    use super::*;
+    use crate::capture::scene::{MAX_MEASUREMENT_SAMPLE_FRAMES, MAX_MEASUREMENT_WARMUP_FRAMES};
+
+    #[test]
+    fn measurement_frames_advance_animation_without_vm() {
+        let mut clock = CaptureMeasurementAnimationClock::default();
+        assert_eq!(clock.time_seconds(), 0.0);
+
+        let first = clock.advance_frame();
+        let second = clock.advance_frame();
+
+        assert_eq!(first, measurement_animation_time_seconds(1));
+        assert_eq!(second, measurement_animation_time_seconds(2));
+        assert!(second > first);
+    }
+
+    // Regression: repeated f32 additions drifted at the accepted measurement maximum.
+    #[test]
+    fn maximum_measurement_tick_count_derives_one_stable_time_coordinate() {
+        let total =
+            u64::from(MAX_MEASUREMENT_WARMUP_FRAMES) + u64::from(MAX_MEASUREMENT_SAMPLE_FRAMES);
+        let mut clock = CaptureMeasurementAnimationClock { ticks: total - 1 };
+
+        let actual = clock.advance_frame();
+        let expected = (total as f64 / 60.0) as f32;
+
+        assert_eq!(clock.ticks, total);
+        assert_eq!(actual, expected);
+        assert_eq!(clock.time_seconds(), expected);
+    }
 }

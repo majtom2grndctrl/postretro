@@ -165,17 +165,16 @@ pub fn primitive_descriptor_from_js<'js>(
         None
     };
 
-    // `args` is the primitive's typed payload. Absent / null defaults to an
-    // empty object so primitives that take no arguments still deserialize.
+    // Preserve the light-animation clear form and legacy no-argument defaults.
     let args = if obj.contains_key("args").map_err(js_err)? {
         let raw: JsValue = obj.get("args").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
-            serde_json::Value::Object(Default::default())
+            nullish_primitive_args(&primitive)
         } else {
             conv::js_to_json(ctx, raw).map_err(js_err)?
         }
     } else {
-        serde_json::Value::Object(Default::default())
+        nullish_primitive_args(&primitive)
     };
 
     validate_consequential_reaction(

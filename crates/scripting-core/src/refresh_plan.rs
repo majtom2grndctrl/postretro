@@ -271,7 +271,7 @@ fn plan_existing_descriptor(
     plan: &mut DescriptorRefreshPlan,
 ) {
     for component in DescriptorComponentKind::ALL {
-        let new_declares = descriptor_declares(new_descriptor, component);
+        let new_declares = new_descriptor.declares(component);
         let live_exists = live_component_exists(registry, entity, component);
 
         if new_declares {
@@ -365,21 +365,6 @@ fn plan_removed_descriptor(
             None,
             "descriptor was removed, but provenance recorded no descriptor-owned components",
         );
-    }
-}
-
-fn descriptor_declares(
-    descriptor: &EntityTypeDescriptor,
-    component: DescriptorComponentKind,
-) -> bool {
-    match component {
-        DescriptorComponentKind::Weapon => descriptor.weapon.is_some(),
-        DescriptorComponentKind::Movement => descriptor.movement.is_some(),
-        DescriptorComponentKind::Light => descriptor.light.is_some(),
-        DescriptorComponentKind::Emitter => descriptor.emitter.is_some(),
-        DescriptorComponentKind::Mesh => descriptor.mesh.is_some(),
-        DescriptorComponentKind::Health => descriptor.health.is_some(),
-        DescriptorComponentKind::Touchable => descriptor.touchable.is_some(),
     }
 }
 
@@ -1056,6 +1041,135 @@ mod tests {
         };
         assert_eq!(component.max, 40.0);
         assert_eq!(component.current, 40.0, "current clamps to the new max");
+    }
+
+    #[test]
+    fn held_descriptor_lifecycle_refresh_preserves_ownership_and_retained_state() {
+        use crate::components::inventory::Inventory;
+        use crate::data_descriptors::{
+            HealthDescriptor, MeshDescriptor, TouchMode, TouchableDescriptor,
+        };
+
+        for resource in [
+            serde_json::json!({ "kind": "ammo", "type": "rounds", "magazine": 10, "reserve": 0 }),
+            serde_json::json!({ "kind": "heat", "heatPerShot": 10, "overheatAt": 100, "coolPerSecond": 5 }),
+            serde_json::json!({ "kind": "cell", "capacity": 100, "costPerShot": 10, "regenPerSecond": 5 }),
+        ] {
+            let mut descriptor = weapon_descriptor("held", 10.0);
+            descriptor.weapon.as_mut().unwrap().resource =
+                serde_json::from_value(resource).unwrap();
+            descriptor.health = Some(HealthDescriptor {
+                max: 80.0,
+                hitbox: None,
+                zone_multipliers: Default::default(),
+            });
+            descriptor.touchable = Some(TouchableDescriptor {
+                mode: TouchMode::Auto,
+                radius: 1.0,
+            });
+            descriptor.mesh = Some(MeshDescriptor {
+                model: "held.gltf".into(),
+                shadow_only: false,
+                attachments: Default::default(),
+                shadow_bias_scale: 1.0,
+                animations: Default::default(),
+                default_state: None,
+                locomotion: None,
+            });
+            let old = [descriptor];
+            let mut new = old.clone();
+            new[0].weapon.as_mut().unwrap().damage = 25.0;
+            new[0].health.as_mut().unwrap().max = 60.0;
+            new[0].touchable.as_mut().unwrap().radius = 2.0;
+            new[0].mesh.as_mut().unwrap().model = "changed.gltf".into();
+            let mut registry = EntityRegistry::new();
+            let holder = registry.spawn(Transform::default());
+            let item = registry.spawn(Transform::default());
+            let mut weapon = WeaponComponent::from_descriptor(old[0].weapon.as_ref().unwrap());
+            weapon.magazine = 3;
+            weapon.cooldown_remaining_ms = 87.0;
+            weapon.state = WieldableState::Reloading;
+            weapon.state_remaining_ms = 123;
+            weapon.state_total_ms = 300;
+            if let Some(heat) = weapon.heat.as_mut() {
+                heat.heat = 75.0;
+                heat.idle_ms = 12.0;
+                heat.overheated = true;
+            }
+            if let Some(cell) = weapon.cell.as_mut() {
+                cell.charge = 35.0;
+                cell.idle_ms = 12.0;
+            }
+            registry.set_component(item, weapon.clone()).unwrap();
+            let mut health = HealthComponent::from_descriptor(old[0].health.as_ref().unwrap());
+            health.current = 37.0;
+            registry.set_component(item, health).unwrap();
+            registry
+                .set_component(
+                    item,
+                    provenance(
+                        "held",
+                        &[
+                            DescriptorComponentKind::Weapon,
+                            DescriptorComponentKind::Health,
+                            DescriptorComponentKind::Mesh,
+                            DescriptorComponentKind::Touchable,
+                        ],
+                    ),
+                )
+                .unwrap();
+            // Pickup removed Mesh/Touchable but kept their descriptor provenance.
+            // The holstered slot, rather than missing components, owns the item.
+            let mut inventory = Inventory::default();
+            inventory.wieldables[6] = Some(item);
+            registry.set_component(holder, inventory.clone()).unwrap();
+
+            let plan = plan_descriptor_refresh(&old, &new, &registry);
+            let summary = apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
+            assert_eq!(summary.applied_actions, 2);
+            assert_eq!(summary.kept_old_actions, 2);
+            assert_eq!(registry.inventory_owner(item), Some((holder, 6)));
+            assert_eq!(
+                registry.get_component::<Inventory>(holder).unwrap(),
+                &inventory
+            );
+            assert!(registry.get_component::<MeshComponent>(item).is_err());
+            assert!(registry.get_component::<TouchableComponent>(item).is_err());
+            let after = registry.get_component::<WeaponComponent>(item).unwrap();
+            assert!((after.damage - 25.0).abs() < f32::EPSILON);
+            assert_eq!(after.magazine, weapon.magazine);
+            assert_eq!(after.heat, weapon.heat);
+            assert_eq!(after.cell, weapon.cell);
+            assert!(
+                (after.cooldown_remaining_ms - weapon.cooldown_remaining_ms).abs() < f32::EPSILON
+            );
+            assert_eq!(after.state, weapon.state);
+            assert_eq!(after.state_remaining_ms, weapon.state_remaining_ms);
+            assert_eq!(after.state_total_ms, weapon.state_total_ms);
+            let health = registry.get_component::<HealthComponent>(item).unwrap();
+            assert!((health.current - 37.0).abs() < f32::EPSILON);
+            assert!((health.max - 60.0).abs() < f32::EPSILON);
+
+            let mut without_health = new.clone();
+            without_health[0].health = None;
+            let plan = plan_descriptor_refresh(&new, &without_health, &registry);
+            apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
+            assert!(registry.get_component::<HealthComponent>(item).is_err());
+            assert_eq!(registry.inventory_owner(item), Some((holder, 6)));
+            let plan = plan_descriptor_refresh(&without_health, &new, &registry);
+            apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
+            assert!(
+                registry.get_component::<HealthComponent>(item).is_err(),
+                "refresh does not recreate a missing live component"
+            );
+            assert!(registry.get_component::<MeshComponent>(item).is_err());
+            assert!(registry.get_component::<TouchableComponent>(item).is_err());
+            assert_eq!(registry.inventory_owner(item), Some((holder, 6)));
+            assert_eq!(
+                registry.get_component::<Inventory>(holder).unwrap(),
+                &inventory
+            );
+        }
     }
 
     #[test]

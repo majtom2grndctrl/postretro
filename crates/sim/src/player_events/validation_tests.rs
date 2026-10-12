@@ -812,3 +812,239 @@ fn an_interruptible_wait_is_rejected_and_a_plain_wait_installs() {
     );
     assert!(errors_containing(&capture, "drops address `pause`").is_empty());
 }
+
+#[test]
+fn player_event_audiences_reject_trigger_tokens_in_primitives_and_raw_sequence_args() {
+    let mut world = World::new();
+    world.spawn_player(Some(Seat(1)), 30.0);
+    let capture = LogCapture::start();
+    let mut reactions = Vec::new();
+    let mut fire = Vec::new();
+    for (label, token) in [("activators", "@activators"), ("trigger", "@trigger")] {
+        for raw_sequence in [false, true] {
+            let name = format!(
+                "{label}.{}",
+                if raw_sequence {
+                    "sequence"
+                } else {
+                    "primitive"
+                }
+            );
+            let args = json!({ "sound": "alarm", "audience": token });
+            reactions.push(if raw_sequence {
+                sequence(
+                    &name,
+                    vec![SequenceStep {
+                        id: SequenceTarget::Entity(world.spawn_unbound(100.0)),
+                        primitive: "playSound".to_string(),
+                        args,
+                    }],
+                )
+            } else {
+                system(&name, "playSound", args)
+            });
+            fire.push(name);
+        }
+    }
+    reactions.extend([
+        system(
+            "subject",
+            "playSound",
+            json!({ "sound": "subject", "audience": "@player" }),
+        ),
+        system(
+            "everyone",
+            "playSound",
+            json!({ "sound": "team", "audience": "everyone" }),
+        ),
+        play_sound("default", "default"),
+    ]);
+    let wrong = fire.clone();
+    reactions.push(sequence("relayEveryone", vec![fire_step("everyone")]));
+    fire.push("relayEveryone".to_string());
+    fire.extend([
+        "subject".to_string(),
+        "everyone".to_string(),
+        "default".to_string(),
+    ]);
+    let addresses: Vec<_> = fire.iter().map(String::as_str).collect();
+    world.install(
+        reactions,
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            low_health(),
+            &addresses,
+        )],
+    );
+    for name in wrong {
+        let errors = errors_containing(&capture, &format!("drops address `{name}`"));
+        assert_eq!(errors.len(), 1, "{name}: {errors:?}");
+        let token = if name.starts_with("activators") {
+            "on.activators"
+        } else {
+            "on.trigger"
+        };
+        assert!(
+            errors[0].contains("setupLevel().playerEvents[0]")
+                && errors[0].contains(&format!("reaction `{name}` uses `{token}`"))
+                && errors[0].contains("only trigger events publish"),
+            "{}",
+            errors[0]
+        );
+    }
+    let relay_errors = errors_containing(&capture, "drops address `relayEveryone`");
+    assert_eq!(relay_errors.len(), 1);
+    assert!(
+        relay_errors[0].contains("reaches reaction `everyone`")
+            && relay_errors[0].contains("presents `playSound`"),
+        "audience everyone retains the existing prohibition on context-free player-event presentation"
+    );
+    for name in ["subject", "everyone", "default"] {
+        assert!(errors_containing(&capture, &format!("drops address `{name}`")).is_empty());
+    }
+    world.tick();
+    assert_eq!(
+        world.take_residual_reactions(),
+        vec!["subject", "everyone", "default"]
+    );
+}
+
+#[test]
+fn trigger_audiences_reject_player_tokens_in_primitives_and_raw_sequence_args() {
+    use crate::trigger_bindings::TriggerBindingTable;
+    use crate::trigger_system::TriggerEventEdge;
+    use postretro_entities::{
+        MoverCommand, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    };
+
+    for (audience, raw_sequence, should_bind) in [
+        ("@player", false, false),
+        ("@player", true, false),
+        ("@activators", false, true),
+        ("@trigger", false, true),
+        ("everyone", false, true),
+    ] {
+        let mut world = World::new();
+        let trigger = {
+            let mut registry = world.script_ctx.registry.borrow_mut();
+            let trigger = registry.spawn(postretro_entities::Transform::default());
+            registry
+                .set_component(
+                    trigger,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        "cue".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .unwrap();
+            trigger
+        };
+        let reaction = if raw_sequence {
+            sequence(
+                "cue",
+                vec![SequenceStep {
+                    id: SequenceTarget::Entity(trigger),
+                    primitive: "setEmitterRate".to_string(),
+                    args: json!({ "rate": 1.0, "audience": audience }),
+                }],
+            )
+        } else {
+            system(
+                "cue",
+                "playSound",
+                json!({ "sound": "alarm", "audience": audience }),
+            )
+        };
+        world.install(vec![reaction], vec![]);
+        let capture = LogCapture::start();
+        let bindings = TriggerBindingTable::build_with_script_ctx(
+            &world.script_ctx.registry.borrow(),
+            &world.script_ctx.data_registry.borrow(),
+            &world.script_ctx,
+        );
+        assert_eq!(
+            bindings
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Enter)),
+            should_bind,
+            "audience={audience}, raw_sequence={raw_sequence}"
+        );
+        let errors = errors_containing(&capture, "reaction `cue` uses `on.player`");
+        if should_bind {
+            assert!(errors.is_empty(), "{errors:?}");
+        } else {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("only a player event publishes")
+                    && errors[0].contains(&trigger.to_string())
+            );
+        }
+    }
+}
+
+#[test]
+fn reachable_machine_local_reactions_walks_duplicate_bodies_cycles_and_post_wait_routes() {
+    use super::reachable_machine_local_reactions;
+    let mut data = postretro_scripting_core::data_registry::DataRegistry::new();
+    let wait = || SequenceStep {
+        id: SequenceTarget::Wait,
+        primitive: "wait".to_string(),
+        args: json!({ "durationMs": 100.0 }),
+    };
+    data.populate_level(
+        vec![
+            with_on_complete(
+                system("root", "showDialog", json!({ "tree": "dialog" })),
+                "relay",
+            ),
+            sequence("root", vec![wait(), fire_step("postWait")]),
+            sequence(
+                "postWait",
+                vec![
+                    wait(),
+                    SequenceStep {
+                        id: SequenceTarget::Entity(postretro_entities::EntityId::from_raw(1)),
+                        primitive: "closeDialog".to_string(),
+                        args: json!({}),
+                    },
+                    fire_step("relay"),
+                ],
+            ),
+            sequence("relay", vec![fire_step("root")]),
+            with_on_complete(play_sound("relay", "alarm"), "text"),
+            with_on_complete(
+                system(
+                    "text",
+                    "appendText",
+                    json!({ "slot": "note", "text": "alarm" }),
+                ),
+                "postWait",
+            ),
+            system("text", "clearText", json!({ "slot": "note" })),
+            system("unrelated", "openMenu", json!({ "tree": "other" })),
+            system(
+                "localSlot",
+                "setState",
+                json!({ "slot": "local", "value": 1.0 }),
+            ),
+        ],
+        vec![],
+        &[],
+    );
+    assert_eq!(
+        reachable_machine_local_reactions("root", &data),
+        vec!["root", "postWait", "text"],
+        "each reached address warns once, including steps after wait and routes in every same-named body"
+    );
+    assert!(
+        reachable_machine_local_reactions("localSlot", &data).is_empty(),
+        "the UI warning class is MachineLocal; slot replication has its own validation"
+    );
+    assert!(reachable_machine_local_reactions("missing", &data).is_empty());
+}

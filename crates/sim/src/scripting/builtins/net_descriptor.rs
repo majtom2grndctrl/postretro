@@ -3,7 +3,8 @@
 
 use super::MapEntity;
 use super::data_archetype::{
-    compose_wieldable_inventory, compose_wieldable_inventory_from_slots, descriptor_mesh_component,
+    ai_capsule_center_from_feet_offset, compose_wieldable_inventory,
+    compose_wieldable_inventory_from_slots, descriptor_light_component, descriptor_mesh_component,
     find_descriptor, spawn_descriptor_instance,
 };
 use super::wieldable_inventory::{acquire_wieldable_at, release_wieldable};
@@ -215,6 +216,7 @@ pub fn materialize_net_local_wieldable_inventory_from_tuning(
     );
     if !has_inventory {
         let placement = MapEntity {
+            map_ordinal: None,
             classname: entity_class.to_string(),
             origin: registry
                 .get_component::<Transform>(id)
@@ -322,6 +324,7 @@ fn materialize_net_local_wieldable_at_slot(
         return false;
     };
     let weapon_entity = MapEntity {
+        map_ordinal: None,
         classname: canonical_name.to_string(),
         origin: registry
             .get_component::<Transform>(pawn)
@@ -349,17 +352,134 @@ fn materialize_net_local_wieldable_at_slot(
     true
 }
 
+/// Compare only the host fields installed on this instance. Sound keys remain
+/// local, placement belongs to the owner projection, and resource balances and
+/// activation/recovery state are live values rather than descriptor tuning.
+fn net_wieldable_gameplay_matches(
+    weapon: &WeaponComponent,
+    tuning: &WieldableTuningPayload,
+) -> bool {
+    // Keep this exhaustive so a new host field cannot silently skip retuning.
+    let WieldableTuningPayload {
+        canonical_name: _,
+        placement: _,
+        muzzle_offset,
+        range,
+        primary,
+        secondary,
+        damage,
+        knockback,
+        projectile,
+        splash,
+        resource,
+        pellet_count,
+        spread_degrees,
+        bloom_per_shot_degrees,
+        bloom_max_degrees,
+        bloom_decay_degrees_per_second,
+        bloom_decay_delay_ms,
+        movement_spread_degrees,
+        spread_vertical_bias,
+        resolution,
+        lower_ms,
+        raise_ms,
+        block_during_reload,
+    } = tuning;
+    let activation_matches =
+        |installed: &postretro_foundation::WeaponActivationDescriptor,
+         incoming: &postretro_foundation::WeaponActivationDescriptor| {
+            let postretro_foundation::WeaponActivationDescriptor {
+                trigger,
+                recovery_ms,
+                steps,
+                charge,
+                sounds: _,
+                emits,
+            } = incoming;
+            installed.trigger == *trigger
+                && installed.recovery_ms == *recovery_ms
+                && &installed.steps == steps
+                && &installed.charge == charge
+                && &installed.emits == emits
+        };
+    let resource_matches = match (
+        resource,
+        weapon.ammo.as_ref(),
+        weapon.heat.as_ref(),
+        weapon.cell.as_ref(),
+    ) {
+        (None, None, None, None) => true,
+        (Some(postretro_foundation::WeaponResource::Ammo(incoming)), Some(ammo), None, None) => {
+            let postretro_foundation::AmmoResource {
+                ammo_type,
+                magazine,
+                cost_per_shot,
+                // Initial grants are not installed on the weapon component.
+                reserve: _,
+                reload_ms,
+                reload_style,
+            } = incoming;
+            ammo.ammo_type == *ammo_type
+                && ammo.capacity == *magazine
+                && ammo.cost_per_shot == *cost_per_shot
+                && ammo.reload_ms == *reload_ms
+                && ammo.reload_style == *reload_style
+        }
+        (Some(postretro_foundation::WeaponResource::Heat(incoming)), None, Some(heat), None) => {
+            heat.tuning == *incoming
+        }
+        (Some(postretro_foundation::WeaponResource::Cell(incoming)), None, None, Some(cell)) => {
+            cell.tuning == *incoming
+        }
+        _ => false,
+    };
+    weapon.damage == *damage
+        && weapon.knockback == *knockback
+        && weapon.range == *range
+        && &weapon.projectile == projectile
+        && &weapon.splash == splash
+        && weapon.muzzle_offset.map(|offset| offset.to_array()) == *muzzle_offset
+        && weapon.pellet_count == (*pellet_count).clamp(1, MAX_PELLET_COUNT)
+        && weapon.spread_degrees == clamp_tuning_degrees(*spread_degrees)
+        && weapon.bloom_per_shot_degrees == clamp_tuning_degrees(*bloom_per_shot_degrees)
+        && weapon.bloom_max_degrees == clamp_tuning_degrees(*bloom_max_degrees)
+        && weapon.bloom_decay_degrees_per_second
+            == clamp_tuning_nonnegative(*bloom_decay_degrees_per_second)
+        && weapon.bloom_decay_delay_ms == clamp_tuning_nonnegative(*bloom_decay_delay_ms)
+        && weapon.movement_spread_degrees == clamp_tuning_degrees(*movement_spread_degrees)
+        && weapon.spread_vertical_bias
+            == if spread_vertical_bias.is_finite() {
+                spread_vertical_bias.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        && weapon.resolution == *resolution
+        && weapon.lower_ms == *lower_ms
+        && weapon.raise_ms == *raise_ms
+        && weapon.block_during_reload == *block_during_reload
+        && resource_matches
+        && activation_matches(&weapon.primary, primary)
+        && match (weapon.secondary.as_deref(), secondary.as_ref()) {
+            (None, None) => true,
+            (Some(installed), Some(incoming)) => activation_matches(installed, incoming),
+            _ => false,
+        }
+}
+
 fn apply_net_wieldable_tuning(
     registry: &mut EntityRegistry,
     weapon_id: EntityId,
     tuning: &WieldableTuningPayload,
 ) {
-    let Ok(mut weapon) = registry
-        .get_component::<WeaponComponent>(weapon_id)
-        .cloned()
-    else {
+    let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
         return;
     };
+    // Ordinary owner snapshots revisit every slot. An unchanged row must leave
+    // captured activation work and installed programs on this instance intact.
+    if net_wieldable_gameplay_matches(weapon, tuning) {
+        return;
+    }
+    let mut weapon = weapon.clone();
     weapon.cancel_activation();
     weapon.range = tuning.range;
     weapon.pellet_count = tuning.pellet_count.clamp(1, MAX_PELLET_COUNT);
@@ -491,6 +611,62 @@ pub fn materialize_net_mesh_presentation(
     true
 }
 
+/// Attach a descriptor display copy's complete presentation set independently.
+/// Existing components retain applied network state across retries and re-baselines.
+pub fn materialize_net_descriptor_presentation(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    agent_params: Option<NavAgentParams>,
+) -> bool {
+    use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::hit_volume::HitVolumeComponent;
+    use postretro_entities::components::light::LightComponent;
+    use postretro_entities::components::mesh::MeshComponent;
+
+    let Ok(transform) = registry.get_component::<Transform>(id).copied() else {
+        return false;
+    };
+    let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
+        log::warn!(
+            "[Net] remote entity_class `{entity_class}` not registered; presentation incomplete"
+        );
+        return false;
+    };
+    let mut complete = true;
+    if registry.get_component::<MeshComponent>(id).is_err()
+        && let Some(component) = descriptor_mesh_component(descriptor, agent_params)
+    {
+        complete &= registry.set_component(id, component).is_ok();
+    }
+    if registry.get_component::<LightComponent>(id).is_err()
+        && let Some(light) = descriptor.light.as_ref()
+    {
+        complete &= registry
+            .set_component(id, descriptor_light_component(light, transform.position))
+            .is_ok();
+    }
+    if registry
+        .get_component::<BillboardEmitterComponent>(id)
+        .is_err()
+        && let Some(emitter) = descriptor.emitter.as_ref()
+    {
+        complete &= registry.set_component(id, emitter.clone()).is_ok();
+    }
+    if registry.get_component::<HitVolumeComponent>(id).is_err()
+        && let Some(health) = descriptor.health.as_ref()
+        && let Some(mut hitbox) = HealthComponent::from_descriptor(health).hitbox
+    {
+        hitbox.offset -= ai_capsule_center_from_feet_offset(descriptor, agent_params);
+        complete &= registry
+            .set_component(id, HitVolumeComponent { hitbox })
+            .is_ok();
+    }
+    complete
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,6 +755,281 @@ mod tests {
             &[],
         )
         .expect("registry has room for one entity")
+    }
+
+    fn display_descriptor(mesh: bool, hitbox: bool) -> EntityTypeDescriptor {
+        let mut descriptor = enemy_mesh_descriptor("display", true);
+        if !mesh {
+            descriptor.mesh = None;
+        }
+        descriptor.health = Some(
+            postretro_scripting_core::data_descriptors::HealthDescriptor {
+                max: 100.0,
+                hitbox: hitbox.then_some(
+                    postretro_scripting_core::data_descriptors::HitboxDescriptor {
+                        half_extents: [0.5; 3],
+                        offset: Some([0.0, 1.0, 0.0]),
+                    },
+                ),
+                zone_multipliers: Default::default(),
+            },
+        );
+        descriptor
+    }
+
+    #[test]
+    fn descriptor_display_set_attaches_independently_and_preserves_live_state() {
+        use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+        use postretro_entities::components::hit_volume::HitVolumeComponent;
+        use postretro_entities::components::light::LightComponent;
+        let mut descriptor = display_descriptor(true, true);
+        descriptor.light = Some(
+            postretro_scripting_core::data_descriptors::LightDescriptor {
+                color: [0.2, 0.4, 0.6],
+                intensity: 3.0,
+                range: 7.0,
+                is_dynamic: false,
+            },
+        );
+        descriptor.emitter = Some(BillboardEmitterComponent {
+            rate: 2.0,
+            burst: None,
+            spread: 0.5,
+            lifetime: 1.0,
+            velocity: [0.0; 3],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: vec![1.0].into(),
+            opacity_over_lifetime: vec![1.0].into(),
+            color: [1.0; 3],
+            sprite: "spark".into(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        });
+        descriptor.behavior = Some(BehaviorGraphDescriptor {
+            knockback: Default::default(),
+            envelope: BehaviorGraphEnvelope {
+                initial: "idle".to_string(),
+                activities: std::collections::BTreeMap::from([(
+                    "idle".to_string(),
+                    BehaviorActivityDescriptor {
+                        sound: None,
+                        animation: Some("idle".to_string()),
+                        motion: Some(MotionVerb::Hold),
+                        action: None,
+                        on_enter: None,
+                        layers: std::collections::BTreeMap::new(),
+                    },
+                )]),
+                transitions: std::collections::BTreeMap::new(),
+            },
+            candidate_filter: None,
+            retaliation: None,
+            patrol: None,
+            attacks: Default::default(),
+            engagement_radius: None,
+            move_speed: 3.5,
+        });
+        descriptor.weapon = weapon_descriptor("unused").weapon;
+        descriptor.movement = player_with_movement("unused").movement;
+        descriptor.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Press,
+            radius: 1.0,
+        });
+        let mut registry = EntityRegistry::new();
+        let id = spawn_transform_only(&mut registry);
+        let descriptors = [descriptor];
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &descriptors,
+            &mut registry,
+            id,
+            None
+        ));
+        let light = registry.get_component::<LightComponent>(id).unwrap();
+        assert!(Vec3::from_array(light.origin).distance(Vec3::new(1.0, 2.0, 3.0)) < 1e-5);
+        assert!(light.is_dynamic);
+        assert!((light.intensity - 3.0).abs() < 1e-5);
+        assert!(
+            registry
+                .get_component::<HitVolumeComponent>(id)
+                .unwrap()
+                .hitbox
+                .offset
+                .distance(Vec3::Y - ai_capsule_center_from_feet_offset(&descriptors[0], None))
+                < 1e-5
+        );
+        for kind in [
+            ComponentKind::Health,
+            ComponentKind::Brain,
+            ComponentKind::Agent,
+            ComponentKind::Weapon,
+            ComponentKind::Touchable,
+            ComponentKind::PlayerMovement,
+            ComponentKind::DescriptorProvenance,
+        ] {
+            assert!(
+                !registry.has_component_kind(id, kind).unwrap(),
+                "unexpected {kind:?}"
+            );
+        }
+        let mut light = light.clone();
+        light.intensity = 8.0;
+        registry.set_component(id, light).unwrap();
+        let mut emitter = registry
+            .get_component::<BillboardEmitterComponent>(id)
+            .unwrap()
+            .clone();
+        emitter.rate = 0.0;
+        registry.set_component(id, emitter).unwrap();
+        let mut mesh = registry.get_component::<MeshComponent>(id).unwrap().clone();
+        mesh.animation.as_mut().unwrap().current_state = "attack".into();
+        registry.set_component(id, mesh.clone()).unwrap();
+        registry.remove_component::<HitVolumeComponent>(id).unwrap();
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &descriptors,
+            &mut registry,
+            id,
+            None
+        ));
+        assert!(
+            (registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .intensity
+                - 8.0)
+                .abs()
+                < 1e-5
+        );
+        assert!(
+            registry
+                .get_component::<BillboardEmitterComponent>(id)
+                .unwrap()
+                .rate
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(registry.get_component::<MeshComponent>(id).unwrap(), &mesh);
+        assert!(registry.get_component::<HitVolumeComponent>(id).is_ok());
+    }
+
+    #[test]
+    fn descriptor_display_set_completes_empty_and_meshless_but_rejects_unknown_or_stale() {
+        let mut registry = EntityRegistry::new();
+        let id = spawn_transform_only(&mut registry);
+        let mut descriptor = display_descriptor(false, false);
+        descriptor.health = None;
+        assert!(materialize_net_descriptor_presentation(
+            "display",
+            &[descriptor.clone()],
+            &mut registry,
+            id,
+            None
+        ));
+        assert!(!materialize_net_descriptor_presentation(
+            "unknown",
+            &[descriptor.clone()],
+            &mut registry,
+            id,
+            None
+        ));
+        registry.despawn(id).unwrap();
+        assert!(!materialize_net_descriptor_presentation(
+            "display",
+            &[descriptor],
+            &mut registry,
+            id,
+            None
+        ));
+    }
+
+    #[test]
+    fn descriptor_display_hit_volume_targets_ray_without_damage_splash_or_policy() {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        use crate::sim::splash::entities_in_sphere;
+        use crate::weapon::{ActivationOutcome, DamagePayload, WeaponImpact};
+        use postretro_entities::components::health::{
+            DamageContext, DamageProducer, apply_damage_with_context,
+        };
+        use postretro_entities::components::hit_volume::HitVolumeComponent;
+        for mesh in [false, true] {
+            for authored_hitbox in [false, true] {
+                let mut registry = EntityRegistry::new();
+                let id = registry.spawn(Transform::default());
+                let descriptor = display_descriptor(mesh, authored_hitbox);
+                assert!(materialize_net_descriptor_presentation(
+                    "display",
+                    &[descriptor],
+                    &mut registry,
+                    id,
+                    None
+                ));
+                let store = HitZoneStore::new();
+                let hit = nearest_entity_hit(
+                    &registry,
+                    &store,
+                    0.0,
+                    Vec3::new(0.0, 1.0, -3.0),
+                    Vec3::Z,
+                    10.0,
+                    0.0,
+                );
+                assert_eq!(hit.map(|hit| hit.target), authored_hitbox.then_some(id));
+                assert!(
+                    nearest_entity_hit(
+                        &registry,
+                        &store,
+                        0.0,
+                        Vec3::new(2.0, 1.0, -3.0),
+                        Vec3::Z,
+                        10.0,
+                        0.0
+                    )
+                    .is_none()
+                );
+                assert!(
+                    entities_in_sphere(&registry, &store, Vec3::Y, 5.0, |_| false, None, Vec3::Y)
+                        .is_empty()
+                );
+                let payload = DamagePayload {
+                    amount: 10.0,
+                    impulse: Vec3::ZERO,
+                };
+                assert!(!apply_damage_with_context(
+                    &mut registry,
+                    id,
+                    &payload,
+                    DamageContext::new("test", DamageProducer::InTick)
+                ));
+                let impact = WeaponImpact {
+                    point: Vec3::Y,
+                    normal: -Vec3::Z,
+                    target: Some(id),
+                    zone: None,
+                    outcome: ActivationOutcome::Hit(payload),
+                };
+                crate::sim::weapon_stage::apply_authorized_weapon_impact_damage(
+                    &mut registry,
+                    id,
+                    None,
+                    &impact,
+                    "test".into(),
+                    10.0,
+                );
+                assert!(registry.take_impact_dispatches().is_empty());
+                assert!(registry.get_component::<HealthComponent>(id).is_err());
+                assert!(
+                    registry
+                        .get_component::<postretro_entities::components::brain::BrainComponent>(id)
+                        .is_err()
+                );
+                assert_eq!(
+                    registry.get_component::<HitVolumeComponent>(id).is_ok(),
+                    authored_hitbox
+                );
+            }
+        }
     }
 
     #[test]
@@ -999,6 +1450,7 @@ mod tests {
             kv.insert((*k).to_string(), (*v).to_string());
         }
         MapEntity {
+            map_ordinal: None,
             classname: "player_spawn".to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::ZERO,
@@ -1088,6 +1540,234 @@ mod tests {
             block_during_reload: None,
         });
         TuningPayload::new(None, wieldables)
+    }
+
+    #[test]
+    fn net_wieldable_repeat_tuning_preserves_burst_and_charge_without_allocations() {
+        use crate::weapon::FireButtonState;
+        use crate::weapon::execution::{ActivationCommand, advance_weapon_activation};
+        use postretro_foundation::{
+            ActivationCharge, ActivationInput, ActivationLane, ActivationRelease, ActivationToken,
+            ActivationTrigger, WeaponActivationDescriptor,
+        };
+        use std::sync::Arc;
+
+        let burst: WeaponActivationDescriptor = serde_json::from_value(serde_json::json!({
+            "trigger": "press", "recoveryMs": 300.0,
+            "steps": [
+                {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0},
+                {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0},
+                {"kind": "shot"}
+            ],
+            "emits": {"activate": "burst.activate"}
+        }))
+        .unwrap();
+        let mut charge = WeaponActivationDescriptor::single(ActivationTrigger::Press, 300.0);
+        charge.charge = Some(ActivationCharge {
+            min_ms: 200.0,
+            full_ms: 1000.0,
+        });
+        let token = ActivationToken {
+            start_tick: 10,
+            lane: ActivationLane::Secondary,
+        };
+
+        for (action, release_tick, expected_shots) in [(burst, None, 3), (charge, Some(25), 1)] {
+            let mut registry = EntityRegistry::new();
+            let weapon_id = registry.spawn(Transform::default());
+            let mut descriptor = ammo_weapon_descriptor("reference_pistol");
+            let local = descriptor.weapon.as_mut().unwrap();
+            local.secondary = Some(action.clone());
+            local.secondary.as_mut().unwrap().sounds =
+                Some(postretro_foundation::ActivationSounds {
+                    fire: Some("sfx/local-secondary".into()),
+                    impact: None,
+                });
+            let mut weapon = WeaponComponent::from_descriptor(local);
+            weapon.magazine = 5;
+            registry.set_component(weapon_id, weapon).unwrap();
+            let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+            let row = tuning.wieldables[0].as_mut().unwrap();
+            row.secondary = Some(action);
+            row.resource = local.resource.clone();
+            row.bloom_per_shot_degrees = 1.0;
+            row.bloom_max_degrees = 6.0;
+            apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+            let mut shots = Vec::new();
+
+            for tick in 10..=30 {
+                let mut weapon = registry
+                    .get_component::<WeaponComponent>(weapon_id)
+                    .unwrap()
+                    .clone();
+                let advance = advance_weapon_activation(
+                    &mut weapon,
+                    ActivationCommand {
+                        tick,
+                        pawn: 7,
+                        real_command: true,
+                        input: ActivationInput {
+                            initiation: (tick == 10).then_some(token),
+                            release: (release_tick == Some(tick)).then_some(ActivationRelease {
+                                token,
+                                release_tick: tick,
+                            }),
+                            cancel: None,
+                        },
+                        controller_starts: false,
+                        primary: FireButtonState {
+                            pressed: false,
+                            active: false,
+                        },
+                        secondary: FireButtonState {
+                            pressed: tick == 10,
+                            active: release_tick.is_none_or(|release| tick < release),
+                        },
+                    },
+                    1000.0 / 60.0,
+                    true,
+                    true,
+                );
+                if tick == 10 {
+                    assert!(weapon.state.activation_cursor().is_some());
+                }
+                if let Some(shot) = advance.shot {
+                    shots.push(shot);
+                }
+                let before = weapon.clone();
+                registry.set_component(weapon_id, weapon).unwrap();
+                let probe = crate::alloc_probe::AllocSnapshot::arm();
+                apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+                apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+                let allocations = probe.allocs_since();
+                assert_eq!(
+                    allocations, 0,
+                    "unchanged tuning must not rebuild installed data"
+                );
+                let installed = registry
+                    .get_component::<WeaponComponent>(weapon_id)
+                    .unwrap();
+                assert_eq!(
+                    installed, &before,
+                    "repeat install changed live state at tick {tick}"
+                );
+                assert!(Arc::ptr_eq(&installed.primary, &before.primary));
+                assert!(Arc::ptr_eq(
+                    installed.secondary.as_ref().unwrap(),
+                    before.secondary.as_ref().unwrap(),
+                ));
+                assert!(Arc::ptr_eq(
+                    installed.activation_programs.primary.as_ref().unwrap(),
+                    before.activation_programs.primary.as_ref().unwrap(),
+                ));
+                assert!(Arc::ptr_eq(
+                    installed.activation_programs.secondary.as_ref().unwrap(),
+                    before.activation_programs.secondary.as_ref().unwrap(),
+                ));
+            }
+            assert_eq!(shots.len(), expected_shots);
+            for (ordinal, shot) in shots.iter().enumerate() {
+                assert_eq!(shot.shot_id.start_tick, token.start_tick);
+                assert_eq!(shot.shot_id.lane, token.lane);
+                assert_eq!(shot.shot_id.ordinal, ordinal as u8);
+            }
+            if release_tick.is_some() {
+                assert!((shots[0].charge - 0.25).abs() < f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn net_wieldable_changed_tuning_cancels_future_work_after_atomic_validation() {
+        use crate::weapon::FireButtonState;
+        use crate::weapon::execution::{ActivationCommand, advance_weapon_activation};
+        use postretro_foundation::{ActivationInput, ActivationLane, ActivationToken};
+        use std::sync::Arc;
+
+        let mut registry = EntityRegistry::new();
+        let weapon_id = registry.spawn(Transform::default());
+        let mut tuning = tuning_for_slot(0, "reference_pistol", 64.0, 100.0, 0, 0);
+        let row = tuning.wieldables[0].as_mut().unwrap();
+        row.secondary = Some(
+            serde_json::from_value(serde_json::json!({
+                "trigger": "press", "recoveryMs": 300.0,
+                "steps": [
+                    {"kind": "shot"}, {"kind": "wait", "durationMs": 80.0}, {"kind": "shot"}
+                ]
+            }))
+            .unwrap(),
+        );
+        row.resource = ammo_weapon_descriptor("reference_pistol")
+            .weapon
+            .unwrap()
+            .resource;
+        let mut weapon =
+            WeaponComponent::from_descriptor(&row.weapon_descriptor().validate().unwrap());
+        let advance = advance_weapon_activation(
+            &mut weapon,
+            ActivationCommand {
+                tick: 10,
+                pawn: 7,
+                real_command: true,
+                input: ActivationInput {
+                    initiation: Some(ActivationToken {
+                        start_tick: 10,
+                        lane: ActivationLane::Secondary,
+                    }),
+                    ..Default::default()
+                },
+                controller_starts: false,
+                primary: FireButtonState {
+                    pressed: false,
+                    active: false,
+                },
+                secondary: FireButtonState {
+                    pressed: true,
+                    active: true,
+                },
+            },
+            1000.0 / 60.0,
+            false,
+            true,
+        );
+        let frozen_shot = advance.shot.unwrap();
+        assert_eq!(weapon.magazine, 11);
+        assert!(weapon.state.activation_cursor().is_some());
+        let before = weapon.clone();
+        registry.set_component(weapon_id, weapon).unwrap();
+
+        row.damage = f32::NAN;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        let installed = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(
+            installed, &before,
+            "rejected tuning must not cancel live execution"
+        );
+        assert!(Arc::ptr_eq(
+            installed.activation_programs.secondary.as_ref().unwrap(),
+            before.activation_programs.secondary.as_ref().unwrap(),
+        ));
+
+        row.damage = 25.0;
+        apply_net_wieldable_tuning(&mut registry, weapon_id, row);
+        let installed = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert_eq!(installed.state, WieldableState::Idle);
+        assert_eq!(installed.damage, 25.0);
+        assert_eq!(installed.magazine, before.magazine);
+        assert_eq!(
+            installed.cooldown_remaining_ms,
+            before.cooldown_remaining_ms
+        );
+        assert!(!Arc::ptr_eq(
+            installed.activation_programs.secondary.as_ref().unwrap(),
+            &frozen_shot.program,
+        ));
+        assert_eq!(frozen_shot.values.damage, 10.0);
+        assert_eq!(frozen_shot.shot_id.ordinal, 0);
     }
 
     #[test]
@@ -1284,6 +1964,171 @@ mod tests {
     }
 
     #[test]
+    fn held_descriptor_lifecycle_client_materialization_orders_preserve_ownership_and_health() {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        fn health_weapon(name: &str) -> EntityTypeDescriptor {
+            let mut descriptor = touchable_mesh_weapon_descriptor(name);
+            descriptor.health = Some(postretro_foundation::HealthDescriptor {
+                max: 75.0,
+                hitbox: Some(postretro_foundation::HitboxDescriptor {
+                    half_extents: [0.5; 3],
+                    offset: None,
+                }),
+                zone_multipliers: Default::default(),
+            });
+            descriptor
+        }
+        for control_first in [false, true] {
+            let mut registry = EntityRegistry::new();
+            let pawn = registry.spawn(Transform::default());
+            let descriptors = [
+                player_with_default_weapon("player", "local_pistol"),
+                health_weapon("local_pistol"),
+                health_weapon("replacement_rifle"),
+            ];
+            let mut tuning = tuning_for_slot(0, "local_pistol", 220.0, 340.0, 55, 80);
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                if control_first { Some(&tuning) } else { None }
+            ));
+            let item = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0]
+                .unwrap();
+            assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+            assert!(registry.is_inventory_owned(item));
+            let mut health = registry
+                .get_component::<HealthComponent>(item)
+                .unwrap()
+                .clone();
+            health.current = 29.0;
+            registry.set_component(item, health).unwrap();
+            let mut weapon = registry
+                .get_component::<WeaponComponent>(item)
+                .unwrap()
+                .clone();
+            weapon.magazine = 3;
+            weapon.cooldown_remaining_ms = 47.0;
+            registry.set_component(item, weapon).unwrap();
+            // The other arrival must keep the already materialized instance and live state.
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                if control_first { None } else { Some(&tuning) }
+            ));
+            assert_eq!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0],
+                Some(item)
+            );
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            tuning.wieldables[0].as_mut().unwrap().range = 180.0;
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            assert_eq!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0],
+                Some(item)
+            );
+            assert_eq!(registry.inventory_owner(item), Some((pawn, 0)));
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                29.0
+            );
+            let weapon = registry.get_component::<WeaponComponent>(item).unwrap();
+            assert_eq!(weapon.range, 180.0);
+            assert_eq!(weapon.magazine, 3);
+            assert_eq!(weapon.cooldown_remaining_ms, 47.0);
+            let zones = HitZoneStore::new();
+            assert!(
+                nearest_entity_hit(&registry, &zones, 0.0, Vec3::Z * 2.0, Vec3::NEG_Z, 4.0, 0.0)
+                    .is_none()
+            );
+            // Positive query control proves the retained hitbox is usable in world space.
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            registry.set_component(pawn, Inventory::default()).unwrap();
+            assert_eq!(
+                nearest_entity_hit(&registry, &zones, 0.0, Vec3::Z * 2.0, Vec3::NEG_Z, 4.0, 0.0)
+                    .unwrap()
+                    .target,
+                item
+            );
+            registry.set_component(pawn, inventory).unwrap();
+            tuning.wieldables[0].as_mut().unwrap().canonical_name = "replacement_rifle".into();
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            let replacement = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0]
+                .unwrap();
+            assert_ne!(replacement, item);
+            assert_eq!(replacement.to_raw() & 0xffff, item.to_raw() & 0xffff);
+            assert_ne!(replacement.to_raw() >> 16, item.to_raw() >> 16);
+            assert!(!registry.exists(item));
+            assert_eq!(registry.inventory_owner(item), None);
+            assert_eq!(registry.inventory_owner(replacement), Some((pawn, 0)));
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(replacement)
+                    .unwrap()
+                    .current,
+                75.0
+            );
+            tuning.wieldables[0] = None;
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut registry,
+                pawn,
+                Some(&tuning)
+            ));
+            assert!(
+                registry
+                    .get_component::<Inventory>(pawn)
+                    .unwrap()
+                    .wieldables[0]
+                    .is_none()
+            );
+            assert!(!registry.exists(replacement));
+            assert_eq!(registry.inventory_owner(replacement), None);
+            let reused = registry.spawn(Transform::default());
+            assert_eq!(reused.to_raw() & 0xffff, replacement.to_raw() & 0xffff);
+            assert_ne!(reused.to_raw() >> 16, replacement.to_raw() >> 16);
+            assert_eq!(registry.inventory_owner(reused), None);
+        }
+    }
+
+    #[test]
     fn tuning_first_materializes_capacity_slot_from_host_archetype() {
         let mut reg = EntityRegistry::new();
         let pawn = reg.spawn(Transform::default());
@@ -1306,6 +2151,7 @@ mod tests {
         assert_eq!(inventory.active_slot, 2);
         assert!(inventory.wieldables[0].is_none());
         let weapon_id = inventory.wieldables[2].expect("host slot materialized");
+        assert_eq!(reg.inventory_owner(weapon_id), Some((pawn, 2)));
         assert_eq!(
             reg.get_component::<DescriptorProvenance>(weapon_id)
                 .unwrap()
@@ -1390,6 +2236,8 @@ mod tests {
         let inventory = reg.get_component::<Inventory>(pawn).unwrap();
         assert_eq!(inventory.wieldables[0], Some(original));
         let grown = inventory.wieldables[2].expect("host-named slot is filled");
+        assert_eq!(reg.inventory_owner(original), Some((pawn, 0)));
+        assert_eq!(reg.inventory_owner(grown), Some((pawn, 2)));
         assert_eq!(
             reg.get_component::<DescriptorProvenance>(grown)
                 .unwrap()

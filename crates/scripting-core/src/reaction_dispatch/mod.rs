@@ -2,12 +2,14 @@
 // See: context/lib/scripting.md §12 (Reaction Dispatch Model)
 
 mod group_dispatch;
+pub mod presentation_capture;
 mod primitive_dispatch;
 mod progress;
 mod sequence_dispatch;
 #[cfg(test)]
 mod tests;
 
+use postretro_entities::reactions::system_commands::FireOrigin;
 use std::collections::VecDeque;
 
 use super::ctx::ScriptCtx;
@@ -62,20 +64,20 @@ pub fn fire_named_event_with_sequences(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
     dispatch_context: Option<NamedEventDispatchContext<'_>>,
-) -> Vec<String> {
+) -> Vec<(String, FireOrigin)> {
     let source = dispatch_context.as_ref().map_or_else(
         || format!("named:{event_name}"),
         |context| context.source.clone(),
     );
-    let (values, emitter) = dispatch_context
-        .map(|context| (context.values.to_vec(), context.emitter))
+    let (values, emitter, origin) = dispatch_context
+        .map(|context| (context.values.to_vec(), context.emitter, context.origin))
         .unwrap_or_default();
     let previous_context = script_ctx.system_commands.replace_fire_context(
         postretro_entities::SystemCommandFireContext {
             source,
             values,
             emitter,
-            presentation_seat: None,
+            origin: origin.clone(),
         },
     );
     let mut chained = Vec::new();
@@ -122,12 +124,16 @@ pub fn fire_named_event_with_sequences(
         .system_commands
         .replace_fire_context(previous_context);
     chained
+        .into_iter()
+        .map(|name| (name, origin.follow_up()))
+        .collect()
 }
 
-/// Explicit per-fire context for sources that publish ephemeral dispatch
-/// inputs. Ordinary named events derive their source identity from the event
-/// name and pass `None`.
+/// Explicit fire origin and optional dispatch inputs for a named event.
+/// `None` uses the default every-machine origin; host-only fires must provide
+/// context even when they have no inputs or emitter.
 pub struct NamedEventDispatchContext<'a> {
+    pub origin: FireOrigin,
     pub source: String,
     pub values: &'a [(String, IrValue)],
     /// Where a named gameplay event happened; `playSound`'s `at: on.emitter`
@@ -177,7 +183,7 @@ pub fn fire_prepartitioned_reactions_with_sequences(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
     origin: ResidualOrigin,
-) -> Vec<String> {
+) -> Vec<(String, FireOrigin)> {
     // `origin` gates the two debug-only residual guards below; it is inert in
     // release. Keeping the parameter live in release (rather than `cfg`-gating it
     // out of the signature) keeps every call site identical across build modes.
@@ -252,7 +258,11 @@ pub fn fire_prepartitioned_reactions_with_sequences(
             }
         }
     }
+    let fire_origin = script_ctx.system_commands.fire_context().origin.follow_up();
     chained
+        .into_iter()
+        .map(|name| (name, fire_origin.clone()))
+        .collect()
 }
 
 /// The trigger app-frame drain supplies every same-frame residual root in one
@@ -262,7 +272,7 @@ pub fn fire_prepartitioned_reactions_with_sequences(
 /// It bounds malformed duplicate-name graphs without changing FIFO order among
 /// the work that fits below the cap.
 pub fn dispatch_deferred_named_events_with_sequences(
-    initial_events: impl IntoIterator<Item = String>,
+    initial_events: impl IntoIterator<Item = (String, FireOrigin)>,
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
@@ -282,7 +292,7 @@ pub fn dispatch_deferred_named_events_with_sequences(
 }
 
 fn dispatch_deferred_named_events_with_sequences_up_to(
-    initial_events: impl IntoIterator<Item = String>,
+    initial_events: impl IntoIterator<Item = (String, FireOrigin)>,
     data_registry: &DataRegistry,
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
@@ -290,9 +300,9 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
     script_ctx: &ScriptCtx,
     max_dispatch_hops: usize,
 ) -> usize {
-    let mut pending: VecDeque<String> = initial_events.into_iter().collect();
+    let mut pending: VecDeque<(String, FireOrigin)> = initial_events.into_iter().collect();
     let mut dispatched = 0;
-    while let Some(event_name) = pending.pop_front() {
+    while let Some((event_name, origin)) = pending.pop_front() {
         if dispatched == max_dispatch_hops {
             log::warn!(
                 "[Scripting] deferred reaction dispatch reached the {max_dispatch_hops}-hop aggregate batch cap; dropping {} queued event(s)",
@@ -318,7 +328,12 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
             reaction_registry,
             system_registry,
             script_ctx,
-            None,
+            Some(NamedEventDispatchContext {
+                source: format!("named:{event_name}"),
+                values: &[],
+                emitter: None,
+                origin,
+            }),
         ));
     }
     dispatched

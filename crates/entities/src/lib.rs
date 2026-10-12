@@ -8,6 +8,8 @@ pub mod ctx;
 pub mod data_descriptors;
 pub mod data_registry;
 pub mod engine_state_catalog;
+pub mod presentation_binding;
+pub mod presentation_overrides;
 pub mod provenance;
 pub mod reactions;
 pub mod registry;
@@ -47,7 +49,8 @@ pub use reactions::emitter::{
     WeaponEmission,
 };
 pub use reactions::system_commands::{
-    SystemCommandFireContext, SystemCommandQueue, SystemReactionCommand,
+    Audience, FireOrigin, FireSubject, Recipients, SystemCommandFireContext, SystemCommandQueue,
+    SystemReactionCommand,
 };
 pub use registry::{
     Component, ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,

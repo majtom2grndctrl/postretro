@@ -90,6 +90,11 @@ impl SequencedPrimitiveRegistry {
         self.handlers.insert(name, Box::new(handler));
     }
 
+    /// Every registered sequence primitive name, in no order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.handlers.keys().map(String::as_str)
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.handlers.contains_key(name)
     }

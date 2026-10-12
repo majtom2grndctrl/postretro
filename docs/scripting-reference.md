@@ -236,8 +236,9 @@ archetype, an entity carrying `components.health` is placed by `canonicalName` �
 ## `components.weapon`
 
 Attach a `weapon` block to an entity descriptor to define a weapon archetype.
-Weapon descriptors are equipped by name, not placed directly as map pickups in
-this surface.
+A weapon can be equipped by name in a loadout or placed by its canonical
+classname as a world item. Add `components.mesh` for its world appearance and
+`components.touchable` for pickup; its `mode` selects automatic or use-button pickup.
 
 ```typescript
 defineEntity({
@@ -420,6 +421,22 @@ Heat and cell weapons have no reserve and never reload. The reload button does n
 - `capacity` must be greater than `0`. `costPerShot` must be greater than `0` and no more than `capacity`.
 
 Heat and charge use whatever scale you choose. Rates are per second, and delays are in milliseconds. A weapon in the inventory keeps cooling or refilling while it is holstered, so a player can swap away to let a gun cool down. The dev mod's `reference_plasma_bolt` is a worked cell weapon.
+
+### Held ownership and retained state
+
+A picked-up weapon belongs to its player's inventory, including while holstered.
+It leaves world interaction and replication: other players cannot hit it, pick it
+up, or see its old ground copy. Health and behavior components stay on the item;
+pickup does not rebuild the item from its descriptor. Health, ammo, heat and cell
+state survive holstering, re-equipping and dropping. Heat and cell resources keep
+cooling or refilling while held or holstered.
+
+Dropping returns that same item to world participation at its drop pose. Its
+current state reaches peers again. A `health`-bearing weapon therefore keeps its
+previous damage; dropping it is not a heal. Ordinary scripted damage or despawn
+still applies to explicitly addressed held items. Use tags deliberately if a
+script should reach inventory items rather than world targets.
+
 
 ### Projectile weapons
 
@@ -2324,11 +2341,11 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 
 | Helper | Emitted body | Notes |
 |--------|--------------|-------|
-| `playSound(sound, { bus?, at? }?)` | `{ primitive: "playSound", args: { sound, bus?, at? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. `at` with a non-SFX bus is rejected when the level installs. |
-| `rumble(strong, durationMs, weak?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
-| `flashScreen(color, durationMs)` | `{ primitive: "flashScreen", args: { color, durationMs } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
-| `vignette(strength, durationMs, color?)` | `{ primitive: "vignette", args: { color?, strength, durationMs } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
-| `screenShake(amplitude, durationMs, frequency?)` | `{ primitive: "screenShake", args: { amplitude, durationMs, frequency? } }` | Writes the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted → the engine applies its default frequency). |
+| `playSound(sound, { bus?, at?, audience? }?)` | `{ primitive: "playSound", args: { sound, bus?, at?, audience? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. `at` with a non-SFX bus is rejected when the level installs. |
+| `rumble(strong, durationMs, weak?, { audience? }?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs, audience? } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
+| `flashScreen(color, durationMs, { audience? }?)` | `{ primitive: "flashScreen", args: { color, durationMs, audience? } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
+| `vignette(strength, durationMs, color?, { audience? }?)` | `{ primitive: "vignette", args: { color?, strength, durationMs, audience? } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
+| `screenShake(amplitude, durationMs, frequency?, { audience? }?)` | `{ primitive: "screenShake", args: { amplitude, durationMs, frequency?, audience? } }` | Writes the engine-owned `screen.shake` offset slot, a decaying oscillation that fades to rest. `amplitude` is the peak displacement in logical-reference px; `durationMs` is the total decay time. Optional `frequency` is the oscillation rate in Hz (omitted → the engine applies its default frequency). |
 | `showDialog(tree, onCommit?)` | `{ primitive: "showDialog", args: { tree, onCommit? } }` | Pushes the dialog UI `tree` onto the modal stack; optional `onCommit` names a reaction fired on commit. |
 | `openTextEntry(onCommit?)` | `{ primitive: "showDialog", args: { tree: "keyboard", onCommit? } }` | Opens the engine-shipped on-screen keyboard (a capturing modal editing `ui.textEntry`). A `showDialog` wrapper targeting the `keyboard` tree. See the text-entry walkthrough below. |
 | `openMenu(tree)` | `{ primitive: "openMenu", args: { tree } }` | A v1 alias of `showDialog` (identical push behavior) without the `onCommit` hook. |
@@ -2342,6 +2359,103 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
+
+### Presentation audience
+
+The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`,
+`screenShake`) accept an optional `audience`. Omit it for the source's default:
+
+| Source that fires the reaction | Default sound audience | Default flash, vignette, shake and rumble audience |
+|---|---|---|
+| Trigger enter or exit | Everyone | The players who activated that edge |
+| Per-player event | That player | That player |
+| Host-only AI cues, death, movers, kill progress, follow-ups and timed landings | Everyone | Host only |
+| Each-machine level load, local crossing, movement, weapon or AI activate/observer presentation | This machine | This machine |
+
+`audience: "everyone"` reaches every participating player. In a trigger callback,
+`audience: on.activators` selects that edge's activators;
+`audience: on.trigger` selects the players inside that trigger at the fire.
+In a player-event callback, `audience: on.player` selects its player. These are
+source tokens, not entity positions. An absent or disconnected player adds no
+recipient. Every recipient plays the command once, including the host when
+selected. In single player, legal presentation plays locally even when no seat is
+selected. A token whose source does not publish it is skipped.
+
+```typescript
+import { defineReaction, type TriggerEventParams } from "postretro";
+import { playSound, flashScreen, screenShake } from "postretro/ui";
+
+const alarm = defineReaction("plate.alarm", playSound("sfx/test_tone"));
+const flash = defineReaction("plate.flash", flashScreen([0.2, 0.7, 1, 0.35], 250));
+const shake = defineReaction("plate.shake", (on: TriggerEventParams) =>
+  screenShake(6, 350, 18, { audience: on.trigger }));
+const click = defineReaction("plate.click", (on: TriggerEventParams) =>
+  playSound("fixtures/land", { audience: on.activators }));
+// Return plate.on("enter", [alarm, flash, shake, click]) in triggerEvents.
+```
+
+A named `fire` or `onComplete` follow-up has no activator/player/occupant token.
+Register its own default-audience or `"everyone"` reaction instead of forwarding
+a source-token reaction. Timed landings likewise run without those tokens.
+The TypeScript surface and level install checks reject unsupported token sources.
+`"everyone"` works from any source; each-machine sources still present locally,
+so they do not multiply a cue across the network.
+
+### Co-op
+
+Damage numbers authored with impact-policy `present` appear on every participating
+player's machine, including hits between enemies. They are transient: a late joiner
+does not replay earlier hits. Damaged-enemy health and shield bars share one
+host-selected set across participating players, using your authored maximum
+visible count and linger. A joining player sees only still-live bars with their
+remaining lifetime. Each machine anchors them to its local view; clients display
+the host's facts without simulating enemy health. XP and rewards still belong to
+the player your policy credits.
+
+World descriptor entities carrying a mesh, health, a touchable component, or enemy behavior
+reach connected clients automatically. Light-only and emitter-only descriptors
+stay local until a host-only reaction changes their presentation. Every light,
+fog or emitter change from a host-only source reaches clients; any change to the
+light or emitter of an already-networked world entity does too. A late joiner
+gets the current state. Finite animations resume at their current age and settle
+when finished; looping animations keep their phase. For co-op replication, keep
+each animation channel to 64 samples or fewer. A write that cannot be encoded
+warns and leaves clients on the last valid replicated override; local primitive
+validation and behavior are unchanged. Sounds, flashes, shakes, vignettes and
+rumble are momentary cues and are not replayed to a late joiner.
+
+Prefer a member verb where one exists, and use raw descriptors for scalar fog
+and emitter writes:
+
+```typescript
+const fade = defineReaction("mist.fade", {
+  sequence: fog.fade({ from: 0.6, to: 0.1, periodMs: 5000 }),
+});
+const density = defineReaction("mist.density", {
+  primitive: "setFogDensity", tag: "mist", args: { density: 0.6 },
+});
+const stop = defineReaction("smoke.stop", {
+  primitive: "setEmitterRate", tag: "smoke", args: { rate: 0 },
+});
+```
+
+A descriptor light may not exist while `setupLevel` is building reactions.
+Use a raw tag-targeted `setLightAnimation` reaction to resolve those placements
+when it fires, including the light of a mesh prop:
+
+```typescript
+const pulseProp = defineReaction("prop.pulse", {
+  primitive: "setLightAnimation", tag: "lit-prop",
+  args: { periodMs: 2000, brightness: [0.2, 1, 0.2] },
+});
+```
+
+UI-stack verbs (`showDialog`, `openMenu`, `closeDialog`) and cell/text edits
+operate on the machine running them. They have no `audience` option and are
+not forwarded. A hosted session warns at install when a trigger can reach one,
+naming the reaction and binding; it still runs on the host. Use the presentation
+builders above for shared gameplay feedback. Client accessibility settings still apply to
+forwarded flashes and shakes.
 
 The three UI-stack helpers (`showDialog` / `openMenu` / `closeDialog`) route to
 the modal stack: `showDialog` and `openMenu` perform the identical `PushTree`

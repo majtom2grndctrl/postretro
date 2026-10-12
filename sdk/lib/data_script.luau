@@ -641,8 +641,9 @@ local IMPACT: Impact = table.freeze({
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 
---- Spawn a passive presentation at the current impact target. The impact
---- runtime captures `value` before any following despawn and stamps source.
+--- Spawn a passive presentation at the current impact target, shared with every
+--- participating peer. The runtime freezes `value` and the anchor before despawn;
+--- source identity does not restrict the audience.
 function DataScriptSdk.present(template: { id: string }, value: NumberValue): Effect
   if type(template) ~= "table" or type(template.id) ~= "string" or #template.id == 0 then
     error("present: template must come from definePresentationTemplate", 2)

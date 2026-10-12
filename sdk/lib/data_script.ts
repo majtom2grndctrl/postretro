@@ -89,12 +89,19 @@ export type ProgressReactionDescriptor = {
 };
 
 /** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.player`) carries `target: "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
-export type PrimitiveReactionDescriptor = {
+declare const reactionBodyScopeBrand: unique symbol;
+
+/** A body retains the fire context its builders require, including direct-body registration. */
+export type ReactionBodyScope<S> = {
+  readonly [reactionBodyScopeBrand]?: (scope: S) => void;
+};
+
+export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
   target?: "@activators" | "@trigger" | "@player";
-  args?: Record<string, unknown>;
+  args?: Record<string, unknown> | null;
   onComplete?: string;
 };
 
@@ -165,11 +172,7 @@ export type SequenceReactionDescriptor = {
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
-export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
-  | ProgressReactionDescriptor
-  | PrimitiveReactionDescriptor
-  | SequenceReactionDescriptor
-);
+export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
 
 /**
  * Deserialized once at level load; the data-script VM is dropped immediately after.
@@ -249,15 +252,16 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-export type ReactionBody =
+export type ReactionBody<S = {}> = ReactionBodyScope<S> & (
   | ProgressReactionDescriptor
-  | PrimitiveReactionDescriptor
-  | SequenceReactionDescriptor;
+  | PrimitiveReactionDescriptor<S>
+  | SequenceReactionDescriptor
+);
 
 declare const reactionScopeBrand: unique symbol;
 
 /** A named reaction whose phantom dispatch scope is enforced only by TypeScript. */
-export type Reaction<S = {}> = NamedReactionDescriptor & {
+export type Reaction<S = {}> = NamedReactionDescriptor<S> & {
   readonly [reactionScopeBrand]?: (scope: S) => void;
 };
 
@@ -430,9 +434,9 @@ const IMPACT: Impact = Object.freeze({
 });
 
 /**
- * Spawn a passive presentation at the current impact target. The target token
- * is closed over here; Rust stamps the dispatch source as its future presenter
- * route and freezes `value` before a subsequent despawn can remove the target.
+ * Spawn a passive presentation at the current impact target, shared with every
+ * participating peer. Rust freezes `value` and the anchor before a subsequent
+ * despawn can remove the target; source identity does not restrict the audience.
  */
 export function present(template: PresentationTemplate, value: NumberValue): Effect {
   if (template === null || typeof template !== "object" || typeof template.id !== "string") {

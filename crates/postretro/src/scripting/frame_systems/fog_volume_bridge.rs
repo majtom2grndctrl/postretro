@@ -99,6 +99,19 @@ impl FogVolumeBridge {
         }
     }
 
+    pub(crate) fn entity_for_map_index(&self, map_index: usize) -> Option<EntityId> {
+        self.entity_ids.get(map_index).copied()
+    }
+
+    pub(crate) fn map_index_for_entity(&self, entity: EntityId) -> Option<usize> {
+        self.entity_ids.iter().position(|id| *id == entity)
+    }
+
+    pub(crate) fn map_origin_for_entity(&self, entity: EntityId) -> Option<Vec3> {
+        self.map_index_for_entity(entity)?;
+        Some(self.aabbs.get(&entity)?.center)
+    }
+
     /// Populate the entity registry with one entity per fog-volume record.
     /// Called once at level load. Stores the AABB and shape parameters in the
     /// side-table; the four runtime-settable parameters (`density`, `glow`,
@@ -162,8 +175,39 @@ impl FogVolumeBridge {
         }
     }
 
-    /// Drop per-level state. Byte-buffer capacity is retained so the next
-    /// level reuses the allocation.
+    /// Cache the replicated animation while retaining a local start when
+    /// no host start was supplied. A new unseeded slot starts lazily in `tick`.
+    pub(crate) fn seed_replicated_state(
+        &mut self,
+        registry: &EntityRegistry,
+        id: EntityId,
+        start: Option<f64>,
+    ) -> bool {
+        if start.is_some_and(|value| !value.is_finite() || !(value * 1000.0).is_finite()) {
+            return false;
+        }
+        let Ok(component) = registry.get_component::<FogVolumeComponent>(id) else {
+            return false;
+        };
+        let Some(animation) = component.animation.as_ref() else {
+            self.anim_slots.remove(&id);
+            return true;
+        };
+        if let Some(start) = start {
+            self.anim_slots.insert(
+                id,
+                FogAnimSlot {
+                    animation_start_time_ms: start * 1000.0,
+                    cached_animation: animation.clone(),
+                },
+            );
+        } else if let Some(slot) = self.anim_slots.get_mut(&id) {
+            slot.cached_animation = animation.clone();
+        }
+        true
+    }
+
+    /// Drop per-level state. Byte-buffer capacity is retained for the next level.
     pub(crate) fn clear(&mut self) {
         self.aabbs.clear();
         self.entity_ids.clear();
@@ -181,8 +225,9 @@ impl FogVolumeBridge {
     /// Called once per frame, immediately before `update_volumes`, so the GPU
     /// pack picks up the freshly evaluated density unchanged.
     ///
-    /// `time_seconds` is engine wall-clock time; sampling is done in
-    /// milliseconds because `FogAnimation.period_ms` is millisecond-keyed.
+    /// `time_seconds` is the freeze-aware, level-relative script sample clock;
+    /// sampling is done in milliseconds because `FogAnimation.period_ms` is
+    /// millisecond-keyed.
     ///
     /// Taken as `f64` so `(now_ms - start_ms)` retains sub-second precision
     /// after long uptimes — at ~30 minutes an `f32` ms count loses enough
@@ -673,6 +718,43 @@ mod tests {
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
         }
+    }
+
+    #[test]
+    fn presentation_identity_uses_authored_center_and_keeps_spawn_failure_prefix() {
+        let mut registry = EntityRegistry::new();
+        registry.set_test_capacity_limit(1);
+        let mut bridge = FogVolumeBridge::new();
+        let record = sample_record();
+        bridge.populate_from_level(&mut registry, &[record.clone(), record.clone()]);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        assert_eq!(bridge.map_index_for_entity(id), Some(0));
+        assert_eq!(bridge.entity_for_map_index(1), None);
+        assert_eq!(bridge.entity_for_map_index(usize::MAX), None);
+        registry
+            .set_component(
+                id,
+                Transform {
+                    position: Vec3::splat(99.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            bridge
+                .map_origin_for_entity(id)
+                .unwrap()
+                .distance(Vec3::from_array(record.center))
+                < 1e-5
+        );
+        registry.despawn(id).unwrap();
+        let replacement = registry.spawn(Transform::default());
+        assert_eq!(bridge.map_index_for_entity(replacement), None);
+        assert_eq!(bridge.map_origin_for_entity(replacement), None);
+        assert_eq!(bridge.entity_for_map_index(0), Some(id));
+        bridge.clear();
+        assert_eq!(bridge.entity_for_map_index(0), None);
+        assert_eq!(bridge.map_origin_for_entity(id), None);
     }
 
     #[test]
@@ -1389,5 +1471,93 @@ mod tests {
             "density must not be modified by a light_range-only animation; got {}",
             comp.density
         );
+    }
+    #[test]
+    fn replicated_fog_seed_keeps_age_through_same_frame_tick_and_scalar_write() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 5000.0,
+                phase: None,
+                play_count: Some(1),
+                density: Some(vec![0.0, 1.0]),
+                saturation: None,
+                min_brightness: None,
+                light_range: None,
+            },
+        );
+        assert!(bridge.seed_replicated_state(&registry, id, Some(8.0)));
+        bridge.tick(&mut registry, 10.0);
+        assert!(
+            (registry
+                .get_component::<FogVolumeComponent>(id)
+                .unwrap()
+                .density
+                - 0.4)
+                .abs()
+                < 1e-5
+        );
+        let mut component = registry
+            .get_component::<FogVolumeComponent>(id)
+            .unwrap()
+            .clone();
+        component.glow = 2.0;
+        registry.set_component(id, component).unwrap();
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        bridge.tick(&mut registry, 11.0);
+        assert!(
+            (registry
+                .get_component::<FogVolumeComponent>(id)
+                .unwrap()
+                .density
+                - 0.6)
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(bridge.anim_slots[&id].animation_start_time_ms, 8000.0);
+        assert!(bridge.seed_replicated_state(&registry, id, Some(4.0)));
+        bridge.tick(&mut registry, 11.0);
+        let component = registry.get_component::<FogVolumeComponent>(id).unwrap();
+        assert!(component.animation.is_none());
+        assert_eq!(component.density, 1.0);
+        bridge.clear();
+        assert!(bridge.anim_slots.is_empty());
+    }
+
+    #[test]
+    fn replicated_none_fog_seed_keeps_first_start_lazy() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = FogVolumeBridge::new();
+        bridge.populate_from_level(&mut registry, &[sample_record()]);
+        let id = bridge.entity_ids[0];
+        install_fog_animation(
+            &mut registry,
+            id,
+            FogAnimation {
+                period_ms: 5000.0,
+                phase: None,
+                play_count: Some(1),
+                density: Some(vec![0.0, 1.0]),
+                saturation: None,
+                min_brightness: None,
+                light_range: None,
+            },
+        );
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        bridge.tick(&mut registry, 20.0);
+        assert_eq!(bridge.anim_slots[&id].animation_start_time_ms, 20000.0);
+        bridge.clear();
+        assert!(bridge.anim_slots.is_empty());
+        assert!(bridge.seed_replicated_state(&registry, id, None));
+        bridge.tick(&mut registry, 30.0);
+        assert_eq!(bridge.anim_slots[&id].animation_start_time_ms, 30000.0);
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(f64::NAN)));
+        registry.despawn(id).unwrap();
+        assert!(!bridge.seed_replicated_state(&registry, id, Some(0.0)));
     }
 }

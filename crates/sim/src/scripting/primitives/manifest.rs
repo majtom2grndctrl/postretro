@@ -193,7 +193,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "presentationOverlays?",
             "PresentationOverlay",
-            "One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.",
+            "One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.",
         )
         .field(
             "theme?",

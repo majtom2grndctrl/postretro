@@ -121,6 +121,21 @@ impl TriggerBindingTable {
         &self.bound_edges
     }
 
+    /// Accepted frame-end work, keyed by its installed trigger edge. Diagnostics
+    /// must inspect this partition rather than reconstruct rejected author roots.
+    pub fn residual_bindings(
+        &self,
+    ) -> impl Iterator<Item = (EntityId, TriggerEventEdge, &TriggerResidual)> {
+        self.bindings
+            .iter()
+            .filter_map(|(&(trigger, edge), binding)| {
+                binding
+                    .residual
+                    .and_then(|handle| self.residual(handle))
+                    .map(|residual| (trigger, edge, residual))
+            })
+    }
+
     #[cfg(not(feature = "test-support"))]
     pub(crate) fn execute(
         &self,

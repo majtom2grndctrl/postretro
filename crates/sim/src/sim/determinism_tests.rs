@@ -859,7 +859,7 @@ impl SimHarness {
             trigger_residuals: events
                 .trigger_residuals
                 .iter()
-                .map(|(handle, _, _)| *handle)
+                .map(|(handle, _, _, _)| *handle)
                 .collect(),
             trigger_exit_fires: events
                 .trigger_exit_fires

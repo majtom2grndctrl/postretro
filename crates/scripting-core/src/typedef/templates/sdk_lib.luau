@@ -490,7 +490,9 @@ export type PlayerEventParams = { player: PlayerTarget }
 --- `playSound` options: `bus` routes to a mixer bus (SFX when omitted); `at =
 --- on.emitter` positions the sound where the named gameplay event happened,
 --- on the SFX bus.
-export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
+export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone"
+export type PresentationOptions = { audience: PresentationAudience? }
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget?, audience: PresentationAudience? }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Shared fluent-expression IR skin. These refs lower to the existing closed runtime IR;
@@ -903,13 +905,13 @@ declare function playSound(sound: string, options: PlaySoundOptions?): Primitive
 --- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
 --- is the rumble length. Warn-once no-op without force-feedback hardware.
 --- Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function rumble(strong: number, durationMs: number, weak: number?): PrimitiveReactionDescriptor
+declare function rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
 
 --- System-reaction body: flash the screen by writing the engine-owned
 --- `screen.flash` RGBA slot, which decays to transparent. `color` is
 --- `{r, g, b, a}` (0-1); `durationMs` is the decay time. Pure: returns a
 --- `PrimitiveReactionDescriptor`, no FFI.
-declare function flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
+declare function flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): PrimitiveReactionDescriptor
 
 --- System-reaction body: darken (or tint) the screen edges by writing the
 --- engine-owned `screen.vignette` slot, which rises to peak then decays to rest.
@@ -917,7 +919,7 @@ declare function flashScreen(color: {number}, durationMs: number): PrimitiveReac
 --- rise-plus-decay time. Optional `color` is an `{r, g, b}` linear-RGB tint
 --- (omitted when nil -> black, a pure strength-only edge-darken). Pure: returns
 --- a `PrimitiveReactionDescriptor`, no FFI.
-declare function vignette(strength: number, durationMs: number, color: {number}?): PrimitiveReactionDescriptor
+declare function vignette(strength: number, durationMs: number, color: {number}?, options: PresentationOptions?): PrimitiveReactionDescriptor
 
 --- System-reaction body: shake the screen by writing the engine-owned
 --- `screen.shake` offset slot, a decaying oscillation that fades to rest.
@@ -925,7 +927,7 @@ declare function vignette(strength: number, durationMs: number, color: {number}?
 --- is the total decay time. Optional `frequency` is the oscillation rate in Hz
 --- (omitted when nil -> the engine applies its default frequency). Pure: returns
 --- a `PrimitiveReactionDescriptor`, no FFI.
-declare function screenShake(amplitude: number, durationMs: number, frequency: number?): PrimitiveReactionDescriptor
+declare function screenShake(amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
 
 --- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
 --- with an optional `onCommit` reaction (omitted when nil). An unknown tree name

@@ -15,6 +15,34 @@ use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
 };
 
+/// Finish windowed CPU presentation install after reactions and attachment setup.
+/// Settling does not advance these clocks. The first running frame must sample
+/// install-time animations from zero, matching their captured wire start.
+pub(crate) fn start_installed_presentation_animations(
+    registry: &postretro_entities::EntityRegistry,
+    lights: &mut crate::scripting_systems::light_bridge::LightBridge,
+    fog: &mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    emitters: &mut crate::scripting_systems::emitter_bridge::EmitterBridge,
+) {
+    use postretro_entities::{ComponentKind, ComponentValue};
+
+    lights.absorb_dynamic_lights(registry);
+    for (id, component) in registry.iter_with_kind(ComponentKind::Light) {
+        if matches!(component, ComponentValue::Light(light) if light.animation.as_ref().is_some_and(|animation|
+            animation.play_count.is_some_and(|count| count > 0)
+                && animation.start_active.unwrap_or(true)))
+        {
+            lights.seed_replicated_state(registry, id, Some(0.0));
+        }
+    }
+    for (id, component) in registry.iter_with_kind(ComponentKind::FogVolume) {
+        if matches!(component, ComponentValue::FogVolume(fog) if fog.animation.is_some()) {
+            fog.seed_replicated_state(registry, id, Some(0.0));
+        }
+    }
+    emitters.start_installed_animations(registry);
+}
+
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
@@ -67,10 +95,21 @@ pub(crate) fn install_world_cpu(
         mesh_clip_tables,
         hit_zone_store,
         trigger_pool_policy,
-        suppress_ai_enemies,
+        suppress_host_replicated,
         suppress_boot_pawn,
         local_carried_loadout,
     } = handles;
+
+    // Install has not reset App's old clock yet. No previous-level baseline
+    // or timing may reach levelLoad or already-met progress reactions.
+    script_ctx.presentation_overrides.borrow_mut().clear();
+    script_ctx.presentation_script_time.set(0.0);
+    script_ctx
+        .presentation_networked_predicate
+        .set(Some(crate::netcode::is_host_replicated_descriptor_entity));
+    script_ctx
+        .presentation_override_validator
+        .set(Some(crate::netcode::validate_presentation_override));
 
     // Fog volumes — one entity per record. Runs after the windowed light-bridge
     // populate so the first fog entity-id lands after the light entities.
@@ -119,8 +158,18 @@ pub(crate) fn install_world_cpu(
     // Classname dispatch: partition player-start placements out (retained for the
     // caller), dispatch the remainder through built-in handlers. The handled set
     // feeds the data-archetype sweep below.
-    let all_entities: Vec<crate::scripting::map_entity::MapEntity> =
-        world.map_entities.iter().cloned().map(Into::into).collect();
+    let all_entities: Vec<crate::scripting::map_entity::MapEntity> = world
+        .map_entities
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, record)| {
+            let mut entity = crate::scripting::map_entity::MapEntity::from(record);
+            entity.map_ordinal =
+                Some(u32::try_from(index).expect("PRL map-entity ordinal fits u32"));
+            entity
+        })
+        .collect();
     let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
@@ -278,7 +327,7 @@ pub(crate) fn install_world_cpu(
     let first_spawn = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
-        if suppress_ai_enemies {
+        if suppress_host_replicated {
             // A connected client must not spawn local copies of host-authoritative
             // map entities. Filter before dispatch, while descriptor metadata is
             // available but live components do not exist yet.
@@ -344,7 +393,7 @@ pub(crate) fn install_world_cpu(
     // Pool arming is host-only and occurs after every trigger/spawner binding
     // exists, but before `levelLoad` so level-load reactions can override it.
     // Connected clients retain their authored trigger state and an empty report.
-    let trigger_pool_report = if suppress_ai_enemies {
+    let trigger_pool_report = if suppress_host_replicated {
         TriggerPoolInstallReport::default()
     } else {
         let pools = script_ctx.data_registry.borrow().trigger_pools().to_vec();
@@ -442,7 +491,7 @@ pub(crate) fn install_world_cpu(
     // detector already initialized above. `progress` is host-authoritative: a
     // connected client (host-replicated placements suppressed) captures nothing,
     // stays unsubscribed, and never warns.
-    let progress_already_met = if suppress_ai_enemies {
+    let progress_already_met = if suppress_host_replicated {
         Vec::new()
     } else {
         capture_progress_membership(progress_tracker, script_ctx)
@@ -483,7 +532,12 @@ pub(crate) fn install_world_cpu(
     // after `levelLoad` — the install-time counterpart of a recompose's fire.
     if !progress_already_met.is_empty() {
         dispatch_deferred_named_events_with_sequences(
-            progress_already_met,
+            progress_already_met.into_iter().map(|name| {
+                (
+                    name,
+                    postretro_entities::FireOrigin::HostOnly(postretro_entities::FireSubject::None),
+                )
+            }),
             &script_ctx.data_registry.borrow(),
             sequence_registry,
             reaction_registry,

@@ -24,9 +24,11 @@ Game logic and the renderer meet at exactly one point: a read-only snapshot publ
 
 A spawn from an impact policy's `present()` anchors at the impact's contact point when the producer supplied one, and otherwise at the target's position. Hitscan pellets and direct projectile contacts supply a point. Splash, script, crush and contact-attack damage do not, because those receivers have no single struck point. The host chooses the anchor, and clients draw the anchor they receive. A connected client's accepted hit claim, hitscan or direct projectile, supplies the point the client declared. The host checks that point for range, and a hitscan point for line of sight, but not against the target's volume. A template's `motion.rise` and `spawnScatter.radius` are device pixels.
 
-Each presentation pool contains only feedback for that machine's local screen.
-Host-addressed remote overlays stay in recipient-private fact streams and never
-enter the host renderer's pool or compete with another recipient's cap.
+Each presentation pool draws only that machine's local screen. In co-op, the
+host selects one bounded damaged-enemy roster for all participating machines.
+Pools project that selection using local cameras and pushed facts, with no
+independent cap ranking or receive-time linger. Original host expiry and
+recoverable current state govern lifetime; see `networking.md`.
 
 Gameplay UI is a **modal stack** of trees: top tree's capture mode decides capture vs. passthrough (lower trees freeze; HUD passes through), and behavior-relevant properties — capture mode, text-entry target, initial focus — live on the declared `AnchoredTree` envelope, so a tree declares its own behavior. A pushed registration with `hideBelow: true` also omits lower pushed trees from composition while retaining them on the stack, so Back/pop restores the prior navigation state; always-on base layers are unaffected. Trees register by name in an app-side registry, and the render path resolves them **by name** — it never calls a layout builder, so content authoring is decoupled from the frame loop. Engine fallbacks and script registrations share the same registry seam. JSON assets cover layout-only engine screens such as the frontend fallback, pause menu fallback, and on-screen keyboard; SDK-authored mod trees are the production path for frontend, HUD, pause menu, and dialogs. The registry's name→tree lookup is the seam the per-frame snapshot reads through (a `&self` accessor; the mutating handle stays private). The boot splash is not gameplay UI: it is a renderer-owned boot path and never enters the registry, modal stack, UI image registry, or `UiReadSnapshot` snapshot flow. Loading frames are UI: the chosen loading tree composes alone, never on the modal stack (`boot_sequence.md` §1 Loading screen).
 

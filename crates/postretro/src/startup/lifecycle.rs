@@ -10,6 +10,9 @@ mod lifecycle_net;
 #[cfg(test)]
 #[path = "lifecycle_progress_install_tests.rs"]
 mod lifecycle_progress_install_tests;
+#[cfg(test)]
+#[path = "lifecycle_reaction_install_tests.rs"]
+mod lifecycle_reaction_install_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
@@ -18,7 +21,7 @@ mod lifecycle_sprite_collections;
 mod lifecycle_world_cpu;
 
 use lifecycle_model_sweep::ParsedSweepModel;
-pub(crate) use lifecycle_world_cpu::install_world_cpu;
+pub(crate) use lifecycle_world_cpu::{install_world_cpu, start_installed_presentation_animations};
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
@@ -254,7 +257,22 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        self.warn_hosted_trigger_machine_local();
         self.rebuild_player_events(true);
+    }
+
+    fn warn_hosted_trigger_machine_local(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        crate::startup::reaction_validation::warn_hosted_trigger_machine_local(
+            &session.scripting.script_ctx,
+            &self.trigger_bindings,
+            matches!(
+                session.net_endpoint.as_ref(),
+                Some(crate::netcode::NetEndpoint::Host { .. })
+            ),
+        );
     }
 
     /// Rebind player events over the active composed set. A recompose keeps
@@ -760,8 +778,9 @@ impl App {
         // injected as the `upload_mesh_models` hook so it stays windowed; a
         // headless caller passes a no-op and its clip tables stay empty (the
         // documented headless shape).
-        // `suppress` gates the connected-client spawn / AI-enemy suppression
-        // (`false` off a connected client — single-player, listen host, headless).
+        // `suppress` gates connected-client suppression of host-replicated world
+        // placements and the boot pawn (`false` for single-player, listen host,
+        // and headless installs).
         let suppress = self.is_connected_client();
         // Cloned so the segment-B handles do not alias a `self.content_root`
         // borrow held across the call.
@@ -838,7 +857,7 @@ impl App {
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
-            suppress_ai_enemies: suppress,
+            suppress_host_replicated: suppress,
             suppress_boot_pawn: suppress,
             local_carried_loadout: session
                 .seat_table
@@ -896,6 +915,7 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        self.warn_hosted_trigger_machine_local();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -935,20 +955,24 @@ impl App {
         // Register host-authoritative map entities and PRL-loaded movers for outbound
         // replication. Host-gated (a no-op off a listen host) and reload-safe; each
         // takes its own registry borrow.
-        self.host_register_map_enemies_after_install();
-        self.host_register_world_items_after_install();
+        self.host_register_descriptor_entities_after_install();
         self.host_register_loaded_movers_after_install();
         self.level_timings.record("host_registration");
 
-        // Pick up any descriptor-spawned `LightComponent`s so they participate in
-        // the per-frame light bridge pack.
+        // Enroll descriptor lights and start install-time animations at clock zero.
+        // The first running frame advances from that origin after Settling.
         {
             let registry = script_ctx.registry.borrow();
-            self.session
+            let session = self
+                .session
                 .as_mut()
-                .expect("session installed before level install")
-                .light_bridge
-                .absorb_dynamic_lights(&registry);
+                .expect("session installed before level install");
+            start_installed_presentation_animations(
+                &registry,
+                &mut session.light_bridge,
+                &mut session.fog_volume_bridge,
+                &mut session.emitter_bridge,
+            );
         }
 
         // Teleport the camera to the first player spawn (or the geometry center
@@ -1012,9 +1036,9 @@ impl App {
 
         // Register sprite collections for every distinct emitter `sprite` in the
         // registry — map-spawned and descriptor-spawned alike — plus descriptor
-        // projectile bodies/trails and the weapon impact collection. A projectile
-        // materializes only after a fire command, so descriptor discovery is the
-        // required level-install path that keeps GPU uploads renderer-owned.
+        // projectile bodies/trails, suppressed descriptor emitters, resolved
+        // spawner emitters and the weapon impact collection. Deferred presentation
+        // must have its assets ready before gameplay; uploads stay renderer-owned.
         if let Some(renderer) = self.renderer.as_mut() {
             let texture_root = self.content_root.join("textures");
             let map_billboard_collections = self
@@ -1026,14 +1050,26 @@ impl App {
                     )
                 })
                 .unwrap_or_default();
-            let projectile_sprites = {
+            let registry = script_ctx.registry.borrow();
+            let sprite_candidates = {
                 let data_registry = script_ctx.data_registry.borrow();
-                crate::scripting::builtins::data_archetype::projectile_presentation_assets(
+                let projectile_sprites =
+                    crate::scripting::builtins::data_archetype::projectile_presentation_assets(
+                        &data_registry.entities,
+                    )
+                    .1;
+                let suppressed_placements = self
+                    .level
+                    .as_ref()
+                    .filter(|_| suppress)
+                    .map_or(&[][..], |world| world.map_entities.as_slice());
+                lifecycle_sprite_collections::discover_sprite_collection_candidates(
+                    &registry,
+                    projectile_sprites,
+                    suppressed_placements,
                     &data_registry.entities,
                 )
-                .1
             };
-            let registry = script_ctx.registry.borrow();
             let particle_render = &mut self
                 .session
                 .as_mut()
@@ -1044,8 +1080,7 @@ impl App {
                 particle_render,
                 &texture_root,
                 &prm_cache_root,
-                &registry,
-                projectile_sprites,
+                sprite_candidates,
                 &map_billboard_collections,
             );
         }
@@ -1123,14 +1158,13 @@ fn rebuild_reaction_subscribers(
 ) -> Vec<String> {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
-        // Group reactions by dispatch address (name). Addressing is many-to-one
-        // (scripting.md §12): one address may hold several reactions, and firing
-        // it runs all of them. An address is incompatible with crossing dispatch
-        // only when EVERY reaction there needs trigger-fire context; if one
-        // sibling is sentinel-free, the runtime dispatch path skips just the
-        // incompatible commands, so the compatible reactions must keep their
-        // crossing subscription. Stripping the whole address by name would
-        // silence those benign siblings.
+        // Group reactions by dispatch address (name). For the existing
+        // command-target sentinel rule, an address is incompatible with crossing
+        // dispatch only when EVERY reaction there needs trigger-fire context; a
+        // sentinel-free sibling keeps the address subscribed. Audience tokens
+        // and `on.player` have a separate whole-address rejection below: any
+        // sibling using either is enough to reject that address, since crossing
+        // dispatch cannot supply that context.
         let (fully_sentinel_bound, level_load_has_sentinel): (
             std::collections::HashSet<String>,
             bool,
@@ -1178,9 +1212,22 @@ fn rebuild_reaction_subscribers(
                 event_player_addresses.insert(reaction.name.clone());
             }
         }
+        let audience_addresses: std::collections::HashMap<String, String> = data_registry
+            .reactions
+            .iter()
+            .filter_map(|reaction| {
+                crate::startup::reaction_validation::reaction_audience_token(&reaction.descriptor)
+                    .map(|token| (reaction.name.clone(), token.to_string()))
+            })
+            .collect();
         data_registry.crossings.retain_mut(|crossing| {
             let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
             crossing.fire.retain(|address| {
+                if let Some(token) = audience_addresses.get(address) {
+                    log::error!("[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses audience `{token}`, which this source does not publish");
+                    return false;
+                }
+
                 if event_player_addresses.contains(address) {
                     log::error!(
                         "[Scripting] crossing on `{crossing_id}` drops address `{address}`: reaction `{address}` uses `on.player`, which only a player event publishes"
@@ -1197,12 +1244,26 @@ fn rebuild_reaction_subscribers(
             });
             !crossing.fire.is_empty()
         });
+        for reaction in &mut data_registry.reactions {
+            if reaction.name == "levelLoad"
+                && let Some(token) = crate::startup::reaction_validation::reaction_audience_token(
+                    &reaction.descriptor,
+                )
+            {
+                log::error!(
+                    "[Scripting] levelLoad: reaction `levelLoad` uses audience `{token}`, which this source does not publish; dropping the reaction"
+                );
+                reaction.descriptor = postretro_entities::ReactionDescriptor::Sequence(Vec::new());
+            }
+        }
         if level_load_has_sentinel {
             log::warn!(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
             );
         }
-        if event_player_addresses.contains("levelLoad") {
+        if event_player_addresses.contains("levelLoad")
+            && !audience_addresses.contains_key("levelLoad")
+        {
             log::error!(
                 "[Scripting] levelLoad: reaction `levelLoad` uses `on.player`, which only a player event publishes; its `on.player` work never runs at level load"
             );
@@ -1495,7 +1556,7 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// Connected-client setup flag: skip host-authoritative map-placement
     /// materialization and boot-pawn spawn. Both `false` off a connected client
     /// (single-player, listen host, headless).
-    pub(crate) suppress_ai_enemies: bool,
+    pub(crate) suppress_host_replicated: bool,
     pub(crate) suppress_boot_pawn: bool,
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
@@ -1558,6 +1619,7 @@ pub(crate) mod tests {
 
         let mut registry = postretro_entities::EntityRegistry::new();
         let map_entity = |archetype: &str| MapEntity {
+            map_ordinal: None,
             classname: entity_spawner::CLASSNAME.to_string(),
             origin: Vec3::ZERO,
             angles: Vec3::ZERO,
@@ -1875,7 +1937,7 @@ pub(crate) mod tests {
     /// The scripting core lives on `Session`; this keeps the many test reads of
     /// the shared registries one short call away without a borrow fight against
     /// the non-`Clone` session subsystems.
-    pub(super) fn script_ctx(app: &App) -> ScriptCtx {
+    pub(crate) fn script_ctx(app: &App) -> ScriptCtx {
         app.session
             .as_ref()
             .expect("test app session installed")
@@ -2141,7 +2203,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(super) fn level_world(
+    pub(crate) fn level_world(
         _name: &str,
         triangle_count: usize,
     ) -> postretro_level_loader::LevelWorld {
@@ -2416,6 +2478,8 @@ pub(crate) mod tests {
     struct TriggerPoolWorldInstall {
         report: TriggerPoolInstallReport,
         registry: postretro_entities::EntityRegistry,
+        upload_models: Vec<String>,
+        hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
     }
 
     fn install_trigger_pool_world(
@@ -2423,10 +2487,32 @@ pub(crate) mod tests {
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
         global_pools: Vec<TriggerPoolDescriptor>,
-        suppress_ai_enemies: bool,
+        suppress_host_replicated: bool,
+    ) -> TriggerPoolWorldInstall {
+        install_descriptor_world(
+            world,
+            policy,
+            active_level_tags,
+            global_pools,
+            suppress_host_replicated,
+            Vec::new(),
+        )
+    }
+
+    fn install_descriptor_world(
+        world: postretro_level_loader::LevelWorld,
+        policy: TriggerPoolSeedPolicy,
+        active_level_tags: &[&str],
+        global_pools: Vec<TriggerPoolDescriptor>,
+        suppress_host_replicated: bool,
+        descriptors: Vec<EntityTypeDescriptor>,
     ) -> TriggerPoolWorldInstall {
         let mut app = test_app();
         let ctx = script_ctx(&app);
+        ctx.data_registry.borrow_mut().entities = descriptors;
+        let mut upload_models = Vec::new();
+        let content_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
         ctx.data_registry
             .borrow_mut()
             .replace_global_trigger_pools(global_pools);
@@ -2445,7 +2531,7 @@ pub(crate) mod tests {
                 spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
-                content_root: std::path::Path::new("content/dev"),
+                content_root: &content_root,
                 active_level_tags: &active_level_tags,
                 nav_graph: None,
                 fog_volume_bridge: &mut session.fog_volume_bridge,
@@ -2463,14 +2549,18 @@ pub(crate) mod tests {
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: policy,
-                suppress_ai_enemies,
-                suppress_boot_pawn: suppress_ai_enemies,
+                suppress_host_replicated,
+                suppress_boot_pawn: suppress_host_replicated,
                 local_carried_loadout: None,
             };
             install_world_cpu(
                 handles,
                 &mut timings,
-                |_models, _clip_tables| {
+                |models, _clip_tables| {
+                    upload_models.extend(models.iter().map(|model| {
+                        assert!(model.result.is_ok(), "{} must parse", model.handle);
+                        model.handle.clone()
+                    }));
                     crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
                 },
                 |_spawn_points| {},
@@ -2481,6 +2571,124 @@ pub(crate) mod tests {
         TriggerPoolWorldInstall {
             report: products.trigger_pool_report,
             registry,
+            upload_models,
+            hit_zone_store: std::mem::take(&mut app.session.as_mut().unwrap().hit_zone_store),
+        }
+    }
+
+    #[test]
+    fn authored_map_ordinals_survive_player_partition_and_client_suppression() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+        use postretro_entities::{ComponentKind, ComponentValue};
+        use postretro_level_format::map_entity::MapEntityRecord;
+        let mut prop = mesh_descriptor("network_prop", false);
+        prop.mesh.as_mut().unwrap().model =
+            "models/decraniated_low_poly_retro_pixel/scene.gltf".to_string();
+        let mut local_light = prop.clone();
+        local_light.canonical_name = Some("local_light".into());
+        local_light.mesh = None;
+        local_light.light = Some(postretro_entities::LightDescriptor {
+            color: [1.0; 3],
+            intensity: 1.0,
+            range: 8.0,
+            is_dynamic: true,
+        });
+        for connected in [false, true] {
+            let mut world = level_world("ordinal_install", 1);
+            world.map_entities = ["player_spawn", "network_prop", "local_light"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, classname)| MapEntityRecord {
+                    classname: classname.to_string(),
+                    origin: [index as f32 * 3.0, 0.0, 0.0],
+                    tags: vec![classname.to_string()],
+                    ..Default::default()
+                })
+                .collect();
+            let installed = install_descriptor_world(
+                world,
+                TriggerPoolSeedPolicy::ArmAll,
+                &[],
+                Vec::new(),
+                connected,
+                vec![prop.clone(), local_light.clone()],
+            );
+            let ordinals: Vec<_> = installed
+                .registry
+                .iter_with_kind(ComponentKind::MapOrdinal)
+                .filter_map(|(id, value)| match value {
+                    ComponentValue::MapOrdinal(MapOrdinal(index)) if *index > 0 => {
+                        Some((id, *index))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                ordinals.iter().any(|(_, ordinal)| *ordinal == 2),
+                "client-local descriptor retains PRL ordinal after partition and filtering"
+            );
+            assert_eq!(
+                ordinals.iter().any(|(_, ordinal)| *ordinal == 1),
+                !connected,
+                "networked descriptor has its original ordinal only on the host"
+            );
+        }
+    }
+
+    #[test]
+    fn suppressed_descriptor_models_install_hit_zones_once() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::mesh_descriptor;
+        use postretro_entities::ComponentKind;
+        use postretro_entities::provenance::DescriptorProvenance;
+        use postretro_level_format::map_entity::MapEntityRecord;
+        use postretro_scripting_core::data_descriptors::HealthDescriptor;
+
+        let model = "models/decraniated_low_poly_retro_pixel/scene.gltf";
+        let mut prop = mesh_descriptor("network_prop", false);
+        prop.mesh.as_mut().unwrap().model = model.to_string();
+        let mut dummy = prop.clone();
+        dummy.canonical_name = Some("network_dummy".to_string());
+        dummy.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        });
+        for connected in [false, true] {
+            let mut world = level_world("descriptor_install", 1);
+            world.map_entities = ["network_prop", "network_dummy", "network_dummy"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, classname)| MapEntityRecord {
+                    classname: classname.to_string(),
+                    origin: [i as f32 * 3.0, 0.0, 0.0],
+                    ..Default::default()
+                })
+                .collect();
+
+            let installed = install_descriptor_world(
+                world,
+                TriggerPoolSeedPolicy::ArmAll,
+                &[],
+                Vec::new(),
+                connected,
+                vec![prop.clone(), dummy.clone()],
+            );
+            let placements = installed.registry.iter_with_kind(ComponentKind::DescriptorProvenance)
+                .filter(|(_, value)| matches!(value, postretro_entities::ComponentValue::DescriptorProvenance(DescriptorProvenance { canonical_name, .. }) if canonical_name.starts_with("network_")))
+                .count();
+            assert_eq!(placements, if connected { 0 } else { 3 });
+            assert_eq!(
+                installed.upload_models,
+                [model],
+                "shared suppressed models upload once"
+            );
+            let zones = installed
+                .hit_zone_store
+                .get_by_name(model)
+                .expect("suppressed model retains CPU hit zones");
+            assert!(zones.joint_zones.iter().any(Option::is_some));
+            assert!(zones.derived_bound.is_some());
         }
     }
 
@@ -2492,14 +2700,14 @@ pub(crate) mod tests {
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
         global_pools: Vec<TriggerPoolDescriptor>,
-        suppress_ai_enemies: bool,
+        suppress_host_replicated: bool,
     ) -> TrapPoolFixtureInstall {
         let installed = install_trigger_pool_world(
             trap_pool_fixture_world(),
             policy,
             active_level_tags,
             global_pools,
-            suppress_ai_enemies,
+            suppress_host_replicated,
         );
         let registry = &installed.registry;
         let armed_by_tag = ["closet_trap", "ambush_trap"]
@@ -2572,6 +2780,58 @@ pub(crate) mod tests {
                 .armed,
             "the connected client does not rerun the host pool roll",
         );
+    }
+
+    /// Production segment-B install and presentation finalization for CPU tests.
+    pub(crate) fn install_capture_world(app: &mut App, world: &postretro_level_loader::LevelWorld) {
+        let ctx = script_ctx(app);
+        let content_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+        let session = app.session.as_mut().unwrap();
+        session
+            .light_bridge
+            .populate_from_level(&world.lights, &mut ctx.registry.borrow_mut(), 0);
+        let handles = WorldInstallHandles {
+            world,
+            script_ctx: &ctx,
+            command_diagnostics: Default::default(),
+            mover_auto_close_ms: crate::runtime_movers::ENGINE_AUTO_CLOSE_MS,
+            spawn_context: Default::default(),
+            content_root: &content_root,
+            active_level_tags: &[],
+            nav_graph: None,
+            fog_volume_bridge: &mut session.fog_volume_bridge,
+            trigger_volume_bridge: &mut session.trigger_volume_bridge,
+            classname_dispatch: &session.classname_dispatch,
+            script_runtime: &session.scripting.script_runtime,
+            sequence_registry: &session.scripting.sequence_registry,
+            reaction_registry: &session.scripting.reaction_registry,
+            system_registry: &session.scripting.system_registry,
+            modal_stack: &mut session.modal_stack,
+            progress_tracker: &mut session.progress_tracker,
+            crossing_detector: &mut session.crossing_detector,
+            slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
+            mesh_clip_tables: &mut session.mesh_clip_tables,
+            hit_zone_store: &mut session.hit_zone_store,
+            trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
+            suppress_host_replicated: false,
+            suppress_boot_pawn: true,
+            local_carried_loadout: None,
+        };
+        let _ = install_world_cpu(
+            handles,
+            &mut StartupTimings::new(),
+            |_models, _clips| crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide,
+            |_spawns| {},
+        );
+        start_installed_presentation_animations(
+            &ctx.registry.borrow(),
+            &mut session.light_bridge,
+            &mut session.fog_volume_bridge,
+            &mut session.emitter_bridge,
+        );
+        app.script_time = 0.0;
     }
 
     struct CpuFixture {
@@ -2737,19 +2997,14 @@ pub(crate) mod tests {
                 fade: postretro_foundation::PresentationFade::default(),
                 scatter_radius: 0.0,
             });
-            crate::netcode::ingest_client_overlay_fact(
-                &mut session.client_overlay_facts,
-                &mut session.presentation_pool,
-                crate::netcode::ClientOverlayFact::new(
-                    postretro_net::wire::NetworkId(91),
-                    0.0,
-                    0.0,
-                    false,
-                    false,
-                ),
-                None,
-                None,
-                None,
+            assert!(
+                session
+                    .client_overlay_facts
+                    .receive(postretro_net::wire::WireOverlayRoster {
+                        revision: 91,
+                        server_script_time: 1.0,
+                        entries: Vec::new(),
+                    },)
             );
         }
 
@@ -2802,7 +3057,7 @@ pub(crate) mod tests {
         );
         let session = app.session.as_ref().expect("test app session installed");
         assert_eq!(session.presentation_pool.live_counts(), (0, 0));
-        assert_eq!(session.client_overlay_facts.terminal_len(), 0);
+        assert_eq!(session.client_overlay_facts.revision(), None);
         assert!(
             session
                 .scripting
@@ -4518,7 +4773,7 @@ pub(crate) mod tests {
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
-                suppress_ai_enemies: false,
+                suppress_host_replicated: false,
                 suppress_boot_pawn: false,
                 local_carried_loadout: None,
             };
@@ -4758,5 +5013,180 @@ pub(crate) mod tests {
             }),
             "legacy sentinel warning fired for an `@player`-only levelLoad"
         );
+    }
+    #[test]
+    fn audience_source_gates_reject_all_tokens_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        for token in ["@activators", "@trigger", "@player"] {
+            let ctx = ScriptCtx::new();
+            let named = |name: &str| NamedReaction {
+                name: name.into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".into(),
+                    target: None,
+                    kind: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({"sound":"beep", "audience":token}),
+                }),
+            };
+            ctx.data_registry.borrow_mut().populate_level(
+                vec![named("audience"), named("levelLoad")],
+                vec![CrossingDescriptor {
+                    slot: Some("player.health".into()),
+                    condition: CrossingCondition::Below { threshold: 0.5 },
+                    max: 100.0,
+                    edge: None,
+                    fire: vec!["audience".into()],
+                }],
+                &[],
+            );
+            let capture = LogCapture::start();
+            rebuild_reaction_subscribers(
+                &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+                &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+                &ctx,
+                SubscriberRebuild::LevelInstall,
+            );
+            assert!(ctx.data_registry.borrow().crossings.is_empty(), "{token}");
+            assert!(
+                matches!(&ctx.data_registry.borrow().reactions[1].descriptor,
+                ReactionDescriptor::Sequence(steps) if steps.is_empty())
+            );
+            capture.assert_logged_once(
+                log::Level::Error,
+                "crossing on `player.health` drops address `audience`",
+            );
+            capture.assert_logged_once(
+                log::Level::Error,
+                "levelLoad: reaction `levelLoad` uses audience",
+            );
+        }
+    }
+
+    /// Parse identical raw descriptors through a bundled TS entry and the Luau
+    /// data-script runtime. Builder serialization is covered by the SDK tests.
+    pub(crate) fn runtime_audience_manifest(
+        value: &serde_json::Value,
+        luau: bool,
+    ) -> postretro_scripting_core::data_descriptors::LevelManifest {
+        fn lua(value: &serde_json::Value) -> String {
+            use serde_json::Value;
+            match value {
+                Value::Null => {
+                    panic!("Lua nil omits a field; parity fixtures use representable values")
+                }
+                Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+                Value::Array(values) => format!(
+                    "{{{}}}",
+                    values.iter().map(lua).collect::<Vec<_>>().join(",")
+                ),
+                Value::Object(values) => format!(
+                    "{{{}}}",
+                    values
+                        .iter()
+                        .map(|(key, value)| format!(
+                            "[{}]={}",
+                            serde_json::to_string(key).unwrap(),
+                            lua(value)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(if luau { "audience.luau" } else { "audience.ts" });
+        let source = if luau {
+            format!("function setupLevel(_ctx) return {} end", lua(value))
+        } else {
+            format!("export function setupLevel() {{ return {value}; }}")
+        };
+        std::fs::write(&path, &source).unwrap();
+        let source = if luau {
+            source
+        } else {
+            postretro_script_compiler::bundle_entry(&path).expect("raw audience TS fixture bundles")
+        };
+        let ctx = ScriptCtx::new();
+        let runtime = ScriptRuntime::new(
+            &PrimitiveRegistry::new(),
+            &ScriptRuntimeConfig::default(),
+            &ctx,
+        )
+        .unwrap();
+        runtime.run_data_script(
+            &postretro_level_format::data_script::DataScriptSection {
+                compiled_bytes: source.into_bytes(),
+                source_path: path.to_string_lossy().into_owned(),
+            },
+            dir.path(),
+        )
+    }
+
+    #[test]
+    fn runtime_audience_source_install_parity_for_crossings_and_level_load() {
+        use postretro_test_log_capture::LogCapture;
+        for audience in [
+            Some("@activators"),
+            Some("@trigger"),
+            Some("@player"),
+            Some("everyone"),
+            None,
+        ] {
+            let mut args = serde_json::json!({ "sound": "beep" });
+            if let Some(audience) = audience {
+                args["audience"] = serde_json::json!(audience);
+            }
+            let fixture = serde_json::json!({
+                "reactions": [
+                    { "name": "crossingCue", "primitive": "playSound", "args": args },
+                    { "name": "levelLoad", "primitive": "playSound", "args": args }
+                ],
+                "crossings": [{ "slot": "player.health", "below": 25, "max": 100, "fire": ["crossingCue"] }]
+            });
+            let ts = runtime_audience_manifest(&fixture, false);
+            let luau = runtime_audience_manifest(&fixture, true);
+            assert_eq!(ts.reactions.len(), 2, "fixture must parse: {audience:?}");
+            assert_eq!(ts.crossings.len(), 1);
+            assert_eq!(ts.reactions, luau.reactions);
+            assert_eq!(ts.crossings, luau.crossings);
+            let scoped = audience.is_some_and(|audience| audience.starts_with('@'));
+            for manifest in [ts, luau] {
+                let ctx = ScriptCtx::new();
+                ctx.data_registry.borrow_mut().populate_level(
+                    manifest.reactions,
+                    manifest.crossings,
+                    &[],
+                );
+                let capture = LogCapture::start();
+                rebuild_reaction_subscribers(
+                    &mut ProgressTracker::new(),
+                    &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+                    &ctx,
+                    SubscriberRebuild::LevelInstall,
+                );
+                let data = ctx.data_registry.borrow();
+                assert_eq!(data.crossings.is_empty(), scoped, "{audience:?}");
+                assert_eq!(
+                    matches!(&data.reactions[1].descriptor, ReactionDescriptor::Sequence(steps) if steps.is_empty()),
+                    scoped
+                );
+                if scoped {
+                    capture.assert_logged_once(
+                        log::Level::Error,
+                        "crossing on `player.health` drops address `crossingCue`",
+                    );
+                    capture.assert_logged_once(
+                        log::Level::Error,
+                        "levelLoad: reaction `levelLoad` uses audience",
+                    );
+                } else {
+                    capture.assert_not_logged(log::Level::Error, "uses audience");
+                }
+            }
+        }
     }
 }

@@ -199,7 +199,7 @@ impl World {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, occupancy, registry| {
+            |event, occupancy, _occupants, registry| {
                 let execution = bindings.execute_with_script_ctx(
                     event.fire.trigger,
                     event.edge,
@@ -590,4 +590,52 @@ fn level_member_enter_survives_a_mod_reload_recompose_for_its_volume_only() {
 
     assert_eq!(world.visit(0.0).0, vec![enter(plate, &["reveal"])]);
     assert!(world.visit(10.0).0.is_empty());
+}
+
+#[test]
+fn player_audience_is_rejected_for_mod_and_level_member_trigger_bindings() {
+    let mut world = World::new();
+    let global = world.volume("global", &["global"], 0.0, TriggerFireMode::Multiple, "");
+    let member = world.volume("member", &[], 10.0, TriggerFireMode::Multiple, "");
+    let records = world.install(
+        r#"({ triggerEvents: [{ tag: "global", event: "enter", fire: ["subject", "occupants"] }] })"#,
+        r#"({
+            reactions: [
+                { name: "subject", primitive: "playSound", args: { sound: "alarm", audience: "@player" } },
+                { name: "occupants", primitive: "playSound", args: { sound: "alarm", audience: "@trigger" } }
+            ],
+            triggerEvents: [{ trigger: ID_MEMBER, event: "enter", fire: ["subject"] }]
+        })"#,
+        &[],
+    );
+    let errors: Vec<_> = records
+        .iter()
+        .filter(|record| {
+            record.level == log::Level::Error
+                && record
+                    .message
+                    .contains("reaction `subject` uses `on.player`")
+        })
+        .collect();
+    assert_eq!(
+        errors.len(),
+        2,
+        "both manifest binding forms reject the unavailable player audience: {records:?}"
+    );
+    assert!(
+        !world
+            .bindings
+            .bound_edges()
+            .contains(&(member, TriggerEventEdge::Enter))
+    );
+    assert_eq!(
+        world.step_to(Vec3::new(0.0, 1.0, 0.0)),
+        vec![enter(global, &["occupants"])]
+    );
+    assert!(
+        world
+            .step_to(Vec3::new(10.0, 1.0, 0.0))
+            .iter()
+            .all(|fire| fire.trigger != member)
+    );
 }

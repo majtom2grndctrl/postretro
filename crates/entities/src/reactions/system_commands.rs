@@ -1,7 +1,10 @@
 // System-reaction commands: app-drained queue, reaction classes, player-routed presentation.
 // See: context/lib/scripting.md §10.4, §12 (Player events)
 
+use crate::EntityId;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use postretro_foundation::{Seat, ir::IrValue};
@@ -13,6 +16,7 @@ use super::emitter::Emitter;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemReactionCommand {
     PlaySound {
+        audience: Option<Audience>,
         sound: String,
         bus: Option<String>,
         /// Where the sound plays from, resolved from the firing source's
@@ -21,20 +25,24 @@ pub enum SystemReactionCommand {
         at: Option<Emitter>,
     },
     Rumble {
+        audience: Option<Audience>,
         strong: f32,
         weak: Option<f32>,
         duration_ms: f32,
     },
     FlashScreen {
+        audience: Option<Audience>,
         color: [f32; 4],
         duration_ms: f32,
     },
     Vignette {
+        audience: Option<Audience>,
         color: Option<[f32; 3]>,
         strength: f32,
         duration_ms: f32,
     },
     ScreenShake {
+        audience: Option<Audience>,
         amplitude: f32,
         duration_ms: f32,
         frequency: Option<f32>,
@@ -99,27 +107,72 @@ pub enum SystemReactionCommand {
     },
 }
 
-/// Shared handle to the per-frame system-command queue.
+/// Audience tokens retain their existing descriptor spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Audience {
+    #[serde(rename = "@activators")]
+    Activators,
+    #[serde(rename = "@trigger")]
+    Trigger,
+    #[serde(rename = "@player")]
+    Player,
+    #[serde(rename = "everyone")]
+    Everyone,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FireOrigin {
+    #[default]
+    EveryMachine,
+    HostOnly(FireSubject),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FireSubject {
+    #[default]
+    None,
+    Trigger {
+        player: Option<Seat>,
+        trigger: EntityId,
+        occupants: Vec<Seat>,
+    },
+    PlayerEvent {
+        player: Option<Seat>,
+    },
+}
+
+impl FireOrigin {
+    /// Named follow-ups preserve where they run but carry no scoped subject.
+    pub fn follow_up(&self) -> Self {
+        match self {
+            Self::EveryMachine => Self::EveryMachine,
+            Self::HostOnly(_) => Self::HostOnly(FireSubject::None),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recipients {
+    Local,
+    Seats(Vec<Seat>),
+    Everyone,
+    Skip,
+}
+
+/// One ordered queue includes both local work and routed presentation.
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
-    commands: Rc<RefCell<Vec<SystemReactionCommand>>>,
-    /// Presentation a player event fired for one player, held for the app to
-    /// present on that player's machine.
-    routed: Rc<RefCell<Vec<(Seat, SystemReactionCommand)>>>,
+    commands: Rc<RefCell<Vec<(Recipients, SystemReactionCommand)>>>,
     fire_context: Rc<RefCell<SystemCommandFireContext>>,
+    warned_audiences: Rc<RefCell<HashSet<(String, &'static str)>>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemCommandFireContext {
     pub source: String,
     pub values: Vec<(String, IrValue)>,
-    /// The emitter a named gameplay source published, if any. Sources without
-    /// one (level load, crossings, triggers, deaths, follow-ups) leave it
-    /// `None`, and a reaction reading `on.emitter` there is skipped.
     pub emitter: Option<Emitter>,
-    /// The player whose machine presentation from this fire plays on. Only a
-    /// player event sets it; every other source presents where it drains.
-    pub presentation_seat: Option<Seat>,
+    pub origin: FireOrigin,
 }
 
 impl SystemCommandQueue {
@@ -127,51 +180,72 @@ impl SystemCommandQueue {
         Self::default()
     }
 
-    /// Enqueue a command. Presentation fired for one player is held apart
-    /// for [`Self::take_routed`]; everything else drains locally.
     pub fn push(&self, command: SystemReactionCommand) {
-        let seat = self.fire_context.borrow().presentation_seat;
-        match seat {
-            Some(seat) if command.class() == SystemReactionClass::Presentation => {
-                self.routed.borrow_mut().push((seat, command));
+        let context = self.fire_context.borrow();
+        let recipients = if command.class() == SystemReactionClass::Presentation {
+            resolve_recipients(
+                &context.origin,
+                command.audience(),
+                matches!(command, SystemReactionCommand::PlaySound { .. }),
+            )
+        } else {
+            Recipients::Local
+        };
+        if recipients == Recipients::Skip {
+            let key = (
+                context.source.clone(),
+                command.presentation_primitive().unwrap(),
+            );
+            if self.warned_audiences.borrow_mut().insert(key) {
+                log::warn!(
+                    "[Scripting] source '{}' does not publish audience for {}; skipping",
+                    context.source,
+                    command.presentation_primitive().unwrap()
+                );
             }
-            _ => self.commands.borrow_mut().push(command),
+            return;
         }
+        self.commands.borrow_mut().push((recipients, command));
     }
 
-    /// Presentation routed to a player, in fire order.
-    pub fn take_routed(&self) -> Vec<(Seat, SystemReactionCommand)> {
-        std::mem::take(&mut self.routed.borrow_mut())
+    /// Drain the whole queue for ordered delivery at the app boundary.
+    pub fn take_ordered(&self) -> Vec<(Recipients, SystemReactionCommand)> {
+        std::mem::take(&mut self.commands.borrow_mut())
     }
 
-    /// Replace the active named-fire context, returning the prior context so a
-    /// caller can restore it after dispatch. Registry handler signatures stay
-    /// source-agnostic; only commands that need context snapshot it.
+    /// Routed presentation, retaining relative fire order.
+    pub fn take_routed(&self) -> Vec<(Recipients, SystemReactionCommand)> {
+        let (local, routed): (Vec<_>, Vec<_>) = self
+            .take_ordered()
+            .into_iter()
+            .partition(|(recipients, _)| *recipients == Recipients::Local);
+        *self.commands.borrow_mut() = local;
+        routed
+    }
+
     pub fn replace_fire_context(
         &self,
         context: SystemCommandFireContext,
     ) -> SystemCommandFireContext {
         std::mem::replace(&mut *self.fire_context.borrow_mut(), context)
     }
-
     pub fn fire_context(&self) -> SystemCommandFireContext {
         self.fire_context.borrow().clone()
     }
 
-    /// Drain the local commands. Presentation routed to a player leaves through
-    /// [`Self::take_routed`].
     pub fn take(&self) -> Vec<SystemReactionCommand> {
-        std::mem::take(&mut self.commands.borrow_mut())
+        let (local, routed): (Vec<_>, Vec<_>) = self
+            .take_ordered()
+            .into_iter()
+            .partition(|(recipients, _)| *recipients == Recipients::Local);
+        *self.commands.borrow_mut() = routed;
+        local.into_iter().map(|(_, command)| command).collect()
     }
-
-    /// Drop every queued command, routed presentation included.
     pub fn discard_all(&self) {
         self.commands.borrow_mut().clear();
-        self.routed.borrow_mut().clear();
     }
-
     pub fn is_empty(&self) -> bool {
-        self.commands.borrow().is_empty() && self.routed.borrow().is_empty()
+        self.commands.borrow().is_empty()
     }
 }
 
@@ -179,8 +253,34 @@ impl std::fmt::Debug for SystemCommandQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SystemCommandQueue")
             .field("len", &self.commands.borrow().len())
-            .field("routed", &self.routed.borrow().len())
             .finish()
+    }
+}
+
+fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bool) -> Recipients {
+    use Audience::*;
+    use FireOrigin::*;
+    match (origin, audience) {
+        (EveryMachine, Option::None | Some(Everyone)) => Recipients::Local,
+        (EveryMachine, Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
+        (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
+        (HostOnly(FireSubject::Trigger { player, .. }), Some(Activators)) => {
+            Recipients::Seats(player.iter().copied().collect())
+        }
+        (HostOnly(FireSubject::Trigger { occupants, .. }), Some(Audience::Trigger)) => {
+            Recipients::Seats(occupants.clone())
+        }
+        (HostOnly(FireSubject::Trigger { .. } | FireSubject::None), Option::None) if sound => {
+            Recipients::Everyone
+        }
+        (HostOnly(FireSubject::Trigger { player, .. }), Option::None) => {
+            Recipients::Seats(player.iter().copied().collect())
+        }
+        (HostOnly(FireSubject::PlayerEvent { player }), Option::None | Some(Player)) => {
+            player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
+        }
+        (HostOnly(FireSubject::None), Option::None) => Recipients::Local,
+        (HostOnly(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
     }
 }
 
@@ -189,8 +289,8 @@ impl std::fmt::Debug for SystemCommandQueue {
 /// player (`scripting.md` §12, Player events).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionClass {
-    /// Presents to whoever plays on the draining machine. A player event
-    /// forwards it to its player's machine.
+    /// A one-shot effect whose audience is resolved from its fire origin and
+    /// optional audience.
     Presentation,
     /// Changes the draining machine's own UI or text state. Nothing forwards
     /// it, so on the host it would land on the host's screen.
@@ -204,7 +304,7 @@ pub enum SystemReactionClass {
 }
 
 /// Every system reaction primitive, by its registered name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemReactionKind {
     PlaySound,
     Rumble,
@@ -306,6 +406,37 @@ impl SystemReactionKind {
 }
 
 impl SystemReactionCommand {
+    pub fn presentation_primitive(&self) -> Option<&'static str> {
+        match self {
+            Self::PlaySound { .. } => Some("playSound"),
+            Self::Rumble { .. } => Some("rumble"),
+            Self::FlashScreen { .. } => Some("flashScreen"),
+            Self::Vignette { .. } => Some("vignette"),
+            Self::ScreenShake { .. } => Some("screenShake"),
+            _ => None,
+        }
+    }
+    pub fn audience(&self) -> Option<Audience> {
+        match self {
+            Self::PlaySound { audience, .. }
+            | Self::Rumble { audience, .. }
+            | Self::FlashScreen { audience, .. }
+            | Self::Vignette { audience, .. }
+            | Self::ScreenShake { audience, .. } => *audience,
+            _ => None,
+        }
+    }
+    pub fn clear_audience(&mut self) {
+        match self {
+            Self::PlaySound { audience, .. }
+            | Self::Rumble { audience, .. }
+            | Self::FlashScreen { audience, .. }
+            | Self::Vignette { audience, .. }
+            | Self::ScreenShake { audience, .. } => *audience = None,
+            _ => {}
+        }
+    }
+
     /// The class of the reaction that enqueued this command. Exhaustive, so a
     /// new command fails to build until it is classified.
     pub const fn class(&self) -> SystemReactionClass {
@@ -329,5 +460,153 @@ impl SystemReactionCommand {
             | Self::AddOwnerSlot { .. } => SystemReactionClass::HostConsequence,
             Self::SetState { .. } => SystemReactionClass::SlotWrite,
         }
+    }
+}
+
+#[cfg(test)]
+mod audience_tests {
+    use super::*;
+    fn command(sound: bool, audience: Option<Audience>) -> SystemReactionCommand {
+        if sound {
+            SystemReactionCommand::PlaySound {
+                audience,
+                sound: "beep".into(),
+                bus: None,
+                at: None,
+            }
+        } else {
+            SystemReactionCommand::FlashScreen {
+                audience,
+                color: [1.0; 4],
+                duration_ms: 100.0,
+            }
+        }
+    }
+
+    #[test]
+    fn presentation_audience_resolution_matches_every_origin_subject_row() {
+        use Audience::*;
+        let trigger = |player| {
+            FireOrigin::HostOnly(FireSubject::Trigger {
+                player,
+                trigger: EntityId::from_raw(7),
+                occupants: vec![Seat(0), Seat(2)],
+            })
+        };
+        let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
+        let none = FireOrigin::HostOnly(FireSubject::None);
+        let rows = [
+            (FireOrigin::EveryMachine, None, false, Recipients::Local),
+            (
+                FireOrigin::EveryMachine,
+                Some(Everyone),
+                true,
+                Recipients::Local,
+            ),
+            (
+                FireOrigin::EveryMachine,
+                Some(Activators),
+                true,
+                Recipients::Skip,
+            ),
+            (
+                FireOrigin::EveryMachine,
+                Some(Trigger),
+                false,
+                Recipients::Skip,
+            ),
+            (
+                FireOrigin::EveryMachine,
+                Some(Player),
+                false,
+                Recipients::Skip,
+            ),
+            (trigger(Some(Seat(2))), None, true, Recipients::Everyone),
+            (
+                trigger(Some(Seat(2))),
+                None,
+                false,
+                Recipients::Seats(vec![Seat(2)]),
+            ),
+            (trigger(None), None, false, Recipients::Seats(vec![])),
+            (
+                trigger(Some(Seat(2))),
+                Some(Activators),
+                true,
+                Recipients::Seats(vec![Seat(2)]),
+            ),
+            (
+                trigger(None),
+                Some(Activators),
+                true,
+                Recipients::Seats(vec![]),
+            ),
+            (
+                trigger(None),
+                Some(Trigger),
+                false,
+                Recipients::Seats(vec![Seat(0), Seat(2)]),
+            ),
+            (trigger(None), Some(Player), false, Recipients::Skip),
+            (
+                event(Some(Seat(3))),
+                None,
+                true,
+                Recipients::Seats(vec![Seat(3)]),
+            ),
+            (
+                event(Some(Seat(3))),
+                Some(Player),
+                false,
+                Recipients::Seats(vec![Seat(3)]),
+            ),
+            (event(None), None, true, Recipients::Local),
+            (event(None), Some(Player), false, Recipients::Local),
+            (event(None), Some(Activators), false, Recipients::Skip),
+            (event(None), Some(Trigger), false, Recipients::Skip),
+            (none.clone(), None, true, Recipients::Everyone),
+            (none.clone(), None, false, Recipients::Local),
+            (none.clone(), Some(Activators), true, Recipients::Skip),
+            (none.clone(), Some(Trigger), true, Recipients::Skip),
+            (none.clone(), Some(Player), true, Recipients::Skip),
+            (none.clone(), Some(Everyone), false, Recipients::Everyone),
+            (trigger(None), Some(Everyone), false, Recipients::Everyone),
+            (event(None), Some(Everyone), true, Recipients::Everyone),
+        ];
+        for (origin, audience, sound, expected) in rows {
+            let queue = SystemCommandQueue::new();
+            queue.replace_fire_context(SystemCommandFireContext {
+                origin: origin.clone(),
+                source: "row".into(),
+                ..Default::default()
+            });
+            let command = command(sound, audience);
+            queue.push(command.clone());
+            let entries = queue.take_ordered();
+            if expected == Recipients::Skip {
+                assert!(entries.is_empty(), "{origin:?} {audience:?}");
+            } else {
+                assert_eq!(entries, [(expected, command)], "{origin:?} {audience:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn presentation_origin_does_not_route_other_classes_and_followups_clear_subject() {
+        let queue = SystemCommandQueue::new();
+        let origin = FireOrigin::HostOnly(FireSubject::PlayerEvent {
+            player: Some(Seat(2)),
+        });
+        queue.replace_fire_context(SystemCommandFireContext {
+            origin: origin.clone(),
+            ..Default::default()
+        });
+        queue.push(SystemReactionCommand::PopTree);
+        assert_eq!(queue.take(), [SystemReactionCommand::PopTree]);
+        assert_eq!(origin.follow_up(), FireOrigin::HostOnly(FireSubject::None));
+        assert_eq!(
+            FireOrigin::EveryMachine.follow_up(),
+            FireOrigin::EveryMachine
+        );
     }
 }

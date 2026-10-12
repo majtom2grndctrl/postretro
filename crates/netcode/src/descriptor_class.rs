@@ -1,24 +1,28 @@
-// Descriptor-class metadata derivation and networked AI-enemy classification.
+// Descriptor-class metadata and authoritative descriptor-world classification.
 // See: context/lib/networking.md
 
 use postretro_net::wire::ComponentPayload;
 
-use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+use postretro_entities::provenance::{
+    DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath, ReplicationRole,
+};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
 const DESCRIPTOR_CLASS_PREFIX: &str = "descriptor:";
+const PAWN_CLASS_PREFIX: &str = "pawn:";
 const PROJECTILE_CLASS_PREFIX: &str = "projectile:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReplicatedDescriptorClass<'a> {
     Descriptor(&'a str),
+    Pawn(&'a str),
     Projectile(&'a str),
 }
 
 impl<'a> ReplicatedDescriptorClass<'a> {
     pub(super) fn canonical_name(self) -> &'a str {
         match self {
-            Self::Descriptor(name) | Self::Projectile(name) => name,
+            Self::Descriptor(name) | Self::Pawn(name) | Self::Projectile(name) => name,
         }
     }
 }
@@ -26,11 +30,13 @@ impl<'a> ReplicatedDescriptorClass<'a> {
 pub(super) fn decode_replicated_descriptor_class(value: &str) -> ReplicatedDescriptorClass<'_> {
     if let Some(name) = value.strip_prefix(PROJECTILE_CLASS_PREFIX) {
         ReplicatedDescriptorClass::Projectile(name)
+    } else if let Some(name) = value.strip_prefix(PAWN_CLASS_PREFIX) {
+        ReplicatedDescriptorClass::Pawn(name)
     } else if let Some(name) = value.strip_prefix(DESCRIPTOR_CLASS_PREFIX) {
         ReplicatedDescriptorClass::Descriptor(name)
     } else {
-        // Untagged values remain readable for local fixtures and older in-memory
-        // producers. Canonical-name consumers must always pass through this decoder;
+        // Untagged values remain descriptor-world classes for local fixtures and
+        // older in-memory world producers. Canonical-name consumers use this decoder;
         // the replicated value is a presentation classifier, not a descriptor key.
         ReplicatedDescriptorClass::Descriptor(value)
     }
@@ -44,67 +50,36 @@ fn projectile_class(name: &str) -> String {
     format!("{PROJECTILE_CLASS_PREFIX}{name}")
 }
 
-/// Shared predicate: is `id` a descriptor AI enemy that the host owns as an
-/// authoritative networked entity (E10 — networked enemy authority)?
-///
-/// True iff the entity is alive and:
-/// - its `DescriptorProvenance.spawn_path` is `MapPlacement` or `RuntimeSpawn` (not a
-///   player-start / net-slot / default-weapon spawn), AND
-/// - its **live** registry columns carry BOTH `ComponentKind::Brain` AND
-///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent a brain
-///   `components.behavior` graph materializes together — see
-///   `data_archetype::attach_descriptor_components`).
-///
-/// Contract notes for importers:
-/// - It reads the **live component columns**, NOT `DescriptorProvenance.owned_components`.
-///   `owned_components` only tracks the modder-declarable `DescriptorComponentKind` set
-///   and never includes engine-owned AI components, so it cannot be used to detect an
-///   AI enemy.
-/// - It is registry-blind about role: it does not check host/client. Host registration
-///   (this task) gates on the role separately; connected-client spawn suppression (Task 5)
-///   imports the same predicate to decide which descriptor placements NOT to spawn locally.
-/// - Both consumers (`replication.rs` host registration and `descriptor_entity_class`
-///   below) reach it via the direct submodule path, not a re-export.
-///
-/// A stale/despawned id (`get_component` errors) returns `false`.
-pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> bool {
+/// Live world-entity classification. Canonical inventory ownership takes precedence
+/// over retained descriptor components; pawn and projectile paths remain separate.
+pub fn is_host_replicated_descriptor_entity(registry: &EntityRegistry, id: EntityId) -> bool {
     let Ok(provenance) = registry.get_component::<DescriptorProvenance>(id) else {
         return false;
     };
     if !matches!(
         provenance.spawn_path,
-        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::RuntimeSpawn
-    ) {
+        DescriptorSpawnPath::MapPlacement
+            | DescriptorSpawnPath::RuntimeSpawn
+            | DescriptorSpawnPath::DefaultWeapon
+    ) || registry.is_inventory_owned(id)
+    {
         return false;
     }
-    matches!(
-        registry.has_component_kind(id, ComponentKind::Brain),
-        Ok(true)
-    ) && matches!(
-        registry.has_component_kind(id, ComponentKind::Agent),
-        Ok(true)
-    )
+    DescriptorComponentKind::ALL.into_iter().any(|kind| {
+        kind.replication_role() == ReplicationRole::NetworksEntity
+            && registry
+                .has_component_kind(id, kind.component_kind())
+                .unwrap_or(false)
+    }) || (registry
+        .has_component_kind(id, ComponentKind::Brain)
+        .unwrap_or(false)
+        && registry
+            .has_component_kind(id, ComponentKind::Agent)
+            .unwrap_or(false))
 }
 
-/// The descriptor class a replicable entity was materialized from, for the snapshot's
-/// `entity_class` (M15 Phase 3 Task 7 / E16 Task 5). The recipient uses it to materialize
-/// the matching descriptor-backed presentation locally. `None` unless the entity is one of:
-///
-/// - a **movement pawn** (carries a `PlayerMovementState` wire payload) spawned through
-///   the net-slot or player-start descriptor path
-///   (`DescriptorSpawnPath::NetworkSlot` / `DescriptorSpawnPath::PlayerSpawn`) — its
-///   `canonical_name` is the resolved `entity_class` (default `"player"`); or
-/// - a **networked AI enemy** ([`is_networked_ai_enemy`]) — its `canonical_name` is
-///   the descriptor class the host registered it under.
-/// - a **world item** (carries `ComponentKind::Touchable`) — its canonical descriptor
-///   class lets the client materialize its mesh presentation from a Transform-only record.
-/// - a **projectile presentation** — host-created Transform/provenance-only flight
-///   entity whose canonical class names the firing weapon descriptor.
-///
-/// The wire allows `entity_class` on any non-despawn finite-`Transform` record (E10
-/// Task 3 relaxed it off the movement-only gate), so AI enemies and world items ride
-/// Transform-only snapshots. A Transform-only fixture / demo mover / map-start pawn that
-/// is none of the above returns `None`.
+/// Snapshot class for descriptor-world entities and the separate pawn/projectile
+/// paths. The client resolves this name to build descriptor presentation.
 pub(super) fn descriptor_entity_class(
     registry: &EntityRegistry,
     id: EntityId,
@@ -124,7 +99,9 @@ pub(super) fn descriptor_entity_class(
             DescriptorSpawnPath::NetworkSlot | DescriptorSpawnPath::PlayerSpawn
         )
     {
-        return Some(descriptor_class(&provenance.canonical_name));
+        // Capability alone cannot identify a pawn: a directly placed descriptor
+        // may also author Movement alongside its world presentation and Health.
+        return Some(format!("{PAWN_CLASS_PREFIX}{}", provenance.canonical_name));
     }
 
     // Projectile observer copies deliberately carry no gameplay component. Their
@@ -137,14 +114,8 @@ pub(super) fn descriptor_entity_class(
         return Some(projectile_class(&provenance.canonical_name));
     }
 
-    // A map-placed/runtime AI enemy or a live world item needs its descriptor class
-    // so the client can materialize mesh presentation from the Transform-only record.
-    // World-item membership deliberately keys only on the host-local touchable component.
-    if is_networked_ai_enemy(registry, id)
-        || registry
-            .has_component_kind(id, ComponentKind::Touchable)
-            .unwrap_or(false)
-    {
+    // World descriptor records carry the class needed to build their display copy.
+    if is_host_replicated_descriptor_entity(registry, id) {
         return Some(descriptor_class(&provenance.canonical_name));
     }
 
@@ -162,49 +133,119 @@ mod tests {
     use postretro_net::wire::WireTransform;
 
     use crate::scripting::builtins::data_archetype::{
-        apply_data_archetype_dispatch, descriptor_materializes_ai_enemy, find_descriptor,
+        apply_data_archetype_dispatch, find_descriptor,
     };
     use crate::scripting::builtins::data_archetype_test_fixtures::{
         behavior_enemy_descriptor, mesh_descriptor, placement,
     };
+    use crate::scripting::builtins::descriptor_is_host_replicated;
 
     #[test]
     fn classifier_agrees_with_live_predicate_one_source_of_truth() {
-        // One source of truth: the pre-materialization descriptor classifier
-        // (`descriptor_materializes_ai_enemy`, used to FILTER on the client) must
-        // agree with the live-component predicate (`is_networked_ai_enemy`,
-        // used to REGISTER on the host) for a `MapPlacement` spawn. Materialize
-        // an AI enemy and a non-AI prop and assert each side agrees per entity.
-        //
-        // Lives on the netcode side because only it can see BOTH the scripting
-        // classifier and the netcode live predicate — the scripting tree must not
-        // reach up into `crate::netcode` (dependency arrow is netcode → scripting).
-        let descriptors = vec![
-            behavior_enemy_descriptor("grunt"),
-            mesh_descriptor("crate", false),
+        use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+        use postretro_entities::data_descriptors::{
+            HealthDescriptor, LightDescriptor, TouchableDescriptor,
+        };
+        let health = HealthDescriptor {
+            max: 48.0,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        };
+        let light = LightDescriptor {
+            color: [1.0; 3],
+            intensity: 1.0,
+            range: 8.0,
+            is_dynamic: true,
+        };
+        let emitter = BillboardEmitterComponent {
+            rate: 1.0,
+            burst: None,
+            spread: 0.0,
+            lifetime: 1.0,
+            velocity: [0.0; 3],
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_over_lifetime: [1.0].into(),
+            opacity_over_lifetime: [1.0].into(),
+            color: [1.0; 3],
+            sprite: "smoke".into(),
+            spin_rate: 0.0,
+            spin_animation: None,
+        };
+        let mut world_item = mesh_descriptor("world_item", false);
+        world_item.touchable = Some(TouchableDescriptor {
+            mode: TouchMode::Auto,
+            radius: 1.0,
+        });
+        let mut dummy = mesh_descriptor("dummy", false);
+        dummy.health = Some(health.clone());
+        let mesh_prop = mesh_descriptor("mesh_prop", false);
+        let mut invisible = mesh_descriptor("invisible", false);
+        invisible.mesh = None;
+        invisible.health = Some(health.clone());
+        let mut local_light = mesh_descriptor("local_light", false);
+        local_light.mesh = None;
+        local_light.light = Some(light.clone());
+        let mut local_emitter = mesh_descriptor("local_emitter", false);
+        local_emitter.mesh = None;
+        local_emitter.emitter = Some(emitter.clone());
+        let mut lit_prop = mesh_descriptor("lit_prop", false);
+        lit_prop.light = Some(light);
+        let mut health_emitter = mesh_descriptor("health_emitter", false);
+        health_emitter.mesh = None;
+        health_emitter.health = Some(health);
+        health_emitter.emitter = Some(emitter);
+        let cases = vec![
+            (behavior_enemy_descriptor("grunt"), true),
+            (world_item, true),
+            (dummy, true),
+            (mesh_prop, true),
+            (invisible, true),
+            (local_light, false),
+            (local_emitter, false),
+            (lit_prop, true),
+            (health_emitter, true),
         ];
-        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+        let descriptors: Vec<_> = cases
+            .iter()
+            .map(|(descriptor, _)| descriptor.clone())
+            .collect();
+        let placements: Vec<_> = descriptors
+            .iter()
+            .map(|descriptor| placement(descriptor.canonical_name.as_deref().unwrap(), &[]))
+            .collect();
         let mut reg = EntityRegistry::new();
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
-
-        for (id, _) in reg
-            .iter_with_kind(ComponentKind::DescriptorProvenance)
-            .collect::<Vec<_>>()
-        {
+        assert_eq!(
+            reg.iter_with_kind(ComponentKind::DescriptorProvenance)
+                .count(),
+            cases.len()
+        );
+        for (id, _) in reg.iter_with_kind(ComponentKind::DescriptorProvenance) {
             let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
-            let descriptor = find_descriptor(&descriptors, &provenance.canonical_name)
-                .expect("descriptor for materialized entity");
+            let descriptor = find_descriptor(&descriptors, &provenance.canonical_name).unwrap();
+            let expected = cases
+                .iter()
+                .find(|(case, _)| case.canonical_name == descriptor.canonical_name)
+                .unwrap()
+                .1;
             assert_eq!(
-                descriptor_materializes_ai_enemy(descriptor),
-                is_networked_ai_enemy(&reg, id),
-                "pre-materialization classifier and live predicate must agree for `{}`",
-                provenance.canonical_name,
+                descriptor_is_host_replicated(descriptor),
+                expected,
+                "descriptor {}",
+                provenance.canonical_name
+            );
+            assert_eq!(
+                is_host_replicated_descriptor_entity(&reg, id),
+                expected,
+                "live {}",
+                provenance.canonical_name
             );
         }
     }
 
     #[test]
-    fn runtime_spawn_requires_the_same_live_ai_pair_and_stamps_its_class() {
+    fn runtime_spawn_stamps_descriptor_class_and_behavior_requires_live_pair() {
         let descriptors = vec![
             behavior_enemy_descriptor("grunt"),
             mesh_descriptor("crate", false),
@@ -226,7 +267,7 @@ mod tests {
         reg.set_component(grunt, runtime_provenance)
             .expect("live entity accepts updated provenance");
 
-        assert!(is_networked_ai_enemy(&reg, grunt));
+        assert!(is_host_replicated_descriptor_entity(&reg, grunt));
         assert_eq!(
             descriptor_entity_class(
                 &reg,
@@ -257,10 +298,13 @@ mod tests {
         reg.set_component(crate_id, prop_provenance)
             .expect("live entity accepts updated provenance");
         assert!(
-            !is_networked_ai_enemy(&reg, crate_id),
-            "RuntimeSpawn alone never makes a non-AI descriptor networked"
+            is_host_replicated_descriptor_entity(&reg, crate_id),
+            "a runtime-spawned mesh descriptor is networked"
         );
 
+        // Isolate behavior's signal from the independently networking mesh.
+        reg.remove_component_kind(grunt, ComponentKind::Mesh)
+            .unwrap();
         let agent = reg
             .get_component::<AgentComponent>(grunt)
             .expect("AI descriptor materializes an Agent")
@@ -268,7 +312,7 @@ mod tests {
         reg.remove_component_kind(grunt, ComponentKind::Agent)
             .expect("remove Agent from live AI fixture");
         assert!(
-            !is_networked_ai_enemy(&reg, grunt),
+            !is_host_replicated_descriptor_entity(&reg, grunt),
             "RuntimeSpawn with a missing Agent is not a networked AI enemy"
         );
 
@@ -277,7 +321,7 @@ mod tests {
         reg.remove_component_kind(grunt, ComponentKind::Brain)
             .expect("remove Brain from live AI fixture");
         assert!(
-            !is_networked_ai_enemy(&reg, grunt),
+            !is_host_replicated_descriptor_entity(&reg, grunt),
             "RuntimeSpawn with a missing Brain is not a networked AI enemy"
         );
     }

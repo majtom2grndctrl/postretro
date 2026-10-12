@@ -99,6 +99,9 @@ fn apply_weapon_impact_damage_with_source(
     else {
         return;
     };
+    if registry.is_inventory_owned(target) {
+        return;
+    }
     // Capture liveness before lethal damage. Push-only effects never enter the
     // health ledger, and hit-zone damage multipliers never amplify movement.
     if crate::scripting_systems::health::is_damage_target_eligible(registry, target) {
@@ -304,5 +307,74 @@ mod tests {
                 .abs()
                 < 1.0e-5
         );
+    }
+    #[test]
+    fn held_world_participation_rechecks_queued_direct_hit_but_allows_held_firing_weapon() {
+        let mut registry = EntityRegistry::new();
+        let holder = registry.spawn(Transform::default());
+        let firing_weapon = registry.spawn(Transform::default());
+        let receiver = target(&mut registry);
+        let impact = weapon::WeaponImpact {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            target: Some(receiver),
+            zone: None,
+            outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
+                amount: 10.0,
+                impulse: Vec3::X * 8.0,
+            }),
+        };
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(firing_weapon);
+        inventory.wieldables[9] = Some(receiver);
+        registry.set_component(holder, inventory.clone()).unwrap();
+        apply_authorized_weapon_impact_damage(
+            &mut registry,
+            firing_weapon,
+            Some(holder),
+            &impact,
+            "test.held".into(),
+            10.0,
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(receiver)
+                .unwrap()
+                .current,
+            100.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(receiver)
+                .unwrap()
+                .velocity,
+            Vec3::ZERO
+        );
+        assert!(registry.take_impact_dispatches().is_empty());
+        inventory.wieldables[9] = None;
+        registry.set_component(holder, inventory).unwrap();
+        apply_authorized_weapon_impact_damage(
+            &mut registry,
+            firing_weapon,
+            Some(holder),
+            &impact,
+            "test.held".into(),
+            10.0,
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(receiver)
+                .unwrap()
+                .current,
+            90.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(receiver)
+                .unwrap()
+                .velocity,
+            Vec3::X * 8.0
+        );
+        assert_eq!(registry.take_impact_dispatches().len(), 1);
     }
 }

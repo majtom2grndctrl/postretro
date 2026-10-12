@@ -7,9 +7,14 @@
 mod agent_diagnostics;
 mod app;
 mod camera;
+#[cfg(test)]
+mod coop_fixture_tests;
 mod frame_eye;
 mod frame_loop;
 mod host_activations;
+mod host_overlays;
+#[cfg(test)]
+mod presentation_budget_measurement_tests;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -416,12 +421,13 @@ fn rebuild_blocked_portals(
 /// event without one (deaths, follow-ups) publishes none.
 fn drain_named_events_with_sequences<I, S>(
     events: I,
+    origin: postretro_entities::FireOrigin,
     data_registry: &postretro_entities::DataRegistry,
     sequence_registry: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     reaction_registry: &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry,
     system_registry: &postretro_scripting_core::reaction_registry::SystemReactionRegistry,
     script_ctx: &postretro_entities::ScriptCtx,
-) -> Vec<String>
+) -> Vec<(String, postretro_entities::FireOrigin)>
 where
     I: IntoIterator<Item = (S, Option<postretro_entities::Emitter>)>,
     S: AsRef<str>,
@@ -429,13 +435,14 @@ where
     let mut chained = Vec::new();
     for (event_name, emitter) in events {
         let event_name = event_name.as_ref();
-        let context = emitter.map(|emitter| {
+        let context = Some(
             postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
                 source: format!("named:{event_name}"),
                 values: &[],
-                emitter: Some(emitter),
-            }
-        });
+                emitter,
+                origin: origin.clone(),
+            },
+        );
         chained.extend(fire_named_event_with_sequences(
             event_name,
             data_registry,
@@ -3402,7 +3409,7 @@ impl App {
         }
         for command in script_ctx.system_commands.take() {
             match command {
-                SystemReactionCommand::PlaySound { sound, bus, at } => {
+                SystemReactionCommand::PlaySound { sound, bus, at, .. } => {
                     // Place an `at: on.emitter` anchor now, at fire time, so an
                     // emitter removed before the audio step still has a position.
                     // Name the listener's pawn with it: own-pawn treatment is
@@ -3450,6 +3457,7 @@ impl App {
                     strong,
                     weak,
                     duration_ms,
+                    ..
                 } => {
                     if let Some(gp) = self
                         .session
@@ -3460,7 +3468,9 @@ impl App {
                     }
                     // No gamepad subsystem ⇒ nothing to vibrate.
                 }
-                SystemReactionCommand::FlashScreen { color, duration_ms } => {
+                SystemReactionCommand::FlashScreen {
+                    color, duration_ms, ..
+                } => {
                     if let Some(session) = self.session.as_mut() {
                         session.scripting.flash_decay.start(color, duration_ms);
                     }
@@ -3469,6 +3479,7 @@ impl App {
                     color,
                     strength,
                     duration_ms,
+                    ..
                 } => {
                     // Absent color ⇒ black: a pure strength-only edge-darken. The
                     // single `durationMs` splits into a short rise (so the vignette
@@ -3488,6 +3499,7 @@ impl App {
                     amplitude,
                     duration_ms,
                     frequency,
+                    ..
                 } => {
                     // Pass the optional frequency straight through: the driver
                     // applies its 18 Hz default when it is `None`.
@@ -3846,8 +3858,7 @@ impl App {
                 tick,
                 last_emitted_snapshot_tick: _,
                 host_pawn: _,
-                map_enemies: _,
-                world_items: _,
+                descriptor_entities: _,
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
@@ -4322,6 +4333,16 @@ impl App {
                         &self.kinematic_mover_colliders,
                         &self.kinematic_mover_tick_states,
                     );
+                    let mut presentation_bindings =
+                        scripting_systems::presentation_bindings::PresentationBindingsMut {
+                            lights: &mut session.light_bridge,
+                            fog: &mut session.fog_volume_bridge,
+                            emitters: &mut session.emitter_bridge,
+                            map_entities: self
+                                .level
+                                .as_ref()
+                                .map_or(&[], |level| level.map_entities.as_slice()),
+                        };
                     netcode::client_receive_and_apply(
                         &mut registry,
                         &mut slot_table,
@@ -4345,6 +4366,9 @@ impl App {
                             .and_then(|payload| payload.movement.as_ref()),
                         tuning.as_deref(),
                         *applied_movement_tuning_generation != *tuning_generation,
+                        &mut presentation_bindings,
+                        script_ctx.presentation_script_time.get(),
+                        time_sync.rtt_micros(),
                     )
                 };
                 // This owner projection can arrive on a zero-tick frame. Death
@@ -4384,7 +4408,8 @@ impl App {
                     hit_zone_store,
                     host_agent_params,
                     presentation_anim_time,
-                    frame_dt,
+                    script_ctx.presentation_script_time.get(),
+                    time_sync.rtt_micros(),
                 );
                 if apply_outcome.replicated_state_changed
                     && let Some(local_seat) = session_status.local_seat()
@@ -4613,7 +4638,11 @@ impl App {
     /// this redraw completed a 30 Hz cadence tick, sends each accepted client a
     /// per-client delta snapshot over the snapshot channel. No-op for single-player
     /// and the client.
-    fn net_serialize_and_send(&mut self, snapshot_due: bool) -> Vec<postretro_entities::EntityId> {
+    fn net_serialize_and_send(
+        &mut self,
+        snapshot_due: bool,
+        server_script_time: f64,
+    ) -> Vec<postretro_entities::EntityId> {
         let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
@@ -4650,8 +4679,7 @@ impl App {
             pending_hit_declarations: _,
             weaponless_fire_logged: _,
             host_pawn,
-            map_enemies: _,
-            world_items: _,
+            descriptor_entities: _,
             loaded_movers: _,
             demo_mover,
             state_slots,
@@ -4671,7 +4699,7 @@ impl App {
         // no-op on an ordinary host.
         {
             let mut registry = script_ctx.registry.borrow_mut();
-            netcode::route_host_presentation_spawns(&mut registry, server, owners);
+            netcode::route_host_presentation_spawns(&mut registry, server);
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
             if weapon_owners.has_attachment_changes() {
                 let descriptors = script_ctx.data_registry.borrow();
@@ -4694,14 +4722,29 @@ impl App {
             // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
             // `host_replicate` can collect this frame's replicated-state source values
             // and splice the per-client state records into the snapshot envelope. The
-            // two RefCells are disjoint, so both borrows coexist. Game logic has settled
-            // the live components by this post-tick point, but host HUD slot publication
-            // occurs later in the frame. Owner-private projections read the live components
-            // directly, so replication observes this frame's settled authoritative state
-            // without depending on those later HUD slot writes.
+            // two RefCells are disjoint, so both borrows coexist. HUD slot publication
+            // and crossing reactions have settled before this point. Owner-private
+            // projections read the live components directly, so replication observes
+            // this frame's settled authoritative state.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
             let faction_sentiment = script_ctx.faction_sentiment.borrow();
+            let bindings = crate::scripting_systems::presentation_bindings::PresentationBindings {
+                lights: &session.light_bridge,
+                fog: &session.fog_volume_bridge,
+                map_entities: self
+                    .level
+                    .as_ref()
+                    .map_or(&[], |world| world.map_entities.as_slice()),
+            };
+            netcode::host_register_presentation_overrides(
+                &registry,
+                &mut script_ctx.presentation_overrides.borrow_mut(),
+                &bindings,
+                allocator,
+                replicable,
+                replication,
+            );
             let sampled_weapons = netcode::host_replicate(
                 &registry,
                 &slot_table,
@@ -4717,8 +4760,10 @@ impl App {
                 command_queues,
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 tick.wrapping_add(1),
+                server_script_time,
                 snapshot_due,
                 last_emitted_snapshot_tick,
+                &script_ctx.presentation_overrides.borrow(),
             );
             // Ingesting the current presentation pose establishes which baseline
             // must eventually be acknowledged; it does not imply snapshot delivery.
@@ -4781,7 +4826,11 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let Some(netcode::NetEndpoint::Client { replication, .. }) = session.net_endpoint.as_ref()
+        let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = session.net_endpoint.as_ref()
         else {
             return;
         };
@@ -4801,6 +4850,8 @@ impl App {
             &session.hit_zone_store,
             agent_params,
             anim_time,
+            script_ctx.presentation_script_time.get(),
+            time_sync.rtt_micros(),
         );
     }
 
@@ -5240,9 +5291,13 @@ impl App {
         };
         let scripting = &mut session.scripting;
         let hit_zone_store = &session.hit_zone_store;
+        let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+        let overlay_tracker = &mut session.host_overlay_fact_tracker;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
+            replicable,
+            descriptor_entities,
             tick,
             command_queues,
             owners,
@@ -5256,19 +5311,53 @@ impl App {
         };
 
         let mut registry = script_ctx.registry.borrow_mut();
-        netcode::host_flush_pending_hit_declarations(
-            server,
-            &mut registry,
-            &self.collision_world,
-            hit_zone_store,
-            allocator,
-            owners,
+        let ready = netcode::host_take_ready_hit_declarations(
             command_queues,
             open_shots,
             pending_hit_declarations,
             *tick,
+        );
+        if ready.is_empty() {
+            return false;
+        }
+        let identities = crate::host_overlays::HostOverlayIdentities::new(
+            allocator,
+            replicable,
+            descriptor_entities,
+        );
+        if overlay_config.is_some() {
+            identities.register_before_remote_hits(
+                &registry,
+                &mut script_ctx.presentation_overrides.borrow_mut(),
+            );
+        }
+        netcode::host_ingest_ready_hit_declarations(
+            server,
+            &mut registry,
+            &self.collision_world,
+            hit_zone_store,
+            &identities.allocator(),
+            owners,
+            open_shots,
+            *tick,
             anim_time,
-            |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+            ready,
+            |registry| {
+                scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+                    registry,
+                    |registry, damage| {
+                        if let Some(config) = overlay_config.as_ref() {
+                            identities.record_damage(
+                                registry,
+                                damage,
+                                &mut script_ctx.presentation_overrides.borrow_mut(),
+                                overlay_tracker,
+                                config,
+                            );
+                        }
+                    },
+                );
+            },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
         )
@@ -5409,31 +5498,17 @@ impl App {
         }
     }
 
-    /// Register the listen host's networked AI enemies for outbound replication after a
-    /// level install (E10 Task 4). Descriptor enemies carrying `Brain` + `Agent` from a
-    /// map placement or runtime spawner must enter the `ReplicableSet`, or clients never
-    /// receive their snapshots.
-    ///
-    /// Host-gated: a no-op for single-player and the connected client (the endpoint is not
-    /// the `Host` variant). Thin delegation to `netcode::host_register_map_enemies`, which
-    /// sweeps the registry for networked AI enemies, stamps each a `NetworkId`, registers it with
-    /// NO owner mapping (host-authoritative, never `local_player`), and tracks the ids in
-    /// the `Host` endpoint's `map_enemies` set so a level reload unregisters the stale ones
-    /// first. The enemies stay driven by the host's AI/steering systems — this only
-    /// replicates their `Transform` (and descriptor class) outbound.
-    fn host_register_map_enemies_after_install(&mut self) {
-        self.host_register_map_enemies();
+    /// Register unheld descriptor-world entities after install and every host tick.
+    /// The shared classifier also removes acquired items and stale level entities.
+    fn host_register_descriptor_entities_after_install(&mut self) {
+        self.host_register_descriptor_entities();
     }
 
-    /// Re-sweep after every completed host fixed tick so runtime-spawned AI enemies are
-    /// registered before the next outbound snapshot. The underlying sweep is idempotent,
-    /// so existing registered enemies retain their `NetworkId`; this is a no-op off the host.
-    fn host_register_map_enemies_after_fixed_sim_tick(&mut self) {
-        self.host_register_map_enemies();
+    fn host_register_descriptor_entities_after_fixed_sim_tick(&mut self) {
+        self.host_register_descriptor_entities();
     }
 
-    /// Shared host-gated delegation for install-time and post-tick AI registration.
-    fn host_register_map_enemies(&mut self) {
+    fn host_register_descriptor_entities(&mut self) {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5444,7 +5519,7 @@ impl App {
         let Some(netcode::NetEndpoint::Host {
             allocator,
             replicable,
-            map_enemies,
+            descriptor_entities,
             ..
         }) = self
             .session
@@ -5454,46 +5529,13 @@ impl App {
             return;
         };
         let registry = script_ctx.registry.borrow();
-        netcode::host_register_map_enemies(&registry, allocator, replicable, map_enemies);
-    }
-
-    /// Register map-placed and dropped world items after level install. The item sweep
-    /// is host-gated and reload-safe; connected clients receive these entities solely
-    /// through host baselines.
-    fn host_register_world_items_after_install(&mut self) {
-        self.host_register_world_items();
-    }
-
-    /// Re-sweep after every host fixed tick so acquisition emits a despawn and a drop
-    /// receives a fresh baseline before the next outbound snapshot.
-    fn host_register_world_items_after_fixed_sim_tick(&mut self) {
-        self.host_register_world_items();
-    }
-
-    /// Shared host-gated delegation for install-time and post-tick world-item
-    /// registration. Membership derives solely from `TouchableComponent` presence.
-    fn host_register_world_items(&mut self) {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
-            return;
-        };
-        let Some(netcode::NetEndpoint::Host {
+        netcode::host_register_descriptor_entities(
+            &registry,
             allocator,
             replicable,
-            world_items,
-            ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
-        };
-        let registry = script_ctx.registry.borrow();
-        netcode::host_register_world_items(&registry, allocator, replicable, world_items);
+            descriptor_entities,
+            &mut script_ctx.presentation_overrides.borrow_mut(),
+        );
     }
 
     /// Register PRL-loaded kinematic movers for outbound replication after level
@@ -8346,6 +8388,7 @@ mod tests {
 
         drain_named_events_with_sequences(
             event_names.iter().map(|name| (name, None)),
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8355,6 +8398,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "door_open".to_string(),
                 bus: Some("sfx".to_string()),
                 at: None,
@@ -8405,6 +8449,7 @@ mod tests {
 
         drain_named_events_with_sequences(
             [("activate", Some(emitter.clone())), ("activate", None)],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8414,6 +8459,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "sfx/shot".to_string(),
                 bus: None,
                 at: Some(emitter),
@@ -8513,6 +8559,7 @@ mod tests {
                     origin: edge.point.unwrap_or_default(),
                 }),
             )],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8525,6 +8572,7 @@ mod tests {
                 sound,
                 bus,
                 at: Some(emitter),
+                ..
             },
         ] = commands.as_slice()
         else {
@@ -8632,6 +8680,7 @@ mod tests {
         register_system_reaction_primitives(&mut system_registry);
         drain_named_events_with_sequences(
             [(emission.address, Some(emission.emitter.clone()))],
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8641,6 +8690,7 @@ mod tests {
         assert_eq!(
             script_ctx.system_commands.take(),
             vec![SystemReactionCommand::PlaySound {
+                audience: None,
                 sound: "sfx/brass".to_string(),
                 bus: None,
                 at: None,
@@ -8713,6 +8763,7 @@ mod tests {
 
         let chained = drain_named_events_with_sequences(
             ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
+            postretro_entities::FireOrigin::EveryMachine,
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8727,9 +8778,18 @@ mod tests {
         assert_eq!(
             chained,
             vec![
-                "postTickTarget".to_string(),
-                "postTickTarget".to_string(),
-                "postTickTarget".to_string(),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
+                (
+                    "postTickTarget".to_string(),
+                    postretro_entities::FireOrigin::EveryMachine
+                ),
             ],
             "each source contributes its fire target to the shared deferred batch"
         );
@@ -8746,16 +8806,19 @@ mod tests {
             script_ctx.system_commands.take(),
             vec![
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,
                 },
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,
                 },
                 SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "event_chain".to_string(),
                     bus: Some("sfx".to_string()),
                     at: None,

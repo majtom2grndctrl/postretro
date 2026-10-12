@@ -53,7 +53,7 @@ export type PostretroUiModule = {
     text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
     bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
   },
-  --- Build a target-keyed host/single-player damaged-enemy source.
+  --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.
   defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
@@ -80,13 +80,13 @@ export type PostretroUiModule = {
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
   playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
-  rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
+  rumble: (strong: number, durationMs: number, weak: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.
-  flashScreen: (color: {number}, durationMs: number) -> PrimitiveReactionDescriptor,
+  flashScreen: (color: {number}, durationMs: number, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Apply a screen-edge vignette. `strength` is peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB.
-  vignette: (strength: number, durationMs: number, color: {number}?) -> PrimitiveReactionDescriptor,
+  vignette: (strength: number, durationMs: number, color: {number}?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz.
-  screenShake: (amplitude: number, durationMs: number, frequency: number?) -> PrimitiveReactionDescriptor,
+  screenShake: (amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit.
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
   --- Push a menu tree by registry name. Unknown tree names warn and no-op.

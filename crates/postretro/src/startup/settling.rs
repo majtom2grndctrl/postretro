@@ -613,6 +613,7 @@ mod tests {
             .system_commands
             .push(
                 postretro_entities::reactions::system_commands::SystemReactionCommand::PlaySound {
+                    audience: None,
                     sound: "door".into(),
                     bus: None,
                     at: None,

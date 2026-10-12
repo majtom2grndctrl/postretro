@@ -149,7 +149,7 @@ local function tokenCommand(target: string)
   end
 end
 
-local ACTIVATORS_TARGET = opaqueTarget("on.activators", playerVerbs(tokenCommand("@activators")))
+local ACTIVATORS_TARGET = opaqueTarget("on.activators", playerVerbs(tokenCommand("@activators")), "@activators")
 local PLAYER_TARGET = opaqueTarget("on.player", playerVerbs(tokenCommand("@player")), "@player")
 
 local triggerCommand = tokenCommand("@trigger")
@@ -160,7 +160,7 @@ local TRIGGER_TARGET = opaqueTarget("on.trigger", {
   disarm = function(_self)
     return triggerCommand("disarmTrigger", {})
   end,
-})
+}, "@trigger")
 
 return {
   builders = CommandsSdk,

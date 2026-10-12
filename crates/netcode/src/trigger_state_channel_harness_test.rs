@@ -598,6 +598,7 @@ impl PersistentAtmosphereHarness {
             state_schema_fingerprint: fingerprint,
             state_records: records,
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         };
         assert!(
             self.server
@@ -811,6 +812,9 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 None,
                 None,
                 false,
+                &mut crate::netcode::client::NoPresentationBindings,
+                0.0,
+                None,
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;

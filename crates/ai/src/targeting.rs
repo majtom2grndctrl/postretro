@@ -119,6 +119,9 @@ pub(super) fn target_candidate(
     entity: EntityId,
     from: Vec3,
 ) -> Option<TargetCandidate> {
+    if registry.is_inventory_owned(entity) {
+        return None;
+    }
     let is_pawn = registry
         .get_component::<PlayerMovementComponent>(entity)
         .is_ok()
@@ -225,7 +228,8 @@ pub(super) fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> 
 }
 
 pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId) -> bool {
-    crate::scripting_systems::health::is_damage_target_eligible(registry, target)
+    !registry.is_inventory_owned(target)
+        && crate::scripting_systems::health::is_damage_target_eligible(registry, target)
 }
 
 /// Choose from a raw offer set on an acquisition tick. Authored candidacy and

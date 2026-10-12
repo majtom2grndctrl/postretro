@@ -233,6 +233,28 @@ mod tests {
     use postretro_entities::EntityRegistry;
 
     #[test]
+    fn display_hit_volume_does_not_supply_ai_eye_target_or_aim() {
+        use postretro_entities::components::{health::Hitbox, hit_volume::HitVolumeComponent};
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Default::default());
+        registry
+            .set_component(
+                entity,
+                HitVolumeComponent {
+                    hitbox: Hitbox {
+                        half_extents: Vec3::splat(20.0),
+                        offset: Vec3::Y * 100.0,
+                    },
+                },
+            )
+            .unwrap();
+        let position = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(enemy_eye(&registry, entity, position, None), position);
+        assert_eq!(target_aim(&registry, TargetPawn { entity, position }), None);
+        assert!(crate::targeting::target_candidate(&registry, entity, Vec3::ZERO).is_none());
+    }
+
+    #[test]
     fn debounce_holds_exactly_the_configured_loss_grace_ticks() {
         let mut grace = HashMap::new();
         let mut registry = EntityRegistry::new();

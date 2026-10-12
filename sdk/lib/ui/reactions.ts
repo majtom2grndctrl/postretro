@@ -170,8 +170,32 @@ export function onStateCrossing(
   return descriptor;
 }
 
+/** A subject token scopes presentation to its source; everyone needs no subject. */
+export type PresentationAudience = import("../data_script/commands").ActivatorsTarget
+  | import("../data_script/commands").TriggerTarget
+  | import("../data_script/commands").PlayerTarget | "everyone";
+export type PresentationOptions = { audience?: PresentationAudience };
+export type AudienceScope<A> =
+  (Extract<A, import("../data_script/commands").ActivatorsTarget | import("../data_script/commands").TriggerTarget> extends never ? {} : import("../data_script").TriggerEventParams)
+  & (Extract<A, import("../data_script/commands").PlayerTarget> extends never ? {} : import("../data_script").PlayerEventParams);
+export type PresentationBody<O extends PresentationOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
+export type SoundBody<O extends PlaySoundOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>
+  & (Extract<O["at"], EmitterTarget> extends never ? {} : import("../data_script").EmitterParams)>;
+
+function presentationAudience(args: Record<string, unknown>, options: PresentationOptions | undefined): void {
+  if (options != null && (typeof options !== "object" || Array.isArray(options))) {
+    throw new Error("presentation: options must be an object when provided");
+  }
+  if (options?.audience !== undefined) {
+    const audience = options.audience;
+    const wire = typeof audience === "object" && audience !== null
+      ? (audience as unknown as { __wire?: unknown }).__wire : audience;
+    args.audience = wire === "@activators" || wire === "@trigger" || wire === "@player" || wire === "everyone" ? wire : "@invalid";
+  }
+}
+
 /** Options for `playSound`. */
-export type PlaySoundOptions = {
+export type PlaySoundOptions = PresentationOptions & {
   /** Mixer bus (`"sfx"`, `"music"`, `"ui"`). Omitted routes to SFX. */
   bus?: string;
   /**
@@ -188,17 +212,18 @@ export type PlaySoundOptions = {
  * `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
  * Without `at` the sound plays unpositioned.
  */
-export function playSound(
+export function playSound<O extends PlaySoundOptions = {}>(
   sound: string,
-  options?: PlaySoundOptions,
-): import("../data_script").PrimitiveReactionDescriptor {
+  options?: O,
+): SoundBody<O> {
   // Guard the shape before reading fields: a primitive inherits properties
   // from its prototype, so the pre-options `playSound(sound, "sfx")` form
   // would read `String.prototype.at` as an authored `at` and drop its bus.
   if (options != null && (typeof options !== "object" || Array.isArray(options))) {
     throw new Error("playSound: options must be an object `{ bus?, at? }` when provided");
   }
-  const args: { sound: string; bus?: string; at?: string } = { sound };
+  const args: { sound: string; bus?: string; at?: string; audience?: unknown } = { sound };
+  presentationAudience(args, options);
   if (options?.bus !== undefined) args.bus = options.bus;
   if (options?.at !== undefined && options.at !== null) {
     // The emitter token carries its wire spelling; anything else is rejected
@@ -216,16 +241,18 @@ export function playSound(
  * rumble length in milliseconds. A warn-once no-op on hardware without force
  * feedback.
  */
-export function rumble(
+export function rumble<O extends PresentationOptions = {}>(
   strong: number,
   durationMs: number,
   weak?: number,
-): import("../data_script").PrimitiveReactionDescriptor {
+  options?: O,
+): PresentationBody<O> {
   const args: { strong: number; weak?: number; durationMs: number } = {
     strong,
     durationMs,
   };
   if (weak !== undefined) args.weak = weak;
+  presentationAudience(args, options);
   return { primitive: "rumble", args };
 }
 
@@ -235,11 +262,14 @@ export function rumble(
  * engine side effect. `color` is an `[r, g, b, a]` tuple (0–1); `durationMs`
  * is the decay time in milliseconds.
  */
-export function flashScreen(
+export function flashScreen<O extends PresentationOptions = {}>(
   color: [number, number, number, number],
   durationMs: number,
-): import("../data_script").PrimitiveReactionDescriptor {
-  return { primitive: "flashScreen", args: { color, durationMs } };
+  options?: O,
+): PresentationBody<O> {
+  const args = { color, durationMs };
+  presentationAudience(args, options);
+  return { primitive: "flashScreen", args };
 }
 
 /**
@@ -250,17 +280,19 @@ export function flashScreen(
  * milliseconds. The optional `color` is an `[r, g, b]` linear-RGB tint (omitted
  * when undefined ⇒ black, a pure strength-only edge-darken).
  */
-export function vignette(
+export function vignette<O extends PresentationOptions = {}>(
   strength: number,
   durationMs: number,
   color?: [number, number, number],
-): import("../data_script").PrimitiveReactionDescriptor {
+  options?: O,
+): PresentationBody<O> {
   const args: {
     color?: [number, number, number];
     strength: number;
     durationMs: number;
   } = { strength, durationMs };
   if (color !== undefined) args.color = color;
+  presentationAudience(args, options);
   return { primitive: "vignette", args };
 }
 
@@ -272,16 +304,18 @@ export function vignette(
  * The optional `frequency` is the oscillation rate in Hz (omitted when
  * undefined ⇒ the engine applies its default frequency).
  */
-export function screenShake(
+export function screenShake<O extends PresentationOptions = {}>(
   amplitude: number,
   durationMs: number,
   frequency?: number,
-): import("../data_script").PrimitiveReactionDescriptor {
+  options?: O,
+): PresentationBody<O> {
   const args: { amplitude: number; durationMs: number; frequency?: number } = {
     amplitude,
     durationMs,
   };
   if (frequency !== undefined) args.frequency = frequency;
+  presentationAudience(args, options);
   return { primitive: "screenShake", args };
 }
 

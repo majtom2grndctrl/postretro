@@ -62,7 +62,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("LightDescriptor")
         .doc("Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting.")
-        .field("color", "Vec3", "Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted.")
+        .field("color", "[f32; 3]", "Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted.")
         .field("intensity", "f32", "Unitless brightness multiplier. Must be finite and ≥ 0; 0 produces no light.")
         .field(
             "range",

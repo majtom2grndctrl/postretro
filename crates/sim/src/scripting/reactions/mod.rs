@@ -58,6 +58,7 @@ pub fn dispatch_state_crossings_with_sequences(
             system_registry,
             script_ctx,
             Some(NamedEventDispatchContext {
+                origin: postretro_entities::FireOrigin::EveryMachine,
                 source: format!("crossing:{}", fire.source_id),
                 values: &dispatch_values,
                 // Crossings publish no emitter.

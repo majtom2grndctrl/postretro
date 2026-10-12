@@ -121,8 +121,10 @@ pub fn host_replicate(
     command_queues: &HostCommandQueues,
     host_aim: Option<(EntityId, f32)>,
     tick: u32,
+    server_script_time: f64,
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
+    presentation_overrides: &postretro_entities::presentation_overrides::PresentationOverrides,
 ) -> Vec<EntityId> {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
@@ -134,6 +136,7 @@ pub fn host_replicate(
         owners,
         command_queues,
         host_aim,
+        presentation_overrides,
     );
     replication.ingest_tick(owned);
 
@@ -178,6 +181,7 @@ pub fn host_replicate(
         replication.register_client(client_id);
         state_slots.register_client(client_id);
         if let Some(mut raw) = replication.encode_in_batch(client_id, tick, sequence) {
+            raw.server_script_time = server_script_time;
             // Splice this client's replicated-state records into the SAME snapshot
             // envelope the entity tracker produced (no new channel, no sibling message).
             // The entity tracker leaves `state_records` empty + an all-zero fingerprint;
@@ -189,6 +193,13 @@ pub fn host_replicate(
             raw.faction_sentiment_record =
                 state_slots.produce_faction_sentiment_for_client(client_id);
             let bytes = wire::encode(&raw);
+            let deferred = replication.deferred_baseline_count(client_id);
+            if deferred > 0 {
+                log::debug!(
+                    "[Net] client {client_id} snapshot bytes={} deferred_baselines={deferred}",
+                    bytes.len()
+                );
+            }
             let _ = server.send_snapshot(client_id, bytes);
         }
     }
@@ -494,7 +505,6 @@ pub fn host_handle_transport_disconnect(
             weaponless_fire_logged,
             client_id,
             pawn,
-            &[],
         );
     }
     closed.and_then(|closed| closed.network_id)

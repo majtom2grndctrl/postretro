@@ -208,7 +208,7 @@ pub(super) fn materialize_armed_local_pawn(
 }
 
 /// Materialize a remote descriptor-backed player as presentation only. The player
-/// type signal is selected by the caller from the descriptor's `movement` block;
+/// identity is selected by the caller from the host-stamped pawn class;
 /// this seam deliberately attaches only the descriptor mesh. A remote client never
 /// gains a simulation copy of another player's movement, weapon, or health state.
 /// Unknown classes and meshless descriptors remain transform-only, while a repeated
@@ -261,7 +261,7 @@ pub(super) fn materialize_armed_remote_enemy(
     agent_params: Option<NavAgentParams>,
 ) -> bool {
     let entity_class = decode_replicated_descriptor_class(&remote.entity_class).canonical_name();
-    crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+    crate::scripting::builtins::net_descriptor::materialize_net_descriptor_presentation(
         entity_class,
         descriptors,
         registry,
@@ -601,7 +601,7 @@ mod tests {
     }
 
     // The remote-enemy glue resolves the request's class against the shared descriptor
-    // table and attaches ONLY the descriptor's mesh — never authoritative AI state.
+    // table and attaches its display components without authoritative AI state.
     #[test]
     fn materialize_armed_remote_enemy_attaches_mesh_only() {
         let descriptors = vec![enemy_mesh_descriptor("decraniated_mob")];
@@ -984,7 +984,7 @@ mod tests {
             &ArmedLocalPawn {
                 network_id: postretro_net::wire::NetworkId(10),
                 entity_id: id,
-                entity_class: Some("descriptor:co_op_avatar".to_string()),
+                entity_class: Some("pawn:co_op_avatar".to_string()),
             },
             &descriptors,
             &mut reg,

@@ -506,7 +506,8 @@ impl TimedAlarmHarness {
             1,
             "one Enter-bound residual fires"
         );
-        let (handle, trigger, player) = host_events.trigger_residuals[0];
+        let (handle, trigger, player, _) = &host_events.trigger_residuals[0];
+        let (handle, trigger, player) = (*handle, *trigger, *player);
 
         {
             // Scoped exactly like `main.rs`'s residual loop: the origin guard
@@ -665,6 +666,7 @@ impl TimedAlarmHarness {
             state_schema_fingerprint: fingerprint,
             state_records: records,
             faction_sentiment_record: None,
+            server_script_time: 0.0,
         };
         assert!(
             self.server
@@ -818,6 +820,9 @@ impl ReplicatedStateFrame for TimedAlarmHarness {
                 None,
                 None,
                 false,
+                &mut crate::netcode::client::NoPresentationBindings,
+                0.0,
+                None,
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;

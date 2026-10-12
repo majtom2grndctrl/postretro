@@ -603,7 +603,7 @@ fn frame(
                 alive_players: &alive,
                 bound_edges: table.bound_edges(),
             },
-            |event, occupancy, registry| {
+            |event, occupancy, _occupants, registry| {
                 fired.push((event.fire.trigger, event.edge));
                 let activator = players
                     .iter()

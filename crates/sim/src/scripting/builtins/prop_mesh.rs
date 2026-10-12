@@ -91,6 +91,7 @@ mod tests {
             kv.insert((*k).to_string(), (*v).to_string());
         }
         MapEntity {
+            map_ordinal: None,
             classname: CLASSNAME.to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
             angles: Vec3::ZERO,

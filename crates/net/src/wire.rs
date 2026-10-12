@@ -30,6 +30,17 @@ use std::collections::BTreeMap;
 
 use bitcode::{Decode, Encode};
 
+mod components;
+pub use components::{
+    COMPONENT_KIND_BILLBOARD_EMITTER, COMPONENT_KIND_FOG_VOLUME,
+    COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT,
+    COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+    COMPONENT_KIND_TRANSFORM, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
+    WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef, WireKinematicMoverState,
+    WireLightAnimation, WireLightState, WireMeshAnimationState, WireMovementState,
+    WirePlayerMovementState, WireSpinAnimation, WireTransform,
+};
+
 mod control;
 pub use control::{
     ClientControlMessage, ClientSwitchDeclaration, ClosingCause, ConnectClaim,
@@ -57,7 +68,7 @@ pub enum PresentationFact {
 }
 
 /// One host-to-client presentation message: a passive presentation event, or a
-/// presentation command a player event addressed to this client's player.
+/// host presentation command routed to this client by audience.
 ///
 /// This family rides the dedicated unreliable `Channel::Presentation`; it is
 /// intentionally separate from [`ServerMessage`], whose envelope belongs to
@@ -69,10 +80,9 @@ pub struct ServerPresentationMessage {
 
 /// Payloads carried by [`ServerPresentationMessage`].
 ///
-/// New variants must be appended. bitcode encodes enum tags positionally. The
-/// first two variants (`Spawn`, `OverlayFact`) were defined together so the
-/// later overlay surface needed no second wire-version bump; `Command` was
-/// appended after them.
+/// bitcode encodes enum tags positionally. Wire 28 replaces the attacker-private
+/// OverlayFact at tag 1 with complete shared roster state; older peers are gated
+/// before decode. Transient Spawn and Command retain their existing semantics.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ServerPresentationPayload {
     /// A one-shot transient authored from a presentation template. `value` is
@@ -84,29 +94,70 @@ pub enum ServerPresentationPayload {
         value: f32,
         facts: BTreeMap<String, PresentationFact>,
     },
-    /// Reserved for host-pushed enemy-status facts. It is deliberately fully
-    /// decodable now even though Tasks 7/8 are its first producer/consumer.
-    OverlayFact {
-        enemy_id: NetworkId,
-        health_fraction: f32,
-        shield_fraction: f32,
-        has_shield: bool,
-        alive: bool,
-    },
-    /// A presentation command a player event fired for this client's player.
-    /// The client turns it into the same local command a local reaction
-    /// enqueues.
+    /// Complete bounded live roster. Absence at a newer revision retires a bar;
+    /// repair sends repeat current state without replaying combat events.
+    OverlayRoster(WireOverlayRoster),
+    /// A host presentation command routed to this client by audience. The client
+    /// turns it into the same local command a local reaction enqueues.
     Command(PresentationCommand),
 }
 
-/// Wire mirror of the engine's presentation system-reaction commands. Sounds
-/// carry no anchor: a player event publishes no emitter, so they play
-/// unpositioned.
+/// Mirrors the existing authoring limit, checked against it in netcode tests.
+pub const MAX_OVERLAY_ROSTER_ENTRIES: usize = 64;
+
+/// One live enemy in the shared host-selected overlay roster. Network ids are
+/// never recycled; a newer complete roster supplies removal/terminal ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct WireEnemyOverlay {
+    pub enemy_id: NetworkId,
+    pub health_fraction: f32,
+    pub shield_fraction: f32,
+    pub has_shield: bool,
+    pub damaged_at: f64,
+    pub expires_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
+pub struct WireOverlayRoster {
+    pub revision: u64,
+    /// Host script clock at publication, not at reception or original damage.
+    pub server_script_time: f64,
+    /// Sorted by stable NetworkId; every entry is live at publication.
+    pub entries: Vec<WireEnemyOverlay>,
+}
+
+impl WireOverlayRoster {
+    pub fn is_valid(&self) -> bool {
+        self.revision > 0
+            && self.server_script_time.is_finite()
+            && self.server_script_time >= 0.0
+            && self.entries.len() <= MAX_OVERLAY_ROSTER_ENTRIES
+            && self
+                .entries
+                .windows(2)
+                .all(|pair| pair[0].enemy_id.0 < pair[1].enemy_id.0)
+            && self.entries.iter().all(|entry| {
+                entry.health_fraction.is_finite()
+                    && entry.health_fraction > 0.0
+                    && entry.shield_fraction.is_finite()
+                    && entry.shield_fraction >= 0.0
+                    && entry.damaged_at.is_finite()
+                    && entry.damaged_at >= 0.0
+                    && entry.damaged_at <= self.server_script_time
+                    && entry.expires_at.is_finite()
+                    && entry.expires_at > entry.damaged_at
+                    && entry.expires_at > self.server_script_time
+            })
+    }
+}
+
+/// Wire mirror of the engine's presentation system-reaction commands.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum PresentationCommand {
     PlaySound {
         sound: String,
         bus: Option<String>,
+        at: Option<[f32; 3]>,
     },
     Rumble {
         strong: f32,
@@ -290,7 +341,16 @@ impl WeaponCuesMessage {
 ///
 /// Bumped to 16 for the protected knockback velocity in player movement state.
 /// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
-pub const SNAPSHOT_VERSION: u16 = 17;
+pub const SNAPSHOT_VERSION: u16 = 18;
+
+/// Stable map presentation identity. The receiver verifies the origin before applying.
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+pub struct WirePresentationBinding {
+    /// 0 = authored map light, 1 = fog volume, 2 = map entity ordinal.
+    pub kind: u8,
+    pub index: u32,
+    pub origin: [f32; 3],
+}
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -298,275 +358,6 @@ pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
 pub const RECORD_KIND_DELTA: u16 = 1;
 /// `record_kind` discriminant for a despawn record.
 pub const RECORD_KIND_DESPAWN: u16 = 2;
-
-/// `component_kind` discriminant for a `Transform` payload. Numeric-equal to the
-/// engine `ComponentKind::Transform as u16`.
-pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
-/// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
-/// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
-pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
-/// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
-/// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
-pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
-/// `component_kind` discriminant for a kinematic-mover-state payload.
-/// Numeric-equal to the engine `ComponentKind::KinematicMover as u16`.
-pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 13;
-
-/// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
-/// `rotation`, and `scale`.
-///
-/// `rotation` mirrors the engine quaternion in **`[x, y, z, w]` order**. The
-/// engine-side conversion (which knows glam's `Quat` component order) lives in
-/// `postretro-netcode`; here it is just four floats in that fixed order.
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
-pub struct WireTransform {
-    pub position: [f32; 3],
-    pub rotation: [f32; 4],
-    pub scale: [f32; 3],
-}
-
-impl WireTransform {
-    /// Whether every replicated float is finite (no NaN/inf): position, rotation,
-    /// and scale. Registry-blind — operates only on the plain `[f32; N]` wire
-    /// fields, never an engine/glam type. Backs two rules at `validate`: it gates
-    /// the `Transform` component payload (a non-finite pose is rejected before
-    /// typed apply, so none reaches the registry) and it backs the `entity_class`
-    /// rule (a class may only ride a record carrying a finite `Transform`).
-    ///
-    /// `pub(crate)` so the production side (`MovementAuthority::for_recipient`) gates
-    /// `entity_class` on the SAME finite-`Transform` rule `validate` enforces on receipt,
-    /// keeping production and validation in lockstep.
-    #[must_use]
-    pub(crate) fn all_finite(&self) -> bool {
-        self.position.iter().all(|c| c.is_finite())
-            && self.rotation.iter().all(|c| c.is_finite())
-            && self.scale.iter().all(|c| c.is_finite())
-    }
-}
-
-/// Wire mirror of the engine player movement state machine's active state. Only
-/// the mutable tick fields each variant needs cross the wire; descriptor-immutable
-/// tuning lives local on both peers.
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
-pub enum WireMovementState {
-    Normal,
-    Dash {
-        elapsed_ms: f32,
-        boost: [f32; 3],
-    },
-    Crouching {
-        eye_current: f32,
-    },
-    Sliding {
-        elapsed_ms: f32,
-        boost: [f32; 3],
-        eye_current: f32,
-        /// The prior substrate contact. It is paid only while sliding because
-        /// replay needs the authoritative slope on its first replayed tick. Raw
-        /// validation accepts only absence or a bounded near-unit vector.
-        floor_normal: Option<[f32; 3]>,
-    },
-}
-
-/// Squared-length tolerance for collision-produced floor normals. Bitcode
-/// preserves the source `f32` values exactly, so this only accommodates normal
-/// floating-point normalization error; it is not a normalization step.
-const SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE: f32 = 1.0e-3;
-
-fn sliding_floor_normal_is_valid(normal: &[f32; 3]) -> bool {
-    // Bound components before squaring so even finite hostile values cannot
-    // overflow the magnitude calculation used by this validation gate.
-    normal.iter().all(|component| {
-        component.is_finite()
-            && component.abs() <= 1.0 + SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE
-    }) && ((normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]) - 1.0).abs()
-        <= SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE
-}
-
-/// Wire mirror of the player's generalized ground reference. `Mover` carries the
-/// compile-time PRL mover id, not a `NetworkId`, so the value is stable across
-/// peers that loaded the same map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-pub enum WireGroundRef {
-    Airborne,
-    World,
-    Mover(u32),
-}
-
-/// Wire mirror of the *mutable tick subset* of the engine `PlayerMovementComponent`.
-///
-/// Deliberately **not** a copy of the component struct: descriptor-immutable
-/// movement params, `view_feel`, `standing_*`, `stuck_stop_*`, and the IR-bound
-/// `dash_programs` stay out of this typed tick-state mirror. The local descriptor
-/// is a non-authoritative immutable mirror; E15 sends host-authoritative resolved
-/// tuning separately as opaque Control payload bytes. Only the fields interpolation
-/// and later prediction reconciliation need are mirrored here. Source field types
-/// are preserved: ability counters and `air_ticks` are `u32`; live timers are `f32`.
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
-pub struct WirePlayerMovementState {
-    pub velocity: [f32; 3],
-    /// Protected impulse contribution already included in total velocity.
-    pub knockback_velocity: [f32; 3],
-    pub ground: WireGroundRef,
-    pub air_jumps_remaining: u32,
-    pub air_dashes_remaining: u32,
-    pub dash_cooldown_ms: f32,
-    pub air_ticks: u32,
-    pub movement_state: WireMovementState,
-    pub coyote_timer_ms: f32,
-    pub jump_buffer_timer_ms: f32,
-    pub jump_spent: bool,
-    pub capsule_half_height: f32,
-    pub capsule_eye_height: f32,
-    /// Camera pitch from the movement owner's latest resolved input. It is
-    /// presentation state for remote avatars, not a movement-simulation value.
-    pub aim_pitch: f32,
-}
-
-impl WireMovementState {
-    /// Whether every float this variant carries is finite (no NaN/inf). `Normal`
-    /// carries nothing, so it is vacuously finite. The exhaustive `match` (no `_`
-    /// arm) means a new variant with float payload is a compile error here until its
-    /// finiteness is accounted for — the same drift discipline as the variant guards.
-    #[must_use]
-    fn all_finite(&self) -> bool {
-        match self {
-            WireMovementState::Normal => true,
-            WireMovementState::Dash { elapsed_ms, boost } => {
-                elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
-            }
-            WireMovementState::Crouching { eye_current } => eye_current.is_finite(),
-            WireMovementState::Sliding {
-                elapsed_ms,
-                boost,
-                eye_current,
-                floor_normal,
-            } => {
-                elapsed_ms.is_finite()
-                    && boost.iter().all(|c| c.is_finite())
-                    && eye_current.is_finite()
-                    && floor_normal
-                        .as_ref()
-                        .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
-            }
-        }
-    }
-
-    /// Whether variant-specific movement invariants hold after decoding. Dash may
-    /// preserve vertical boost. Slide boost is horizontal, and its optional floor
-    /// normal must be safely bounded and near-unit before replay projects gravity
-    /// against it.
-    #[must_use]
-    fn has_valid_state_contract(&self) -> bool {
-        match self {
-            WireMovementState::Normal
-            | WireMovementState::Dash { .. }
-            | WireMovementState::Crouching { .. } => true,
-            WireMovementState::Sliding {
-                boost,
-                floor_normal,
-                ..
-            } => {
-                boost[1] == 0.0
-                    && floor_normal
-                        .as_ref()
-                        .is_none_or(sliding_floor_normal_is_valid)
-            }
-        }
-    }
-}
-
-impl WirePlayerMovementState {
-    /// Whether every replicated float is finite (no NaN/inf): velocity, protected
-    /// knockback velocity, all live timers, capsule dimensions, aim pitch, and the
-    /// active state's payload. Checked at `validate` so a non-finite movement state is
-    /// rejected before typed apply and never reaches the registry. Integer counters and
-    /// bools cannot be non-finite, so they are not checked.
-    #[must_use]
-    fn all_finite(&self) -> bool {
-        self.velocity.iter().all(|c| c.is_finite())
-            && self.knockback_velocity.iter().all(|c| c.is_finite())
-            && self.dash_cooldown_ms.is_finite()
-            && self.coyote_timer_ms.is_finite()
-            && self.jump_buffer_timer_ms.is_finite()
-            && self.capsule_half_height.is_finite()
-            && self.capsule_eye_height.is_finite()
-            && self.aim_pitch.is_finite()
-            && self.movement_state.all_finite()
-    }
-}
-
-/// Wire mirror of a kinematic mover's replicated deterministic phase. Static
-/// path data stays local on each peer through PRL load; these fields are the
-/// authoritative phase seed clients predict from and reconcile against.
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
-pub struct WireKinematicMoverState {
-    pub mover_id: u32,
-    pub segment_index: u16,
-    pub direction: i8,
-    pub mode: u8,
-    pub segment_elapsed_ms: f32,
-    pub wait_remaining_ms: f32,
-    pub started: bool,
-    pub completed: bool,
-    pub blocked: bool,
-    pub velocity: [f32; 3],
-    pub target_segment: Option<u16>,
-    pub spin_angle_rad: f32,
-    pub spin_angle_before_tick_rad: f32,
-    pub was_active_this_tick: bool,
-    pub spin_rate_rad_s: f32,
-    pub spin_target_rate_rad_s: f32,
-}
-
-impl WireKinematicMoverState {
-    #[must_use]
-    fn all_finite(&self) -> bool {
-        self.segment_elapsed_ms.is_finite()
-            && self.wait_remaining_ms.is_finite()
-            && self.velocity.iter().all(|c| c.is_finite())
-            && self.spin_angle_rad.is_finite()
-            && self.spin_angle_before_tick_rad.is_finite()
-            && self.spin_rate_rad_s.is_finite()
-            && self.spin_target_rate_rad_s.is_finite()
-    }
-
-    #[must_use]
-    fn has_valid_phase_tags(&self) -> bool {
-        matches!(self.direction, -1 | 1) && matches!(self.mode, 0 | 1)
-    }
-}
-
-/// Wire mirror of the mutable mesh-animation state. Descriptor-owned data
-/// (model handle, state table, clips, fade policy) stays local on each peer; this
-/// carries only the authoritative current state name.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct WireMeshAnimationState {
-    pub current_state: String,
-}
-
-// ---------------------------------------------------------------------------
-// Raw encoded boundary
-// ---------------------------------------------------------------------------
-
-/// Raw component payload as it crosses the wire: an explicit `component_kind`
-/// discriminant plus one `Option` slot per supported component. Exactly one slot
-/// must be `Some` and it must match `component_kind`; any other shape (wrong slot,
-/// no slot, two slots, unknown kind) is a clean decode but a `validate` rejection.
-///
-/// The explicit discriminant + `Option` slots are deliberate: they make an invalid
-/// kind value or a missing/duplicate payload *representable* in the decoded
-/// envelope, so the malformed-input tests exercise validation without relying on
-/// bitcode's internal enum tag (which would make an invalid tag a decode error
-/// instead of a testable rejected envelope).
-#[derive(Debug, Clone, PartialEq, Encode, Decode)]
-pub struct RawComponentPayload {
-    pub component_kind: u16,
-    pub transform: Option<WireTransform>,
-    pub player_movement: Option<WirePlayerMovementState>,
-    pub mesh_animation_state: Option<WireMeshAnimationState>,
-    pub kinematic_mover: Option<WireKinematicMoverState>,
-}
 
 /// Raw per-entity lifecycle record. `record_kind` selects which logical record
 /// this is; the `baseline_id_or_ref` / `new_baseline_id_or_tombstone_id` / `reason`
@@ -629,6 +420,7 @@ pub struct RawEntityRecord {
     pub active_weapon_archetype: String,
     pub components: Vec<RawComponentPayload>,
     pub projectile_presentation: Option<WireProjectilePresentation>,
+    pub presentation_binding: Option<WirePresentationBinding>,
 }
 
 /// Raw snapshot envelope as it crosses the wire. `version` is checked against
@@ -656,36 +448,12 @@ pub struct RawSnapshotMessage {
     /// from `state_records`: it is a dynamic set, not a static descriptor-backed
     /// slot. `None` means this snapshot carries no new faction-sentiment baseline.
     pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
+    pub server_script_time: f64,
 }
 
 // ---------------------------------------------------------------------------
 // Typed apply model (produced only after validation)
 // ---------------------------------------------------------------------------
-
-/// A validated component payload. Constructed only by [`RawComponentPayload::validate`],
-/// so a typed payload always has exactly the inner value its kind requires.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ComponentPayload {
-    Transform(WireTransform),
-    PlayerMovementState(WirePlayerMovementState),
-    MeshAnimationState(WireMeshAnimationState),
-    KinematicMoverState(WireKinematicMoverState),
-}
-
-impl ComponentPayload {
-    /// Engine-aligned `u16` discriminant for this payload, numeric-equal to
-    /// `ComponentKind as u16` in the engine. Drift here desyncs replication, so
-    /// the mapping is pinned by `component_kind_pinned_to_engine_discriminants`.
-    #[must_use]
-    pub fn kind(&self) -> u16 {
-        match self {
-            ComponentPayload::Transform(_) => COMPONENT_KIND_TRANSFORM,
-            ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
-            ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
-            ComponentPayload::KinematicMoverState(_) => COMPONENT_KIND_KINEMATIC_MOVER_STATE,
-        }
-    }
-}
 
 /// A validated lifecycle record. Constructed only by [`RawEntityRecord::validate`].
 /// A full-baseline refresh *response* is encoded as a `FullBaseline` record — the
@@ -717,6 +485,7 @@ pub enum EntityRecord {
         active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
         projectile_presentation: Option<WireProjectilePresentation>,
+        presentation_binding: Option<WirePresentationBinding>,
     },
     Delta {
         network_id: u32,
@@ -732,6 +501,7 @@ pub enum EntityRecord {
         active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
         projectile_presentation: Option<WireProjectilePresentation>,
+        presentation_binding: Option<WirePresentationBinding>,
     },
     Despawn {
         network_id: u32,
@@ -758,6 +528,7 @@ pub struct SnapshotMessage {
     /// Raw sparse faction-sentiment overlay record. It is validated by the engine
     /// alongside the installed faction registry before the overlay is replaced.
     pub faction_sentiment_record: Option<crate::state_slots::RawFactionSentimentRecord>,
+    pub server_script_time: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -796,8 +567,8 @@ pub enum ValidationError {
     MalformedTickMetadata {
         last_processed_client_tick: u32,
     },
-    /// A despawn record carried movement-authority metadata, an `entity_class`, or
-    /// active-weapon metadata. A tombstone has no pawn state or presentation identity.
+    /// A despawn record carried metadata. Tombstones carry no movement authority,
+    /// descriptor/weapon metadata, or projectile/presentation metadata.
     MetadataOnDespawn,
     /// A despawn record carried component payloads. Despawns are tombstone-only and
     /// never carry replicated component state.
@@ -837,11 +608,30 @@ pub enum ValidationError {
     /// tag. Loaded-mover existence is intentionally not checked in this crate.
     InvalidKinematicMoverState,
     InvalidProjectilePresentation,
+    NonFinitePresentationState(u16),
+    InvalidPresentationState(u16),
+    InvalidPresentationBinding,
+    PresentationStateWithoutTransform,
+    NonFiniteScriptTime,
 }
 
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ValidationError::NonFinitePresentationState(kind) => {
+                write!(f, "non-finite presentation state for component kind {kind}")
+            }
+            ValidationError::InvalidPresentationState(kind) => write!(
+                f,
+                "invalid presentation animation for component kind {kind}"
+            ),
+            ValidationError::InvalidPresentationBinding => {
+                write!(f, "invalid presentation binding or bound record shape")
+            }
+            ValidationError::PresentationStateWithoutTransform => {
+                write!(f, "unbound presentation state requires a Transform")
+            }
+            ValidationError::NonFiniteScriptTime => write!(f, "non-finite server script time"),
             ValidationError::VersionMismatch { expected, received } => write!(
                 f,
                 "snapshot version mismatch: expected {expected}, received {received}"
@@ -872,10 +662,7 @@ impl std::fmt::Display for ValidationError {
                 "has_last_processed_client_tick=false but last_processed_client_tick={last_processed_client_tick} is nonzero"
             ),
             ValidationError::MetadataOnDespawn => {
-                write!(
-                    f,
-                    "movement-authority, entity_class, or active-weapon metadata on a despawn record"
-                )
+                write!(f, "forbidden metadata on a despawn record")
             }
             ValidationError::ComponentsOnDespawn => {
                 write!(f, "component payloads on a despawn record")
@@ -925,84 +712,6 @@ impl std::fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-impl RawComponentPayload {
-    /// Validate this raw payload into a typed [`ComponentPayload`]. Rejects unknown
-    /// `component_kind` values, a missing slot for the named kind, and any extra or
-    /// mismatched slot. Exactly one slot must be `Some` and it must be the one the
-    /// `component_kind` names.
-    pub fn validate(&self) -> Result<ComponentPayload, ValidationError> {
-        // Count populated slots once: a well-formed payload has exactly one, the
-        // one its `component_kind` names. Any other slot being `Some` is a
-        // mismatch regardless of the named kind (it makes the envelope ambiguous).
-        let populated = usize::from(self.transform.is_some())
-            + usize::from(self.player_movement.is_some())
-            + usize::from(self.mesh_animation_state.is_some())
-            + usize::from(self.kinematic_mover.is_some());
-
-        match self.component_kind {
-            COMPONENT_KIND_TRANSFORM => match self.transform {
-                Some(t) if populated == 1 => {
-                    if t.all_finite() {
-                        Ok(ComponentPayload::Transform(t))
-                    } else {
-                        Err(ValidationError::NonFiniteTransform)
-                    }
-                }
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(
-                    self.component_kind,
-                )),
-                None => Err(ValidationError::MissingComponentPayload(
-                    self.component_kind,
-                )),
-            },
-            COMPONENT_KIND_PLAYER_MOVEMENT_STATE => match self.player_movement {
-                Some(m) if populated == 1 => {
-                    if !m.all_finite() {
-                        Err(ValidationError::NonFiniteMovementState)
-                    } else if !m.movement_state.has_valid_state_contract() {
-                        Err(ValidationError::InvalidMovementState)
-                    } else {
-                        Ok(ComponentPayload::PlayerMovementState(m))
-                    }
-                }
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(
-                    self.component_kind,
-                )),
-                None => Err(ValidationError::MissingComponentPayload(
-                    self.component_kind,
-                )),
-            },
-            COMPONENT_KIND_MESH_ANIMATION_STATE => match &self.mesh_animation_state {
-                Some(m) if populated == 1 => Ok(ComponentPayload::MeshAnimationState(m.clone())),
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(
-                    self.component_kind,
-                )),
-                None => Err(ValidationError::MissingComponentPayload(
-                    self.component_kind,
-                )),
-            },
-            COMPONENT_KIND_KINEMATIC_MOVER_STATE => match self.kinematic_mover {
-                Some(m) if populated == 1 => {
-                    if !m.all_finite() {
-                        Err(ValidationError::NonFiniteKinematicMoverState)
-                    } else if !m.has_valid_phase_tags() {
-                        Err(ValidationError::InvalidKinematicMoverState)
-                    } else {
-                        Ok(ComponentPayload::KinematicMoverState(m))
-                    }
-                }
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(
-                    self.component_kind,
-                )),
-                None => Err(ValidationError::MissingComponentPayload(
-                    self.component_kind,
-                )),
-            },
-            other => Err(ValidationError::UnknownComponentKind(other)),
-        }
-    }
-}
-
 impl RawEntityRecord {
     /// Validate this raw record into a typed [`EntityRecord`]. Rejects unknown
     /// `record_kind` values and propagates any per-component validation failure;
@@ -1015,6 +724,7 @@ impl RawEntityRecord {
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
                 self.validate_projectile_presentation(&components, entity_class.as_deref())?;
+                self.validate_presentation_binding(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::FullBaseline {
                     network_id: self.network_id,
                     baseline_id: self.baseline_id_or_ref,
@@ -1024,6 +734,7 @@ impl RawEntityRecord {
                     active_weapon_archetype,
                     components,
                     projectile_presentation: self.projectile_presentation,
+                    presentation_binding: self.presentation_binding,
                 })
             }
             RECORD_KIND_DELTA => {
@@ -1032,6 +743,7 @@ impl RawEntityRecord {
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
                 self.validate_projectile_presentation(&components, entity_class.as_deref())?;
+                self.validate_presentation_binding(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::Delta {
                     network_id: self.network_id,
                     baseline_ref: self.baseline_id_or_ref,
@@ -1042,6 +754,7 @@ impl RawEntityRecord {
                     active_weapon_archetype,
                     components,
                     projectile_presentation: self.projectile_presentation,
+                    presentation_binding: self.presentation_binding,
                 })
             }
             // Despawn is tombstone-only. It carries no component state and no
@@ -1055,6 +768,7 @@ impl RawEntityRecord {
                     || self.has_active_weapon_archetype
                     || !self.active_weapon_archetype.is_empty()
                     || self.projectile_presentation.is_some()
+                    || self.presentation_binding.is_some()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
                 }
@@ -1069,6 +783,37 @@ impl RawEntityRecord {
             }
             other => Err(ValidationError::UnknownRecordKind(other)),
         }
+    }
+
+    fn validate_presentation_binding(
+        &self,
+        components: &[ComponentPayload],
+        entity_class: Option<&str>,
+    ) -> Result<(), ValidationError> {
+        let has_transform = components
+            .iter()
+            .any(|p| matches!(p, ComponentPayload::Transform(_)));
+        let has_state = components.iter().any(|p| {
+            matches!(
+                p,
+                ComponentPayload::LightState(_)
+                    | ComponentPayload::FogState(_)
+                    | ComponentPayload::EmitterState(_)
+            )
+        });
+        if let Some(binding) = self.presentation_binding {
+            if binding.kind > 2
+                || !binding.origin.iter().all(|v| v.is_finite())
+                || entity_class.is_some()
+                || has_transform
+                || !has_state
+            {
+                return Err(ValidationError::InvalidPresentationBinding);
+            }
+        } else if has_state && !has_transform {
+            return Err(ValidationError::PresentationStateWithoutTransform);
+        }
+        Ok(())
     }
 
     fn validate_projectile_presentation(
@@ -1166,7 +911,10 @@ impl RawEntityRecord {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_) => false,
                 ComponentPayload::MeshAnimationState(_) => false,
-                ComponentPayload::KinematicMoverState(_) => false,
+                ComponentPayload::KinematicMoverState(_)
+                | ComponentPayload::LightState(_)
+                | ComponentPayload::FogState(_)
+                | ComponentPayload::EmitterState(_) => false,
             });
             if !carries_finite_transform {
                 return Err(ValidationError::EntityClassWithoutTransform);
@@ -1216,6 +964,9 @@ impl RawSnapshotMessage {
                 received: self.version,
             });
         }
+        if !self.server_script_time.is_finite() {
+            return Err(ValidationError::NonFiniteScriptTime);
+        }
         let records = self
             .records
             .iter()
@@ -1228,6 +979,7 @@ impl RawSnapshotMessage {
             state_schema_fingerprint: self.state_schema_fingerprint,
             state_records: self.state_records.clone(),
             faction_sentiment_record: self.faction_sentiment_record.clone(),
+            server_script_time: self.server_script_time,
         })
     }
 }
@@ -1588,6 +1340,9 @@ mod tests {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         }
     }
 
@@ -1598,6 +1353,9 @@ mod tests {
             player_movement: Some(sample_movement()),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         }
     }
 
@@ -1610,6 +1368,9 @@ mod tests {
                 current_state: state.to_string(),
             }),
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         }
     }
 
@@ -1641,6 +1402,9 @@ mod tests {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: Some(sample_mover_state()),
+            light: None,
+            emitter: None,
+            fog: None,
         }
     }
 
@@ -1669,6 +1433,7 @@ mod tests {
             has_active_weapon_archetype: false,
             active_weapon_archetype: String::new(),
             projectile_presentation: None,
+            presentation_binding: None,
             components,
         }
     }
@@ -1683,6 +1448,7 @@ mod tests {
         records: Vec<RawEntityRecord>,
     ) -> RawSnapshotMessage {
         RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence,
             server_tick,
@@ -1770,6 +1536,7 @@ mod tests {
             WireSlotValue,
         };
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 3,
             server_tick: 42,
@@ -2078,8 +1845,8 @@ mod tests {
     #[test]
     fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
         assert_eq!(
-            SNAPSHOT_VERSION, 17,
-            "the protected knockback snapshot layout requires snapshot version 17"
+            SNAPSHOT_VERSION, 18,
+            "presentation state and clock require snapshot version 18"
         );
 
         let spawn = ServerPresentationMessage {
@@ -2100,15 +1867,128 @@ mod tests {
         assert!(round_trips(&spawn));
 
         let overlay = ServerPresentationMessage {
-            payload: ServerPresentationPayload::OverlayFact {
-                enemy_id: NetworkId(77),
-                health_fraction: 0.25,
-                shield_fraction: 0.5,
-                has_shield: true,
-                alive: true,
-            },
+            payload: ServerPresentationPayload::OverlayRoster(WireOverlayRoster {
+                revision: 4,
+                server_script_time: 10.0,
+                entries: vec![WireEnemyOverlay {
+                    enemy_id: NetworkId(77),
+                    health_fraction: 0.25,
+                    shield_fraction: 0.5,
+                    has_shield: true,
+                    damaged_at: 9.0,
+                    expires_at: 12.0,
+                }],
+            }),
         };
         assert!(round_trips(&overlay));
+    }
+
+    #[test]
+    fn overlay_roster_validates_capacity_order_finite_facts_and_absolute_expiry() {
+        let entry = WireEnemyOverlay {
+            enemy_id: NetworkId(0),
+            health_fraction: 0.5,
+            shield_fraction: 0.0,
+            has_shield: false,
+            damaged_at: 1.0,
+            expires_at: 3.0,
+        };
+        let valid = WireOverlayRoster {
+            revision: 1,
+            server_script_time: 2.0,
+            entries: vec![entry],
+        };
+        assert!(valid.is_valid(), "the first allocated NetworkId is zero");
+        let mut roster = valid.clone();
+        roster.entries = (0..MAX_OVERLAY_ROSTER_ENTRIES)
+            .map(|id| WireEnemyOverlay {
+                enemy_id: NetworkId(id as u32),
+                ..entry
+            })
+            .collect();
+        assert!(roster.is_valid());
+        assert!(round_trips(&roster));
+        roster.entries.push(WireEnemyOverlay {
+            enemy_id: NetworkId(MAX_OVERLAY_ROSTER_ENTRIES as u32),
+            ..entry
+        });
+        assert!(!roster.is_valid());
+        for bad in [
+            WireEnemyOverlay {
+                health_fraction: f32::NAN,
+                ..entry
+            },
+            WireEnemyOverlay {
+                health_fraction: 0.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                shield_fraction: -1.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                shield_fraction: f32::INFINITY,
+                ..entry
+            },
+            WireEnemyOverlay {
+                damaged_at: -1.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                damaged_at: 2.1,
+                ..entry
+            },
+            WireEnemyOverlay {
+                expires_at: 2.0,
+                ..entry
+            },
+            WireEnemyOverlay {
+                expires_at: f64::INFINITY,
+                ..entry
+            },
+        ] {
+            assert!(
+                !WireOverlayRoster {
+                    entries: vec![bad],
+                    ..valid.clone()
+                }
+                .is_valid()
+            );
+        }
+        assert!(
+            !WireOverlayRoster {
+                revision: 0,
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                server_script_time: f64::NAN,
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                entries: vec![entry, entry],
+                ..valid.clone()
+            }
+            .is_valid()
+        );
+        assert!(
+            !WireOverlayRoster {
+                entries: vec![
+                    WireEnemyOverlay {
+                        enemy_id: NetworkId(1),
+                        ..entry
+                    },
+                    entry
+                ],
+                ..valid
+            }
+            .is_valid()
+        );
     }
 
     #[test]
@@ -2117,10 +1997,12 @@ mod tests {
             PresentationCommand::PlaySound {
                 sound: "level_up".to_string(),
                 bus: Some("ui".to_string()),
+                at: Some([1.0, 2.0, 3.0]),
             },
             PresentationCommand::PlaySound {
                 sound: "scald".to_string(),
                 bus: None,
+                at: None,
             },
             PresentationCommand::Rumble {
                 strong: 0.75,
@@ -2166,6 +2048,7 @@ mod tests {
     #[test]
     fn validate_full_baseline_produces_typed_record() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 4,
             server_tick: 60,
@@ -2194,6 +2077,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2205,6 +2089,7 @@ mod tests {
     #[test]
     fn validate_delta_maps_overloaded_ids() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 5,
             server_tick: 61,
@@ -2232,6 +2117,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }]
         );
@@ -2240,6 +2126,7 @@ mod tests {
     #[test]
     fn validate_despawn_maps_tombstone_and_reason() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 6,
             server_tick: 62,
@@ -2287,6 +2174,7 @@ mod tests {
     #[test]
     fn truncated_buffer_decodes_to_err_not_panic() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 9,
             server_tick: 1,
@@ -2319,6 +2207,7 @@ mod tests {
     #[test]
     fn invalid_record_kind_decodes_then_rejects_without_panic() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2347,6 +2236,7 @@ mod tests {
     #[test]
     fn invalid_component_kind_decodes_then_rejects() {
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2362,6 +2252,9 @@ mod tests {
                     player_movement: None,
                     mesh_animation_state: None,
                     kinematic_mover: None,
+                    light: None,
+                    emitter: None,
+                    fog: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -2384,6 +2277,9 @@ mod tests {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2402,6 +2298,9 @@ mod tests {
             player_movement: Some(sample_movement()),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2422,6 +2321,9 @@ mod tests {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2435,10 +2337,11 @@ mod tests {
     fn knockback_snapshot_version_rejects_immediately_previous_layout() {
         const PRE_KNOCKBACK_SNAPSHOT_VERSION: u16 = 15;
         assert_eq!(
-            SNAPSHOT_VERSION, 17,
-            "protected knockback state requires snapshot version 17"
+            SNAPSHOT_VERSION, 18,
+            "presentation state retains the protected knockback layout at snapshot version 18"
         );
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: PRE_KNOCKBACK_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2461,6 +2364,7 @@ mod tests {
         // A good record followed by a bad one: validation rejects the whole
         // snapshot and produces no partial typed result.
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2505,9 +2409,15 @@ mod tests {
                 ComponentPayload::PlayerMovementState(_) => 6,
                 ComponentPayload::MeshAnimationState(_) => 9,
                 ComponentPayload::KinematicMoverState(_) => 13,
+                ComponentPayload::LightState(_) => 1,
+                ComponentPayload::EmitterState(_) => 2,
+                ComponentPayload::FogState(_) => 5,
             };
             assert_eq!(payload.kind(), expected);
         }
+        assert_eq!(COMPONENT_KIND_LIGHT, 1);
+        assert_eq!(COMPONENT_KIND_BILLBOARD_EMITTER, 2);
+        assert_eq!(COMPONENT_KIND_FOG_VOLUME, 5);
     }
 
     // Drift guard: the three record_kind constants are distinct and a typed record
@@ -2525,6 +2435,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::KinematicMoverState(sample_mover_state()),
@@ -2539,6 +2450,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::KinematicMoverState(sample_mover_state()),
@@ -2642,6 +2554,7 @@ mod tests {
         record.active_weapon_archetype = "reference_pistol".to_string();
 
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2663,6 +2576,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: Some("reference_pistol".to_string()),
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2694,6 +2608,7 @@ mod tests {
                 entity_class: None,
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
             }
         );
@@ -2773,11 +2688,9 @@ mod tests {
     }
 
     #[test]
-    fn metadata_on_despawn_display_mentions_entity_class() {
+    fn metadata_on_despawn_display_describes_forbidden_metadata() {
         let text = ValidationError::MetadataOnDespawn.to_string();
-        assert!(text.contains("movement-authority"));
-        assert!(text.contains("entity_class"));
-        assert!(text.contains("active-weapon"));
+        assert!(text.contains("forbidden metadata"));
         assert!(text.contains("despawn"));
     }
 
@@ -2861,6 +2774,7 @@ mod tests {
         record.local_player = true;
 
         let raw = RawSnapshotMessage {
+            server_script_time: 0.0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2882,6 +2796,7 @@ mod tests {
                 entity_class: Some("player".to_string()),
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2909,6 +2824,7 @@ mod tests {
                 entity_class: Some("boomer".to_string()),
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
@@ -2943,6 +2859,7 @@ mod tests {
                 entity_class: Some("boomer".to_string()),
                 active_weapon_archetype: None,
                 projectile_presentation: None,
+                presentation_binding: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
@@ -3098,6 +3015,9 @@ mod tests {
                 player_movement: Some(movement),
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3122,6 +3042,9 @@ mod tests {
             player_movement: Some(movement),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         };
         assert_eq!(
             payload.validate(),
@@ -3148,6 +3071,9 @@ mod tests {
             player_movement: Some(movement),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         };
 
         assert_eq!(
@@ -3176,6 +3102,9 @@ mod tests {
                 player_movement: Some(movement),
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             };
 
             assert_eq!(
@@ -3208,6 +3137,9 @@ mod tests {
                 player_movement: Some(movement),
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             };
 
             assert_eq!(
@@ -3246,6 +3178,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: Some(mover),
+                light: None,
+                emitter: None,
+                fog: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3269,6 +3204,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: Some(mover),
+                light: None,
+                emitter: None,
+                fog: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3298,6 +3236,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
         }
@@ -3323,6 +3264,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             }],
         );
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
@@ -3349,52 +3293,14 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             }],
         );
         record.has_entity_class = true;
         record.entity_class = "player".to_string();
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
-    }
-
-    // Drift guard: every `WireMovementState` variant's float payload is covered by
-    // the finiteness check. The expectation is derived from the source enum via an
-    // exhaustive `match` (no `_` arm), so a new variant is a compile error here until
-    // its finiteness contribution is declared — never a silently-passing guard.
-    #[test]
-    fn movement_state_finiteness_covers_every_variant() {
-        let variants = [
-            WireMovementState::Normal,
-            WireMovementState::Dash {
-                elapsed_ms: 1.0,
-                boost: [0.0, 0.0, 0.0],
-            },
-            WireMovementState::Crouching { eye_current: 0.5 },
-            WireMovementState::Sliding {
-                elapsed_ms: 1.0,
-                boost: [0.0, 0.0, 0.0],
-                eye_current: 0.5,
-                floor_normal: Some([0.0, 1.0, 0.0]),
-            },
-        ];
-        for state in variants {
-            // A finite instance of every variant must pass the finiteness gate.
-            assert!(state.all_finite(), "finite variant must be all_finite");
-            // The number of float fields each variant carries — derived from the
-            // source enum so adding a variant (or a float field) forces an update.
-            let float_field_count = match state {
-                WireMovementState::Normal => 0,
-                WireMovementState::Dash { .. } => 4, // elapsed_ms + 3 boost components
-                WireMovementState::Crouching { .. } => 1,
-                WireMovementState::Sliding { floor_normal, .. } => {
-                    5 + floor_normal.map_or(0, |_| 3)
-                }
-            };
-            // Non-`Normal` variants carry floats and so are non-finite-detectable.
-            assert_eq!(
-                float_field_count > 0,
-                !matches!(state, WireMovementState::Normal)
-            );
-        }
     }
 
     fn projectile_facts() -> WireProjectilePresentation {
@@ -3556,13 +3462,105 @@ mod tests {
         assert_eq!(
             raw.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 17,
+                expected: SNAPSHOT_VERSION,
                 received: 16
             })
         );
     }
 
-    /// Re-encode a typed payload into its raw envelope form for round-trip guards.
+    #[test]
+    fn presentation_binding_and_script_clock_roundtrip_and_reject_invalid_shapes() {
+        let state = ComponentPayload::EmitterState(WireEmitterState {
+            rate: 3.0,
+            spin_rate: 2.0,
+            spin_animation: None,
+            anim_start: Some(4.25),
+        });
+        let mut record = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            7,
+            2,
+            0,
+            0,
+            vec![raw_from_typed(&state)],
+        );
+        record.presentation_binding = Some(WirePresentationBinding {
+            kind: 2,
+            index: 18,
+            origin: [1.0, 2.0, 3.0],
+        });
+        let mut snapshot = raw_snapshot(1, 2, vec![record.clone()]);
+        snapshot.server_script_time = 4.5;
+        let decoded: RawSnapshotMessage = decode(&encode(&snapshot)).unwrap();
+        assert_eq!(decoded, snapshot);
+        let typed = decoded.validate().unwrap();
+        assert_eq!(typed.server_script_time, 4.5);
+        assert!(
+            matches!(&typed.records[0], EntityRecord::FullBaseline { presentation_binding: Some(binding), .. } if binding.index == 18)
+        );
+
+        for binding in [
+            WirePresentationBinding {
+                kind: 3,
+                index: 0,
+                origin: [0.0; 3],
+            },
+            WirePresentationBinding {
+                kind: 0,
+                index: 0,
+                origin: [f32::NAN, 0.0, 0.0],
+            },
+        ] {
+            let mut bad = record.clone();
+            bad.presentation_binding = Some(binding);
+            assert_eq!(
+                bad.validate(),
+                Err(ValidationError::InvalidPresentationBinding)
+            );
+        }
+        let mut bad = record.clone();
+        bad.components.push(raw_transform_payload());
+        assert_eq!(
+            bad.validate(),
+            Err(ValidationError::InvalidPresentationBinding)
+        );
+        let mut bad = record.clone();
+        bad.has_entity_class = true;
+        bad.entity_class = "prop".into();
+        assert!(bad.validate().is_err());
+        let mut bad = record.clone();
+        bad.components.clear();
+        assert_eq!(
+            bad.validate(),
+            Err(ValidationError::InvalidPresentationBinding)
+        );
+        let mut bad = record.clone();
+        bad.presentation_binding = None;
+        assert_eq!(
+            bad.validate(),
+            Err(ValidationError::PresentationStateWithoutTransform)
+        );
+        bad.components.push(raw_transform_payload());
+        assert!(bad.validate().is_ok());
+        let mut bad = record;
+        bad.record_kind = RECORD_KIND_DESPAWN;
+        assert_eq!(bad.validate(), Err(ValidationError::MetadataOnDespawn));
+        snapshot.server_script_time = f64::INFINITY;
+        assert_eq!(
+            snapshot.validate(),
+            Err(ValidationError::NonFiniteScriptTime)
+        );
+        snapshot.server_script_time = 0.0;
+        snapshot.version = 17;
+        assert!(matches!(
+            snapshot.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: 18,
+                received: 17
+            })
+        ));
+    }
+
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
             ComponentPayload::Transform(t) => RawComponentPayload {
@@ -3571,6 +3569,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
@@ -3578,6 +3579,9 @@ mod tests {
                 player_movement: Some(*m),
                 mesh_animation_state: None,
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
@@ -3585,6 +3589,9 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: Some(m.clone()),
                 kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
             },
             ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
@@ -3592,6 +3599,39 @@ mod tests {
                 player_movement: None,
                 mesh_animation_state: None,
                 kinematic_mover: Some(*m),
+                light: None,
+                emitter: None,
+                fog: None,
+            },
+            ComponentPayload::LightState(state) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_LIGHT,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: Some(state.clone()),
+                emitter: None,
+                fog: None,
+            },
+            ComponentPayload::EmitterState(state) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_BILLBOARD_EMITTER,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: Some(state.clone()),
+                fog: None,
+            },
+            ComponentPayload::FogState(state) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_FOG_VOLUME,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: Some(state.clone()),
             },
         }
     }

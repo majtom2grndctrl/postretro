@@ -1535,6 +1535,150 @@ mod tests {
     }
 
     #[test]
+    fn presentation_audience_builders_match_across_sdk_runtimes_and_preserve_positionals() {
+        let js = r#"
+            function setupLevel() {
+              return { reactions: [defineReaction("capture", on => ({ primitive: "capture", args: {
+                bodies: [on.activators, on.trigger, on.player, "everyone", 42, players(), npcs()].flatMap(audience => [
+                  playSound("alarm", { bus: "ui", audience }),
+                  rumble(0.75, 200, 0.25, { audience }),
+                  flashScreen([1, 0, 0, 0.5], 300, { audience }),
+                  vignette(0.5, 400, [0.25, 0.5, 0.75], { audience }),
+                  screenShake(3, 500, 7, { audience }),
+                  rumble(0.75, 200, undefined, { audience }),
+                  vignette(0.5, 400, undefined, { audience }),
+                  screenShake(3, 500, undefined, { audience }),
+                ])
+              }}))] };
+            }
+        "#;
+        let luau = r#"
+            local ui = require("postretro/ui")
+            local Postretro = require("postretro")
+            function setupLevel()
+              return { reactions = { defineReaction("capture", function(on)
+                local bodies = {}
+                local players = Postretro.players()
+                local npcs = Postretro.npcs()
+                -- Internal audience lowering must not relax ordinary opaque indexing.
+                for _, group in ipairs({ players, npcs }) do
+                  local ok, message = pcall(function() return group.__wire end)
+                  assert(not ok and string.find(message, "has no verb or field", 1, true))
+                end
+                for _, audience in ipairs({ on.activators, on.trigger, on.player, "everyone", 42, players, npcs }) do
+                  local batch = {
+                    ui.playSound("alarm", { bus = "ui", audience = audience }),
+                    ui.rumble(0.75, 200, 0.25, { audience = audience }),
+                    ui.flashScreen({1, 0, 0, 0.5}, 300, { audience = audience }),
+                    ui.vignette(0.5, 400, {0.25, 0.5, 0.75}, { audience = audience }),
+                    ui.screenShake(3, 500, 7, { audience = audience }),
+                    ui.rumble(0.75, 200, nil, { audience = audience }),
+                    ui.vignette(0.5, 400, nil, { audience = audience }),
+                    ui.screenShake(3, 500, nil, { audience = audience }),
+                  }
+                  for _, body in ipairs(batch) do table.insert(bodies, body) end
+                end
+                return { primitive = "capture", args = { bodies = bodies } }
+              end) } }
+            end
+        "#;
+        let world = || Rc::new(BuildWorld::new(&table()).unwrap());
+        let stubs = || Rc::new(RefCell::new(BTreeSet::new()));
+        let ts = evaluate_quickjs(js, Path::new("audience.ts"), world(), stubs()).unwrap();
+        let lua = evaluate_luau(
+            luau,
+            Path::new("audience.luau"),
+            Path::new("."),
+            world(),
+            stubs(),
+        )
+        .unwrap();
+        assert_eq!(ts, lua);
+        let bodies = ts["reactions"][0]["args"]["bodies"].as_array().unwrap();
+        assert_eq!(bodies.len(), 56);
+        for (batch, audience) in bodies.as_chunks::<8>().0.iter().zip([
+            "@activators",
+            "@trigger",
+            "@player",
+            "everyone",
+            "@invalid",
+            "@invalid",
+            "@invalid",
+        ]) {
+            for body in batch {
+                assert_eq!(body["args"]["audience"], audience);
+            }
+            assert_eq!(batch[0]["args"]["bus"], "ui");
+            assert_eq!(batch[1]["args"]["weak"], 0.25);
+            assert_eq!(
+                batch[3]["args"]["color"],
+                serde_json::json!([0.25, 0.5, 0.75])
+            );
+            assert_eq!(batch[4]["args"]["frequency"], 7);
+            assert!(batch[5]["args"].get("weak").is_none());
+            assert!(batch[6]["args"].get("color").is_none());
+            assert!(batch[7]["args"].get("frequency").is_none());
+        }
+    }
+
+    // Regression: accepted negative shield expressions must reach presentation normalization in both runtimes.
+    #[test]
+    fn negative_shield_overlay_factories_match_across_sdk_runtimes() {
+        let js = r#"
+            function setupLevel() {
+              const template = definePresentationTemplate("enemyStatus", {
+                root: { kind: "text", content: "enemy", fontSize: 12, color: [1,1,1,1] },
+                lifetimeMs: 500, motion: { rise: 0, easing: "linear" },
+                fade: { startMs: 0 }, spawnScatter: { radius: 0 },
+                worldAnchor: { socket: "head", offsetY: 0 },
+              });
+              return { presentationOverlays: defineOverlay({
+                over: damagedEnemies({ lingerMs: 500, hideAtFull: true, shield: {
+                  value: () => runtime.constant(-1), max: () => runtime.constant(100),
+                }}), template, maxVisible: 2,
+              }) };
+            }
+        "#;
+        let luau = r#"
+            local P = require("postretro")
+            local Ui = require("postretro/ui")
+            function setupLevel()
+              local template = Ui.definePresentationTemplate("enemyStatus", {
+                root = { kind = "text", content = "enemy", fontSize = 12, color = {1,1,1,1} },
+                lifetimeMs = 500, motion = { rise = 0, easing = "linear" },
+                fade = { startMs = 0 }, spawnScatter = { radius = 0 },
+                worldAnchor = { socket = "head", offsetY = 0 },
+              })
+              return { presentationOverlays = Ui.defineOverlay({
+                over = Ui.damagedEnemies({ lingerMs = 500, hideAtFull = true, shield = {
+                  value = function() return P.runtime.constant(-1) end,
+                  max = function() return P.runtime.constant(100) end,
+                }}), template = template, maxVisible = 2,
+              }) }
+            end
+        "#;
+        let world = || Rc::new(BuildWorld::new(&table()).unwrap());
+        let stubs = || Rc::new(RefCell::new(BTreeSet::new()));
+        let ts = evaluate_quickjs(js, Path::new("negative-shield.ts"), world(), stubs()).unwrap();
+        let lua = evaluate_luau(
+            luau,
+            Path::new("negative-shield.luau"),
+            Path::new("."),
+            world(),
+            stubs(),
+        )
+        .unwrap();
+        assert_eq!(ts, lua);
+        assert_eq!(
+            ts["presentationOverlays"]["over"]["shield"],
+            json!({
+                "value": { "op": "const", "value": -1 },
+                "max": { "op": "const", "value": 100 },
+            })
+        );
+    }
+
+    #[test]
     fn quickjs_collects_static_and_dynamic_membership_from_light_handles() {
         let source = r#"
             function setupLevel() {

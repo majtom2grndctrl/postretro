@@ -29,9 +29,9 @@ defineEntity({
       initial: "idle",
       moveSpeed: 3,
       activities: { idle: { animation: "idle", motion: "hold" } },
+      // @ts-expect-error Guard positions accept RuntimeValue, not a native boolean.
       transitions: {
         idle: [{
-          // @ts-expect-error Guard positions accept RuntimeValue, not a native boolean.
           when: nativeNot,
           to: "idle",
         }],

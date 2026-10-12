@@ -179,7 +179,26 @@ export type EmitterTarget = { __emitterTarget: true }
 --- `at = on.emitter` positions the sound where the named gameplay event
 --- happened, on the SFX bus. A source that publishes no emitter skips the
 --- reaction with a warning.
-export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
+export type PresentationAudience = { [string]: any } | "everyone"
+export type PresentationOptions = { audience: PresentationAudience? }
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget?, audience: PresentationAudience? }
+
+local function presentationAudience(args, options)
+  if options ~= nil and type(options) ~= "table" then
+    error("presentation: options must be a table when provided")
+  end
+  if options ~= nil and options.audience ~= nil then
+    local audience = options.audience
+    local wire = audience
+    if type(audience) == "table" then
+      -- Unsupported opaque groups throw on missing fields. Keep malformed
+      -- audiences for the named install rejection instead of aborting setup.
+      local ok, value = pcall(function() return audience.__wire end)
+      wire = if ok then value else nil
+    end
+    args.audience = if wire == "@activators" or wire == "@trigger" or wire == "@player" or wire == "everyone" then wire else "@invalid"
+  end
+end
 
 --- Play a sound through the audio module. Pure: returns a primitive reaction
 --- body, no engine side effect. Pass the result as the descriptor of
@@ -193,6 +212,7 @@ function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): Pr
     error("playSound: options must be a table `{ bus?, at? }` when provided")
   end
   local args: { [string]: any } = { sound = sound }
+  presentationAudience(args, options)
   if options ~= nil then
     if options.bus ~= nil then
       args.bus = options.bus
@@ -213,11 +233,12 @@ end
 --- (omitted when nil) are 0-1 motor intensities; `durationMs` is the rumble
 --- length in milliseconds. A warn-once no-op when force feedback is
 --- unsupported.
-function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?): PrimitiveReactionDescriptor
+function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
   local args: { [string]: any } = { strong = strong, durationMs = durationMs }
   if weak ~= nil then
     args.weak = weak
   end
+  presentationAudience(args, options)
   return { primitive = "rumble", args = args }
 end
 
@@ -225,8 +246,10 @@ end
 --- which decays back to transparent. Pure: returns a primitive reaction body,
 --- no engine side effect. `color` is an `{r, g, b, a}` tuple (0-1); `durationMs`
 --- is the decay time in milliseconds.
-function UiReactionsSdk.flashScreen(color: {number}, durationMs: number): PrimitiveReactionDescriptor
-  return { primitive = "flashScreen", args = { color = color, durationMs = durationMs } }
+function UiReactionsSdk.flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): PrimitiveReactionDescriptor
+  local args = { color = color, durationMs = durationMs }
+  presentationAudience(args, options)
+  return { primitive = "flashScreen", args = args }
 end
 
 --- Darken (or tint) the screen edges by writing the engine-owned
@@ -238,12 +261,14 @@ end
 function UiReactionsSdk.vignette(
   strength: number,
   durationMs: number,
-  color: {number}?
+  color: {number}?,
+  options: PresentationOptions?
 ): PrimitiveReactionDescriptor
   local args: { [string]: any } = { strength = strength, durationMs = durationMs }
   if color ~= nil then
     args.color = color
   end
+  presentationAudience(args, options)
   return { primitive = "vignette", args = args }
 end
 
@@ -256,12 +281,14 @@ end
 function UiReactionsSdk.screenShake(
   amplitude: number,
   durationMs: number,
-  frequency: number?
+  frequency: number?,
+  options: PresentationOptions?
 ): PrimitiveReactionDescriptor
   local args: { [string]: any } = { amplitude = amplitude, durationMs = durationMs }
   if frequency ~= nil then
     args.frequency = frequency
   end
+  presentationAudience(args, options)
   return { primitive = "screenShake", args = args }
 end
 

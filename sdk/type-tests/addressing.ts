@@ -32,6 +32,10 @@ const memberSteps: SequenceStep[] = [
 ];
 const spawnedTags: ReadonlyArray<string> = closets[0].spawnedTags;
 const emitterRate: number = emitters[0].component.rate;
+// Descriptor-only lights resolve by tag when the reaction fires. Null clears.
+defineReaction("alarm.clear", {
+  primitive: "setLightAnimation", tag: "alarm", args: null,
+});
 // Members are plain arrays the author inspects.
 const sorted = lights.sort((a, b) => a.position.x - b.position.x);
 

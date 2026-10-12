@@ -48,7 +48,6 @@ use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
-#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent, switch_animation_state};
 use postretro_entities::components::player_movement::PlayerMovementComponent;
@@ -216,11 +215,16 @@ pub fn simulate_client_wieldable_tick(
     (accepted, result.repointed_pawn)
 }
 
-fn player_is_present_for_trigger_occupancy(
+fn player_is_alive_for_trigger_occupancy(
     registry: &EntityRegistry,
     player: &AuthoritativePlayer,
 ) -> bool {
     registry.exists(player.pawn)
+        && registry
+            .get_component::<HealthComponent>(player.pawn)
+            .map_or(true, |health| {
+                !scripting_systems::health::is_depleted(health)
+            })
 }
 
 #[derive(Debug, Clone)]
@@ -362,7 +366,7 @@ pub struct TickEvents {
     /// alongside the opaque handle so the frame-end drain can key an enrolled
     /// timed-reaction instance to its activator — two players entering one plate
     /// push the same handle twice and must not collapse into one instance (O59).
-    pub trigger_residuals: Vec<(TriggerResidualHandle, EntityId, PlayerId)>,
+    pub trigger_residuals: Vec<(TriggerResidualHandle, EntityId, PlayerId, Vec<PlayerId>)>,
     /// This tick's paired-trigger Exit fires, as `(trigger, player)`. Production
     /// reads them in the `RedrawRequested` arm to cancel matching interruptible
     /// timed-reaction instances before their countdown advances (O4). Derived from
@@ -611,7 +615,7 @@ where
             let registry = registry.borrow();
             players
                 .iter()
-                .filter(|player| player_is_present_for_trigger_occupancy(&registry, player))
+                .filter(|player| player_is_alive_for_trigger_occupancy(&registry, player))
                 .map(|player| player.id)
                 .collect()
         };
@@ -631,7 +635,7 @@ where
                     tick_dt,
                 },
                 dispatch_inputs,
-                |event, occupancy, registry| {
+                |event, occupancy, occupants, registry| {
                     let fire_context =
                         trigger_fire_context(event, occupancy, &canonical_player_pawns);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
@@ -654,7 +658,12 @@ where
                         // frame-end drain keys each enrolled instance to its
                         // activator; one handle fired by two players yields two
                         // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                        trigger_residuals.push((
+                            handle,
+                            event.fire.trigger,
+                            event.fire.player,
+                            occupants.to_vec(),
+                        ));
                     }
                     if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
                         trigger_exit_fires.push((event.fire.trigger, event.fire.player));
@@ -676,7 +685,7 @@ where
                     tick_dt,
                 },
                 dispatch_inputs,
-                |event, _occupancy, registry| {
+                |event, _occupancy, occupants, registry| {
                     let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(
                         event.fire.trigger,
@@ -698,7 +707,12 @@ where
                         // frame-end drain keys each enrolled instance to its
                         // activator; one handle fired by two players yields two
                         // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((handle, event.fire.trigger, event.fire.player));
+                        trigger_residuals.push((
+                            handle,
+                            event.fire.trigger,
+                            event.fire.player,
+                            occupants.to_vec(),
+                        ));
                     }
                     if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
                         trigger_exit_fires.push((event.fire.trigger, event.fire.player));
@@ -1773,9 +1787,14 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     #[test]
-    fn zero_hp_player_remains_present_for_trigger_occupancy_until_despawn() {
+    fn trigger_effective_occupancy_uses_live_health_and_allows_healthless_pawns() {
         let mut registry = EntityRegistry::new();
         let pawn = registry.spawn(Transform::default());
+        let player = AuthoritativePlayer {
+            id: PlayerId::Local(pawn),
+            pawn,
+        };
+        assert!(player_is_alive_for_trigger_occupancy(&registry, &player));
         registry
             .set_component(
                 pawn,
@@ -1790,16 +1809,31 @@ mod tests {
                 },
             )
             .unwrap();
-        let player = AuthoritativePlayer {
-            id: PlayerId::Local(pawn),
-            pawn,
-        };
+        assert!(registry.exists(pawn), "death does not remove the pawn");
+        assert!(!player_is_alive_for_trigger_occupancy(&registry, &player));
 
-        assert!(player_is_present_for_trigger_occupancy(&registry, &player));
+        let mut health = registry
+            .get_component::<HealthComponent>(pawn)
+            .unwrap()
+            .clone();
+        health.death_handled = false;
+        registry.set_component(pawn, health).unwrap();
+        assert!(!player_is_alive_for_trigger_occupancy(&registry, &player));
+
+        postretro_entities::components::health::set_health_absolute(&mut registry, pawn, 25.0);
+        assert!(player_is_alive_for_trigger_occupancy(&registry, &player));
+
+        let mut health = registry
+            .get_component::<HealthComponent>(pawn)
+            .unwrap()
+            .clone();
+        health.current = f32::NAN;
+        registry.set_component(pawn, health).unwrap();
+        assert!(!player_is_alive_for_trigger_occupancy(&registry, &player));
 
         registry.despawn(pawn).unwrap();
 
-        assert!(!player_is_present_for_trigger_occupancy(&registry, &player));
+        assert!(!player_is_alive_for_trigger_occupancy(&registry, &player));
     }
 
     #[test]
@@ -2802,6 +2836,232 @@ mod tests {
             None,
             |_| {},
         )
+    }
+
+    // Regression: the simulation counted seated zero-HP corpses as alive and
+    // froze their seats into on.trigger presentation audiences.
+    #[test]
+    fn trigger_tick_excludes_seated_corpses_from_count_and_frozen_residual_audience() {
+        use crate::residual_drain::{ResidualRegistries, drain_frame_residuals};
+        use crate::scripting_systems::reaction_scheduler::ReactionScheduler;
+        use postretro_entities::{Recipients, SystemReactionCommand};
+        use postretro_foundation::Seat;
+
+        let script_ctx = ScriptCtx::new();
+        *script_ctx.slot_table.borrow_mut() = trigger_slots();
+        let registry = script_ctx.registry.clone();
+        let outside = Vec3::new(10.0, 0.0, 0.0);
+        let (live_pawn, dead_pawn, trigger) = {
+            let mut registry = registry.borrow_mut();
+            let live_pawn = registry.spawn(Transform {
+                position: outside,
+                ..Transform::default()
+            });
+            let dead_pawn = registry.spawn(Transform::default());
+            for (pawn, seat, current, death_handled) in [
+                (live_pawn, Seat(1), 100.0, false),
+                (dead_pawn, Seat(2), 0.0, true),
+            ] {
+                registry.set_component(pawn, trigger_movement()).unwrap();
+                registry
+                    .set_component(
+                        pawn,
+                        HealthComponent {
+                            max: 100.0,
+                            current,
+                            hitbox: None,
+                            death_handled,
+                            pending_kill_credit: None,
+                            zone_multipliers: Default::default(),
+                            contributor_ledger: Default::default(),
+                        },
+                    )
+                    .unwrap();
+                registry.bind_pawn_seat(pawn, seat);
+            }
+            registry.mark_local_player_pawn(live_pawn).unwrap();
+            let trigger = registry.spawn(Transform::default());
+            let mut component = trigger_component("occupants", true);
+            component.on_exit = "occupants".into();
+            registry.set_component(trigger, component).unwrap();
+            (live_pawn, dead_pawn, trigger)
+        };
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            [
+                (
+                    "setState",
+                    serde_json::json!({
+                        "slot": "trigger.flag",
+                        "value": { "op": "input", "name": "@occupancy" }
+                    }),
+                ),
+                (
+                    "flashScreen",
+                    serde_json::json!({
+                        "color": [1.0, 0.0, 0.0, 1.0],
+                        "durationMs": 30.0,
+                        "audience": "@trigger"
+                    }),
+                ),
+            ]
+            .into_iter()
+            .map(|(primitive, args)| NamedReaction {
+                name: "occupants".into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: primitive.into(),
+                    target: None,
+                    kind: None,
+                    tag: None,
+                    on_complete: None,
+                    args,
+                }),
+            })
+            .collect(),
+            Vec::new(),
+            &[],
+        );
+        let bindings =
+            TriggerBindingTable::build_with_script_ctx(&registry.borrow(), &data, &script_ctx);
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
+        let mut trigger_system = TriggerSystem::default();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let use_edges = HashMap::new();
+        let remote = [remote_command(dead_pawn, None, 2, 0, false, false)];
+        let mut tick = |trigger_system: &mut TriggerSystem| {
+            simulate_tick(
+                registry.clone(),
+                &world,
+                &hit_zones,
+                None,
+                0.0,
+                None,
+                0.0,
+                &mut progress,
+                postretro_ai::test_tick_runner!(&mut ai_runtime),
+                &[],
+                &mut mover_states,
+                &remote,
+                &sim_command(false, false),
+                |_| PostMovementCommand {
+                    aim_origin: Vec3::ZERO,
+                    aim_direction: Vec3::NEG_Z,
+                },
+                1.0 / 60.0,
+                Some(TriggerTickContext {
+                    system: trigger_system,
+                    bridge: &bridge,
+                    bindings: &bindings,
+                    slot_table: script_ctx.slot_table.clone(),
+                    script_ctx: Some(script_ctx.clone()),
+                    auto_close_timers: None,
+                    use_edges: &use_edges,
+                }),
+                |_| {},
+            )
+        };
+        let count = || match script_ctx
+            .slot_table
+            .borrow()
+            .get("trigger.flag")
+            .and_then(|record| record.value.as_ref())
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected effective occupancy, got {other:?}"),
+        };
+        let move_pawn = |pawn, position| {
+            registry
+                .borrow_mut()
+                .set_component(
+                    pawn,
+                    Transform {
+                        position,
+                        ..Transform::default()
+                    },
+                )
+                .unwrap();
+        };
+
+        let dead_enter = tick(&mut trigger_system);
+        assert_eq!(trigger_system.occupancy(trigger), 1);
+        assert_eq!(dead_enter.trigger_residuals.len(), 1);
+        assert!(dead_enter.trigger_residuals[0].3.is_empty());
+        assert!(count().abs() <= 1.0e-5);
+
+        move_pawn(live_pawn, Vec3::ZERO);
+        let live_enter = tick(&mut trigger_system);
+        assert_eq!(trigger_system.occupancy(trigger), 2);
+        assert_eq!(live_enter.trigger_residuals.len(), 1);
+        assert_eq!(
+            live_enter.trigger_residuals[0].3,
+            vec![PlayerId::Local(live_pawn)]
+        );
+        assert!((count() - 1.0).abs() <= 1.0e-5);
+
+        move_pawn(live_pawn, outside);
+        let live_exit = tick(&mut trigger_system);
+        assert_eq!(trigger_system.occupancy(trigger), 1);
+        assert_eq!(
+            live_exit.trigger_exit_fires,
+            vec![(trigger, PlayerId::Local(live_pawn))]
+        );
+        assert_eq!(live_exit.trigger_residuals.len(), 1);
+        assert!(live_exit.trigger_residuals[0].3.is_empty());
+        assert!(count().abs() <= 1.0e-5);
+        assert!(
+            trigger_system
+                .paired_enters()
+                .contains(&(trigger, PlayerId::Remote(7)))
+        );
+
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let mut follow_ups = Vec::new();
+        drain_frame_residuals(
+            &live_enter.trigger_residuals,
+            &bindings,
+            &trigger_system,
+            &[],
+            &crate::player_events::PlayerEventTable::default(),
+            &ReactionScheduler::default(),
+            ResidualRegistries {
+                sequence: &SequencedPrimitiveRegistry::new(),
+                reaction: &ReactionPrimitiveRegistry::new(),
+                system: &system_registry,
+            },
+            &script_ctx,
+            &mut follow_ups,
+            |player, registry| match player {
+                PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                PlayerId::Remote(7) => registry.seat_for_pawn(dead_pawn),
+                PlayerId::Remote(_) => None,
+            },
+        );
+        assert!(follow_ups.is_empty());
+        assert!(matches!(
+            script_ctx.system_commands.take_ordered().as_slice(),
+            [(Recipients::Seats(seats), SystemReactionCommand::FlashScreen { .. })]
+                if seats == &vec![Seat(1)]
+        ));
+        assert_eq!(registry.borrow().seat_for_pawn(dead_pawn), Some(Seat(2)));
+
+        move_pawn(dead_pawn, outside);
+        let dead_exit = tick(&mut trigger_system);
+        assert_eq!(
+            dead_exit.trigger_exit_fires,
+            vec![(trigger, PlayerId::Remote(7))]
+        );
+        assert_eq!(trigger_system.occupancy(trigger), 0);
+        assert!(
+            !trigger_system
+                .paired_enters()
+                .contains(&(trigger, PlayerId::Remote(7)))
+        );
     }
 
     #[test]

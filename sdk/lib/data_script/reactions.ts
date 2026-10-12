@@ -15,7 +15,7 @@ import type {
 } from "../data_script";
 import { ACTIVATORS_TARGET, PLAYER_TARGET, TRIGGER_TARGET } from "./commands";
 
-type ReactionTracer<S> = (params: S) => ReactionBody;
+type ReactionTracer<S> = (params: S) => ReactionBody<S>;
 
 // This is deliberately one plain merged object rather than a Proxy. The
 // subject tokens (activators, trigger, player) sit beside these input nodes and carry
@@ -111,15 +111,15 @@ function stableStringify(value: unknown): string {
  * @param name Stable event/reaction name consumed by dispatch. Optional.
  * @param descriptor Reaction body data consumed later by Rust.
  */
-export function defineReaction(body: ReactionBody): Reaction<{}>;
+export function defineReaction<S = {}>(body: ReactionBody<S>): Reaction<S>;
 export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
 export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
 export function defineReaction(tracer: ReactionTracer<EmitterParams>): Reaction<EmitterParams>;
 export function defineReaction(tracer: ReactionTracer<PlayerEventParams>): Reaction<PlayerEventParams>;
-export function defineReaction(
+export function defineReaction<S = {}>(
   name: string,
-  descriptor: ReactionBody,
-): Reaction<{}>;
+  descriptor: ReactionBody<S>,
+): Reaction<S>;
 export function defineReaction(
   name: string,
   tracer: ReactionTracer<CrossingParams>,
@@ -139,26 +139,21 @@ export function defineReaction(
 export function defineReaction(
   nameOrBody:
     | string
-    | ReactionBody
-    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams | PlayerEventParams>,
+    | ReactionBody<any>
+    | ReactionTracer<any>,
   descriptor?:
-    | ReactionBody
-    | ReactionTracer<CrossingParams | TriggerEventParams | EmitterParams | PlayerEventParams>,
-):
-  | Reaction<{}>
-  | Reaction<CrossingParams>
-  | Reaction<TriggerEventParams>
-  | Reaction<EmitterParams>
-  | Reaction<PlayerEventParams> {
+    | ReactionBody<any>
+    | ReactionTracer<any>,
+): Reaction<any> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
   const tracedBody = typeof authored === "function"
     ? authored(DISPATCH_PARAMS)
-    : authored as ReactionBody;
+    : authored as ReactionBody<any>;
   const [name, body] =
     typeof nameOrBody === "string"
       ? [nameOrBody, tracedBody]
       : [autoReactionId(tracedBody), tracedBody];
-  return { name, ...body } as Reaction<{}> | Reaction<CrossingParams> | Reaction<TriggerEventParams>;
+  return { name, ...body } as Reaction<any>;
 }
 
 /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */

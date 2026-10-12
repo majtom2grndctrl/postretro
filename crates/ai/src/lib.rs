@@ -462,7 +462,7 @@ where
             // A terminal impact effect or queued despawn leaves the id live
             // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
-            if host.is_quiescent(registry, id) {
+            if registry.is_inventory_owned(id) || host.is_quiescent(registry, id) {
                 return None;
             }
             let ComponentValue::Brain(brain) = value else {

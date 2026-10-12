@@ -78,6 +78,14 @@ impl ReactionPrimitiveRegistry {
         self.handlers.contains_key(name) || self.tagged_handlers.contains_key(name)
     }
 
+    /// Every registered entity reaction name, in no order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.handlers
+            .keys()
+            .chain(self.tagged_handlers.keys())
+            .map(String::as_str)
+    }
+
     pub fn get(&self, name: &str) -> Option<&ReactionPrimitiveFn> {
         self.handlers.get(name)
     }

@@ -17,7 +17,7 @@ export type ComponentValue = (Transform & { kind: "transform" }) | (LightCompone
 --- Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting.
 export type LightDescriptor = {
   --- Linear RGB light color multiplier. Components are conventionally in [0, 1], though HDR values above 1 are accepted.
-  color: Vec3,
+  color: {number},
   --- Unitless brightness multiplier. Must be finite and ≥ 0; 0 produces no light.
   intensity: number,
   --- Falloff range in metres. Must be finite and ≥ 0; 0 gives the light no spatial reach.
@@ -1398,7 +1398,7 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
-  --- One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.
+  --- One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.
   presentationOverlays: PresentationOverlay?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
@@ -2112,7 +2112,9 @@ export type PlayerEventParams = { player: PlayerTarget }
 --- `playSound` options: `bus` routes to a mixer bus (SFX when omitted); `at =
 --- on.emitter` positions the sound where the named gameplay event happened,
 --- on the SFX bus.
-export type PlaySoundOptions = { bus: string?, at: EmitterTarget? }
+export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone"
+export type PresentationOptions = { audience: PresentationAudience? }
+export type PlaySoundOptions = { bus: string?, at: EmitterTarget?, audience: PresentationAudience? }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Shared fluent-expression IR skin. These refs lower to the existing closed runtime IR;
@@ -3165,7 +3167,7 @@ export type PostretroUiModule = {
     text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
     bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
   },
-  --- Build a target-keyed host/single-player damaged-enemy source.
+  --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.
   defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
@@ -3192,13 +3194,13 @@ export type PostretroUiModule = {
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
   playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
-  rumble: (strong: number, durationMs: number, weak: number?) -> PrimitiveReactionDescriptor,
+  rumble: (strong: number, durationMs: number, weak: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.
-  flashScreen: (color: {number}, durationMs: number) -> PrimitiveReactionDescriptor,
+  flashScreen: (color: {number}, durationMs: number, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Apply a screen-edge vignette. `strength` is peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB.
-  vignette: (strength: number, durationMs: number, color: {number}?) -> PrimitiveReactionDescriptor,
+  vignette: (strength: number, durationMs: number, color: {number}?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz.
-  screenShake: (amplitude: number, durationMs: number, frequency: number?) -> PrimitiveReactionDescriptor,
+  screenShake: (amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
   --- Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit.
   showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
   --- Push a menu tree by registry name. Unknown tree names warn and no-op.

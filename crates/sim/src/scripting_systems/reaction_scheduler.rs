@@ -599,6 +599,15 @@ impl ReactionScheduler {
         for landing in self.take_landings() {
             let _depth = self.begin_enrollment_depth(landing.depth);
             let (address, body_ordinal, _origin) = landing.key.clone();
+            let previous = script_ctx.system_commands.replace_fire_context(
+                postretro_entities::SystemCommandFireContext {
+                    source: format!("landing:{address}"),
+                    origin: postretro_entities::FireOrigin::HostOnly(
+                        postretro_entities::FireSubject::None,
+                    ),
+                    ..postretro_entities::SystemCommandFireContext::default()
+                },
+            );
             let follow_ups = {
                 // Re-park detection spans ONLY the tail resume. A nested `wait`
                 // re-enters synchronously here and is the same instance continuing
@@ -623,6 +632,7 @@ impl ReactionScheduler {
                     ResidualOrigin::ResumedTail,
                 )
             };
+            script_ctx.system_commands.replace_fire_context(previous);
             dispatch_deferred_named_events_with_sequences(
                 follow_ups,
                 data_registry,

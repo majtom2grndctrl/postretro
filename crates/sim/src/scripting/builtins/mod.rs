@@ -12,8 +12,11 @@ pub mod data_archetype;
 pub(crate) mod entity_spawner;
 #[cfg(feature = "test-support")]
 pub mod entity_spawner;
+pub mod host_replicated;
 pub mod net_descriptor;
 pub(crate) mod prop_mesh;
+#[cfg(test)]
+mod real_dummy_hit_tests;
 pub(crate) mod wieldable_inventory;
 
 // Shared descriptor/placement builders used by both `data_archetype`'s own
@@ -34,10 +37,12 @@ pub use data_archetype::{
 // pulls in the scripting tree but never installs a level, so the import is unused there.
 #[allow(unused_imports)]
 pub use data_archetype::{
-    descriptor_materializes_ai_enemy, descriptor_materializes_world_item,
-    filter_out_client_host_replicated_placements, movement_descriptor_mesh_models,
-    suppressed_client_host_replicated_mesh_models, touchable_wieldable_world_models,
-    weapon_presentation_models,
+    movement_descriptor_mesh_models, touchable_wieldable_world_models, weapon_presentation_models,
+};
+#[allow(unused_imports)]
+pub use host_replicated::{
+    descriptor_is_host_replicated, descriptor_materializes_ai_enemy,
+    filter_out_client_host_replicated_placements, suppressed_client_host_replicated_mesh_models,
 };
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep
@@ -151,6 +156,12 @@ pub fn apply_classname_dispatch(
                 // write.)
                 if let Some(entity_id) = handler(entity, registry) {
                     let _ = registry.set_map_kvps(entity_id, entity.key_values.clone());
+                    if let Some(ordinal) = entity.map_ordinal {
+                        let _ = registry.set_component(
+                            entity_id,
+                            postretro_entities::components::map_ordinal::MapOrdinal(ordinal),
+                        );
+                    }
                 }
             }
             None => {
@@ -169,6 +180,29 @@ mod tests {
     use super::*;
     use glam::Vec3;
     use postretro_entities::registry::ComponentKind;
+
+    #[test]
+    fn authored_map_ordinals_do_not_shift_after_failed_placement_spawn() {
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+        let mut registry = EntityRegistry::new();
+        let mut dispatch = ClassnameDispatch::new();
+        register_builtins(&mut dispatch);
+        let mut placements = [
+            data_archetype_test_fixtures::placement("billboard_emitter", &[]),
+            data_archetype_test_fixtures::placement("billboard_emitter", &[]),
+        ];
+        placements[0].map_ordinal = Some(4);
+        placements[1].map_ordinal = Some(9);
+        registry.set_test_capacity_limit(0);
+        apply_classname_dispatch(&placements[..1], &dispatch, &mut registry);
+        registry.set_test_capacity_limit(1);
+        apply_classname_dispatch(&placements[1..], &dispatch, &mut registry);
+        let ordinals: Vec<_> = registry
+            .iter_with_kind(ComponentKind::MapOrdinal)
+            .map(|(id, _)| registry.get_component::<MapOrdinal>(id).unwrap().0)
+            .collect();
+        assert_eq!(ordinals, [9]);
+    }
 
     #[test]
     fn register_builtins_registers_billboard_emitter() {
@@ -208,6 +242,7 @@ mod tests {
         let mut kv = HashMap::new();
         kv.insert("rate".to_string(), "9.5".to_string());
         let entities = vec![MapEntity {
+            map_ordinal: None,
             classname: "billboard_emitter".to_string(),
             origin: Vec3::new(1.0, 2.0, 3.0),
             key_values: kv,
@@ -249,6 +284,7 @@ mod tests {
         register_builtins(&mut dispatch);
 
         let entities = vec![MapEntity {
+            map_ordinal: None,
             classname: "never_registered".to_string(),
             origin: Vec3::ZERO,
             key_values: HashMap::new(),

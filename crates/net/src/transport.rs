@@ -777,10 +777,8 @@ impl NetServer {
 
     /// Send one transient server presentation event to its exact recipient.
     ///
-    /// Presentation is intentionally not participation-framed and has no
-    /// acknowledgement, resend, or reconciliation path. A departed/demoted
-    /// recipient silently loses the cosmetic instead of retaining it for a
-    /// later participation generation.
+    /// The current participation frame fences delayed cosmetics without adding
+    /// acknowledgement, resend, or reconciliation to the unreliable lane.
     pub fn send_presentation(
         &mut self,
         client_id: ClientId,
@@ -789,9 +787,46 @@ impl NetServer {
         if !self.is_participating(client_id) {
             return false;
         }
-        self.server
-            .send_message(client_id, Channel::Presentation, wire::encode(&message));
+        let Some(participation_epoch) = self.participation_epochs.get(&client_id).copied() else {
+            return false;
+        };
+        self.server.send_message(
+            client_id,
+            Channel::Presentation,
+            wire::encode(&ParticipationFrame {
+                participation_epoch,
+                payload: wire::encode(&message),
+            }),
+        );
         true
+    }
+
+    /// Send shared presentation to the current participants, encoding its inner
+    /// payload once. Each recipient still receives its own participation frame.
+    /// Returns the number of eligible recipients attempted; delivery is unreliable.
+    pub fn broadcast_presentation(&mut self, message: ServerPresentationMessage) -> usize {
+        let recipients = self.participating_clients();
+        if recipients.is_empty() {
+            return 0;
+        }
+        let payload = wire::encode(&message);
+        let mut sent = 0;
+        for client_id in recipients {
+            let Some(participation_epoch) = self.participation_epochs.get(&client_id).copied()
+            else {
+                continue;
+            };
+            self.server.send_message(
+                client_id,
+                Channel::Presentation,
+                wire::encode(&ParticipationFrame {
+                    participation_epoch,
+                    payload: payload.clone(),
+                }),
+            );
+            sent += 1;
+        }
+        sent
     }
 
     pub fn packets_to_send(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
@@ -1329,10 +1364,9 @@ impl NetClient {
     }
 
     /// Drain decoded passive presentation events and player-addressed
-    /// presentation commands from the dedicated unreliable channel. Unlike
-    /// snapshots, these carry no participation epoch. The lane
-    /// is still participation-gated: held/disconnected clients exhaust and
-    /// discard it so a retired cosmetic cannot enter a later world lifecycle.
+    /// presentation commands from the dedicated unreliable channel. Only the
+    /// current participation epoch is accepted; held/disconnected clients
+    /// exhaust and discard the lane.
     pub fn drain_presentation(&mut self) -> Vec<ServerPresentationMessage> {
         let bytes = drain_client_channel(&mut self.client, Channel::Presentation);
         if !self.client.is_connected() || self.active_participation_epoch.is_none() {
@@ -1340,11 +1374,23 @@ impl NetClient {
         }
         bytes
             .into_iter()
-            .filter_map(|bytes| match wire::decode(&bytes) {
-                Ok(message) => Some(message),
-                Err(err) => {
-                    log::warn!("[Net] dropping malformed server Presentation message: {err}");
-                    None
+            .filter_map(|bytes| {
+                let frame: ParticipationFrame = match wire::decode(&bytes) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        log::warn!("[Net] dropping unframed server Presentation message: {err}");
+                        return None;
+                    }
+                };
+                if self.active_participation_epoch != Some(frame.participation_epoch) {
+                    return None;
+                }
+                match wire::decode(&frame.payload) {
+                    Ok(message) => Some(message),
+                    Err(err) => {
+                        log::warn!("[Net] dropping malformed server Presentation message: {err}");
+                        None
+                    }
                 }
             })
             .collect()
@@ -1409,13 +1455,6 @@ impl NetClient {
             .is_some_and(|active| !epoch_is_newer(active, epoch))
         {
             self.active_participation_epoch = None;
-            // Presentation is deliberately unframed and fire-and-forget. Flush
-            // anything that arrived beside this reliable hold so it cannot be
-            // mistaken for work from a later participation generation.
-            drop(drain_client_channel(
-                &mut self.client,
-                Channel::Presentation,
-            ));
         }
     }
 
@@ -1680,6 +1719,43 @@ mod tests {
         (server, client)
     }
 
+    fn add_participating_relay_client(
+        server: &mut NetServer,
+        server_addr: SocketAddr,
+        client_id: ClientId,
+    ) -> NetClient {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind relay client socket");
+        let mut client = NetClient::new(
+            socket,
+            server_addr,
+            client_id,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("construct relay client");
+        server.add_relay_connection(client_id, None);
+        client.set_connected();
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+        client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        client.set_revealed_level(Some("test-level".to_string()));
+        client.update_connections(Duration::from_millis(16));
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, client_id);
+        }
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating { client_id }],
+        );
+        for packet in server.packets_to_send(client_id) {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_control().is_empty());
+        assert!(client.is_participating());
+        client
+    }
+
     #[test]
     fn presentation_channel_is_the_fourth_dedicated_unreliable_channel() {
         let config = connection_config();
@@ -1708,6 +1784,8 @@ mod tests {
     #[test]
     fn presentation_channel_delivers_a_typed_message_only_to_its_recipient() {
         let (mut server, mut client) = participate_relay_pair();
+        let mut other =
+            add_participating_relay_client(&mut server, client.server_addr, RELAY_CLIENT_ID + 1);
         let message = ServerPresentationMessage {
             payload: crate::wire::ServerPresentationPayload::Spawn {
                 template_id: "damage-number".to_string(),
@@ -1722,14 +1800,71 @@ mod tests {
 
         assert!(server.send_presentation(RELAY_CLIENT_ID, message.clone()));
         relay_server_to_client(&mut server, &mut client);
+        for packet in server.packets_to_send(RELAY_CLIENT_ID + 1) {
+            other.process_packet(&packet);
+        }
         assert!(client.drain_control().is_empty());
         assert_eq!(client.drain_presentation(), vec![message]);
+        assert!(other.drain_presentation().is_empty());
     }
 
-    // Regression: unframed pre-demotion presentation survived a Holding drain
-    // and was ingested after the same connection re-entered participation.
     #[test]
-    fn demotion_discards_late_spawn_and_overlay_before_rejoin() {
+    fn broadcast_presentation_frames_each_current_participant_and_excludes_held_slots() {
+        const OTHER_ID: ClientId = RELAY_CLIENT_ID + 1;
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let mut other = add_participating_relay_client(&mut server, client.server_addr, OTHER_ID);
+        assert_ne!(
+            client.active_participation_epoch,
+            other.active_participation_epoch
+        );
+        let message = ServerPresentationMessage {
+            payload: wire::ServerPresentationPayload::Command(wire::PresentationCommand::Rumble {
+                strong: 0.5,
+                weak: None,
+                duration_ms: 100.0,
+            }),
+        };
+        assert_eq!(server.broadcast_presentation(message.clone()), 2);
+        relay_server_to_client(&mut server, &mut client);
+        for packet in server.packets_to_send(OTHER_ID) {
+            other.process_packet(&packet);
+        }
+        assert_eq!(client.drain_presentation(), vec![message.clone()]);
+        assert_eq!(other.drain_presentation(), vec![message.clone()]);
+
+        other.set_mod_digest(Some([8; 32]));
+        other.update_connections(Duration::from_millis(16));
+        for packet in other.packets_to_send() {
+            server.process_packet_from(&packet, OTHER_ID);
+        }
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { client_id, .. }] if *client_id == OTHER_ID
+        ));
+        assert_eq!(server.broadcast_presentation(message.clone()), 1);
+        relay_server_to_client(&mut server, &mut client);
+        for packet in server.packets_to_send(OTHER_ID) {
+            other.process_packet(&packet);
+        }
+        let _ = other.drain_control();
+        assert!(!other.is_participating());
+        assert_eq!(client.drain_presentation(), vec![message.clone()]);
+        assert!(other.drain_presentation().is_empty());
+
+        assert!(
+            server
+                .close_relay_connection(RELAY_CLIENT_ID, CloseCause::Disconnect)
+                .is_some()
+        );
+        assert_eq!(server.broadcast_presentation(message), 0);
+    }
+
+    // Regression: blanket hold-time flushing also discarded fresh presentation
+    // queued beside a coalesced re-promotion marker.
+    #[test]
+    fn coalesced_hold_and_repromotion_keep_only_current_epoch_presentation() {
         let (mut server, mut client) = participate_relay_pair();
         let stale_spawn = ServerPresentationMessage {
             payload: crate::wire::ServerPresentationPayload::Spawn {
@@ -1739,17 +1874,17 @@ mod tests {
                 facts: BTreeMap::new(),
             },
         };
-        let stale_overlay = ServerPresentationMessage {
-            payload: crate::wire::ServerPresentationPayload::OverlayFact {
-                enemy_id: crate::wire::NetworkId(3),
-                health_fraction: 0.5,
-                shield_fraction: 0.0,
-                has_shield: false,
-                alive: true,
-            },
+        let stale_command = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Command(
+                crate::wire::PresentationCommand::PlaySound {
+                    sound: "old-sound".to_string(),
+                    bus: None,
+                    at: None,
+                },
+            ),
         };
         assert!(server.send_presentation(RELAY_CLIENT_ID, stale_spawn));
-        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_overlay));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, stale_command));
 
         server.set_level_parity(None);
         assert!(matches!(
@@ -1761,19 +1896,7 @@ mod tests {
             server.poll_handshakes().lifecycle.as_slice(),
             [SlotEvent::Participating { .. }]
         ));
-        relay_server_to_client(&mut server, &mut client);
-        assert!(matches!(
-            client.drain_control().as_slice(),
-            [ServerControlMessage::Divergence(DivergenceReason::Holding(
-                HoldingCause::HostLevelAbsent
-            ))]
-        ));
-        assert!(
-            client.drain_presentation().is_empty(),
-            "pre-demotion presentation must be retired even after re-promotion",
-        );
-
-        let current = ServerPresentationMessage {
+        let current_spawn = ServerPresentationMessage {
             payload: crate::wire::ServerPresentationPayload::Spawn {
                 template_id: "current-number".to_string(),
                 anchor: [4.0, 5.0, 6.0],
@@ -1781,9 +1904,201 @@ mod tests {
                 facts: BTreeMap::new(),
             },
         };
+        let current_command = ServerPresentationMessage {
+            payload: crate::wire::ServerPresentationPayload::Command(
+                crate::wire::PresentationCommand::PlaySound {
+                    sound: "current-sound".to_string(),
+                    bus: None,
+                    at: Some([4.0, 5.0, 6.0]),
+                },
+            ),
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, current_spawn.clone()));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, current_command.clone()));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(client.is_participating());
+        assert_eq!(
+            client.drain_presentation(),
+            vec![current_spawn, current_command],
+            "only fresh presentation survives the coalesced hold and promotion",
+        );
+    }
+
+    // Regression: a pre-demotion unreliable packet arrived after the hold's
+    // queue flush and after re-promotion, restoring a retired cosmetic.
+    #[test]
+    fn presentation_epoch_rejects_late_spawn_and_command_after_repromotion() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let old_epoch = client.active_participation_epoch;
+        let spawn = ServerPresentationMessage {
+            payload: wire::ServerPresentationPayload::Spawn {
+                template_id: "damage-number".to_string(),
+                anchor: [1.0, 2.0, 3.0],
+                value: 25.0,
+                facts: BTreeMap::from([(
+                    "critical".to_string(),
+                    wire::PresentationFact::Bool(true),
+                )]),
+            },
+        };
+        let command = ServerPresentationMessage {
+            payload: wire::ServerPresentationPayload::Command(
+                wire::PresentationCommand::PlaySound {
+                    sound: "impact".to_string(),
+                    bus: Some("effects".to_string()),
+                    at: Some([1.0, 2.0, 3.0]),
+                },
+            ),
+        };
+        assert!(server.send_presentation(RELAY_CLIENT_ID, spawn.clone()));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, command.clone()));
+        let delayed = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(
+            !delayed.is_empty(),
+            "old presentation must enter real packets"
+        );
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(!client.is_participating());
+        assert!(!server.send_presentation(RELAY_CLIENT_ID, spawn.clone()));
+        assert!(client.drain_presentation().is_empty());
+
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        assert!(client.is_participating());
+        assert_ne!(client.active_participation_epoch, old_epoch);
+
+        for packet in delayed {
+            client.process_packet(&packet);
+        }
+        assert!(
+            client.drain_presentation().is_empty(),
+            "old spawn and command must be rejected even after re-promotion",
+        );
+
+        assert!(server.send_presentation(RELAY_CLIENT_ID, spawn.clone()));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, command.clone()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(client.drain_presentation(), vec![spawn, command]);
+        assert!(client.drain_presentation().is_empty(), "no event replay");
+    }
+
+    #[test]
+    fn presentation_drain_discards_malformed_and_other_epoch_messages() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let epoch = client
+            .active_participation_epoch
+            .expect("active participant");
+        let current = ServerPresentationMessage {
+            payload: wire::ServerPresentationPayload::Command(wire::PresentationCommand::Rumble {
+                strong: 0.5,
+                weak: None,
+                duration_ms: 100.0,
+            }),
+        };
+        server
+            .server
+            .send_message(RELAY_CLIENT_ID, Channel::Presentation, Vec::<u8>::new());
+        server.server.send_message(
+            RELAY_CLIENT_ID,
+            Channel::Presentation,
+            wire::encode(&ParticipationFrame {
+                participation_epoch: epoch,
+                payload: Vec::new(),
+            }),
+        );
+        server.server.send_message(
+            RELAY_CLIENT_ID,
+            Channel::Presentation,
+            wire::encode(&ParticipationFrame {
+                participation_epoch: epoch.wrapping_add(1),
+                payload: wire::encode(&current),
+            }),
+        );
         assert!(server.send_presentation(RELAY_CLIENT_ID, current.clone()));
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(client.drain_presentation(), vec![current]);
+        assert!(client.drain_presentation().is_empty());
+        capture.assert_logged_once(log::Level::Warn, "dropping unframed server Presentation");
+        capture.assert_logged_once(log::Level::Warn, "dropping malformed server Presentation");
+    }
+
+    #[test]
+    fn presentation_drain_exhausts_held_and_disconnected_clients() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+        let message = ServerPresentationMessage {
+            payload: wire::ServerPresentationPayload::Command(wire::PresentationCommand::Rumble {
+                strong: 0.5,
+                weak: None,
+                duration_ms: 100.0,
+            }),
+        };
+        assert!(!server.send_presentation(RELAY_CLIENT_ID + 1, message.clone()));
+        assert!(server.send_presentation(RELAY_CLIENT_ID, message.clone()));
+        let delayed = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(!delayed.is_empty());
+        server.set_level_parity(None);
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(!client.is_participating());
+        assert!(!server.send_presentation(RELAY_CLIENT_ID, message.clone()));
+        for packet in delayed {
+            client.process_packet(&packet);
+        }
+        assert!(client.drain_presentation().is_empty());
+        assert!(
+            client
+                .client
+                .receive_message(Channel::Presentation)
+                .is_none()
+        );
+
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        let _ = server.poll_handshakes();
+        relay_server_to_client(&mut server, &mut client);
+        let _ = client.drain_control();
+        assert!(client.is_participating());
+        assert!(server.send_presentation(RELAY_CLIENT_ID, message));
+        relay_server_to_client(&mut server, &mut client);
+        client.client.disconnect();
+        assert!(!client.is_connected());
+        assert!(client.drain_presentation().is_empty());
+        assert!(
+            client
+                .client
+                .receive_message(Channel::Presentation)
+                .is_none()
+        );
     }
 
     fn observer_cue(ordinal: u8) -> wire::WeaponCue {

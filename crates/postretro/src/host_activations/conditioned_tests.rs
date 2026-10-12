@@ -360,6 +360,9 @@ struct Fixture {
     /// Host touch stage state and the descriptors it resolves drops against.
     touch: crate::sim::touch::TouchSystem,
     descriptors: Vec<postretro_entities::EntityTypeDescriptor>,
+    /// Opt-in composition coverage: ordinary tests intentionally leave snapshot
+    /// receive outside their transport/activation seam.
+    receive: Option<receive_alternate::SnapshotReceive>,
 }
 
 impl Fixture {
@@ -454,6 +457,7 @@ impl Fixture {
             reloads: Vec::new(),
             touch: Default::default(),
             descriptors: Vec::new(),
+            receive: None,
         };
         for _ in 0..256 {
             fixture.transport();
@@ -552,6 +556,9 @@ impl Fixture {
             );
         }
         for message in self.client.drain_control() {
+            if let Some(receive) = self.receive.as_mut() {
+                receive.control(&message);
+            }
             match message {
                 wire::ServerControlMessage::SwitchAccepted(accepted) => self
                     .switch_outcomes
@@ -563,6 +570,7 @@ impl Fixture {
                 _ => {}
             }
         }
+        self.receive_snapshots();
         for bytes in self.client.drain_input() {
             match wire::decode::<wire::ServerMessage>(&bytes).unwrap() {
                 wire::ServerMessage::ActivationOutcomes(outcomes) => {
@@ -626,11 +634,10 @@ impl Fixture {
     fn send_input(&mut self, tick: u32, command: &sim::SimCommand) {
         // Fixed fixture data, not an alternative serializer or queue: actual
         // bitcode and the production incoming converter handle these messages.
-        assert_eq!(command.movement.wish_dir, Vec2::ZERO);
         let input = wire::InputCommand {
             client_tick: tick,
             movement: wire::WireMovementInput {
-                wish_dir: [0.0; 2],
+                wish_dir: command.movement.wish_dir.to_array(),
                 jump_pressed: false,
                 dash_pressed: false,
                 running: false,
@@ -662,13 +669,32 @@ impl Fixture {
                 cancel: command.activation.cancel.map(wire_token),
             },
         };
-        self.client
-            .send_input(wire::encode(&wire::ClientMessage::Input(input)));
+        if let Some(receive) = self.receive.as_mut() {
+            let result = netcode::client_predict_tick(
+                &mut self.local.borrow_mut(),
+                &mut self.client,
+                &mut receive.prediction,
+                netcode::ClientPredictionTickContext {
+                    command,
+                    aim_pitch: self.aim_pitch,
+                    collision: &self.world,
+                    gravity: 0.0,
+                    tick_dt: DT,
+                },
+            );
+            assert_eq!(result.client_tick, tick);
+        } else {
+            self.client
+                .send_input(wire::encode(&wire::ClientMessage::Input(input)));
+        }
         self.sent.push(input);
         self.sent_at.push(self.tick);
     }
 
     fn declare(&mut self, shot: ShotId, records: Vec<wire::HitRecord>) {
+        if let Some(receive) = self.receive.as_mut() {
+            receive.declarations.push(shot);
+        }
         self.client
             .send_input(wire::encode(&wire::ClientMessage::HitDeclaration(
                 wire::HitDeclaration {
@@ -744,6 +770,18 @@ impl Fixture {
                 0.0,
                 queued.shot.clone(),
             );
+            if let Some(receive) = self.receive.as_mut() {
+                let effects = weapon::client_pull_effects(
+                    queued.presentation,
+                    resolution.projectile_launch.is_some(),
+                    !resolution.impact_contacts().is_empty(),
+                );
+                if effects.addresses.contains(&"activate") {
+                    receive
+                        .fire_cues
+                        .push((id, queued.shot.sounds.fire.clone()));
+                }
+            }
             self.predicted.predict(
                 id,
                 queued.weapon,
@@ -1011,6 +1049,7 @@ impl Fixture {
             |_, _| {},
             |_| {},
         );
+        self.publish_receive_snapshots();
         self.tick = self.tick.wrapping_add(1);
     }
 
@@ -3028,7 +3067,7 @@ fn conditioned_late_admitted_start_fires_along_its_own_aim_while_the_pawn_faces_
 /// Where [`hand_weapon`] puts the client's slot-0 host weapon.
 #[derive(Clone, Copy)]
 enum WeaponLocation {
-    /// Back in the client pawn's slot 0. A holder's inventory is left as it was.
+    /// Back in the client pawn's slot 0, released from any other holder.
     Pawn,
     /// Out of the client pawn's inventory, as when dropped into the world: its
     /// cooldown freezes.
@@ -3041,6 +3080,20 @@ enum WeaponLocation {
 fn hand_weapon(fixture: &Fixture, to: WeaponLocation) {
     let mut registry = fixture.host.borrow_mut();
     let weapon = fixture.host_actors.weapon;
+    // Release canonical ownership without advancing a tick or clearing the
+    // client's network cadence record or the weapon's recovery.
+    if let Some((holder, slot)) = registry.inventory_owner(weapon)
+        && holder != fixture.host_actors.pawn
+    {
+        let mut inventory = registry
+            .get_component::<Inventory>(holder)
+            .expect("current holder has an inventory")
+            .clone();
+        inventory.wieldables[slot] = None;
+        registry
+            .set_component(holder, inventory)
+            .expect("current holder releases the weapon");
+    }
     let mut inventory = registry
         .get_component::<Inventory>(fixture.host_actors.pawn)
         .expect("client pawn holds an inventory")
@@ -3056,6 +3109,12 @@ fn hand_weapon(fixture: &Fixture, to: WeaponLocation) {
             .set_component(holder, holder_inventory)
             .expect("holder inventory attaches");
     }
+    let expected_owner = match to {
+        WeaponLocation::Pawn => Some((fixture.host_actors.pawn, 0)),
+        WeaponLocation::World => None,
+        WeaponLocation::Holder(holder) => Some((holder, 0)),
+    };
+    assert_eq!(registry.inventory_owner(weapon), expected_owner);
 }
 
 // A stamping client that lets its weapon go between starts, dropped to the
@@ -3407,4 +3466,5 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
 }
 
 // Weapon-switch declarations ordered by client tick with starts and presses.
+mod receive_alternate;
 mod switch_order;

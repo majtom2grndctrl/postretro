@@ -358,7 +358,7 @@ pub fn run_mover_blocking_pass(
 
         if snapshot.policy == BlockPolicy::Crush {
             for &(crush_mover, victim) in &pinned_crush_contacts {
-                if crush_mover != snapshot.entity {
+                if crush_mover != snapshot.entity || registry.is_inventory_owned(victim) {
                     continue;
                 }
                 if !crush_hit_is_due(
@@ -569,6 +569,9 @@ fn player_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Caps
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .filter_map(|(entity, _)| {
+            if registry.is_inventory_owned(entity) {
+                return None;
+            }
             let movement = registry
                 .get_component::<PlayerMovementComponent>(entity)
                 .ok()?;
@@ -587,6 +590,9 @@ fn agent_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsu
     registry
         .iter_with_kind(ComponentKind::Agent)
         .filter_map(|(entity, _)| {
+            if registry.is_inventory_owned(entity) {
+                return None;
+            }
             let agent = registry.get_component::<AgentComponent>(entity).ok()?;
             let transform = registry.get_component::<Transform>(entity).ok()?;
             Some((
@@ -599,6 +605,9 @@ fn agent_capsules(registry: &EntityRegistry) -> Vec<(EntityId, glam::Vec3, Capsu
 }
 
 fn is_blocking_victim(registry: &EntityRegistry, entity: EntityId) -> bool {
+    if registry.is_inventory_owned(entity) {
+        return false;
+    }
     registry
         .has_component_kind(entity, ComponentKind::PlayerMovement)
         .unwrap_or(false)
@@ -2795,5 +2804,137 @@ mod tests {
                 .count(),
             2
         );
+    }
+    #[test]
+    fn held_world_participation_excludes_blockers_and_crush_victims_until_release() {
+        use postretro_entities::components::inventory::Inventory;
+        for policy in [BlockPolicy::Stop, BlockPolicy::Reverse, BlockPolicy::Crush] {
+            let mover_id = 42;
+            let mut registry = EntityRegistry::new();
+            let holder = registry.spawn(Transform::default());
+            let mover_entity = registry.spawn(Transform::default());
+            let mut component = mover(mover_id);
+            component.block_policy = policy;
+            component.crush_damage = 10.0;
+            registry.set_component(mover_entity, component).unwrap();
+            let item = add_enemy(&mut registry, Some(47.0));
+            let agent = registry
+                .get_component::<AgentComponent>(item)
+                .unwrap()
+                .clone();
+            let mut inventory = Inventory::default();
+            inventory.wieldables[9] = Some(item);
+            registry.set_component(holder, inventory).unwrap();
+            let collider = swept_wall(mover_id);
+            let poses = moving_contact_pose(mover_id);
+            let mut state = MoverBlockingState::default();
+            let mut events = Vec::new();
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &poses,
+                &mut state,
+                0.05,
+                &mut events,
+                &mut |_| panic!("held item must not dispatch crush policy"),
+            );
+            assert!(events.is_empty());
+            assert_eq!(
+                registry
+                    .get_component::<HealthComponent>(item)
+                    .unwrap()
+                    .current,
+                47.0
+            );
+            assert_eq!(
+                registry.get_component::<AgentComponent>(item).unwrap(),
+                &agent
+            );
+            assert!(
+                !registry
+                    .get_component::<KinematicMoverComponent>(mover_entity)
+                    .unwrap()
+                    .blocked
+            );
+            assert_eq!(
+                registry
+                    .get_component::<KinematicMoverComponent>(mover_entity)
+                    .unwrap()
+                    .direction_sign,
+                1
+            );
+            registry
+                .set_component(holder, Inventory::default())
+                .unwrap();
+            run_mover_blocking_pass(
+                &mut registry,
+                &CollisionWorld::new(),
+                std::slice::from_ref(&collider),
+                &poses,
+                &mut state,
+                0.05,
+                &mut events,
+                &mut |_| {},
+            );
+            assert_eq!(events.len(), 1, "released item resumes mover participation");
+            if policy == BlockPolicy::Crush {
+                assert_eq!(
+                    registry
+                        .get_component::<HealthComponent>(item)
+                        .unwrap()
+                        .current,
+                    37.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn held_world_participation_rechecks_queued_crush_victims_after_callback() {
+        use postretro_entities::components::inventory::Inventory;
+        let mover_id = 42;
+        let mut registry = EntityRegistry::new();
+        let holder = registry.spawn(Transform::default());
+        let mover_entity = registry.spawn(Transform::default());
+        let mut component = mover(mover_id);
+        component.block_policy = BlockPolicy::Crush;
+        component.crush_damage = 10.0;
+        registry.set_component(mover_entity, component).unwrap();
+        let first = add_enemy(&mut registry, Some(47.0));
+        let second = add_enemy(&mut registry, Some(47.0));
+        let collider = swept_wall(mover_id);
+        let poses = moving_contact_pose(mover_id);
+        let mut callbacks = 0;
+        let mut events = Vec::new();
+        run_mover_blocking_pass(
+            &mut registry,
+            &CollisionWorld::new(),
+            std::slice::from_ref(&collider),
+            &poses,
+            &mut MoverBlockingState::default(),
+            0.05,
+            &mut events,
+            &mut |registry| {
+                callbacks += 1;
+                // Contact iteration order is deliberately irrelevant to this proof.
+                let mut inventory = Inventory::default();
+                inventory.wieldables[8] = Some(first);
+                inventory.wieldables[9] = Some(second);
+                registry.set_component(holder, inventory).unwrap();
+            },
+        );
+        assert_eq!(callbacks, 1);
+        assert_eq!(events, vec![(MoverEventKind::Crushed, mover_id)]);
+        let healths: Vec<_> = [first, second]
+            .into_iter()
+            .map(|id| {
+                registry
+                    .get_component::<HealthComponent>(id)
+                    .unwrap()
+                    .current
+            })
+            .collect();
+        assert_eq!(healths.iter().sum::<f32>(), 84.0);
     }
 }

@@ -353,7 +353,9 @@ fn tick_impl(
     let snapshot: Vec<AgentSnapshot> = registry
         .iter_with_kind(ComponentKind::Agent)
         .filter_map(|(id, value)| {
-            if crate::scripting_systems::health::is_quiescent(registry, id) {
+            if registry.is_inventory_owned(id)
+                || crate::scripting_systems::health::is_quiescent(registry, id)
+            {
                 return None;
             }
             let ComponentValue::Agent(agent) = value else {
@@ -1135,3 +1137,80 @@ fn separation_preserving_goal_progress(steer_velocity: Vec3, separation: Vec3) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod held_world_participation {
+    use super::*;
+    use postretro_entities::Transform;
+    use postretro_entities::components::inventory::Inventory;
+
+    #[test]
+    fn held_world_participation_omits_neighbor_separation_and_resumes_movement() {
+        fn scenario(held_neighbor: bool) -> (Vec3, Vec3, Vec3) {
+            let mut registry = EntityRegistry::new();
+            let holder = registry.spawn(Transform::default());
+            let walker = registry.spawn(Transform::default());
+            let neighbor = registry.spawn(Transform {
+                position: Vec3::Z * 0.2,
+                ..Transform::default()
+            });
+            let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 3.5);
+            agent.destination = Some(Vec3::X * 10.0);
+            agent.planned_destination = agent.destination;
+            agent.path = vec![Vec3::X * 10.0];
+            agent.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(walker, agent.clone()).unwrap();
+            if held_neighbor {
+                registry.set_component(neighbor, agent.clone()).unwrap();
+                let mut inventory = Inventory::default();
+                inventory.wieldables[9] = Some(neighbor);
+                registry.set_component(holder, inventory).unwrap();
+            }
+            let before = registry
+                .get_component::<Transform>(neighbor)
+                .unwrap()
+                .position;
+            tick(&mut registry, &CollisionWorld::new(), None, 0.0, 1.0 / 60.0);
+            let walker_position = registry
+                .get_component::<Transform>(walker)
+                .unwrap()
+                .position;
+            assert_eq!(
+                registry
+                    .get_component::<Transform>(neighbor)
+                    .unwrap()
+                    .position,
+                before
+            );
+            if held_neighbor {
+                assert_eq!(
+                    registry.get_component::<AgentComponent>(neighbor).unwrap(),
+                    &agent
+                );
+                registry
+                    .set_component(holder, Inventory::default())
+                    .unwrap();
+                tick(&mut registry, &CollisionWorld::new(), None, 0.0, 1.0 / 60.0);
+            }
+            (
+                walker_position,
+                before,
+                registry
+                    .get_component::<Transform>(neighbor)
+                    .unwrap()
+                    .position,
+            )
+        }
+        let held = scenario(true);
+        let absent = scenario(false);
+        assert_eq!(
+            held.0, absent.0,
+            "a held neighbor exerts no separation force"
+        );
+        assert!(held.0.x > 0.0, "the world agent still follows its path");
+        assert_ne!(
+            held.1, held.2,
+            "release resumes the retained navigation path"
+        );
+    }
+}

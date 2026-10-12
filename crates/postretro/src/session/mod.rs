@@ -23,7 +23,9 @@ use crate::render;
 use crate::scripting::builtins::{
     ClassnameDispatch, register_builtins as register_builtin_classnames,
 };
-use crate::scripting::primitives::light::register_sequenced_light_primitives;
+use crate::scripting::primitives::light::{
+    register_light_reaction_primitives, register_sequenced_light_primitives,
+};
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
@@ -143,13 +145,11 @@ pub(crate) struct Session {
     /// this session-owned bridge.
     pub(crate) presentation_pool: crate::presentation_pool::PresentationPool,
 
-    /// Client-only terminal guards for unordered enemy-overlay facts. This is
-    /// separate from the pool because a removed overlay must still remember its
-    /// terminal `NetworkId` until the reorder horizon has elapsed.
+    /// Latest shared roster and synchronized expiry ordering, independent of
+    /// the local draw pool so delayed baselines can still project live bars.
     pub(crate) client_overlay_facts: crate::netcode::ClientOverlayFactState,
-    /// Host-only recipient and change bookkeeping for remote damaged-enemy
-    /// overlay facts. Kept outside the registry so it cannot leak EntityIds onto
-    /// the wire or affect the host-owned local overlay.
+    /// One bounded host-selected roster for every participating screen.
+    /// Selection and lifetime stay independent of local rendering.
     pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
 
     /// Gates the one-time persistence overlay and clean-exit save.
@@ -915,6 +915,7 @@ fn build_scripting_core(
     register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
+    register_light_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
         &mut reaction_registry,
         command_diagnostics.clone(),
@@ -981,6 +982,21 @@ impl ScriptingCore {
             &mut self.impact_policy_runtime,
             registry,
         );
+    }
+
+    /// Hosted combat streams each original damage edge into the shared bounded
+    /// selector while preserving the same post-damage owner HUD publication.
+    pub(crate) fn evaluate_pending_in_tick_impacts_with_overlay_sink(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        sink: impl FnMut(
+            &postretro_entities::EntityRegistry,
+            crate::impact_policy::DamagedEnemyOverlayDamage,
+        ),
+    ) {
+        self.player_hud_state.publish_health_from_registry(registry);
+        self.impact_policy_runtime
+            .evaluate_pending_in_registry_with_overlay_sink(registry, sink);
     }
 
     /// Drain the validated mod manifest's engine-global registrations into the

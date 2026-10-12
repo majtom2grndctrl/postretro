@@ -496,6 +496,7 @@ fn snapshot_with_state(
         state_schema_fingerprint: fingerprint,
         state_records,
         faction_sentiment_record: None,
+        server_script_time: 0.0,
     }
 }
 

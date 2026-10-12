@@ -95,18 +95,9 @@ pub enum NetEndpoint {
         /// local-player marker exists; the host pawn stays the host's own
         /// `local_player_pawn` registry-side and is replicated outbound, that is all.
         host_pawn: Option<EntityId>,
-        /// E10 Task 4: the set of map-placed or runtime-spawned AI enemy `EntityId`s the host
-        /// has registered for outbound replication this level. The single owner of that id set so a level
-        /// reload has one place to clean up: `host_register_map_enemies` unregisters every
-        /// stale id here before registering the freshly-spawned level's enemies (the
-        /// registry bumps generations on despawn, so a reloaded enemy is a distinct
-        /// entity). Empty until the first level install registers enemies, and on a map
-        /// with no AI enemies.
-        map_enemies: std::collections::HashSet<EntityId>,
-        /// World-item entities registered for replication while they carry the
-        /// host-local `TouchableComponent`. The sweep removes stale entries on
-        /// acquisition and stamps a fresh `NetworkId` when a drop restores touchability.
-        world_items: std::collections::HashSet<EntityId>,
+        /// Live descriptor-world entities registered by the shared classifier.
+        /// Ownership/component changes prune membership before each snapshot.
+        descriptor_entities: std::collections::HashSet<EntityId>,
         /// PRL-loaded kinematic movers registered for outbound replication. Clients
         /// bind these by `mover_id` to their already-loaded local mover entities
         /// rather than spawning from the baseline.
@@ -389,6 +380,13 @@ impl ClientTimeSync {
             .then(|| self.estimator.estimated_server_tick(&self.clock))
     }
 
+    /// Smoothed round-trip time, unavailable until a real echo initializes sync.
+    pub fn rtt_micros(&self) -> Option<f64> {
+        self.estimator
+            .is_initialized()
+            .then(|| self.estimator.rtt_micros())
+    }
+
     /// The smoothed jitter estimate in microseconds, for interpolation delay
     /// sizing. `None` until the first echo has been folded in.
     pub(crate) fn jitter_micros(&self) -> Option<f64> {
@@ -523,8 +521,7 @@ impl NetEndpoint {
                     pending_hit_declarations: PendingHitDeclarations::new(),
                     weaponless_fire_logged: std::collections::HashSet::new(),
                     host_pawn: None,
-                    map_enemies: std::collections::HashSet::new(),
-                    world_items: std::collections::HashSet::new(),
+                    descriptor_entities: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
@@ -717,8 +714,7 @@ impl NetEndpoint {
             pending_hit_declarations,
             weaponless_fire_logged,
             host_pawn,
-            map_enemies,
-            world_items,
+            descriptor_entities,
             loaded_movers,
             demo_mover,
             state_slots,
@@ -741,8 +737,7 @@ impl NetEndpoint {
         *pending_hit_declarations = PendingHitDeclarations::new();
         weaponless_fire_logged.clear();
         *host_pawn = None;
-        map_enemies.clear();
-        world_items.clear();
+        descriptor_entities.clear();
         loaded_movers.clear();
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();

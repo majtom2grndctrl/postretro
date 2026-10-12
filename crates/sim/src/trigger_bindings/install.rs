@@ -132,8 +132,8 @@ impl TriggerBindingTable {
             );
             return;
         }
-        // `on.player` and `byPlayer(on.player)` exist only in a player event's
-        // fire; a trigger publishes no event player.
+        // `on.player` as a target, read owner or presentation audience exists
+        // only in a player event's fire; a trigger publishes no event player.
         if let Some(reaction) = matched
             .iter()
             .find(|reaction| reaction_uses_event_player(&reaction.descriptor))

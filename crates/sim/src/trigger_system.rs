@@ -174,7 +174,7 @@ impl TriggerSystem {
                 alive_players: &alive_players,
                 bound_edges: &bound_edges,
             },
-            |_, _, _| {},
+            |_, _, _, _| {},
         )
     }
 
@@ -182,14 +182,17 @@ impl TriggerSystem {
     /// callback runs immediately after the direct mover command and gate-state
     /// update, before the next `(trigger, player)` edge is evaluated. This lets
     /// a trigger reaction arm or disarm a later trigger in the same fixed tick
-    /// without bringing a script VM into the simulation seam.
+    /// without bringing a script VM into the simulation seam. The occupant slice
+    /// is the completed tick occupancy filtered through `alive_players`; its
+    /// length is the count passed beside it. Residual producers retain a copy
+    /// only when that edge leaves frame-end work.
     pub fn run_authoritative_tick_with_dispatch(
         &mut self,
         registry: &mut EntityRegistry,
         bridge: &TriggerVolumeBridge,
         tick_inputs: TriggerTickInputs<'_>,
         dispatch_inputs: TriggerDispatchInputs<'_>,
-        mut dispatch: impl FnMut(&TriggerEvent, usize, &mut EntityRegistry),
+        mut dispatch: impl FnMut(&TriggerEvent, usize, &[PlayerId], &mut EntityRegistry),
     ) -> TriggerFireReport {
         let player_capsules = canonical_player_capsules(
             registry,
@@ -318,9 +321,9 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        let occupancy =
-                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
-                        dispatch(&event, occupancy, registry);
+                        let occupants =
+                            self.effective_occupants(trigger_id, dispatch_inputs.alive_players);
+                        dispatch(&event, occupants.len(), &occupants, registry);
                         report.fires.push(event);
                     }
                     TriggerEventEdge::Enter => {
@@ -375,9 +378,9 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        let occupancy =
-                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
-                        dispatch(&event, occupancy, registry);
+                        let occupants =
+                            self.effective_occupants(trigger_id, dispatch_inputs.alive_players);
+                        dispatch(&event, occupants.len(), &occupants, registry);
                         report.fires.push(event);
                     }
                 }
@@ -387,13 +390,20 @@ impl TriggerSystem {
         report
     }
 
-    fn effective_occupancy(&self, trigger: EntityId, alive_players: &HashSet<PlayerId>) -> usize {
-        self.occupants.get(&trigger).map_or(0, |occupants| {
-            occupants
-                .iter()
-                .filter(|player| alive_players.contains(player))
-                .count()
-        })
+    fn effective_occupants(
+        &self,
+        trigger: EntityId,
+        alive_players: &HashSet<PlayerId>,
+    ) -> Vec<PlayerId> {
+        self.occupants
+            .get(&trigger)
+            .map_or_else(Vec::new, |occupants| {
+                occupants
+                    .iter()
+                    .filter(|player| alive_players.contains(player))
+                    .copied()
+                    .collect()
+            })
     }
 
     #[cfg(test)]
@@ -1455,10 +1465,16 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &HashSet::new(),
             },
-            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+            |event, occupancy, occupants, _| {
+                observed.push((event.clone(), occupancy, occupants.to_vec()))
+            },
         );
         assert_eq!(observed.len(), 2, "both physical entries still emit edges");
-        assert!(observed.iter().all(|(_, occupancy)| *occupancy == 1));
+        assert!(
+            observed
+                .iter()
+                .all(|(_, occupancy, occupants)| *occupancy == 1 && occupants == &[live_id])
+        );
 
         set_player_position(&mut registry, live, Vec3::new(4.0, 1.0, 0.0));
         observed.clear();
@@ -1474,7 +1490,9 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &HashSet::new(),
             },
-            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+            |event, occupancy, occupants, _| {
+                observed.push((event.clone(), occupancy, occupants.to_vec()))
+            },
         );
         assert_eq!(observed.len(), 1);
         assert_eq!(observed[0].0.edge, TriggerEventEdge::Exit);
@@ -1482,6 +1500,102 @@ mod tests {
         assert_eq!(
             observed[0].1, 0,
             "the exiting live pawn is removed before dispatch"
+        );
+        assert!(observed[0].2.is_empty());
+    }
+
+    #[test]
+    fn edge_occupants_include_simultaneous_entries_and_remain_frozen_across_ticks() {
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let first = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let second = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let third = spawn_player(&mut registry, Vec3::new(4.0, 1.0, 0.0));
+        let ids = [
+            PlayerId::Local(first),
+            PlayerId::Remote(2),
+            PlayerId::Remote(3),
+        ];
+        let players = [
+            AuthoritativePlayer {
+                id: ids[0],
+                pawn: first,
+            },
+            AuthoritativePlayer {
+                id: ids[1],
+                pawn: second,
+            },
+            AuthoritativePlayer {
+                id: ids[2],
+                pawn: third,
+            },
+        ];
+        let alive = HashSet::from(ids);
+        let mut system = TriggerSystem::default();
+        let mut captured = Vec::new();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
+            |event, count, occupants, _| {
+                assert_eq!(count, occupants.len());
+                captured.push((event.edge, occupants.to_vec()));
+            },
+        );
+        assert_eq!(
+            captured,
+            vec![
+                (TriggerEventEdge::Enter, vec![ids[0], ids[1]]),
+                (TriggerEventEdge::Enter, vec![ids[0], ids[1]]),
+            ]
+        );
+        // A later catch-up tick removes the first player and adds the third.
+        // Both edges see the completed tick occupancy, while queued snapshots
+        // still retain the first tick's recipients for the frame-end drain.
+        set_player_position(&mut registry, first, Vec3::new(4.0, 1.0, 0.0));
+        set_player_position(&mut registry, third, Vec3::new(0.0, 1.0, 0.0));
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
+            |event, count, occupants, _| {
+                assert_eq!(count, occupants.len());
+                captured.push((event.edge, occupants.to_vec()));
+            },
+        );
+        assert_eq!(
+            captured,
+            vec![
+                (TriggerEventEdge::Enter, vec![ids[0], ids[1]]),
+                (TriggerEventEdge::Enter, vec![ids[0], ids[1]]),
+                (TriggerEventEdge::Exit, vec![ids[1], ids[2]]),
+                (TriggerEventEdge::Enter, vec![ids[1], ids[2]]),
+            ]
         );
     }
 
@@ -1530,7 +1644,7 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, _, _| observed.push(event.clone()),
+            |event, _, _, _| observed.push(event.clone()),
         );
         assert_eq!(
             observed.len(),
@@ -1559,7 +1673,7 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, _, _| observed.push(event.clone()),
+            |event, _, _, _| observed.push(event.clone()),
         );
         assert_eq!(observed.len(), 1, "the paired exit dispatches too");
         assert_eq!(observed[0].edge, TriggerEventEdge::Exit);
@@ -1694,7 +1808,7 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, _, registry| {
+            |event, _, _, registry| {
                 let execution = bindings.execute_with_script_ctx(
                     event.fire.trigger,
                     event.edge,
@@ -1855,7 +1969,7 @@ mod tests {
                 alive_players: &alive,
                 bound_edges: &bound_edges,
             },
-            |event, _, registry| {
+            |event, _, _, registry| {
                 bindings.execute_with_script_ctx(
                     event.fire.trigger,
                     event.edge,

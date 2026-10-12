@@ -2133,4 +2133,44 @@ mod tests {
         assert!((midpoint.position.z + 0.5).abs() <= f32::EPSILON);
         assert!((current.position.z + 1.0).abs() <= f32::EPSILON);
     }
+    #[test]
+    fn held_world_participation_rechecks_queued_projectile_contact_after_pickup() {
+        use postretro_entities::components::inventory::Inventory;
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let holder = registry.borrow_mut().spawn(Transform::default());
+        let first = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        let later = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        advance_once(&registry, 1.0);
+        let mut policies = 0;
+        let contacts = advance(
+            &registry,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0,
+            &mut |registry| {
+                policies += 1;
+                let mut inventory = Inventory::default();
+                inventory.wieldables[9] = Some(target);
+                registry.set_component(holder, inventory).unwrap();
+            },
+        );
+        let registry = registry.borrow();
+        assert_eq!(policies, 1);
+        assert_eq!(
+            contacts.len(),
+            2,
+            "accepted endpoints still present after pickup; target damage is rechecked"
+        );
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 15.0);
+        assert_eq!(health.contributor_ledger.total_recorded_hits(), 1);
+        assert!(!registry.exists(first));
+        assert!(!registry.exists(later));
+    }
 }

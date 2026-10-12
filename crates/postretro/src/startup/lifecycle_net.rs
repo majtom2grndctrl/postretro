@@ -192,6 +192,17 @@ impl App {
         }
         self.particle_live_counts.clear();
         if let Some(session) = self.session.as_mut() {
+            session
+                .scripting
+                .script_ctx
+                .presentation_overrides
+                .borrow_mut()
+                .clear();
+            session
+                .scripting
+                .script_ctx
+                .presentation_script_time
+                .set(0.0);
             session.light_bridge.clear();
             session.particle_render.reset_for_level();
             session.mesh_clip_tables.clear();

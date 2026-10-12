@@ -1,6 +1,8 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
+pub(crate) mod named_drains;
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -18,14 +20,14 @@ use crate::startup::BootState;
 use crate::{
     App, GamepadPollVotes, append_tick_weapon_script_events, apply_mover_yaw_carry,
     build_post_movement_command, build_sim_command, camera, cpu_timing,
-    drain_named_events_with_sequences, follow_camera_to_local_pawn, followed_player_pawn,
-    frame_eye, frontend_root_is_pushed, gameplay_capture_gate_for_frame,
-    gameplay_snapshot_for_capture_state, has_player_pawn, impact_effects, input,
-    local_active_wieldable, local_player_ground, local_viewmodel_asset, local_wieldable_occupancy,
-    maybe_save_connected_client_per_owner_state, netcode, poll_gamepad, rebuild_blocked_portals,
-    render, render_preparation, resolve_crouch_intent, resolve_mesh_entity_bindings_for_entities,
-    resolve_sprint_intent, scripting_systems, sim, sound_events, trigger_system, view_feel,
-    viewmodel_asset_for_archetype, viewmodel_world_transform,
+    follow_camera_to_local_pawn, followed_player_pawn, frame_eye, frontend_root_is_pushed,
+    gameplay_capture_gate_for_frame, gameplay_snapshot_for_capture_state, has_player_pawn,
+    impact_effects, input, local_active_wieldable, local_player_ground, local_viewmodel_asset,
+    local_wieldable_occupancy, maybe_save_connected_client_per_owner_state, netcode, poll_gamepad,
+    rebuild_blocked_portals, render, render_preparation, resolve_crouch_intent,
+    resolve_mesh_entity_bindings_for_entities, resolve_sprint_intent, scripting_systems, sim,
+    sound_events, trigger_system, view_feel, viewmodel_asset_for_archetype,
+    viewmodel_world_transform,
 };
 #[cfg(feature = "dev-tools")]
 use crate::{
@@ -142,6 +144,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     let frozen = false;
     let frame_anim_time =
         App::frame_anim_time(app.anim_time, frame_dt as f64, app.anim_time_scale, frozen);
+    // Clear the dispatch baseline before Input can fire a UI reaction. Capture,
+    // serialization and bridge sampling share this advanced, unclamped clock.
+    let frame_script_delta = if frozen { 0.0 } else { frame_dt };
+    let frame_script_time = app.script_time + f64::from(frame_script_delta);
+    if let Some(session) = app.session.as_ref() {
+        let ctx = &session.scripting.script_ctx;
+        ctx.presentation_overrides.borrow_mut().begin_frame();
+        ctx.presentation_script_time.set(frame_script_time);
+    }
 
     // Tail of the Input stage: poll the gamepad, BEFORE the
     // `take_ready`/`advance_frame` pair below (see `poll_gamepad`).
@@ -849,6 +860,29 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let hit_zone_store = &session.hit_zone_store;
             let progress_tracker = &mut session.progress_tracker;
             let scripting = &mut session.scripting;
+            let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+            let overlay_tracker = &mut session.host_overlay_fact_tracker;
+            let (mut host_hit_intake, host_overlay_identities) = match net_endpoint.as_mut() {
+                Some(netcode::NetEndpoint::Host {
+                    server,
+                    allocator,
+                    replicable,
+                    descriptor_entities,
+                    owners,
+                    open_shots,
+                    projectile_presentations,
+                    tick,
+                    ..
+                }) => (
+                    Some((server, owners, open_shots, projectile_presentations, *tick)),
+                    Some(crate::host_overlays::HostOverlayIdentities::new(
+                        allocator,
+                        replicable,
+                        descriptor_entities,
+                    )),
+                ),
+                _ => (None, None),
+            };
             let trigger_system = &mut session.trigger_system;
             let touch_system = &mut session.touch_system;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
@@ -913,24 +947,26 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     use_edges: &trigger_use_edges,
                 }),
                 |registry, on_impact| {
-                    let Some(netcode::NetEndpoint::Host {
-                        server,
-                        allocator,
-                        owners,
-                        open_shots,
-                        projectile_presentations,
-                        tick,
-                        ..
-                    }) = net_endpoint.as_mut()
+                    let Some((server, owners, open_shots, projectile_presentations, tick)) =
+                        host_hit_intake.as_mut()
                     else {
                         return;
                     };
+                    let identities = host_overlay_identities
+                        .as_ref()
+                        .expect("host HIT intake has canonical identities");
+                    if overlay_config.is_some() && !ready_hit_declarations.is_empty() {
+                        identities.register_before_remote_hits(
+                            registry,
+                            &mut script_ctx.presentation_overrides.borrow_mut(),
+                        );
+                    }
                     let _ = netcode::host_ingest_ready_hit_declarations(
                         server,
                         registry,
                         collision_world,
                         hit_zone_store,
-                        allocator,
+                        &identities.allocator(),
                         owners,
                         open_shots,
                         *tick,
@@ -941,7 +977,26 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         |impact| remote_impacts.push(impact),
                     );
                 },
-                |registry| scripting.evaluate_pending_in_tick_impacts(registry),
+                |registry| {
+                    if let Some(identities) = host_overlay_identities.as_ref() {
+                        scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+                            registry,
+                            |registry, damage| {
+                                if let Some(config) = overlay_config.as_ref() {
+                                    identities.record_damage(
+                                        registry,
+                                        damage,
+                                        &mut script_ctx.presentation_overrides.borrow_mut(),
+                                        overlay_tracker,
+                                        config,
+                                    );
+                                }
+                            },
+                        );
+                    } else {
+                        scripting.evaluate_pending_in_tick_impacts(registry);
+                    }
+                },
                 sim_cpu.gate(),
             );
             sim_cpu.absorb(&tick_events.cpu);
@@ -1056,8 +1111,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Unconditional per-tick registration sweeps, not gated on "did a spawn
             // happen this tick": they catch runtime enemies and component-driven
             // world-item acquisition/drop changes before post-loop serialization.
-            app.host_register_map_enemies_after_fixed_sim_tick();
-            app.host_register_world_items_after_fixed_sim_tick();
+            app.host_register_descriptor_entities_after_fixed_sim_tick();
         }
     }
 
@@ -1108,72 +1162,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // client receives cues, so other roles skip the registry borrow.
     if app.is_connected_client() {
         app.spawn_observer_impact_bursts(&mut script_ctx.registry.borrow_mut());
-    }
-
-    // Status overlays are host/single-player presentation facts.
-    // This runs once after every fixed tick (including zero-tick
-    // frames), so a same-frame damage refresh is stamped before
-    // Render while a create-then-kill is removed before it draws.
-    if !app.is_connected_client() {
-        let session = app.session.as_mut().expect("running session installed");
-        let overlay_config = session
-            .scripting
-            .impact_policy_runtime
-            .client_overlay_config();
-        if let Some(config) = overlay_config.as_ref()
-            && let Some(netcode::NetEndpoint::Host {
-                server,
-                allocator,
-                replicable,
-                owners,
-                ..
-            }) = session.net_endpoint.as_mut()
-        {
-            session
-                .host_overlay_fact_tracker
-                .begin_frame(frame_dt, config.linger_seconds, owners);
-            let overlay_frame = {
-                let registry = script_ctx.registry.borrow();
-                session
-                    .scripting
-                    .impact_policy_runtime
-                    .update_damaged_enemy_overlays(
-                        &mut session.presentation_pool,
-                        &registry,
-                        &session.hit_zone_store,
-                        frame_anim_time,
-                        session.host_overlay_fact_tracker.tracked_entities(),
-                        |source| source.is_some_and(|source| owners.owner_of(source).is_some()),
-                    )
-            };
-
-            // The host renderer pool contains only host-local feedback.
-            // Each remote recipient has an independently capped fact
-            // stream on the unreliable presentation channel.
-            netcode::send_host_overlay_facts(
-                &mut session.host_overlay_fact_tracker,
-                server,
-                allocator,
-                replicable,
-                owners,
-                &overlay_frame,
-                config.max_visible,
-            );
-        } else {
-            session.host_overlay_fact_tracker.clear();
-            let registry = script_ctx.registry.borrow();
-            let _ = session
-                .scripting
-                .impact_policy_runtime
-                .update_damaged_enemy_overlays(
-                    &mut session.presentation_pool,
-                    &registry,
-                    &session.hit_zone_store,
-                    frame_anim_time,
-                    [],
-                    |_| false,
-                );
-        }
     }
 
     drop(stage_scope);
@@ -1247,99 +1235,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             })
             .collect();
     if let Some(session) = app.session.as_ref() {
-        let mut pending_trigger_follow_ups = Vec::new();
-        // Every post-tick named source uses the executing path, then
-        // contributes `fire`/`on_complete` names to one bounded deferred
-        // batch. This keeps movement, AI, weapon, mover, and death events
-        // semantically aligned and lets waits enroll through the common
-        // sequence control arm.
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_movement_events
-                .iter()
-                .map(|emission| (emission.address, Some(emission.emitter.clone()))),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
+        let mut pending_trigger_follow_ups = named_drains::drain_frame_named_events(
+            named_drains::NamedFrameEvents {
+                movement: &pending_movement_events,
+                ai: &pending_ai_events,
+                observer: &app.observer_weapon_cues,
+                weapon: &pending_weapon_script_events,
+                movers: &pending_mover_event_names,
+                deaths: &pending_death_events,
+            },
+            &session.scripting,
             &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_ai_events.iter().filter_map(|emission| {
-                emission
-                    .address
-                    .as_deref()
-                    .map(|address| (address, Some(emission.emitter.clone())))
-            }),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_ai_events
-                .iter()
-                .filter(|emission| emission.shot_id.is_some())
-                .flat_map(|emission| {
-                    std::iter::once("activate")
-                        .chain(
-                            emission
-                                .action
-                                .as_ref()
-                                .and_then(|a| a.emits.as_ref())
-                                .and_then(|e| e.activate.as_deref()),
-                        )
-                        .map(move |address| (address, Some(emission.emitter.clone())))
-                }),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            app.observer_weapon_cues.iter().flat_map(|cue| {
-                let builtin = match cue.kind {
-                    netcode::weapon_cues::WeaponCueKind::Activate => "activate",
-                    netcode::weapon_cues::WeaponCueKind::Impact => "impact",
-                };
-                std::iter::once(builtin)
-                    .chain(cue.alias.as_deref())
-                    .map(move |address| (address, Some(cue.emitter.clone())))
-            }),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_weapon_script_events.iter().flat_map(|emission| {
-                sound_events::weapon_emission_addresses(emission)
-                    .map(move |address| (address, Some(emission.emitter.clone())))
-            }),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_mover_event_names,
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
-        pending_trigger_follow_ups.extend(drain_named_events_with_sequences(
-            pending_death_events.iter().map(|name| (name, None)),
-            &script_ctx.data_registry.borrow(),
-            &session.scripting.sequence_registry,
-            &session.scripting.reaction_registry,
-            &session.scripting.system_registry,
-            &script_ctx,
-        ));
+        );
         postretro_sim::residual_drain::drain_frame_residuals(
             &pending_trigger_residuals,
             &app.trigger_bindings,
@@ -1354,6 +1261,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             },
             &script_ctx,
             &mut pending_trigger_follow_ups,
+            |player, registry| match player {
+                trigger_system::PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                trigger_system::PlayerId::Remote(client_id) => session
+                    .seat_table
+                    .as_ref()
+                    .and_then(|seats| seats.seat_for_client(client_id)),
+            },
         );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and
@@ -1507,13 +1421,55 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         },
     );
 
+    // Select/read shared facts after every frame-end consequence, including
+    // zero-tick frames, and before either snapshots or rendering observe them.
+    if !app.is_connected_client() {
+        let session = app.session.as_mut().expect("running session installed");
+        let registry = script_ctx.registry.borrow();
+        if let Some(netcode::NetEndpoint::Host {
+            server,
+            allocator,
+            replicable,
+            ..
+        }) = session.net_endpoint.as_mut()
+        {
+            netcode::update_host_overlay_roster(
+                &mut session.host_overlay_fact_tracker,
+                &mut session.scripting.impact_policy_runtime,
+                &registry,
+                allocator,
+                replicable,
+                &mut session.presentation_pool,
+                &session.hit_zone_store,
+                server,
+                frame_script_time,
+                frame_anim_time,
+            );
+        } else {
+            session.host_overlay_fact_tracker.clear();
+            let _ = session
+                .scripting
+                .impact_policy_runtime
+                .update_damaged_enemy_overlays(
+                    &mut session.presentation_pool,
+                    &registry,
+                    &session.hit_zone_store,
+                    frame_anim_time,
+                    [],
+                    |_| false,
+                );
+        }
+    }
+
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::HostSend);
 
     // Host serialize + send after terminal removals, so the
     // authoritative snapshot cannot carry an entity already reaped
     // this frame. No-op for the client and single-player.
-    let owner_projected_weapons = app.net_serialize_and_send(host_snapshot_due);
+    // Serialization precedes the clock advance; carry the script clock the
+    // presentation bridges will sample later in this frame.
+    let owner_projected_weapons = app.net_serialize_and_send(host_snapshot_due, frame_script_time);
 
     // Fix B: present connected-client pawns from the delay buffer at a delayed
     // fractional target, AFTER serialization read the authoritative poses and
@@ -1676,8 +1632,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // desync this branch fixed. Read the freeze flag from the
     // renderer — it owns the toggle (driven by the debug panel) — and
     // skip the increment while frozen so both sides hold one phase.
+    app.script_time = frame_script_time;
     if !frozen {
-        app.script_time += frame_dt as f64;
         // Animation clock accumulates scaled dt at the same site,
         // under the same freeze gate. Accumulation (not absolute-time
         // scaling) keeps a mid-fade scale change from jumping poses;
@@ -1771,7 +1727,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         .map(|renderer| renderer.render_extents().upscaled_scene())
         .map(|span| [span.width, span.height])
         .unwrap_or([0, 0]);
-    let is_connected_client = app.is_connected_client();
 
     if let Some(renderer) = app.renderer.as_mut() {
         // The render-stage bridges + collectors live on `Session`;
@@ -1820,6 +1775,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session.emitter_bridge.update(
                 &mut registry,
                 frame_dt,
+                frame_script_delta,
                 app.script_time as f32,
                 &app.particle_live_counts,
             );
@@ -1845,13 +1801,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // allocates slots, so scripted lights reflect their new state.
         {
             let mut registry = script_ctx.registry.borrow_mut();
-            // Connected clients materialize predicted and remote
-            // projectile lights locally from shared descriptors. They
-            // skip the host tick's enrollment path, so absorb before
-            // this render-frame update makes those lights visible.
-            if is_connected_client {
-                session.light_bridge.absorb_dynamic_lights(&registry);
-            }
             if let Some(update) = session.light_bridge.update(
                 &mut registry,
                 app.script_time as f32,

@@ -10,22 +10,31 @@
 // replication state and encoding.
 //
 // Delta granularity is **per entity**: an unacked or lost packet only affects that
-// entity's next encoding. A newly dirty/unacked entity gets a `Delta` (or a
-// `FullBaseline` when the client holds no acked baseline for it); an entity whose
-// acked baseline already matches the current one is omitted. Despawn tombstones
-// resend until the client acks them. Acks advance per-client state monotonically:
-// a newer baseline-id advances, an older one is ignored, and an omitted entry
-// leaves prior state unchanged. None of this path panics on a stale or malformed
-// ack/refresh — a `NetworkId` the server does not know is simply ignored.
+// entity. A dirty entity with an acked baseline emits a `Delta`; one needing a
+// `FullBaseline` waits for the pending-byte budget, then stays in flight until a
+// qualifying snapshot ack. An entity whose acked baseline matches the current one
+// is omitted. Despawn tombstones resend until acked. Acks advance per-client state
+// monotonically: newer baseline ids advance, older ones are ignored, and omitted
+// entries leave prior state unchanged. Stale or malformed ack/refresh ids are
+// ignored without panicking.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::wire::{
     COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_TRANSFORM, ComponentPayload, EntityRecord,
-    RECORD_KIND_DELTA, RECORD_KIND_DESPAWN, RECORD_KIND_FULL_BASELINE, RawComponentPayload,
-    RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION, WireProjectilePresentation,
+    RawComponentPayload, RawSnapshotMessage, WirePresentationBinding, WireProjectilePresentation,
 };
+
+#[cfg(test)]
+mod presentation_budget_tests;
+
+mod encode;
+use encode::ClientReplicationState;
+
+/// Pending FullBaseline bytes per snapshot beyond the first pending record.
+/// Tombstones, held-entity deltas and forced refreshes are exempt.
+pub const JOIN_BASELINE_BUDGET_BYTES: usize = 16 * 1024;
 
 /// One replicable entity's owned, post-tick component state, keyed by its stable
 /// `NetworkId`. Produced by the engine glue (`crate::netcode`) after it releases
@@ -74,6 +83,7 @@ pub struct EntitySnapshot {
     /// baseline so recipients observe an equip/unequip within one snapshot interval.
     pub active_weapon_archetype: Option<String>,
     pub projectile_presentation: Option<WireProjectilePresentation>,
+    pub presentation_binding: Option<WirePresentationBinding>,
 }
 
 impl EntitySnapshot {
@@ -90,6 +100,7 @@ impl EntitySnapshot {
             entity_class: None,
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 }
@@ -97,32 +108,6 @@ impl EntitySnapshot {
 /// Despawn reason carried in a tombstone record. A `u8` on the wire; the tracker
 /// keeps it so a resent despawn carries the original reason.
 pub type DespawnReason = u8;
-
-/// Per-client replication state the server tracks: how far this client has acked,
-/// which baseline it holds per entity, which despawn tombstones it has applied, and
-/// any pending baseline-refresh requests to satisfy in its next snapshot.
-#[derive(Debug, Default)]
-struct ClientReplicationState {
-    /// Highest snapshot sequence this client has acked (diagnostic; the per-entity
-    /// baseline map is the authoritative progress record).
-    last_acked_sequence: u32,
-    /// `network_id -> acked baseline_id`. The baseline the client is known to
-    /// hold for each entity. Advanced monotonically by acks.
-    acked_baselines: HashMap<u32, u32>,
-    /// `network_id -> acked tombstone_id`. A despawn is resent until its tombstone
-    /// appears here.
-    acked_tombstones: HashMap<u32, u32>,
-    /// Pending baseline-refresh requests, keyed by `(network_id,
-    /// missing_baseline_ref)` so a duplicate request collapses to one queued
-    /// `FullBaseline`. Cleared once the refresh is emitted.
-    pending_refreshes: HashSet<(u32, u32)>,
-    /// Entity ids this recipient must never receive. This is host-local
-    /// presentation routing, not snapshot metadata: the omitted record has no
-    /// owner field on the wire. Excluded ids are removed once their tombstone
-    /// drains, so the session-monotonic network-id namespace cannot accumulate
-    /// per-shot entries forever.
-    excluded_entities: HashSet<u32>,
-}
 
 /// Current server-tracked state for one entity: its latest owned components, the
 /// `baseline_id` that names them, and the movement-authority metadata. The baseline
@@ -148,6 +133,7 @@ struct EntityState {
     /// authority metadata, a change makes the snapshot dirty and advances its baseline.
     active_weapon_archetype: Option<String>,
     projectile_presentation: Option<WireProjectilePresentation>,
+    presentation_binding: Option<WirePresentationBinding>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -219,6 +205,21 @@ impl ServerReplication {
         self.clients.clear();
     }
 
+    /// Forget a bound map presentation identity while clients retain their own
+    /// authored entity. No tombstone is created, including on the next ingest.
+    pub fn forget_entity_without_tombstone(&mut self, network_id: u32) {
+        self.entities.remove(&network_id);
+        self.tombstones.remove(&network_id);
+        self.pending_despawn_reasons.remove(&network_id);
+        for client in self.clients.values_mut() {
+            client.acked_baselines.remove(&network_id);
+            client.acked_tombstones.remove(&network_id);
+            client.pending_refreshes.retain(|(id, _)| *id != network_id);
+            client.excluded_entities.remove(&network_id);
+            client.in_flight_baselines.remove(&network_id);
+        }
+    }
+
     /// Attach a cause to the next despawn tombstone emitted for `network_id`.
     /// The marker is consumed when the entity vanishes from an ingested tick; if
     /// the entity remains live, a later call may overwrite it.
@@ -267,10 +268,10 @@ impl ServerReplication {
     }
 
     /// Register a client so it is replicated to. Idempotent — re-registering an
-    /// existing client leaves its ack state intact. A newly registered client holds
-    /// no acked baselines, so its first snapshot is all `FullBaseline` records for
-    /// live entities. It is marked as having acked tombstones that were active
-    /// before it joined, since it never had mappings for those despawned entities.
+    /// existing client leaves its ack state intact. A new client has no acked
+    /// baselines, so live entities need `FullBaseline` records; the pending-byte
+    /// budget may defer some. Tombstones active before it joined are pre-acked,
+    /// since it never mapped those despawned entities.
     pub fn register_client(&mut self, client_id: u64) {
         if self.clients.contains_key(&client_id) {
             return;
@@ -305,6 +306,7 @@ impl ServerReplication {
     pub fn exclude_entity_for_client(&mut self, client_id: u64, network_id: u32) {
         if let Some(state) = self.clients.get_mut(&client_id) {
             state.excluded_entities.insert(network_id);
+            state.in_flight_baselines.remove(&network_id);
             state.pending_refreshes.retain(|(id, _)| *id != network_id);
         }
     }
@@ -375,7 +377,8 @@ impl ServerReplication {
                 Some(existing)
                     if existing.components == snap.components
                         && existing.active_weapon_archetype == snap.active_weapon_archetype
-                        && existing.projectile_presentation == snap.projectile_presentation =>
+                        && existing.projectile_presentation == snap.projectile_presentation
+                        && existing.presentation_binding == snap.presentation_binding =>
                 {
                     // Unchanged pose/movement mirrors: keep the baseline id so acked
                     // clients are omitted. The authority metadata still refreshes —
@@ -389,6 +392,7 @@ impl ServerReplication {
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
                     existing.projectile_presentation = snap.projectile_presentation;
+                    existing.presentation_binding = snap.presentation_binding;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
@@ -398,6 +402,7 @@ impl ServerReplication {
                     existing.entity_class = snap.entity_class;
                     existing.active_weapon_archetype = snap.active_weapon_archetype;
                     existing.projectile_presentation = snap.projectile_presentation;
+                    existing.presentation_binding = snap.presentation_binding;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -413,6 +418,7 @@ impl ServerReplication {
                             entity_class: snap.entity_class,
                             active_weapon_archetype: snap.active_weapon_archetype,
                             projectile_presentation: snap.projectile_presentation,
+                            presentation_binding: snap.presentation_binding,
                         },
                     );
                 }
@@ -443,6 +449,7 @@ impl ServerReplication {
             // mapping to tear down. Mark this tombstone as already acknowledged
             // for that client instead of sending an unknown-id despawn forever.
             for client in self.clients.values_mut() {
+                client.in_flight_baselines.remove(&id);
                 if client.excluded_entities.contains(&id) {
                     client.acked_tombstones.insert(id, tombstone_id);
                 }
@@ -512,6 +519,25 @@ impl ServerReplication {
             }
         }
 
+        // A qualifying snapshot ack closes the window even when the packet or
+        // this record was lost. Preserve additive older baseline progress: it can
+        // support a delta; otherwise the newest state becomes a pending full.
+        state.in_flight_baselines.retain(|network_id, flight| {
+            if latest_snapshot_sequence < flight.sent_sequence {
+                return true;
+            }
+            let covered = state.acked_baselines.get(network_id).copied().unwrap_or(0)
+                >= flight.sent_baseline_id;
+            if !covered {
+                // No flight state may suppress the next repair. The ack map alone
+                // decides whether that repair is a full baseline or a delta.
+                if state.acked_baselines.get(network_id) == Some(&0) {
+                    state.acked_baselines.remove(network_id);
+                }
+            }
+            false
+        });
+
         // This client may have just acked the last outstanding tombstone; once every
         // registered client has acked a tombstone it can leave the global map.
         self.prune_acked_tombstones();
@@ -530,6 +556,14 @@ impl ServerReplication {
         }
     }
 
+    /// Baselines deferred by the last encoding for this client, excluding flights.
+    #[must_use]
+    pub fn deferred_baseline_count(&self, client_id: u64) -> usize {
+        self.clients
+            .get(&client_id)
+            .map_or(0, |state| state.deferred_baselines)
+    }
+
     /// Allocate the next monotonic snapshot sequence. Called once per emitted
     /// 20 Hz snapshot batch so every client's snapshot in that batch shares a
     /// sequence.
@@ -546,7 +580,9 @@ impl ServerReplication {
     /// one; emit a `FullBaseline` if the client holds no acked baseline (or a refresh
     /// was requested for it); otherwise emit a `Delta` from the client's acked
     /// baseline to the current one. Active despawn tombstones the client has not
-    /// acked are appended as `Despawn` records and resend until acked.
+    /// acked go first as `Despawn` records and resend until acked. Pending full
+    /// baselines follow held updates in stable priority order, within the byte
+    /// budget, and remain in flight until a qualifying snapshot acknowledgement.
     ///
     /// Returns the raw envelope ready for `wire::encode`. The same `sequence` should
     /// be shared across all clients in one 20 Hz batch by allocating it once via the
@@ -581,237 +617,6 @@ impl ServerReplication {
     ) -> Option<RawSnapshotMessage> {
         self.encode_for_client_with_sequence(client_id, server_tick, sequence)
     }
-
-    fn encode_for_client_with_sequence(
-        &mut self,
-        client_id: u64,
-        server_tick: u32,
-        sequence: u32,
-    ) -> Option<RawSnapshotMessage> {
-        // Pull the client's pending refreshes out up front (clearing them: a
-        // refresh is satisfied by the FullBaseline this snapshot emits).
-        let refreshes: HashSet<u32> = {
-            let state = self.clients.get_mut(&client_id)?;
-            let nids = state
-                .pending_refreshes
-                .iter()
-                .map(|&(nid, _)| nid)
-                .collect();
-            state.pending_refreshes.clear();
-            nids
-        };
-
-        let mut records = Vec::new();
-
-        // Entity records. Iterate the current entity set; the client's acked map is
-        // consulted read-only here, then mutated below would violate the borrow, so
-        // read it through an immutable borrow scoped to this loop.
-        for (&network_id, entity) in &self.entities {
-            if self
-                .clients
-                .get(&client_id)
-                .is_some_and(|client| client.excluded_entities.contains(&network_id))
-            {
-                continue;
-            }
-            let acked = self
-                .clients
-                .get(&client_id)
-                .and_then(|c| c.acked_baselines.get(&network_id).copied());
-            let force_full = refreshes.contains(&network_id);
-
-            // Per-recipient movement-authority metadata (M15 Phase 3). Derived here
-            // from id comparison only — the tracker never sees an `EntityId`, registry,
-            // or descriptor. The metadata is meaningful only on a movement record
-            // (`validate` rejects it elsewhere), so `movement_metadata` gates it on the
-            // entity actually carrying a `PlayerMovementState` payload, and
-            // `local_player` is `true` only in the snapshot sent to the owning client.
-            let authority = MovementAuthority::for_recipient(entity, client_id);
-
-            match acked {
-                // Already holds the current baseline and no refresh forced: omit.
-                Some(acked_id) if acked_id == entity.baseline_id && !force_full => continue,
-                // Holds an older baseline and not forced: a per-entity delta.
-                Some(acked_id) if !force_full => {
-                    records.push(RawEntityRecord {
-                        record_kind: RECORD_KIND_DELTA,
-                        network_id,
-                        baseline_id_or_ref: acked_id,
-                        new_baseline_id_or_tombstone_id: entity.baseline_id,
-                        reason: 0,
-                        has_last_processed_client_tick: authority.has_tick,
-                        last_processed_client_tick: authority.tick,
-                        local_player: authority.local_player,
-                        has_entity_class: authority.has_entity_class,
-                        entity_class: authority.entity_class.clone(),
-                        has_active_weapon_archetype: authority.has_active_weapon_archetype,
-                        active_weapon_archetype: authority.active_weapon_archetype.clone(),
-                        projectile_presentation: entity.projectile_presentation,
-                        components: entity.components.iter().map(raw_from_payload).collect(),
-                    });
-                }
-                // No acked baseline, or a forced refresh: a full baseline.
-                _ => {
-                    records.push(RawEntityRecord {
-                        record_kind: RECORD_KIND_FULL_BASELINE,
-                        network_id,
-                        baseline_id_or_ref: entity.baseline_id,
-                        new_baseline_id_or_tombstone_id: 0,
-                        reason: 0,
-                        has_last_processed_client_tick: authority.has_tick,
-                        last_processed_client_tick: authority.tick,
-                        local_player: authority.local_player,
-                        has_entity_class: authority.has_entity_class,
-                        entity_class: authority.entity_class.clone(),
-                        has_active_weapon_archetype: authority.has_active_weapon_archetype,
-                        active_weapon_archetype: authority.active_weapon_archetype.clone(),
-                        projectile_presentation: entity.projectile_presentation,
-                        components: entity.components.iter().map(raw_from_payload).collect(),
-                    });
-                }
-            }
-        }
-
-        // Despawn records: resend every active tombstone the client has not acked.
-        for (&network_id, tombstone) in &self.tombstones {
-            if self
-                .clients
-                .get(&client_id)
-                .is_some_and(|client| client.excluded_entities.contains(&network_id))
-            {
-                continue;
-            }
-            let acked = self
-                .clients
-                .get(&client_id)
-                .and_then(|c| c.acked_tombstones.get(&network_id).copied())
-                .unwrap_or(0);
-            if acked >= tombstone.tombstone_id {
-                continue;
-            }
-            records.push(RawEntityRecord {
-                record_kind: RECORD_KIND_DESPAWN,
-                network_id,
-                baseline_id_or_ref: 0,
-                new_baseline_id_or_tombstone_id: tombstone.tombstone_id,
-                reason: tombstone.reason,
-                // A despawn never carries movement-authority metadata or an
-                // entity_class (rejected at validate); the tracker leaves all absent.
-                has_last_processed_client_tick: false,
-                last_processed_client_tick: 0,
-                local_player: false,
-                has_entity_class: false,
-                entity_class: String::new(),
-                has_active_weapon_archetype: false,
-                active_weapon_archetype: String::new(),
-                projectile_presentation: None,
-                components: Vec::new(),
-            });
-        }
-
-        Some(RawSnapshotMessage {
-            version: SNAPSHOT_VERSION,
-            sequence,
-            server_tick,
-            records,
-            // Entity replication owns the entity-record half of the snapshot only.
-            // The replicated state-slot half (fingerprint + records, M15 Phase 3.5)
-            // is produced by the sibling state tracker and merged into this envelope
-            // by the engine send path; the entity producer leaves it empty so a
-            // state-less snapshot is still a valid carrier.
-            state_schema_fingerprint: [0u8; 32],
-            state_records: Vec::new(),
-            faction_sentiment_record: None,
-        })
-    }
-}
-
-/// The per-recipient movement-authority metadata for one entity record, resolved
-/// from id comparison only. Registry-blind: it compares the entity's tracked
-/// `owner_client_id` against the recipient client id and never sees an `EntityId`,
-/// the registry, or a movement descriptor.
-struct MovementAuthority {
-    /// Whether `tick` carries a real resolved cursor (mirrors the typed `Option`).
-    has_tick: bool,
-    /// The resolved cursor value; meaningful only when `has_tick` is `true`.
-    tick: u32,
-    /// `true` only in the snapshot sent to this pawn's owning client.
-    local_player: bool,
-    /// Whether `entity_class` carries a real value (mirrors the typed `Option`).
-    has_entity_class: bool,
-    /// The descriptor-class identifier; meaningful only when `has_entity_class` is
-    /// `true`. Cloned into the record (the only allocation on the encode path here).
-    entity_class: String,
-    /// Whether the active-weapon metadata carries a canonical name. Unlike
-    /// `entity_class`, it is valid only on a movement record.
-    has_active_weapon_archetype: bool,
-    /// Active weapon canonical name, empty when the flag is false.
-    active_weapon_archetype: String,
-}
-
-impl MovementAuthority {
-    /// Resolve the authority metadata for `recipient`. Two metadata classes ride a
-    /// record under DIFFERENT rules, mirroring the two `validate` gates (E10 Task 3/4):
-    ///
-    /// - **Movement authority** (`has_tick`/`last_processed_client_tick`, `local_player`)
-    ///   rides ONLY a movement record: an entity with no `PlayerMovementState` payload
-    ///   emits all-absent movement metadata regardless of its `owner_client_id`, because
-    ///   `validate` rejects ack/local-player metadata on a non-movement record.
-    ///   `local_player` is `true` only when the recipient is the tracked owner.
-    /// - **`entity_class`** rides any NON-DESPAWN record carrying a finite `Transform`
-    ///   (it no longer needs a `PlayerMovementState`): a host-authoritative map enemy
-    ///   replicates Transform-only, so its descriptor class must travel on that record.
-    ///   It is echoed to EVERY recipient (it is entity state, not owner-private — a
-    ///   remote viewer materializes the same descriptor for its presentation). Gated on
-    ///   the finite-`Transform` check `validate` enforces on receipt so production never
-    ///   stamps a class the validator would reject. (A despawn record never reaches
-    ///   here — this resolves only entity records the encode loop emits as
-    ///   baseline/delta.)
-    fn for_recipient(entity: &EntityState, recipient: u64) -> Self {
-        let carries_movement = entity
-            .components
-            .iter()
-            .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
-        let carries_finite_transform = entity.components.iter().any(|c| match c {
-            ComponentPayload::Transform(t) => t.all_finite(),
-            ComponentPayload::PlayerMovementState(_) => false,
-            ComponentPayload::MeshAnimationState(_) => false,
-            ComponentPayload::KinematicMoverState(_) => false,
-        });
-
-        // `entity_class` is valid on any finite-Transform record; movement metadata is
-        // movement-only. Empty class ids are equivalent to absent metadata on the
-        // producer side so the raw envelope stays valid.
-        let entity_class = if carries_finite_transform {
-            entity
-                .entity_class
-                .as_deref()
-                .filter(|class| !class.is_empty())
-        } else {
-            None
-        };
-        let active_weapon_archetype = if carries_movement {
-            entity
-                .active_weapon_archetype
-                .as_deref()
-                .filter(|archetype| !archetype.is_empty())
-        } else {
-            None
-        };
-        Self {
-            has_tick: carries_movement && entity.last_processed_client_tick.is_some(),
-            tick: if carries_movement {
-                entity.last_processed_client_tick.unwrap_or(0)
-            } else {
-                0
-            },
-            local_player: carries_movement && entity.owner_client_id == Some(recipient),
-            has_entity_class: entity_class.is_some(),
-            entity_class: entity_class.unwrap_or_default().to_string(),
-            has_active_weapon_archetype: active_weapon_archetype.is_some(),
-            active_weapon_archetype: active_weapon_archetype.unwrap_or_default().to_string(),
-        }
-    }
 }
 
 /// Re-encode a typed [`ComponentPayload`] into its raw wire envelope form. Mirror of
@@ -824,6 +629,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
@@ -831,6 +639,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: Some(*m),
             mesh_animation_state: None,
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
@@ -838,6 +649,9 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: Some(m.clone()),
             kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
             component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
@@ -845,6 +659,39 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             player_movement: None,
             mesh_animation_state: None,
             kinematic_mover: Some(*m),
+            light: None,
+            emitter: None,
+            fog: None,
+        },
+        ComponentPayload::LightState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_LIGHT,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: Some(state.clone()),
+            emitter: None,
+            fog: None,
+        },
+        ComponentPayload::EmitterState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_BILLBOARD_EMITTER,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: Some(state.clone()),
+            fog: None,
+        },
+        ComponentPayload::FogState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_FOG_VOLUME,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: Some(state.clone()),
         },
     }
 }
@@ -868,6 +715,58 @@ mod tests {
 
     const CLIENT_A: u64 = 1;
     const CLIENT_B: u64 = 2;
+
+    #[test]
+    fn forgetting_bound_entity_clears_all_delivery_state_without_tombstone() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.register_client(CLIENT_B);
+        server.ingest_tick(vec![
+            entity(7, vec![transform(0.0)]),
+            entity(8, vec![transform(1.0)]),
+        ]);
+        let baseline = server.current_baseline_id(7).unwrap();
+        server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.set_next_despawn_reason(7, 1);
+        // Create a tombstone before populating every delivery-state seam.
+        server.ingest_tick(vec![entity(8, vec![transform(1.0)])]);
+        assert!(server.tombstones.contains_key(&7));
+        server.set_next_despawn_reason(7, 1);
+        for state in server.clients.values_mut() {
+            state.acked_baselines.insert(7, baseline);
+            state.acked_tombstones.insert(7, 12);
+            state.pending_refreshes.insert((7, baseline));
+            state.excluded_entities.insert(7);
+            state.in_flight_baselines.insert(
+                7,
+                encode::BaselineFlight {
+                    sent_sequence: 1,
+                    sent_baseline_id: baseline,
+                },
+            );
+        }
+        server.forget_entity_without_tombstone(7);
+        server.ingest_tick(vec![entity(8, vec![transform(1.0)])]);
+        assert!(!server.entities.contains_key(&7));
+        assert!(!server.tombstones.contains_key(&7));
+        assert!(!server.pending_despawn_reasons.contains_key(&7));
+        for state in server.clients.values() {
+            assert!(!state.acked_baselines.contains_key(&7));
+            assert!(!state.acked_tombstones.contains_key(&7));
+            assert!(!state.pending_refreshes.iter().any(|(id, _)| *id == 7));
+            assert!(!state.excluded_entities.contains(&7));
+            assert!(!state.in_flight_baselines.contains_key(&7));
+        }
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 2)
+                .unwrap()
+                .records
+                .iter()
+                .all(|record| record.network_id != 7)
+        );
+        assert!(server.current_baseline_id(8).is_some());
+    }
 
     fn transform(x: f32) -> ComponentPayload {
         ComponentPayload::Transform(WireTransform {
@@ -917,6 +816,7 @@ mod tests {
             entity_class: Some("player".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 
@@ -927,6 +827,57 @@ mod tests {
             EntityRecord::Delta { network_id: n, .. } => *n == network_id,
             EntityRecord::Despawn { network_id: n, .. } => *n == network_id,
         })
+    }
+
+    #[test]
+    fn presentation_binding_survives_baseline_delta_and_refresh() {
+        let binding = WirePresentationBinding {
+            kind: 2,
+            index: 8,
+            origin: [1.0, 2.0, 3.0],
+        };
+        let mut current = entity(
+            1,
+            vec![ComponentPayload::EmitterState(
+                crate::wire::WireEmitterState {
+                    rate: 1.0,
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                    anim_start: None,
+                },
+            )],
+        );
+        current.presentation_binding = Some(binding);
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![current.clone()]);
+        let first = server.encode_for_client(CLIENT_A, 1).unwrap();
+        let EntityRecord::FullBaseline {
+            baseline_id,
+            presentation_binding: Some(received),
+            ..
+        } = record_for(&first, 1).unwrap()
+        else {
+            panic!("bound baseline");
+        };
+        assert_eq!(received, binding);
+        server.apply_ack(CLIENT_A, first.sequence, &[(1, baseline_id)], &[]);
+        current.components[0] = ComponentPayload::EmitterState(crate::wire::WireEmitterState {
+            rate: 2.0,
+            spin_rate: 0.0,
+            spin_animation: None,
+            anim_start: None,
+        });
+        server.ingest_tick(vec![current]);
+        let delta = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert!(
+            matches!(record_for(&delta, 1), Some(EntityRecord::Delta { presentation_binding: Some(received), .. }) if received == binding)
+        );
+        server.request_refresh(CLIENT_A, 1, baseline_id);
+        let refresh = server.encode_for_client(CLIENT_A, 3).unwrap();
+        assert!(
+            matches!(record_for(&refresh, 1), Some(EntityRecord::FullBaseline { presentation_binding: Some(received), .. }) if received == binding)
+        );
     }
 
     #[test]
@@ -951,6 +902,7 @@ mod tests {
         let EntityRecord::FullBaseline {
             baseline_id,
             projectile_presentation: Some(received),
+            presentation_binding: None,
             ..
         } = record_for(&first, 1).unwrap()
         else {
@@ -969,6 +921,7 @@ mod tests {
         let EntityRecord::Delta {
             new_baseline_id,
             projectile_presentation: Some(received),
+            presentation_binding: None,
             ..
         } = record_for(&changed, 1).unwrap()
         else {
@@ -980,6 +933,7 @@ mod tests {
         let late = server.encode_for_client(CLIENT_B, 62).unwrap();
         let EntityRecord::FullBaseline {
             projectile_presentation: Some(late),
+            presentation_binding: None,
             ..
         } = record_for(&late, 1).unwrap()
         else {
@@ -993,6 +947,7 @@ mod tests {
             record_for(&refresh, 1),
             Some(EntityRecord::FullBaseline {
                 projectile_presentation: Some(_),
+                presentation_binding: None,
                 ..
             })
         ));
@@ -1163,7 +1118,7 @@ mod tests {
         );
     }
 
-    // Two clients are independent: B acking does not omit A's records.
+    // Two clients are independent: B acking does not complete A's flight.
     #[test]
     fn per_client_baselines_are_independent() {
         let mut server = ServerReplication::new();
@@ -1182,11 +1137,22 @@ mod tests {
             panic!("fb");
         };
 
-        // Only B acks. A must still receive the entity next tick.
+        // Only B acks. A still has an independent flight, so neither repeats it.
         server.apply_ack(CLIENT_B, seq, &[(1, baseline_id)], &[]);
         server.ingest_tick(vec![entity(1, vec![transform(0.0)])]);
-        assert!(record_for(&server.encode_for_client(CLIENT_A, 61).unwrap(), 1).is_some());
+        let waiting_a = server.encode_for_client(CLIENT_A, 61).unwrap();
+        assert!(record_for(&waiting_a, 1).is_none());
         assert!(record_for(&server.encode_for_client(CLIENT_B, 62).unwrap(), 1).is_none());
+        assert!(!server.baseline_acked_by_all_recipients(1, baseline_id));
+
+        // A acknowledges a later snapshot without coverage: its lost record re-pends,
+        // while B's acknowledged entity remains omitted.
+        server.apply_ack(CLIENT_A, waiting_a.sequence, &[], &[]);
+        assert!(matches!(
+            record_for(&server.encode_for_client(CLIENT_A, 63).unwrap(), 1),
+            Some(EntityRecord::FullBaseline { .. })
+        ));
+        assert!(record_for(&server.encode_for_client(CLIENT_B, 64).unwrap(), 1).is_none());
     }
 
     #[test]
@@ -1226,8 +1192,7 @@ mod tests {
         else {
             panic!("fb");
         };
-        // Client acks b0 so the next change is a Delta (an unacked client would get
-        // another FullBaseline instead).
+        // Ack b0 before changing state so the next record can be a Delta.
         server.apply_ack(CLIENT_A, snap1.sequence, &[(1, b0)], &[]);
         // Move -> baseline 1.
         server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
@@ -1859,6 +1824,7 @@ mod tests {
             entity_class: Some(class.to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }
     }
 
@@ -1921,6 +1887,7 @@ mod tests {
             entity_class: Some(String::new()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
@@ -2037,6 +2004,7 @@ mod tests {
             entity_class: Some("grunt".to_string()),
             active_weapon_archetype: None,
             projectile_presentation: None,
+            presentation_binding: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
@@ -2058,5 +2026,377 @@ mod tests {
             }
             other => panic!("expected FullBaseline, got {other:?}"),
         }
+    }
+
+    fn join_budget_sized_entity(network_id: u32, encoded_bytes: usize) -> EntitySnapshot {
+        let mut snapshot = entity(network_id, vec![transform(network_id as f32)]);
+        snapshot.entity_class = Some("x".repeat(encoded_bytes));
+        for _ in 0..8 {
+            let mut probe = ServerReplication::new();
+            probe.register_client(CLIENT_A);
+            probe.ingest_tick(vec![snapshot.clone()]);
+            let raw = probe.encode_for_client(CLIENT_A, 0).unwrap();
+            let actual = crate::wire::encode(&raw.records[0]).len();
+            let class = snapshot.entity_class.as_mut().unwrap();
+            match actual.cmp(&encoded_bytes) {
+                std::cmp::Ordering::Equal => return snapshot,
+                std::cmp::Ordering::Greater => {
+                    class.truncate(class.len() - (actual - encoded_bytes))
+                }
+                std::cmp::Ordering::Less => class.push_str(&"x".repeat(encoded_bytes - actual)),
+            }
+        }
+        panic!("could not construct exact encoded record size");
+    }
+
+    fn join_budget_bound(network_id: u32) -> EntitySnapshot {
+        let mut snapshot = entity(
+            network_id,
+            vec![ComponentPayload::EmitterState(
+                crate::wire::WireEmitterState {
+                    rate: network_id as f32,
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                    anim_start: None,
+                },
+            )],
+        );
+        snapshot.presentation_binding = Some(WirePresentationBinding {
+            kind: 2,
+            index: network_id,
+            origin: [0.0; 3],
+        });
+        snapshot
+    }
+
+    fn join_budget_ids(snapshot: &RawSnapshotMessage) -> Vec<u32> {
+        snapshot
+            .records
+            .iter()
+            .map(|record| record.network_id)
+            .collect()
+    }
+
+    fn join_budget_ack(server: &mut ServerReplication, snapshot: &RawSnapshotMessage) {
+        let baselines: Vec<_> = snapshot
+            .records
+            .iter()
+            .filter_map(|record| match record.record_kind {
+                crate::wire::RECORD_KIND_FULL_BASELINE => {
+                    Some((record.network_id, record.baseline_id_or_ref))
+                }
+                crate::wire::RECORD_KIND_DELTA => {
+                    Some((record.network_id, record.new_baseline_id_or_tombstone_id))
+                }
+                _ => None,
+            })
+            .collect();
+        let tombstones: Vec<_> = snapshot
+            .records
+            .iter()
+            .filter(|record| record.record_kind == crate::wire::RECORD_KIND_DESPAWN)
+            .map(|record| (record.network_id, record.new_baseline_id_or_tombstone_id))
+            .collect();
+        server.apply_ack(CLIENT_A, snapshot.sequence, &baselines, &tombstones);
+    }
+
+    #[test]
+    fn join_budget_first_oversized_is_exempt_and_exact_remaining_budget_is_admitted() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![
+            join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100),
+            join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES),
+            entity(3, vec![transform(3.0)]),
+        ]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert!(first.validate().is_ok());
+        assert_eq!(join_budget_ids(&first), [1, 2]);
+        assert_eq!(
+            crate::wire::encode(&first.records[1]).len(),
+            JOIN_BASELINE_BUDGET_BYTES
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 1);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(
+            join_budget_ids(&second),
+            [3],
+            "in-flight window does not repeat"
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 0);
+    }
+
+    #[test]
+    fn join_budget_priority_is_own_pawn_then_unbound_then_bound_in_id_order() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![
+            join_budget_bound(2),
+            entity(9, vec![transform(9.0)]),
+            owned_movement(20, CLIENT_A, Some(1), 0.0),
+            join_budget_bound(1),
+            owned_movement(8, CLIENT_B, Some(1), 0.0),
+            entity(4, vec![transform(4.0)]),
+        ]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [20, 4, 8, 9, 1, 2]);
+        assert!(first.records[0].local_player);
+        assert!(!first.records[2].local_player);
+    }
+
+    #[test]
+    fn join_budget_pending_latest_state_and_despawn_precede_backlog() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let a = join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let b = join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let c = join_budget_sized_entity(3, JOIN_BASELINE_BUDGET_BYTES + 100);
+        server.ingest_tick(vec![a.clone(), b.clone(), c]);
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [1]);
+        let mut newest = b;
+        newest.components = vec![transform(42.0)];
+        server.ingest_tick(vec![a, newest]);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(join_budget_ids(&second), [3, 2]);
+        assert_eq!(
+            second.records[0].record_kind,
+            crate::wire::RECORD_KIND_DESPAWN
+        );
+        assert_eq!(
+            second.records[1].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_eq!(
+            second.records[1].components[0].transform.unwrap().position[0],
+            42.0
+        );
+        assert_eq!(
+            second
+                .records
+                .iter()
+                .filter(|record| record.network_id == 3)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn join_budget_held_deltas_and_forced_refresh_never_charge_pending_budget() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut held_a = join_budget_sized_entity(1, JOIN_BASELINE_BUDGET_BYTES + 100);
+        let held_b = join_budget_sized_entity(2, JOIN_BASELINE_BUDGET_BYTES + 100);
+        // Seed the two held entities over two windows.
+        server.ingest_tick(vec![held_a.clone(), held_b.clone()]);
+        let seed_a = server.encode_for_client(CLIENT_A, 0).unwrap();
+        join_budget_ack(&mut server, &seed_a);
+        let seed_b = server.encode_for_client(CLIENT_A, 1).unwrap();
+        join_budget_ack(&mut server, &seed_b);
+        held_a.components = vec![transform(99.0)];
+        server.ingest_tick(vec![
+            held_a,
+            held_b,
+            join_budget_sized_entity(3, JOIN_BASELINE_BUDGET_BYTES + 100),
+            join_budget_sized_entity(4, JOIN_BASELINE_BUDGET_BYTES),
+            entity(5, vec![transform(5.0)]),
+        ]);
+        server.request_refresh(CLIENT_A, 2, 0);
+        let raw = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert_eq!(join_budget_ids(&raw), [1, 2, 3, 4]);
+        assert_eq!(raw.records[0].record_kind, crate::wire::RECORD_KIND_DELTA);
+        assert_eq!(
+            raw.records[1].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_eq!(
+            crate::wire::encode(&raw.records[3]).len(),
+            JOIN_BASELINE_BUDGET_BYTES
+        );
+        assert_eq!(server.deferred_baseline_count(CLIENT_A), 1);
+    }
+
+    #[test]
+    fn join_budget_flight_waits_for_qualifying_sequence_then_repends_latest_after_loss() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        // Ensure an older sequence exists: the first real flight has sequence 1.
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let lost = server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        server.request_refresh(CLIENT_A, 1, 0);
+        server.apply_ack(CLIENT_A, old.sequence, &[], &[]);
+        let waiting = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert!(waiting.records.is_empty());
+        server.apply_ack(CLIENT_A, waiting.sequence, &[], &[]);
+        let repair = server.encode_for_client(CLIENT_A, 3).unwrap();
+        assert_eq!(join_budget_ids(&repair), [1]);
+        assert_eq!(
+            repair.records[0].record_kind,
+            crate::wire::RECORD_KIND_FULL_BASELINE
+        );
+        assert_ne!(
+            repair.records[0].baseline_id_or_ref,
+            lost.records[0].baseline_id_or_ref
+        );
+        assert_eq!(
+            repair.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &repair);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 4)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_older_baseline_ack_cannot_hide_newer_state_or_release_newer_flight() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        let old_id = old.records[0].baseline_id_or_ref;
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 1)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        let newer = server.encode_for_client(CLIENT_A, 2).unwrap();
+        assert_eq!(newer.records[0].record_kind, crate::wire::RECORD_KIND_DELTA);
+        assert_eq!(newer.records[0].baseline_id_or_ref, old_id);
+        assert_eq!(
+            newer.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &newer);
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 3)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_late_additive_older_baseline_supports_delta_after_new_flight_loss() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        server.ingest_tick(vec![entity(1, vec![transform(1.0)])]);
+        let old = server.encode_for_client(CLIENT_A, 0).unwrap();
+        let old_id = old.records[0].baseline_id_or_ref;
+        let empty = server.encode_for_client(CLIENT_A, 1).unwrap();
+        server.apply_ack(CLIENT_A, empty.sequence, &[], &[]);
+        server.ingest_tick(vec![entity(1, vec![transform(2.0)])]);
+        let lost_new = server.encode_for_client(CLIENT_A, 2).unwrap();
+        server.apply_ack(CLIENT_A, old.sequence, &[(1, old_id)], &[]);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 3)
+                .unwrap()
+                .records
+                .is_empty(),
+            "stale sequence cannot end newer flight"
+        );
+        server.apply_ack(CLIENT_A, lost_new.sequence, &[], &[]);
+        let repair = server.encode_for_client(CLIENT_A, 4).unwrap();
+        assert_eq!(
+            repair.records[0].record_kind,
+            crate::wire::RECORD_KIND_DELTA
+        );
+        assert_eq!(repair.records[0].baseline_id_or_ref, old_id);
+        assert_eq!(
+            repair.records[0].components[0].transform.unwrap().position[0],
+            2.0
+        );
+        join_budget_ack(&mut server, &repair);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 5)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_windows_converge_without_flight_repeats() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut snapshots: Vec<_> = (1..=8)
+            .map(|id| join_budget_sized_entity(id, JOIN_BASELINE_BUDGET_BYTES))
+            .collect();
+        server.ingest_tick(snapshots.clone());
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert_eq!(join_budget_ids(&first), [1, 2]);
+        snapshots.push(entity(20, vec![transform(20.0)]));
+        server.ingest_tick(snapshots);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(join_budget_ids(&second), [3, 4]);
+        join_budget_ack(&mut server, &first);
+        join_budget_ack(&mut server, &second);
+        let mut observed: HashSet<_> = first
+            .records
+            .iter()
+            .chain(&second.records)
+            .map(|r| r.network_id)
+            .collect();
+        for tick in 2..8 {
+            let raw = server.encode_for_client(CLIENT_A, tick).unwrap();
+            if raw.records.is_empty() {
+                break;
+            }
+            for record in &raw.records {
+                assert!(
+                    observed.insert(record.network_id),
+                    "already-admitted baseline repeated"
+                );
+            }
+            join_budget_ack(&mut server, &raw);
+        }
+        assert_eq!(observed.len(), 9);
+        assert!(
+            server
+                .encode_for_client(CLIENT_A, 9)
+                .unwrap()
+                .records
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn join_budget_later_unbound_entity_passes_earlier_bound_backlog() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut snapshots: Vec<_> = (1..=1200).map(join_budget_bound).collect();
+        server.ingest_tick(snapshots.clone());
+        let first = server.encode_for_client(CLIENT_A, 0).unwrap();
+        assert!(server.deferred_baseline_count(CLIENT_A) > 0);
+        let first_ids: HashSet<_> = join_budget_ids(&first).into_iter().collect();
+        snapshots.push(entity(1201, vec![transform(1201.0)]));
+        server.ingest_tick(snapshots);
+        let second = server.encode_for_client(CLIENT_A, 1).unwrap();
+        assert_eq!(second.records[0].network_id, 1201);
+        assert!(second.records[0].presentation_binding.is_none());
+        assert!(
+            second.records[1..]
+                .iter()
+                .all(|r| r.presentation_binding.is_some() && !first_ids.contains(&r.network_id))
+        );
+        assert!(
+            second.records[1..]
+                .windows(2)
+                .all(|pair| pair[0].network_id < pair[1].network_id)
+        );
     }
 }

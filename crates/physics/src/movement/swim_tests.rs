@@ -18,7 +18,11 @@ use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 
 const DT: f32 = 1.0 / 60.0;
 const LEVEL_GRAVITY: f32 = -20.0;
-const STANDARD_GRAVITY: f32 = 9.81;
+/// `swim.sink_speed` is authored at default level gravity.
+const REFERENCE_GRAVITY: f32 = -postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
+/// Fixture sink at default gravity; under `LEVEL_GRAVITY` it settles near 1.57 m/s,
+/// which the current fixtures below are sized against.
+const SINK_SPEED: f32 = 1.6;
 const WATER_VISCOSITY: f32 = 2.0;
 const VEL_EPS: f32 = 1.0e-4;
 const POS_EPS: f32 = 1.0e-4;
@@ -31,7 +35,7 @@ fn swim_params() -> SwimParams {
     SwimParams {
         speed: 4.5,
         accel: 6.0,
-        sink_speed: 0.8,
+        sink_speed: SINK_SPEED,
         enter_depth: 0.5,
         exit_depth: 0.35,
         fluid_jump_velocity: 6.5,
@@ -713,10 +717,10 @@ fn fluid_jump_wins_over_exit_on_the_same_tick() {
 #[test]
 fn swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity() {
     for gravity in [
-        -STANDARD_GRAVITY,
-        -0.5 * STANDARD_GRAVITY,
+        -REFERENCE_GRAVITY,
+        -0.5 * REFERENCE_GRAVITY,
         0.0,
-        STANDARD_GRAVITY,
+        REFERENCE_GRAVITY,
     ] {
         let volumes = EnvironmentVolumes::build(vec![fluid_box(
             Vec3::splat(-100.0),
@@ -724,7 +728,7 @@ fn swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity() {
             Some(gravity),
         )]);
         let view = water_view(&volumes);
-        let expected = 0.8 * gravity / STANDARD_GRAVITY;
+        let expected = SINK_SPEED * gravity / REFERENCE_GRAVITY;
         let mut component = swimming(&swim_descriptor());
         let mut position = Vec3::ZERO;
         for _ in 0..120 {
@@ -1202,7 +1206,7 @@ fn reported_immersion_is_the_tick_start_resolve_not_the_tick_end_position() {
 
 /// The idle swimmer's settled sink velocity under the level's gravity.
 fn level_sink() -> f32 {
-    0.8 * LEVEL_GRAVITY / STANDARD_GRAVITY
+    SINK_SPEED * LEVEL_GRAVITY / REFERENCE_GRAVITY
 }
 
 // While swimming the drift layer carries vertical push
@@ -1273,7 +1277,7 @@ fn swimmer_on_the_pool_floor(
 // current whose settled drift outruns the sink lifts from the floor as it does
 // mid-water — here one whose push
 // (4 m/s²) is below the swim acceleration (6 m/s²) but whose settled drift
-// (2 m/s) beats the sink (1.63 m/s). A current whose drift falls short of the
+// (2 m/s) beats the sink (1.57 m/s). A current whose drift falls short of the
 // sink leaves the swimmer on the floor.
 #[test]
 fn upward_current_lifts_a_swimmer_resting_on_the_pool_floor() {
@@ -1856,7 +1860,7 @@ fn swimmer_wedged_in_a_corner_keeps_its_vertical_drift() {
 
 // A swimmer's one lift-off rule is the settled-total release,
 // never the gravity-based push lift-off. An upward current stronger than
-// gravity whose drift (25 / 20 = 1.25 m/s) stays below the sink (1.63 m/s)
+// gravity whose drift (25 / 20 = 1.25 m/s) stays below the sink (1.57 m/s)
 // leaves the swimmer on the floor, grounded for the whole tick, so a shove
 // decays at ground drag rather than as a launched body's air drag.
 #[test]

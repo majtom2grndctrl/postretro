@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-30"
 "wad" ""
 "data_script" "../scripts/arena-lights.ts"
 "_tb_mod" "dev"

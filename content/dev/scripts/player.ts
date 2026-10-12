@@ -66,7 +66,9 @@ export const playerEntity = defineEntity({
         maxControlSpeed: 2,
         bunnyHop: true,
         jumps: 0,
-        jumpVelocity: 9,
+        // Quake's 270 u/s: under the default -20.32 m/s² gravity the jump peaks
+        // at 1.16 m and lands in 0.675 s.
+        jumpVelocity: 6.86,
         jumpCeiling: 0.0,
       },
       fall: { terminalVelocity: 40.0 },
@@ -116,10 +118,10 @@ export const playerEntity = defineEntity({
       swim: {
         speed: 4.5, // m/s target swim speed
         accel: 6.0, // m/s² toward wish velocity
-        sinkSpeed: 0.8, // m/s drift along gravity with no vertical input, at 9.81 m/s²
+        sinkSpeed: 0.8, // m/s drift along gravity with no vertical input, at default gravity
         enterDepth: 0.5, // immersion fraction that enters swim
         exitDepth: 0.35, // immersion fraction that leaves swim; < enterDepth
-        fluidJumpVelocity: 6.5, // m/s upward on a jump from the surface
+        fluidJumpVelocity: 9.35, // m/s upward on a jump from the surface
       },
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,

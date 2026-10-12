@@ -9,7 +9,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 {
 ( 2416 -16 -16 ) ( 2416 296 0 ) ( 2416 296 -16 ) concrete_pavement_036 0 0 0 1 1

@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/combat-demo-reaction.ts"
 "_tb_mod" "dev"

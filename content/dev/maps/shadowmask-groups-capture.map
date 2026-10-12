@@ -9,7 +9,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "ambient_color" "0 0 0"
 "wad" ""
 "_tb_mod" "dev"

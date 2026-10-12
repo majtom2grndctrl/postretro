@@ -109,6 +109,7 @@ Design inputs for every renderer, baker, and netcode decision, not stretch goals
 
 - **Pre-RTX.** No dependence on hardware ray-tracing APIs. Lightweight ray work is in bounds when bounded and either offline in the baker or a cheap runtime trace against baked structures (BVH, SDF, probe volumes). Mac/Metal is a perf target.
 - **Ambitious perf inside that era.** Bake over compute. Bound every bake and pass to where the player can be and see: no probes or texels in the void outside the hull, no bake rays through solid geometry or past a light's reach. Measure, don't assume.
+- **2 GB VRAM.** A loaded level's resident GPU memory fits 2 GB. Every large allocation draws on that one pool.
 - **Smooth PvE co-op.** Prediction, reconciliation, and interpolation done well, validated at realistic latency. PvP, live service, and full lag compensation stay non-goals (§4).
 - **Altitude.** Destination clear → build the full shape in strides. Cut breadth before correctness or performance (`development_guide.md` §1.3).
 

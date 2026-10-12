@@ -1,8 +1,11 @@
 # E24--water-and-environment-volumes — plan of record
 
 mode: resumable
-status: approved
+status: blocked
 read at: 08822b8a4 (main 784af6536 plus the claim commit; the brief's cfd2d861d is an ancestor)
+
+## Block (Task 4, push rule 3)
+**False premise:** "Push adds to velocity after the state intent and is never clipped by the intent's speed caps." Adding after the intent protects the push only on the tick it is added. Velocity carries into the next tick. There, with movement input held and `air.bunny_hop` off, the airborne cap in `intents/normal.rs` and `intents/crouching.rs` clamps total horizontal speed to the walk/run/crouch tier (`movement.md` §6: airborne Normal re-clamps carried momentum). With input held, airborne wind stalls at that cap plus `push·dt`; with no input it grows until the terminal cap. M15's airborne half ("not clipped by the air speed cap") therefore fails under the Decision's mechanism. Evidence: `crates/physics/src/movement/push_tests.rs` `airborne_push_survives_the_air_cap_on_the_tick_it_is_added` pins only the per-tick half. Options are in the owner question. The rest of Task 4 (lift-off, terminal speed, ground drift, slide, agents, upward level gravity, harness) is built and passing, and is unaffected by options (a)–(c).
 
 ## Corrections
 Source re-read by three read-only agents at 08822b8a4. No Decision premise is false. Path and detail drift:

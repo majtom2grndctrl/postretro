@@ -107,7 +107,7 @@ General engine practice, not re-verified against sources this session.
 
 ## E24 reconciliation
 
-- E24 (`drafts/E24--water-and-environment-volumes`) resolves gravity and push per particle, at its own position, on every particle step. Buoyancy scales the resolved gravity; push is unscaled. The step therefore needs per-particle acceleration inputs; a scalar `gravity` parameter, as `particle_sim::tick` takes today, does not survive.
+- E24 (`ready/E24--water-and-environment-volumes`) resolves gravity and push per particle, at its own position, on every particle step. Buoyancy scales the resolved gravity; push is unscaled. The step therefore needs per-particle acceleration inputs; a scalar `gravity` parameter, as `particle_sim::tick` takes today, does not survive.
 - E24 times the resolve as a stage nested in `particle_sim`, budgeted under 0.5 ms per frame at 10k on this fixture. Counting it inside this brief's 0.6 ms would leave the pool 0.1 ms, so this brief's budget excludes it and the nested stage is measured separately.
 - E24's pre-flight figures (AI about 7.4 ms/tick, particle sim about 4.5 ms/frame) predate both perf briefs and do not gate it.
 

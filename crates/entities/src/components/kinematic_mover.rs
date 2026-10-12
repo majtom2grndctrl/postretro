@@ -374,6 +374,28 @@ mod tests {
         let mut short = configured(2, vec![Vec3::NEG_X]);
         short.close_event = Some("closed".to_string());
         short.blocked_sound = Some("thud".to_string());
+        // Every scalar differs from `long`, so a dropped copy cannot pass.
+        short.speed_mps = 7.0;
+        short.wait_ms = 30.0;
+        short.mode = KinematicMoverMode::PingPong;
+        short.spin_axis = Vec3::X;
+        short.spin_accel_rad_s2 = 0.5;
+        short.carry_yaw = true;
+        short.block_policy = BlockPolicy::Crush;
+        short.crush_damage = 12.0;
+        short.crush_interval_ms = 250.0;
+        short.auto_close_ms = 900.0;
+        short.direction_sign = -1;
+        short.segment_elapsed_ms = 41.0;
+        short.wait_remaining_ms = 9.0;
+        short.current_linear_velocity = Vec3::Y;
+        short.started = true;
+        short.completed = true;
+        short.spin_angle_rad = 1.5;
+        short.spin_angle_before_tick_rad = 1.25;
+        short.was_active_this_tick = true;
+        short.spin_rate_rad_s = 3.0;
+        short.spin_target_rate_rad_s = 4.0;
 
         // Shrinking vectors, Some -> None, None -> Some, and back again.
         for (target, source) in [(long.clone(), &short), (short.clone(), &long)] {

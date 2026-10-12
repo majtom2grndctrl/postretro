@@ -516,8 +516,10 @@ fn mover_bound_may_reach_segment(
     }
     let motion_len_sq = motion.length_squared();
     let closest = if motion_len_sq > 0.0 {
-        // A huge finite `max_toi` overflows the projection; `clamp` would pass
-        // the NaN through and reject a mover the narrow phase hits.
+        // A huge finite `max_toi` overflows the projection: an infinite length
+        // pins `t` to the start, and an infinite dot product makes it NaN,
+        // which `clamp` passes through. Either rejects a mover the narrow
+        // phase hits.
         let t = (center - start).dot(motion) / motion_len_sq;
         if !motion_len_sq.is_finite() || !t.is_finite() {
             return true;

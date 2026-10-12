@@ -555,8 +555,10 @@ fn sweep_ending_inside_the_skin_band_is_never_culled() {
     let capsule = capsule();
     let (_, capsule_radius) = capsule_bounding_sphere(&capsule);
     let end_gap = SKIN_DISTANCE * 0.75;
-    assert!(end_gap > BROAD_PHASE_MARGIN);
     let start_height = capsule_radius + 0.5;
+    let slack_without_skin =
+        movers[0].bound_radius + BROAD_PHASE_MARGIN + start_height * BROAD_PHASE_RELATIVE_MARGIN;
+    assert!(end_gap > slack_without_skin);
     let query = Query {
         pos: Vec3::new(0.0, start_height, 0.0),
         dir: Vec3::NEG_Y,

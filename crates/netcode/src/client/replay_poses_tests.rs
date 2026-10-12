@@ -123,8 +123,9 @@ fn assert_replay_matches(history: &mut MoverHistoryBuffer, ticks: impl IntoItera
     }
 }
 
-/// `{:?}` prints the shortest round-tripping form of every float, so equal
-/// strings mean equal bits; `PartialEq` would let `-0.0` pass for `0.0`.
+/// `{:?}` prints the shortest round-tripping form of every float, so for
+/// non-NaN values equal strings mean equal bits (every NaN prints alike; poses
+/// are finite). `PartialEq` would let `-0.0` pass for `0.0`.
 fn assert_bit_identical(memo: Option<MoverPose>, reference: Option<MoverPose>, context: &str) {
     assert_eq!(format!("{memo:?}"), format!("{reference:?}"), "{context}");
 }

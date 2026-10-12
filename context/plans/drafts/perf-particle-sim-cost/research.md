@@ -132,3 +132,36 @@ An occupancy index makes column walks O(members), and in-place `&mut` updates pl
 - `entity_model.md` §8 says particles are registry entities and the sim runs "every game-logic tick". Both change with this brief. The sim already runs per rendered frame.
 - `entity_model.md` §5 lists the particle sim among the bridges that "may spawn or despawn entities".
 - Reconcile both at promotion.
+
+## Ordering pins
+
+Added by `/review-brief` (2026-10-12). Acceptance rows cite these by id. A stale-backlog pin for ticks running while rendering is skipped was withdrawn: fixed ticks and the particle stages run in the same `redraw`, so a queued request is at most one frame old.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Emitter parameters change on the same frame as a spawn | A script rewrites curves, drag, buoyancy, sprite, lifetime or tint in a fixed tick; the bridge spawns later in that frame | The new particle takes the new values. Particles already live keep their spawn-time values for life. |
+| P2 | Emitter changed twice between spawns | Two rewrites of block fields in ticks between one spawn and the next | One block is minted, at the next spawn. A rewrite followed by no spawn mints none. |
+| P3 | Non-block rewrite | Spin-tween sample, burst reset or client replication apply rewrites only rate, spin or burst | No block is minted. Existing particles keep their block. |
+| P4 | Block freed, then re-tenanted before its emitter spawns again | Frame N: sim expires emitter A's last particle and frees its block. Frame N+1: emitter B changes and mints into the freed index, then A spawns with unchanged parameters | A's new particle carries A's parameters, never B's. |
+| P5 | Changed emitter whose next spawn is refused | Emitter changes; its next spawn is dropped by the per-emitter cap or the global budget | No block is left holding no particle. |
+| P6 | Cap across a parameter change | Emitter holds near-cap live particles in block A, changes, then spawns into block B | Headroom counts A's and B's particles together. |
+| P7 | Emitter despawn and re-tenant on one tick | Emitter A despawns and emitter B spawns into A's registry slot or A's spin slot on the same tick; A's orphans step that frame | A's orphans keep A's last rate for life. B's rate never reaches them. |
+| P8 | Impact request versus the frame's stages | A request queued in a fixed tick; then emitter bridge, sim, collect | Requests drain before the emitter bridge spawns. Drained and bridge-spawned particles are both stepped once by that frame's delta before collect. |
+| P9 | Requests from several fixed ticks of one frame | Ticks 1..k of one frame each queue requests | All drain on that frame in raise order. If the budget fills mid-drain, earlier requests land and later ones drop. |
+| P10 | Budget reached mid-burst | Budget room k is smaller than an emitter burst or the 9-particle impact burst | k particles land and the rest drop, as the per-emitter cap clamps today. |
+| P11 | Several producers at the budget on one frame | Budget minus a few live; impact drain and several emitters spawn on one frame | The pool never exceeds the budget. |
+| P12 | Rate spawn blocked by the budget, then room frees | Rate emitter blocked for several frames; particles expire | Spawning resumes at the authored rate with no catch-up burst. Fractional progress is kept. |
+| P13 | Throttle across a level clear | Overflow warns late in level 1; level clear; overflow early in level 2 | Level 2's first overflow warns. |
+| P14 | Request queued, then level clear before drain | Final tick queues an impact request; level clear, reload or seat swap; next level's first frame drains | The request never reaches the next level's pool. |
+| P15 | Impacts across a level clear | Impacts in level 1; level clear; first impact in level 2 | Impacts mint no blocks. After the clear, the block table holds only the static impact blocks, and the first impact uses them. |
+| P16 | Host impact request versus presentation routing | Host queues an impact request in a tick; host routing runs before frame intake | The request is never offered to transport. Each remote client materializes exactly one burst per contact, from its prediction or the observer cue. |
+| P17 | Removal edges | One step expires the last element and another particle; and a step expires every particle | Every survivor is stepped exactly once. The pool ends empty in the all-expire case. |
+| P18 | Zero live particles | Particle stages run on a frame whose pool is empty | The window reports a live count of zero, not absent. |
+
+## Source pins
+
+| pin | finding |
+|---|---|
+| `ComponentKind` numbering pins (a307e3f10) | The enum's explicit `#[repr(u16)]` discriminants (`entities/src/registry.rs`), which index the `[_; COUNT]` column array; `netcode::component_kind_discriminant` and its enum-layout drift test; `net` `COMPONENT_KIND_*` constants (FOG 5, PLAYER_MOVEMENT_STATE 6, MESH_ANIMATION_STATE 9, KINEMATIC_MOVER_STATE 13) and the literal-value test `component_kind_pinned_to_engine_discriminants` in `net/src/wire.rs`; the `WIRE_VERSION == 29` assertion in `net/src/handshake.rs`. All shift together; name-keyed maps (observability, FFI) do not. |
+| Impact burst raise sites (a307e3f10) | Fixed tick: `projectile_stage` (two sites), `weapon_stage/commands/local.rs`. Frame time, after the tick loop: `client_weapon::run_client_fire_path_post_loop` (client prediction), `weapon_observers::spawn_observer_impact_bursts` (observer cue). Host ingest: `netcode::host_ingest_ready_hit_declarations`. `ingest_client_presentation_messages` raises none; it only queues `PresentationSpawn`s. Supersedes the client-ingest site listed under §Impact transport. |
+| SDK typedef source (a307e3f10) | `postretro.d.ts`, `postretro.d.luau` and both `typedef/tests/fixtures/expected.d.*` are generated from the hand-written registration in `sim/src/scripting/primitives/mod.rs`, plus the `ParticleState` name map in `scripting-core/src/typedef/common.rs`, not from the Rust enum. Deleting the variant does not regenerate them; `committed_sdk_types_match_current_registry` catches a missed regeneration. |

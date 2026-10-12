@@ -30,12 +30,12 @@ When done:
   - `sim_steering` keeps its `sim_steer_agents`, `sim_steer_pose` and `sim_steer_movers` split. Labels follow `rendering_pipeline.md` §12.
 - **Budgets are priced on top of the particle pool.** The `sim_ai` and `sim_steer_agents` targets below were set at about 10k registry-resident particles and are re-confirmed against a baseline measured after `perf-particle-sim-cost` lands.
 - **Landing order** across the stress pre-flight work:
-  1. GPU smoke spike (queued, not drafted).
-  2. Particle pool (`perf-particle-sim-cost`).
-  3. This brief's nav region index, independent, may land alongside 2.
-  4. This brief's pawn index, after the pool.
-  5. E24's particle environment rows.
-  6. Registry occupancy index, last, its own brief.
+  1. Particle pool (`perf-particle-sim-cost`), the next priority after E24, ending with E24's particle environment rows.
+  2. This brief's nav region index, independent, may land alongside 1.
+  3. This brief's pawn index, after the pool.
+  4. Registry occupancy index, last, its own brief.
+
+  The GPU smoke spike stays queued off this order: not next, diagnosis only (owner, 2026-10-09).
 - **Non-goals.**
   - Registry occupancy index: the last-landing follow-up, justified by non-particle populations (projectiles, props, crates) with a synthetic population of its own. Registry storage shape: `drafts/registry-column-storage`.
   - Time-slicing perception or LOS: measured at about 0% of AI cost, and it would change reaction latency.

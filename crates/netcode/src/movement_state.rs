@@ -35,6 +35,7 @@ pub(crate) fn movement_state_to_wire(
             component.velocity.z,
         ],
         knockback_velocity: component.knockback_velocity.to_array(),
+        push_velocity: [component.push_velocity.x, component.push_velocity.z],
         ground: ground_ref_to_wire(component.ground),
         air_jumps_remaining: component.air_jumps_remaining,
         air_dashes_remaining: component.air_dashes_remaining,
@@ -70,6 +71,7 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     };
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
     component.knockback_velocity = Vec3::from_array(wire.knockback_velocity);
+    component.push_velocity = Vec3::new(wire.push_velocity[0], 0.0, wire.push_velocity[1]);
     component.ground = ground;
     component.air_jumps_remaining = wire.air_jumps_remaining;
     component.air_dashes_remaining = wire.air_dashes_remaining;
@@ -250,6 +252,7 @@ mod tests {
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
+            push_velocity: [0.0; 2],
             velocity: [1.0, -2.0, 3.5],
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,
@@ -276,6 +279,7 @@ mod tests {
         // back into a fresh component and confirm the subset survives.
         component.velocity = Vec3::new(2.0, -0.5, 9.0);
         component.knockback_velocity = Vec3::new(1.0, 0.0, 6.0);
+        component.push_velocity = Vec3::new(-2.5, 0.0, 0.75);
         component.set_grounded(false);
         component.air_jumps_remaining = 1;
         component.air_dashes_remaining = 1;
@@ -303,6 +307,7 @@ mod tests {
 
         assert!((rebuilt.velocity - component.velocity).length() < EPSILON);
         assert!((rebuilt.knockback_velocity - component.knockback_velocity).length() < EPSILON);
+        assert!((rebuilt.push_velocity - component.push_velocity).length() < EPSILON);
         assert_eq!(rebuilt.is_grounded(), component.is_grounded());
         assert_eq!(rebuilt.air_jumps_remaining, component.air_jumps_remaining);
         assert_eq!(rebuilt.air_dashes_remaining, component.air_dashes_remaining);

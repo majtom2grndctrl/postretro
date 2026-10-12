@@ -538,12 +538,14 @@ fn plan_movement_replace(
     }
 
     let mut refreshed = PlayerMovementComponent::from_descriptor(descriptor);
-    // Preserve live physics integration, including the external-impulse layer.
-    // Dropping that layer would reclassify the shove as voluntary velocity and
-    // let the next movement tick erase it through ordinary speed caps.
+    // Preserve live physics integration, including the external-impulse and
+    // push-drift layers. Dropping either would reclassify it as voluntary
+    // velocity and let the next movement tick erase it through ordinary speed
+    // caps.
     // Descriptor-derived response tuning reseeds from the new descriptor.
     refreshed.velocity = live.velocity;
     refreshed.knockback_velocity = live.knockback_velocity;
+    refreshed.push_velocity = live.push_velocity;
     refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability

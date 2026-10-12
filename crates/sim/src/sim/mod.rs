@@ -325,6 +325,10 @@ pub struct TickEvents {
     /// Weapon events this tick: fire, dry fire, spawn, and one impact per
     /// activation carrying its contacts (hitscan and projectile alike).
     pub weapon: Vec<crate::emission::WeaponEmission>,
+    /// The local shooter's hitscan fluid splashes this tick, in shot and
+    /// pellet order. Presentation facts beside the `impact` emission; a
+    /// remote client's shot raises none here (peer splash is a follow-up).
+    pub weapon_fluid_splashes: Vec<crate::weapon::FluidSplashFact>,
     /// Per-pellet cast points for determinism tests. Capture precedes impact
     /// policy, so tests compare the cast set rather than the applied subset.
     #[cfg(test)]
@@ -867,6 +871,7 @@ where
             &weapon_fire,
             command.reload,
             collision_world,
+            environment,
             hit_zone_store,
             anim_time,
             tick_dt,
@@ -886,6 +891,7 @@ where
     let mut reload = remote_weapon_result.reload_emissions;
     reload.extend(local_result.reload_emissions);
     let mut weapon = local_result.weapon_events;
+    let weapon_fluid_splashes = local_result.fluid_splashes;
     let repointed_pawn = local_result.repointed_pawn;
     #[cfg(test)]
     let weapon_impact_points = local_result.weapon_impact_points;
@@ -922,6 +928,7 @@ where
         movement_edges: movement.state_edges,
         ai,
         weapon,
+        weapon_fluid_splashes,
         #[cfg(test)]
         weapon_impact_points,
         mover: mover_events,

@@ -19,7 +19,7 @@ const LEVEL_GRAVITY: f32 = -20.0;
 const VOLUME_GRAVITY: f32 = -3.0;
 const VEL_EPS: f32 = 1.0e-4;
 
-fn descriptor() -> PlayerMovementDescriptor {
+pub(super) fn descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
         sounds: None,
         capsule: CapsuleParams {
@@ -71,7 +71,7 @@ fn airborne_pawn(vy: f32) -> PlayerMovementComponent {
     component
 }
 
-fn idle_input() -> MovementInput {
+pub(super) fn idle_input() -> MovementInput {
     MovementInput {
         wish_dir: Vec2::ZERO,
         jump_pressed: false,
@@ -84,27 +84,44 @@ fn idle_input() -> MovementInput {
     }
 }
 
+/// An axis-aligned box leaf, as the level loader would hand movement.
+fn box_leaf(min: Vec3, max: Vec3) -> ConvexLeaf {
+    let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
+    ConvexLeaf {
+        planes: vec![
+            plane(Vec3::X, max.x),
+            plane(Vec3::NEG_X, -min.x),
+            plane(Vec3::Y, max.y),
+            plane(Vec3::NEG_Y, -min.y),
+            plane(Vec3::Z, max.z),
+            plane(Vec3::NEG_Z, -min.z),
+        ],
+        aabb_min: min,
+        aabb_max: max,
+    }
+}
+
 /// An axis-aligned box volume that sets only gravity.
 fn gravity_box(min: Vec3, max: Vec3, gravity: f32) -> EnvironmentVolume {
-    let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
     EnvironmentVolume {
         source_entity: 1,
         priority: 0,
         gravity: Some(gravity),
         push: None,
         fluid: None,
-        brushes: vec![ConvexLeaf {
-            planes: vec![
-                plane(Vec3::X, max.x),
-                plane(Vec3::NEG_X, -min.x),
-                plane(Vec3::Y, max.y),
-                plane(Vec3::NEG_Y, -min.y),
-                plane(Vec3::Z, max.z),
-                plane(Vec3::NEG_Z, -min.z),
-            ],
-            aabb_min: min,
-            aabb_max: max,
-        }],
+        brushes: vec![box_leaf(min, max)],
+    }
+}
+
+/// An axis-aligned box volume that sets only push.
+pub(super) fn push_box(min: Vec3, max: Vec3, push: Vec3) -> EnvironmentVolume {
+    EnvironmentVolume {
+        source_entity: 1,
+        priority: 0,
+        gravity: None,
+        push: Some(push),
+        fluid: None,
+        brushes: vec![box_leaf(min, max)],
     }
 }
 

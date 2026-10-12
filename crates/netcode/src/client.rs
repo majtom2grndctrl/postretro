@@ -2708,6 +2708,7 @@ mod tests {
     ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
+            push_velocity: [0.0; 2],
             velocity,
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,

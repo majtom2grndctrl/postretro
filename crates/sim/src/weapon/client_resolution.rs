@@ -12,6 +12,7 @@ pub fn resolve_client_shot(
     aim_direction: Vec3,
     placement: &WeaponPlacementDescriptor,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -35,6 +36,7 @@ pub fn resolve_client_shot(
         },
         placement,
         collision_world,
+        environment,
         hit_zone_store,
         anim_time,
         shot,
@@ -60,12 +62,15 @@ pub fn resolve_client_shot(
         client_tick,
         hits,
         world_contacts,
+        fluid_splashes: events.fluid_splashes,
         projectile_launch: events.projectile_launches.into_iter().next(),
     }
 }
 
 // Spatial fixtures use the actual fixed-tick advance/freeze/resolve chain.
-// Production callers must supply every due snapshot explicitly.
+// Production callers must supply every due snapshot explicitly. Fixtures
+// resolve against no environment volumes; splash tests call
+// `resolve_client_shot` with their own.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_test_client_shot(
@@ -116,6 +121,7 @@ pub fn resolve_test_client_shot(
         aim_direction,
         placement,
         collision_world,
+        EnvironmentView::level_only(0.0),
         registry,
         hit_zone_store,
         anim_time,

@@ -27,7 +27,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Frozen projectile facts and reliable observer cues advance this to 25.
 /// The weapon-switch declaration's client tick advances it to 26.
 /// Shared enemy overlay rosters and participation-framed Presentation advance it to 28.
-pub const WIRE_VERSION: u32 = 28;
+/// The protected push-drift layer in player movement state advances it to 29.
+pub const WIRE_VERSION: u32 = 29;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -447,8 +448,8 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 28,
-            "shared rosters and framed presentation extend the shipped layout"
+            WIRE_VERSION, 29,
+            "the push-drift layer in player movement extends the shipped layout"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
@@ -578,8 +579,9 @@ mod switch_tick_epoch_tests {
 
     #[test]
     fn shared_overlay_roster_refuses_wire_27_without_changing_snapshot_layout() {
-        assert_eq!(WIRE_VERSION, 28);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 18);
+        const {
+            assert!(WIRE_VERSION >= 28);
+        }
         assert_eq!(PROTOCOL_ID, 0x5052_4c42);
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
@@ -590,6 +592,21 @@ mod switch_tick_epoch_tests {
             Err(ClosingCause::Protocol { .. })
         ));
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 27);
+    }
+
+    #[test]
+    fn push_drift_layer_refuses_wire_28_peers() {
+        assert_eq!(WIRE_VERSION, 29);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 19);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 28,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 28);
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.
@@ -619,11 +636,12 @@ mod switch_tick_epoch_tests {
             PROTOCOL_ID, 0x5052_4c42,
             "the switch tick changed no vocabulary; player-addressed presentation later advanced it to PRLB"
         );
-        assert_eq!(
-            crate::wire::SNAPSHOT_VERSION,
-            18,
-            "presentation state later extended snapshot records"
-        );
+        const {
+            assert!(
+                crate::wire::SNAPSHOT_VERSION >= 18,
+                "presentation state later extended snapshot records"
+            );
+        }
         assert!(matches!(
             validate_handshake(
                 protocol_version(),

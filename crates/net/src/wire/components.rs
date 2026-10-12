@@ -121,6 +121,9 @@ pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],
     /// Protected impulse contribution already included in total velocity.
     pub knockback_velocity: [f32; 3],
+    /// Protected push-drift contribution already included in total velocity,
+    /// as `[x, z]`: the layer is horizontal, so its vertical part is not sent.
+    pub push_velocity: [f32; 2],
     pub ground: WireGroundRef,
     pub air_jumps_remaining: u32,
     pub air_dashes_remaining: u32,
@@ -192,7 +195,7 @@ impl WireMovementState {
 
 impl WirePlayerMovementState {
     /// Whether every replicated float is finite (no NaN/inf): velocity, protected
-    /// knockback velocity, all live timers, capsule dimensions, aim pitch, and the
+    /// knockback and push-drift velocity, all live timers, capsule dimensions, aim pitch, and the
     /// active state's payload. Checked at `validate` so a non-finite movement state is
     /// rejected before typed apply and never reaches the registry. Integer counters and
     /// bools cannot be non-finite, so they are not checked.
@@ -200,6 +203,7 @@ impl WirePlayerMovementState {
     fn all_finite(&self) -> bool {
         self.velocity.iter().all(|c| c.is_finite())
             && self.knockback_velocity.iter().all(|c| c.is_finite())
+            && self.push_velocity.iter().all(|c| c.is_finite())
             && self.dash_cooldown_ms.is_finite()
             && self.coyote_timer_ms.is_finite()
             && self.jump_buffer_timer_ms.is_finite()

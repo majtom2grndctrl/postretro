@@ -1374,12 +1374,22 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
 const LOW_GRAVITY: f32 = -8.0;
 const LOW_GRAVITY_MIN: Vec3 = Vec3::new(-50.0, -1.0, -24.0);
 const LOW_GRAVITY_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
+/// Push crossing scenario: a sideways wind slab across the forward path from
+/// 16 m to 24 m ahead, then an updraft from 32 m to 40 m whose push beats
+/// gravity, capped low so the pawn lifts off, rises out through its top face,
+/// falls back in, and lands beyond it.
+const WIND_PUSH: Vec3 = Vec3::new(6.0, 0.0, 0.0);
+const WIND_MIN: Vec3 = Vec3::new(-50.0, -1.0, -24.0);
+const WIND_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
+const UPDRAFT_PUSH: Vec3 = Vec3::new(0.0, 30.0, 0.0);
+const UPDRAFT_MIN: Vec3 = Vec3::new(-50.0, -1.0, -40.0);
+const UPDRAFT_MAX: Vec3 = Vec3::new(50.0, 3.0, -32.0);
 /// "No corrections" (brief Co-op Decision): every recorded correction is at most
 /// this many metres under `light_link`.
 const NO_CORRECTION_M: f32 = 1.0e-4;
 
-fn in_low_gravity_volume(position: Vec3) -> bool {
-    position.cmpge(LOW_GRAVITY_MIN).all() && position.cmple(LOW_GRAVITY_MAX).all()
+fn in_box(position: Vec3, (min, max): (Vec3, Vec3)) -> bool {
+    position.cmpge(min).all() && position.cmple(max).all()
 }
 
 fn jumping_forward_command() -> SimCommand {
@@ -1388,56 +1398,92 @@ fn jumping_forward_command() -> SimCommand {
     command
 }
 
-struct GravityCrossingRun {
-    final_host_position: Vec3,
-    corrections: Vec<f32>,
-    reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
+fn push_box_volume(min: Vec3, max: Vec3, push: Vec3) -> postretro_collision::EnvironmentVolume {
+    postretro_collision::EnvironmentVolume {
+        gravity: None,
+        push: Some(push),
+        ..gravity_box_volume(min, max, 0.0)
+    }
+}
+
+/// One tracked region of a crossing run (the box of one volume).
+#[derive(Default)]
+struct RegionCrossings {
     /// Client ticks whose predicted pose first lies inside / first lies outside
-    /// the volume after being on the other side.
+    /// the region after being on the other side.
     entry_ticks: Vec<u32>,
     exit_ticks: Vec<u32>,
     host_was_inside: bool,
 }
 
-fn run_gravity_crossing(
+struct VolumeCrossingRun {
+    final_host_position: Vec3,
+    max_host_y: f32,
+    corrections: Vec<f32>,
+    reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
+    regions: Vec<RegionCrossings>,
+    /// Client ticks whose predicted pawn was airborne carrying push drift.
+    airborne_drift_ticks: Vec<u32>,
+}
+
+/// Drive the harness through `steps` commands with `volumes` installed on both
+/// peers, recording every correction and each region's client crossing ticks.
+fn run_volume_crossing(
     volumes: Vec<postretro_collision::EnvironmentVolume>,
-) -> GravityCrossingRun {
+    regions: &[(Vec3, Vec3)],
+    steps: u32,
+    command_for_step: impl Fn(u32) -> SimCommand,
+) -> VolumeCrossingRun {
     let mut h = LoopbackHarness::with_environment_volumes(light_link(), volumes);
     h.step_until_armed(&idle_command());
-    let mut run = GravityCrossingRun {
+    let mut run = VolumeCrossingRun {
         final_host_position: Vec3::ZERO,
+        max_host_y: f32::NEG_INFINITY,
         corrections: Vec::new(),
         reconcile_windows: Vec::new(),
-        entry_ticks: Vec::new(),
-        exit_ticks: Vec::new(),
-        host_was_inside: false,
+        regions: regions.iter().map(|_| RegionCrossings::default()).collect(),
+        airborne_drift_ticks: Vec::new(),
     };
-    let mut client_inside = h.client_position().is_some_and(in_low_gravity_volume);
-    for step in 0..180 {
-        // Run up on the ground first: jumping from rest keeps the pawn slow,
-        // since air control barely accelerates it.
-        let command = if step < 60 {
-            forward_command(false)
-        } else {
-            jumping_forward_command()
-        };
-        h.step(&command);
+    let mut client_inside: Vec<bool> = regions
+        .iter()
+        .map(|region| h.client_position().is_some_and(|p| in_box(p, *region)))
+        .collect();
+    for step in 0..steps {
+        h.step(&command_for_step(step));
         run.corrections
             .extend(h.latest_local_corrections.iter().copied());
         run.reconcile_windows
             .extend(h.latest_reconcile_windows.iter().copied());
-        run.host_was_inside |= in_low_gravity_volume(h.host_position());
-        let inside = h.client_position().is_some_and(in_low_gravity_volume);
-        if inside != client_inside {
-            let tick = h
-                .last_sent_client_tick
-                .expect("client sent this step's command");
-            if inside {
-                run.entry_ticks.push(tick);
-            } else {
-                run.exit_ticks.push(tick);
+        run.max_host_y = run.max_host_y.max(h.host_position().y);
+        let client_movement = h.client_pawn.and_then(|pawn| {
+            h.client_registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()
+        });
+        if let Some(movement) = client_movement
+            && !movement.is_grounded()
+            && movement.push_velocity.length() > 1.0e-3
+        {
+            run.airborne_drift_ticks.push(
+                h.last_sent_client_tick
+                    .expect("client sent this step's command"),
+            );
+        }
+        for (index, region) in regions.iter().enumerate() {
+            let crossings = &mut run.regions[index];
+            crossings.host_was_inside |= in_box(h.host_position(), *region);
+            let inside = h.client_position().is_some_and(|p| in_box(p, *region));
+            if inside != client_inside[index] {
+                let tick = h
+                    .last_sent_client_tick
+                    .expect("client sent this step's command");
+                if inside {
+                    crossings.entry_ticks.push(tick);
+                } else {
+                    crossings.exit_ticks.push(tick);
+                }
+                client_inside[index] = inside;
             }
-            client_inside = inside;
         }
     }
     run.final_host_position = h.host_position();
@@ -1450,54 +1496,121 @@ fn some_replay_spans(windows: &[(Option<u32>, Option<u32>)], tick: u32) -> bool 
     })
 }
 
+/// The shared "no corrections" gate: reconciles ran throughout, none exceeded
+/// `NO_CORRECTION_M`, and every region was crossed both ways with some
+/// reconcile's replay window spanning each crossing tick.
+fn assert_crossings_reconcile_without_correction(run: &VolumeCrossingRun) {
+    assert!(
+        run.corrections.len() > 30,
+        "reconciles must run throughout the scenario; saw {}",
+        run.corrections.len()
+    );
+    let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+    assert!(
+        worst <= NO_CORRECTION_M,
+        "every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+    );
+    for (index, region) in run.regions.iter().enumerate() {
+        assert!(
+            region.host_was_inside,
+            "fixture: the host pawn must pass through region {index}"
+        );
+        assert!(
+            !region.entry_ticks.is_empty() && !region.exit_ticks.is_empty(),
+            "the client must cross into and out of region {index}: entries {:?}, exits {:?}",
+            region.entry_ticks,
+            region.exit_ticks
+        );
+        for tick in region.entry_ticks.iter().chain(&region.exit_ticks) {
+            assert!(
+                some_replay_spans(&run.reconcile_windows, *tick),
+                "some reconcile's replay window must span region {index} crossing tick {tick}"
+            );
+        }
+    }
+}
+
+/// Run up on the ground first, then bunny-hop: jumping from rest keeps the pawn
+/// slow, since air control barely accelerates it.
+fn run_then_hop(step: u32) -> SimCommand {
+    if step < 60 {
+        forward_command(false)
+    } else {
+        jumping_forward_command()
+    }
+}
+
 // N1, gravity half: per-tick resolution keeps host and client identical across a
 // low-gravity volume, so crossing in and out costs no reconciliation correction,
 // including reconciles whose replay window spans a crossing.
 #[test]
 fn low_gravity_volume_crossings_reconcile_without_correction_under_light_link() {
-    let volume_run = run_gravity_crossing(vec![gravity_box_volume(
-        LOW_GRAVITY_MIN,
-        LOW_GRAVITY_MAX,
-        LOW_GRAVITY,
-    )]);
-    let baseline_run = run_gravity_crossing(Vec::new());
-
-    assert!(
-        volume_run.host_was_inside,
-        "fixture: the host pawn must pass through the volume"
+    let region = [(LOW_GRAVITY_MIN, LOW_GRAVITY_MAX)];
+    let volume_run = run_volume_crossing(
+        vec![gravity_box_volume(
+            LOW_GRAVITY_MIN,
+            LOW_GRAVITY_MAX,
+            LOW_GRAVITY,
+        )],
+        &region,
+        180,
+        run_then_hop,
     );
+    let baseline_run = run_volume_crossing(Vec::new(), &region, 180, run_then_hop);
+
     assert!(
         (volume_run.final_host_position - baseline_run.final_host_position).length() > 0.05,
         "the volume must change the trajectory: with {:?}, without {:?}",
         volume_run.final_host_position,
         baseline_run.final_host_position
     );
+    assert_crossings_reconcile_without_correction(&volume_run);
+}
+
+// Push keeps prediction exact: a drift built hopping through a sideways wind and
+// carried out of it airborne, then an updraft lift-off, rise out through its top,
+// fall back and landing, all predicted by the client with no reconciliation
+// correction, including replays that start from an airborne drift baseline.
+#[test]
+fn push_volume_crossings_reconcile_without_correction_under_light_link() {
+    let regions = [(WIND_MIN, WIND_MAX), (UPDRAFT_MIN, UPDRAFT_MAX)];
+    let push_run = run_volume_crossing(
+        vec![
+            push_box_volume(WIND_MIN, WIND_MAX, WIND_PUSH),
+            push_box_volume(UPDRAFT_MIN, UPDRAFT_MAX, UPDRAFT_PUSH),
+        ],
+        &regions,
+        300,
+        run_then_hop,
+    );
+    let baseline_run = run_volume_crossing(Vec::new(), &regions, 300, run_then_hop);
+
     assert!(
-        !volume_run.entry_ticks.is_empty() && !volume_run.exit_ticks.is_empty(),
-        "the client must cross into and out of the volume: entries {:?}, exits {:?}",
-        volume_run.entry_ticks,
-        volume_run.exit_ticks
+        (push_run.final_host_position.x - baseline_run.final_host_position.x).abs() > 0.05,
+        "the wind must drift the pawn sideways: with {:?}, without {:?}",
+        push_run.final_host_position,
+        baseline_run.final_host_position
     );
     assert!(
-        volume_run.corrections.len() > 30,
-        "reconciles must run throughout the scenario; saw {}",
-        volume_run.corrections.len()
+        push_run.max_host_y > baseline_run.max_host_y + 0.5,
+        "the updraft must lift the pawn: max y {} vs {}",
+        push_run.max_host_y,
+        baseline_run.max_host_y
     );
-    let worst = volume_run
-        .corrections
-        .iter()
-        .copied()
-        .fold(0.0_f32, f32::max);
     assert!(
-        worst <= NO_CORRECTION_M,
-        "every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+        push_run.final_host_position.z < UPDRAFT_MIN.z,
+        "fixture: the pawn must pass the updraft, ended at {:?}",
+        push_run.final_host_position
     );
-    for tick in volume_run.entry_ticks.iter().chain(&volume_run.exit_ticks) {
-        assert!(
-            some_replay_spans(&volume_run.reconcile_windows, *tick),
-            "some reconcile's replay window must span crossing tick {tick}"
-        );
-    }
+    assert!(
+        push_run
+            .airborne_drift_ticks
+            .iter()
+            .any(|tick| some_replay_spans(&push_run.reconcile_windows, *tick)),
+        "some reconcile's replay window must span an airborne tick carrying drift: {:?}",
+        push_run.airborne_drift_ticks
+    );
+    assert_crossings_reconcile_without_correction(&push_run);
 }
 
 #[test]

@@ -735,6 +735,7 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
     };
     m.velocity.iter().all(|c| c.is_finite())
         && m.knockback_velocity.iter().all(|c| c.is_finite())
+        && m.push_velocity.iter().all(|c| c.is_finite())
         && m.dash_cooldown_ms.is_finite()
         && m.coyote_timer_ms.is_finite()
         && m.jump_buffer_timer_ms.is_finite()
@@ -4920,6 +4921,7 @@ mod tests {
             client_tick: token.start_tick,
             hits: Vec::new(),
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             projectile_launch: None,
         };
         let mut predicted = weapon::ClientPredictedShots::new();
@@ -5141,6 +5143,7 @@ mod tests {
                 client_tick: 1000,
                 hits: Vec::new(),
                 world_contacts: Vec::new(),
+                fluid_splashes: Vec::new(),
                 projectile_launch: None,
             },
             0.0,
@@ -6013,13 +6016,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            28,
-            "participation-framed shared roster requires wire version 28"
+            29,
+            "the push-drift layer in player movement requires wire version 29"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            18,
-            "presentation state, bindings and clock require snapshot version 18"
+            19,
+            "the push-drift layer in player movement requires snapshot version 19"
         );
     }
 
@@ -6772,6 +6775,7 @@ mod tests {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                 knockback_velocity: [0.0; 3],
+                push_velocity: [0.0; 2],
                 velocity: [12.0, 0.0, 4.0],
                 ground: postretro_net::wire::WireGroundRef::World,
                 air_jumps_remaining: 1,
@@ -7383,6 +7387,7 @@ mod tests {
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                                     knockback_velocity: [0.0; 3],
+                                    push_velocity: [0.0; 2],
                                     velocity: [0.0, 0.0, 0.0],
                                     ground: postretro_net::wire::WireGroundRef::World,
                                     air_jumps_remaining: 1,

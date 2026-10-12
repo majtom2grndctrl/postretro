@@ -87,6 +87,8 @@ impl App {
         // Share interpolation and mover carry with the view, while keeping
         // cosmetic view feel out of fire origin and authored muzzle placement.
         let (origin, direction) = presented_aim.aim_ray();
+        // Predicted pellets cross the same digest-bound volumes the host holds.
+        let level_gravity = ctx.gravity.get();
         for mut queued in std::mem::take(&mut self.client_weapon.due) {
             if !self
                 .client_weapon
@@ -109,6 +111,10 @@ impl App {
                     direction,
                     &queued.placement,
                     &self.collision_world,
+                    postretro_collision::EnvironmentView::new(
+                        level_gravity,
+                        &self.environment_volumes,
+                    ),
                     &registry,
                     &self
                         .session

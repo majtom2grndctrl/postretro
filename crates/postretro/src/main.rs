@@ -7723,6 +7723,7 @@ mod tests {
             weapon_a,
             &weapon::ClientFireResolution {
                 world_contacts: Vec::new(),
+                fluid_splashes: Vec::new(),
                 client_tick: 3,
                 hits: Vec::new(),
                 projectile_launch: None,

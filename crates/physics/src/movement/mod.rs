@@ -9,6 +9,7 @@ mod environment;
 mod intents;
 pub mod knockback;
 mod mover_carry;
+mod push;
 mod substrate;
 
 pub(crate) use mover_carry::mover_push_is_blocked_by_static;
@@ -187,7 +188,10 @@ pub fn tick(
     let knockback_launch = component.is_grounded()
         && component.knockback_velocity.y > 0.0
         && component.velocity.y > 0.0;
-    if knockback_launch {
+    // Push lift-off leaves the ground the same way a knockback launch does.
+    let push_launch = component.is_grounded() && push::lifts_off(&resolved_environment);
+    let launched = knockback_launch || push_launch;
+    if launched {
         component.set_grounded(false);
     }
     let collision = collision.combined_collision();
@@ -217,9 +221,9 @@ pub fn tick(
     // it borrows a state's live payload. Snapshot the real outgoing vocabulary
     // member first so the tick owns the single authoritative edge record.
     // State caps, friction, and transition carry own voluntary movement only.
-    // Gravity still accumulates in that base; the external layer is recomposed
-    // before the one shared collision sweep.
-    component.velocity -= component.knockback_velocity;
+    // Gravity still accumulates in that base; the protected knockback and push
+    // drift layers are recomposed before the one shared collision sweep.
+    component.velocity -= component.knockback_velocity + component.push_velocity;
     let state_before_dispatch = component.movement_state.kind();
     let transition = dispatch_state_intent(
         component,
@@ -232,14 +236,19 @@ pub fn tick(
         &mut events,
     );
 
+    // Push lands after the intent: horizontal push in the protected drift layer,
+    // vertical push in locomotion. Terminal speed along the push is held beside
+    // the fall clamp.
+    push::apply(component, resolved_environment.push, dt);
     knockback::decay(
         &mut component.knockback_velocity,
         &component.knockback,
-        previous_ground.is_grounded() && !knockback_launch,
+        previous_ground.is_grounded() && !launched,
         dt,
     );
     knockback::clamp_fall_speed(component);
-    component.velocity += component.knockback_velocity;
+    push::clamp_speed_along_push(component, resolved_environment.push);
+    component.velocity += component.knockback_velocity + component.push_velocity;
 
     // The grounded edge consumed a pending buffer this tick — clear it so the
     // buffered jump fires exactly once on landing, never twice.
@@ -271,7 +280,7 @@ pub fn tick(
         dt,
         position,
         previous_ground,
-        events.jumped || knockback_launch,
+        events.jumped || launched,
     );
 
     // Contact flows forward through the tick seam: the active intent has
@@ -324,6 +333,8 @@ pub fn tick(
 
 #[cfg(test)]
 mod environment_tests;
+#[cfg(test)]
+mod push_tests;
 
 #[cfg(test)]
 mod tests {

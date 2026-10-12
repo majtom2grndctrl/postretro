@@ -262,6 +262,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal);
                     component.velocity.y = 0.0;
                     component.knockback_velocity.y = 0.0;
                     if toi <= 1e-6 {
@@ -326,6 +327,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal);
                     if toi <= 1e-6 {
                         // Separation nudge, not a physics step: see floor
                         // branch above for rationale. Zero remaining_dt
@@ -369,6 +371,7 @@ pub(super) fn integrate_collision(
             component.velocity.z = 0.0;
             component.knockback_velocity.x = 0.0;
             component.knockback_velocity.z = 0.0;
+            component.push_velocity = Vec3::ZERO;
             current_pos.x = slide_start_xz.x;
             current_pos.z = slide_start_xz.y;
         }

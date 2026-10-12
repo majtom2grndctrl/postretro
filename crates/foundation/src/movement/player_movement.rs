@@ -245,10 +245,18 @@ pub struct PlayerMovementComponent {
     /// to when standing. Seeded from `desc.capsule.eye_height`, never mutated.
     pub standing_eye_height: f32,
     pub ground: GroundRef,
-    /// Total collision-resolved velocity, including the protected knockback layer.
+    /// Total collision-resolved velocity, including the protected knockback and
+    /// push-drift layers.
     pub velocity: Vec3,
     #[serde(default)]
     pub knockback_velocity: Vec3,
+    /// Protected drift a push volume's horizontal push has built up, already
+    /// included in `velocity`. Horizontal only: `y` is always 0, since vertical
+    /// push joins locomotion directly. Intent speed caps and steering never see
+    /// it; collision projects it like knockback, and the medium decays it (ground
+    /// friction while grounded, none airborne).
+    #[serde(default)]
+    pub push_velocity: Vec3,
     #[serde(default)]
     pub knockback: KnockbackResponse,
     /// The most recent walkable floor-contact normal, forwarded by the
@@ -389,6 +397,7 @@ impl PlayerMovementComponent {
             ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
             knockback_velocity: Vec3::ZERO,
+            push_velocity: Vec3::ZERO,
             knockback: desc.knockback,
             last_floor_normal: None,
             air_jumps_remaining,

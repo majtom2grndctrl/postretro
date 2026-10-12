@@ -15,6 +15,7 @@ use crate::emission::{WeaponEmission, descriptor_name, entity_emitter, reload_em
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::sprite_collection::derive_collection_id;
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_collision::EnvironmentView;
 use postretro_combat_model::{
     AuthorizedShot, MAX_OPEN_SHOT_AGE_TICKS, OpenAuthorizedShot, projectile_timeout_budget_ticks,
 };
@@ -48,6 +49,9 @@ pub(in crate::sim) struct LocalWeaponCommandResult {
     /// `reload_deliveries` stamped for presentation at this tick, in order.
     pub(in crate::sim) reload_emissions: Vec<WeaponEmission>,
     pub(in crate::sim) weapon_events: Vec<WeaponEmission>,
+    /// The local shooter's hitscan fluid splashes, carried beside its impact
+    /// emission for presentation to attach to.
+    pub(in crate::sim) fluid_splashes: Vec<crate::weapon::FluidSplashFact>,
     pub(in crate::sim) repointed_pawn: Option<EntityId>,
     pub(in crate::sim) projectile_spawns: Vec<EntityId>,
     #[cfg(test)]

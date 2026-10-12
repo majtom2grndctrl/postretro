@@ -109,7 +109,8 @@ export const playerEntity = defineEntity({
         entryBoost: 3.0,
         minDurationMs: 400.0,
       },
-      // Swimming (E24). Absent = this player cannot swim and walks fluid floors.
+      // Swimming in fluid volumes. Absent = this player cannot swim and walks
+      // fluid floors.
       // Enter at half immersion, leave below 35%; the gap keeps a swimmer
       // treading at the surface from toggling state.
       swim: {

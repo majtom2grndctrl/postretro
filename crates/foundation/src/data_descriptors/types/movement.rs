@@ -356,11 +356,12 @@ pub struct SwimParams {
     pub sink_speed: f32,
     /// Immersion fraction at which any state enters swim. Finite, `[0, 1]`.
     pub enter_depth: f32,
-    /// Immersion fraction below which swim leaves. Finite, `[0, 1]`, and
-    /// strictly less than `enter_depth`.
+    /// Immersion fraction below which swim leaves. Finite, `(0, 1]`, and
+    /// strictly less than `enter_depth`. Zero would make swim unleavable by
+    /// immersion and the fluid-jump re-entry latch uncleareable.
     pub exit_depth: f32,
     /// Upward velocity a jump from the surface sets, metres/sec. Finite and
-    /// ≥ 0.
+    /// > 0: a zero jump could never clear `exit_depth`.
     pub fluid_jump_velocity: f32,
 }
 
@@ -368,12 +369,20 @@ impl SwimParams {
     /// Range-check every field, naming the first bad one as
     /// `movement.swim.<field>`. Shared by the QuickJS and Luau parsers.
     pub fn validated(self) -> Result<Self, DescriptorError> {
-        use crate::data_descriptors::{validate_in_range_finite, validate_non_negative_finite};
+        use crate::data_descriptors::{
+            validate_in_range_finite, validate_in_range_finite_exclusive_min,
+            validate_non_negative_finite, validate_positive_finite,
+        };
         validate_non_negative_finite(self.speed, "movement.swim.speed")?;
         validate_non_negative_finite(self.accel, "movement.swim.accel")?;
         validate_non_negative_finite(self.sink_speed, "movement.swim.sinkSpeed")?;
         validate_in_range_finite(self.enter_depth, 0.0, 1.0, "movement.swim.enterDepth")?;
-        validate_in_range_finite(self.exit_depth, 0.0, 1.0, "movement.swim.exitDepth")?;
+        validate_in_range_finite_exclusive_min(
+            self.exit_depth,
+            0.0,
+            1.0,
+            "movement.swim.exitDepth",
+        )?;
         if self.exit_depth >= self.enter_depth {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
@@ -382,7 +391,7 @@ impl SwimParams {
                 ),
             });
         }
-        validate_non_negative_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
+        validate_positive_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
         Ok(self)
     }
 }
@@ -562,4 +571,65 @@ pub struct SwayParams {
 impl SwayParams {
     /// Default `groundedOnly` gate applied when the wire field is absent.
     pub const DEFAULT_GROUNDED_ONLY: bool = false;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn swim() -> SwimParams {
+        SwimParams {
+            speed: 4.5,
+            accel: 6.0,
+            sink_speed: 0.8,
+            enter_depth: 0.5,
+            exit_depth: 0.35,
+            fluid_jump_velocity: 6.5,
+        }
+    }
+
+    fn rejection_reason(params: SwimParams) -> String {
+        match params.validated() {
+            Err(DescriptorError::InvalidShape { reason }) => reason,
+            other => panic!("expected an InvalidShape rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn swim_validation_accepts_the_brief_example_block() {
+        assert_eq!(swim().validated().expect("valid swim block"), swim());
+    }
+
+    // A zero exit depth makes swim unleavable by immersion and the fluid-jump
+    // re-entry latch uncleareable.
+    #[test]
+    fn swim_validation_rejects_zero_exit_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            exit_depth: 0.0,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.exitDepth"), "{reason}");
+    }
+
+    // A zero fluid jump never clears the surface, so the jump never fires.
+    #[test]
+    fn swim_validation_rejects_zero_fluid_jump_velocity_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            fluid_jump_velocity: 0.0,
+            ..swim()
+        });
+        assert!(
+            reason.contains("movement.swim.fluidJumpVelocity"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn swim_validation_rejects_exit_depth_at_enter_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            exit_depth: 0.5,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.exitDepth"), "{reason}");
+    }
 }

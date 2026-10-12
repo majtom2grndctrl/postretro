@@ -1253,37 +1253,59 @@ mod tests {
         }
     }
 
-    // AC P9 (validation half): a bad swim block rejects its descriptor, naming the field.
+    // AC P9 (validation half), owner ruling Q4: a bad swim block is dropped
+    // with a warning naming the field; the descriptor and the mod still load,
+    // and the player wades.
     #[test]
-    fn mod_init_rejects_a_swim_block_whose_exit_depth_is_not_below_enter_depth() {
+    fn mod_init_drops_a_swim_block_whose_exit_depth_is_not_below_enter_depth_and_loads_the_mod() {
         let registry = PrimitiveRegistry::new();
         let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
             .expect("QuickJS subsystem should initialize");
         let movement_js = "movement: { capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }, ground: { speed: { walk: 7, run: 11, crouch: 3 }, accel: 10, stepHeight: 0.3, maxSlope: 45 }, air: { forwardSteer: 0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0 }, fall: { terminalVelocity: 40 }, swim: { speed: 4.5, accel: 6, sinkSpeed: 0.8, enterDepth: 0.4, exitDepth: 0.4, fluidJumpVelocity: 6.5 } }";
-        let js_error = run_mod_init_quickjs(
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let js = run_mod_init_quickjs(
             &quickjs,
             &format!(
-                "globalThis.__postretroModManifest = {{ name: 'Swim', id: 'swim', version: '1', entities: [{{ canonicalName: 'player', components: {{ {movement_js} }} }}] }};"
+                "globalThis.__postretroModManifest = {{ name: 'Swim', id: 'swim', version: '1', entities: [{{ canonicalName: 'player', components: {{ {movement_js} }} }}], maps: [{{ id: 'e1', path: 'maps/e1.prl', name: 'E1' }}] }};"
             ),
             "swim.js",
         )
-        .expect_err("a swim block with exitDepth >= enterDepth rejects the descriptor");
+        .expect("a bad swim block never rejects the QuickJS manifest");
         let movement_luau = movement_js.replace(": ", " = ");
-        let luau_error = run_mod_init_luau(
+        let luau = run_mod_init_luau(
             &[],
             &format!(
-                "return defineMod({{ name = 'Swim', id = 'swim', version = '1', entities = {{ {{ canonicalName = 'player', components = {{ {movement_luau} }} }} }} }})"
+                "return defineMod({{ name = 'Swim', id = 'swim', version = '1', entities = {{ {{ canonicalName = 'player', components = {{ {movement_luau} }} }} }}, maps = {{{{ id = 'e1', path = 'maps/e1.prl', name = 'E1' }}}} }})"
             ),
             "swim.luau",
             Path::new("."),
         )
-        .expect_err("the Luau descriptor rejects the same swim block");
-        for error in [js_error.to_string(), luau_error.to_string()] {
-            assert!(
-                error.contains("movement.swim.exitDepth"),
-                "the rejection names the field: {error}"
-            );
+        .expect("a bad swim block never rejects the Luau manifest");
+        for manifest in [&js, &luau] {
+            let player = manifest
+                .entities
+                .iter()
+                .find(|entity| entity.canonical_name.as_deref() == Some("player"))
+                .expect("the player descriptor loads");
+            let movement = player.movement.as_ref().expect("movement loads");
+            assert_eq!(movement.swim, None, "the swim block is dropped");
+            assert_eq!(movement.capsule.radius, 0.4, "the rest of movement stands");
+            assert_eq!(manifest.maps.len(), 1, "the rest of the manifest stands");
         }
+        let dropped: Vec<String> = capture
+            .records()
+            .into_iter()
+            .filter(|record| {
+                record.level == log::Level::Warn
+                    && record.message.contains("`movement.swim.exitDepth`")
+                    && record
+                        .message
+                        .contains("the movement.swim block was dropped")
+            })
+            .map(|record| record.message)
+            .collect();
+        assert_eq!(dropped.len(), 2, "one warning per runtime: {dropped:?}");
+        assert_eq!(dropped[0], dropped[1], "the runtimes' diagnostics diverged");
     }
 
     #[test]

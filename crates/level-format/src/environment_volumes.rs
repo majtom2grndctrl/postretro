@@ -55,7 +55,8 @@ pub struct EnvironmentVolumeRecord {
     pub fluid: String,
     /// One convex leaf per authored brush.
     pub brushes: Vec<EnvironmentBrush>,
-    /// Visible fluid surface polygons. A dry volume has none.
+    /// Visible fluid surface polygons. A dry volume has none; decoding rejects
+    /// one that does, and a volume that sets no field at all.
     pub surface_faces: Vec<EnvironmentSurfaceFace>,
 }
 
@@ -85,6 +86,8 @@ pub struct EnvironmentSurfaceFace {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnvironmentSurfaceVertex {
     pub position: [f32; 3],
+    /// Texture coordinates in texel space, from the brush face's projection.
+    /// The renderer normalises them by the texture's size at load.
     pub uv: [f32; 2],
 }
 
@@ -203,6 +206,11 @@ fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeR
     let push = r.finite_vec3(&format!("volume {i} push"))?;
     let push = r.optional(push_present, push, [0.0; 3], &format!("volume {i} push"))?;
     let fluid = r.string(&format!("volume {i} fluid"))?;
+    if gravity.is_none() && push.is_none() && fluid.is_empty() {
+        return invalid(format!(
+            "volume {i} sets no field; a volume sets gravity, push or a fluid"
+        ));
+    }
 
     let brush_count = r.bounded_count(&format!("volume {i} brush count"), MIN_BRUSH_SIZE)?;
     if brush_count == 0 {
@@ -239,6 +247,11 @@ fn read_volume(r: &mut Reader<'_>, i: usize) -> crate::Result<EnvironmentVolumeR
     }
 
     let face_count = r.bounded_count(&format!("volume {i} surface face count"), MIN_FACE_SIZE)?;
+    if fluid.is_empty() && face_count > 0 {
+        return invalid(format!(
+            "volume {i} is dry but carries {face_count} surface face(s); a dry volume has none"
+        ));
+    }
     let mut surface_faces = Vec::with_capacity(face_count);
     for f in 0..face_count {
         let what = format!("volume {i} surface face {f}");
@@ -627,6 +640,24 @@ mod tests {
         let mut section = sample();
         section.volumes[2].surface_faces[0].vertices.truncate(2);
         assert_rejected(&section.to_bytes(), "a polygon needs at least 3");
+    }
+
+    #[test]
+    fn rejects_a_dry_volume_carrying_surface_faces() {
+        let mut section = sample();
+        let faces = section.volumes[2].surface_faces.clone();
+        section.volumes[0].surface_faces = faces;
+        assert_rejected(
+            &section.to_bytes(),
+            "volume 0 is dry but carries 1 surface face(s)",
+        );
+    }
+
+    #[test]
+    fn rejects_a_volume_that_sets_no_field() {
+        let mut section = sample();
+        section.volumes[0].gravity = None;
+        assert_rejected(&section.to_bytes(), "volume 0 sets no field");
     }
 
     #[test]

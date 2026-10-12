@@ -8,8 +8,9 @@ use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{
     crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent,
 };
+use crate::movement::push::fold_vertical_drift;
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
-use crate::movement::swim_transition::environment_transition;
+use crate::movement::swim_transition::{SwimSeam, environment_transition};
 use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -107,6 +108,9 @@ fn swim_fluid(state: &MovementState) -> Option<u16> {
 /// velocity, reading the outgoing state's live boost, and the edge is recorded
 /// for reactions. `resolved` may be replaced: entry from a crouched capsule
 /// stands it up and re-resolves at the standing capsule.
+///
+/// Returns whether the swim intent fires a fluid jump this tick: the seam
+/// decides it, since qualifying needs a headroom cast an intent may not make.
 pub(super) fn apply_environment_transition(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -115,11 +119,13 @@ pub(super) fn apply_environment_transition(
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
     events: &mut MovementEvents,
-) {
-    let Some(Transition { next, carry }) =
-        environment_transition(component, input, view, resolved, collision, position)
-    else {
-        return;
+) -> bool {
+    let SwimSeam {
+        transition,
+        fluid_jump,
+    } = environment_transition(component, input, view, resolved, collision, position);
+    let Some(Transition { next, carry }) = transition else {
+        return fluid_jump;
     };
     let from = component.movement_state.kind();
     events.swim_fluid = swim_fluid(&next).or(swim_fluid(&component.movement_state));
@@ -128,11 +134,15 @@ pub(super) fn apply_environment_transition(
         &mut component.velocity,
         outgoing_boost(&component.movement_state),
     );
+    if swim_fluid(&component.movement_state).is_some() {
+        fold_vertical_drift(component);
+    }
     component.movement_state = next;
     events.state_edges.push(MovementStateEdge {
         from,
         to: next.kind(),
     });
+    fluid_jump
 }
 
 /// Run the active state's velocity intent, resolving the
@@ -161,7 +171,12 @@ pub(super) fn apply_environment_transition(
 ///
 /// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
 /// before dispatch; both `normal_intent` and `crouching_intent` consume them
-/// (the `Dash` state drops jump input by design).
+/// (the `Dash` state drops jump input by design). `fluid_jump` is the swim
+/// seam's verdict on this tick's fluid jump, which only `swim_intent` reads.
+///
+/// An edge out of `Swim` folds the drift layer's vertical part into locomotion
+/// here, after the carry (`push::fold_vertical_drift`), so outside water the
+/// layer is horizontal again.
 ///
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
@@ -174,6 +189,7 @@ pub(super) fn dispatch_state_intent(
     input: &MovementInput,
     jump_edges: JumpEdges,
     environment: &ResolvedEnvironment,
+    fluid_jump: bool,
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
@@ -220,7 +236,7 @@ pub(super) fn dispatch_state_intent(
             eye_current,
         ),
         MovementState::Swim { fluid } => {
-            swim_intent(component, input, environment, dt, events, fluid)
+            swim_intent(component, input, environment, fluid_jump, dt, events, fluid)
         }
     };
     match transition {
@@ -231,6 +247,7 @@ pub(super) fn dispatch_state_intent(
             apply_carry(carry, &mut component.velocity, outgoing_boost(&state));
             if let Some(fluid) = swim_fluid(&state) {
                 events.swim_fluid = Some(fluid);
+                fold_vertical_drift(component);
             }
             Some(next)
         }

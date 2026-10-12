@@ -129,14 +129,18 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
 
---- Current world gravity in m/s² (negative = downward; positive = upward).
---- Seeded from the worldspawn `initialGravity` KVP at level load and
---- persists until the next level load or `setGravity` call.
+--- Level default gravity in m/s² (negative = downward; positive = upward):
+--- the gravity outside every gravity volume. Seeded from the worldspawn
+--- `initialGravity` KVP at level load and persists until the next level load
+--- or `setGravity` call. Inside a `gravity_volume` the volume's own value
+--- holds; this still returns the level default.
 declare function getGravity(): number
 
---- Set world gravity in m/s² (negative = downward; positive = upward).
---- NaN and non-finite values are ignored with a warning. Effect is immediate
---- and persists until the next level load or another `setGravity` call.
+--- Set the level default gravity in m/s² (negative = downward; positive =
+--- upward): the gravity outside every gravity volume. A `gravity_volume`'s
+--- value holds inside it regardless. NaN and non-finite values are ignored
+--- with a warning. Effect is immediate and persists until the next level load
+--- or another `setGravity` call.
 declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.

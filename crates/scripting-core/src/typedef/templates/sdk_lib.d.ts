@@ -94,9 +94,9 @@
   /** Return the map-placed members of `kind`, optionally only those carrying `tag`, in authored map order. Membership is fixed at install: an instance a runtime spawn carries never appears. Returns `[]` on no match. Callable only inside a level's data script (module evaluation or `setupLevel`); elsewhere it raises. */
   export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];
 
-  /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+  /** Level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. Inside a `gravity_volume` the volume's own value holds; this still returns the level default. */
   export function getGravity(): number;
-  /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are ignored with a warning. Effect is immediate and persists until the next level load or another `setGravity` call. */
+  /** Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. NaN and non-finite values are ignored with a warning. Effect is immediate and persists until the next level load or another `setGravity` call. */
   export function setGravity(value: number): void;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */

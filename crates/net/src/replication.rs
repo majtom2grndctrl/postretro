@@ -779,7 +779,7 @@ mod tests {
     fn movement(velocity_x: f32) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
-            push_velocity: [0.0; 2],
+            push_velocity: [0.0; 3],
             velocity: [velocity_x, 0.0, 0.0],
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,

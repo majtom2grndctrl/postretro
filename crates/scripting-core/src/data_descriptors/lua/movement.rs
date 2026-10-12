@@ -192,17 +192,14 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
-    // `swim` is optional: absence means the pawn cannot swim. When present,
-    // every field is required and validated, mirroring the JS path.
+    // `swim` is optional: absence means the pawn cannot swim. A present block
+    // that fails parsing or validation is dropped with a warning and the rest
+    // of the descriptor loads, mirroring the JS path.
     let raw: LuaValue = table.get("swim").map_err(lua_err)?;
     let swim = match raw {
         LuaValue::Nil => None,
-        LuaValue::Table(t) => Some(swim_params_from_lua(&t)?),
-        other => {
-            return Err(DescriptorError::InvalidShape {
-                reason: format!("`movement.swim` must be a table, got {}", other.type_name()),
-            });
-        }
+        LuaValue::Table(t) => keep_or_drop_swim_block(swim_params_from_lua(&t)),
+        _ => keep_or_drop_swim_block(Err(swim_block_not_an_object())),
     };
 
     // Absent viewFeel disables camera effects. Each sub-object is optional;
@@ -438,17 +435,17 @@ pub fn slide_params_from_lua(table: &Table) -> Result<SlideParams, DescriptorErr
 }
 
 /// Mirror of [`swim_params_from_js`] for Luau tables. All six fields are
-/// required when `movement.swim` is present.
+/// required when `movement.swim` is present; errors are worded identically.
 pub fn swim_params_from_lua(table: &Table) -> Result<SwimParams, DescriptorError> {
-    SwimParams {
-        speed: get_required_f32_lua(table, "speed")?,
-        accel: get_required_f32_lua(table, "accel")?,
-        sink_speed: get_required_f32_lua(table, "sinkSpeed")?,
-        enter_depth: get_required_f32_lua(table, "enterDepth")?,
-        exit_depth: get_required_f32_lua(table, "exitDepth")?,
-        fluid_jump_velocity: get_required_f32_lua(table, "fluidJumpVelocity")?,
-    }
-    .validated()
+    swim_params_from_fields(|field| {
+        let raw: LuaValue = table.get(field).map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => Err(swim_field_missing(field)),
+            LuaValue::Integer(i) => Ok(i as f32),
+            LuaValue::Number(f) => Ok(f as f32),
+            _ => Err(swim_field_not_a_number(field)),
+        }
+    })
 }
 
 pub fn get_required_table_lua(

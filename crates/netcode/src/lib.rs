@@ -7125,7 +7125,7 @@ mod tests {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                 knockback_velocity: [0.0; 3],
-                push_velocity: [0.0; 2],
+                push_velocity: [0.0; 3],
                 velocity: [12.0, 0.0, 4.0],
                 ground: postretro_net::wire::WireGroundRef::World,
                 air_jumps_remaining: 1,
@@ -7739,7 +7739,7 @@ mod tests {
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
                                     knockback_velocity: [0.0; 3],
-                                    push_velocity: [0.0; 2],
+                                    push_velocity: [0.0; 3],
                                     velocity: [0.0, 0.0, 0.0],
                                     ground: postretro_net::wire::WireGroundRef::World,
                                     air_jumps_remaining: 1,

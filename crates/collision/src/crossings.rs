@@ -3,8 +3,8 @@
 
 use glam::Vec3;
 
-use crate::leaf::ContentsMask;
-use crate::line::{Run, clip_line, for_each_run};
+use crate::leaf::{ContentsMask, ConvexLeaf};
+use crate::line::{BrushInterval, Run, clip_line, for_each_run};
 use crate::query_timer::{QueryFamily, timed};
 use crate::resolve::EnvironmentView;
 use crate::volumes::EnvironmentVolumes;
@@ -14,12 +14,22 @@ use crate::volumes::EnvironmentVolumes;
 /// splashes there, whether it leaves or enters through it.
 pub const CROSSING_START_EPSILON: f32 = 1.0e-3;
 
-/// Brushes of one fluid volume whose intervals along the ray are separated by at
-/// most this gap, in metres, count as continuous. Shared faces between brushes of
-/// one entity are compiled per brush, so their planes can disagree by float
-/// noise; without this a ray across the seam would see a hairline gap and report
-/// an exit and an entry inside the pool.
+/// Brushes of one fluid volume whose intervals along the ray are separated by a
+/// gap whose midpoint lies within this distance of one of the volume's brushes,
+/// in metres ([`ConvexLeaf`] bounds and plane depth), count as continuous.
+/// Shared faces between brushes of one entity are compiled per brush, so their
+/// planes can disagree by float noise; without this a ray across the seam would
+/// see a hairline gap and report an exit and an entry inside the pool. Measured
+/// across the seam rather than along the ray, so a ray grazing a tilted seam,
+/// whose gap along the ray is the noise divided by the grazing angle's sine,
+/// still joins it.
 pub const CROSSING_SEAM_EPSILON: f32 = 1.0e-4;
+
+/// Brush intervals one volume's measurement keeps inline, so its runs are found
+/// from the clips already made. A ray meeting more of one volume's brushes falls
+/// back to re-clipping that volume's brush list on each pass; both paths measure
+/// the same runs.
+const INLINE_VOLUME_INTERVALS: usize = 16;
 
 /// One crossing of a fluid volume's boundary along a ray.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -74,6 +84,7 @@ fn visit_fluid_crossings_untimed(
     let volumes = view.volumes;
     let dir_length = dir.length();
     if volumes.is_empty()
+        || !origin.is_finite()
         || !(dir_length > 0.0 && dir_length.is_finite())
         || max_t.is_nan()
         || max_t <= 0.0
@@ -85,6 +96,10 @@ fn visit_fluid_crossings_untimed(
     // Clip past `max_t` so a brush continuing the volume just beyond it still
     // joins the run, and an end at `max_t` is not mistaken for an exit.
     let clip_end = max_t + 4.0 * seam_t;
+    let hits = |leaf: &ConvexLeaf| {
+        clip_line(&leaf.planes, origin, dir, 0.0, clip_end)
+            .is_some_and(|interval| interval.has_length())
+    };
 
     volumes.visit_brushes_on_line(
         origin,
@@ -92,43 +107,72 @@ fn visit_fluid_crossings_untimed(
         0.0,
         clip_end,
         ContentsMask::FLUID,
-        |volume, brush, leaf| {
-            let Some(fluid) = volumes.volume(volume).and_then(|v| v.fluid) else {
+        |index, brush, leaf| {
+            let Some(volume) = volumes.volume(index) else {
                 return;
             };
-            let hits = clip_line(&leaf.planes, origin, dir, 0.0, clip_end)
-                .is_some_and(|interval| interval.has_length());
-            // Measure each volume once, from its lowest-index brush the ray hits.
-            if !hits || lowest_hit_brush(volumes, volume, origin, dir, clip_end) != Some(brush) {
+            let Some(fluid) = volume.fluid else {
+                return;
+            };
+            // Measure each volume once, from the lowest-index brush the ray
+            // hits, scanning its own brush list rather than walking the tree.
+            let first = brush as usize;
+            if !hits(leaf) || volume.brushes[..first].iter().any(hits) {
                 return;
             }
+            let clip = |brush: usize, leaf: &ConvexLeaf| {
+                clip_line(&leaf.planes, origin, dir, 0.0, clip_end)
+                    .filter(|interval| interval.has_length())
+                    .map(|interval| BrushInterval {
+                        brush: brush as u32,
+                        interval,
+                    })
+            };
+            // Brushes before the first hit miss, so the gather starts there.
+            let mut inline = [None::<BrushInterval>; INLINE_VOLUME_INTERVALS];
+            let mut kept = 0;
+            let mut overflowed = false;
+            for (brush, leaf) in volume.brushes.iter().enumerate().skip(first) {
+                let Some(interval) = clip(brush, leaf) else {
+                    continue;
+                };
+                if kept == INLINE_VOLUME_INTERVALS {
+                    overflowed = true;
+                    break;
+                }
+                inline[kept] = Some(interval);
+                kept += 1;
+            }
             for_each_run(
-                |sink| volumes.volume_line_intervals(volume, origin, dir, 0.0, clip_end, sink),
-                seam_t,
+                |sink| {
+                    if overflowed {
+                        for (brush, leaf) in volume.brushes.iter().enumerate().skip(first) {
+                            if let Some(interval) = clip(brush, leaf) {
+                                sink(interval);
+                            }
+                        }
+                    } else {
+                        inline[..kept]
+                            .iter()
+                            .flatten()
+                            .for_each(|interval| sink(*interval));
+                    }
+                },
+                |gap_start, gap_end| {
+                    let midpoint = origin + dir * (0.5 * (gap_start + gap_end));
+                    volume
+                        .brushes
+                        .iter()
+                        .any(|leaf| leaf.is_near(midpoint, CROSSING_SEAM_EPSILON))
+                },
                 |run| {
                     report_run(
-                        volumes, volume, fluid, origin, dir, start_t, max_t, run, &mut visit,
+                        volumes, index, fluid, origin, dir, start_t, max_t, run, &mut visit,
                     )
                 },
             );
         },
     );
-}
-
-fn lowest_hit_brush(
-    volumes: &EnvironmentVolumes,
-    volume: usize,
-    origin: Vec3,
-    dir: Vec3,
-    clip_end: f32,
-) -> Option<u32> {
-    let mut lowest: Option<u32> = None;
-    volumes.volume_line_intervals(volume, origin, dir, 0.0, clip_end, &mut |candidate| {
-        if candidate.interval.has_length() && lowest.is_none_or(|brush| candidate.brush < brush) {
-            lowest = Some(candidate.brush);
-        }
-    });
-    lowest
 }
 
 #[allow(clippy::too_many_arguments)]

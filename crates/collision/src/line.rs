@@ -91,39 +91,31 @@ pub(crate) struct Run {
 }
 
 /// Emit, in increasing order, the maximal runs of the union of the positive-length
-/// intervals `source` yields. Intervals separated by a gap of at most `seam` join
-/// one run. Allocation-free: `source` is called once per extension step and must
-/// yield the same intervals every call (any order). A run's start face is the
-/// lowest brush index among intervals starting there, its end face the lowest
-/// among those ending there, so runs never depend on yield order.
+/// intervals `source` yields. Overlapping or touching intervals join one run; a
+/// run also continues across a gap `(end, next_start)` when `joins` accepts it
+/// (a seam of float noise between two brushes of one union). Allocation-free:
+/// `source` is called once per extension step and must yield the same intervals
+/// every call (any order). A run's start face is the lowest brush index among
+/// intervals starting there, its end face the lowest among those ending there,
+/// so runs never depend on yield order.
 pub(crate) fn for_each_run(
     source: impl Fn(&mut dyn FnMut(BrushInterval)),
-    seam: f32,
+    joins: impl Fn(f32, f32) -> bool,
     mut emit: impl FnMut(Run),
 ) {
     let mut previous_end: Option<f32> = None;
     loop {
-        // Every interval starting within `seam` of the previous run's end was
-        // absorbed into it, so the next run starts at the earliest one past that.
-        let mut first: Option<BrushInterval> = None;
-        source(&mut |candidate| {
-            if !candidate.interval.has_length() {
-                return;
-            }
-            if previous_end.is_some_and(|end| candidate.interval.t_enter <= end + seam) {
-                return;
-            }
-            if first.is_none_or(|best| starts_before(candidate, best)) {
-                first = Some(candidate);
-            }
-        });
-        let Some(first) = first else {
+        // Every interval starting at or before the previous run's end lies
+        // inside it, so the next run starts at the earliest one past that.
+        let Some(first) = earliest_start_after(&source, previous_end) else {
             return;
         };
 
         // Extend while any interval reaching the run ends later, or ends at the
         // same point from a lower brush index: the end face is then the lowest
         // brush among the run's intervals ending there, whatever the pass order.
+        // With nothing reaching, step over a gap `joins` accepts to the next
+        // interval and keep extending from there.
         let mut last = first;
         loop {
             let end = last.interval.t_exit;
@@ -131,17 +123,21 @@ pub(crate) fn for_each_run(
             source(&mut |candidate| {
                 let interval = candidate.interval;
                 if interval.has_length()
-                    && interval.t_enter <= end + seam
+                    && interval.t_enter <= end
                     && ends_after(candidate, last)
                     && extension.is_none_or(|best| ends_after(candidate, best))
                 {
                     extension = Some(candidate);
                 }
             });
-            let Some(extension) = extension else {
-                break;
-            };
-            last = extension;
+            if let Some(extension) = extension {
+                last = extension;
+                continue;
+            }
+            match earliest_start_after(&source, Some(end)) {
+                Some(next) if joins(end, next.interval.t_enter) => last = next,
+                _ => break,
+            }
         }
 
         let end = last.interval.t_exit;
@@ -155,12 +151,32 @@ pub(crate) fn for_each_run(
     }
 }
 
+/// The positive-length interval starting first after `after` (any, for `None`),
+/// lowest brush index on a tie.
+fn earliest_start_after(
+    source: &impl Fn(&mut dyn FnMut(BrushInterval)),
+    after: Option<f32>,
+) -> Option<BrushInterval> {
+    let mut first: Option<BrushInterval> = None;
+    source(&mut |candidate| {
+        if !candidate.interval.has_length()
+            || after.is_some_and(|end| candidate.interval.t_enter <= end)
+        {
+            return;
+        }
+        if first.is_none_or(|best| starts_before(candidate, best)) {
+            first = Some(candidate);
+        }
+    });
+    first
+}
+
 /// Total length covered by the union of the positive-length intervals `source`
 /// yields. Exact: overlapping intervals count once, and runs sum in increasing
 /// order so the float result never depends on yield order.
 pub(crate) fn union_length(source: impl Fn(&mut dyn FnMut(BrushInterval))) -> f32 {
     let mut total = 0.0;
-    for_each_run(source, 0.0, |run| total += run.end - run.start);
+    for_each_run(source, |_, _| false, |run| total += run.end - run.start);
     total
 }
 
@@ -197,11 +213,12 @@ mod tests {
         }
     }
 
+    /// Runs of `intervals`, joining any gap no wider than `seam`.
     fn runs(intervals: &[BrushInterval], seam: f32) -> Vec<(f32, f32)> {
         let mut out = Vec::new();
         for_each_run(
             |sink| intervals.iter().for_each(|i| sink(*i)),
-            seam,
+            |gap_start, gap_end| gap_end - gap_start <= seam,
             |run| out.push((run.start, run.end)),
         );
         out
@@ -237,8 +254,9 @@ mod tests {
         assert_eq!(runs(&set, 0.0), vec![(0.0, 2.0), (3.0, 5.0)]);
         let total = union_length(|sink| set.iter().for_each(|i| sink(*i)));
         assert!((total - 4.0).abs() < EPS);
-        // A seam wider than the gap joins the runs.
+        // A gap the predicate accepts joins the runs; one it rejects does not.
         assert_eq!(runs(&set, 1.0), vec![(0.0, 5.0)]);
+        assert_eq!(runs(&set, 0.99), vec![(0.0, 2.0), (3.0, 5.0)]);
     }
 
     #[test]

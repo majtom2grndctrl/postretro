@@ -172,6 +172,8 @@ impl<B: Backend> AudioCore<B> {
         self.mono.set(mono);
     }
 
+    /// Muffle the SFX bus by `amount` in 0..=1 (the app drives it while the
+    /// camera eye is in a fluid); a non-finite amount reads as 0.
     pub(crate) fn set_world_muffle(&mut self, amount: f32) {
         self.muffle.set(amount);
     }

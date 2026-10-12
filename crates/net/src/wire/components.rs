@@ -127,9 +127,10 @@ pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],
     /// Protected impulse contribution already included in total velocity.
     pub knockback_velocity: [f32; 3],
-    /// Protected push-drift contribution already included in total velocity,
-    /// as `[x, z]`: the layer is horizontal, so its vertical part is not sent.
-    pub push_velocity: [f32; 2],
+    /// Protected push-drift contribution already included in total velocity.
+    /// Its vertical part is non-zero only while swimming, where the layer
+    /// carries the full push; outside `Swim` it is 0.
+    pub push_velocity: [f32; 3],
     pub ground: WireGroundRef,
     pub air_jumps_remaining: u32,
     pub air_dashes_remaining: u32,

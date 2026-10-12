@@ -1,4 +1,4 @@
-# E24 environment-volume playtest
+# Environment-volume playtest hall: fluids, gravity and push
 
 A sealed hall of small areas, one per environment-volume behaviour, for the
 manual swim, low-gravity and co-op playtests. Its fluids, `water` and `sludge`,

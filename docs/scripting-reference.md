@@ -1903,7 +1903,9 @@ Postretro.defineTriggerEvent({ tag = "story_plate", event = "enter", fire = { st
 
 ## getGravity / setGravity
 
-Read and write the world gravity at runtime. The starting value is set per-map via the `initialGravity` worldspawn KVP in TrenchBroom.
+Read and write the level's default gravity at runtime: the gravity everywhere outside a `gravity_volume`. The starting value is set per-map via the `initialGravity` worldspawn KVP in TrenchBroom.
+
+Inside a `gravity_volume` the volume's own `gravity` holds. `setGravity` never reaches inside one, and `getGravity` keeps returning the level default even while the player stands in one ([level design reference](level_design.md#environment-volumes-fluids-gravity-and-push)).
 
 **Sign convention:** negative = downward, positive = upward. Standard Earth gravity is `-9.81` m/s².
 
@@ -2875,11 +2877,14 @@ logs one warning. All six fields are required:
 | `accel` | m/s² | `≥ 0` | How fast the swimmer reaches that speed. |
 | `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at Earth gravity (9.81 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
 | `enterDepth` | fraction | `0`–`1` | How much of the body, feet to head, must be in the fluid to start swimming. |
-| `exitDepth` | fraction | `0`–`1`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
-| `fluidJumpVelocity` | m/s | `≥ 0` | Upward speed of a jump out of the fluid. |
+| `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
+| `fluidJumpVelocity` | m/s | above `0` | Upward speed of a jump out of the fluid. |
 
-`exitDepth` at or above `enterDepth` rejects the descriptor, naming
-`movement.swim.exitDepth`; any other field out of range names that field.
+A swim block with a missing field, a field that is not a number, a field out of
+range, or `exitDepth` at or above `enterDepth` is dropped with a warning naming
+the field (for example `movement.swim.exitDepth`). The rest of the descriptor
+and the mod still load, and the player wades, as if the descriptor had no
+`swim` block.
 
 How swimming plays:
 

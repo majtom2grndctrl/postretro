@@ -12,7 +12,7 @@ use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
 };
-use postretro_foundation::{GroundRef, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
@@ -164,6 +164,10 @@ pub(super) fn integrate_collision(
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
     let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
+    // The drift layer is 3D only while swimming (`push::apply`), and contact
+    // leaves its vertical part to the fluid (`push::project_drift`); the state
+    // does not change inside the substrate.
+    let drift_is_3d = matches!(component.movement_state, MovementState::Swim { .. });
 
     let mut current_pos = apply_mover_carry(position, previous_ground, collision);
     current_pos =
@@ -262,7 +266,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
-                    super::push::project_drift(&mut component.push_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal, drift_is_3d);
                     component.velocity.y = 0.0;
                     component.knockback_velocity.y = 0.0;
                     if toi <= 1e-6 {
@@ -327,7 +331,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
-                    super::push::project_drift(&mut component.push_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal, drift_is_3d);
                     if toi <= 1e-6 {
                         // Separation nudge, not a physics step: see floor
                         // branch above for rationale. Zero remaining_dt
@@ -610,19 +614,38 @@ pub(super) fn standup_clearance_probe(
     standing_half_height: f32,
 ) -> bool {
     let head_rise = 2.0 * (standing_half_height - crouched_half_height);
-    if head_rise <= 0.0 {
-        // Already standing-or-taller: no growth needed, so nothing to clear.
+    upward_clearance_probe(
+        component,
+        collision,
+        position,
+        crouched_half_height,
+        head_rise,
+    )
+}
+
+/// Upward headroom probe: can a capsule of `half_height` (the live radius)
+/// centred at `position` rise `rise` metres straight up without hitting
+/// anything? Sweeps that capsule up by `rise`; a hit strictly within it blocks.
+/// A rise of zero or less needs nothing cleared. Shared by crouch stand-up
+/// (through [`standup_clearance_probe`]) and the swim seam's fluid-jump
+/// qualification. Returns `true` when headroom is CLEAR.
+pub(super) fn upward_clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    half_height: f32,
+    rise: f32,
+) -> bool {
+    if rise <= 0.0 {
         return true;
     }
-    // Build the crouched-size parry capsule (radius unchanged). The parry
-    // shape stays inside this collision-boundary call; the result crosses back
-    // as a plain bool.
-    let capsule = Capsule::new_y(crouched_half_height, component.capsule.radius);
-    let hit = cast_capsule_query(collision, position, &capsule, Vec3::Y, head_rise);
-    // A hit strictly within the head-rise distance blocks standing. `None`
-    // (nothing within range) or a hit at/after the full rise is clear.
+    // The parry shape stays inside this collision-boundary call; the result
+    // crosses back as a plain bool.
+    let capsule = Capsule::new_y(half_height, component.capsule.radius);
+    let hit = cast_capsule_query(collision, position, &capsule, Vec3::Y, rise);
+    // `None` (nothing within range) or a hit at/after the full rise is clear.
     match hit {
-        Some(h) => h.time_of_impact >= head_rise,
+        Some(h) => h.time_of_impact >= rise,
         None => true,
     }
 }

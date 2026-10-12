@@ -42,8 +42,9 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::{MovementEvents, MovementInput};
 use crate::netcode::{
-    NetworkIdAllocator, client_environment_view, client_fluid_table, host_handle_client_message,
-    replace_client_tuning, tuning_control_if_changed, tuning_payload_for_pawn,
+    NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn, client_environment_view,
+    client_fluid_table, host_handle_client_message, replace_client_tuning,
+    tuning_control_if_changed, tuning_payload_for_pawn,
 };
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -65,6 +66,9 @@ use postretro_foundation::{
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
+/// "No corrections" (E24 brief, Co-op parity): every recorded correction is at
+/// most this many metres under [`light_link`].
+pub(crate) const NO_CORRECTION_M: f32 = 1.0e-4;
 pub(crate) const GRAVITY: f32 = -20.0;
 pub(crate) const TICK_MS: VirtualMillis = 16; // ~16.667 ms; integer ms keeps the clock exact-ish
 pub(crate) const CLIENT_ID: u64 = 1;
@@ -91,6 +95,20 @@ pub(crate) const PLAYOUT_WARMUP_TICKS: u32 = 7;
 /// effectively-at-rest pose. Bounded + deterministic (vs. waiting for exact stillness,
 /// whose geometric decay tail is unboundedly slow). See `drain_step`.
 pub(crate) const DRAIN_SETTLE_TICKS: u32 = 30;
+
+/// A near-perfect link for scenario tests that exercise the gap policy, stale and
+/// duplicate seams, and exact prediction deterministically without the full
+/// latency profile's loss obscuring the assertion. A small fixed delay keeps the
+/// predict→ack loop realistic (the client predicts ahead of the host) without
+/// jitter or loss.
+pub(crate) fn light_link() -> LinkConfig {
+    LinkConfig {
+        delay: 32,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0x6010,
+    }
+}
 
 /// A large flat floor so the pawn stays grounded for the whole run — keeps the
 /// scenario about prediction/reconciliation, not terrain interaction.
@@ -1242,6 +1260,29 @@ impl LoopbackHarness {
             self.client_tuning_installs += 1;
             self.client_sync_fluid_table();
         }
+    }
+
+    /// CLIENT: rebuild the armed pawn's movement component from the installed
+    /// host tuning through the production rebuild
+    /// (`apply_installed_movement_tuning_to_armed_pawn`), as a pawn-tuning
+    /// change does on install — a weapon pickup, a host reload. Called between
+    /// steps it lands after this frame's reconcile and before the next
+    /// prediction, as a Control payload arriving in a frame with no snapshot
+    /// does, so nothing restores the pawn before it predicts.
+    pub(crate) fn client_rebuild_movement_from_installed_tuning(&mut self) {
+        let armed = self
+            .client_replication
+            .armed_local_pawn()
+            .expect("the client is armed");
+        let mut applied_generation = 0;
+        apply_installed_movement_tuning_to_armed_pawn(
+            &armed,
+            self.client_tuning.as_deref(),
+            1,
+            &mut applied_generation,
+            &self.descriptors,
+            &mut self.client_registry,
+        );
     }
 
     /// Feed client acks back to the server replication tracker (the reverse control

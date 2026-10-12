@@ -358,3 +358,113 @@ fn resolved_viscosity_is_the_winning_fluid_entry_of_the_view_table() {
     );
     assert_eq!((level_only.fluid, level_only.viscosity), (None, 0.0));
 }
+
+// Q3: a pool split into two stacked entities of one fluid reads as one pool,
+// whichever entity wins the overlap rule.
+#[test]
+fn pool_split_into_two_stacked_entities_of_one_fluid_reads_full_immersion_and_eye_in() {
+    // The upper layer is smaller, so it wins wherever the segment meets both.
+    let volumes = EnvironmentVolumes::build(vec![pool(0.0, 2.0, 0), pool(2.0, 3.0, 0)]);
+
+    // Segment 0.5..2.5 straddles the seam: the winner's 2..2.5 alone would read 0.25.
+    let straddling = resolve(&volumes, Vec3::new(0.0, 1.5, 0.0));
+    assert_eq!(straddling.fluid, Some(0));
+    assert!(
+        (straddling.immersion - 1.0).abs() < EPS,
+        "immersion {}",
+        straddling.immersion
+    );
+    assert!(
+        straddling.tick_eye_in_fluid,
+        "the eye at 2.1 is in the upper layer"
+    );
+
+    // The eye at 1.9 sits in the lower, losing layer: still in the fluid.
+    let eye_in_loser = resolve(&volumes, Vec3::new(0.0, 1.3, 0.0));
+    assert!((eye_in_loser.immersion - 1.0).abs() < EPS);
+    assert!(eye_in_loser.tick_eye_in_fluid);
+
+    // Head out of the top of the stack: segment 1.5..3.5 is covered on 1.5..3.
+    let surfacing = resolve(&volumes, Vec3::new(0.0, 2.5, 0.0));
+    assert!((surfacing.immersion - 0.75).abs() < EPS);
+    assert!(!surfacing.tick_eye_in_fluid);
+}
+
+// Q3: a narrow stream volume of water dipping into a water pool adds to it; a
+// stream of another fluid wins the fluid and counts alone.
+#[test]
+fn stream_of_one_fluid_dipping_into_a_pool_of_the_same_fluid_adds_up() {
+    let stream = |fluid: u16| {
+        fluid_box(
+            Vec3::new(-0.5, 1.5, -0.5),
+            Vec3::new(0.5, 4.0, 0.5),
+            fluid,
+            0,
+        )
+    };
+    // Body at 2: segment 1..3, the pool covers 1..2 and the stream 1.5..3.
+    let water = EnvironmentVolumes::build(vec![pool(0.0, 2.0, 0), stream(0)]);
+    let resolved = resolve(&water, Vec3::new(0.0, 2.0, 0.0));
+    assert_eq!(resolved.fluid, Some(0));
+    assert!(
+        (resolved.immersion - 1.0).abs() < EPS,
+        "{}",
+        resolved.immersion
+    );
+
+    let sludge = EnvironmentVolumes::build(vec![pool(0.0, 2.0, 0), stream(3)]);
+    let resolved = resolve(&sludge, Vec3::new(0.0, 2.0, 0.0));
+    assert_eq!(resolved.fluid, Some(3), "the smaller stream wins the fluid");
+    assert!(
+        (resolved.immersion - 0.75).abs() < EPS,
+        "different fluids never add: {}",
+        resolved.immersion
+    );
+}
+
+// Regression: a NaN probe resolved fully immersed in any fluid its NaN axis
+// made the segment test pass.
+#[test]
+fn non_finite_probe_resolves_level_defaults_dry() {
+    let everywhere = EnvironmentVolume {
+        gravity: Some(-2.0),
+        push: Some(Vec3::new(3.0, 0.0, 0.0)),
+        fluid: Some(1),
+        ..volume(vec![axis_box(Vec3::splat(-50.0), Vec3::splat(50.0))])
+    };
+    let volumes = EnvironmentVolumes::build(vec![everywhere]);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[4.0, 4.0]);
+    let defaults = ResolvedEnvironment {
+        gravity: LEVEL_GRAVITY,
+        push: Vec3::ZERO,
+        fluid: None,
+        viscosity: 0.0,
+        immersion: 0.0,
+        tick_eye_in_fluid: false,
+    };
+    for position in [
+        Vec3::new(f32::NAN, 0.0, 0.0),
+        Vec3::new(0.0, f32::NAN, 0.0),
+        Vec3::new(0.0, 0.0, f32::INFINITY),
+        Vec3::new(f32::NEG_INFINITY, 0.0, 0.0),
+    ] {
+        assert_eq!(
+            resolve_environment(view, &probe_at(position)),
+            defaults,
+            "{position:?}"
+        );
+        assert_eq!(
+            resolve_gravity(view, position),
+            LEVEL_GRAVITY,
+            "{position:?}"
+        );
+    }
+    // A finite body with a non-finite eye is still wet, its eye out.
+    let nan_eye = BodyProbe {
+        eye_height: f32::NAN,
+        ..probe_at(Vec3::ZERO)
+    };
+    let resolved = resolve_environment(view, &nan_eye);
+    assert_eq!(resolved.fluid, Some(1));
+    assert!(!resolved.tick_eye_in_fluid);
+}

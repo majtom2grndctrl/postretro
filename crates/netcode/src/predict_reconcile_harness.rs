@@ -26,7 +26,7 @@ use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
     ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
     faceted_floor_height, faceted_slope_world, forward_command, gravity_box_volume, idle_command,
-    input_at, use_command,
+    input_at, light_link, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -57,19 +57,6 @@ fn mandated_link() -> LinkConfig {
         jitter: 60,
         loss_probability: 0.05,
         seed: 0x1502,
-    }
-}
-
-/// A near-perfect link for the scenario tests that exercise the gap policy /
-/// stale / duplicate seams deterministically without the full latency profile's
-/// loss obscuring the assertion. A small fixed delay keeps the predict→ack loop
-/// realistic (the client predicts ahead of the host) without jitter or loss.
-fn light_link() -> LinkConfig {
-    LinkConfig {
-        delay: 32,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed: 0x6010,
     }
 }
 

@@ -28,7 +28,7 @@ pub(crate) fn clipped_box_volume(planes: &[LeafPlane], min: Vec3, max: Vec3) -> 
         }
         let normal = plane.normal / length;
         let distance = plane.distance / length;
-        faces = clip_polyhedron(&faces, normal, distance, epsilon);
+        faces = clip_polyhedron(faces, normal, distance, epsilon);
         if faces.is_empty() {
             return 0.0;
         }
@@ -85,9 +85,11 @@ fn box_faces(min: Vec3, max: Vec3) -> Vec<Vec<Vec3>> {
 }
 
 /// Clip every face against the half-space `dot(p, normal) <= distance` and close
-/// the cut with a cap polygon on the plane.
+/// the cut with a cap polygon on the plane. Takes the faces by value: a plane
+/// that cuts nothing (most of a brush's own planes against its own AABB) hands
+/// them straight back, with no copy.
 fn clip_polyhedron(
-    faces: &[Vec<Vec3>],
+    faces: Vec<Vec<Vec3>>,
     normal: Vec3,
     distance: f32,
     epsilon: f32,
@@ -97,12 +99,12 @@ fn clip_polyhedron(
         .flatten()
         .all(|point| normal.dot(*point) - distance <= epsilon);
     if all_inside {
-        return faces.to_vec();
+        return faces;
     }
 
     let mut clipped = Vec::with_capacity(faces.len() + 1);
     let mut cap = Vec::new();
-    for face in faces {
+    for face in &faces {
         let polygon = clip_polygon(face, normal, distance, epsilon, &mut cap);
         if polygon.len() >= 3 {
             clipped.push(polygon);

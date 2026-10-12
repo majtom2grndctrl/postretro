@@ -115,7 +115,7 @@ fn level_install_builds_environment_volumes_before_parity_digest_and_any_tick() 
         .find("crate::collision::CollisionWorld::from_level(")
         .expect("install builds static collision");
     let volumes = install
-        .find("self.environment_volumes =")
+        .find("self.install_environment_volumes(")
         .expect("install builds the environment volumes");
     let digest = install
         .find("level_content_digest(")
@@ -559,6 +559,229 @@ fn a_connected_client_resolves_fluid_volumes_only_against_the_installed_host_tab
     assert_eq!(resolve_at(&app, SUBMERGED).fluid, None);
 }
 
+const UNDECLARED_FLUID_WARNING: &str = "names undeclared fluid";
+
+// A connected client never resolves names against its own registry, so it
+// never warns about one: before the host's table installs (and after a
+// demotion drops it) it builds no volumes at all, and once the table arrives
+// the volumes appear, gravity-only ones included, even from an empty table.
+#[test]
+fn a_connected_clients_install_and_demotion_log_no_undeclared_fluid_warning() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let mut app = test_app();
+    // The client's own manifest lacks lava; the host's table will carry it.
+    declare_fluids(&app, &["water"]);
+    connect_as_client(&mut app);
+    let mut world = level_with_fluid_volume(7, "lava");
+    world
+        .environment_volumes
+        .volumes
+        .push(EnvironmentVolumeRecord {
+            source_entity: 8,
+            priority: 0,
+            gravity: Some(VOLUME_GRAVITY),
+            push: None,
+            fluid: String::new(),
+            brushes: vec![box_brush(Vec3::splat(10.0), Vec3::splat(14.0))],
+            surface_faces: Vec::new(),
+        });
+    app.install_level_payload(world, PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert!(
+        app.environment_volumes.is_empty(),
+        "no volumes before the host's table"
+    );
+
+    // The host's table carries no fluid at all: still the source the client
+    // was waiting for, so the volumes build, and the gravity volume applies.
+    deliver_host_fluids(&mut app, &[]);
+    assert_eq!(app.environment_volumes.len(), 2);
+    let host = client_resolve_at(&app, Vec3::splat(12.0)).expect("host tuning installed");
+    assert_eq!(host.gravity, VOLUME_GRAVITY);
+    assert_eq!(client_resolve_at(&app, SUBMERGED).unwrap().fluid, None);
+
+    deliver_host_fluids(&mut app, &[("lava", 9.0)]);
+    let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
+    assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 9.0));
+
+    crate::client_drain_control(
+        &mut app,
+        vec![postretro_net::wire::ServerControlMessage::Divergence(
+            postretro_net::wire::DivergenceReason::Holding(
+                postretro_net::wire::HoldingCause::HostLevelAbsent,
+            ),
+        )],
+    );
+    assert!(
+        app.environment_volumes.is_empty(),
+        "a demotion drops the volumes until the next table"
+    );
+
+    capture.assert_not_logged(log::Level::Warn, UNDECLARED_FLUID_WARNING);
+}
+
+// Owner ruling (fixes list): a fluid-table rename moves fluid indices, so a
+// pawn swimming through the reload is remapped by name and its exit edge plays
+// the fluid it was in, not the one that took its old index.
+#[test]
+fn a_host_reload_that_reorders_fluids_mid_swim_keeps_the_swimmers_fluid() {
+    use postretro_foundation::{
+        FluidDescriptor, FluidRegistry, MovementState, PlayerMovementComponent,
+    };
+    let sounding = |name: &str, exit: &str| FluidDescriptor {
+        exit_sound: Some(exit.to_string()),
+        ..fluid(name)
+    };
+    let declare = |app: &App, fluids: Vec<FluidDescriptor>| {
+        script_ctx(app).data_registry.borrow_mut().replace_fluids(
+            FluidRegistry::from_declarations("test", fluids.into_iter().map(Ok)),
+        );
+    };
+    let mut app = test_app();
+    declare(
+        &app,
+        vec![
+            sounding("water", "sfx/water_out"),
+            sounding("sludge", "sfx/sludge_out"),
+        ],
+    );
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    spawn_local_pawn(&app, "swimmer", Some(swim_block()));
+    let ctx = script_ctx(&app);
+    let pawn = ctx
+        .registry
+        .borrow()
+        .local_player_pawn()
+        .expect("local pawn");
+    let swim_state = |app: &App| {
+        script_ctx(app)
+            .registry
+            .borrow()
+            .get_component::<PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .movement_state
+    };
+    {
+        let mut registry = ctx.registry.borrow_mut();
+        let mut movement = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .clone();
+        movement.movement_state = MovementState::Swim { fluid: 0 };
+        registry.set_component(pawn, movement).expect("movement");
+    }
+
+    // The reload declares the same fluids in the other order.
+    declare(
+        &app,
+        vec![
+            sounding("sludge", "sfx/sludge_out"),
+            sounding("water", "sfx/water_out"),
+        ],
+    );
+    app.refresh_environment_fluids();
+    assert_eq!(swim_state(&app), MovementState::Swim { fluid: 1 });
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
+
+    // Rise out of the pool: the exit edge plays water's exit sound.
+    ctx.registry
+        .borrow_mut()
+        .set_component(
+            pawn,
+            postretro_entities::Transform {
+                position: Vec3::new(2.0, 20.0, 2.0),
+                ..Default::default()
+            },
+        )
+        .expect("transform");
+    let view = EnvironmentView::new(
+        LEVEL_GRAVITY,
+        &app.environment_volumes,
+        app.environment_fluids.viscosities(),
+    );
+    let idle = postretro_physics::movement::MovementInput {
+        wish_dir: glam::Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        facing_pitch: 0.0,
+        use_pressed: false,
+        drop_pressed: false,
+    };
+    let mut registry = ctx.registry.borrow_mut();
+    let ticks = postretro_sim::sim::run_host_movement_tick(
+        &mut registry,
+        &app.collision_world,
+        view,
+        &[(pawn, idle)],
+        1.0 / 60.0,
+    );
+    let mut emissions = Vec::new();
+    for (id, events) in ticks {
+        let emitter = postretro_sim::emission::entity_emitter(&registry, id);
+        postretro_sim::emission::append_movement_emissions(&events, &emitter, &mut emissions);
+    }
+    assert!(!matches!(
+        registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .movement_state,
+        MovementState::Swim { .. }
+    ));
+    let data = ctx.data_registry.borrow();
+    let mut movers = crate::runtime_movers::KinematicMoverRenderCollector::new();
+    let mut scene = crate::sound_events::AnchorScene {
+        registry: &registry,
+        world: None,
+        movers: &mut movers,
+    };
+    let fluids = crate::sound_events::LocalFluids {
+        active: &app.environment_fluids,
+        local: &data.fluids,
+    };
+    let played: Vec<String> = emissions
+        .iter()
+        .filter_map(|emission| crate::sound_events::movement_sound(emission, fluids, &mut scene))
+        .map(|request| request.sound)
+        .collect();
+    assert_eq!(played, ["sfx/water_out"]);
+}
+
+/// This machine's presentation of installed volume `volume`, read through the
+/// shared lookup every per-frame consumer uses.
+fn volume_presentation<T>(
+    app: &App,
+    volume: usize,
+    read: impl FnOnce(&postretro_foundation::FluidDescriptor) -> T,
+) -> Option<T> {
+    let ctx = script_ctx(app);
+    let registry = ctx.data_registry.borrow();
+    crate::fluid_presentation::local_fluid_presentation(
+        &app.environment_volumes,
+        &app.environment_fluids,
+        &registry.fluids,
+        volume,
+    )
+    .map(read)
+}
+
+/// This machine's presentation of active-table fluid `fluid`: the local
+/// declaration of the name the active table gives it.
+fn fluid_presentation<T>(
+    app: &App,
+    fluid: u16,
+    read: impl FnOnce(&postretro_foundation::FluidDescriptor) -> T,
+) -> Option<T> {
+    let ctx = script_ctx(app);
+    let registry = ctx.data_registry.borrow();
+    app.environment_fluids
+        .local_presentation(fluid, &registry.fluids)
+        .map(read)
+}
+
 // N8 through the App: the presentation lookup maps the active table's index to
 // a name and the LOCAL manifest's declaration of it.
 #[test]
@@ -575,7 +798,7 @@ fn fluid_presentation_resolves_the_active_fluid_against_the_local_manifest() {
     app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
         .expect("fixture installs");
     assert!(
-        app.fluid_presentation_for_volume(0).is_none(),
+        volume_presentation(&app, 0, |_| ()).is_none(),
         "dry: no table yet"
     );
 
@@ -586,21 +809,17 @@ fn fluid_presentation_resolves_the_active_fluid_against_the_local_manifest() {
         (Some(1), 2.0),
         "movement takes the host's water"
     );
-    let shown = app
-        .fluid_presentation(1)
-        .expect("the client declares water");
     assert_eq!(
-        shown.view_tint, CLIENT_TINT,
+        fluid_presentation(&app, 1, |fluid| fluid.view_tint),
+        Some(CLIENT_TINT),
         "presentation is the client's own"
     );
-    drop(shown);
     assert_eq!(
-        app.fluid_presentation_for_volume(0)
-            .map(|fluid| fluid.view_tint),
+        volume_presentation(&app, 0, |fluid| fluid.view_tint),
         Some(CLIENT_TINT)
     );
     assert!(
-        app.fluid_presentation(0).is_none(),
+        fluid_presentation(&app, 0, |_| ()).is_none(),
         "no local sludge: that fluid shows nothing"
     );
 
@@ -608,8 +827,8 @@ fn fluid_presentation_resolves_the_active_fluid_against_the_local_manifest() {
     declare_fluids(&app, &["sludge"]);
     let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
     assert_eq!(resolved.fluid, Some(1));
-    assert!(app.fluid_presentation(1).is_none());
-    assert!(app.fluid_presentation_for_volume(0).is_none());
+    assert!(fluid_presentation(&app, 1, |_| ()).is_none());
+    assert!(volume_presentation(&app, 0, |_| ()).is_none());
 }
 
 // Offline or hosting, the active table is the machine's own registry, so the
@@ -623,8 +842,7 @@ fn a_host_presents_its_own_fluid_declaration() {
     let resolved = resolve_at(&app, SUBMERGED);
     assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 2.0));
     assert_eq!(
-        app.fluid_presentation_for_volume(0)
-            .map(|fluid| fluid.name.clone()),
+        volume_presentation(&app, 0, |fluid| fluid.name.clone()),
         Some("water".to_string())
     );
 }

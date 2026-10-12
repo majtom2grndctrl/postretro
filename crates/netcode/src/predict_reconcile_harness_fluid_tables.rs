@@ -10,20 +10,10 @@ use postretro_collision::{
     BodyProbe, EnvironmentView, EnvironmentVolume, ResolvedEnvironment, resolve_environment,
 };
 use postretro_foundation::{FluidDescriptor, FluidRegistry};
-use postretro_net::harness::LinkConfig;
 
 use super::predict_reconcile_harness_test_fixtures::{
-    LoopbackHarness, NamedEnvironmentVolume, gravity_box_volume, idle_command,
+    LoopbackHarness, NamedEnvironmentVolume, gravity_box_volume, idle_command, light_link,
 };
-
-fn light_link() -> LinkConfig {
-    LinkConfig {
-        delay: 32,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed: 0x6010,
-    }
-}
 
 const HOST_WATER_VISCOSITY: f32 = 2.0;
 const HOST_SLUDGE_VISCOSITY: f32 = 6.5;

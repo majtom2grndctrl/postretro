@@ -167,7 +167,7 @@ export default defineMod({
     markSwimming,
     splashSound,
   ],
-  // Swimming (E24): a host decision per player as they start swimming, and
+  // Swimming: a host decision per player as they start swimming, and
   // own-state feedback that stays local on each machine (scripts/swim-events.ts).
   playerEvents: [players().on(becomes(read(player.swimming)), [markSwimming])],
   crossings: [onStateCrossing(read(player.swimming), [splashSound])],

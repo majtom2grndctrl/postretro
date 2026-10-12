@@ -236,26 +236,49 @@ fn fluids_swim_twin_with_negative_water_viscosity_drops_water_naming_the_field()
     assert_eq!(rejections.len(), 2, "one per runtime: {rejections:?}");
 }
 
-// AC P9 (validation half, at the fixture): a swim block whose `exitDepth` is
-// not below `enterDepth` rejects the descriptor, naming the field.
+// AC P9 (validation half, at the fixture), owner ruling Q4: a swim block whose
+// `exitDepth` is not below `enterDepth` is dropped with a warning naming the
+// field, in both runtimes; the descriptor and the mod load, so the player
+// wades.
 #[test]
-fn fluids_swim_twin_with_exit_depth_at_enter_depth_is_rejected_naming_exit_depth() {
+fn fluids_swim_twin_with_exit_depth_at_enter_depth_drops_the_swim_block_naming_exit_depth() {
+    let capture = LogCapture::start();
     let ts = run_manifest(
         "start-script.js",
         &mutate(&bundled_ts_twin(), "exitDepth: 0.35", "exitDepth: 0.5"),
     )
-    .expect_err("the TS swim block is rejected");
+    .expect("a bad swim block never rejects the TS manifest");
     let luau = run_manifest(
         "start-script.luau",
         &mutate(&luau_twin(), "exitDepth = 0.35", "exitDepth = 0.5"),
     )
-    .expect_err("the Luau swim block is rejected");
-    for error in [ts, luau] {
-        assert!(
-            error.contains("movement.swim.exitDepth"),
-            "the rejection names the field: {error}"
+    .expect("a bad swim block never rejects the Luau manifest");
+    for manifest in [&ts, &luau] {
+        assert_eq!(
+            swim_of(manifest, "player"),
+            None,
+            "the swim block is dropped"
+        );
+        assert_eq!(
+            manifest.fluids.names(),
+            ["water", "sludge"],
+            "the rest of the mod stands"
         );
     }
+    let dropped: Vec<String> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn
+                && record.message.contains("`movement.swim.exitDepth`")
+                && record
+                    .message
+                    .contains("the movement.swim block was dropped")
+        })
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(dropped.len(), 2, "one per runtime: {dropped:?}");
+    assert_eq!(dropped[0], dropped[1], "the runtimes' diagnostics diverged");
 }
 
 /// Every `"fluid" "<name>"` key a map authors.

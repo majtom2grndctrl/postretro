@@ -191,17 +191,19 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
-    // `swim` is optional: absence means the pawn cannot swim. When present,
-    // every field is required and validated, mirroring `slide`.
+    // `swim` is optional: absence means the pawn cannot swim. A present block
+    // that fails parsing or validation is dropped with a warning and the rest
+    // of the descriptor loads, so the player wades.
     let swim = if obj.contains_key("swim").map_err(js_err)? {
         let raw: JsValue = obj.get("swim").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
             None
         } else {
-            let swim_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
-                reason: "`movement.swim` must be an object".to_string(),
-            })?;
-            Some(swim_params_from_js(&swim_obj)?)
+            let parsed = match Object::from_value(raw) {
+                Ok(swim_obj) => swim_params_from_js(&swim_obj),
+                Err(_) => Err(swim_block_not_an_object()),
+            };
+            keep_or_drop_swim_block(parsed)
         }
     } else {
         None
@@ -473,16 +475,24 @@ pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, Descr
 
 /// Parse a `swim` sub-object. All six fields are required; ranges and the
 /// `exitDepth < enterDepth` order are checked by [`SwimParams::validated`].
+/// Every error names its field as `movement.swim.<field>`, worded exactly as
+/// [`swim_params_from_lua`] words it.
 pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, DescriptorError> {
-    SwimParams {
-        speed: get_required_f32_js(obj, "speed")?,
-        accel: get_required_f32_js(obj, "accel")?,
-        sink_speed: get_required_f32_js(obj, "sinkSpeed")?,
-        enter_depth: get_required_f32_js(obj, "enterDepth")?,
-        exit_depth: get_required_f32_js(obj, "exitDepth")?,
-        fluid_jump_velocity: get_required_f32_js(obj, "fluidJumpVelocity")?,
-    }
-    .validated()
+    swim_params_from_fields(|field| {
+        if !obj.contains_key(field).map_err(js_err)? {
+            return Err(swim_field_missing(field));
+        }
+        let raw: JsValue = obj.get(field).map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            return Err(swim_field_missing(field));
+        }
+        if let Some(i) = raw.as_int() {
+            return Ok(i as f32);
+        }
+        raw.as_float()
+            .map(|f| f as f32)
+            .ok_or_else(|| swim_field_not_a_number(field))
+    })
 }
 
 pub fn get_required_object_js<'js>(

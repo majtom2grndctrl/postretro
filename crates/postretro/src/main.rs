@@ -988,6 +988,9 @@ pub(crate) struct App {
     /// installed tuning on a connected client (empty before one installs).
     /// Fluid indices in the volumes, and every view's viscosities, index it.
     environment_fluids: postretro_combat_model::FluidMovementTable,
+    /// Where `environment_fluids` came from; a connected client awaiting the
+    /// host's table leaves `environment_volumes` unbuilt.
+    environment_fluid_source: startup::environment_install::FluidTableSource,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes
@@ -2047,6 +2050,7 @@ impl ApplicationHandler for App {
         self.clear_net_level_parity();
         self.discard_pending_system_commands();
         self.clear_surface_lifetime_level_state();
+        self.clear_fluid_eye_presentation();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
         // worker; holding a stale receiver/handle would either block install

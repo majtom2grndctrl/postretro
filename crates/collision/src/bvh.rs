@@ -118,6 +118,14 @@ impl<P> AabbTree<P> {
         );
     }
 
+    /// Visit every entry whose closed bounds meet the closed box `[min, max]`.
+    pub(crate) fn visit_box(&self, min: Vec3, max: Vec3, visit: impl FnMut(&P)) {
+        self.visit_overlapping(
+            |node_min, node_max| min.cmple(node_max).all() && max.cmpge(node_min).all(),
+            visit,
+        );
+    }
+
     fn visit_overlapping(&self, overlaps: impl Fn(Vec3, Vec3) -> bool, mut visit: impl FnMut(&P)) {
         if self.nodes.is_empty() {
             return;

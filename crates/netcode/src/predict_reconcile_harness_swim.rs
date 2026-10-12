@@ -8,17 +8,14 @@ use postretro_collision::{BodyProbe, EnvironmentVolume, resolve_environment};
 use postretro_foundation::{
     FluidDescriptor, FluidRegistry, MovementStateKind, PlayerMovementComponent, SwimParams,
 };
-use postretro_net::harness::LinkConfig;
 
 use super::predict_reconcile_harness_test_fixtures::{
-    LoopbackHarness, NamedEnvironmentVolume, forward_command, gravity_box_volume, idle_command,
+    LoopbackHarness, NO_CORRECTION_M, NamedEnvironmentVolume, forward_command, gravity_box_volume,
+    idle_command, light_link,
 };
 use crate::emission;
 use crate::sim::SimCommand;
 
-/// "No corrections" (brief Co-op Decision): every recorded correction is at most
-/// this many metres under `light_link`.
-const NO_CORRECTION_M: f32 = 1.0e-4;
 const LOW_GRAVITY: f32 = -3.0;
 const HOST_WATER_VISCOSITY: f32 = 2.0;
 
@@ -31,15 +28,6 @@ const SHALLOWS_MIN: Vec3 = Vec3::new(-50.0, -1.0, -20.0);
 const SHALLOWS_MAX: Vec3 = Vec3::new(50.0, 1.0, -14.0);
 const LOW_GRAVITY_MIN: Vec3 = Vec3::new(-50.0, -1.0, -60.0);
 const LOW_GRAVITY_MAX: Vec3 = Vec3::new(50.0, 20.0, -20.0);
-
-fn light_link() -> LinkConfig {
-    LinkConfig {
-        delay: 32,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed: 0x6010,
-    }
-}
 
 fn swim() -> SwimParams {
     SwimParams {
@@ -105,6 +93,9 @@ struct ClientTick {
     /// The tick-END position's resolve, i.e. the next tick's tick-start view.
     immersion: f32,
     in_low_gravity: bool,
+    /// The predicted drift layer's vertical part and total vertical velocity.
+    drift_y: f32,
+    velocity_y: f32,
 }
 
 struct SwimRun {
@@ -125,8 +116,20 @@ fn run_course(
     steps: u32,
     command_at: impl Fn(Vec3) -> SimCommand,
 ) -> SwimRun {
+    run_records(course(), client_fluids, steps, command_at, |_, _| {})
+}
+
+/// [`run_course`] over `records`, calling `before_step(h, step)` before each
+/// driven step.
+fn run_records(
+    records: Vec<NamedEnvironmentVolume>,
+    client_fluids: FluidRegistry,
+    steps: u32,
+    command_at: impl Fn(Vec3) -> SimCommand,
+    mut before_step: impl FnMut(&mut LoopbackHarness, &SwimRun),
+) -> SwimRun {
     let mut h =
-        LoopbackHarness::with_fluid_tables(light_link(), course(), host_fluids(), client_fluids)
+        LoopbackHarness::with_fluid_tables(light_link(), records, host_fluids(), client_fluids)
             .with_player_swim(swim());
     h.step_until_armed(&idle_command());
     let mut run = SwimRun {
@@ -138,6 +141,7 @@ fn run_course(
         host_reached_low_gravity: false,
     };
     for _ in 0..steps {
+        before_step(&mut h, &run);
         let position = h.client_position().expect("the client is armed");
         h.step(&command_at(position));
         run.corrections
@@ -188,6 +192,8 @@ fn run_course(
             latched: movement.swim_reentry_latched,
             immersion: resolved.immersion,
             in_low_gravity: in_box(position, LOW_GRAVITY_MIN, LOW_GRAVITY_MAX),
+            drift_y: movement.push_velocity.y,
+            velocity_y: movement.velocity.y,
         });
     }
     run
@@ -373,8 +379,9 @@ fn fluid_jump_and_reentry_latch_reconcile_without_correction_under_light_link() 
     assert!(run.host_swam, "fixture: the host pawn must swim");
     assert_no_correction(&run);
 
-    // Each fluid jump arms the latch. Holding jump, a pawn that falls back in
-    // with its eye still out leaps again on its entry tick.
+    // Each fluid jump arms the latch, and clears the water so the latch clears
+    // on the way up. Holding jump, a pawn that falls back in swims, then leaps
+    // again from the surface.
     let leaps = run
         .ticks
         .windows(2)
@@ -429,4 +436,127 @@ fn client_with_differing_fluid_declarations_swims_with_zero_corrections() {
         );
         assert_no_correction(&run);
     }
+}
+
+/// An upward current filling the pool and reaching well above its surface: the
+/// pool's footprint, from its floor to 6 m.
+const CURRENT_MIN: Vec3 = Vec3::new(-50.0, -1.0, -14.0);
+const CURRENT_MAX: Vec3 = Vec3::new(50.0, 6.0, -6.0);
+const CURRENT_PUSH: Vec3 = Vec3::new(0.0, 9.0, 0.0);
+
+/// The pool with a coincident vertical current; no shallows or room.
+fn current_course() -> Vec<NamedEnvironmentVolume> {
+    vec![
+        NamedEnvironmentVolume {
+            volume: EnvironmentVolume {
+                gravity: None,
+                ..gravity_box_volume(POOL_MIN, POOL_MAX, 0.0)
+            },
+            fluid: Some("water".to_string()),
+        },
+        NamedEnvironmentVolume {
+            volume: EnvironmentVolume {
+                gravity: None,
+                push: Some(CURRENT_PUSH),
+                ..gravity_box_volume(CURRENT_MIN, CURRENT_MAX, 0.0)
+            },
+            fluid: None,
+        },
+    ]
+}
+
+/// Walk into the pool and stop inside the current.
+fn walk_into_the_current(position: Vec3) -> SimCommand {
+    if position.z > -10.0 {
+        forward_command(false)
+    } else {
+        idle_command()
+    }
+}
+
+// Q2 (review panel 1): a vertical current while swimming lands in the 3D drift
+// layer, lifts the swimmer out of the water (folding the drift into vertical
+// velocity) and back in, over and over, and the client predicts all of it with
+// zero corrections: the drift's vertical part crosses the wire.
+#[test]
+fn vertical_current_lifts_a_swimmer_out_and_reconciles_without_correction_under_light_link() {
+    let run = run_records(
+        current_course(),
+        host_fluids(),
+        300,
+        walk_into_the_current,
+        |_, _| {},
+    );
+    assert!(run.host_swam, "fixture: the host pawn must swim");
+    assert_no_correction(&run);
+    let settled = CURRENT_PUSH.y / HOST_WATER_VISCOSITY;
+    assert!(
+        run.ticks
+            .iter()
+            .any(|record| record.state == MovementStateKind::Swim
+                && record.drift_y > 0.5 * settled),
+        "the client's swimmer must carry a vertical drift"
+    );
+    let lifted_out = run
+        .ticks
+        .windows(2)
+        .filter(|pair| {
+            pair[0].state == MovementStateKind::Swim
+                && pair[1].state == MovementStateKind::Normal
+                && pair[1].velocity_y > 0.0
+                && pair[1].drift_y == 0.0
+        })
+        .count();
+    assert!(
+        lifted_out >= 2,
+        "the current must lift the swimmer out of the water repeatedly: {lifted_out}"
+    );
+    // Some reconcile replays from a `Swim` baseline carrying a vertical drift.
+    assert!(
+        run.windows.iter().any(|window| matches!(
+            *window,
+            (Some(acked), Some(_)) if run.ticks.iter().any(|record| record.tick == acked
+                && record.state == MovementStateKind::Swim
+                && record.drift_y > 0.5 * settled)
+        )),
+        "a replay must start from a swimming baseline with a vertical drift"
+    );
+}
+
+/// Walk into the pool and keep swimming forward through it.
+fn swim_forward(_position: Vec3) -> SimCommand {
+    forward_command(false)
+}
+
+// Review panel 1: a pawn-tuning change (a weapon pickup) arriving while the
+// client swims rebuilds its movement component through the production rebuild,
+// which carries the live tick state: no correction, and no second swim entry,
+// even when the rebuild lands in a frame with no snapshot to reconcile against.
+#[test]
+fn pawn_tuning_rebuild_on_a_swimming_client_costs_no_correction_and_no_swim_edge() {
+    let mut rebuilds = 0;
+    let run = run_records(course(), host_fluids(), 200, swim_forward, |h, run| {
+        let swimming_for = run
+            .ticks
+            .iter()
+            .rev()
+            .take_while(|record| record.state == MovementStateKind::Swim)
+            .count();
+        if [10, 40].contains(&swimming_for) {
+            h.client_rebuild_movement_from_installed_tuning();
+            rebuilds += 1;
+        }
+    });
+    assert_eq!(
+        rebuilds, 2,
+        "fixture: the client rebuilt twice while swimming"
+    );
+    assert!(run.host_swam, "fixture: the host pawn must swim");
+    assert_no_correction(&run);
+    let entries = run
+        .swim_emissions
+        .iter()
+        .filter(|(_, address, _)| *address == "swim_started")
+        .count();
+    assert_eq!(entries, 1, "one swim entry: {:?}", run.swim_emissions);
 }

@@ -94,6 +94,33 @@ impl ConvexLeaf {
     pub fn volume(&self) -> f32 {
         polytope::clipped_box_volume(&self.planes, self.aabb_min, self.aabb_max)
     }
+
+    /// The smallest normalized inward plane distance at `point`: positive
+    /// inside, zero on the boundary, negative outside. Conservative both ways:
+    /// its magnitude never exceeds the true distance to the solid's boundary.
+    /// A plane with a zero or non-finite normal bounds nothing and is skipped.
+    pub(crate) fn plane_depth(&self, point: Vec3) -> f32 {
+        self.planes
+            .iter()
+            .filter_map(|plane| {
+                let length = plane.normal.length();
+                (length > 0.0 && length.is_finite()).then(|| -plane.side(point) / length)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// Whether `point` lies within `reach` of this leaf's bounds on every axis.
+    pub(crate) fn bounds_within(&self, point: Vec3, reach: f32) -> bool {
+        point.cmpge(self.aabb_min - Vec3::splat(reach)).all()
+            && point.cmple(self.aabb_max + Vec3::splat(reach)).all()
+    }
+
+    /// Whether `point` is within `epsilon` of this leaf: inside its bounds
+    /// widened by `epsilon`, and no plane farther than `epsilon` outside. The
+    /// seam test for a gap between two intervals of one union along a line.
+    pub(crate) fn is_near(&self, point: Vec3, epsilon: f32) -> bool {
+        self.bounds_within(point, epsilon) && self.plane_depth(point) >= -epsilon
+    }
 }
 
 #[cfg(test)]

@@ -128,7 +128,7 @@ fn push_volume_converts_map_axes_to_engine_axes_without_unit_scale() {
 
 #[test]
 fn push_volume_rejects_any_shape_but_three_numbers_naming_the_entity() {
-    assert_fails_naming_entity("push_volume", "\"push\" \"15\"", "has 1 numbers");
+    assert_fails_naming_entity("push_volume", "\"push\" \"15\"", "has 1 number;");
     assert_fails_naming_entity("push_volume", "\"push\" \"0 15\"", "has 2 numbers");
     assert_fails_naming_entity("push_volume", "\"push\" \"0 0 15 1\"", "has 4 numbers");
     assert_fails_naming_entity("push_volume", "\"push\" \"0 up 15\"", "`up`");

@@ -27,9 +27,9 @@ use crate::App;
 pub(crate) const CAPTURE_FLUID_SURFACE_OPACITY: f32 = 0.6;
 
 /// The local presentation of installed volume `volume`'s fluid: the local
-/// manifest's declaration of the name the active table gives that fluid, as
-/// `App::fluid_presentation_for_volume` reads it. Takes the App's fields
-/// apart so per-frame callers can borrow them beside a live collector.
+/// manifest's declaration of the name the active table gives that fluid, or
+/// `None` when this machine declares none ("shows none"). Takes the App's
+/// fields apart so per-frame callers can borrow them beside a live collector.
 pub(crate) fn local_fluid_presentation<'r>(
     volumes: &EnvironmentVolumes,
     fluids: &FluidMovementTable,

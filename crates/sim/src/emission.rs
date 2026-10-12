@@ -20,8 +20,8 @@ pub fn entity_emitter(registry: &EntityRegistry, id: EntityId) -> Emitter {
 }
 
 /// Append one movement tick's emissions on its pawn, in dispatch order. Each
-/// swim edge carries the tick's swim fluid; one tick's swim edges always share
-/// it, since a swim state never changes fluid. Shared by the host or offline
+/// swim edge carries the tick's swim fluid; swim edges within one tick share one
+/// fluid, so a single value names them all. Shared by the host or offline
 /// local tick and a client's forward prediction, the only two routes into the
 /// movement drain, so a reconcile replay can never emit.
 pub fn append_movement_emissions(

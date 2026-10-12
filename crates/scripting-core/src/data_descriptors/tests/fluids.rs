@@ -202,3 +202,76 @@ fn a_non_array_fluids_field_warns_and_declares_none() {
     assert!(drain_lua("return { fluids = 3 }").is_empty());
     assert_eq!(warnings(&capture, "`fluids` must be an array").len(), 2);
 }
+
+// A hole in the list costs only its own slot, in both runtimes: the entries
+// around it keep their declaration order and their diagnostic indices.
+#[test]
+fn a_hole_in_fluids_warns_for_that_entry_only_in_both_runtimes() {
+    let capture = LogCapture::start();
+    let water = js_fluid("water", &[]);
+    let sludge = js_fluid("sludge", &[]);
+    let js = drain_js(&format!("({{ fluids: [{water}, undefined, {sludge}] }})"));
+    let js_sparse = drain_js(&format!("({{ fluids: [{water}, , {sludge}] }})"));
+    let lua = drain_lua(&format!(
+        "return {{ fluids = {{ {}, nil, {} }} }}",
+        lua_fluid("water", &[]),
+        lua_fluid("sludge", &[])
+    ));
+    assert_eq!(js, lua);
+    assert_eq!(js_sparse, lua);
+    assert_eq!(lua.names(), ["water", "sludge"]);
+    let skipped = warnings(&capture, "fluids[1] is malformed and was skipped");
+    assert_eq!(skipped.len(), 3, "one per drain: {skipped:?}");
+    assert!(
+        skipped.iter().all(|warning| *warning == skipped[0]),
+        "the runtimes' diagnostics diverged: {skipped:?}"
+    );
+    assert!(
+        warnings(&capture, "must be an array").is_empty(),
+        "the field itself stands"
+    );
+}
+
+// `fluids: {}` is an empty list in QuickJS, as an empty Luau table is.
+#[test]
+fn an_empty_fluids_object_declares_none_without_a_warning() {
+    let capture = LogCapture::start();
+    assert!(drain_js("({ fluids: {} })").is_empty());
+    assert!(drain_lua("return { fluids = {} }").is_empty());
+    assert!(warnings(&capture, "fluids").is_empty());
+}
+
+// A missing or mistyped field names `fluids[i].<field>` in the fluid's own
+// wording, never the generic reaction-descriptor message.
+#[test]
+fn a_missing_or_mistyped_fluid_field_names_the_entry_field() {
+    for (js_entry, lua_entry, needle) in [
+        (
+            "{ name: \"water\", viewTint: [0, 0, 0, 0], muffle: 0, surfaceOpacity: 1 }",
+            "{ name = \"water\", viewTint = {0, 0, 0, 0}, muffle = 0, surfaceOpacity = 1 }",
+            "`fluids[0].viscosity` is required",
+        ),
+        (
+            "{ name: \"water\", viscosity: \"thick\", viewTint: [0, 0, 0, 0], muffle: 0, surfaceOpacity: 1 }",
+            "{ name = \"water\", viscosity = \"thick\", viewTint = {0, 0, 0, 0}, muffle = 0, surfaceOpacity = 1 }",
+            "`fluids[0].viscosity` must be a number",
+        ),
+        (
+            "{ name: \"water\", viscosity: 2, viewTint: [0, 0, 0, 0], muffle: 0, surfaceOpacity: 1, exitSound: 4 }",
+            "{ name = \"water\", viscosity = 2, viewTint = {0, 0, 0, 0}, muffle = 0, surfaceOpacity = 1, exitSound = 4 }",
+            "`fluids[0].exitSound` must be a string",
+        ),
+    ] {
+        let capture = LogCapture::start();
+        assert!(drain_js(&format!("({{ fluids: [{js_entry}] }})")).is_empty());
+        assert!(drain_lua(&format!("return {{ fluids = {{ {lua_entry} }} }}")).is_empty());
+        let skipped = warnings(&capture, needle);
+        assert_eq!(skipped.len(), 2, "{needle}: {skipped:?}");
+        assert_eq!(skipped[0], skipped[1], "the runtimes' diagnostics diverged");
+        assert!(
+            !skipped[0].contains("reaction descriptor"),
+            "{}",
+            skipped[0]
+        );
+    }
+}

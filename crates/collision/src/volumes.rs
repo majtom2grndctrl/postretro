@@ -5,7 +5,6 @@ use glam::Vec3;
 
 use crate::bvh::{AabbTree, TreeEntry};
 use crate::leaf::{ContentsMask, ConvexLeaf};
-use crate::line::{BrushInterval, clip_line};
 
 /// One canonical environment volume: a place that may set gravity, push and a
 /// fluid. A field left `None` is not set by this volume, so overlapping volumes
@@ -46,8 +45,36 @@ impl EnvironmentVolume {
 /// never recompute it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct VolumeRecord {
-    /// Sum of the volume's brush volumes, m³ — the overlap rule's second key.
+    /// Sum of the volume's brush volumes, m³.
     summed_brush_volume: f32,
+    /// The overlap rule's second key: `summed_brush_volume` quantized by
+    /// [`size_key`].
+    size_key: u32,
+}
+
+/// Mantissa bits the overlap rule's size key keeps. The summed volume of a
+/// brush set depends on where it sits, since its planes round differently at
+/// different coordinates, so two identical copies differ in their last bits.
+/// Rounded to 8 significant bits (a relative step of 2^-8, about 0.4%), sizes
+/// closer than that compare equal and map order decides, which keeps "a pool
+/// inside a room wins" while identical copies almost always tie. Two sizes
+/// straddling a rounding boundary still order by size, deterministically.
+const SIZE_KEY_MANTISSA_BITS: u32 = 8;
+
+/// A monotone, coarse key for a summed brush volume: the f32 rounded to
+/// [`SIZE_KEY_MANTISSA_BITS`] significant bits, as its bit pattern (positive
+/// floats order as their bits). Zero, negative and NaN sizes key 0; +inf keys
+/// above every finite size.
+fn size_key(summed: f32) -> u32 {
+    if summed.is_nan() || summed <= 0.0 {
+        return 0;
+    }
+    if summed.is_infinite() {
+        return u32::MAX;
+    }
+    let dropped = f32::MANTISSA_DIGITS - 1 - SIZE_KEY_MANTISSA_BITS;
+    let half = 1u32 << (dropped - 1);
+    (summed.to_bits() + half) & !((1u32 << dropped) - 1)
 }
 
 /// The tree payload: one brush of one volume, with its volume's contents so a
@@ -100,6 +127,7 @@ impl EnvironmentVolumes {
             let summed_brush_volume = volume.brushes.iter().map(ConvexLeaf::volume).sum();
             records.push(VolumeRecord {
                 summed_brush_volume,
+                size_key: size_key(summed_brush_volume),
             });
             for (brush_index, brush) in volume.brushes.iter().enumerate() {
                 let pad = BOUNDS_RELATIVE_PAD
@@ -193,40 +221,62 @@ impl EnvironmentVolumes {
         });
     }
 
-    /// Feed `sink` the clipped interval of every brush of volume `volume` along
-    /// `origin + t * dir`, `t` in `[t_min, t_max]`. Order unspecified; brushes the
-    /// line misses yield nothing.
-    pub(crate) fn volume_line_intervals(
-        &self,
-        volume: usize,
-        origin: Vec3,
-        dir: Vec3,
-        t_min: f32,
-        t_max: f32,
-        sink: &mut dyn FnMut(BrushInterval),
-    ) {
-        self.tree.visit_line(origin, dir, t_min, t_max, |leaf| {
-            if leaf.volume as usize != volume {
-                return;
-            }
-            if let Some(interval) = clip_line(&self.brush(leaf).planes, origin, dir, t_min, t_max) {
-                sink(BrushInterval {
-                    brush: leaf.brush,
-                    interval,
-                });
-            }
-        });
-    }
-
-    /// Whether any brush of volume `volume` contains `point` (on a face counts).
-    pub(crate) fn volume_contains_point(&self, volume: usize, point: Vec3) -> bool {
+    /// Whether any brush of a volume carrying fluid `fluid` contains `point` (on
+    /// a face counts).
+    pub(crate) fn fluid_contains_point(&self, fluid: u16, point: Vec3) -> bool {
         let mut inside = false;
         self.tree.visit_point(point, |leaf| {
-            if !inside && leaf.volume as usize == volume {
+            if !inside && self.carries_fluid(leaf, fluid) {
                 inside = self.brush(leaf).contains_point(point);
             }
         });
         inside
+    }
+
+    /// Call `visit` with every brush of a volume carrying fluid `fluid` whose
+    /// bounds come within `reach` of `point` on every axis
+    /// ([`ConvexLeaf::bounds_within`]). Order unspecified.
+    pub(crate) fn visit_fluid_brushes_near(
+        &self,
+        fluid: u16,
+        point: Vec3,
+        reach: f32,
+        mut visit: impl FnMut(&ConvexLeaf),
+    ) {
+        let reach_box = Vec3::splat(reach);
+        self.tree
+            .visit_box(point - reach_box, point + reach_box, |leaf| {
+                if !self.carries_fluid(leaf, fluid) {
+                    return;
+                }
+                let brush = self.brush(leaf);
+                if brush.bounds_within(point, reach) {
+                    visit(brush);
+                }
+            });
+    }
+
+    /// Whether `point` is within `epsilon` of the union of every volume
+    /// carrying fluid `fluid` ([`ConvexLeaf::is_near`] on some brush).
+    pub(crate) fn fluid_is_near(&self, fluid: u16, point: Vec3, epsilon: f32) -> bool {
+        let mut near = false;
+        self.visit_fluid_brushes_near(fluid, point, epsilon, |brush| {
+            near = near || brush.is_near(point, epsilon);
+        });
+        near
+    }
+
+    /// Conservative signed depth of `point` in the union of every volume
+    /// carrying fluid `fluid`, over the brushes whose bounds lie within `reach`
+    /// of it: the maximum of their [`ConvexLeaf::plane_depth`]. `None` when no
+    /// such brush is that close.
+    pub(crate) fn fluid_plane_depth(&self, fluid: u16, point: Vec3, reach: f32) -> Option<f32> {
+        let mut depth: Option<f32> = None;
+        self.visit_fluid_brushes_near(fluid, point, reach, |brush| {
+            let brush_depth = brush.plane_depth(point);
+            depth = Some(depth.map_or(brush_depth, |best| best.max(brush_depth)));
+        });
+        depth
     }
 
     /// Signed depth of `point` in the union of volume `index`'s brushes, metres:
@@ -243,21 +293,22 @@ impl EnvironmentVolumes {
         volume
             .brushes
             .iter()
-            .map(|brush| brush_signed_depth(brush, point))
+            .map(|brush| brush.plane_depth(point))
             .reduce(f32::max)
     }
 
     /// Whether volume `a` beats volume `b` under the overlap rule: higher
-    /// priority, then smaller summed brush volume, then earlier map order. The
-    /// map-order key decides exact ties only, so the order is total.
+    /// priority, then smaller summed brush volume compared by its quantized key
+    /// ([`SIZE_KEY_MANTISSA_BITS`]), then earlier map order. Map order decides
+    /// only when both keys tie, so the order is total.
     pub(crate) fn outranks(&self, a: usize, b: usize) -> bool {
         let priority_a = self.volumes[a].priority;
         let priority_b = self.volumes[b].priority;
         if priority_a != priority_b {
             return priority_a > priority_b;
         }
-        let size_a = self.records[a].summed_brush_volume;
-        let size_b = self.records[b].summed_brush_volume;
+        let size_a = self.records[a].size_key;
+        let size_b = self.records[b].size_key;
         if size_a != size_b {
             return size_a < size_b;
         }
@@ -267,17 +318,9 @@ impl EnvironmentVolumes {
     fn brush(&self, leaf: &LeafRef) -> &ConvexLeaf {
         &self.volumes[leaf.volume as usize].brushes[leaf.brush as usize]
     }
-}
 
-/// A brush's smallest normalized inward plane distance at `point`. A plane with
-/// a zero or non-finite normal bounds nothing and is skipped.
-fn brush_signed_depth(brush: &ConvexLeaf, point: Vec3) -> f32 {
-    brush
-        .planes
-        .iter()
-        .filter_map(|plane| {
-            let length = plane.normal.length();
-            (length > 0.0 && length.is_finite()).then(|| -plane.side(point) / length)
-        })
-        .fold(f32::INFINITY, f32::min)
+    fn carries_fluid(&self, leaf: &LeafRef, fluid: u16) -> bool {
+        leaf.contents.intersects(ContentsMask::FLUID)
+            && self.volumes[leaf.volume as usize].fluid == Some(fluid)
+    }
 }

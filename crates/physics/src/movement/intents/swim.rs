@@ -14,26 +14,28 @@ use postretro_foundation::{MovementState, PlayerMovementComponent};
 /// gravity and scales linearly with the resolved gravity.
 const STANDARD_GRAVITY: f32 = 9.81;
 
-/// Whether this tick's jump input is a fluid jump: jump held with the TICK eye
-/// (the tick-start resolve's `position.y + eye_height`) outside the fluid. The
-/// presented camera eye, view feel included, never reaches movement, so host,
-/// prediction and replay agree on it (`research.md` P5). Jump is the same level
-/// bit every other jump fires off (`MovementInput::jump_pressed`): held at the
-/// surface it leaps out, held underwater it swims up.
-pub(crate) fn fluid_jump_qualifies(
-    input: &MovementInput,
-    environment: &ResolvedEnvironment,
-) -> bool {
+/// The input half of a fluid jump: jump held with the TICK eye (the tick-start
+/// resolve's `position.y + eye_height`) outside the fluid. The presented camera
+/// eye, view feel included, never reaches movement, so host, prediction and
+/// replay agree on it (`research.md` P5). Jump is the same level bit every other
+/// jump fires off (`MovementInput::jump_pressed`): held at the surface it leaps
+/// out, held underwater it swims up. The swim seam adds the rest — swimming at
+/// tick start, and a rise that clears the water — and hands the intent the
+/// verdict (`swim_transition::environment_transition`).
+pub(crate) fn fluid_jump_input(input: &MovementInput, environment: &ResolvedEnvironment) -> bool {
     input.jump_pressed && !environment.tick_eye_in_fluid
 }
 
 /// The `Swim` state's per-tick velocity intent. Entry and exit by immersion are
-/// applied at the tick seam before this runs (`swim_transition`); this intent
+/// applied at the tick seam before this runs (`swim_transition`), which also
+/// decides whether this tick fires a fluid jump (`fluid_jump`); this intent
 /// owns the fluid jump and the fluid locomotion.
 ///
-/// 1. Fluid jump: with [`fluid_jump_qualifies`], vertical velocity is SET to
-///    `swim.fluid_jump_velocity` (horizontal momentum kept), the re-entry latch
-///    is armed, and the state leaves to airborne `Normal` with no solid needed.
+/// 1. Fluid jump: with `fluid_jump`, vertical velocity is SET to
+///    `swim.fluid_jump_velocity` (horizontal momentum kept; the drift layer's
+///    vertical current is discarded, so the jump leaves at exactly the velocity
+///    the seam's clearance test assumed), the re-entry latch is armed, and the
+///    state leaves to airborne `Normal` with no solid needed.
 /// 2. Drag: the fluid's viscosity removes a linear fraction of locomotion per
 ///    tick, `max(0, 1 - viscosity * dt)`, on all three axes. It is the only
 ///    drag while swimming; a swimmer touching the pool floor gets no ground
@@ -46,12 +48,14 @@ pub(crate) fn fluid_jump_qualifies(
 ///
 /// A swimmer touching the pool floor stays grounded for collision (ground
 /// reference, landing refresh, mover carry, step-up) but not for its medium:
-/// no ground friction, and its push drift decays at the fluid's viscosity.
-/// Any upward velocity lifts it off the floor.
+/// no ground friction, and its push drift decays at the fluid's viscosity. It
+/// leaves the floor once its total vertical motion, current included, points
+/// up (`push::apply`).
 pub(crate) fn swim_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     environment: &ResolvedEnvironment,
+    fluid_jump: bool,
     dt: f32,
     events: &mut MovementEvents,
     fluid: &mut u16,
@@ -70,8 +74,9 @@ pub(crate) fn swim_intent(
     let sink_speed = swim.sink_speed;
     let fluid_jump_velocity = swim.fluid_jump_velocity;
 
-    if fluid_jump_qualifies(input, environment) {
+    if fluid_jump {
         component.velocity.y = fluid_jump_velocity;
+        component.push_velocity.y = 0.0;
         component.set_grounded(false);
         component.jump_spent = true;
         component.swim_reentry_latched = true;
@@ -84,15 +89,11 @@ pub(crate) fn swim_intent(
     let target = wish_velocity(input, speed, sink_speed, environment);
     let accel = accel * component.knockback_control();
     accelerate_toward(&mut component.velocity, target, accel, dt);
-    // Rising off the pool floor leaves it, as a jump does; `tick` then tells
-    // the substrate not to clamp the rise or stick the swimmer back down.
-    if component.is_grounded() && component.velocity.y > 0.0 {
-        component.set_grounded(false);
-    }
     None
 }
 
-/// `Swim` → `Normal`, momentum unchanged: swim carries no boost layer.
+/// `Swim` → `Normal`, momentum unchanged: swim carries no boost layer. Dispatch
+/// folds the drift layer's vertical part into locomotion on the edge.
 pub(crate) fn leave_swim() -> Transition {
     Transition {
         next: MovementState::Normal,

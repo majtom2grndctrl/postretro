@@ -8,9 +8,11 @@ use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use crate::crossings::{
     CROSSING_SEAM_EPSILON, CROSSING_START_EPSILON, FluidCrossing, visit_fluid_crossings,
 };
-use crate::eye::fluid_at_eye;
+use crate::eye::{
+    EYE_DEPTH_REACH, fluid_at_eye, fluid_volume_plane_depth, fluid_volume_signed_depth,
+};
 use crate::leaf::{ContentsMask, ConvexLeaf, LeafPlane};
-use crate::line::clip_line;
+use crate::line::{LineInterval, clip_line};
 use crate::resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
 };
@@ -51,33 +53,23 @@ fn reference_winner(
     })
 }
 
-/// Merged runs of a volume's positive-length brush intervals along a line,
-/// sorted then swept: `(start, start_face, end, end_face)`.
+/// Merged runs of positive-length brush intervals along a line, sorted then
+/// swept; a gap joins when `joins(gap_start, gap_end)` accepts it:
+/// `(start, start_face, end, end_face)`.
 type ReferenceRun = (f32, Option<(u32, u32)>, f32, Option<(u32, u32)>);
 
-fn reference_runs(
-    volume: &EnvironmentVolume,
-    origin: Vec3,
-    dir: Vec3,
-    t_min: f32,
-    t_max: f32,
-    seam: f32,
+fn reference_union_runs(
+    mut intervals: Vec<(u32, LineInterval)>,
+    joins: impl Fn(f32, f32) -> bool,
 ) -> Vec<ReferenceRun> {
-    let mut intervals: Vec<_> = volume
-        .brushes
-        .iter()
-        .enumerate()
-        .filter_map(|(brush, leaf)| {
-            clip_line(&leaf.planes, origin, dir, t_min, t_max)
-                .filter(|interval| interval.has_length())
-                .map(|interval| (brush as u32, interval))
-        })
-        .collect();
+    intervals.retain(|(_, interval)| interval.has_length());
     intervals.sort_by(|a, b| a.1.t_enter.total_cmp(&b.1.t_enter).then(a.0.cmp(&b.0)));
     let mut runs: Vec<ReferenceRun> = Vec::new();
     for &(brush, interval) in &intervals {
         match runs.last_mut() {
-            Some(run) if interval.t_enter <= run.2 + seam => run.2 = run.2.max(interval.t_exit),
+            Some(run) if interval.t_enter <= run.2 || joins(run.2, interval.t_enter) => {
+                run.2 = run.2.max(interval.t_exit)
+            }
             _ => runs.push((
                 interval.t_enter,
                 interval.enter_plane.map(|plane| (brush, plane)),
@@ -96,6 +88,64 @@ fn reference_runs(
         run.3 = interval.exit_plane.map(|plane| (*brush, plane));
     }
     runs
+}
+
+/// Clipped intervals of `brushes` along a line, tagged with their index.
+fn reference_intervals<'a>(
+    brushes: impl Iterator<Item = &'a ConvexLeaf>,
+    origin: Vec3,
+    dir: Vec3,
+    t_min: f32,
+    t_max: f32,
+) -> Vec<(u32, LineInterval)> {
+    brushes
+        .enumerate()
+        .filter_map(|(brush, leaf)| {
+            clip_line(&leaf.planes, origin, dir, t_min, t_max).map(|i| (brush as u32, i))
+        })
+        .collect()
+}
+
+/// Every brush of every volume carrying `fluid`, in map order.
+fn fluid_brushes(volumes: &EnvironmentVolumes, fluid: u16) -> impl Iterator<Item = &ConvexLeaf> {
+    (0..volumes.len())
+        .map(|index| volumes.volume(index).unwrap())
+        .filter(move |volume| volume.fluid == Some(fluid))
+        .flat_map(|volume| volume.brushes.iter())
+}
+
+/// Brute-force vertical eye depth through the union of `fluid`'s brushes.
+fn reference_vertical_depth(volumes: &EnvironmentVolumes, fluid: u16, point: Vec3) -> Option<f32> {
+    let bottom = point - Vec3::new(0.0, EYE_DEPTH_REACH, 0.0);
+    let at = point.y - bottom.y;
+    let runs = reference_union_runs(
+        reference_intervals(
+            fluid_brushes(volumes, fluid),
+            bottom,
+            Vec3::Y,
+            0.0,
+            2.0 * EYE_DEPTH_REACH,
+        ),
+        |a, b| {
+            let midpoint = bottom + Vec3::new(0.0, 0.5 * (a + b), 0.0);
+            fluid_brushes(volumes, fluid).any(|leaf| leaf.is_near(midpoint, CROSSING_SEAM_EPSILON))
+        },
+    );
+    if let Some(run) = runs.iter().find(|run| run.0 <= at && at <= run.2) {
+        return Some(run.2 - at);
+    }
+    runs.iter()
+        .map(|run| if run.2 < at { at - run.2 } else { run.0 - at })
+        .reduce(f32::min)
+        .map(|gap| -gap)
+}
+
+/// Brute-force plane depth over `fluid`'s brushes within the eye reach.
+fn reference_plane_depth(volumes: &EnvironmentVolumes, fluid: u16, point: Vec3) -> Option<f32> {
+    fluid_brushes(volumes, fluid)
+        .filter(|leaf| leaf.bounds_within(point, EYE_DEPTH_REACH))
+        .map(|leaf| leaf.plane_depth(point))
+        .reduce(f32::max)
 }
 
 fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> ResolvedEnvironment {
@@ -118,21 +168,31 @@ fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> Resolve
     let feet = Vec3::new(probe.position.x, probe.position.y - reach, probe.position.z);
     let length = 2.0 * reach;
     let eye = probe.position + Vec3::new(0.0, probe.eye_height, 0.0);
+    let never = |_: f32, _: f32| false;
     let (winner, immersion) = if length > 0.0 {
         let winner = reference_winner(
             volumes,
             (0..volumes.len()).filter(|&i| {
                 let volume = volumes.volume(i).unwrap();
                 volume.fluid.is_some()
-                    && !reference_runs(volume, feet, Vec3::Y, 0.0, length, 0.0).is_empty()
+                    && !reference_union_runs(
+                        reference_intervals(volume.brushes.iter(), feet, Vec3::Y, 0.0, length),
+                        never,
+                    )
+                    .is_empty()
             }),
         );
+        // Q3: the union of every volume carrying the winner's fluid.
         let covered: f32 = winner
-            .map(|i| {
-                reference_runs(volumes.volume(i).unwrap(), feet, Vec3::Y, 0.0, length, 0.0)
-                    .iter()
-                    .map(|run| run.2 - run.0)
-                    .sum()
+            .and_then(|i| volumes.volume(i).unwrap().fluid)
+            .map(|fluid| {
+                reference_union_runs(
+                    reference_intervals(fluid_brushes(volumes, fluid), feet, Vec3::Y, 0.0, length),
+                    never,
+                )
+                .iter()
+                .map(|run| run.2 - run.0)
+                .sum()
             })
             .unwrap_or(0.0);
         (winner, (covered / length).clamp(0.0, 1.0))
@@ -140,16 +200,17 @@ fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> Resolve
         let winner = at_point(ContentsMask::FLUID, |v| v.fluid.is_some());
         (winner, if winner.is_some() { 1.0 } else { 0.0 })
     };
-    let fluid_volume = winner.map(|i| volumes.volume(i).unwrap());
+    let fluid = winner.and_then(|i| volumes.volume(i).unwrap().fluid);
     ResolvedEnvironment {
         gravity,
         push,
-        fluid: fluid_volume.and_then(|v| v.fluid),
+        fluid,
         // The tree side resolves with an empty fluid table.
         viscosity: 0.0,
         immersion,
-        tick_eye_in_fluid: fluid_volume
-            .is_some_and(|v| v.brushes.iter().any(|brush| brush.contains_point(eye))),
+        tick_eye_in_fluid: fluid.is_some_and(|fluid| {
+            fluid_brushes(volumes, fluid).any(|brush| brush.contains_point(eye))
+        }),
     }
 }
 
@@ -169,9 +230,17 @@ fn reference_crossings(
         let Some(fluid) = volume.fluid else {
             continue;
         };
-        for (start, start_face, end, end_face) in
-            reference_runs(volume, origin, dir, 0.0, clip_end, seam_t)
-        {
+        let runs = reference_union_runs(
+            reference_intervals(volume.brushes.iter(), origin, dir, 0.0, clip_end),
+            |a, b| {
+                let midpoint = origin + dir * (0.5 * (a + b));
+                volume
+                    .brushes
+                    .iter()
+                    .any(|leaf| leaf.is_near(midpoint, CROSSING_SEAM_EPSILON))
+            },
+        );
+        for (start, start_face, end, end_face) in runs {
             for (t, face, entering) in [(start, start_face, true), (end, end_face, false)] {
                 let Some((brush, plane)) = face else {
                     continue;
@@ -321,6 +390,39 @@ fn ray() -> impl Strategy<Value = (Vec3, Vec3, f32)> {
     )
 }
 
+/// The eye depths against brute force, measured from every fluid volume.
+fn assert_eye_depths_match(
+    volumes: &EnvironmentVolumes,
+    view: EnvironmentView<'_>,
+    point: Vec3,
+) -> Result<(), TestCaseError> {
+    if let Some(eye) = fluid_at_eye(view, point) {
+        let reference =
+            reference_vertical_depth(volumes, eye.fluid, point).map_or(0.0, |depth| depth.max(0.0));
+        prop_assert_eq!(eye.signed_depth, reference, "eye depth at {:?}", point);
+    }
+    for index in 0..volumes.len() {
+        let Some(fluid) = volumes.volume(index).unwrap().fluid else {
+            continue;
+        };
+        prop_assert_eq!(
+            fluid_volume_signed_depth(view, index, point),
+            reference_vertical_depth(volumes, fluid, point),
+            "vertical depth of volume {} at {:?}",
+            index,
+            point
+        );
+        prop_assert_eq!(
+            fluid_volume_plane_depth(view, index, point),
+            reference_plane_depth(volumes, fluid, point),
+            "plane depth of volume {} at {:?}",
+            index,
+            point
+        );
+    }
+    Ok(())
+}
+
 fn assert_resolves_match(
     tree: &ResolvedEnvironment,
     reference: &ResolvedEnvironment,
@@ -398,6 +500,7 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
                     reference_containing(&volumes, point, ContentsMask::FLUID).into_iter(),
                 );
                 prop_assert_eq!(eye.map(|e| e.volume), reference_eye, "eye at {:?}", point);
+                assert_eye_depths_match(&volumes, view, point)?;
             }
             for probe in probes {
                 assert_resolves_match(
@@ -447,6 +550,17 @@ fn tree_queries_match_brute_force_scan_over_a_dense_volume_field() {
                     &reference_resolve(&volumes, &probe),
                     &probe,
                 )?;
+                // The eye depths of the fluid at the probe, through the deep tree.
+                if let Some(eye) = fluid_at_eye(view, probe.position) {
+                    prop_assert_eq!(
+                        fluid_volume_signed_depth(view, eye.volume, probe.position),
+                        reference_vertical_depth(&volumes, eye.fluid, probe.position)
+                    );
+                    prop_assert_eq!(
+                        fluid_volume_plane_depth(view, eye.volume, probe.position),
+                        reference_plane_depth(&volumes, eye.fluid, probe.position)
+                    );
+                }
             }
             for (origin, dir, max_t) in rays {
                 prop_assert_eq!(
@@ -457,6 +571,43 @@ fn tree_queries_match_brute_force_scan_over_a_dense_volume_field() {
             Ok(())
         })
         .unwrap();
+}
+
+// A capsule segment meeting more fluid brushes than the resolve keeps inline
+// measures the same union through the tree fallback.
+#[test]
+fn resolve_matches_brute_force_when_the_segment_meets_more_fluid_brushes_than_it_keeps_inline() {
+    // Thirteen overlapping 0.2 m layers up 0..2, every third a second fluid.
+    let layers: Vec<EnvironmentVolume> = (0..13)
+        .map(|layer| {
+            let y = 0.15 * layer as f32;
+            EnvironmentVolume {
+                source_entity: layer,
+                priority: 0,
+                gravity: None,
+                push: None,
+                fluid: Some(u16::from(layer % 3 == 2)),
+                brushes: vec![axis_box(
+                    Vec3::new(-1.0, y, -1.0),
+                    Vec3::new(1.0, y + 0.2, 1.0),
+                )],
+            }
+        })
+        .collect();
+    let volumes = EnvironmentVolumes::build(layers);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    for (y, half_height) in [(1.0, 0.6), (0.9, 0.5), (1.4, 0.8)] {
+        let probe = BodyProbe {
+            position: Vec3::new(0.0, y, 0.0),
+            half_height,
+            radius: 0.4,
+            eye_height: 0.3,
+        };
+        let resolved = resolve_environment(view, &probe);
+        assert_resolves_match(&resolved, &reference_resolve(&volumes, &probe), &probe).unwrap();
+        assert_eq!(resolved.fluid, Some(0), "the earliest layer in reach wins");
+        assert!(resolved.immersion > 0.0 && resolved.immersion < 1.0);
+    }
 }
 
 // Q5, research.md P9

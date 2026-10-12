@@ -95,8 +95,8 @@ fn parse_gravity(props: &HashMap<String, String>, entity: &str) -> Result<f32> {
     match numbers.as_slice() {
         [gravity] => Ok(*gravity),
         _ => anyhow::bail!(
-            "{entity} `gravity` \"{raw}\" has {} numbers; {GRAVITY_SHAPE}",
-            numbers.len()
+            "{entity} `gravity` \"{raw}\" has {}; {GRAVITY_SHAPE}",
+            number_count(numbers.len())
         ),
     }
 }
@@ -112,8 +112,8 @@ fn parse_push(props: &HashMap<String, String>, entity: &str) -> Result<Vec3> {
     let numbers = parse_numbers(raw, "push", entity, PUSH_SHAPE)?;
     let [x, y, z] = numbers.as_slice() else {
         anyhow::bail!(
-            "{entity} `push` \"{raw}\" has {} numbers; {PUSH_SHAPE}",
-            numbers.len()
+            "{entity} `push` \"{raw}\" has {}; {PUSH_SHAPE}",
+            number_count(numbers.len())
         );
     };
     let map_axes = DVec3::new(f64::from(*x), f64::from(*y), f64::from(*z));
@@ -137,6 +137,15 @@ fn parse_priority(props: &HashMap<String, String>, entity: &str) -> Result<i32> 
     raw.parse::<i32>().map_err(|error| {
         anyhow::anyhow!("{entity} `priority` \"{raw}\" is not an integer ({error})")
     })
+}
+
+/// "1 number", "3 numbers".
+fn number_count(count: usize) -> String {
+    if count == 1 {
+        "1 number".to_string()
+    } else {
+        format!("{count} numbers")
+    }
 }
 
 fn parse_numbers(raw: &str, key: &str, entity: &str, shape: &str) -> Result<Vec<f32>> {

@@ -10,15 +10,12 @@ use postretro_foundation::{
     FluidDescriptor, FluidRegistry, ImmersionComponent, MovementStateKind, PlayerMovementComponent,
     SwimParams,
 };
-use postretro_net::harness::LinkConfig;
 
 use super::predict_reconcile_harness_test_fixtures::{
-    LoopbackHarness, NamedEnvironmentVolume, forward_command, gravity_box_volume, idle_command,
+    LoopbackHarness, NO_CORRECTION_M, NamedEnvironmentVolume, forward_command, gravity_box_volume,
+    idle_command, light_link,
 };
 
-/// "No corrections" (brief Co-op Decision): every recorded correction is at most
-/// this many metres under `light_link`.
-const NO_CORRECTION_M: f32 = 1.0e-4;
 /// A pool along -Z from the pawn's start, deep enough that a standing pawn
 /// swims (immersion ≈ 0.79 against `enter_depth` 0.5); the pawn walks out its
 /// far face dry again.
@@ -27,15 +24,6 @@ const POOL_MAX: Vec3 = Vec3::new(50.0, 1.9, -6.0);
 /// The stale values written into the immersion component before every step,
 /// alternating, so each differs from the truth on most ticks dry or swimming.
 const STALE: [f32; 2] = [1.0, 0.0];
-
-fn light_link() -> LinkConfig {
-    LinkConfig {
-        delay: 32,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed: 0x1335,
-    }
-}
 
 fn swim() -> SwimParams {
     SwimParams {

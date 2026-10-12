@@ -18,7 +18,9 @@ use postretro_level_format::environment_volumes::{
 };
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::flash_clamp::ChannelClamp;
-use postretro_render_cpu::flash_limiter::{LimiterFrameInput, flash_limiter_enabled};
+use postretro_render_cpu::flash_limiter::{
+    HITCH_CEILING_SECONDS, LimiterFrameInput, flash_limiter_enabled,
+};
 use postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector;
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 use postretro_visibility::VisibleCells;
@@ -70,6 +72,56 @@ fn pool() -> EnvironmentVolumes {
             Vec3::new(50.0, SURFACE_Y, 50.0),
         )],
     }])
+}
+
+fn water_volume(brushes: Vec<ConvexLeaf>) -> EnvironmentVolume {
+    EnvironmentVolume {
+        source_entity: 1,
+        priority: 0,
+        gravity: None,
+        push: None,
+        fluid: Some(0),
+        brushes,
+    }
+}
+
+/// [`pool`] built from two brushes of one entity sharing the face x = 0, the
+/// plane [`eye_at`] sits on.
+fn seam_pool() -> EnvironmentVolumes {
+    EnvironmentVolumes::build(vec![water_volume(vec![
+        axis_leaf(
+            Vec3::new(-50.0, -10.0, -50.0),
+            Vec3::new(0.0, SURFACE_Y, 50.0),
+        ),
+        axis_leaf(
+            Vec3::new(0.0, -10.0, -50.0),
+            Vec3::new(50.0, SURFACE_Y, 50.0),
+        ),
+    ])])
+}
+
+/// [`pool`] split into two stacked entities of one fluid at y = 0.
+fn stacked_pool() -> EnvironmentVolumes {
+    EnvironmentVolumes::build(vec![
+        water_volume(vec![axis_leaf(
+            Vec3::new(-50.0, -10.0, -50.0),
+            Vec3::new(50.0, 0.0, 50.0),
+        )]),
+        water_volume(vec![axis_leaf(
+            Vec3::new(-50.0, 0.0, -50.0),
+            Vec3::new(50.0, SURFACE_Y, 50.0),
+        )]),
+    ])
+}
+
+/// Every pool shape the eye rows run against: one brush, a seam under the
+/// eye, and stacked entities.
+fn pools() -> [(&'static str, EnvironmentVolumes); 3] {
+    [
+        ("one brush", pool()),
+        ("seam under the eye", seam_pool()),
+        ("stacked entities", stacked_pool()),
+    ]
 }
 
 fn eye_at(y: f32) -> Vec3 {
@@ -216,34 +268,35 @@ fn eye_bobbing_across_the_surface_at_dev_head_bob_toggles_the_tint_at_most_once(
         "the hysteresis margin {EYE_FLUID_MARGIN} m must exceed content/dev's bob amplitude {} m",
         bob.vertical_amplitude
     );
-    let volumes = pool();
     // Just above the threshold (full amplitude, slowest bob) to a sprint.
     let full = bob.speed_threshold + crate::view_feel::BOB_EASE_IN_BAND;
-    for speed in [full, full + 5.0, full + 20.0] {
-        for fps in [30.0, 60.0, 144.0] {
-            let offsets = bob_offsets(&bob, speed, fps, 10.0);
-            let peak = offsets.iter().fold(0.0f32, |p, o| p.max(o.abs()));
-            assert!(
-                (peak - bob.vertical_amplitude).abs() < 0.01,
-                "the eye really bobs: peak {peak} at {speed} m/s"
-            );
-            let centred: Vec<f32> = offsets.iter().map(|o| SURFACE_Y + o).collect();
+    for (shape, volumes) in pools() {
+        for speed in [full, full + 5.0, full + 20.0] {
+            for fps in [30.0, 60.0, 144.0] {
+                let offsets = bob_offsets(&bob, speed, fps, 10.0);
+                let peak = offsets.iter().fold(0.0f32, |p, o| p.max(o.abs()));
+                assert!(
+                    (peak - bob.vertical_amplitude).abs() < 0.01,
+                    "the eye really bobs: peak {peak} at {speed} m/s"
+                );
+                let centred: Vec<f32> = offsets.iter().map(|o| SURFACE_Y + o).collect();
 
-            let mut from_air = FluidEye::default();
-            let toggles = count_toggles(&mut from_air, &volumes, &centred, 1.0 / fps);
-            assert!(
-                toggles <= 1,
-                "from air: {toggles} toggles at {speed} m/s, {fps} fps"
-            );
+                let mut from_air = FluidEye::default();
+                let toggles = count_toggles(&mut from_air, &volumes, &centred, 1.0 / fps);
+                assert!(
+                    toggles <= 1,
+                    "{shape}, from air: {toggles} toggles at {speed} m/s, {fps} fps"
+                );
 
-            let mut from_under = FluidEye::default();
-            count_toggles(&mut from_under, &volumes, &[SURFACE_Y - 1.0], 1.0 / fps);
-            assert!(from_under.active_volume().is_some());
-            let toggles = count_toggles(&mut from_under, &volumes, &centred, 1.0 / fps);
-            assert!(
-                toggles <= 1,
-                "from under: {toggles} toggles at {speed} m/s, {fps} fps"
-            );
+                let mut from_under = FluidEye::default();
+                count_toggles(&mut from_under, &volumes, &[SURFACE_Y - 1.0], 1.0 / fps);
+                assert!(from_under.active_volume().is_some(), "{shape}: under is on");
+                let toggles = count_toggles(&mut from_under, &volumes, &centred, 1.0 / fps);
+                assert!(
+                    toggles <= 1,
+                    "{shape}, from under: {toggles} toggles at {speed} m/s, {fps} fps"
+                );
+            }
         }
     }
 }
@@ -708,4 +761,202 @@ fn eye_moving_between_adjacent_fluid_volumes_switches_once_at_the_band() {
     assert_eq!(switches, 1);
     assert_eq!(eye.active_volume(), Some(1));
     assert_eq!(eye.tint(), sludge.tint);
+}
+
+// Regression: the eye depth was a per-brush plane depth, which reads 0 on a seam
+// inside a pool, so an eye sinking at the seam never turned the tint on.
+#[test]
+fn eye_sinking_at_a_two_brush_pools_internal_seam_turns_the_tint_on_8cm_under_the_surface() {
+    let volumes = seam_pool();
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    let mut eye = FluidEye::default();
+    // Down from 20 cm above the surface to 30 cm under, 1 mm a frame.
+    let mut turned_on = None;
+    for step in 0..=500 {
+        let y = SURFACE_Y + 0.2 - step as f32 * 0.001;
+        eye.update(view, eye_at(y), 1.0 / 60.0, |_| Some(WATER));
+        if eye.active_volume().is_some() && turned_on.is_none() {
+            turned_on = Some(y);
+        }
+        if turned_on.is_none() {
+            assert_eq!(eye.ramp(), 0.0, "off above the band at y = {y}");
+        }
+    }
+    let on_at = turned_on.expect("the tint turns on under the seam");
+    assert!(
+        ((SURFACE_Y - on_at) - EYE_FLUID_MARGIN).abs() < 0.0015,
+        "on {} m under the surface",
+        SURFACE_Y - on_at
+    );
+    // And off again 8 cm above it on the way up.
+    let mut turned_off = None;
+    for step in 0..=500 {
+        let y = SURFACE_Y - 0.3 + step as f32 * 0.001;
+        eye.update(view, eye_at(y), 1.0 / 60.0, |_| Some(WATER));
+        if eye.active_volume().is_none() && turned_off.is_none() {
+            turned_off = Some(y);
+        }
+    }
+    let off_at = turned_off.expect("the tint turns off above the seam");
+    assert!(((off_at - SURFACE_Y) - EYE_FLUID_MARGIN).abs() < 0.0015);
+}
+
+// A hitch frame advances the ramp by at most the limiter's hitch ceiling, so
+// entry is never held by the limiter's rate cap, which allows that much too.
+#[test]
+fn a_hitch_frame_steps_the_tint_ramp_no_further_than_the_limiter_admits() {
+    let volumes = pool();
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    let full = FluidLook {
+        tint: [0.1, 0.3, 0.4, 1.0],
+        muffle: 1.0,
+    };
+    for look in [WATER, full] {
+        let (mut eye, mut clamp) = (FluidEye::default(), ChannelClamp::default());
+        let slots = HashMap::new();
+        for _ in 0..10 {
+            present(
+                (&mut eye, &mut clamp),
+                view,
+                SURFACE_Y + 0.5,
+                1.0 / 60.0,
+                look,
+                &slots,
+                true,
+            );
+        }
+        // Dive under on half-second hitches, then out the same way.
+        let mut strengths = Vec::new();
+        for y in [SURFACE_Y - 0.5; 10]
+            .into_iter()
+            .chain([SURFACE_Y + 0.5; 10])
+        {
+            let packed = present((&mut eye, &mut clamp), view, y, 0.5, look, &slots, true);
+            assert_eq!(
+                packed.fluid_tint,
+                eye.tint(),
+                "the limiter never holds the ramp on a hitch"
+            );
+            strengths.push(packed.fluid_tint[3]);
+        }
+        let per_hitch = look.tint[3] * HITCH_CEILING_SECONDS / FLUID_PRESENTATION_RAMP_SECONDS;
+        assert!((strengths[0] - per_hitch).abs() < 1e-6, "{strengths:?}");
+        for pair in strengths.windows(2) {
+            assert!((pair[1] - pair[0]).abs() <= per_hitch + 1e-6, "{pair:?}");
+        }
+    }
+}
+
+// Switching into a fluid this machine does not present ramps the held look
+// out rather than dropping it in one frame.
+#[test]
+fn switching_into_a_fluid_with_no_local_presentation_ramps_the_held_look_out() {
+    let pool_at = |fluid: u16, min_x: f32, max_x: f32| EnvironmentVolume {
+        fluid: Some(fluid),
+        ..water_volume(vec![axis_leaf(
+            Vec3::new(min_x, -10.0, -10.0),
+            Vec3::new(max_x, SURFACE_Y, 10.0),
+        )])
+    };
+    let volumes = EnvironmentVolumes::build(vec![pool_at(0, -10.0, 0.0), pool_at(1, 0.0, 10.0)]);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    // Fluid 1 is undeclared here: no local presentation.
+    let look_of = |volume: usize| (volume == 0).then_some(WATER);
+    let dt = 1.0 / 60.0;
+    let deep = SURFACE_Y - 1.0;
+    let mut eye = FluidEye::default();
+    for _ in 0..30 {
+        eye.update(view, Vec3::new(-1.0, deep, 0.0), dt, look_of);
+    }
+    assert_eq!(eye.tint(), WATER.tint);
+
+    let step = dt / FLUID_PRESENTATION_RAMP_SECONDS;
+    let mut previous = eye.ramp();
+    for frame in 0..30 {
+        eye.update(view, Vec3::new(1.0, deep, 0.0), dt, look_of);
+        assert_eq!(
+            eye.active_volume(),
+            Some(1),
+            "the eye is in the other fluid"
+        );
+        assert!(
+            (previous - eye.ramp() - step).abs() < 1e-5 || eye.ramp() == 0.0,
+            "frame {frame}: ramp {} after {previous}",
+            eye.ramp()
+        );
+        if eye.ramp() > 0.0 {
+            assert_eq!(&eye.tint()[..3], &WATER.tint[..3], "the held look");
+            assert!((eye.tint()[3] - WATER.tint[3] * eye.ramp()).abs() < 1e-6);
+        }
+        previous = eye.ramp();
+    }
+    assert_eq!(eye.tint(), [0.0; 4]);
+    assert_eq!(eye.muffle(), 0.0);
+}
+
+// Suspend drops the surface; no tint or muffle may outlive it.
+#[test]
+fn suspend_clears_the_fluid_eye_presentation() {
+    let main = include_str!("../main.rs");
+    let start = main
+        .find("fn suspended(")
+        .expect("main.rs has a suspend handler");
+    let body = &main[start..];
+    let body = &body[..body.find("\n    fn ").unwrap_or(body.len())];
+    assert!(
+        body.contains("self.clear_fluid_eye_presentation();"),
+        "suspended() clears the fluid eye presentation"
+    );
+
+    let mut app = test_app();
+    app.fluid_eye = {
+        let volumes = pool();
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let mut eye = FluidEye::default();
+        for _ in 0..30 {
+            eye.update(view, eye_at(SURFACE_Y - 1.0), 1.0 / 60.0, |_| Some(WATER));
+        }
+        eye
+    };
+    assert_eq!(app.fluid_eye.tint(), WATER.tint);
+    app.clear_fluid_eye_presentation();
+    assert_eq!(app.fluid_eye.tint(), [0.0; 4]);
+    assert_eq!(app.fluid_eye.muffle(), 0.0);
+}
+
+// An eye swaying out through a pool's side face keeps the band there, even
+// with a lower basin of the same fluid under it that the vertical line meets.
+#[test]
+fn eye_swaying_across_a_pools_side_face_above_a_lower_basin_stays_on_inside_the_band() {
+    let volumes = EnvironmentVolumes::build(vec![
+        water_volume(vec![axis_leaf(
+            Vec3::new(-10.0, -2.0, -10.0),
+            Vec3::new(0.0, SURFACE_Y, 10.0),
+        )]),
+        water_volume(vec![axis_leaf(
+            Vec3::new(0.0, -10.0, -10.0),
+            Vec3::new(10.0, -0.5, 10.0),
+        )]),
+    ]);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    // Fixture: the vertical line beside the pool meets the basin 1.5 m down.
+    let beside = Vec3::new(0.05, SURFACE_Y - 1.0, 0.0);
+    let vertical = postretro_collision::fluid_volume_signed_depth(view, 0, beside)
+        .expect("the basin is on the vertical line");
+    assert!((vertical + 1.5).abs() < 1e-4, "{vertical}");
+    let dt = 1.0 / 60.0;
+    let y = SURFACE_Y - 1.0;
+    let mut eye = FluidEye::default();
+    for _ in 0..30 {
+        eye.update(view, Vec3::new(-1.0, y, 0.0), dt, |_| Some(WATER));
+    }
+    assert!(eye.active_volume().is_some());
+    for n in 0..240 {
+        let x = 0.05 * (n as f32 * 0.3).sin();
+        eye.update(view, Vec3::new(x, y, 0.0), dt, |_| Some(WATER));
+        assert!(eye.active_volume().is_some(), "x = {x}");
+    }
+    // Past the band sideways it turns off, though the basin lies below.
+    eye.update(view, Vec3::new(0.09, y, 0.0), dt, |_| Some(WATER));
+    assert_eq!(eye.active_volume(), None);
 }

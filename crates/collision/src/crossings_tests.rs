@@ -252,3 +252,80 @@ fn overlapping_fluid_entities_each_report_their_own_boundary_and_fluid() {
         vec![(0, 1, true), (1, 2, true), (1, 2, false), (0, 1, false)]
     );
 }
+
+// Regression: the seam gap was measured along the ray, so a ray grazing a
+// tilted seam with plane noise saw a gap of noise / sin(angle) and splashed
+// inside the pool.
+#[test]
+fn ray_grazing_a_tilted_seam_between_two_brushes_of_one_fluid_has_no_crossing_there() {
+    let normal = Vec3::new(1.0, 1.0, 0.0).normalize();
+    let tangent = Vec3::new(1.0, -1.0, 0.0).normalize();
+    let split = |gap: f32| {
+        let mut below = axis_box(Vec3::splat(-4.0), Vec3::splat(4.0));
+        below.planes.push(LeafPlane {
+            normal,
+            distance: 0.0,
+        });
+        let mut above = axis_box(Vec3::splat(-4.0), Vec3::splat(4.0));
+        above.planes.push(LeafPlane {
+            normal: -normal,
+            distance: -gap,
+        });
+        EnvironmentVolumes::build(vec![fluid(vec![below, above], 0)])
+    };
+    // Crossing the seam plane at 3 degrees, mid-box.
+    let angle = 3.0_f32.to_radians();
+    let dir = tangent * angle.cos() + normal * angle.sin();
+    let origin = Vec3::new(0.0, 0.0, 0.5) - dir * 20.0;
+
+    // 20 microns of plane noise: about 0.4 mm along this ray.
+    let noisy = crossings(&split(2.0e-5), origin, dir, 40.0);
+    assert_eq!(noisy.len(), 2, "{noisy:?}");
+    assert!(noisy[0].entering && !noisy[1].entering);
+
+    // A real 1 cm gap between the brushes still splashes out and back in.
+    let gapped = crossings(&split(0.01), origin, dir, 40.0);
+    assert_eq!(gapped.len(), 4, "{gapped:?}");
+
+    // A non-finite origin crosses nothing.
+    assert!(crossings(&split(0.0), Vec3::new(f32::NAN, 0.0, 0.5), dir, 40.0).is_empty());
+}
+
+// A ray meeting more of one volume's brushes than the measurement keeps inline
+// reports the same crossings through the re-clip fallback.
+#[test]
+fn ray_along_a_many_brush_fluid_volume_reports_its_union_boundary_only() {
+    // Twenty 1 m blocks along x, each overlapping the next by 0.1 m, with real
+    // 0.5 m gaps after the 7th and 14th: three runs.
+    let mut starts = Vec::new();
+    let mut x = 0.0;
+    for block in 0..20 {
+        starts.push(x);
+        x += if block == 6 || block == 13 { 1.5 } else { 0.9 };
+    }
+    let brushes = starts
+        .iter()
+        .map(|&x| axis_box(Vec3::new(x, 0.0, -1.0), Vec3::new(x + 1.0, 1.0, 1.0)))
+        .collect();
+    let volumes = EnvironmentVolumes::build(vec![fluid(brushes, 2)]);
+    let found = crossings(&volumes, Vec3::new(-1.0, 0.5, 0.0), Vec3::X, 40.0);
+    let millimetres = |t: f32| (t * 1000.0).round() as i32;
+    let summary: Vec<_> = found
+        .iter()
+        .map(|c| (millimetres(c.t), c.entering))
+        .collect();
+    // The ray starts 1 m before x = 0.
+    let at = |x: f32| millimetres(x + 1.0);
+    assert_eq!(
+        summary,
+        vec![
+            (at(starts[0]), true),
+            (at(starts[6] + 1.0), false),
+            (at(starts[7]), true),
+            (at(starts[13] + 1.0), false),
+            (at(starts[14]), true),
+            (at(starts[19] + 1.0), false),
+        ],
+        "{found:?}"
+    );
+}

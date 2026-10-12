@@ -258,8 +258,9 @@ pub fn tick_with_immersion(
     // drift layers are recomposed before the one shared collision sweep.
     component.velocity -= component.knockback_velocity + component.push_velocity;
     // Swim entry and exit by immersion apply here, before the intent, so the
-    // entered state owns this tick (`swim_transition`).
-    apply_environment_transition(
+    // entered state owns this tick (`swim_transition`), which also decides
+    // whether the swim intent fires a fluid jump.
+    let fluid_jump = apply_environment_transition(
         component,
         input,
         environment,
@@ -274,19 +275,20 @@ pub fn tick_with_immersion(
         input,
         jump_edges,
         &resolved_environment,
+        fluid_jump,
         dt,
         &collision,
         &mut position,
         &mut events,
     );
-    // An intent that cleared grounded launched the body: a jump, or a swimmer
-    // rising off the pool floor. The substrate must not clamp the rise.
-    let intent_left_ground = previous_ground.is_grounded() && !component.is_grounded();
 
-    // Push lands after the intent: horizontal push in the protected drift layer,
-    // vertical push in locomotion. Terminal speed along the push is held beside
-    // the fall clamp.
+    // Push lands after the intent: horizontal push (all of it while swimming) in
+    // the protected drift layer, vertical push otherwise in locomotion. Terminal
+    // speed along the push is held beside the fall clamp.
     push::apply(component, &resolved_environment, dt);
+    // An intent or push that cleared grounded launched the body: a jump, or a
+    // swimmer rising off the pool floor. The substrate must not clamp the rise.
+    let left_ground = previous_ground.is_grounded() && !component.is_grounded();
     knockback::decay(
         &mut component.knockback_velocity,
         &component.knockback,
@@ -329,7 +331,7 @@ pub fn tick_with_immersion(
         dt,
         position,
         previous_ground,
-        events.jumped || launched || intent_left_ground,
+        events.jumped || launched || left_ground,
     );
 
     // Contact flows forward through the tick seam: the active intent has
@@ -346,7 +348,8 @@ pub fn tick_with_immersion(
         component.refresh_on_landing();
     }
 
-    events.landed = substrate.landed;
+    // A swimmer settling onto the pool floor is not a landing.
+    events.landed = substrate.landed && component.movement_state.kind() != MovementStateKind::Swim;
 
     // Apply any state transition the intent returned, after the substrate has
     // resolved collision/landing. `Normal` transitions to `Dash` on rising-edge

@@ -266,11 +266,13 @@ pub struct PlayerMovementComponent {
     pub velocity: Vec3,
     #[serde(default)]
     pub knockback_velocity: Vec3,
-    /// Protected drift a push volume's horizontal push has built up, already
-    /// included in `velocity`. Horizontal only: `y` is always 0, since vertical
-    /// push joins locomotion directly. Intent speed caps and steering never see
-    /// it; collision projects it like knockback, and the medium decays it (ground
-    /// friction while grounded, none airborne).
+    /// Protected drift a push volume's push has built up, already included in
+    /// `velocity`. While swimming it carries the full 3D push; outside `Swim`
+    /// it is horizontal (`y` is 0), since vertical push joins locomotion
+    /// directly there, and leaving swim folds its `y` into locomotion. Intent
+    /// speed caps and steering never see it; collision projects it like
+    /// knockback, and the medium decays it: the fluid's viscosity while
+    /// swimming, ground friction while grounded, nothing airborne.
     #[serde(default)]
     pub push_velocity: Vec3,
     #[serde(default)]
@@ -496,6 +498,24 @@ impl PlayerMovementComponent {
         // edge derivation, not here.
         self.jump_spent = false;
         self.coyote_timer_ms = 0.0;
+    }
+
+    /// Settle swim state on a component rebuilt from a descriptor (hot reload, a
+    /// client's tuning rebuild) after the live tick state was carried onto it.
+    /// Without a `swim` block the pawn cannot swim, so a carried `Swim` leaves
+    /// as a swim exit does: `Normal`, the drift layer's vertical part folded
+    /// into locomotion, the re-entry latch cleared. `velocity` is total here
+    /// (protected layers included), so the fold zeroes only the layer's `y`;
+    /// total vertical velocity is unchanged. With a `swim` block nothing changes.
+    pub fn leave_swim_without_swim_block(&mut self) {
+        if self.swim.is_some() {
+            return;
+        }
+        if matches!(self.movement_state, MovementState::Swim { .. }) {
+            self.movement_state = MovementState::Normal;
+        }
+        self.push_velocity.y = 0.0;
+        self.swim_reentry_latched = false;
     }
 
     pub fn is_grounded(&self) -> bool {

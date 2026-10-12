@@ -545,10 +545,12 @@
     _tags(string) : "Space-delimited tags" : ""
 ]
 
-// Environment volumes: invisible, non-solid brush regions that hold a fluid,
-// change gravity, or add a push. They never block anything, seal rooms, take
-// light or cast shadows. Each brush is one convex region, any shape, floating
-// in mid-air included; one entity may own several brushes.
+// Environment volumes: non-solid brush regions that hold a fluid, change
+// gravity, or add a push. They never block anything, seal rooms, join the
+// lightmap bake or cast shadows. A fluid volume draws its exposed faces as a
+// lit, translucent surface; gravity and push volumes are invisible. Each brush
+// is one convex region, any shape, floating in mid-air included; one entity may
+// own several brushes.
 //
 // Overlap rule, per field. Where volumes that set the same field overlap, the
 // highest `priority` wins. On a priority tie the smallest volume wins (an

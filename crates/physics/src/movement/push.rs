@@ -12,7 +12,7 @@ use super::intents::GROUND_STOP_FRICTION;
 /// does, so a landed drift reaches exactly zero instead of trailing denormals.
 const DRIFT_STOP_SPEED_SQ: f32 = 1.0e-6;
 
-/// Rule 1, lift-off: a grounded body leaves the ground when the push points up
+/// Lift-off: a grounded body leaves the ground when the push points up
 /// harder than gravity pulls down. Only gravity's downward part resists, so
 /// upward gravity never holds a body down; with no push this is always false,
 /// and upward gravity alone never lifts a grounded body. `tick` treats a true
@@ -23,14 +23,21 @@ pub(super) fn lifts_off(environment: &ResolvedEnvironment) -> bool {
     push_y > 0.0 && push_y + environment.gravity.min(0.0) > 0.0
 }
 
-/// Rule 3, after the intent. Called while `velocity` holds locomotion only.
-/// The medium first decays the drift built up so far, then horizontal push
-/// accrues in the protected drift layer (`push_velocity`), which intent caps
-/// and steering never see. Vertical push joins locomotion directly; no intent
-/// caps vertical speed, and gravity, lift-off and the terminal cap govern it.
-/// While the body stays grounded the floor bears the vertical part, exactly as
-/// every intent gates gravity on airborne; a push strong enough to lift has
-/// already cleared grounded through [`lifts_off`].
+/// After the intent. Called while `velocity` holds locomotion only. The medium
+/// first decays the drift built up so far, then the tick's push accrues:
+/// - **Swimming:** the whole push, all three axes, accrues in the protected
+///   drift layer (`push_velocity`), so a current settles at push / viscosity in
+///   every direction and swim steering never fights it. A swimmer resting on the
+///   pool floor takes vertical push too: the layer rejoins before collision,
+///   which projects its horizontal part like knockback and leaves its vertical
+///   part to the fluid ([`project_drift`]), so a downward current presses into
+///   the floor and an upward one lifts off it ([`release_rising_swimmer`]).
+/// - **Otherwise:** horizontal push accrues in the drift layer, which intent caps
+///   and steering never see. Vertical push joins locomotion directly; no intent
+///   caps vertical speed, and gravity, lift-off and the terminal cap govern it.
+///   While the body stays grounded the floor bears the vertical part, exactly as
+///   every intent gates gravity on airborne; a push strong enough to lift has
+///   already cleared grounded through [`lifts_off`].
 pub(super) fn apply(
     component: &mut PlayerMovementComponent,
     environment: &ResolvedEnvironment,
@@ -38,10 +45,42 @@ pub(super) fn apply(
 ) {
     let push = environment.push;
     decay_drift(component, environment.viscosity, dt);
+    if is_swimming(component) {
+        component.push_velocity += push * dt;
+        release_rising_swimmer(component);
+        return;
+    }
     component.push_velocity += Vec3::new(push.x, 0.0, push.z) * dt;
     if !component.is_grounded() {
         component.velocity.y += push.y * dt;
     }
+}
+
+/// A swimmer resting on the pool floor leaves it once its total vertical
+/// motion points up: locomotion (swimming up), knockback and the drift layer
+/// (an upward current) together. It runs after the drift accrues, which is the
+/// first point the tick knows the total; `tick` then reads the cleared ground
+/// as a launch and tells the substrate neither to clamp the rise nor to stick
+/// the swimmer back down. A downward current outweighing an upward swim keeps
+/// it on the floor.
+fn release_rising_swimmer(component: &mut PlayerMovementComponent) {
+    let rising = component.velocity.y + component.knockback_velocity.y + component.push_velocity.y;
+    if component.is_grounded() && rising > 0.0 {
+        component.set_grounded(false);
+    }
+}
+
+/// Leaving `Swim`: the drift layer's vertical part joins locomotion
+/// `velocity.y` and the layer is horizontal again, so outside water vertical
+/// push stays in locomotion. Dispatch calls it on every edge out of `Swim`,
+/// while `velocity` holds locomotion only, so total velocity is unchanged.
+pub(super) fn fold_vertical_drift(component: &mut PlayerMovementComponent) {
+    component.velocity.y += component.push_velocity.y;
+    component.push_velocity.y = 0.0;
+}
+
+fn is_swimming(component: &PlayerMovementComponent) -> bool {
+    matches!(component.movement_state, MovementState::Swim { .. })
 }
 
 /// The medium a body's drift decays in this tick.
@@ -60,7 +99,7 @@ enum DriftMedium {
 /// and a fluid jump this tick (which left swim) counts as airborne too.
 /// `viscosity` is the tick's resolved fluid drag.
 fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMedium {
-    if matches!(component.movement_state, MovementState::Swim { .. }) {
+    if is_swimming(component) {
         DriftMedium::Fluid { viscosity }
     } else if component.is_grounded() {
         DriftMedium::Ground
@@ -73,8 +112,9 @@ fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMed
 /// push accrues. Ground friction is the intents' stop-friction model on
 /// locomotion, applied whether or not input is held because drift is never
 /// voluntary; with a steady push the drift settles at push /
-/// `GROUND_STOP_FRICTION`. A fluid removes the same linear fraction per tick as
-/// the swim intent's drag on locomotion (`max(0, 1 - viscosity * dt)`).
+/// `GROUND_STOP_FRICTION`. A fluid removes the same linear fraction per tick,
+/// on all three axes, as the swim intent's drag on locomotion
+/// (`max(0, 1 - viscosity * dt)`).
 fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32) {
     let medium = drift_medium(component, viscosity);
     let drift = &mut component.push_velocity;
@@ -103,22 +143,34 @@ fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32)
 
 /// Project the drift layer against a contact normal exactly as collision
 /// projects total velocity and knockback, so a wall absorbs the drift into it.
-/// The layer stays horizontal: any vertical part the projection produces stays
-/// in total velocity, where the next tick reads it as locomotion.
-pub(super) fn project_drift(drift: &mut Vec3, normal: Vec3) {
+///
+/// Outside `Swim` (`three_d` false) the layer stays horizontal: any vertical
+/// part the projection produces stays in total velocity, where the next tick
+/// reads it as locomotion.
+///
+/// While swimming the layer's vertical part is the fluid's, not the contact's:
+/// a floor or ceiling never consumes it. The contact still stops total
+/// velocity, so locomotion absorbs the difference, and the current keeps its
+/// settled push / viscosity against the floor exactly as in open water. That
+/// keeps lift-off honest: a swimmer resting on the pool floor rises exactly
+/// when the same current would hold a mid-water swimmer rising, rather than only
+/// when one tick's push outweighs one tick's sink acceleration, which is what
+/// consuming the layer on every floor contact would test.
+pub(super) fn project_drift(drift: &mut Vec3, normal: Vec3, three_d: bool) {
+    let vertical = drift.y;
     *drift -= normal * drift.dot(normal);
-    drift.y = 0.0;
+    drift.y = if three_d { vertical } else { 0.0 };
 }
 
-/// Rule 2, terminal speed: cap the total speed along the push direction at the
+/// Terminal speed: cap the total speed along the push direction at the
 /// descriptor's fall terminal velocity, so an updraft or a wind does not
 /// accelerate a body forever. Only the component along the push is touched.
 /// Runs while `velocity` holds only locomotion. The excess splits into its
-/// horizontal and vertical parts, each taken from the protected layers first,
-/// as `knockback::clamp_fall_speed` does, so a decaying layer never leaves
-/// locomotion pushing against the push:
-/// - horizontal: from the drift layer, then knockback, then locomotion;
-/// - vertical: from knockback, then locomotion `velocity.y` (drift has none).
+/// horizontal and vertical parts, each taken from the protected layers first —
+/// the drift layer, then knockback, then locomotion — as
+/// `knockback::clamp_fall_speed` does, so a decaying layer never leaves
+/// locomotion pushing against the push. Outside `Swim` the drift layer has no
+/// vertical part, so vertical excess comes from knockback, then locomotion.
 pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, push: Vec3) {
     let Some(direction) = push.try_normalize() else {
         return;
@@ -130,9 +182,14 @@ pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, pu
     }
     let excess = direction * excess;
 
-    let horizontal = Vec3::new(excess.x, 0.0, excess.z);
-    if let Some(along) = horizontal.try_normalize() {
-        let mut remaining = horizontal.length();
+    for part in [
+        Vec3::new(excess.x, 0.0, excess.z),
+        Vec3::new(0.0, excess.y, 0.0),
+    ] {
+        let Some(along) = part.try_normalize() else {
+            continue;
+        };
+        let mut remaining = part.length();
         for layer in [
             &mut component.push_velocity,
             &mut component.knockback_velocity,
@@ -143,10 +200,4 @@ pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, pu
         }
         component.velocity -= along * remaining;
     }
-
-    let sign = excess.y.signum();
-    let vertical = excess.y.abs();
-    let cut = vertical.min((component.knockback_velocity.y * sign).max(0.0));
-    component.knockback_velocity.y -= sign * cut;
-    component.velocity.y -= sign * (vertical - cut);
 }

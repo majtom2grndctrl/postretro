@@ -1316,7 +1316,7 @@ mod tests {
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
-            push_velocity: [0.0; 2],
+            push_velocity: [0.0; 3],
             velocity: [0.0, 3.5, -1.0],
             ground: WireGroundRef::Airborne,
             air_jumps_remaining: 1,
@@ -1608,6 +1608,21 @@ mod tests {
                 assert!(round_trips(&movement));
             }
         }
+    }
+
+    // A swimmer's drift layer carries vertical push; all three axes cross the
+    // wire.
+    #[test]
+    fn swimming_movement_state_round_trips_its_vertical_drift() {
+        let movement = WirePlayerMovementState {
+            movement_state: WireMovementState::Swim { fluid: 0 },
+            push_velocity: [1.5, -2.25, 0.5],
+            ..sample_movement()
+        };
+        assert!(round_trips(&movement));
+        let bytes = encode(&movement);
+        let decoded: WirePlayerMovementState = decode(&bytes).expect("decodes");
+        assert_eq!(decoded.push_velocity, [1.5, -2.25, 0.5]);
     }
 
     #[test]
@@ -2959,10 +2974,11 @@ mod tests {
     /// field.
     #[test]
     fn non_finite_movement_state_rejects_each_field() {
-        let mutators: [fn(&mut WirePlayerMovementState); 19] = [
+        let mutators: [fn(&mut WirePlayerMovementState); 20] = [
             |m| m.knockback_velocity[0] = f32::NAN,
             |m| m.push_velocity[0] = f32::NAN,
             |m| m.push_velocity[1] = f32::INFINITY,
+            |m| m.push_velocity[2] = f32::NEG_INFINITY,
             |m| m.knockback_velocity[1] = f32::INFINITY,
             |m| m.knockback_velocity[2] = f32::NEG_INFINITY,
             |m| m.velocity[0] = f32::NAN,

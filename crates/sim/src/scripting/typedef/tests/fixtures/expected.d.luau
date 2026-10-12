@@ -835,7 +835,7 @@ export type PlayerMovementDescriptor = {
   crouch: CrouchParams?,
   --- Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.
   slide: SlideParams?,
-  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required. Never overridable by a map.
+  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.
   swim: SwimParams?,
   --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
   viewFeel: ViewFeelParams?,
@@ -955,7 +955,7 @@ export type SlideParams = {
   minDurationMs: number,
 }
 
---- Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a bad field rejects the descriptor naming `movement.swim.<field>`.
+--- Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades.
 export type SwimParams = {
   --- Target swim speed in metres/sec. Must be finite and ≥ 0.
   speed: number,
@@ -965,9 +965,9 @@ export type SwimParams = {
   sinkSpeed: number,
   --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite and in [0, 1].
   enterDepth: number,
-  --- Immersion fraction below which swimming ends. Must be finite, in [0, 1], and less than `enterDepth`.
+  --- Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.
   exitDepth: number,
-  --- Upward velocity in metres/sec a jump from the surface sets while the eye is out of the fluid. Must be finite and ≥ 0.
+  --- Upward velocity in metres/sec a jump from the surface sets while the eye is out of the fluid. Must be finite and > 0.
   fluidJumpVelocity: number,
 }
 
@@ -1791,14 +1791,18 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
 
---- Current world gravity in m/s² (negative = downward; positive = upward).
---- Seeded from the worldspawn `initialGravity` KVP at level load and
---- persists until the next level load or `setGravity` call.
+--- Level default gravity in m/s² (negative = downward; positive = upward):
+--- the gravity outside every gravity volume. Seeded from the worldspawn
+--- `initialGravity` KVP at level load and persists until the next level load
+--- or `setGravity` call. Inside a `gravity_volume` the volume's own value
+--- holds; this still returns the level default.
 declare function getGravity(): number
 
---- Set world gravity in m/s² (negative = downward; positive = upward).
---- NaN and non-finite values are ignored with a warning. Effect is immediate
---- and persists until the next level load or another `setGravity` call.
+--- Set the level default gravity in m/s² (negative = downward; positive =
+--- upward): the gravity outside every gravity volume. A `gravity_volume`'s
+--- value holds inside it regardless. NaN and non-finite values are ignored
+--- with a warning. Effect is immediate and persists until the next level load
+--- or another `setGravity` call.
 declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.

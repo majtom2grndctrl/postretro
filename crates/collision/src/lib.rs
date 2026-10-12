@@ -25,7 +25,9 @@ mod query_equivalence_tests;
 pub use crossings::{
     CROSSING_SEAM_EPSILON, CROSSING_START_EPSILON, FluidCrossing, visit_fluid_crossings,
 };
-pub use eye::{EyeFluid, fluid_at_eye, fluid_volume_signed_depth};
+pub use eye::{
+    EYE_DEPTH_REACH, EyeFluid, fluid_at_eye, fluid_volume_plane_depth, fluid_volume_signed_depth,
+};
 pub use leaf::{ContentsMask, ConvexLeaf, LeafPlane};
 pub use query_timer::EnvironmentQueryTimer;
 pub use resolve::{

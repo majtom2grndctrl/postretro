@@ -2854,7 +2854,9 @@ through its `fluid` key. Each field is checked when the mod loads:
 
 A field out of range, an unknown field, or a second fluid with a name already
 declared rejects that one declaration, with a warning naming the field. The
-first declaration of a name stands, and the rest of the manifest loads. A
+first declaration of a name stands, and the rest of the manifest loads. The
+`fluids` array holds at most 4,096 entries, holes included; a longer one, or a
+value that is not an array, declares no fluids, with one warning. A
 `fluid_volume` naming a fluid the mod does not declare loads dry, with a
 warning.
 
@@ -2876,7 +2878,7 @@ logs one warning. All six fields are required:
 | `speed` | m/s | `≥ 0` | Target swim speed. |
 | `accel` | m/s² | `≥ 0` | How fast the swimmer reaches that speed. |
 | `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at Earth gravity (9.81 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
-| `enterDepth` | fraction | `0`–`1` | How much of the body, feet to head, must be in the fluid to start swimming. |
+| `enterDepth` | fraction | above `0`, up to `1` | How much of the body, feet to head, must be in the fluid to start swimming. |
 | `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
 | `fluidJumpVelocity` | m/s | above `0` | Upward speed of a jump out of the fluid. |
 
@@ -2893,11 +2895,16 @@ How swimming plays:
   there is headroom.
 - **Steering.** The swimmer moves toward where they look. Jump swims up and
   crouch swims down. The fluid's `viscosity` is the drag.
-- **Jumping out.** Pressing jump with the eye above the surface sets the upward
-  speed to `fluidJumpVelocity` and ends the swim, with no ground needed. Swimming
-  cannot start again until immersion has dropped below `exitDepth`, so the jump
-  is never cancelled by the water it leaves. Fully under the surface, jump only
-  swims up.
+- **Jumping out.** Pressing jump while swimming, with the eye above the
+  surface, sets the upward speed to `fluidJumpVelocity` and ends the swim, with
+  no ground needed. It fires only when the jump would rise far enough for
+  immersion to drop below `exitDepth`: its height under the local gravity and
+  any upward or downward push, with headroom above the player for that rise.
+  Otherwise jump at the surface does nothing; tune `fluidJumpVelocity` high
+  enough for the gravity and currents your fluids sit in. A jump never fires
+  on the tick swimming starts. Swimming cannot start again until immersion has
+  dropped below `exitDepth`, so the jump is never cancelled by the water it
+  leaves. Fully under the surface, jump only swims up.
 - **Currents.** A `push_volume` over the fluid pushes swimmers along.
 - **Maps cannot change swim tuning.** It belongs to the descriptor.
 

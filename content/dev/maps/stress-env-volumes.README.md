@@ -1,8 +1,7 @@
 # stress-env-volumes — environment-volume stress and test-zone map
 
-A zoned stress-warren variant for the E24 water and environment-volume work
-(the E24 water-and-environment-volumes plan). It carries the
-warren showcase's full feature set plus ~1,000 `fluid_volume` /
+A zoned stress-warren variant for water and environment volumes. It carries
+the warren showcase's full feature set plus ~1,000 `fluid_volume` /
 `gravity_volume` brush entities, 64 AI agents and ~10,000 live particles, laid
 out in zones so water can be checked alone, beside one feature at a time, and
 with everything at once.
@@ -22,12 +21,13 @@ only into the EnvironmentVolumes section (id 52), which the build log counts as
 byte-identical, so cell, portal, static-collision and navmesh output are
 identical by construction.
 
-The volume entities use the E24 vocabulary. `fluid_volume` carries `fluid` and
+The volume entities use the environment-volume vocabulary. `fluid_volume` carries `fluid` and
 `priority`; `gravity_volume` carries `gravity` (one signed vertical number in
 m/s², like worldspawn `initialGravity`) and `priority`. A few volumes deliberately omit
 `priority` to exercise its default of 0. The fixture names two fluids, `water`
 and `sludge`; for them to be live the mod manifest must declare both
-(`defineFluid`). An undeclared fluid is planned to load dry with a warning.
+(`defineFluid`). A volume naming an undeclared fluid loads dry with a
+warning; its gravity and push still apply.
 
 ## Regenerate
 
@@ -89,36 +89,70 @@ Long bakes are intended: this map exists to stress the baker as well as the
 runtime. Use an interactive (non-`--release`) prl-build bake with `--no-cache`.
 Stages to watch: the lightmap bake, the cell residency set, the navmesh and the
 SH volume. The volume map's extra brushes never reach the BSP, so they add only
-parse and pack time. Recorded bake times and output sizes are in the E24
-water-and-environment-volumes plan's research notes.
+parse and pack time.
 
 ## Measure
 
-CPU stage timing (`context/lib/rendering_pipeline.md` §12) from a windowed
-release build with dev-tools, at the mixed measurement pose. Run each map the
-same way:
+The volumes' runtime cost, measured on a windowed release build with
+dev-tools against the zero-volume baseline. The procedure targets a Mac with
+the display kept awake.
 
-```bash
-caffeinate -dimsu env POSTRETRO_CPU_TIMING=1 RUST_LOG=info \
-    cargo run -p xtask -- run --release --features dev-tools -- \
-    content/dev/maps/stress-env-volumes.prl \
-    --start-pose=114.60,2.44,-138.99,45,0
-```
+0. **Preconditions.** The mod manifest declares `water` and `sludge`
+   (content/dev does). No other cargo build is running. Free disk is at least
+   15 GB plus the release build. With the engine closed, note the idle
+   `ioreg -c IOAccelerator` `inUseVidMemoryBytes` and `Device Utilization %`.
+1. **Re-bake both maps** (1–2.5 min each) with the commands under Compile, or
+   from a checkout with
+   `cargo run -p postretro-level-compiler -- <map> -o <prl> --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache`.
+   The volume map's build log must say `Environment volumes: 1000`, the
+   baseline's `0`.
+2. **Run each map unattended**, the volume map and then the baseline, at the
+   mixed measurement pose:
 
-Measurement hygiene: keep the window in front and check
-`pgrep -x ScreenSaverEngine` stays empty, because a screen saver distorts the
-frame regime. Read the `[CpuTiming]` lines after warmup. Particle cost is under `render_prep`
-as `particle_emit` (emitter bridge spawns) and `particle_sim`
-(`particle_sim::tick`). The `sim_*` stages sum over the frame's fixed ticks: divide by `ticks` for
-per-tick cost. `particle_emit` and `particle_sim` run once per rendered frame
-under `render_prep`, so do not divide them.
+   ```bash
+   caffeinate -dimsu env POSTRETRO_CPU_TIMING=1 RUST_LOG=info \
+       cargo run -p xtask -- run --release --features dev-tools -- \
+       content/dev/maps/stress-env-volumes.prl \
+       --start-pose=114.60,2.44,-138.99,45,0 2>&1 | tee <scratch>/env.log
+   ```
 
-Metrics to compare between the two maps: frame `total`, `ticks` per frame,
-`sim_tick`, `sim_ai`, `sim_steering`, `sim_movement`, `particle_emit` and
-`particle_sim`. The `.prl` files differ only in the EnvironmentVolumes section, so
-any gap while nothing resolves the volumes is run-to-run drift, not volume cost. AI cost grows over a run as agents
-with an open aggro gate converge, so compare windows at matched elapsed times.
-AI and particle cost dominate this fixture's frame: the fixed-step loop is
-CPU-bound, and that upstream cost can swamp any environment-resolution signal.
-The E24 water-and-environment-volumes plan's research notes hold the recorded
-numbers.
+   Give no input, keep the window in front, and check
+   `pgrep -x ScreenSaverEngine` stays empty: a screen saver fakes a GPU regime
+   while the engine still counts as foreground. Collect at least 10
+   `[CpuTiming]` windows (one 120-frame window is about 10.5 s) and drop the
+   first 2. Compare windows at matching elapsed times, since agents converge
+   on the player.
+3. **Hitscan crossings.** An unattended run fires nothing, so
+   `sim_weapon_fluid_crossings` is absent. Do one attended run on the volume
+   map, holding hitscan fire into a pool for a full window. Its average covers
+   only the frames that fired (`ran/frames`).
+4. **Read:**
+   - Volume tree build: `[Loader] environment volumes: 1000 volumes, M leaves, built in X ms`.
+     Budget: under 2 ms.
+   - Fluid names: no `[Loader] fluid_volume entity N names undeclared fluid`
+     warnings.
+   - Body resolution per tick: the `sim_environment` average divided by the
+     `ticks` average. Budget: under 0.25 ms. The reported max is per frame,
+     summed over its ticks, so it bounds the per-tick max from above.
+   - Baseline: `sim_environment` appears there too, resolving against an empty
+     set; the difference between the maps is the volumes' cost.
+
+   Delete the scratch logs afterwards.
+
+### Reading the timing
+
+CPU stage timing is described in `context/lib/rendering_pipeline.md` §12.
+Read the `[CpuTiming]` lines after warmup. Particle cost is under
+`render_prep` as `particle_emit` (emitter bridge spawns) and `particle_sim`
+(`particle_sim::tick`). The `sim_*` stages sum over the frame's fixed ticks:
+divide by `ticks` for per-tick cost. `particle_emit` and `particle_sim` run
+once per rendered frame under `render_prep`, so do not divide them.
+
+Other metrics to compare between the two maps: frame `total`, `ticks` per
+frame, `sim_tick`, `sim_ai`, `sim_steering`, `sim_movement`, `particle_emit`
+and `particle_sim`. The `.prl` files differ only in the EnvironmentVolumes
+section, so any gap in a stage that never resolves the volumes is run-to-run
+drift, not volume cost. AI cost grows over a run as agents with an open aggro
+gate converge, so compare windows at matched elapsed times. AI and particle
+cost dominate this fixture's frame: the fixed-step loop is CPU-bound, and that
+upstream cost can swamp any environment-resolution signal.

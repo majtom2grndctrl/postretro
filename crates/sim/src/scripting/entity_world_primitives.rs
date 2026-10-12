@@ -106,12 +106,14 @@ const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching 
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
 
-const WORLD_GET_GRAVITY_DOC: &str = "Return the current world gravity in m/s² (negative = downward; positive = upward). \
+const WORLD_GET_GRAVITY_DOC: &str = "Return the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. \
      Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. \
+     Inside a `gravity_volume` the volume's own value holds; this still returns the level default. \
      The SDK wraps this as `getGravity`.";
 
-const WORLD_SET_GRAVITY_DOC: &str = "Set the world gravity in m/s² (negative = downward; positive = upward). \
-     NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. \
+const WORLD_SET_GRAVITY_DOC: &str = "Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. \
+     A `gravity_volume`'s value holds inside it regardless. \
+     NaN and non-finite values are ignored with a warning so a misbehaving script cannot wedge particle physics. \
      Effect is immediate and persists until the next level load or another `worldSetGravity` call. \
      The SDK wraps this as `setGravity`.";
 

@@ -5,6 +5,7 @@ use glam::Vec3;
 
 use crate::crossings::{FluidCrossing, visit_fluid_crossings};
 use crate::leaf::LeafPlane;
+use crate::line::CLIP_LINE_CALLS;
 use crate::resolve::EnvironmentView;
 use crate::test_fixtures::{axis_box, volume};
 use crate::volumes::{EnvironmentVolume, EnvironmentVolumes};
@@ -328,4 +329,77 @@ fn ray_along_a_many_brush_fluid_volume_reports_its_union_boundary_only() {
         ],
         "{found:?}"
     );
+}
+
+/// Clips `visit_fluid_crossings` makes on this thread for one ray.
+fn crossings_counting_clips(
+    volumes: &EnvironmentVolumes,
+    origin: Vec3,
+    dir: Vec3,
+    max_t: f32,
+) -> (Vec<FluidCrossing>, usize) {
+    let before = CLIP_LINE_CALLS.with(|calls| calls.get());
+    let found = crossings(volumes, origin, dir, max_t);
+    (found, CLIP_LINE_CALLS.with(|calls| calls.get()) - before)
+}
+
+// Regression: measuring a volume clipped every brush below and after the first
+// one the ray hit, so a ray's cost grew with the volume's total brush count.
+#[test]
+fn ray_meeting_few_brushes_of_a_400_brush_fluid_volume_clips_only_those_near_it() {
+    // 400 blocks in a column along z, far from both rays, then some moved onto
+    // them: ray A meets brushes 397..400 (inline gather), ray B meets 17
+    // brushes spread from index 60 up (more than are kept inline, so the
+    // re-clip fallback runs).
+    let mut brushes: Vec<_> = (0..400)
+        .map(|i| {
+            let z = 2.0 * i as f32;
+            axis_box(Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 1.0, z + 1.0))
+        })
+        .collect();
+    let on_ray =
+        |y: f32, x0: f32, x1: f32| axis_box(Vec3::new(x0, y, 0.0), Vec3::new(x1, y + 1.0, 1.0));
+    // A: 397 and 398 share a face (one run), 399 stands apart.
+    brushes[397] = on_ray(10.0, 0.0, 1.0);
+    brushes[398] = on_ray(10.0, 1.0, 2.0);
+    brushes[399] = on_ray(10.0, 3.0, 4.0);
+    // B: brush 60 + 20k at x = 1.5k, each its own run.
+    let spread: Vec<usize> = (0..17).map(|k| 60 + 20 * k).collect();
+    for (k, &index) in spread.iter().enumerate() {
+        let x = 1.5 * k as f32;
+        brushes[index] = on_ray(20.0, x, x + 1.0);
+    }
+    let volumes = EnvironmentVolumes::build(vec![fluid(brushes, 4)]);
+
+    let (found, clips) =
+        crossings_counting_clips(&volumes, Vec3::new(-1.0, 10.5, 0.5), Vec3::X, 10.0);
+    assert_eq!(found.len(), 4, "{found:?}");
+    assert_crossing(&found[0], 1.0, Vec3::NEG_X, true, 4, 0);
+    assert_crossing(&found[1], 3.0, Vec3::X, false, 4, 0);
+    assert_crossing(&found[2], 4.0, Vec3::NEG_X, true, 4, 0);
+    assert_crossing(&found[3], 5.0, Vec3::X, false, 4, 0);
+    // Brush 397 is clipped by its visit and the gather's three clips; 398 and
+    // 399 by their visits and a gate that stops at 397. None of the 397 the
+    // ray misses is clipped.
+    assert!(clips <= 8, "ray A made {clips} clips");
+
+    let (found, clips) =
+        crossings_counting_clips(&volumes, Vec3::new(-1.0, 20.5, 0.5), Vec3::X, 40.0);
+    assert_eq!(found.len(), 2 * spread.len(), "{found:?}");
+    for (k, pair) in found.chunks(2).enumerate() {
+        let x = 1.5 * k as f32;
+        assert!(
+            (pair[0].t - (x + 1.0)).abs() < EPS && pair[0].entering,
+            "{pair:?}"
+        );
+        assert!(
+            (pair[1].t - (x + 2.0)).abs() < EPS && !pair[1].entering,
+            "{pair:?}"
+        );
+    }
+    // The fallback re-clips on every run-extension pass (a few per run), but
+    // only the 17 brushes on the ray: without the bounds test each pass would
+    // clip every brush from index 60 on (~340).
+    let n = spread.len();
+    assert!(clips <= 4 * (n + 1) * n, "ray B made {clips} clips");
 }

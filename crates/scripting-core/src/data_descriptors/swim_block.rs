@@ -1,7 +1,7 @@
 // `movement.swim` assembly and its warn-and-drop policy, shared by the QuickJS
 // and Luau movement parsers so both runtimes keep or drop a block identically,
 // with the same diagnostics.
-// See: context/lib/scripting.md §2 · context/lib/movement.md §7
+// See: context/lib/movement.md §2 (author surface) · context/lib/scripting.md §1 (parser twins)
 
 use postretro_foundation::data_descriptors::SwimParams;
 

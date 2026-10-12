@@ -237,8 +237,79 @@ fn a_hole_in_fluids_warns_for_that_entry_only_in_both_runtimes() {
 fn an_empty_fluids_object_declares_none_without_a_warning() {
     let capture = LogCapture::start();
     assert!(drain_js("({ fluids: {} })").is_empty());
+    assert!(drain_js("({ fluids: Object.create(null) })").is_empty());
     assert!(drain_lua("return { fluids = {} }").is_empty());
     assert!(warnings(&capture, "fluids").is_empty());
+}
+
+// Only a plain `{}` reads as an empty list: a function, Map or Date has no own
+// keys either, but warns like a Luau non-table field.
+#[test]
+fn a_function_map_or_date_fluids_field_warns_like_a_non_array() {
+    for value in ["() => []", "new Map()", "new Date(0)"] {
+        let capture = LogCapture::start();
+        assert!(drain_js(&format!("({{ fluids: {value} }})")).is_empty());
+        let ignored = warnings(
+            &capture,
+            "mod manifest: `fluids` must be an array of fluids; ignoring the field",
+        );
+        assert_eq!(ignored.len(), 1, "{value}: {ignored:?}");
+    }
+    let capture = LogCapture::start();
+    assert!(drain_lua("return { fluids = function() return {} end }").is_empty());
+    assert_eq!(
+        warnings(
+            &capture,
+            "mod manifest: `fluids` must be an array of fluids; ignoring the field"
+        )
+        .len(),
+        1
+    );
+}
+
+// Regression: a sparse `fluids` keyed far out warned once per hole and sized
+// its buffer by the key, in both runtimes.
+#[test]
+fn a_fluids_array_past_4096_slots_warns_once_and_is_ignored_in_both_runtimes() {
+    let capture = LogCapture::start();
+    let water = js_fluid("water", &[]);
+    let js = drain_js(&format!(
+        "(() => {{ const fluids = []; fluids[1000000] = {water}; return {{ fluids }}; }})()"
+    ));
+    let lua = drain_lua(&format!(
+        "return {{ fluids = {{ [1000000] = {} }} }}",
+        lua_fluid("water", &[])
+    ));
+    let lua_huge_key = drain_lua(&format!(
+        "return {{ fluids = {{ [2 ^ 53] = {} }} }}",
+        lua_fluid("water", &[])
+    ));
+    assert!(js.is_empty() && lua.is_empty() && lua_huge_key.is_empty());
+    let oversized = warnings(
+        &capture,
+        "mod manifest: `fluids` exceeds 4096 array slots; ignoring the field",
+    );
+    assert_eq!(oversized.len(), 3, "one per drain: {oversized:?}");
+    assert!(oversized.iter().all(|warning| *warning == oversized[0]));
+    assert!(
+        warnings(&capture, "is malformed").is_empty(),
+        "no warning per hole"
+    );
+
+    drop(capture);
+
+    // The last slot inside the bound still declares its fluid.
+    let capture = LogCapture::start();
+    let js = drain_js(&format!(
+        "(() => {{ const fluids = []; fluids[4095] = {water}; return {{ fluids }}; }})()"
+    ));
+    let lua = drain_lua(&format!(
+        "return {{ fluids = {{ [4096] = {} }} }}",
+        lua_fluid("water", &[])
+    ));
+    assert_eq!(js, lua);
+    assert_eq!(js.names(), ["water"]);
+    assert!(warnings(&capture, "exceeds").is_empty());
 }
 
 // A missing or mistyped field names `fluids[i].<field>` in the fluid's own
@@ -265,7 +336,10 @@ fn a_missing_or_mistyped_fluid_field_names_the_entry_field() {
         let capture = LogCapture::start();
         assert!(drain_js(&format!("({{ fluids: [{js_entry}] }})")).is_empty());
         assert!(drain_lua(&format!("return {{ fluids = {{ {lua_entry} }} }}")).is_empty());
-        let skipped = warnings(&capture, needle);
+        let skipped = warnings(
+            &capture,
+            &format!("mod manifest: fluids[0] is malformed and was skipped: {needle}"),
+        );
         assert_eq!(skipped.len(), 2, "{needle}: {skipped:?}");
         assert_eq!(skipped[0], skipped[1], "the runtimes' diagnostics diverged");
         assert!(

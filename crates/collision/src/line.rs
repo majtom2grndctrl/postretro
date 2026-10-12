@@ -37,6 +37,8 @@ pub(crate) fn clip_line(
     t_min: f32,
     t_max: f32,
 ) -> Option<LineInterval> {
+    #[cfg(test)]
+    CLIP_LINE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let mut interval = LineInterval {
         t_enter: t_min,
         t_exit: t_max,
@@ -69,6 +71,12 @@ pub(crate) fn clip_line(
     Some(interval)
 }
 
+// Test hook: clips made on this thread, so a test can bound a query's cost.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CLIP_LINE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One leaf's interval along a line, tagged with the leaf's index in its volume.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BrushInterval {
@@ -76,7 +84,9 @@ pub(crate) struct BrushInterval {
     pub interval: LineInterval,
 }
 
-/// Which brush face bounds one end of a run: `(brush index, plane index)`.
+/// Which brush face bounds one end of a run: `(brush index, plane index)`. The
+/// brush index is within its own volume, so a face names a unique brush only in
+/// a union of one volume's brushes.
 pub(crate) type FaceRef = (u32, u32);
 
 /// One maximal covered run of a union of intervals.
@@ -96,8 +106,10 @@ pub(crate) struct Run {
 /// (a seam of float noise between two brushes of one union). Allocation-free:
 /// `source` is called once per extension step and must yield the same intervals
 /// every call (any order). A run's start face is the lowest brush index among
-/// intervals starting there, its end face the lowest among those ending there,
-/// so runs never depend on yield order.
+/// intervals starting there, its end face the lowest among those ending there.
+/// A run's bounds never depend on yield order; its faces may when the union
+/// spans several volumes, whose brush indices repeat. Only crossings read
+/// faces, and they measure one volume at a time.
 pub(crate) fn for_each_run(
     source: impl Fn(&mut dyn FnMut(BrushInterval)),
     joins: impl Fn(f32, f32) -> bool,

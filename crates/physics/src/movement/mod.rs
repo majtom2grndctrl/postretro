@@ -222,7 +222,7 @@ pub fn tick_with_immersion(
         && component.knockback_velocity.y > 0.0
         && component.velocity.y > 0.0;
     // Push lift-off leaves the ground the same way a knockback launch does.
-    let push_launch = component.is_grounded() && push::lifts_off(&resolved_environment);
+    let push_launch = component.is_grounded() && push::lifts_off(component, &resolved_environment);
     let launched = knockback_launch || push_launch;
     if launched {
         component.set_grounded(false);

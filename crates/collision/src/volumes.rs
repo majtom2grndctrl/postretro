@@ -45,10 +45,8 @@ impl EnvironmentVolume {
 /// never recompute it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct VolumeRecord {
-    /// Sum of the volume's brush volumes, m³.
-    summed_brush_volume: f32,
-    /// The overlap rule's second key: `summed_brush_volume` quantized by
-    /// [`size_key`].
+    /// The overlap rule's second key: the sum of the volume's brush volumes,
+    /// m³, quantized by [`size_key`].
     size_key: u32,
 }
 
@@ -77,6 +75,11 @@ fn size_key(summed: f32) -> u32 {
     (summed.to_bits() + half) & !((1u32 << dropped) - 1)
 }
 
+/// Sum of a volume's brush volumes, m³.
+fn summed_brush_volume(volume: &EnvironmentVolume) -> f32 {
+    volume.brushes.iter().map(ConvexLeaf::volume).sum()
+}
+
 /// The tree payload: one brush of one volume, with its volume's contents so a
 /// masked query skips it without touching the volume.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,10 +105,6 @@ impl Default for EnvironmentVolumes {
     }
 }
 
-/// Leaf bounds are widened by this relative margin so rounding in a supplied
-/// AABB can never reject a point or line the planes contain.
-const BOUNDS_RELATIVE_PAD: f32 = 1.0e-5;
-
 impl EnvironmentVolumes {
     /// No volumes: every query reports nothing, so resolution yields level defaults.
     pub const fn empty() -> Self {
@@ -124,22 +123,14 @@ impl EnvironmentVolumes {
         let mut entries = Vec::new();
         for (volume_index, volume) in volumes.iter().enumerate() {
             let contents = volume.contents();
-            let summed_brush_volume = volume.brushes.iter().map(ConvexLeaf::volume).sum();
             records.push(VolumeRecord {
-                summed_brush_volume,
-                size_key: size_key(summed_brush_volume),
+                size_key: size_key(summed_brush_volume(volume)),
             });
             for (brush_index, brush) in volume.brushes.iter().enumerate() {
-                let pad = BOUNDS_RELATIVE_PAD
-                    * brush
-                        .aabb_min
-                        .abs()
-                        .max(brush.aabb_max.abs())
-                        .max_element()
-                        .max(1.0);
+                let (min, max) = brush.padded_bounds();
                 entries.push(TreeEntry {
-                    min: brush.aabb_min - Vec3::splat(pad),
-                    max: brush.aabb_max + Vec3::splat(pad),
+                    min,
+                    max,
                     payload: LeafRef {
                         volume: volume_index as u32,
                         brush: brush_index as u32,
@@ -173,11 +164,11 @@ impl EnvironmentVolumes {
         self.volumes.get(index)
     }
 
-    /// Sum of the brush volumes of the volume at map-order `index`, m³.
-    pub fn summed_brush_volume(&self, index: usize) -> Option<f32> {
-        self.records
-            .get(index)
-            .map(|record| record.summed_brush_volume)
+    /// Sum of the brush volumes of the volume at map-order `index`, m³: the
+    /// value its overlap-rule size key quantizes.
+    #[cfg(test)]
+    pub(crate) fn summed_brush_volume(&self, index: usize) -> Option<f32> {
+        self.volumes.get(index).map(summed_brush_volume)
     }
 
     /// Call `visit` with the map-order index of every volume whose contents
@@ -277,24 +268,6 @@ impl EnvironmentVolumes {
             depth = Some(depth.map_or(brush_depth, |best| best.max(brush_depth)));
         });
         depth
-    }
-
-    /// Signed depth of `point` in the union of volume `index`'s brushes, metres:
-    /// the maximum over its brushes of the brush's smallest normalized plane
-    /// distance `-(dot(p, n̂) - d̂)`. Positive inside, zero on the boundary,
-    /// negative outside. Both signs are conservative: the magnitude never
-    /// exceeds the true distance to the union's boundary, and equals it for a
-    /// point straight off one face of a lone brush (a point above a pool's flat
-    /// top reads minus its height above it). Inside near a seam between two
-    /// brushes of one volume it reads no deeper than the distance to the seam.
-    /// `None` for an index out of range or a volume with no brushes.
-    pub fn signed_depth(&self, index: usize, point: Vec3) -> Option<f32> {
-        let volume = self.volumes.get(index)?;
-        volume
-            .brushes
-            .iter()
-            .map(|brush| brush.plane_depth(point))
-            .reduce(f32::max)
     }
 
     /// Whether volume `a` beats volume `b` under the overlap rule: higher

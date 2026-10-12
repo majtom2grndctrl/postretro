@@ -184,7 +184,9 @@ pub enum MovementState {
     },
     /// Swimming in a fluid volume. Entered from any state when the tick's
     /// resolved immersion reaches the descriptor's `swim.enter_depth`, left when
-    /// it falls below `swim.exit_depth` or on a fluid jump. `fluid` is the fluid
+    /// it falls below `swim.exit_depth` or on a fluid jump. The fluid jump fires
+    /// only from a pawn already in `Swim` at tick start, never on the tick it
+    /// enters. `fluid` is the fluid
     /// index (into the active fluid table: the host's on a connected client) the
     /// swimmer is in, set on entry and followed while it swims, so the exit edge
     /// still names the fluid left after the pawn is already dry. Presentation
@@ -507,6 +509,10 @@ impl PlayerMovementComponent {
     /// into locomotion, the re-entry latch cleared. `velocity` is total here
     /// (protected layers included), so the fold zeroes only the layer's `y`;
     /// total vertical velocity is unchanged. With a `swim` block nothing changes.
+    ///
+    /// The state changes with no exit edge: no `swim_ended` (or any other state
+    /// edge) is emitted on this path. It only follows a dev-time descriptor swap,
+    /// so reactions keyed on the exit never see it.
     pub fn leave_swim_without_swim_block(&mut self) {
         if self.swim.is_some() {
             return;

@@ -5,7 +5,12 @@ use std::ops::{BitOr, BitOrAssign};
 
 use glam::Vec3;
 
+use crate::bvh::line_overlaps_box;
 use crate::polytope;
+
+/// Leaf bounds are widened by this relative margin so rounding in a supplied
+/// AABB can never reject a point or line the planes contain.
+const BOUNDS_RELATIVE_PAD: f32 = 1.0e-5;
 
 /// Which regional fields a volume carries. A query names the fields it wants and
 /// never sees a volume whose contents miss all of them.
@@ -107,6 +112,31 @@ impl ConvexLeaf {
                 (length > 0.0 && length.is_finite()).then(|| -plane.side(point) / length)
             })
             .fold(f32::INFINITY, f32::min)
+    }
+
+    /// The leaf's bounds widened by [`BOUNDS_RELATIVE_PAD`] of their largest
+    /// coordinate (at least 1 m's worth): the bounds the query tree indexes.
+    pub(crate) fn padded_bounds(&self) -> (Vec3, Vec3) {
+        let pad = BOUNDS_RELATIVE_PAD
+            * self
+                .aabb_min
+                .abs()
+                .max(self.aabb_max.abs())
+                .max_element()
+                .max(1.0);
+        (
+            self.aabb_min - Vec3::splat(pad),
+            self.aabb_max + Vec3::splat(pad),
+        )
+    }
+
+    /// Whether the segment `origin + t * dir`, `t` in `[t_min, t_max]`, meets
+    /// this leaf's padded bounds: the tree's own leaf test, so a scan of one
+    /// volume's brushes clips exactly the brushes a tree walk would hand it.
+    /// A brush failing it has no interval along the segment.
+    pub(crate) fn line_may_meet(&self, origin: Vec3, dir: Vec3, t_min: f32, t_max: f32) -> bool {
+        let (min, max) = self.padded_bounds();
+        line_overlaps_box(origin, dir, t_min, t_max, min, max)
     }
 
     /// Whether `point` lies within `reach` of this leaf's bounds on every axis.

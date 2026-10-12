@@ -1190,8 +1190,9 @@ fn swimmer_on_the_pool_floor(
 }
 
 // Q2: the same current lifts a swimmer resting on the pool floor. Its drift
-// settles at push / viscosity whether or not the floor bears it, so a current
-// lifts from the floor exactly when it lifts mid-water — here one whose push
+// builds toward push / viscosity whether or not the floor bears it, so a
+// current whose settled drift outruns the sink lifts from the floor as it does
+// mid-water — here one whose push
 // (4 m/s²) is below the swim acceleration (6 m/s²) but whose settled drift
 // (2 m/s) beats the sink (1.63 m/s). A current whose drift falls short of the
 // sink leaves the swimmer on the floor.
@@ -1330,4 +1331,319 @@ fn swimmer_settling_onto_the_pool_floor_fires_no_landed_event() {
         touched_down |= component.is_grounded();
     }
     assert!(touched_down, "fixture: the swimmer sinks onto the floor");
+}
+
+/// The fall terminal velocity of the drift-cap fixtures, low so the cap binds
+/// within a second of a 20 m/s² current.
+const DRIFT_TERMINAL: f32 = 8.0;
+
+/// A swimmer whose fall terminal velocity is [`DRIFT_TERMINAL`].
+fn drift_capped_swimmer() -> PlayerMovementComponent {
+    let mut desc = swim_descriptor();
+    desc.fall.terminal_velocity = DRIFT_TERMINAL;
+    swimming(&desc)
+}
+
+/// A horizontal slab at height `y` over x ≤ `max_x`: a floor with a ledge, or a
+/// ceiling that ends.
+fn slab(y: f32, max_x: f32) -> CollisionWorld {
+    let points = vec![
+        Vec3::new(-200.0, y, -200.0),
+        Vec3::new(max_x, y, -200.0),
+        Vec3::new(max_x, y, 200.0),
+        Vec3::new(-200.0, y, 200.0),
+    ];
+    CollisionWorld::from_triangles_for_test(points, vec![[0, 2, 1], [0, 3, 2]])
+}
+
+/// Deep inviscid water with surface `top`, plus a vertical current of
+/// `push_y` over x in [20, 30]; still water beyond.
+fn inviscid_water_with_a_current(top: f32, push_y: f32) -> EnvironmentVolumes {
+    EnvironmentVolumes::build(vec![
+        fluid_box(
+            Vec3::new(-200.0, -1000.0, -200.0),
+            Vec3::new(500.0, top, 200.0),
+            None,
+        ),
+        push_box(
+            Vec3::new(20.0, -1000.0, -200.0),
+            Vec3::new(30.0, top, 200.0),
+            Vec3::new(0.0, push_y, 0.0),
+        ),
+    ])
+}
+
+/// Swim toward +x until the capsule is clear of the slab's edge at x = 30,
+/// then idle for 15 s, asserting every tick that the swimmer keeps swimming,
+/// its drift stays within terminal speed, and its vertical speed never
+/// exceeds terminal speed.
+fn swim_off_into_still_water(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    view: EnvironmentView<'_>,
+    position: &mut Vec3,
+) {
+    let toward_plus_x = input(|i| {
+        i.facing_yaw = -std::f32::consts::FRAC_PI_2;
+        i.wish_dir = Vec2::new(0.0, 1.0);
+    });
+    let check = |component: &PlayerMovementComponent, phase: &str| {
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+        assert!(
+            component.push_velocity.length() <= DRIFT_TERMINAL + VEL_EPS,
+            "{phase}: drift {:?} exceeds terminal speed",
+            component.push_velocity
+        );
+        assert!(
+            component.velocity.y.abs() <= DRIFT_TERMINAL + VEL_EPS,
+            "{phase}: vertical speed {} exceeds terminal speed",
+            component.velocity.y
+        );
+    };
+    let mut ticks = 0;
+    while position.x < 31.0 {
+        step(component, world, view, &toward_plus_x, position);
+        check(component, "swimming off");
+        ticks += 1;
+        assert!(
+            ticks < 600,
+            "fixture: the swimmer swims off by {position:?}"
+        );
+    }
+    for _ in 0..900 {
+        step(component, world, view, &idle_input(), position);
+        check(component, "still water");
+    }
+}
+
+// Review panel 2: a floor never absorbs a swimmer's vertical drift, so in an
+// inviscid downward current the layer used to grow without bound while
+// locomotion held the opposite; swimming off the floor then sank the swimmer
+// at drift plus sink. The drift is capped at terminal speed, and the fall cap
+// counts it.
+#[test]
+fn inviscid_downward_current_on_the_pool_floor_keeps_drift_and_sinking_within_terminal_speed() {
+    let world = slab(0.0, 30.0);
+    let volumes = inviscid_water_with_a_current(5.0, -20.0);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[0.0]);
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(25.0, REACH + 0.01, 0.0);
+    for tick in 0..600 {
+        step(&mut component, &world, view, &idle_input(), &mut position);
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+        assert!(
+            component.push_velocity.y.abs() <= DRIFT_TERMINAL + VEL_EPS,
+            "tick {tick}: drift {:?}",
+            component.push_velocity
+        );
+        if tick >= 30 {
+            assert!(component.is_grounded(), "the current holds it on the floor");
+        }
+    }
+    assert!(
+        (component.push_velocity.y + DRIFT_TERMINAL).abs() < VEL_EPS,
+        "fixture: the drift saturates at the cap: {:?}",
+        component.push_velocity
+    );
+
+    swim_off_into_still_water(&mut component, &world, view, &mut position);
+    assert!(
+        position.y < -10.0,
+        "the swimmer sinks off the ledge: {position:?}"
+    );
+}
+
+// Review panel 2: the ceiling mirror of the floor case — an inviscid upward
+// current pressing a swimmer into a ceiling keeps its drift within terminal
+// speed, and swimming out from under the ceiling stays within it.
+#[test]
+fn inviscid_upward_current_under_a_ceiling_keeps_drift_and_speed_within_terminal_speed() {
+    let world = slab(3.0, 30.0);
+    let volumes = inviscid_water_with_a_current(50.0, 20.0);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[0.0]);
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(25.0, 3.0 - REACH - 0.05, 0.0);
+    for tick in 0..600 {
+        step(&mut component, &world, view, &idle_input(), &mut position);
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+        assert!(
+            component.push_velocity.y.abs() <= DRIFT_TERMINAL + VEL_EPS,
+            "tick {tick}: drift {:?}",
+            component.push_velocity
+        );
+    }
+    assert!(
+        position.y > 3.0 - REACH - 0.05,
+        "fixture: the current presses the swimmer into the ceiling: {position:?}"
+    );
+    assert!(
+        (component.push_velocity.y - DRIFT_TERMINAL).abs() < VEL_EPS,
+        "fixture: the drift saturates at the cap: {:?}",
+        component.push_velocity
+    );
+
+    swim_off_into_still_water(&mut component, &world, view, &mut position);
+}
+
+// Review panel 2: the fluid jump discards vertical knockback as it discards the
+// drift's vertical current, so a swimmer shoved downward still leaves at the
+// velocity the seam's clearance test assumed. It clears the water and its
+// latch clears on the way up; it is never latched while still immersed.
+#[test]
+fn fluid_jump_after_a_downward_shove_clears_the_water_and_its_latch() {
+    let volumes = open_water(0.0);
+    let view = water_view(&volumes);
+    let world = CollisionWorld::new();
+    let mut component = swimming(&swim_descriptor());
+    component.knockback_velocity = Vec3::new(0.0, -6.0, 0.0);
+    // Velocity is total between ticks: locomotion at rest plus the shove.
+    component.velocity = component.knockback_velocity;
+    let mut position = Vec3::new(0.0, center_at_immersion(0.0, 0.6), 0.0);
+    assert!(!resolve_at(view, &component, position).tick_eye_in_fluid);
+
+    let events = step(&mut component, &world, view, &jump(), &mut position);
+    assert!(events.jumped, "the jump fires");
+    assert!(component.swim_reentry_latched);
+    assert_eq!(component.knockback_velocity.y, 0.0);
+    assert!(
+        (component.velocity.y - 6.5).abs() < VEL_EPS,
+        "the jump leaves at fluidJumpVelocity: vy={}",
+        component.velocity.y
+    );
+    for _ in 0..120 {
+        step(&mut component, &world, view, &jump(), &mut position);
+        if !component.swim_reentry_latched {
+            assert!(
+                component.velocity.y > 0.0,
+                "the latch clears on the way up: vy={}",
+                component.velocity.y
+            );
+            return;
+        }
+        assert_eq!(component.movement_state, MovementState::Normal);
+    }
+    panic!("the latch must clear: the swimmer never left the water ({position:?})");
+}
+
+/// Two walls, x = 5 facing −x and z = 5 facing −z, meeting at a 90° interior
+/// corner, tall enough for a rising swimmer; no floor.
+fn corner_walls() -> CollisionWorld {
+    let points = vec![
+        Vec3::new(5.0, -100.0, -50.0),
+        Vec3::new(5.0, -100.0, 5.0),
+        Vec3::new(5.0, 100.0, 5.0),
+        Vec3::new(5.0, 100.0, -50.0),
+        Vec3::new(-50.0, -100.0, 5.0),
+        Vec3::new(-50.0, 100.0, 5.0),
+        Vec3::new(5.0, 100.0, 5.0),
+        Vec3::new(5.0, -100.0, 5.0),
+    ];
+    CollisionWorld::from_triangles_for_test(
+        points,
+        vec![[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]],
+    )
+}
+
+// Review panel 2: the corner-wedge stuck-stop zeroes horizontal motion only, so
+// a swimmer wedged in a corner keeps its vertical current.
+#[test]
+fn swimmer_wedged_in_a_corner_keeps_its_vertical_drift() {
+    let world = corner_walls();
+    let push = Vec3::new(0.0, 4.0, 0.0);
+    let min = Vec3::new(-50.0, -200.0, -50.0);
+    let max = Vec3::new(50.0, 100.0, 50.0);
+    let volumes =
+        EnvironmentVolumes::build(vec![fluid_box(min, max, None), push_box(min, max, push)]);
+    let view = water_view(&volumes);
+    let mut component = swimming(&swim_descriptor());
+    assert!(component.stuck_stop_enabled, "fixture: the deadzone is on");
+    let toward_corner = input(|i| i.wish_dir = Vec2::new(1.0, -1.0).normalize());
+    let mut position = Vec3::new(3.0, -50.0, 3.0);
+    for _ in 0..600 {
+        step(&mut component, &world, view, &toward_corner, &mut position);
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+    }
+    assert!(
+        position.x > 5.0 - 0.45 && position.z > 5.0 - 0.45,
+        "fixture: the swimmer is wedged in the corner: {position:?}"
+    );
+    let current = push.y / WATER_VISCOSITY;
+    assert!(
+        (component.push_velocity.y - current).abs() < 1.0e-3,
+        "the vertical current survives the wedge: {:?}",
+        component.push_velocity
+    );
+}
+
+// Review panel 2: a swimmer's one lift-off rule is the settled-total release,
+// never the gravity-based push lift-off. An upward current stronger than
+// gravity whose drift (25 / 20 = 1.25 m/s) stays below the sink (1.63 m/s)
+// leaves the swimmer on the floor, grounded for the whole tick, so a shove
+// decays at ground drag rather than as a launched body's air drag.
+#[test]
+fn upward_current_stronger_than_gravity_leaves_a_floor_swimmer_whose_total_sinks_grounded() {
+    const VISCOUS: f32 = 20.0;
+    const PUSH_Y: f32 = 25.0;
+    let desc = with_swim(
+        descriptor(),
+        SwimParams {
+            accel: 30.0,
+            ..swim_params()
+        },
+    );
+    assert!(PUSH_Y > -LEVEL_GRAVITY && PUSH_Y / VISCOUS < -level_sink());
+    let world = floor_world();
+    let pool = floor_pool(5.0);
+    let calm = EnvironmentVolumes::build(vec![pool.clone()]);
+    let current = EnvironmentVolumes::build(vec![
+        pool,
+        push_box(
+            Vec3::new(20.0, -1.0, -200.0),
+            Vec3::new(40.0, 5.0, 200.0),
+            Vec3::new(0.0, PUSH_Y, 0.0),
+        ),
+    ]);
+    let calm_view = EnvironmentView::new(LEVEL_GRAVITY, &calm, &[VISCOUS]);
+    let current_view = EnvironmentView::new(LEVEL_GRAVITY, &current, &[VISCOUS]);
+
+    let (mut component, mut position) = grounded_pawn(&desc, &world);
+    position.x = 30.0;
+    for _ in 0..30 {
+        step(
+            &mut component,
+            &world,
+            calm_view,
+            &idle_input(),
+            &mut position,
+        );
+    }
+    assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+    assert!(component.is_grounded(), "fixture: resting on the floor");
+
+    for _ in 0..120 {
+        step(
+            &mut component,
+            &world,
+            current_view,
+            &idle_input(),
+            &mut position,
+        );
+        assert!(component.is_grounded(), "the current never lifts it");
+    }
+    let shove = Vec3::new(5.0, 0.0, 0.0);
+    component.knockback_velocity += shove;
+    component.velocity += shove;
+    step(
+        &mut component,
+        &world,
+        current_view,
+        &idle_input(),
+        &mut position,
+    );
+    let ground_drag = component.knockback.ground_drag;
+    assert!(
+        (component.knockback_velocity.x - shove.x * (1.0 - ground_drag * DT)).abs() < VEL_EPS,
+        "the shove decays at ground drag, not as a launch: {:?}",
+        component.knockback_velocity
+    );
 }

@@ -18,16 +18,26 @@ const DRIFT_STOP_SPEED_SQ: f32 = 1.0e-6;
 /// and upward gravity alone never lifts a grounded body. `tick` treats a true
 /// result like a knockback launch: it clears grounded before the intent and
 /// tells the substrate to skip the upward clamp and ground-stick.
-pub(super) fn lifts_off(environment: &ResolvedEnvironment) -> bool {
+///
+/// Never for a pawn swimming at tick start (`tick` asks before the swim seam,
+/// since the result gates this tick's jump edges): what holds a swimmer down is
+/// its sink and the current, not one tick of gravity, so its one lift-off rule
+/// is [`release_rising_swimmer`], which reads the total vertical motion after
+/// the drift accrues.
+pub(super) fn lifts_off(
+    component: &PlayerMovementComponent,
+    environment: &ResolvedEnvironment,
+) -> bool {
     let push_y = environment.push.y;
-    push_y > 0.0 && push_y + environment.gravity.min(0.0) > 0.0
+    !is_swimming(component) && push_y > 0.0 && push_y + environment.gravity.min(0.0) > 0.0
 }
 
 /// After the intent. Called while `velocity` holds locomotion only. The medium
 /// first decays the drift built up so far, then the tick's push accrues:
 /// - **Swimming:** the whole push, all three axes, accrues in the protected
 ///   drift layer (`push_velocity`), so a current settles at push / viscosity in
-///   every direction and swim steering never fights it. A swimmer resting on the
+///   every direction (never past terminal speed, [`cap_swim_drift`]) and swim
+///   steering never fights it. A swimmer resting on the
 ///   pool floor takes vertical push too: the layer rejoins before collision,
 ///   which projects its horizontal part like knockback and leaves its vertical
 ///   part to the fluid ([`project_drift`]), so a downward current presses into
@@ -47,6 +57,7 @@ pub(super) fn apply(
     decay_drift(component, environment.viscosity, dt);
     if is_swimming(component) {
         component.push_velocity += push * dt;
+        cap_swim_drift(component);
         release_rising_swimmer(component);
         return;
     }
@@ -54,6 +65,20 @@ pub(super) fn apply(
     if !component.is_grounded() {
         component.velocity.y += push.y * dt;
     }
+}
+
+/// While swimming, cap the drift layer's speed at the descriptor's fall
+/// terminal velocity — by magnitude, so its part along the push (or any
+/// direction) is bounded too. Runs every swimming tick, push or none. The
+/// total-velocity caps cannot bound the layer: a floor or ceiling never absorbs
+/// its vertical part (`project_drift`), so while the contact lasts locomotion
+/// holds the opposite and the total stays near zero; at low viscosity a
+/// vertical current would accrue without limit, then spill out once the
+/// swimmer leaves the contact. A mid-water current settling below terminal
+/// speed is untouched.
+fn cap_swim_drift(component: &mut PlayerMovementComponent) {
+    let terminal = component.fall.terminal_velocity;
+    component.push_velocity = component.push_velocity.clamp_length_max(terminal);
 }
 
 /// A swimmer resting on the pool floor leaves it once its total vertical
@@ -150,12 +175,15 @@ fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32)
 ///
 /// While swimming the layer's vertical part is the fluid's, not the contact's:
 /// a floor or ceiling never consumes it. The contact still stops total
-/// velocity, so locomotion absorbs the difference, and the current keeps its
-/// settled push / viscosity against the floor exactly as in open water. That
-/// keeps lift-off honest: a swimmer resting on the pool floor rises exactly
-/// when the same current would hold a mid-water swimmer rising, rather than only
-/// when one tick's push outweighs one tick's sink acceleration, which is what
-/// consuming the layer on every floor contact would test.
+/// velocity, so locomotion absorbs the difference, and the current builds
+/// toward its settled push / viscosity against the floor as in open water
+/// (bounded by `cap_swim_drift`). That keeps lift-off tied to the current, not
+/// the tick: a swimmer resting on the pool floor rises once its total vertical
+/// motion, current included, points up ([`release_rising_swimmer`]), so a
+/// current strong enough to outrun the swimmer's sink lifts it as the drift
+/// builds, rather than only when one tick's push outweighs one tick's sink
+/// acceleration, which is what consuming the layer on every floor contact would
+/// test.
 pub(super) fn project_drift(drift: &mut Vec3, normal: Vec3, three_d: bool) {
     let vertical = drift.y;
     *drift -= normal * drift.dot(normal);

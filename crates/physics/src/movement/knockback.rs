@@ -24,12 +24,22 @@ pub fn project(velocity: &mut Vec3, normal: Vec3) {
 }
 
 /// Clamp the combined fall speed while `velocity` contains the voluntary base.
-/// Consume excess downward impulse first: putting the correction entirely into
-/// the base would create upward velocity when a large downward shove decays.
+/// The total counts both protected layers: knockback, and the drift layer's
+/// vertical part, which is nonzero only while swimming (a downward current).
+/// Excess comes from the protected layers first — drift, then knockback, then
+/// the base — as `push::clamp_speed_along_push` takes it: putting the
+/// correction entirely into the base would create upward velocity when a large
+/// downward shove or current decays.
 pub(super) fn clamp_fall_speed(component: &mut postretro_foundation::PlayerMovementComponent) {
-    let total_y = component.velocity.y + component.knockback_velocity.y;
-    let correction = (-component.fall.terminal_velocity - total_y).max(0.0);
-    let cancelled_impulse = correction.min((-component.knockback_velocity.y).max(0.0));
-    component.knockback_velocity.y += cancelled_impulse;
-    component.velocity.y += correction - cancelled_impulse;
+    let total_y = component.velocity.y + component.knockback_velocity.y + component.push_velocity.y;
+    let mut correction = (-component.fall.terminal_velocity - total_y).max(0.0);
+    for layer_y in [
+        &mut component.push_velocity.y,
+        &mut component.knockback_velocity.y,
+    ] {
+        let cancelled = correction.min((-*layer_y).max(0.0));
+        *layer_y += cancelled;
+        correction -= cancelled;
+    }
+    component.velocity.y += correction;
 }

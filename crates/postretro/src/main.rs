@@ -277,7 +277,8 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_weapon.clear();
                 app.observer_weapon_cues.clear();
                 // Demotion dropped the host's tuning: until the next one
-                // installs, this client resolves every fluid dry.
+                // installs, this client's volumes keep gravity and push but
+                // every fluid is dry.
                 app.refresh_environment_fluids();
             }
             ServerControlMessage::Tuning(bytes) => {

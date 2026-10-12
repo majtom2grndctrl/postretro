@@ -563,39 +563,72 @@ const UNDECLARED_FLUID_WARNING: &str = "names undeclared fluid";
 
 // A connected client never resolves names against its own registry, so it
 // never warns about one: before the host's table installs (and after a
-// demotion drops it) it builds no volumes at all, and once the table arrives
-// the volumes appear, gravity-only ones included, even from an empty table.
+// demotion drops it) it builds its volumes with every fluid dry, so gravity
+// and push still hold, and once the table arrives the fluids resolve, even
+// from an empty table.
 #[test]
 fn a_connected_clients_install_and_demotion_log_no_undeclared_fluid_warning() {
+    const PUSH: [f32; 3] = [0.0, 0.0, 3.0];
     let capture = postretro_test_log_capture::LogCapture::start();
     let mut app = test_app();
-    // The client's own manifest lacks lava; the host's table will carry it.
+    // The client's own manifest declares water but lacks lava; only the
+    // host's table decides either.
     declare_fluids(&app, &["water"]);
     connect_as_client(&mut app);
     let mut world = level_with_fluid_volume(7, "lava");
-    world
-        .environment_volumes
-        .volumes
-        .push(EnvironmentVolumeRecord {
-            source_entity: 8,
-            priority: 0,
-            gravity: Some(VOLUME_GRAVITY),
-            push: None,
-            fluid: String::new(),
-            brushes: vec![box_brush(Vec3::splat(10.0), Vec3::splat(14.0))],
-            surface_faces: Vec::new(),
-        });
+    for (source_entity, gravity, push, fluid, min) in [
+        (8, Some(VOLUME_GRAVITY), None, "", 10.0),
+        (9, None, Some(PUSH), "", 20.0),
+        (10, None, None, "water", 30.0),
+    ] {
+        world
+            .environment_volumes
+            .volumes
+            .push(EnvironmentVolumeRecord {
+                source_entity,
+                priority: 0,
+                gravity,
+                push,
+                fluid: fluid.to_string(),
+                brushes: vec![box_brush(Vec3::splat(min), Vec3::splat(min + 4.0))],
+                surface_faces: Vec::new(),
+            });
+    }
     app.install_level_payload(world, PathBuf::from("baked"))
         .expect("fixture installs");
-    assert!(
-        app.environment_volumes.is_empty(),
-        "no volumes before the host's table"
-    );
+    let assert_awaiting = |app: &App, when: &str| {
+        assert_eq!(
+            app.environment_volumes.len(),
+            4,
+            "{when}: every volume builds"
+        );
+        assert_eq!(
+            resolve_at(app, SUBMERGED).fluid,
+            None,
+            "{when}: lava is dry"
+        );
+        assert_eq!(
+            resolve_at(app, Vec3::splat(32.0)).fluid,
+            None,
+            "{when}: water is dry though the client's own manifest declares it"
+        );
+        assert_eq!(
+            resolve_at(app, Vec3::splat(12.0)).gravity,
+            VOLUME_GRAVITY,
+            "{when}"
+        );
+        assert_eq!(
+            resolve_at(app, Vec3::splat(22.0)).push,
+            Vec3::from(PUSH),
+            "{when}"
+        );
+    };
+    assert_awaiting(&app, "before the host's table");
 
     // The host's table carries no fluid at all: still the source the client
-    // was waiting for, so the volumes build, and the gravity volume applies.
+    // was waiting for; the gravity volume applies under it.
     deliver_host_fluids(&mut app, &[]);
-    assert_eq!(app.environment_volumes.len(), 2);
+    assert_eq!(app.environment_volumes.len(), 4);
     let host = client_resolve_at(&app, Vec3::splat(12.0)).expect("host tuning installed");
     assert_eq!(host.gravity, VOLUME_GRAVITY);
     assert_eq!(client_resolve_at(&app, SUBMERGED).unwrap().fluid, None);
@@ -612,10 +645,7 @@ fn a_connected_clients_install_and_demotion_log_no_undeclared_fluid_warning() {
             ),
         )],
     );
-    assert!(
-        app.environment_volumes.is_empty(),
-        "a demotion drops the volumes until the next table"
-    );
+    assert_awaiting(&app, "after a demotion");
 
     capture.assert_not_logged(log::Level::Warn, UNDECLARED_FLUID_WARNING);
 }

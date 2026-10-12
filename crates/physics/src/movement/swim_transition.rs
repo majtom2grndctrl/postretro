@@ -39,7 +39,8 @@ impl SwimSeam {
 /// tick-start resolve after the protected layers are peeled and before the
 /// state intent runs, so the entered state's intent owns the tick. Dispatch
 /// applies the returned edge and its carry. Every rule reads `resolved`, a pure
-/// function of the replayed position, plus static collision, so prediction and
+/// function of the replayed position, plus the combined collision world (static
+/// geometry and active movers, which prediction replays too), so prediction and
 /// replay take the same edges on the same ticks.
 ///
 /// - **Latch.** The fluid-jump latch clears on any tick whose immersion is below

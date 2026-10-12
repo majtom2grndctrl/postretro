@@ -132,8 +132,14 @@ impl FluidRegistry {
             let descriptor = match entry {
                 Ok(descriptor) => descriptor,
                 Err(error) => {
+                    // A shape error's reason already names `fluids[i].<field>`;
+                    // the generic manifest prefix would only repeat it.
+                    let reason = match error {
+                        DescriptorError::InvalidShape { reason } => reason,
+                        other => other.to_string(),
+                    };
                     log::warn!(
-                        "[Scripting] {scope}: fluids[{index}] is malformed and was skipped: {error}"
+                        "[Scripting] {scope}: fluids[{index}] is malformed and was skipped: {reason}"
                     );
                     continue;
                 }

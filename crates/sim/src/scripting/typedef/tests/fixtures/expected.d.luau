@@ -963,11 +963,11 @@ export type SwimParams = {
   accel: number,
   --- Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.
   sinkSpeed: number,
-  --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite and in [0, 1].
+  --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.
   enterDepth: number,
   --- Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.
   exitDepth: number,
-  --- Upward velocity in metres/sec a jump from the surface sets while the eye is out of the fluid. Must be finite and > 0.
+  --- Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0.
   fluidJumpVelocity: number,
 }
 
@@ -1557,10 +1557,10 @@ declare function storeRead(name: string): any
 --- Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.
 declare function storeWrite(name: string, value: any): ()
 
---- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The SDK wraps this as `getGravity`.
+--- Return the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. Inside a `gravity_volume` the volume's own value holds; this still returns the level default. The SDK wraps this as `getGravity`.
 declare function worldGetGravity(): number
 
---- Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`.
+--- Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. NaN and non-finite values are ignored with a warning so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`.
 declare function worldSetGravity(value: number): ()
 --- Generated engine-owned state reference tree returned by `getGameState()`.
 export type GameStateRefs = {
@@ -3297,9 +3297,9 @@ export type PostretroModule = {
   --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
   --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
-  --- Current world gravity in m/s².
+  --- Level default gravity in m/s² (negative = downward): the gravity outside every gravity volume. Inside a `gravity_volume` the volume's own value holds; this still returns the level default.
   getGravity: typeof(getGravity),
-  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  --- Set the level default gravity in m/s²: the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. Non-finite values are ignored with a warning.
   setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),

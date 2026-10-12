@@ -356,7 +356,8 @@ pub(super) fn integrate_collision(
     // distinct wall projections (commonly perpendicular interior corners)
     // without making meaningful forward progress.
     //
-    // When triggered we zero `velocity.x`/`velocity.z` and roll back the
+    // When triggered we zero the horizontal part of `velocity` and of both
+    // protected layers (knockback and drift) and roll back the
     // horizontal component of `current_pos` to its pre-slide value, killing
     // the residual XZ wobble that wall nudges and alternating projections
     // leave at a corner wedge. `velocity.y` and any vertical motion from
@@ -375,7 +376,10 @@ pub(super) fn integrate_collision(
             component.velocity.z = 0.0;
             component.knockback_velocity.x = 0.0;
             component.knockback_velocity.z = 0.0;
-            component.push_velocity = Vec3::ZERO;
+            // Horizontal only, like the lines above: a swimmer's drift keeps
+            // its vertical current (`push::project_drift`).
+            component.push_velocity.x = 0.0;
+            component.push_velocity.z = 0.0;
             current_pos.x = slide_start_xz.x;
             current_pos.z = slide_start_xz.y;
         }

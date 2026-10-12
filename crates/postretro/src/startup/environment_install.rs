@@ -12,8 +12,8 @@ use postretro_level_loader::LevelWorld;
 
 use crate::App;
 
-/// Where this machine's fluid table comes from, which decides whether the
-/// level's volumes can be built and who warns about an undeclared name.
+/// Where this machine's fluid table comes from, which decides which fluid
+/// names the level's volumes resolve and who warns about an undeclared name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum FluidTableSource {
     /// Offline or hosting: this machine's own manifest. It is the only source
@@ -24,9 +24,10 @@ pub(crate) enum FluidTableSource {
     /// payload. A name the host lacks loads dry silently: the host warned.
     HostTuning,
     /// A connected client with no host table: before the first tuning
-    /// installs, or after a demotion dropped it. Nothing is built; the volumes
-    /// stay empty until the host's table arrives, since the client may never
-    /// resolve names against its own registry.
+    /// installs, or after a demotion dropped it. The volumes build silently
+    /// with every fluid dry, since the client may never resolve names against
+    /// its own registry; gravity and push still hold for anything resolving
+    /// meanwhile. The host's table re-resolves the fluids when it arrives.
     AwaitingHost,
 }
 
@@ -60,7 +61,7 @@ fn environment_volumes_for(
     match source {
         FluidTableSource::OwnManifest => build_level_environment_volumes(world, fluid_names),
         FluidTableSource::HostTuning => build_resolved(world, fluid_names),
-        FluidTableSource::AwaitingHost => EnvironmentVolumes::empty(),
+        FluidTableSource::AwaitingHost => build_resolved(world, &[]),
     }
 }
 
@@ -102,9 +103,9 @@ impl App {
     /// The fluid table this machine resolves level fluid names against, in
     /// index order, and where it came from. Offline or hosting: the session
     /// manifest's declarations. A connected client: the host's table from the
-    /// installed tuning payload, none (every volume unbuilt) before one
-    /// installs, and never its own registry, because admission gates on mod
-    /// id, not version. Every install and rebuild reads this one source.
+    /// installed tuning payload, none (every fluid dry) before one installs,
+    /// and never its own registry, because admission gates on mod id, not
+    /// version. Every install and rebuild reads this one source.
     fn active_fluid_table(&self) -> (FluidMovementTable, FluidTableSource) {
         let Some(session) = self.session.as_ref() else {
             return (FluidMovementTable::default(), FluidTableSource::OwnManifest);
@@ -140,7 +141,7 @@ impl App {
     /// Re-read the active fluid table and, when its names or source differ
     /// from the ones the installed volumes resolved against, re-resolve the
     /// installed level's fluid volumes, so a newly declared fluid stops
-    /// loading dry, and a client's deferred volumes build once the host's table
+    /// loading dry, and a client's dry fluids resolve once the host's table
     /// arrives. Source-agnostic: a host manifest reload, a client's tuning
     /// install or a client's demotion all land here. A viscosity-only change
     /// replaces the table without a rebuild. No level leaves only the table

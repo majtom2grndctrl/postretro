@@ -133,9 +133,9 @@ export type PostretroModule = {
   --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
   --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
-  --- Current world gravity in m/s².
+  --- Level default gravity in m/s² (negative = downward): the gravity outside every gravity volume. Inside a `gravity_volume` the volume's own value holds; this still returns the level default.
   getGravity: typeof(getGravity),
-  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  --- Set the level default gravity in m/s²: the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. Non-finite values are ignored with a warning.
   setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),

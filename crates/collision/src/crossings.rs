@@ -22,7 +22,8 @@ pub const CROSSING_START_EPSILON: f32 = 1.0e-3;
 /// see a hairline gap and report an exit and an entry inside the pool. Measured
 /// across the seam rather than along the ray, so a ray grazing a tilted seam,
 /// whose gap along the ray is the noise divided by the grazing angle's sine,
-/// still joins it.
+/// still joins it. The eye depth ([`crate::fluid_volume_signed_depth`]) joins
+/// seams by the same distance over the union of every volume of one fluid.
 pub const CROSSING_SEAM_EPSILON: f32 = 1.0e-4;
 
 /// Brush intervals one volume's measurement keeps inline, so its runs are found
@@ -96,10 +97,16 @@ fn visit_fluid_crossings_untimed(
     // Clip past `max_t` so a brush continuing the volume just beyond it still
     // joins the run, and an end at `max_t` is not mistaken for an exit.
     let clip_end = max_t + 4.0 * seam_t;
-    let hits = |leaf: &ConvexLeaf| {
-        clip_line(&leaf.planes, origin, dir, 0.0, clip_end)
-            .is_some_and(|interval| interval.has_length())
+    // Every clip is behind the tree's own bounds test, so scanning a volume's
+    // brush list costs one slab test per brush that misses the ray, and only
+    // brushes the ray comes near are clipped.
+    let clip_leaf = |leaf: &ConvexLeaf| {
+        if !leaf.line_may_meet(origin, dir, 0.0, clip_end) {
+            return None;
+        }
+        clip_line(&leaf.planes, origin, dir, 0.0, clip_end).filter(|interval| interval.has_length())
     };
+    let hits = |leaf: &ConvexLeaf| clip_leaf(leaf).is_some();
 
     volumes.visit_brushes_on_line(
         origin,
@@ -121,12 +128,10 @@ fn visit_fluid_crossings_untimed(
                 return;
             }
             let clip = |brush: usize, leaf: &ConvexLeaf| {
-                clip_line(&leaf.planes, origin, dir, 0.0, clip_end)
-                    .filter(|interval| interval.has_length())
-                    .map(|interval| BrushInterval {
-                        brush: brush as u32,
-                        interval,
-                    })
+                clip_leaf(leaf).map(|interval| BrushInterval {
+                    brush: brush as u32,
+                    interval,
+                })
             };
             // Brushes before the first hit miss, so the gather starts there.
             let mut inline = [None::<BrushInterval>; INLINE_VOLUME_INTERVALS];

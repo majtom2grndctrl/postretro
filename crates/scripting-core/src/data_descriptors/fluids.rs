@@ -19,6 +19,13 @@ const FLUID_KEYS: [&str; 7] = [
     "exitSound",
 ];
 
+/// A `fluids` array holds at most this many slots, holes included. Past it the
+/// whole field warns once and is ignored, so a sparse `[1000000] = ...` costs
+/// neither a warning per hole nor an allocation per slot. Matches the
+/// `events` and `triggerPools` container bound; well under
+/// [`FluidRegistry::MAX_FLUIDS`].
+const MAX_FLUID_CONTAINER_ENTRIES: usize = 4_096;
+
 fn shape(reason: String) -> DescriptorError {
     DescriptorError::InvalidShape { reason }
 }
@@ -117,9 +124,35 @@ fn ignored_field(scope: &str) -> FluidRegistry {
     FluidRegistry::default()
 }
 
+fn oversized_field(scope: &str) -> FluidRegistry {
+    log::warn!(
+        "[Scripting] {scope}: `fluids` exceeds {MAX_FLUID_CONTAINER_ENTRIES} array slots; ignoring the field"
+    );
+    FluidRegistry::default()
+}
+
+/// Whether a non-array JS value is a plain empty object: `{}` (or a
+/// null-prototype object with no own keys). A function, `Map`, `Date` or other
+/// built-in has no own keys either, but is not a list.
+fn is_plain_empty_object<'js>(ctx: &Ctx<'js>, raw: &JsValue<'js>) -> Result<bool, DescriptorError> {
+    let Some(object) = raw.as_object() else {
+        return Ok(false);
+    };
+    if object.keys::<String>().next().is_some() {
+        return Ok(false);
+    }
+    let Some(prototype) = object.get_prototype() else {
+        return Ok(true);
+    };
+    let object_constructor: Object = ctx.globals().get("Object").map_err(js_err)?;
+    let object_prototype: Object = object_constructor.get("prototype").map_err(js_err)?;
+    Ok(prototype.as_value() == object_prototype.as_value())
+}
+
 /// Drain `fluids` from a QuickJS manifest object. Entries convert one at a
-/// time, so an unconvertible entry costs only itself; a non-array field warns
-/// and declares no fluids. Never rejects the manifest.
+/// time, so an unconvertible entry costs only itself; a non-array field, or
+/// an array longer than [`MAX_FLUID_CONTAINER_ENTRIES`], warns once and
+/// declares no fluids. Never rejects the manifest.
 pub fn drain_fluids_js<'js>(
     ctx: &Ctx<'js>,
     obj: &Object<'js>,
@@ -134,14 +167,14 @@ pub fn drain_fluids_js<'js>(
     }
     let Some(entries) = raw.as_array() else {
         // An empty object reads as an empty list, as an empty Luau table does.
-        if raw
-            .as_object()
-            .is_some_and(|object| object.keys::<String>().next().is_none())
-        {
+        if is_plain_empty_object(ctx, &raw)? {
             return Ok(FluidRegistry::default());
         }
         return Ok(ignored_field(scope));
     };
+    if entries.len() > MAX_FLUID_CONTAINER_ENTRIES {
+        return Ok(oversized_field(scope));
+    }
     let mut converted = Vec::with_capacity(entries.len());
     for index in 0..entries.len() {
         let entry: JsValue = entries.get(index).map_err(js_err)?;
@@ -157,8 +190,9 @@ pub fn drain_fluids_js<'js>(
 /// Drain `fluids` from a Luau manifest table. Mirrors [`drain_fluids_js`]:
 /// every slot up to the highest index is an entry, so a `nil` hole is one
 /// malformed entry, as a JS hole is, and its siblings keep their indices.
-/// Diagnostics count entries from 0, matching the QuickJS drain. Only a
-/// non-sequence table (a non-integer or non-positive key) ignores the field.
+/// Diagnostics count entries from 0, matching the QuickJS drain. A
+/// non-sequence table (a non-integer or non-positive key) or one keyed past
+/// [`MAX_FLUID_CONTAINER_ENTRIES`] warns once and ignores the field.
 pub fn drain_fluids_lua(table: &Table, scope: &str) -> Result<FluidRegistry, DescriptorError> {
     let raw: LuaValue = table.get("fluids").map_err(lua_err)?;
     let entries = match raw {
@@ -166,8 +200,10 @@ pub fn drain_fluids_lua(table: &Table, scope: &str) -> Result<FluidRegistry, Des
         LuaValue::Table(entries) => entries,
         _ => return Ok(ignored_field(scope)),
     };
-    let Some(len) = lua_sequence_extent(&entries)? else {
-        return Ok(ignored_field(scope));
+    let len = match lua_sequence_extent(&entries)? {
+        SequenceExtent::Slots(len) => len,
+        SequenceExtent::NotASequence => return Ok(ignored_field(scope)),
+        SequenceExtent::Oversized => return Ok(oversized_field(scope)),
     };
     let mut converted = Vec::with_capacity(len);
     for slot in 1..=len {
@@ -181,23 +217,34 @@ pub fn drain_fluids_lua(table: &Table, scope: &str) -> Result<FluidRegistry, Des
     Ok(FluidRegistry::from_declarations(scope, converted))
 }
 
-/// The highest positive integer key of a Luau sequence, holes allowed, as a
-/// JS array's length counts its holes; `None` when any key is not a positive
-/// integer.
-fn lua_sequence_extent(entries: &Table) -> Result<Option<usize>, DescriptorError> {
+/// How many slots a Luau `fluids` table spans.
+enum SequenceExtent {
+    /// The highest positive integer key, holes allowed, as a JS array's
+    /// length counts its holes.
+    Slots(usize),
+    /// Some key is not a positive integer.
+    NotASequence,
+    /// Some key is past [`MAX_FLUID_CONTAINER_ENTRIES`].
+    Oversized,
+}
+
+fn lua_sequence_extent(entries: &Table) -> Result<SequenceExtent, DescriptorError> {
     let mut extent = 0_usize;
     for pair in entries.clone().pairs::<LuaValue, LuaValue>() {
         let (key, _) = pair.map_err(lua_err)?;
         let LuaValue::Integer(index) = key else {
-            return Ok(None);
+            return Ok(SequenceExtent::NotASequence);
         };
-        let Ok(index) = usize::try_from(index) else {
-            return Ok(None);
-        };
-        if index == 0 {
-            return Ok(None);
+        if index < 1 {
+            return Ok(SequenceExtent::NotASequence);
         }
+        let Some(index) = usize::try_from(index)
+            .ok()
+            .filter(|&index| index <= MAX_FLUID_CONTAINER_ENTRIES)
+        else {
+            return Ok(SequenceExtent::Oversized);
+        };
         extent = extent.max(index);
     }
-    Ok(Some(extent))
+    Ok(SequenceExtent::Slots(extent))
 }

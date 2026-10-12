@@ -872,9 +872,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("speed", "f32", "Target swim speed in metres/sec. Must be finite and ≥ 0.")
         .field("accel", "f32", "Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.")
         .field("sinkSpeed", "f32", "Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.")
-        .field("enterDepth", "f32", "Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite and in [0, 1].")
+        .field("enterDepth", "f32", "Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.")
         .field("exitDepth", "f32", "Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.")
-        .field("fluidJumpVelocity", "f32", "Upward velocity in metres/sec a jump from the surface sets while the eye is out of the fluid. Must be finite and > 0.")
+        .field("fluidJumpVelocity", "f32", "Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0.")
         .finish();
     registry
         .register_type("ViewFeelParams")

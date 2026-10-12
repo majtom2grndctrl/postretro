@@ -354,11 +354,13 @@ pub struct SwimParams {
     /// Drift along gravity with no vertical input, metres/sec at standard
     /// gravity (−9.81 m/s²). Finite and ≥ 0.
     pub sink_speed: f32,
-    /// Immersion fraction at which any state enters swim. Finite, `[0, 1]`.
+    /// Immersion fraction at which any state enters swim. Finite, `(0, 1]`:
+    /// zero would enter swim at any immersion, even dry.
     pub enter_depth: f32,
     /// Immersion fraction below which swim leaves. Finite, `(0, 1]`, and
     /// strictly less than `enter_depth`. Zero would make swim unleavable by
-    /// immersion and the fluid-jump re-entry latch uncleareable.
+    /// immersion and leave the fluid-jump re-entry latch one that can never
+    /// clear.
     pub exit_depth: f32,
     /// Upward velocity a jump from the surface sets, metres/sec. Finite and
     /// > 0: a zero jump could never clear `exit_depth`.
@@ -370,13 +372,18 @@ impl SwimParams {
     /// `movement.swim.<field>`. Shared by the QuickJS and Luau parsers.
     pub fn validated(self) -> Result<Self, DescriptorError> {
         use crate::data_descriptors::{
-            validate_in_range_finite, validate_in_range_finite_exclusive_min,
-            validate_non_negative_finite, validate_positive_finite,
+            validate_in_range_finite_exclusive_min, validate_non_negative_finite,
+            validate_positive_finite,
         };
         validate_non_negative_finite(self.speed, "movement.swim.speed")?;
         validate_non_negative_finite(self.accel, "movement.swim.accel")?;
         validate_non_negative_finite(self.sink_speed, "movement.swim.sinkSpeed")?;
-        validate_in_range_finite(self.enter_depth, 0.0, 1.0, "movement.swim.enterDepth")?;
+        validate_in_range_finite_exclusive_min(
+            self.enter_depth,
+            0.0,
+            1.0,
+            "movement.swim.enterDepth",
+        )?;
         validate_in_range_finite_exclusive_min(
             self.exit_depth,
             0.0,
@@ -600,8 +607,8 @@ mod tests {
         assert_eq!(swim().validated().expect("valid swim block"), swim());
     }
 
-    // A zero exit depth makes swim unleavable by immersion and the fluid-jump
-    // re-entry latch uncleareable.
+    // A zero exit depth makes swim unleavable by immersion and leaves the
+    // fluid-jump re-entry latch one that can never clear.
     #[test]
     fn swim_validation_rejects_zero_exit_depth_naming_the_field() {
         let reason = rejection_reason(SwimParams {
@@ -622,6 +629,18 @@ mod tests {
             reason.contains("movement.swim.fluidJumpVelocity"),
             "{reason}"
         );
+    }
+
+    // A zero enter depth would enter swim at any immersion; the rejection names
+    // enterDepth rather than reporting exitDepth ≥ enterDepth.
+    #[test]
+    fn swim_validation_rejects_zero_enter_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            enter_depth: 0.0,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.enterDepth"), "{reason}");
+        assert!(!reason.contains("movement.swim.exitDepth"), "{reason}");
     }
 
     #[test]

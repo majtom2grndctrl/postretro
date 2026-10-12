@@ -7,11 +7,14 @@ use postretro_collision::{EnvironmentView, fluid_at_eye, fluid_volume_plane_dept
 use postretro_foundation::FluidDescriptor;
 use postretro_render_cpu::flash_limiter::HITCH_CEILING_SECONDS;
 
-/// Half-width of the eye-depth hysteresis band, metres: on once the camera eye
-/// is this far inside a fluid, off once it is this far outside. It must exceed
-/// the head-bob amplitude, so an eye bobbing about the surface never crosses
-/// the whole band; content/dev bobs ±0.05 m (`scripts/player.ts`), so a
-/// treading player sees no flicker.
+/// Width of the eye-depth hysteresis band, metres. On when the camera eye is
+/// inside a fluid with at least this much of it above the eye (vertical
+/// depth), off once the eye is this far outside it (plane depth). Entering
+/// through a side or the bottom, already deeper than this, turns on at the
+/// face; the band is still this wide, since off needs the eye this far back
+/// out. It must exceed the head-bob amplitude, so an eye bobbing about the
+/// surface never crosses the whole band; content/dev bobs ±0.05 m
+/// (`scripts/player.ts`), so a treading player sees no flicker.
 pub(crate) const EYE_FLUID_MARGIN: f32 = 0.08;
 
 /// Seconds for the tint and muffle to ramp fully in or out. A full-strength
@@ -133,6 +136,8 @@ impl FluidEye {
             self.look = look;
         }
         let dt = if dt.is_finite() {
+            // Capped like the flash limiter's own allowance, so one hitch frame
+            // never steps the tint further than the limiter would admit.
             dt.clamp(0.0, HITCH_CEILING_SECONDS)
         } else {
             0.0

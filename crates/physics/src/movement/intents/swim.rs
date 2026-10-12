@@ -32,9 +32,10 @@ pub(crate) fn fluid_jump_input(input: &MovementInput, environment: &ResolvedEnvi
 /// owns the fluid jump and the fluid locomotion.
 ///
 /// 1. Fluid jump: with `fluid_jump`, vertical velocity is SET to
-///    `swim.fluid_jump_velocity` (horizontal momentum kept; the drift layer's
-///    vertical current is discarded, so the jump leaves at exactly the velocity
-///    the seam's clearance test assumed), the re-entry latch is armed, and the
+///    `swim.fluid_jump_velocity` (horizontal momentum kept; the vertical parts
+///    of both protected layers, the drift layer's current and knockback, are
+///    discarded, so the jump leaves at exactly the velocity the seam's
+///    clearance test assumed), the re-entry latch is armed, and the
 ///    state leaves to airborne `Normal` with no solid needed.
 /// 2. Drag: the fluid's viscosity removes a linear fraction of locomotion per
 ///    tick, `max(0, 1 - viscosity * dt)`, on all three axes. It is the only
@@ -77,6 +78,7 @@ pub(crate) fn swim_intent(
     if fluid_jump {
         component.velocity.y = fluid_jump_velocity;
         component.push_velocity.y = 0.0;
+        component.knockback_velocity.y = 0.0;
         component.set_grounded(false);
         component.jump_spent = true;
         component.swim_reentry_latched = true;

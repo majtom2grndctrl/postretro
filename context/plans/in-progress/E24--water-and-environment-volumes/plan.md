@@ -1,7 +1,7 @@
 # E24--water-and-environment-volumes — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 08822b8a4 (main 784af6536 plus the claim commit; the brief's cfd2d861d is an ancestor)
 
 ## Corrections

@@ -80,6 +80,8 @@ pub(crate) fn reconcile_local_pawn(
 /// wrapper above preserves existing static/live collision callers; production client
 /// snapshot apply uses this path so carry/release during replay reads mover poses from
 /// the authoritative tick axis instead of the live post-apply mover table.
+/// The history is taken mutably because replay resolves each replayed tick's
+/// mover poses into the history's memo before that tick's queries run.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconcile_local_pawn_with_mover_history(
     registry: &mut EntityRegistry,

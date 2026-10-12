@@ -277,8 +277,9 @@ pub struct ClientReplication {
     /// Local identity bindings used by snapshot apply.
     bindings: ClientBindings,
     /// Authoritative mover samples from host snapshots, keyed by stable PRL
-    /// `mover_id`. This is distinct from the live per-tick side-table; replay can
-    /// read it through the `MoverPoseSource` seam.
+    /// `mover_id`. This is distinct from the live per-tick side-table. Reconcile
+    /// replay reads per-tick poses from it through `resolve_replay_tick` and
+    /// `replay_pose`; its `MoverPoseSource` impl exposes only the newest sample.
     mover_history: MoverHistoryBuffer,
     /// Off-by-default remote-interpolation continuity diagnostics (see `netdiag`).
     /// Inert unless `postretro::netdiag=debug`; pure observability, never gameplay.
@@ -328,7 +329,8 @@ impl MoverHistoryBuffer {
     }
 
     /// Reference extrapolation the replay memo must reproduce exactly; see
-    /// `replay_poses`. Production replay reads `replay_pose` instead.
+    /// `replay_poses`. Production replay reads `replay_pose` instead; this stays
+    /// as the oracle the memo and snapshot tests compare against.
     #[cfg(test)]
     pub(crate) fn pose_at_tick(
         &self,

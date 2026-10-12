@@ -114,13 +114,48 @@ fn assert_replay_matches(history: &mut MoverHistoryBuffer, ticks: impl IntoItera
     for tick in ticks {
         history.resolve_replay_tick(tick, DT);
         for id in 0..=6u32 {
-            assert_eq!(
+            assert_bit_identical(
                 history.replay_pose(id),
                 history.pose_at_tick(id, tick, DT),
-                "mover {id} at replayed tick {tick}"
+                &format!("mover {id} at replayed tick {tick}"),
             );
         }
     }
+}
+
+/// `{:?}` prints the shortest round-tripping form of every float, so equal
+/// strings mean equal bits; `PartialEq` would let `-0.0` pass for `0.0`.
+fn assert_bit_identical(memo: Option<MoverPose>, reference: Option<MoverPose>, context: &str) {
+    assert_eq!(format!("{memo:?}"), format!("{reference:?}"), "{context}");
+}
+
+/// Heap addresses and capacities of the memo's reusable storage.
+fn scratch_fingerprint(history: &MoverHistoryBuffer) -> Vec<(u32, usize, usize, usize)> {
+    let memo = &history.replay;
+    let mut fingerprint: Vec<_> = memo
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let working = entry.working.as_ref()?;
+            Some((
+                entry.mover_id,
+                working.phase.waypoints.as_ptr() as usize,
+                working.phase.waypoint_names.as_ptr() as usize,
+                working
+                    .phase
+                    .waypoint_names
+                    .first()
+                    .map_or(0, |name| name.as_ptr() as usize),
+            ))
+        })
+        .collect();
+    fingerprint.push((
+        u32::MAX,
+        memo.entries.as_ptr() as usize,
+        memo.entries.capacity(),
+        memo.translation_legs.capacity(),
+    ));
+    fingerprint
 }
 
 #[test]
@@ -210,16 +245,35 @@ fn memo_reseeds_when_a_sample_is_replaced_in_place() {
 }
 
 #[test]
+fn memo_reseeds_when_the_tick_length_changes() {
+    let mut history = host_history(0, &[0, 1]);
+    assert_replay_matches(&mut history, 2..=10);
+    // Same generation and seed, later tick, different step length: the working
+    // phase was stepped at DT and must not continue.
+    let half = DT * 0.5;
+    for tick in 11..=16 {
+        history.resolve_replay_tick(tick, half);
+        for id in 0..=6u32 {
+            assert_bit_identical(
+                history.replay_pose(id),
+                history.pose_at_tick(id, tick, half),
+                &format!("mover {id} at tick {tick} with a half-length step"),
+            );
+        }
+    }
+}
+
+#[test]
 fn memo_reuses_its_buffers_once_warm() {
     let mut history = host_history(0, &[0, 1, 2]);
     assert_replay_matches(&mut history, 3..=20);
-    let warm = history.replay_scratch_fingerprint();
+    let warm = scratch_fingerprint(&history);
 
     // Next snapshot: same movers, newer samples. Reseeding goes through
     // `clone_from`, so every phase buffer and the memo's own storage stay put.
     record_host_ticks(&mut history, 0, &[3, 4]);
     assert_replay_matches(&mut history, 5..=25);
-    assert_eq!(history.replay_scratch_fingerprint(), warm);
+    assert_eq!(scratch_fingerprint(&history), warm);
 }
 
 #[test]
@@ -230,7 +284,7 @@ fn clear_drops_the_memo() {
     history.clear();
     assert_eq!(history.replay_pose(1), None);
     assert_eq!(
-        history.replay_scratch_fingerprint().len(),
+        scratch_fingerprint(&history).len(),
         1,
         "only the memo summary row"
     );

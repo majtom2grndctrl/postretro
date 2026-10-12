@@ -499,8 +499,9 @@ const BROAD_PHASE_RELATIVE_MARGIN: f32 = 1.0e-5;
 /// sweeps a sphere of `query_radius` from `start` along `motion`; the mover's
 /// mesh-centred bounding sphere encloses every triangle at any rotation, so a
 /// reject can never drop a contact. parry's own BVH root test already rejects
-/// far movers, but only after the pose composition and swept-AABB setup this
-/// skips. Non-finite inputs fall through to the narrow phase.
+/// far movers, but only after the dispatch and swept-AABB setup this skips.
+/// Non-finite inputs, and finite ones that overflow here, fall through to the
+/// narrow phase.
 fn mover_bound_may_reach_segment(
     mover: &MoverCollider,
     mover_pose: &Pose,
@@ -515,16 +516,26 @@ fn mover_bound_may_reach_segment(
     }
     let motion_len_sq = motion.length_squared();
     let closest = if motion_len_sq > 0.0 {
-        let t = ((center - start).dot(motion) / motion_len_sq).clamp(0.0, 1.0);
-        start + motion * t
+        // A huge finite `max_toi` overflows the projection; `clamp` would pass
+        // the NaN through and reject a mover the narrow phase hits.
+        let t = (center - start).dot(motion) / motion_len_sq;
+        if !motion_len_sq.is_finite() || !t.is_finite() {
+            return true;
+        }
+        start + motion * t.clamp(0.0, 1.0)
     } else {
         start
     };
+    // Rounding scales with every coordinate the narrow phase touches: the
+    // query, the mover translation, and mesh vertices authored far from the
+    // mover origin.
     let magnitude = center
         .abs()
         .max_element()
         .max(start.abs().max_element())
-        .max(end.abs().max_element());
+        .max(end.abs().max_element())
+        .max(mover_pose.translation.abs().max_element())
+        .max(mover.bound_center.abs().max_element() + mover.bound_radius);
     let reach = mover.bound_radius
         + query_radius
         + BROAD_PHASE_MARGIN

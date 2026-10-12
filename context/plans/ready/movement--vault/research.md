@@ -23,7 +23,7 @@ Read at a307e3f1. Informs; does not decide. Symbols are for the executor to re-v
 
 ## Mover-relative target
 
-- Replay reads mover poses by server tick (`MoverHistoryBuffer::pose_at_tick` through `ReplayCollisionSource`). Live prediction reads the client's mover tick states (`client_predict_movement_tick`), and the host reads its own. A mover-local target resolved through the tick's pose therefore needs only the mover id and the local point on the wire.
+- Replay reads mover poses by server tick: reconcile calls `MoverHistoryBuffer::resolve_replay_tick` once per replayed tick, and `ReplayCollisionSource` reads the result through `replay_pose`. Live prediction reads the client's mover tick states (`client_predict_movement_tick`), and the host reads its own. A mover-local target resolved through the tick's pose therefore needs only the mover id and the local point on the wire.
 - Client mover poses advance to `estimated_server_tick` while the pawn predicts on `client_tick`, so a vault onto a moving mover may mispredict and be corrected. The clock alignment was not verified.
 
 ## Swim facts

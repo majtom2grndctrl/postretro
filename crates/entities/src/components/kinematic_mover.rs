@@ -342,6 +342,48 @@ mod tests {
     use super::*;
     use crate::registry::{Component, ComponentKind, ComponentValue};
 
+    fn configured(id: u32, waypoints: Vec<Vec3>) -> KinematicMoverComponent {
+        let names = (0..waypoints.len()).map(|i| format!("n{i}")).collect();
+        KinematicMoverComponent::new(
+            id,
+            KinematicMoverConfig {
+                waypoints,
+                waypoint_names: names,
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: false,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        )
+    }
+
+    #[test]
+    fn clone_from_matches_clone_across_shape_changes() {
+        let mut long = configured(1, vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z]);
+        long.open_event = Some("opened".to_string());
+        long.crush_sound = Some("crunch".to_string());
+        long.sealed_portal_ids = vec![3, 4, 5];
+        long.segment_index = 2;
+        long.target_segment = Some(1);
+        long.spin_angle_rad = -0.0;
+        long.blocked = true;
+        let mut short = configured(2, vec![Vec3::NEG_X]);
+        short.close_event = Some("closed".to_string());
+        short.blocked_sound = Some("thud".to_string());
+
+        // Shrinking vectors, Some -> None, None -> Some, and back again.
+        for (target, source) in [(long.clone(), &short), (short.clone(), &long)] {
+            let mut target = target;
+            target.clone_from(source);
+            assert_eq!(&target, source);
+            assert_eq!(format!("{target:?}"), format!("{:?}", source.clone()));
+        }
+    }
+
     #[test]
     fn kinematic_mover_component_registers_kind_and_round_trips_serde() {
         let mover = KinematicMoverComponent::new(

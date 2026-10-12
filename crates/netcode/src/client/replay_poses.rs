@@ -1,13 +1,5 @@
-// Replay pose memo: resolves every historical mover's pose once per replayed
-// tick, stepping a reusable working phase forward instead of re-extrapolating
-// from the seed sample on every collision query.
-// See: context/lib/networking.md · context/lib/entity_model.md §7
-//
-// Reconcile replays ticks past the newest snapshot sample, so each lookup used
-// to clone the seed phase and step it to the target tick: once per mover, per
-// cast, per replayed tick. Resolution here is eager per replayed tick and
-// matches `MoverHistoryBuffer::pose_at_tick` exactly — same seed choice, same
-// deterministic step sequence — so poses stay bit-identical.
+// Replay pose memo: each historical mover's pose, resolved once per replayed tick.
+// See: context/lib/networking.md
 
 use postretro_entities::{KinematicMoverComponent, Transform};
 
@@ -15,10 +7,14 @@ use super::{MoverHistoryBuffer, tick_le, ticks_between};
 use crate::collision::moving::{MoverPose, MoverTranslationLeg};
 use crate::kinematic_mover::advance_mover_phase_one_tick_reusing_legs;
 
-/// Scratch owned by [`MoverHistoryBuffer`]. Entries persist across reconciles so
-/// their phase buffers are reused. A working phase continues only while the
-/// history generation that seeded it is current; any `record` or `clear` forces
-/// a reseed.
+/// Scratch owned by [`MoverHistoryBuffer`]. Resolution is eager per replayed
+/// tick and matches `MoverHistoryBuffer::pose_at_tick` bit for bit: the same
+/// seed choice and the same deterministic step sequence, with one working phase
+/// stepped forward instead of re-extrapolating from the seed on every query.
+/// A working phase continues only while the history generation that seeded it
+/// is current. The generation is buffer-wide and every snapshot records, so in
+/// practice each reconcile reseeds every mover once; entries persist so that
+/// reseed reuses their phase buffers through `clone_from`.
 #[derive(Debug, Default)]
 pub(crate) struct ReplayPoseMemo {
     /// Sorted by `mover_id`. Grows only when a new mover id appears in history.
@@ -157,35 +153,6 @@ impl MoverHistoryBuffer {
             .binary_search_by_key(&mover_id, |entry| entry.mover_id)
             .ok()
             .and_then(|index| entries[index].resolved)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replay_scratch_fingerprint(&self) -> Vec<(u32, usize, usize, usize)> {
-        let mut fingerprint: Vec<_> = self
-            .replay
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let working = entry.working.as_ref()?;
-                Some((
-                    entry.mover_id,
-                    working.phase.waypoints.as_ptr() as usize,
-                    working.phase.waypoint_names.as_ptr() as usize,
-                    working
-                        .phase
-                        .waypoint_names
-                        .first()
-                        .map_or(0, |name| name.as_ptr() as usize),
-                ))
-            })
-            .collect();
-        fingerprint.push((
-            u32::MAX,
-            self.replay.entries.as_ptr() as usize,
-            self.replay.entries.capacity(),
-            self.replay.translation_legs.capacity(),
-        ));
-        fingerprint
     }
 }
 

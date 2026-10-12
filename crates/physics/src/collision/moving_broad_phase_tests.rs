@@ -493,6 +493,98 @@ fn non_finite_queries_fall_through_to_the_narrow_phase() {
     }
 }
 
+#[test]
+fn unbounded_finite_queries_fall_through_instead_of_overflowing() {
+    // `f32::MAX` is the usual "no limit": the swept length overflows inside
+    // the bound test, which must admit the mover rather than reject on NaN.
+    let mover = box_collider(1, Vec3::splat(1.0), Vec3::ZERO);
+    let pose = Pose::from_translation(Vec3::new(100.0, 0.0, 0.0));
+    let far = Vec3::new(-100.0, 0.0, 0.0);
+    for max_toi in [f32::MAX, 1.0e37, 1.0e20] {
+        assert!(mover_bound_may_reach_segment(
+            &mover,
+            &pose,
+            far,
+            Vec3::X * max_toi,
+            0.5
+        ));
+    }
+
+    let world = CollisionWorld::new();
+    let movers = [mover];
+    let mut poses = Poses::default();
+    poses.place(1, Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY);
+    for max_toi in [f32::MAX, 1.0e37] {
+        let query = Query {
+            pos: far,
+            dir: Vec3::X,
+            max_toi,
+        };
+        assert_all_queries_match(&world, &movers, &poses, &query).unwrap();
+        let ray = cast_ray_combined_with::<true>(&world, &movers, &poses, far, Vec3::X, max_toi);
+        assert_eq!(ray.map(|hit| hit.source), Some(CollisionSource::Mover(1)));
+    }
+}
+
+/// A 2 mm triangle: its bounding sphere is nearly a point, so the cull's reach
+/// is set by the capsule sphere and the slack alone.
+fn speck_collider(mover_id: u32) -> MoverCollider {
+    MoverCollider::from_local_triangles(
+        mover_id,
+        &[
+            Vec3::new(-0.001, 0.0, -0.001),
+            Vec3::new(0.001, 0.0, -0.001),
+            Vec3::new(0.0, 0.0, 0.001),
+        ],
+        &[[0, 2, 1]],
+    )
+    .unwrap()
+}
+
+#[test]
+fn sweep_ending_inside_the_skin_band_is_never_culled() {
+    // The capsule's bottom pole sits on its bounding sphere, straight above the
+    // speck, so the two spheres meet where the shapes do. The sweep ends three
+    // quarters of a skin above the speck: the narrow phase reports the band
+    // hit, and the cull must reach that far. Its absolute margin alone is
+    // smaller than this gap, so dropping the skin term from the reach fails.
+    let world = CollisionWorld::new();
+    let movers = [speck_collider(1)];
+    let mut poses = Poses::default();
+    poses.place(1, Vec3::ZERO, Quat::IDENTITY);
+    let capsule = capsule();
+    let (_, capsule_radius) = capsule_bounding_sphere(&capsule);
+    let end_gap = SKIN_DISTANCE * 0.75;
+    assert!(end_gap > BROAD_PHASE_MARGIN);
+    let start_height = capsule_radius + 0.5;
+    let query = Query {
+        pos: Vec3::new(0.0, start_height, 0.0),
+        dir: Vec3::NEG_Y,
+        max_toi: start_height - capsule_radius - end_gap,
+    };
+
+    assert_eq!(culled_mover_count(&movers, &poses, &query), 0);
+    let hit = cast_capsule_combined_with::<true>(
+        &world,
+        &movers,
+        &poses,
+        query.pos,
+        &capsule,
+        query.dir,
+        query.max_toi,
+    );
+    assert_eq!(hit.map(|hit| hit.source), Some(CollisionSource::Mover(1)));
+    assert_all_queries_match(&world, &movers, &poses, &query).unwrap();
+
+    // Past the skin plus slack, the same speck is culled.
+    let short = Query {
+        max_toi: start_height - capsule_radius - SKIN_DISTANCE - 2.0 * BROAD_PHASE_MARGIN,
+        ..query
+    };
+    assert_eq!(culled_mover_count(&movers, &poses, &short), 1);
+    assert_all_queries_match(&world, &movers, &poses, &short).unwrap();
+}
+
 /// Manual measurement, not a gate: per-call cost of each combined query with
 /// 12 far movers (512-triangle grids), culled vs exhaustive.
 /// `cargo test -p postretro-physics --release --lib mover_query_cost -- --ignored --nocapture --test-threads=1`

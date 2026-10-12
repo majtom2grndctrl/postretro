@@ -88,7 +88,15 @@ impl App {
         // cosmetic view feel out of fire origin and authored muzzle placement.
         let (origin, direction) = presented_aim.aim_ray();
         // Predicted pellets cross the same digest-bound volumes the host holds.
-        let level_gravity = ctx.gravity.get();
+        // Fluid crossings read only the volumes, so the view's gravity is inert
+        // here; it is still the host's installed value, never this client's own,
+        // and inert zero before a payload installs.
+        let level_gravity = self
+            .session
+            .as_ref()
+            .and_then(|session| session.net_endpoint.as_ref())
+            .and_then(netcode::NetEndpoint::client_host_level_gravity)
+            .unwrap_or(0.0);
         for mut queued in std::mem::take(&mut self.client_weapon.due) {
             if !self
                 .client_weapon

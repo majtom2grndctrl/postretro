@@ -22,12 +22,13 @@ use std::time::Duration;
 use postretro_collision::{
     ConvexLeaf, EnvironmentView, EnvironmentVolume, EnvironmentVolumes, LeafPlane,
 };
+use postretro_combat_model::{EnvironmentTuning, TuningPayload};
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
-    self, ClientMessage, InputCommand, NetworkId, RawSnapshotMessage, WireFireButtonState,
-    WireMovementInput,
+    self, ClientMessage, InputCommand, NetworkId, RawSnapshotMessage, ServerControlMessage,
+    WireFireButtonState, WireMovementInput,
 };
 
 use super::client::{ClientReplication, MoverCorrection};
@@ -40,7 +41,10 @@ use crate::collision::CollisionWorld;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::MovementInput;
-use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
+use crate::netcode::{
+    NetworkIdAllocator, client_environment_view, host_handle_client_message, replace_client_tuning,
+    tuning_control_if_changed, tuning_payload_for_pawn,
+};
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::sim::SimCommand;
@@ -156,8 +160,9 @@ pub(crate) fn gravity_box_volume(min: Vec3, max: Vec3, gravity: f32) -> Environm
 }
 
 /// The shared player descriptor (dash-capable) both ends materialize their pawn
-/// from. This fixture starts with identical local descriptors and does not exercise
-/// Control-channel `TuningPayload` delivery; snapshots carry the mutable tick state.
+/// from. Both peers load identical local descriptors, so movement tuning comes from
+/// the shared table; the host's level gravity alone reaches the client through
+/// Control-channel `TuningPayload` delivery. Snapshots carry the mutable tick state.
 pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
     PlayerMovementDescriptor {
         sounds: None,
@@ -217,6 +222,7 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             entry_boost: 1.5,
             min_duration_ms: 250.0,
         }),
+        swim: None,
         view_feel: None,
     }
 }
@@ -398,6 +404,13 @@ pub(crate) struct LoopbackHarness {
     /// records as both peers build theirs from the same level. Empty by default.
     pub(crate) host_environment_volumes: EnvironmentVolumes,
     pub(crate) client_environment_volumes: EnvironmentVolumes,
+    /// The host's live level gravity (its `script_ctx.gravity`): the host pawn
+    /// integrates it, and every tuning send reads it. A test may change it
+    /// between steps, as a `setGravity` reaction would.
+    pub(crate) host_level_gravity: f32,
+    /// The client's own level gravity. Prediction and replay never read it; the
+    /// client takes the host's value from its installed tuning payload.
+    pub(crate) client_level_gravity: f32,
 
     // --- Host side (authoritative) ---
     pub(crate) host_registry: EntityRegistry,
@@ -419,6 +432,8 @@ pub(crate) struct LoopbackHarness {
     pub(crate) server_state: super::state_slots::HostStateReplication,
     pub(crate) server_tick: u32,
     pub(crate) snapshot_sequence: u32,
+    /// The production per-slot tuning change detector.
+    pub(crate) host_last_sent_tuning: HashMap<u64, TuningPayload>,
     /// Host ticks elapsed since start, gating the playout warmup (the host begins
     /// resolving client commands only after [`PLAYOUT_WARMUP_TICKS`]).
     pub(crate) host_ticks_elapsed: u32,
@@ -427,6 +442,12 @@ pub(crate) struct LoopbackHarness {
     pub(crate) client_registry: EntityRegistry,
     pub(crate) client_replication: ClientReplication,
     pub(crate) prediction: ClientPrediction,
+    /// The client's installed host tuning and its generation, replaced through the
+    /// production `replace_client_tuning` install path.
+    pub(crate) client_tuning: Option<Box<TuningPayload>>,
+    pub(crate) client_tuning_generation: u64,
+    /// Tuning payloads the client installed, in arrival order.
+    pub(crate) client_tuning_installs: u32,
     /// The shared descriptor table the client materializes its LOCAL pawn from on
     /// arming — the SAME table both peers load in production. Drives the real
     /// `materialize_net_local_movement_component` path (no harness stub).
@@ -457,6 +478,9 @@ pub(crate) struct LoopbackHarness {
     // --- Link conditioners (one per direction) + virtual clock ---
     pub(crate) to_server: PacketConditioner,
     pub(crate) to_client: PacketConditioner,
+    /// The reliable-ordered Control lane: the link's one-way delay with no jitter
+    /// or loss, standing in for reliable delivery.
+    pub(crate) to_client_control: PacketConditioner,
     pub(crate) virtual_ms: VirtualMillis,
 
     /// The highest `client_tick` the client has actually sent. Drain completeness
@@ -528,10 +552,18 @@ impl LoopbackHarness {
         let mut client_registry = EntityRegistry::new();
         let client_bystander = spawn_dead_bystander(&mut client_registry);
 
+        let control_link = LinkConfig {
+            jitter: 0,
+            loss_probability: 0.0,
+            ..link
+        };
+
         Self {
             world,
             host_environment_volumes: EnvironmentVolumes::empty(),
             client_environment_volumes: EnvironmentVolumes::empty(),
+            host_level_gravity: GRAVITY,
+            client_level_gravity: GRAVITY,
             host_registry,
             host_pawn,
             server,
@@ -544,10 +576,14 @@ impl LoopbackHarness {
             server_state,
             server_tick: 0,
             snapshot_sequence: 0,
+            host_last_sent_tuning: HashMap::new(),
             host_ticks_elapsed: 0,
             client_registry,
             client_replication: ClientReplication::new(),
             prediction: ClientPrediction::new(),
+            client_tuning: None,
+            client_tuning_generation: 0,
+            client_tuning_installs: 0,
             descriptors: entity_descriptors(),
             client_pawn: None,
             host_pawn_network_id,
@@ -567,6 +603,7 @@ impl LoopbackHarness {
             client_bystander,
             to_server: PacketConditioner::new(link),
             to_client: PacketConditioner::new(link),
+            to_client_control: PacketConditioner::new(control_link),
             virtual_ms: 0,
             last_sent_client_tick: None,
             client_acked_server_tick: 0,
@@ -585,6 +622,26 @@ impl LoopbackHarness {
         h.host_environment_volumes = EnvironmentVolumes::build(volumes.clone());
         h.client_environment_volumes = EnvironmentVolumes::build(volumes);
         h
+    }
+
+    /// Seed the host and the client with independent level gravity, as two peers
+    /// whose `initialGravity` (or a pre-join `setGravity`) differ.
+    pub(crate) fn with_level_gravity(
+        link: LinkConfig,
+        host_level_gravity: f32,
+        client_level_gravity: f32,
+    ) -> Self {
+        let mut h = Self::new(link);
+        h.host_level_gravity = host_level_gravity;
+        h.client_level_gravity = client_level_gravity;
+        h
+    }
+
+    /// The level gravity the client's installed host tuning carries, if any.
+    pub(crate) fn client_installed_level_gravity(&self) -> Option<f32> {
+        self.client_tuning
+            .as_deref()
+            .map(|payload| payload.environment.level_gravity)
     }
 
     pub(crate) fn with_moving_platform(link: LinkConfig) -> Self {
@@ -675,9 +732,14 @@ impl LoopbackHarness {
         self.client_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
 
-        // Drive prediction if armed (writing the predicted pose back to the registry
-        // exactly as `client_predict_tick` does).
-        if let Some(pawn) = self.client_pawn {
+        // Drive prediction if armed and the host's tuning has installed (writing the
+        // predicted pose back to the registry exactly as `client_predict_tick` does).
+        if let Some(pawn) = self.client_pawn
+            && let Some(environment) = client_environment_view(
+                self.client_tuning.as_deref(),
+                &self.client_environment_volumes,
+            )
+        {
             let prev = (
                 *self
                     .client_registry
@@ -693,7 +755,6 @@ impl LoopbackHarness {
                 &self.mover_colliders,
                 &self.client_mover_states,
             );
-            let environment = EnvironmentView::new(GRAVITY, &self.client_environment_volumes);
             if let Some((t, m)) =
                 self.prediction
                     .predict_tick(input, prev, &combined_collision, environment, DT)
@@ -724,8 +785,27 @@ impl LoopbackHarness {
     /// real `host_handle_client_message` ingest seam (decode -> sanitize -> queue),
     /// then advance the authoritative host one fixed tick (resolve per-pawn movement
     /// via the gap policy, run the multi-pawn movement seam), and produce + enqueue a
-    /// snapshot for the client through the to-client conditioner.
+    /// snapshot for the client through the to-client conditioner. One host frame
+    /// running one tick; [`Self::host_frame`] runs several before one send.
     pub(crate) fn host_tick(&mut self) {
+        self.host_frame(1, |_, _| {});
+    }
+
+    /// One host frame in production order: the poll (input ingest, and the
+    /// participation-entry tuning send on first sight), `ticks` fixed ticks, then
+    /// the send (changed tuning, then the snapshot). `between_ticks(h, i)` runs
+    /// after tick `i`, as a reaction during that tick would: a `setGravity` there
+    /// takes effect from the next tick, whose view is built at its start.
+    pub(crate) fn host_frame(&mut self, ticks: u32, mut between_ticks: impl FnMut(&mut Self, u32)) {
+        self.host_poll();
+        for tick in 0..ticks {
+            self.host_simulate_tick();
+            between_ticks(self, tick);
+        }
+        self.host_send();
+    }
+
+    fn host_poll(&mut self) {
         // 1. Deliver + ingest due input packets through the real per-message
         //    dispatcher. The Input arm sanitizes + queues; a malformed/stale/duplicate
         //    command never touches another client or the registry. `server` /
@@ -747,6 +827,13 @@ impl LoopbackHarness {
             }
         }
 
+        // Participation entry: the materialization send, at the live values.
+        if !self.host_last_sent_tuning.contains_key(&CLIENT_ID) {
+            self.host_send_tuning_if_changed();
+        }
+    }
+
+    fn host_simulate_tick(&mut self) {
         // 2. Authoritative movement tick: resolve one command per owned pawn through
         //    the deterministic gap policy, then advance the named pawns.
         //
@@ -786,7 +873,7 @@ impl LoopbackHarness {
             crate::sim::run_host_movement_tick(
                 &mut self.host_registry,
                 &combined_collision,
-                EnvironmentView::new(GRAVITY, &self.host_environment_volumes),
+                EnvironmentView::new(self.host_level_gravity, &self.host_environment_volumes),
                 &pawn_inputs,
                 DT,
             );
@@ -802,6 +889,13 @@ impl LoopbackHarness {
             DT,
         );
         self.server_tick = self.server_tick.wrapping_add(1);
+    }
+
+    fn host_send(&mut self) {
+        // Changed tuning is queued immediately before the snapshot, as
+        // `net_serialize_and_send` does, so it reaches the client no later than
+        // the first snapshot simulated after the change.
+        self.host_send_tuning_if_changed();
 
         // During the playout warmup the host has resolved no command yet (cursor is
         // None), so a snapshot now would carry `last_processed_client_tick = None`.
@@ -847,6 +941,8 @@ impl LoopbackHarness {
         self.latest_mover_corrections.clear();
         self.latest_local_corrections.clear();
         self.latest_reconcile_windows.clear();
+        // Control drains before snapshots, as `App::net_poll_and_apply` does.
+        self.client_drain_control();
         let mut acks = Vec::new();
         for packet in self.to_client.take_ready() {
             let Ok(raw) = wire::decode::<RawSnapshotMessage>(&packet) else {
@@ -887,7 +983,12 @@ impl LoopbackHarness {
                     armed.entity_id,
                 );
             }
-            if let Some(reconcile) = outcome.local_reconcile {
+            if let Some(reconcile) = outcome.local_reconcile
+                && let Some(environment) = client_environment_view(
+                    self.client_tuning.as_deref(),
+                    &self.client_environment_volumes,
+                )
+            {
                 let before = self
                     .client_registry
                     .get_component::<Transform>(reconcile.entity_id)
@@ -908,7 +1009,7 @@ impl LoopbackHarness {
                     reconcile.server_tick,
                     Some(self.client_replication.mover_history()),
                     &combined_collision,
-                    EnvironmentView::new(GRAVITY, &self.client_environment_volumes),
+                    environment,
                     DT,
                 );
                 self.latest_reconcile_windows
@@ -933,6 +1034,43 @@ impl LoopbackHarness {
         acks
     }
 
+    /// HOST: build this slot's tuning payload from the host pawn and the host's live
+    /// level gravity, and enqueue it on the Control lane when it differs from the
+    /// last one sent (`tuning_control_if_changed`, shared with production).
+    pub(crate) fn host_send_tuning_if_changed(&mut self) {
+        let payload = tuning_payload_for_pawn(
+            &self.host_registry,
+            self.host_pawn,
+            &self.descriptors,
+            None,
+            &EnvironmentTuning {
+                level_gravity: self.host_level_gravity,
+            },
+        );
+        if let Some(message) =
+            tuning_control_if_changed(&mut self.host_last_sent_tuning, CLIENT_ID, payload)
+        {
+            self.to_client_control.enqueue(message);
+        }
+    }
+
+    /// CLIENT: install every due tuning payload through the production
+    /// `replace_client_tuning` path.
+    pub(crate) fn client_drain_control(&mut self) {
+        for packet in self.to_client_control.take_ready() {
+            let Ok(ServerControlMessage::Tuning(bytes)) = wire::decode(&packet) else {
+                continue;
+            };
+            replace_client_tuning(
+                &mut self.client_tuning,
+                &mut self.client_tuning_generation,
+                &bytes,
+            )
+            .expect("host tuning payload installs");
+            self.client_tuning_installs += 1;
+        }
+    }
+
     /// Feed client acks back to the server replication tracker (the reverse control
     /// path). Advances each client's acked-baseline set so subsequent encodes emit
     /// deltas rather than full baselines — the production steady state.
@@ -951,6 +1089,7 @@ impl LoopbackHarness {
     pub(crate) fn advance_clock(&mut self) {
         self.to_server.advance(TICK_MS);
         self.to_client.advance(TICK_MS);
+        self.to_client_control.advance(TICK_MS);
         self.virtual_ms += TICK_MS;
     }
 
@@ -975,6 +1114,23 @@ impl LoopbackHarness {
         self.client_predict_and_send(command);
         self.advance_clock();
         self.host_tick();
+        let acks = self.client_receive();
+        self.apply_acks(&acks);
+    }
+
+    /// A catch-up step: the client predicts and sends two commands, then one host
+    /// frame runs two fixed ticks before a single send. `between_ticks` is passed
+    /// to [`Self::host_frame`].
+    pub(crate) fn step_catch_up(
+        &mut self,
+        commands: [&SimCommand; 2],
+        between_ticks: impl FnMut(&mut Self, u32),
+    ) {
+        for command in commands {
+            self.client_predict_and_send(command);
+            self.advance_clock();
+        }
+        self.host_frame(2, between_ticks);
         let acks = self.client_receive();
         self.apply_acks(&acks);
     }
@@ -1063,7 +1219,9 @@ impl LoopbackHarness {
     /// that cursor (its acked server tick reached the frozen drain *target* — the
     /// server tick of the snapshot that first reflected the caught-up cursor).
     pub(crate) fn is_drained(&self) -> bool {
-        let no_in_flight = self.to_server.in_flight() == 0 && self.to_client.in_flight() == 0;
+        let no_in_flight = self.to_server.in_flight() == 0
+            && self.to_client.in_flight() == 0
+            && self.to_client_control.in_flight() == 0;
 
         let cursor_caught_up = match (
             self.command_queues.resolved_cursor(CLIENT_ID),

@@ -1613,6 +1613,224 @@ fn push_volume_crossings_reconcile_without_correction_under_light_link() {
     assert_crossings_reconcile_without_correction(&push_run);
 }
 
+/// One level-gravity run: every correction, the host trajectory and what the
+/// client installed from the host's tuning payload.
+struct LevelGravityRun {
+    corrections: Vec<f32>,
+    max_host_y: f32,
+    final_host_position: Vec3,
+    client_installed_gravity: Option<f32>,
+    client_tuning_installs: u32,
+    client_own_gravity: f32,
+}
+
+/// How a host `setGravity` lands in a level-gravity run.
+#[derive(Clone, Copy)]
+enum GravityChange {
+    /// Before the given step's host frame, as a reaction on the previous tick.
+    BeforeStep(u32, f32),
+    /// During the first of two ticks in a catch-up host frame, which sends one
+    /// snapshot after both: the first step at or after the given one whose host
+    /// pawn is rising, so both ticks integrate gravity.
+    CatchUpFrame(u32, f32),
+}
+
+/// Arm, then drive `steps` run-then-hop commands, applying `change` if any.
+fn run_level_gravity(
+    mut h: LoopbackHarness,
+    steps: u32,
+    change: Option<GravityChange>,
+) -> LevelGravityRun {
+    h.step_until_armed(&idle_command());
+    let mut run = LevelGravityRun {
+        corrections: Vec::new(),
+        max_host_y: f32::NEG_INFINITY,
+        final_host_position: Vec3::ZERO,
+        client_installed_gravity: None,
+        client_tuning_installs: 0,
+        client_own_gravity: h.client_level_gravity,
+    };
+    let mut changed = false;
+    for step in 0..steps {
+        match change {
+            Some(GravityChange::BeforeStep(at, gravity)) if step == at => {
+                h.host_level_gravity = gravity;
+                h.step(&run_then_hop(step));
+            }
+            Some(GravityChange::CatchUpFrame(at, gravity))
+                if !changed && step >= at && host_pawn_rising(&h) =>
+            {
+                changed = true;
+                let command = run_then_hop(step);
+                h.step_catch_up([&command, &command], |h, tick| {
+                    if tick == 0 {
+                        h.host_level_gravity = gravity;
+                    }
+                });
+            }
+            _ => h.step(&run_then_hop(step)),
+        }
+        run.corrections
+            .extend(h.latest_local_corrections.iter().copied());
+        run.max_host_y = run.max_host_y.max(h.host_position().y);
+    }
+    run.final_host_position = h.host_position();
+    run.client_installed_gravity = h.client_installed_level_gravity();
+    run.client_tuning_installs = h.client_tuning_installs;
+    run
+}
+
+fn host_pawn_rising(h: &LoopbackHarness) -> bool {
+    h.host_registry
+        .get_component::<PlayerMovementComponent>(h.host_pawn)
+        .is_ok_and(|movement| !movement.is_grounded() && movement.velocity.y > 1.0)
+}
+
+fn corrections_over(run: &LevelGravityRun, limit: f32) -> usize {
+    run.corrections.iter().filter(|c| **c > limit).count()
+}
+
+const HOST_LEVEL_GRAVITY: f32 = -12.0;
+
+// N5, N7 (gravity half): host and client hold different level gravity, and the
+// client's comes only through the tuning-payload install. Joining a host whose
+// `initialGravity` differs, or whose script changed it before the join, the
+// client predicts with the host's value and takes no correction.
+#[test]
+fn client_joining_host_with_different_level_gravity_predicts_host_value_without_correction() {
+    assert_ne!(HOST_LEVEL_GRAVITY, GRAVITY);
+    let by_initial_gravity = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), HOST_LEVEL_GRAVITY, GRAVITY),
+        180,
+        None,
+    );
+    let mut before_join = LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY);
+    // A host `setGravity` before this client's participation send.
+    before_join.host_level_gravity = HOST_LEVEL_GRAVITY;
+    let by_script_before_join = run_level_gravity(before_join, 180, None);
+    let at_client_gravity = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        180,
+        None,
+    );
+
+    assert!(
+        by_initial_gravity.max_host_y > at_client_gravity.max_host_y + 0.1,
+        "fixture: the host's lighter gravity must change the hop: max y {} vs {}",
+        by_initial_gravity.max_host_y,
+        at_client_gravity.max_host_y
+    );
+    for (name, run) in [
+        ("initialGravity", &by_initial_gravity),
+        ("script change before join", &by_script_before_join),
+    ] {
+        assert_eq!(
+            run.client_installed_gravity,
+            Some(HOST_LEVEL_GRAVITY),
+            "{name}: the client installs the host's level gravity"
+        );
+        assert_eq!(
+            run.client_own_gravity, GRAVITY,
+            "{name}: the client's own level gravity stays its own"
+        );
+        assert_eq!(run.client_tuning_installs, 1, "{name}: one join send");
+        assert!(
+            run.corrections.len() > 30,
+            "{name}: reconciles must run throughout; saw {}",
+            run.corrections.len()
+        );
+        let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst <= NO_CORRECTION_M,
+            "{name}: every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+        );
+    }
+    assert!(
+        (by_initial_gravity.final_host_position - by_script_before_join.final_host_position)
+            .length()
+            < 1.0e-4,
+        "both routes to the same host gravity yield the same host trajectory"
+    );
+}
+
+// N6: a host `setGravity` mid-level, while the client hops, reaches the joined
+// client through a resent tuning payload; the client applies it on arrival and
+// takes at most one correction for the change.
+#[test]
+fn host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction() {
+    const CHANGE_STEP: u32 = 100;
+    let changed = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        Some(GravityChange::BeforeStep(CHANGE_STEP, HOST_LEVEL_GRAVITY)),
+    );
+    let unchanged = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        None,
+    );
+
+    assert!(
+        (changed.final_host_position - unchanged.final_host_position).length() > 0.05,
+        "fixture: the mid-level change must alter the host trajectory: {:?} vs {:?}",
+        changed.final_host_position,
+        unchanged.final_host_position
+    );
+    assert_eq!(
+        changed.client_tuning_installs, 2,
+        "the join send, then exactly one resend for the change"
+    );
+    assert_eq!(changed.client_installed_gravity, Some(HOST_LEVEL_GRAVITY));
+    assert!(changed.corrections.len() > 30);
+    assert_one_correction_for_the_change(&changed);
+}
+
+// N6, catch-up frame: the host runs two ticks before one snapshot send, with the
+// `setGravity` on the first, so the one snapshot already reflects the new
+// gravity. The changed tuning is queued ahead of that snapshot, so the client
+// still takes exactly one correction.
+// Regression: with the resend at the host poll (frame start), that snapshot
+// reached the client a flush before the tuning, costing a second correction.
+#[test]
+fn host_set_gravity_in_a_catch_up_frame_reaches_client_with_exactly_one_correction() {
+    const CHANGE_STEP: u32 = 100;
+    let changed = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        Some(GravityChange::CatchUpFrame(CHANGE_STEP, HOST_LEVEL_GRAVITY)),
+    );
+    let unchanged = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        None,
+    );
+
+    assert!(
+        (changed.final_host_position - unchanged.final_host_position).length() > 0.05,
+        "fixture: the catch-up change must alter the host trajectory"
+    );
+    assert_eq!(changed.client_tuning_installs, 2);
+    assert_eq!(changed.client_installed_gravity, Some(HOST_LEVEL_GRAVITY));
+    assert!(changed.corrections.len() > 30);
+    assert_one_correction_for_the_change(&changed);
+}
+
+/// N6's bound: one gravity change costs exactly one correction over
+/// `NO_CORRECTION_M` (the change does move the airborne pawn, so zero would mean
+/// the client already had the new value before the host simulated it).
+fn assert_one_correction_for_the_change(run: &LevelGravityRun) {
+    let over = corrections_over(run, NO_CORRECTION_M);
+    assert_eq!(
+        over,
+        1,
+        "exactly one correction over {NO_CORRECTION_M} m for one gravity change; saw {over}: {:?}",
+        run.corrections
+            .iter()
+            .filter(|c| **c > NO_CORRECTION_M)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn rotating_platform_reconciles_phase_rider_and_tangential_release_under_mandated_profile() {
     let mut h = LoopbackHarness::with_rotating_platform(mandated_link());
@@ -2262,6 +2480,7 @@ impl LoopbackHarness {
         let mut took_teleport = false;
         let mut max_correction = 0.0_f32;
         let mut acks = Vec::new();
+        self.client_drain_control();
         for packet in self.to_client.take_ready() {
             let Ok(raw) =
                 postretro_net::wire::decode::<postretro_net::wire::RawSnapshotMessage>(&packet)
@@ -2288,7 +2507,12 @@ impl LoopbackHarness {
                     armed.entity_id,
                 );
             }
-            if let Some(reconcile) = outcome.local_reconcile {
+            if let Some(reconcile) = outcome.local_reconcile
+                && let Some(environment) = crate::netcode::client_environment_view(
+                    self.client_tuning.as_deref(),
+                    &self.client_environment_volumes,
+                )
+            {
                 let class = reconcile_local_pawn(
                     &mut self.client_registry,
                     &mut self.prediction,
@@ -2297,7 +2521,7 @@ impl LoopbackHarness {
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
                     &self.world,
-                    postretro_collision::EnvironmentView::level_only(GRAVITY),
+                    environment,
                     DT,
                 );
                 match class {

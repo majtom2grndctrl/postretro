@@ -464,6 +464,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
         }),
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }

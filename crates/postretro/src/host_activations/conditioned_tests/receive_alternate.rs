@@ -27,7 +27,7 @@ impl PresentationBindingResolver for NoBindings {
 }
 
 pub(super) struct SnapshotReceive {
-    tuning: Option<TuningPayload>,
+    pub(super) tuning: Option<TuningPayload>,
     replication: netcode::ClientReplication,
     state: netcode::ClientStateApply,
     pub(super) prediction: netcode::ClientPrediction,
@@ -138,11 +138,13 @@ impl Fixture {
             .unwrap()
             .active_wieldable()
             .unwrap();
+        // The fixture host simulates under `EnvironmentView::level_only(0.0)`.
         let tuning = netcode::tuning_payload_for_pawn(
             &fixture.host.borrow(),
             pawn,
             &fixture.descriptors,
             None,
+            &postretro_combat_model::EnvironmentTuning { level_gravity: 0.0 },
         );
         netcode::host_send_tuning_if_changed(
             &mut fixture.server,
@@ -245,6 +247,7 @@ impl Fixture {
             return;
         };
         let tuning = receive.tuning.as_ref();
+        let no_volumes = postretro_collision::EnvironmentVolumes::empty();
         let outcome = netcode::client_receive_and_apply(
             &mut self.local.borrow_mut(),
             &mut receive.ctx.slot_table.borrow_mut(),
@@ -259,7 +262,7 @@ impl Fixture {
             &self.zones,
             None,
             &self.world,
-            postretro_collision::EnvironmentView::level_only(0.0),
+            &no_volumes,
             DT,
             Duration::from_secs_f32(DT),
             None,

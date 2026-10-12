@@ -805,7 +805,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 &crate::scripting_systems::hit_zones::HitZoneStore::new(),
                 None,
                 &collision,
-                postretro_collision::EnvironmentView::level_only(-20.0),
+                &postretro_collision::EnvironmentVolumes::empty(),
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
                 None,

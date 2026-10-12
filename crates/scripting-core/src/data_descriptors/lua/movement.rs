@@ -192,6 +192,19 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
+    // `swim` is optional: absence means the pawn cannot swim. When present,
+    // every field is required and validated, mirroring the JS path.
+    let raw: LuaValue = table.get("swim").map_err(lua_err)?;
+    let swim = match raw {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => Some(swim_params_from_lua(&t)?),
+        other => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`movement.swim` must be a table, got {}", other.type_name()),
+            });
+        }
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
@@ -245,6 +258,7 @@ pub fn movement_descriptor_from_lua(
         forgiveness,
         crouch,
         slide,
+        swim,
         view_feel,
         sounds,
     })
@@ -421,6 +435,20 @@ pub fn slide_params_from_lua(table: &Table) -> Result<SlideParams, DescriptorErr
         entry_boost,
         min_duration_ms,
     })
+}
+
+/// Mirror of [`swim_params_from_js`] for Luau tables. All six fields are
+/// required when `movement.swim` is present.
+pub fn swim_params_from_lua(table: &Table) -> Result<SwimParams, DescriptorError> {
+    SwimParams {
+        speed: get_required_f32_lua(table, "speed")?,
+        accel: get_required_f32_lua(table, "accel")?,
+        sink_speed: get_required_f32_lua(table, "sinkSpeed")?,
+        enter_depth: get_required_f32_lua(table, "enterDepth")?,
+        exit_depth: get_required_f32_lua(table, "exitDepth")?,
+        fluid_jump_velocity: get_required_f32_lua(table, "fluidJumpVelocity")?,
+    }
+    .validated()
 }
 
 pub fn get_required_table_lua(

@@ -38,7 +38,7 @@ fn push_player_event(
 
 /// A QuickJS conversion failure as the bridge's own reason, without the VM's
 /// wrapper text, so both runtimes log one diagnostic for one authored value.
-fn js_conversion_error(error: rquickjs::Error) -> DescriptorError {
+pub(super) fn js_conversion_error(error: rquickjs::Error) -> DescriptorError {
     match error {
         rquickjs::Error::FromJs {
             message: Some(reason),
@@ -49,7 +49,7 @@ fn js_conversion_error(error: rquickjs::Error) -> DescriptorError {
 }
 
 /// Luau twin of [`js_conversion_error`].
-fn lua_conversion_error(error: mlua::Error) -> DescriptorError {
+pub(super) fn lua_conversion_error(error: mlua::Error) -> DescriptorError {
     match error {
         mlua::Error::FromLuaConversionError {
             message: Some(reason),

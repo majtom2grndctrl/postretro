@@ -1,4 +1,4 @@
-use postretro_combat_model::{TuningPayload, WieldableTuningPayload};
+use postretro_combat_model::{EnvironmentTuning, TuningPayload, WieldableTuningPayload};
 use postretro_entities::EntityTypeDescriptor;
 use postretro_foundation::{
     ActivationTrigger, BoolOrIr, CrouchParams, DashParams, NumberOrIr, PlayerMovementDescriptor,
@@ -118,7 +118,13 @@ fn a_one_weapon_magazine_or_secondary_survives_a_second_weapon_without() {
 }
 
 fn tuning_with_dash() -> TuningPayload {
-    TuningPayload::new(Some(movement(true, false)), std::array::from_fn(|_| None))
+    TuningPayload::new(
+        Some(movement(true, false)),
+        std::array::from_fn(|_| None),
+        EnvironmentTuning {
+            level_gravity: -9.81,
+        },
+    )
 }
 
 #[test]
@@ -160,7 +166,13 @@ fn host_tuning_wieldables_carry_magazine_and_secondary() {
         block_during_reload: None,
     };
     slots[0] = Some(rifle);
-    let facts = tuning_facts(&TuningPayload::new(None, slots));
+    let facts = tuning_facts(&TuningPayload::new(
+        None,
+        slots,
+        EnvironmentTuning {
+            level_gravity: -9.81,
+        },
+    ));
     assert!(facts.magazine && facts.secondary && !facts.dash);
 }
 

@@ -187,9 +187,10 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use glam::{Quat, Vec3};
-use postretro_collision::EnvironmentView;
+use postretro_collision::{EnvironmentView, EnvironmentVolumes};
 use postretro_combat_model::{
-    AuthorizedShot, HIT_RANGE_TOLERANCE, ShotId, TuningPayload, WieldableTuningPayload,
+    AuthorizedShot, EnvironmentTuning, HIT_RANGE_TOLERANCE, ShotId, TuningPayload,
+    WieldableTuningPayload,
 };
 #[cfg(test)]
 use postretro_combat_model::{
@@ -479,7 +480,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
         registry,
         tuning.and_then(|payload| payload.movement.as_ref()),
         tuning,
-        true,
+        *applied_generation != tuning_generation,
     );
     *applied_generation = tuning_generation;
 }
@@ -498,10 +499,38 @@ fn replace_client_tuning(
     // descriptor-derived prediction state live. This reaches only the queued
     // tuning value: live Inventory instances are intentionally untouched, so an
     // in-flight equip keeps its already-latched duration and state.
-    *tuning = None;
-    *tuning_generation = tuning_generation.wrapping_add(1);
-    *tuning = Some(Box::new(decode_tuning_payload(bytes)?));
+    let previous = tuning.take();
+    let payload = match decode_tuning_payload(bytes) {
+        Ok(payload) => payload,
+        Err(error) => {
+            *tuning_generation = tuning_generation.wrapping_add(1);
+            return Err(error);
+        }
+    };
+    // An environment-only change (the host's level gravity) applies on arrival:
+    // prediction and replay read it from the installed payload. The generation
+    // holds so the pawn's live movement component is not rebuilt for it.
+    if previous
+        .as_deref()
+        .is_none_or(|previous| !previous.same_pawn_tuning(&payload))
+    {
+        *tuning_generation = tuning_generation.wrapping_add(1);
+    }
+    *tuning = Some(Box::new(payload));
     Ok(())
+}
+
+/// The environment a connected client predicts and replays against: its own
+/// digest-bound volumes under the HOST's level gravity from the installed tuning
+/// payload. The client never reads its own level gravity (E24 Co-op parity), so
+/// there is no local fallback: `None` until a payload installs, and movement
+/// prediction and reconcile stay off until then, as movement tuning already
+/// gates them.
+pub fn client_environment_view<'a>(
+    host_tuning: Option<&TuningPayload>,
+    volumes: &'a EnvironmentVolumes,
+) -> Option<EnvironmentView<'a>> {
+    host_tuning.map(|payload| EnvironmentView::new(payload.environment.level_gravity, volumes))
 }
 
 fn now() -> Duration {
@@ -783,7 +812,7 @@ pub fn client_receive_and_apply(
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     agent_params: Option<NavAgentParams>,
     collision: &impl MovementCollisionSource,
-    environment: EnvironmentView<'_>,
+    environment_volumes: &EnvironmentVolumes,
     tick_dt: f32,
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
@@ -939,7 +968,11 @@ pub fn client_receive_and_apply(
         // snap the reconciled gameplay state, and seed the decaying presentation
         // offset (or snap on a teleport). The registry-touching orchestration lives in
         // `reconcile`; long-lived prediction/smoothing state lives in `prediction`.
-        if let Some(local) = &outcome.local_reconcile {
+        // Replay runs under the host's installed level gravity; with no payload
+        // installed there is no movement tuning to replay with either.
+        if let Some(local) = &outcome.local_reconcile
+            && let Some(environment) = client_environment_view(host_tuning, environment_volumes)
+        {
             reconcile::reconcile_local_pawn_with_mover_history(
                 registry,
                 prediction,
@@ -1028,7 +1061,10 @@ pub struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
     pub command: &'a SimCommand,
     pub aim_pitch: f32,
     pub collision: &'a C,
-    pub environment: EnvironmentView<'a>,
+    /// This client's own environment volumes; the level gravity comes from
+    /// `host_tuning` through [`client_environment_view`].
+    pub environment_volumes: &'a EnvironmentVolumes,
+    pub host_tuning: Option<&'a TuningPayload>,
     pub tick_dt: f32,
 }
 
@@ -1050,7 +1086,8 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
         command,
         aim_pitch,
         collision,
-        environment,
+        environment_volumes,
+        host_tuning,
         tick_dt,
     } = context;
     // 1. Send exactly one Input command for this predicted tick, stamped with the
@@ -1061,8 +1098,12 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_predict_send();
 
-    // 2. Before the local baseline arms prediction, drive no provisional pawn.
-    let Some(armed) = prediction.armed() else {
+    // 2. Before the local baseline arms prediction, or before the host's tuning
+    //    installs its level gravity, drive no provisional pawn.
+    let (Some(armed), Some(environment)) = (
+        prediction.armed(),
+        client_environment_view(host_tuning, environment_volumes),
+    ) else {
         return ClientPredictionTickResult {
             client_tick,
             movement_events: MovementEvents::default(),
@@ -1340,13 +1381,15 @@ pub fn client_sample_interpolation(
 /// Resolve the host-authoritative prediction values for one spawned slot pawn.
 /// The wieldable rows come from its live inventory, not the authored loadout: a
 /// descriptor refresh retunes existing instances, while loadout changes wait for
-/// the next pawn install. The net crate carries the resulting JSON bytes without
-/// learning this vocabulary.
+/// the next pawn install. `environment` is the host's current level state
+/// ([`host_environment_tuning`]), shared by every pawn's payload. The net crate
+/// carries the resulting JSON bytes without learning this vocabulary.
 pub fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
     descriptors: &[EntityTypeDescriptor],
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    environment: &EnvironmentTuning,
 ) -> TuningPayload {
     let class = registry
         .get_component::<DescriptorProvenance>(pawn)
@@ -1409,7 +1452,16 @@ pub fn tuning_payload_for_pawn(
             })
         })
         .unwrap_or_else(|| std::array::from_fn(|_| None));
-    TuningPayload::new(movement, wieldables)
+    TuningPayload::new(movement, wieldables, environment.clone())
+}
+
+/// The host's current level state for the tuning payload, read live at every
+/// send so a pawn materialized after a mid-level `setGravity` receives the
+/// current value. The one place host environment tuning is resolved.
+pub fn host_environment_tuning(script_ctx: &postretro_entities::ScriptCtx) -> EnvironmentTuning {
+    EnvironmentTuning {
+        level_gravity: script_ctx.gravity.get(),
+    }
 }
 
 pub fn host_send_tuning_if_changed(
@@ -1418,16 +1470,60 @@ pub fn host_send_tuning_if_changed(
     client_id: u64,
     payload: TuningPayload,
 ) {
-    if last_sent_tuning.get(&client_id) == Some(&payload) {
-        return;
+    if let Some(message) = tuning_control_if_changed(last_sent_tuning, client_id, payload) {
+        server.send_control(client_id, message);
     }
-    server.send_control(
-        client_id,
-        wire::encode(&ServerControlMessage::Tuning(
-            tuning_payload::encode_tuning_payload(&payload),
-        )),
-    );
+}
+
+/// Rebuild every participating pawn's tuning payload and resend each one that
+/// changed. Inventory and level-gravity changes have no dirty protocol; the
+/// whole-struct dedupe is the change detector. The frame send path calls this
+/// immediately before the snapshot send, so a change made on any tick reaches
+/// the client in the same transport flush as (and queued ahead of) the first
+/// snapshot simulated after it; the client drains Control before snapshots.
+/// A slot with no pawn yet is skipped: its participation-entry send carries the
+/// current values.
+#[allow(clippy::too_many_arguments)]
+pub fn host_resend_changed_tuning(
+    server: &mut NetServer,
+    slot_pawns: &SlotPawns,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    registry: &EntityRegistry,
+    descriptors: &[EntityTypeDescriptor],
+    default_weapon_placement: Option<&WeaponPlacementDescriptor>,
+    environment: &EnvironmentTuning,
+) {
+    for client_id in server.participating_clients() {
+        let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+            continue;
+        };
+        let payload = tuning_payload_for_pawn(
+            registry,
+            pawn,
+            descriptors,
+            default_weapon_placement,
+            environment,
+        );
+        host_send_tuning_if_changed(server, last_sent_tuning, client_id, payload);
+    }
+}
+
+/// The encoded Control message for `payload`, or `None` when this slot was
+/// already sent an equal one. Whole-struct equality, so a change to any field,
+/// the host's level gravity included, resends.
+pub(crate) fn tuning_control_if_changed(
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    client_id: u64,
+    payload: TuningPayload,
+) -> Option<Vec<u8>> {
+    if last_sent_tuning.get(&client_id) == Some(&payload) {
+        return None;
+    }
+    let message = wire::encode(&ServerControlMessage::Tuning(
+        tuning_payload::encode_tuning_payload(&payload),
+    ));
     last_sent_tuning.insert(client_id, payload);
+    Some(message)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2714,6 +2810,12 @@ mod tests {
         }
     }
 
+    fn test_environment() -> EnvironmentTuning {
+        EnvironmentTuning {
+            level_gravity: -9.81,
+        }
+    }
+
     fn install_test_tuning(
         tuning: &mut Option<Box<TuningPayload>>,
         generation: &mut u64,
@@ -2750,6 +2852,7 @@ mod tests {
         let encoded = tuning_payload::encode_tuning_payload(&TuningPayload::new(
             host_player_descriptor().movement,
             wieldables,
+            test_environment(),
         ));
         replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
         encoded
@@ -2803,7 +2906,13 @@ mod tests {
                 loadout: vec!["new_slot_a".to_string(), "new_slot_b".to_string()],
             },
         );
-        let payload = tuning_payload_for_pawn(&registry, pawn, &[changed_player], None);
+        let payload = tuning_payload_for_pawn(
+            &registry,
+            pawn,
+            &[changed_player],
+            None,
+            &test_environment(),
+        );
 
         assert!(payload.movement.is_some());
         assert!(
@@ -2871,8 +2980,10 @@ mod tests {
             },
             rotation: default_a.rotation.clone(),
         };
-        let before = tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_a));
-        let after = tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_b));
+        let before =
+            tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_a), &test_environment());
+        let after =
+            tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_b), &test_environment());
         assert_eq!(before.wieldables[0].as_ref().unwrap().placement, default_a);
         assert_eq!(after.wieldables[0].as_ref().unwrap().placement, default_b);
         assert_ne!(
@@ -2936,7 +3047,13 @@ mod tests {
             health: None,
             behavior: None,
         };
-        let overridden = tuning_payload_for_pawn(&registry, pawn, &[descriptor], Some(&default_b));
+        let overridden = tuning_payload_for_pawn(
+            &registry,
+            pawn,
+            &[descriptor],
+            Some(&default_b),
+            &test_environment(),
+        );
         assert_eq!(
             overridden.wieldables[0].as_ref().unwrap().placement,
             authored,
@@ -2976,7 +3093,7 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory.clone()).unwrap();
 
-        let before = tuning_payload_for_pawn(&registry, pawn, &[], None);
+        let before = tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment());
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
             sounds: None,
@@ -3016,7 +3133,7 @@ mod tests {
         live.refresh_from_descriptor(&refreshed);
         registry.set_component(weapon_id, live).unwrap();
 
-        let after = tuning_payload_for_pawn(&registry, pawn, &[], None);
+        let after = tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment());
 
         assert_ne!(last_sent.get(&41), Some(&after));
         last_sent.insert(41, after.clone());
@@ -3110,6 +3227,143 @@ mod tests {
         assert_ne!(generation, accepted_generation);
     }
 
+    // A host `setGravity` changes only the environment half of the payload. The
+    // client installs the host's value on arrival without bumping the pawn-tuning
+    // generation, so its live movement component is not rebuilt for it.
+    #[test]
+    fn environment_only_tuning_replacement_installs_host_gravity_and_keeps_generation() {
+        let mut tuning = None;
+        let mut generation = 0;
+        let encoded = install_test_tuning(&mut tuning, &mut generation);
+        let accepted_generation = generation;
+        let installed = tuning.as_deref().cloned().unwrap();
+        assert_eq!(installed.environment.level_gravity, -9.81);
+
+        let regravitated = TuningPayload::new(
+            installed.movement.clone(),
+            installed.wieldables.clone(),
+            EnvironmentTuning {
+                level_gravity: -3.0,
+            },
+        );
+        let rebytes = tuning_payload::encode_tuning_payload(&regravitated);
+        assert_ne!(rebytes, encoded);
+        replace_client_tuning(&mut tuning, &mut generation, &rebytes)
+            .expect("gravity-only payload installs");
+        assert_eq!(generation, accepted_generation);
+        assert_eq!(
+            tuning.as_deref().unwrap().environment.level_gravity,
+            -3.0,
+            "the client installs the host's level gravity on arrival"
+        );
+
+        let mut retuned_movement = installed.movement.clone().unwrap();
+        retuned_movement.ground.speed.run += 1.0;
+        let retuned = TuningPayload::new(
+            Some(retuned_movement),
+            installed.wieldables,
+            EnvironmentTuning {
+                level_gravity: -3.0,
+            },
+        );
+        replace_client_tuning(
+            &mut tuning,
+            &mut generation,
+            &tuning_payload::encode_tuning_payload(&retuned),
+        )
+        .expect("retuned payload installs");
+        assert_ne!(
+            generation, accepted_generation,
+            "a pawn-tuning change still rebuilds"
+        );
+    }
+
+    // The client's prediction environment comes only from the host's installed
+    // payload: no view before install, and the host's gravity after it.
+    #[test]
+    fn client_environment_view_reads_only_the_installed_host_gravity() {
+        let volumes = postretro_collision::EnvironmentVolumes::empty();
+        assert!(client_environment_view(None, &volumes).is_none());
+
+        let mut tuning = None;
+        let mut generation = 0;
+        install_test_tuning(&mut tuning, &mut generation);
+        let view = client_environment_view(tuning.as_deref(), &volumes)
+            .expect("installed tuning yields a view");
+        assert_eq!(view.level_gravity, -9.81);
+    }
+
+    // Executor check (E24 research, fifth direction review): the per-poll resend
+    // skips a participating slot with no pawn, so a slot that gains its pawn after
+    // a mid-level `setGravity` must get the current value from its materialization
+    // send. Both sends share one dedupe.
+    #[test]
+    fn tuning_send_reaches_a_pawn_gained_after_set_gravity_with_the_current_value() {
+        let mut registry = EntityRegistry::new();
+        let joined_pawn = registry.spawn(Transform::default());
+        let late_pawn = registry.spawn(Transform::default());
+        let mut last_sent = HashMap::new();
+        let sent_gravity = |message: Option<Vec<u8>>| -> Option<f32> {
+            let ServerControlMessage::Tuning(bytes) = wire::decode(&message?).unwrap() else {
+                panic!("tuning sends a Tuning control message");
+            };
+            Some(
+                decode_tuning_payload(&bytes)
+                    .unwrap()
+                    .environment
+                    .level_gravity,
+            )
+        };
+        let payload_at = |pawn: EntityId, level_gravity: f32| {
+            tuning_payload_for_pawn(
+                &registry,
+                pawn,
+                &[],
+                None,
+                &EnvironmentTuning { level_gravity },
+            )
+        };
+
+        // Client 1 joins at the level's initial gravity; an unchanged poll is quiet.
+        assert_eq!(
+            sent_gravity(tuning_control_if_changed(
+                &mut last_sent,
+                1,
+                payload_at(joined_pawn, -9.81)
+            )),
+            Some(-9.81)
+        );
+        assert_eq!(
+            sent_gravity(tuning_control_if_changed(
+                &mut last_sent,
+                1,
+                payload_at(joined_pawn, -9.81)
+            )),
+            None
+        );
+
+        // Mid-level `setGravity`: the joined slot's next poll resends.
+        assert_eq!(
+            sent_gravity(tuning_control_if_changed(
+                &mut last_sent,
+                1,
+                payload_at(joined_pawn, -2.5)
+            )),
+            Some(-2.5)
+        );
+
+        // Client 2 gains its pawn afterwards: its materialization send carries the
+        // current value, not the level's initial one.
+        assert_eq!(
+            sent_gravity(tuning_control_if_changed(
+                &mut last_sent,
+                2,
+                payload_at(late_pawn, -2.5)
+            )),
+            Some(-2.5)
+        );
+    }
+
     // Regression: Control tuning arriving after the local-player baseline was
     // stored but never rebuilt movement until another arming snapshot arrived.
     #[test]
@@ -3135,7 +3389,11 @@ mod tests {
         let mut host_movement = local_descriptor.movement.unwrap();
         host_movement.ground.speed.run = 29.0;
         host_movement.view_feel = None;
-        let first = TuningPayload::new(Some(host_movement.clone()), std::array::from_fn(|_| None));
+        let first = TuningPayload::new(
+            Some(host_movement.clone()),
+            std::array::from_fn(|_| None),
+            test_environment(),
+        );
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&first),
@@ -3157,7 +3415,11 @@ mod tests {
         assert_eq!(applied_generation, 1);
 
         host_movement.ground.speed.run = 37.0;
-        let retuned = TuningPayload::new(Some(host_movement), std::array::from_fn(|_| None));
+        let retuned = TuningPayload::new(
+            Some(host_movement),
+            std::array::from_fn(|_| None),
+            test_environment(),
+        );
         apply_installed_movement_tuning_to_armed_pawn(
             &armed,
             Some(&retuned),
@@ -6930,6 +7192,7 @@ mod tests {
                 forgiveness: None,
                 crouch: None,
                 slide: None,
+                swim: None,
                 view_feel: None,
             }),
             weapon: None,

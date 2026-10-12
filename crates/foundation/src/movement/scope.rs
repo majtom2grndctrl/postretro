@@ -233,6 +233,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

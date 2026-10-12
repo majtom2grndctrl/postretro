@@ -298,6 +298,7 @@ fn player_movement() -> PlayerMovementDescriptor {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }

@@ -11,18 +11,19 @@ use crate::data_descriptors::{
     drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
     drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
     drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
-    drain_factions_lua, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
-    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
-    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
-    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
-    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
-    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
-    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js, drain_fonts_lua,
+    drain_frontend_js, drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
+    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
+    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
+    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
+    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -472,6 +473,15 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let fluids = match drain_fluids_js(&ctx, &obj, "default mod manifest export") {
+            Ok(fluids) => fluids,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `fluids` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let reactions = match drain_global_reactions_js(&ctx, &obj, "default mod manifest export") {
             Ok(r) => r,
             Err(e) => {
@@ -557,6 +567,7 @@ pub(super) fn run_mod_init_quickjs(
             loading,
             fonts,
             maps,
+            fluids,
             reactions,
             crossings,
             events,
@@ -847,6 +858,13 @@ pub(super) fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `maps` invalid: {e}"),
         }
     })?;
+    let fluids = drain_fluids_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `fluids` invalid: {e}"
+            ),
+        }
+    })?;
     let reactions = drain_global_reactions_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -916,6 +934,7 @@ pub(super) fn run_mod_init_luau(
         loading,
         fonts,
         maps,
+        fluids,
         reactions,
         crossings,
         events,
@@ -1206,6 +1225,65 @@ mod tests {
         .expect("absent Luau switching block should default");
         assert_eq!(js_default.switching, SwitchingDescriptor::default());
         assert_eq!(luau_default.switching, SwitchingDescriptor::default());
+    }
+
+    #[test]
+    fn mod_init_commits_valid_fluids_and_keeps_the_manifest_when_one_is_rejected() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js = run_mod_init_quickjs(
+            &quickjs,
+            "globalThis.__postretroModManifest = { name: 'Fluids', id: 'fluids', version: '1', fluids: [{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, surfaceOpacity: 0.6, enterSound: 'sfx/splash_in' }, { name: 'tar', viscosity: -1, viewTint: [0, 0, 0, 1], muffle: 1, surfaceOpacity: 1 }, { name: 'sludge', viscosity: 6, viewTint: [0.2, 0.3, 0.1, 0.5], muffle: 0.9, surfaceOpacity: 0.9 }], maps: [{ id: 'e1', path: 'maps/e1.prl', name: 'E1' }] };",
+            "fluids.js",
+        )
+        .expect("a rejected fluid never rejects the QuickJS manifest");
+        let luau = run_mod_init_luau(
+            &[],
+            "return defineMod({ name = 'Fluids', id = 'fluids', version = '1', fluids = { defineFluid({ name = 'water', viscosity = 2, viewTint = {0.1, 0.3, 0.4, 0.35}, muffle = 0.8, surfaceOpacity = 0.6, enterSound = 'sfx/splash_in' }), defineFluid({ name = 'tar', viscosity = -1, viewTint = {0, 0, 0, 1}, muffle = 1, surfaceOpacity = 1 }), defineFluid({ name = 'sludge', viscosity = 6, viewTint = {0.2, 0.3, 0.1, 0.5}, muffle = 0.9, surfaceOpacity = 0.9 }) }, maps = {{ id = 'e1', path = 'maps/e1.prl', name = 'E1' }} })",
+            "fluids.luau",
+            Path::new("."),
+        )
+        .expect("the Luau defineFluid helper builds a manifest a rejected fluid never rejects");
+        assert_eq!(js.fluids, luau.fluids);
+        assert_eq!(js.fluids.names(), ["water", "sludge"]);
+        assert_eq!(js.fluids.index_of("sludge"), Some(1));
+        for manifest in [&js, &luau] {
+            assert_eq!(manifest.maps.len(), 1, "the rest of the manifest stands");
+        }
+    }
+
+    // AC P9 (validation half): a bad swim block rejects its descriptor, naming the field.
+    #[test]
+    fn mod_init_rejects_a_swim_block_whose_exit_depth_is_not_below_enter_depth() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let movement_js = "movement: { capsule: { radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }, ground: { speed: { walk: 7, run: 11, crouch: 3 }, accel: 10, stepHeight: 0.3, maxSlope: 45 }, air: { forwardSteer: 0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0 }, fall: { terminalVelocity: 40 }, swim: { speed: 4.5, accel: 6, sinkSpeed: 0.8, enterDepth: 0.4, exitDepth: 0.4, fluidJumpVelocity: 6.5 } }";
+        let js_error = run_mod_init_quickjs(
+            &quickjs,
+            &format!(
+                "globalThis.__postretroModManifest = {{ name: 'Swim', id: 'swim', version: '1', entities: [{{ canonicalName: 'player', components: {{ {movement_js} }} }}] }};"
+            ),
+            "swim.js",
+        )
+        .expect_err("a swim block with exitDepth >= enterDepth rejects the descriptor");
+        let movement_luau = movement_js.replace(": ", " = ");
+        let luau_error = run_mod_init_luau(
+            &[],
+            &format!(
+                "return defineMod({{ name = 'Swim', id = 'swim', version = '1', entities = {{ {{ canonicalName = 'player', components = {{ {movement_luau} }} }} }} }})"
+            ),
+            "swim.luau",
+            Path::new("."),
+        )
+        .expect_err("the Luau descriptor rejects the same swim block");
+        for error in [js_error.to_string(), luau_error.to_string()] {
+            assert!(
+                error.contains("movement.swim.exitDepth"),
+                "the rejection names the field: {error}"
+            );
+        }
     }
 
     #[test]

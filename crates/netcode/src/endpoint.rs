@@ -785,6 +785,18 @@ impl NetEndpoint {
         time_sync.weapon_cues.clear();
     }
 
+    /// The host's level gravity from this client's installed tuning payload.
+    /// `None` on a host, or on a client before a payload installs; a client never
+    /// substitutes its own level gravity.
+    pub fn client_host_level_gravity(&self) -> Option<f32> {
+        match self {
+            Self::Client { tuning, .. } => tuning
+                .as_deref()
+                .map(|payload| payload.environment.level_gravity),
+            Self::Host { .. } => None,
+        }
+    }
+
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
@@ -801,22 +813,28 @@ impl NetEndpoint {
         else {
             return;
         };
+        let generation_before = *tuning_generation;
         let result = replace_client_tuning(tuning, tuning_generation, bytes);
-        if let Some(armed) = replication.armed_local_pawn() {
-            apply_installed_movement_tuning_to_armed_pawn(
-                &armed,
-                tuning.as_deref(),
-                *tuning_generation,
-                applied_movement_tuning_generation,
-                descriptors,
-                registry,
-            );
-        } else if tuning
-            .as_deref()
-            .and_then(|payload| payload.movement.as_ref())
-            .is_none()
-        {
-            *applied_movement_tuning_generation = *tuning_generation;
+        // An environment-only change keeps the generation: nothing pawn-side to
+        // rematerialize, and prediction reads the new level gravity next tick.
+        let pawn_tuning_changed = *tuning_generation != generation_before;
+        if pawn_tuning_changed {
+            if let Some(armed) = replication.armed_local_pawn() {
+                apply_installed_movement_tuning_to_armed_pawn(
+                    &armed,
+                    tuning.as_deref(),
+                    *tuning_generation,
+                    applied_movement_tuning_generation,
+                    descriptors,
+                    registry,
+                );
+            } else if tuning
+                .as_deref()
+                .and_then(|payload| payload.movement.as_ref())
+                .is_none()
+            {
+                *applied_movement_tuning_generation = *tuning_generation;
+            }
         }
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
@@ -872,6 +890,58 @@ mod tests {
             unreachable!();
         };
         assert_eq!(time_sync.drain_weapon_cues().count(), 0);
+    }
+
+    // The client stores the host's level gravity with its installed tuning and
+    // never substitutes its own; a gravity-only resend keeps both generations,
+    // so no pawn rebuild is queued for it.
+    #[test]
+    fn client_installs_host_level_gravity_without_queueing_a_pawn_rebuild() {
+        use postretro_combat_model::EnvironmentTuning;
+
+        let mut endpoint = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut registry = EntityRegistry::new();
+        assert_eq!(endpoint.client_host_level_gravity(), None);
+
+        let payload = |level_gravity: f32| {
+            crate::tuning_payload::encode_tuning_payload(&TuningPayload::new(
+                None,
+                std::array::from_fn(|_| None),
+                EnvironmentTuning { level_gravity },
+            ))
+        };
+        let generations = |endpoint: &NetEndpoint| match endpoint {
+            NetEndpoint::Client {
+                tuning_generation,
+                applied_movement_tuning_generation,
+                ..
+            } => (*tuning_generation, *applied_movement_tuning_generation),
+            NetEndpoint::Host { .. } => unreachable!(),
+        };
+
+        endpoint.install_tuning_payload(&payload(-12.0), &mut registry, &[]);
+        assert_eq!(endpoint.client_host_level_gravity(), Some(-12.0));
+        let first = generations(&endpoint);
+
+        endpoint.install_tuning_payload(&payload(-4.5), &mut registry, &[]);
+        assert_eq!(endpoint.client_host_level_gravity(), Some(-4.5));
+        assert_eq!(generations(&endpoint), first);
+
+        let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host.client_host_level_gravity(),
+            None,
+            "the host reads its own level gravity, never a payload"
+        );
     }
 
     #[test]

@@ -191,6 +191,22 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `swim` is optional: absence means the pawn cannot swim. When present,
+    // every field is required and validated, mirroring `slide`.
+    let swim = if obj.contains_key("swim").map_err(js_err)? {
+        let raw: JsValue = obj.get("swim").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let swim_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`movement.swim` must be an object".to_string(),
+            })?;
+            Some(swim_params_from_js(&swim_obj)?)
+        }
+    } else {
+        None
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if obj.contains_key("viewFeel").map_err(js_err)? {
@@ -248,6 +264,7 @@ pub fn movement_descriptor_from_js<'js>(
         forgiveness,
         crouch,
         slide,
+        swim,
         view_feel,
         sounds,
     })
@@ -452,6 +469,20 @@ pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, Descr
         entry_boost,
         min_duration_ms,
     })
+}
+
+/// Parse a `swim` sub-object. All six fields are required; ranges and the
+/// `exitDepth < enterDepth` order are checked by [`SwimParams::validated`].
+pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, DescriptorError> {
+    SwimParams {
+        speed: get_required_f32_js(obj, "speed")?,
+        accel: get_required_f32_js(obj, "accel")?,
+        sink_speed: get_required_f32_js(obj, "sinkSpeed")?,
+        enter_depth: get_required_f32_js(obj, "enterDepth")?,
+        exit_depth: get_required_f32_js(obj, "exitDepth")?,
+        fluid_jump_velocity: get_required_f32_js(obj, "fluidJumpVelocity")?,
+    }
+    .validated()
 }
 
 pub fn get_required_object_js<'js>(

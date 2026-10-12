@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::super::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, PresentationOverlay,
-    PresentationTemplate, RegisteredUiTree, SwitchingDescriptor, TriggerPoolDescriptor,
-    WeaponPlacementDescriptor,
+    EntityTypeDescriptor, FluidRegistry, ImpactEventDescriptor, ModThemeTokens,
+    PresentationOverlay, PresentationTemplate, RegisteredUiTree, SwitchingDescriptor,
+    TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
 use super::super::data_registry::{
     FactionRegistry, FactionSentimentDescriptor, ScopedCrossing, ScopedReaction,
@@ -67,6 +67,9 @@ pub struct StagedManifest {
     /// resolved faction registry across the staged worker boundary.
     pub faction_sentiment_decay: f32,
     pub entity_faction_names: Vec<Option<String>>,
+    /// Committed whole; the app re-resolves the installed level's fluid
+    /// volumes when the names change.
+    pub fluids: FluidRegistry,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,

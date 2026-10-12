@@ -3811,14 +3811,11 @@ impl App {
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision and the
-        // environment through `client_receive_and_apply`. Capture the level gravity
-        // before the endpoint borrow (a `Cell` copy); the collision world and the
-        // environment volumes are read by-reference inside the client arm (disjoint
-        // `self` fields from `self.session`).
-        let environment = postretro_collision::EnvironmentView::new(
-            script_ctx.gravity.get(),
-            &self.environment_volumes,
-        );
+        // environment through `client_receive_and_apply`, which takes the level
+        // gravity from the host's installed tuning, never this process's own. The
+        // collision world and the environment volumes are read by-reference inside
+        // the client arm (disjoint `self` fields from `self.session`).
+        let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
@@ -4167,11 +4164,15 @@ impl App {
                                     hit_zone_store,
                                     pawn,
                                 );
+                                // The materialization send reads the level
+                                // gravity live, so a pawn gained after a
+                                // mid-level `setGravity` predicts with it.
                                 let payload = netcode::tuning_payload_for_pawn(
                                     &registry,
                                     pawn,
                                     &net_descriptors,
                                     net_default_weapon_placement.as_ref(),
+                                    &netcode::host_environment_tuning(&script_ctx),
                                 );
                                 netcode::host_send_tuning_if_changed(
                                     server,
@@ -4210,29 +4211,8 @@ impl App {
                         }
                     }
                 }
-                // Inventory changes have no separate dirty protocol. Rebuild every
-                // participating pawn's small fixed tuning payload each host poll;
-                // `host_send_tuning_if_changed` remains the final wire dedupe.
-                {
-                    let registry = script_ctx.registry.borrow();
-                    for client_id in server.participating_clients() {
-                        let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-                            continue;
-                        };
-                        let payload = netcode::tuning_payload_for_pawn(
-                            &registry,
-                            pawn,
-                            &net_descriptors,
-                            net_default_weapon_placement.as_ref(),
-                        );
-                        netcode::host_send_tuning_if_changed(
-                            server,
-                            last_sent_tuning,
-                            client_id,
-                            payload,
-                        );
-                    }
-                }
+                // Changed tuning for already-pawned slots is resent in
+                // `net_serialize_and_send`, just before the snapshot send.
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo
@@ -4365,7 +4345,7 @@ impl App {
                         hit_zone_store,
                         host_agent_params,
                         &combined_collision,
-                        environment,
+                        environment_volumes,
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
                         mover_target_tick,
@@ -4679,7 +4659,7 @@ impl App {
             last_emitted_snapshot_tick,
             replication,
             replicable,
-            slot_pawns: _,
+            slot_pawns,
             command_queues,
             owners,
             weapon_owners,
@@ -4691,7 +4671,7 @@ impl App {
             loaded_movers: _,
             demo_mover,
             state_slots,
-            last_sent_tuning: _,
+            last_sent_tuning,
             join_seeds: _,
             missing_identity_warned: _,
             client_pawn_presentation: _,
@@ -4735,6 +4715,21 @@ impl App {
             // projections read the live components directly, so replication observes
             // this frame's settled authoritative state.
             let registry = script_ctx.registry.borrow();
+            // Tuning changed by any of this frame's ticks (inventory, a host
+            // `setGravity`) is queued ahead of the snapshot that first reflects
+            // it, so a catch-up frame cannot deliver that snapshot a flush early.
+            {
+                let data_registry = script_ctx.data_registry.borrow();
+                netcode::host_resend_changed_tuning(
+                    server,
+                    slot_pawns,
+                    last_sent_tuning,
+                    &registry,
+                    &data_registry.entities,
+                    data_registry.default_weapon_placement.as_ref(),
+                    &netcode::host_environment_tuning(&script_ctx),
+                );
+            }
             let slot_table = script_ctx.slot_table.borrow();
             let faction_sentiment = script_ctx.faction_sentiment.borrow();
             let bindings = crate::scripting_systems::presentation_bindings::PresentationBindings {
@@ -5592,7 +5587,10 @@ impl App {
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())?;
         let Some(netcode::NetEndpoint::Client {
-            client, prediction, ..
+            client,
+            prediction,
+            tuning,
+            ..
         }) = self
             .session
             .as_mut()
@@ -5600,10 +5598,6 @@ impl App {
         else {
             return None;
         };
-        let environment = postretro_collision::EnvironmentView::new(
-            script_ctx.gravity.get(),
-            &self.environment_volumes,
-        );
         let mut registry = script_ctx.registry.borrow_mut();
         let mut command = command.clone();
         command.firing_slot = registry
@@ -5628,7 +5622,8 @@ impl App {
                 command: &command,
                 aim_pitch,
                 collision: &combined_collision,
-                environment,
+                environment_volumes: &self.environment_volumes,
+                host_tuning: tuning.as_deref(),
                 tick_dt,
             },
         ))
@@ -7314,7 +7309,13 @@ mod tests {
             raise_ms: 0,
             block_during_reload: None,
         });
-        let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
+        let initial = postretro_combat_model::TuningPayload::new(
+            None,
+            slots.clone(),
+            postretro_combat_model::EnvironmentTuning {
+                level_gravity: -9.81,
+            },
+        );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
         assert_eq!(terms.placement, host_placement);
         assert_eq!(terms.muzzle_offset, Some(Vec3::from_array(host_muzzle)));
@@ -7334,7 +7335,13 @@ mod tests {
         // snapshot refresh. The old component/data values remain irrelevant.
         slots[0].as_mut().unwrap().placement = replacement_placement.clone();
         slots[0].as_mut().unwrap().muzzle_offset = Some(replacement_muzzle);
-        let replacement = postretro_combat_model::TuningPayload::new(None, slots);
+        let replacement = postretro_combat_model::TuningPayload::new(
+            None,
+            slots,
+            postretro_combat_model::EnvironmentTuning {
+                level_gravity: -9.81,
+            },
+        );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");
         assert_eq!(terms.placement, replacement_placement);
         assert_eq!(
@@ -7806,6 +7813,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -11079,6 +11087,7 @@ mod tests {
                     sentiment: Vec::new(),
                     faction_sentiment_decay: 0.0,
                     entity_faction_names: Vec::new(),
+                    fluids: Default::default(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),

@@ -239,6 +239,7 @@ mod tests {
                 entry_boost: 1.0,
                 min_duration_ms: 100.0,
             }),
+            swim: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,

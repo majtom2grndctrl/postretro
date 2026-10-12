@@ -166,6 +166,8 @@ export type PostretroModule = {
   defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),
+  --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
+  defineFluid: typeof(defineFluid),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

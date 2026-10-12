@@ -64,6 +64,7 @@ fn movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }

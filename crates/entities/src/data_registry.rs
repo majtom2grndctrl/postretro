@@ -14,7 +14,7 @@ use super::data_descriptors::{
     PlayerEventDescriptor, PlayerEventSource, TriggerEventDescriptor, TriggerPoolDescriptor,
     VolumeTriggerEventDescriptor,
 };
-use postretro_foundation::{ModMapEntry, WeaponPlacementDescriptor};
+use postretro_foundation::{FluidRegistry, ModMapEntry, WeaponPlacementDescriptor};
 
 /// Engine-global reaction definition plus its optional level-tag scope.
 /// Empty `levels` means all levels; activation/composition happens separately.
@@ -754,6 +754,10 @@ pub struct DataRegistry {
     /// Manifest-authored named faction registry. Engine-global like entity
     /// descriptors: level unload clears no faction declarations or indices.
     pub factions: FactionRegistry,
+    /// Manifest-declared fluids, indexed by declaration order. Engine-global
+    /// like factions; a level's fluid volumes resolve their names against it
+    /// at install and on every committed manifest reload.
+    pub fluids: FluidRegistry,
     /// Mod map catalog entries. Engine-global — survive level unload.
     /// Populated by the boot caller from `ModManifest.maps` so the
     /// frontend and catalog-id load path can discover maps before a level is
@@ -1037,6 +1041,13 @@ impl DataRegistry {
         sentiment.rebase(&self.factions);
     }
 
+    /// Replace the committed fluid declarations as one snapshot. Unlike
+    /// factions, a reload may add, remove or reorder fluids: the binary
+    /// re-resolves the installed level's fluid volumes after the commit.
+    pub fn replace_fluids(&mut self, fluids: FluidRegistry) {
+        self.fluids = fluids;
+    }
+
     /// Identity of the current complete entity-descriptor snapshot.
     pub fn entity_types_generation(&self) -> u64 {
         self.entity_types_generation
@@ -1127,6 +1138,7 @@ impl DataRegistry {
             && self.level_player_events.is_empty()
             && self.entities.is_empty()
             && self.factions.descriptors().is_empty()
+            && self.fluids.is_empty()
             && self.maps.is_empty()
             && self.default_weapon_placement.is_none()
     }

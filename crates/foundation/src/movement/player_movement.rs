@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::KnockbackResponse;
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, ViewFeelParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SwimParams, ViewFeelParams,
 };
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
@@ -225,6 +225,9 @@ pub struct PlayerMovementComponent {
     /// dimensions, so a descriptor that enables slide without crouch visibly
     /// degrades to this disabled state during materialization.
     pub slide: Option<SlideParams>,
+    /// Optional swim tuning, materialized from the descriptor's `swim` field.
+    /// `None` ⇒ the pawn cannot swim and walks fluid floors.
+    pub swim: Option<SwimParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
@@ -384,6 +387,7 @@ impl PlayerMovementComponent {
             dash_programs,
             crouch: desc.crouch.clone(),
             slide,
+            swim: desc.swim.clone(),
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
@@ -541,6 +545,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

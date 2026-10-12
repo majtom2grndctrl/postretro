@@ -607,7 +607,7 @@ export function defineEntity<T>(
  * `config.name`, `config.id`, and `config.version` are required. The id gates
  * multiplayer admission; the version is display-only and never compared. The
  * first committed id and version remain active across staged reloads. Optional
- * arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`,
+ * arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
  * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
  * effects until the manifest is returned and validated. `factionSentimentDecay`
@@ -642,6 +642,19 @@ export function sentiment(
   >,
 ): import("postretro").FactionSentimentDescriptor {
   return { fromFaction, toFaction, ...values };
+}
+
+/** Identity builder for a fluid declaration in `defineMod({ fluids: [...] })`.
+ * A map's `fluid_volume` names it through its `fluid` key; declaration order
+ * assigns its index. `viscosity` is drag while swimming (1/s, >= 0);
+ * `viewTint` is rgb plus strength, `muffle` and `surfaceOpacity` each in
+ * [0, 1]; `enterSound` and `exitSound` are optional sound keys. A field out of
+ * range, or a repeated name, is rejected with a warning naming the field, and
+ * the first declaration stands. Pure: no engine side effects. */
+export function defineFluid(
+  desc: import("postretro").FluidDescriptor,
+): import("postretro").FluidDescriptor {
+  return desc;
 }
 
 /** Identity builder for a mod map catalog. `entries` are `ModMapEntry` objects with required `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. Pure: no engine side effects. */

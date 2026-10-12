@@ -835,6 +835,8 @@ export type PlayerMovementDescriptor = {
   crouch: CrouchParams?,
   --- Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.
   slide: SlideParams?,
+  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required. Never overridable by a map.
+  swim: SwimParams?,
   --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
   viewFeel: ViewFeelParams?,
   --- Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated.
@@ -951,6 +953,22 @@ export type SlideParams = {
   entryBoost: number,
   --- Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0.
   minDurationMs: number,
+}
+
+--- Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a bad field rejects the descriptor naming `movement.swim.<field>`.
+export type SwimParams = {
+  --- Target swim speed in metres/sec. Must be finite and ≥ 0.
+  speed: number,
+  --- Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.
+  accel: number,
+  --- Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.
+  sinkSpeed: number,
+  --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite and in [0, 1].
+  enterDepth: number,
+  --- Immersion fraction below which swimming ends. Must be finite, in [0, 1], and less than `enterDepth`.
+  exitDepth: number,
+  --- Upward velocity in metres/sec a jump from the surface sets while the eye is out of the fluid. Must be finite and ≥ 0.
+  fluidJumpVelocity: number,
 }
 
 --- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion.
@@ -1366,6 +1384,24 @@ export type FactionSentimentDescriptor = {
   decay: number?,
 }
 
+--- A substance declared in `ModManifest.fluids`, built with `defineFluid`. A map's `fluid_volume` names it through its `fluid` key; the volume owns the place, this owns what being in it is like. Declaration order assigns each fluid's index. A field out of range, or a second declaration of an existing name, is rejected with a warning naming the field; the first declaration stands and the rest of the manifest is kept. Fluids never affect co-op compatibility.
+export type FluidDescriptor = {
+  --- Non-empty name a `fluid_volume`'s `fluid` key refers to. Unique within the manifest; a later duplicate is rejected.
+  name: string,
+  --- Drag while swimming, 1/s. Finite and >= 0. A volume naming no declared fluid loads dry.
+  viscosity: number,
+  --- Full-screen tint while the camera eye is inside: red, green, blue, then strength. Each finite and in [0, 1].
+  viewTint: {number},
+  --- World-sound low-pass while the camera eye is inside: 0 none, 1 maximum. Finite and in [0, 1].
+  muffle: number,
+  --- Opacity of the fluid's visible surface faces. Finite and in [0, 1].
+  surfaceOpacity: number,
+  --- Optional sound key played when a swim starts in this fluid.
+  enterSound: string?,
+  --- Optional sound key played when a swim in this fluid ends.
+  exitSound: string?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -1394,6 +1430,8 @@ export type ModManifest = {
   sentiment: {FactionSentimentDescriptor}?,
   --- Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.
   factionSentimentDecay: number?,
+  --- Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.
+  fluids: {FluidDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -2481,7 +2519,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -2496,6 +2534,11 @@ declare function defineFaction(name: string): FactionDescriptor
 --- Optional non-negative `decay` overrides the global return rate; zero holds
 --- this pair after a runtime change.
 declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
+--- Pure identity builder for a fluid declaration in `fluids` on the returned
+--- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
+--- declaration order assigns its index. A field out of range, or a repeated
+--- name, is rejected with a warning naming the field; the first stands.
+declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -2585,6 +2628,7 @@ export type ModManifestInput = {
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
+  fluids: {FluidDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -3280,6 +3324,8 @@ export type PostretroModule = {
   defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),
+  --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
+  defineFluid: typeof(defineFluid),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

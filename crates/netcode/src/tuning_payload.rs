@@ -37,7 +37,11 @@ fn payload_json_error(source: serde_json::Error) -> TuningPayloadError {
 
 /// Serialize a payload in its canonical JSON form.
 pub(crate) fn encode_tuning_payload(payload: &TuningPayload) -> Vec<u8> {
-    let canonical = TuningPayload::new(payload.movement.clone(), payload.wieldables.clone());
+    let canonical = TuningPayload::new(
+        payload.movement.clone(),
+        payload.wieldables.clone(),
+        payload.environment.clone(),
+    );
     serde_json::to_vec(&canonical)
         .expect("tuning payload only contains validated descriptor values")
 }
@@ -78,7 +82,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use postretro_combat_model::WieldableTuningPayload;
+    use postretro_combat_model::{EnvironmentTuning, WieldableTuningPayload};
     use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams,
@@ -150,6 +154,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -226,8 +231,22 @@ mod tests {
         slots
     }
 
+    /// A level gravity distinct from every default, so a dropped or defaulted
+    /// field cannot round-trip by accident.
+    const HOST_LEVEL_GRAVITY: f32 = -7.25;
+
+    fn host_environment() -> EnvironmentTuning {
+        EnvironmentTuning {
+            level_gravity: HOST_LEVEL_GRAVITY,
+        }
+    }
+
     fn full_payload() -> TuningPayload {
-        TuningPayload::new(Some(movement_descriptor()), weapon_slots())
+        TuningPayload::new(
+            Some(movement_descriptor()),
+            weapon_slots(),
+            host_environment(),
+        )
     }
 
     #[test]
@@ -248,8 +267,11 @@ mod tests {
             land: Some("sfx/land".to_string()),
             jump: Some("sfx/jump".to_string()),
         });
-        let payload =
-            TuningPayload::new_for_test_preserving_view_feel(Some(descriptor), weapon_slots());
+        let payload = TuningPayload::new_for_test_preserving_view_feel(
+            Some(descriptor),
+            weapon_slots(),
+            host_environment(),
+        );
 
         let encoded = encode_tuning_payload(&payload);
         let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
@@ -284,7 +306,7 @@ mod tests {
         let decoded = decode_tuning_payload(&encoded).unwrap();
         assert_eq!(
             decoded,
-            TuningPayload::new(payload.movement, payload.wieldables)
+            TuningPayload::new(payload.movement, payload.wieldables, payload.environment)
         );
         let movement = decoded.movement.unwrap();
         assert!((movement.knockback.air_drag - 3.0).abs() < 1.0e-6);
@@ -297,9 +319,55 @@ mod tests {
 
     #[test]
     fn payload_round_trips_absent_halves() {
-        let payload = TuningPayload::new(None, std::array::from_fn(|_| None));
+        let payload = TuningPayload::new(None, std::array::from_fn(|_| None), host_environment());
         let decoded = decode_tuning_payload(&encode_tuning_payload(&payload)).unwrap();
         assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn payload_round_trips_host_level_gravity() {
+        let encoded = encode_tuning_payload(&full_payload());
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            json["environment"]["level_gravity"],
+            f64::from(HOST_LEVEL_GRAVITY)
+        );
+
+        let decoded = decode_tuning_payload(&encoded).unwrap();
+        assert_eq!(decoded.environment.level_gravity, HOST_LEVEL_GRAVITY);
+        assert_eq!(decoded, full_payload());
+
+        // Upward and weightless level gravity are legitimate host values.
+        for level_gravity in [4.0, 0.0] {
+            let payload = TuningPayload::new(
+                None,
+                std::array::from_fn(|_| None),
+                EnvironmentTuning { level_gravity },
+            );
+            let decoded = decode_tuning_payload(&encode_tuning_payload(&payload)).unwrap();
+            assert_eq!(decoded.environment.level_gravity, level_gravity);
+        }
+    }
+
+    // A current-epoch payload must carry the host's level gravity: a client that
+    // defaulted a missing value would predict against a gravity nobody sent.
+    #[test]
+    fn payload_rejects_missing_or_non_numeric_level_gravity() {
+        let encoded = encode_tuning_payload(&full_payload());
+        let mut missing: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        missing.as_object_mut().unwrap().remove("environment");
+        assert!(matches!(
+            decode_tuning_payload(&serde_json::to_vec(&missing).unwrap()),
+            Err(TuningPayloadError::Malformed { .. })
+        ));
+
+        // JSON has no non-finite numbers; a NaN or infinity reaches the wire as null.
+        let mut null_gravity: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        null_gravity["environment"]["level_gravity"] = serde_json::Value::Null;
+        assert!(matches!(
+            decode_tuning_payload(&serde_json::to_vec(&null_gravity).unwrap()),
+            Err(TuningPayloadError::Malformed { .. })
+        ));
     }
 
     #[test]
@@ -331,18 +399,22 @@ mod tests {
         ));
     }
 
+    // Epoch 10 predates the host's level gravity. Its payload has no
+    // `environment`, and it must explain its stale epoch rather than fail as a
+    // missing field.
     #[test]
-    fn payload_rejects_previous_epoch() {
+    fn payload_rejects_previous_epoch_without_level_gravity() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
-        json["epoch"] = serde_json::json!(9);
+        json.as_object_mut().unwrap().remove("environment");
+        json["epoch"] = serde_json::json!(10);
         let previous_epoch = serde_json::to_vec(&json).unwrap();
 
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 10,
-                received: 9,
+                expected: 11,
+                received: 10,
             })
         ));
     }

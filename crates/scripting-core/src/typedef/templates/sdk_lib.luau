@@ -859,7 +859,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -874,6 +874,11 @@ declare function defineFaction(name: string): FactionDescriptor
 --- Optional non-negative `decay` overrides the global return rate; zero holds
 --- this pair after a runtime change.
 declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
+--- Pure identity builder for a fluid declaration in `fluids` on the returned
+--- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
+--- declaration order assigns its index. A field out of range, or a repeated
+--- name, is rejected with a warning naming the field; the first stands.
+declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -1123,6 +1128,7 @@ export type ModManifestInput = {
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
+  fluids: {FluidDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

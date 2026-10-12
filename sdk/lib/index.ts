@@ -120,6 +120,7 @@ export {
   defineMod,
   defineFaction,
   sentiment,
+  defineFluid,
   defineMapCatalog,
   defineWeaponPlacement,
   defineTriggerPool,

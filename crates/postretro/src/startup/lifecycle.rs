@@ -554,7 +554,10 @@ impl App {
         // no earlier level's volume survives; the renderer-less return below
         // keeps it installed.
         self.environment_volumes =
-            crate::startup::environment_install::build_level_environment_volumes(&world);
+            crate::startup::environment_install::build_level_environment_volumes(
+                &world,
+                &self.environment_fluid_names(),
+            );
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
@@ -3701,6 +3704,7 @@ pub(crate) mod tests {
                 sentiment: Vec::new(),
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
+                fluids: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),

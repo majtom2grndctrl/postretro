@@ -4,13 +4,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::KnockbackResponse;
+use crate::data_descriptors::DescriptorError;
 use crate::ir::IrNode;
 
 /// Authored player-movement component preset. The four core sub-objects
 /// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is
 /// present; `dash` is optional — its absence disables dash entirely; `crouch`
 /// is optional — its absence disables crouch entirely; `slide` is optional —
-/// its absence disables slide entirely. The data-archetype
+/// its absence disables slide entirely; `swim` is optional — its absence
+/// means the pawn cannot swim. The data-archetype
 /// spawn path materializes the runtime movement component from this.
 /// `ground.max_slope` is in degrees on the wire and converted to a cosine at
 /// materialization (not here).
@@ -47,6 +49,9 @@ pub struct PlayerMovementDescriptor {
     /// materialized). When present, all of its fields are required, matching
     /// the present-then-all-required discipline of `dash`/`crouch`.
     pub slide: Option<SlideParams>,
+    /// Optional swim tuning. Absent ⇒ the pawn cannot swim and walks fluid
+    /// floors. When present, all of its fields are required and validated.
+    pub swim: Option<SwimParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway, state-transition impulse). Absent ⇒ view feel disabled (no
     /// `ViewFeelParams` materialized).
@@ -334,6 +339,52 @@ pub struct SlideParams {
     /// Minimum duration before ordinary exits may apply, milliseconds. Must be
     /// finite and ≥ 0.
     pub min_duration_ms: f32,
+}
+
+/// Swim tuning. Optional on [`PlayerMovementDescriptor`] (absent: the pawn
+/// cannot swim); when present, all fields are required and validated. Field
+/// names are camelCase on the wire (`sinkSpeed`, `enterDepth`, …) and
+/// snake_case in Rust. Never map-overridable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwimParams {
+    /// Target swim speed, metres/sec. Finite and ≥ 0.
+    pub speed: f32,
+    /// Acceleration toward the wish velocity, metres/sec². Finite and ≥ 0.
+    pub accel: f32,
+    /// Drift along gravity with no vertical input, metres/sec at standard
+    /// gravity (−9.81 m/s²). Finite and ≥ 0.
+    pub sink_speed: f32,
+    /// Immersion fraction at which any state enters swim. Finite, `[0, 1]`.
+    pub enter_depth: f32,
+    /// Immersion fraction below which swim leaves. Finite, `[0, 1]`, and
+    /// strictly less than `enter_depth`.
+    pub exit_depth: f32,
+    /// Upward velocity a jump from the surface sets, metres/sec. Finite and
+    /// ≥ 0.
+    pub fluid_jump_velocity: f32,
+}
+
+impl SwimParams {
+    /// Range-check every field, naming the first bad one as
+    /// `movement.swim.<field>`. Shared by the QuickJS and Luau parsers.
+    pub fn validated(self) -> Result<Self, DescriptorError> {
+        use crate::data_descriptors::{validate_in_range_finite, validate_non_negative_finite};
+        validate_non_negative_finite(self.speed, "movement.swim.speed")?;
+        validate_non_negative_finite(self.accel, "movement.swim.accel")?;
+        validate_non_negative_finite(self.sink_speed, "movement.swim.sinkSpeed")?;
+        validate_in_range_finite(self.enter_depth, 0.0, 1.0, "movement.swim.enterDepth")?;
+        validate_in_range_finite(self.exit_depth, 0.0, 1.0, "movement.swim.exitDepth")?;
+        if self.exit_depth >= self.enter_depth {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.swim.exitDepth` must be less than `movement.swim.enterDepth`, got exitDepth {} with enterDepth {}",
+                    self.exit_depth, self.enter_depth,
+                ),
+            });
+        }
+        validate_non_negative_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
+        Ok(self)
+    }
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,

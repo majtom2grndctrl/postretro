@@ -54,7 +54,7 @@ pub fn restore_carried_health(
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 10;
+pub const TUNING_PAYLOAD_EPOCH: u32 = 11;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -155,18 +155,35 @@ impl WieldableTuningPayload {
 /// positions. `movement.view_feel` and `movement.sounds` are always cleared
 /// because they are local presentation rather than predicted simulation tuning;
 /// this tuning payload omits sound keys. Observer cues carry frozen effective
-/// sound keys separately.
+/// sound keys separately. `environment` is the host's level state the client
+/// predicts against ([`EnvironmentTuning`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,
     pub movement: Option<PlayerMovementDescriptor>,
     pub wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+    pub environment: EnvironmentTuning,
+}
+
+/// Host level state a connected client resolves environment volumes against.
+///
+/// It rides every pawn's payload because the client never reads its own copy:
+/// prediction and reconcile replay build their environment view from the
+/// installed value. Whole-struct `PartialEq` dedupe on the host resends the
+/// payload whenever a field here changes. Level-scoped, not pawn-scoped, so a
+/// change here alone never rebuilds the client's pawn tuning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvironmentTuning {
+    /// The level default gravity, signed vertical m/s² (worldspawn
+    /// `initialGravity`, then `setGravity`). Never a volume's gravity.
+    pub level_gravity: f32,
 }
 
 impl TuningPayload {
     pub fn new(
         mut movement: Option<PlayerMovementDescriptor>,
         mut wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+        environment: EnvironmentTuning,
     ) -> Self {
         if let Some(descriptor) = movement.as_mut() {
             descriptor.view_feel = None;
@@ -182,7 +199,15 @@ impl TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            environment,
         }
+    }
+
+    /// Whether `other` carries the same pawn-scoped tuning (movement and
+    /// wieldables), whatever its environment. A client keeps its live
+    /// descriptor-derived pawn state across an environment-only change.
+    pub fn same_pawn_tuning(&self, other: &Self) -> bool {
+        self.movement == other.movement && self.wieldables == other.wieldables
     }
 
     /// Construct the only intentionally non-canonical payload shape used by
@@ -192,11 +217,13 @@ impl TuningPayload {
     pub fn new_for_test_preserving_view_feel(
         movement: Option<PlayerMovementDescriptor>,
         wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+        environment: EnvironmentTuning,
     ) -> Self {
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            environment,
         }
     }
 
@@ -217,5 +244,30 @@ impl TuningPayload {
 
     pub fn muzzle_for_slot(&self, slot: usize) -> Option<&[f32; 3]> {
         self.wieldables.get(slot)?.as_ref()?.muzzle_offset.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn payload_with_level_gravity(level_gravity: f32) -> TuningPayload {
+        TuningPayload::new(
+            None,
+            std::array::from_fn(|_| None),
+            EnvironmentTuning { level_gravity },
+        )
+    }
+
+    // The host resends on whole-struct inequality, so a level-gravity change
+    // alone must read as a new payload while leaving pawn tuning untouched.
+    #[test]
+    fn level_gravity_change_is_a_new_payload_with_the_same_pawn_tuning() {
+        let before = payload_with_level_gravity(-9.81);
+        let after = payload_with_level_gravity(-3.0);
+
+        assert_ne!(before, after, "host dedupe must resend a gravity change");
+        assert!(before.same_pawn_tuning(&after));
+        assert_eq!(before, payload_with_level_gravity(-9.81));
     }
 }

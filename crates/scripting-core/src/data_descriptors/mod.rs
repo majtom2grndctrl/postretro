@@ -58,6 +58,7 @@ pub use super::conv;
 
 mod audio_profile;
 mod error;
+mod fluids;
 mod input_block;
 mod loading_manifest;
 mod movement_sounds;
@@ -102,6 +103,7 @@ mod lua {
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
 pub use error::*;
+pub use fluids::{drain_fluids_js, drain_fluids_lua};
 pub(crate) use movement_sounds::*;
 pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_events_lua};
 pub use runtime_manifest::*;
@@ -118,7 +120,7 @@ pub use postretro_entities::data_descriptors::{
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{
-    behavior::*, combat::*, knockback::*, manifest::*, movement::*,
+    behavior::*, combat::*, fluid::*, knockback::*, manifest::*, movement::*,
 };
 
 pub use js::entity::*;

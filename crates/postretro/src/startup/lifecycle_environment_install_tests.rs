@@ -256,3 +256,143 @@ fn two_set_gravity_calls_in_one_turn_leave_the_later_value_and_the_volume_holds(
     assert_eq!(resolve_at(&app, outside).gravity, 1.5);
     assert_eq!(resolve_at(&app, inside).gravity, VOLUME_GRAVITY);
 }
+
+fn fluid(name: &str) -> postretro_foundation::FluidDescriptor {
+    postretro_foundation::FluidDescriptor {
+        name: name.to_string(),
+        viscosity: 2.0,
+        view_tint: [0.1, 0.3, 0.4, 0.35],
+        muffle: 0.8,
+        surface_opacity: 0.6,
+        enter_sound: None,
+        exit_sound: None,
+    }
+}
+
+fn declare_fluids(app: &App, names: &[&str]) {
+    script_ctx(app).data_registry.borrow_mut().replace_fluids(
+        postretro_foundation::FluidRegistry::from_declarations(
+            "test",
+            names.iter().map(|name| Ok(fluid(name))),
+        ),
+    );
+}
+
+/// A level with one fluid volume, map entity `source_entity`, naming `fluid`
+/// and spanning `0..4` on every axis.
+fn level_with_fluid_volume(source_entity: u32, fluid: &str) -> LevelWorld {
+    let mut world = level_world("fluid", 1);
+    world.environment_volumes = EnvironmentVolumesSection {
+        level_gravity: LEVEL_GRAVITY,
+        volumes: vec![EnvironmentVolumeRecord {
+            source_entity,
+            priority: 0,
+            gravity: None,
+            push: None,
+            fluid: fluid.to_string(),
+            brushes: vec![box_brush(Vec3::ZERO, Vec3::splat(4.0))],
+            surface_faces: Vec::new(),
+        }],
+    };
+    world
+}
+
+/// Deep inside the fixture volume: the probe capsule is fully immersed.
+const SUBMERGED: Vec3 = Vec3::splat(2.0);
+
+#[test]
+fn a_declared_fluid_resolves_to_its_declaration_order_index() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water", "sludge"]);
+    app.install_level_payload(level_with_fluid_volume(3, "sludge"), PathBuf::from("baked"))
+        .expect("fixture installs");
+
+    let resolved = resolve_at(&app, SUBMERGED);
+    assert!(resolved.immersion > 0.0, "the probe sits inside the volume");
+    assert_eq!(resolved.fluid, Some(1));
+}
+
+// AC N12: an undeclared fluid name loads dry and warns, naming the entity and the fluid.
+#[test]
+fn a_fluid_volume_naming_an_undeclared_fluid_loads_dry_and_warns_naming_entity_and_fluid() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "lava"), PathBuf::from("baked"))
+        .expect("an undeclared fluid never fails the load");
+
+    let resolved = resolve_at(&app, SUBMERGED);
+    assert_eq!(resolved.fluid, None, "the volume loads dry");
+    assert_eq!(resolved.immersion, 0.0);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "[Loader] fluid_volume entity 7 names undeclared fluid 'lava'; it loads dry",
+    );
+    capture.assert_not_logged(log::Level::Warn, "undeclared fluid 'water'");
+}
+
+// AC N9 (host half): the real staged reload route declares the missing fluid.
+#[test]
+fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    std::fs::write(
+        mod_root.path().join("start-script.js"),
+        "globalThis.__postretroModManifest = { name: 'Fluids', id: 'fluids', version: '1', \
+         fluids: [{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, surfaceOpacity: 0.6 }, \
+                  { name: 'lava', viscosity: 9, viewTint: [1, 0.2, 0, 0.8], muffle: 0.5, surfaceOpacity: 1 }] };",
+    )
+    .expect("reloaded manifest written");
+
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "lava"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert_eq!(
+        resolve_at(&app, SUBMERGED).fluid,
+        None,
+        "dry before the reload"
+    );
+
+    let generation = app
+        .session
+        .as_mut()
+        .expect("test app session installed")
+        .scripting
+        .script_runtime
+        .enqueue_staged_manifest_build(mod_root.path())
+        .expect("staged build queued")
+        .expect("debug builds stage manifest reloads");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while script_runtime_committed(&app) != Some(generation) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the staged manifest never committed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_staged_manifest_results();
+    }
+
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
+}
+
+fn script_runtime_committed(app: &App) -> Option<u64> {
+    app.session
+        .as_ref()
+        .expect("test app session installed")
+        .scripting
+        .script_runtime
+        .committed_staged_manifest_generation()
+}
+
+#[test]
+fn a_reload_that_leaves_the_fluid_table_unchanged_keeps_the_installed_volumes() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let names = app.environment_fluid_names();
+    app.refresh_environment_fluids(&names);
+    capture.assert_not_logged(log::Level::Info, "[Loader] environment volumes:");
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(0));
+}

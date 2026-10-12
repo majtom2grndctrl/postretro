@@ -159,6 +159,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

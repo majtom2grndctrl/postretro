@@ -56,6 +56,7 @@ impl App {
                 registry.default_weapon_placement.clone(),
             )
         };
+        let environment = crate::netcode::host_environment_tuning(&session.scripting.script_ctx);
         let registry = session.scripting.script_ctx.registry.borrow();
         let Some(crate::netcode::NetEndpoint::Host {
             server,
@@ -66,23 +67,15 @@ impl App {
         else {
             return;
         };
-        for client_id in server.participating_clients() {
-            let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-                continue;
-            };
-            let payload = crate::netcode::tuning_payload_for_pawn(
-                &registry,
-                pawn,
-                &descriptors,
-                default_weapon_placement.as_ref(),
-            );
-            crate::netcode::host_send_tuning_if_changed(
-                server,
-                last_sent_tuning,
-                client_id,
-                payload,
-            );
-        }
+        crate::netcode::host_resend_changed_tuning(
+            server,
+            slot_pawns,
+            last_sent_tuning,
+            &registry,
+            &descriptors,
+            default_weapon_placement.as_ref(),
+            &environment,
+        );
     }
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {

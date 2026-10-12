@@ -156,6 +156,7 @@ fn movement() -> PlayerMovementComponent {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     })
 }
@@ -670,6 +671,7 @@ impl Fixture {
             },
         };
         if let Some(receive) = self.receive.as_mut() {
+            let no_volumes = postretro_collision::EnvironmentVolumes::empty();
             let result = netcode::client_predict_tick(
                 &mut self.local.borrow_mut(),
                 &mut self.client,
@@ -678,7 +680,8 @@ impl Fixture {
                     command,
                     aim_pitch: self.aim_pitch,
                     collision: &self.world,
-                    environment: postretro_collision::EnvironmentView::level_only(0.0),
+                    environment_volumes: &no_volumes,
+                    host_tuning: receive.tuning.as_ref(),
                     tick_dt: DT,
                 },
             );

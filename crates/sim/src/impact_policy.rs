@@ -1750,6 +1750,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         });
         let mut registry = ctx.registry.borrow_mut();

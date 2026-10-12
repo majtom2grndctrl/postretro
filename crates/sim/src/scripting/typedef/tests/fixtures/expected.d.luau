@@ -3234,9 +3234,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
-    & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
+    & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
   playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.

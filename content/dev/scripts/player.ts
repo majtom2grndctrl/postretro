@@ -109,6 +109,17 @@ export const playerEntity = defineEntity({
         entryBoost: 3.0,
         minDurationMs: 400.0,
       },
+      // Swimming (E24). Absent = this player cannot swim and walks fluid floors.
+      // Enter at half immersion, leave below 35%; the gap keeps a swimmer
+      // treading at the surface from toggling state.
+      swim: {
+        speed: 4.5, // m/s target swim speed
+        accel: 6.0, // m/s² toward wish velocity
+        sinkSpeed: 0.8, // m/s drift along gravity with no vertical input, at 9.81 m/s²
+        enterDepth: 0.5, // immersion fraction that enters swim
+        exitDepth: 0.35, // immersion fraction that leaves swim; < enterDepth
+        fluidJumpVelocity: 6.5, // m/s upward on a jump from the surface
+      },
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,
       viewFeel: {

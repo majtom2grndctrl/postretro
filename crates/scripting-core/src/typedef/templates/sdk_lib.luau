@@ -892,13 +892,14 @@ declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponP
 declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
 
 --- Build a state-crossing watcher. The threshold form watches a numeric slot;
---- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. A
+--- the predicate form fires on a false-to-true edge of a Bool predicate, a
+--- fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A
 --- predicate already true at registration only arms; it must return false,
 --- then true, to fire. Each `fire` entry is a `defineReaction` handle or a
 --- bare reaction name, reduced to its wire string.
 declare onStateCrossing: (
   ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
-  & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
+  & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
 )
 
 --- System-reaction body: play `sound` through the audio module. Pure: returns

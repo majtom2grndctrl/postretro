@@ -132,14 +132,19 @@ end
 --- reaction in `fire` exactly once, re-arming only after a crossing back. A
 --- registration against a non-Number slot warns and is skipped at load. The
 --- predicate overload takes `onStateCrossing(predicate, fire)` and fires on
---- false-to-true edges, re-arming after it returns false. A predicate already
---- true at registration only arms; it must return false, then true, to fire.
+--- false-to-true edges, re-arming after it returns false. `predicate` is a
+--- fluent Bool value such as `read(player.swimming)` or a raw `runtime.*`
+--- node. A predicate already true at registration only arms; it must return
+--- false, then true, to fire.
 function UiReactionsSdk.onStateCrossing(
   refOrPredicate: any,
   conditionOrFire: any,
   maybeFire: {any}?
 ): CrossingDescriptor
-  local predicateForm = type(refOrPredicate) == "table" and type(refOrPredicate.op) == "string"
+  -- A fluent predicate lowers to its IR node, as `updateState` lowers a fluent
+  -- value; a raw node or a state ref passes through unchanged.
+  local predicate = loweredValue(refOrPredicate)
+  local predicateForm = type(predicate) == "table" and type(predicate.op) == "string"
   local fire = if predicateForm then conditionOrFire else maybeFire
   local fireNames = crossingFireNames(fire)
   if predicateForm then
@@ -147,7 +152,7 @@ function UiReactionsSdk.onStateCrossing(
       error("onStateCrossing: predicate options must be a table when provided")
     end
     local descriptor: PredicateCrossingDescriptor = {
-      predicate = refOrPredicate,
+      predicate = predicate,
       fire = fireNames,
     }
     if maybeFire ~= nil and maybeFire.edge ~= nil then

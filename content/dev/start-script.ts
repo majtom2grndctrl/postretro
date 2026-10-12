@@ -1,4 +1,15 @@
-import { defineFaction, defineMod, defineTriggerPool, sentiment } from "postretro";
+import {
+  becomes,
+  defineFaction,
+  defineFluid,
+  defineMod,
+  defineTriggerPool,
+  getGameState,
+  players,
+  read,
+  sentiment,
+} from "postretro";
+import { onStateCrossing } from "postretro/ui";
 import { playerEntity } from "./scripts/player";
 import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
 import { referencePistolEntity } from "./scripts/reference-pistol";
@@ -87,6 +98,9 @@ import {
   damagedEnemyOverlay,
   damageNumber,
 } from "./scripts/combat-presentation";
+import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
+
+const player = getGameState().player;
 
 export default defineMod({
   name: "dev",
@@ -150,7 +164,13 @@ export default defineMod({
     ...frontendReactions,
     ...factionSentimentReactions,
     ...positionalSoundReactions,
+    markSwimming,
+    splashSound,
   ],
+  // Swimming (E24): a host decision per player as they start swimming, and
+  // own-state feedback that stays local on each machine (scripts/swim-events.ts).
+  playerEvents: [players().on(becomes(read(player.swimming)), [markSwimming])],
+  crossings: [onStateCrossing(read(player.swimming), [splashSound])],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and
@@ -166,7 +186,29 @@ export default defineMod({
     factionSentimentBackstab,
   ],
   triggerEvents: factionSentimentTriggerEvents,
-  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore],
+  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  // Fluids a map's `fluid_volume` names through its `fluid` key. The stress
+  // fixture (maps/stress-env-volumes.map) and the playtest map
+  // (maps/e24-environment-test.map) name both. Sounds reuse existing dev keys.
+  fluids: [
+    defineFluid({
+      name: "water",
+      viscosity: 2.0, // 1/s drag while swimming; >= 0
+      viewTint: [0.1, 0.3, 0.4, 0.35], // rgb + strength, each 0..=1
+      muffle: 0.8, // 0 = none, 1 = maximum low-pass
+      surfaceOpacity: 0.6, // 0..=1
+      enterSound: "fixtures/land",
+      exitSound: "fixtures/jump",
+    }),
+    defineFluid({
+      name: "sludge",
+      viscosity: 6.0, // thick: a swimmer slows three times as fast as in water
+      viewTint: [0.25, 0.3, 0.08, 0.85],
+      muffle: 0.95,
+      surfaceOpacity: 0.95,
+      enterSound: "fixtures/land",
+    }),
+  ],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

@@ -457,7 +457,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
 
     assert!(
         ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;")
-            && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
+            && ts.contains("export function onStateCrossing(predicate: RuntimeValue | BoolRef, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
             && ts.contains("export type PredicateCrossingDescriptor = {")
             && ts.contains("predicate: RuntimeValue;")
             && ts.contains("slot?: never;"),
@@ -474,7 +474,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     );
     assert!(
         luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> PrimitiveReactionDescriptor,")
-            && luau.contains("& ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
+            && luau.contains("& ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")
             && luau.contains("slot: nil?,")

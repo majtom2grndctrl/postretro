@@ -253,6 +253,87 @@ Set it on the `worldspawn` entity, not on individual fog entities.
 
 ---
 
+## Environment Volumes: Fluids, Gravity and Push
+
+Three invisible brush entities change what a region does to the player:
+
+| Entity | Key | Use it for |
+|--------|-----|-----------|
+| `fluid_volume` | `fluid` | Water, sludge or any other fluid to swim in. A pool, a channel, a block of water floating in mid-air. |
+| `gravity_volume` | `gravity` | A region with its own gravity: a low-gravity room, a weightless chamber. |
+| `push_volume` | `push` | A steady force in any direction: an updraft, a wind, a current. |
+
+Each also takes `priority` (see How overlapping volumes combine).
+
+### Placing a volume
+
+1. Draw a convex brush covering the region.
+2. Select it and use **Entity > Tie to Entity** (or press `T`) to bind it to the volume entity.
+3. Set its key in the Entity Inspector.
+
+Each brush is one convex piece of the volume. One entity may own several brushes, and together they make one volume. Volumes may be any convex shape, at any height: a fluid block can float in mid-air with nothing under it.
+
+**Volumes are never solid.** They draw nothing except a fluid's surface, never block movement or shots, never seal the map, and change nothing about lighting, visibility or navigation. A volume that crosses a wall works on both sides of it, so keep each volume inside the space you mean it for.
+
+**Volumes cannot move.** They are baked into the level when it compiles. A volume cannot be part of a `kinematic_mover`, and scripts cannot move, switch off or retune one.
+
+### Keys
+
+| Key | Entity | Type | Default | What it does |
+|-----|--------|------|---------|--------------|
+| `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
+| `gravity` | `gravity_volume` | float | **required** | Gravity inside the volume, in **m/s²**, signed like worldspawn `initialGravity`: negative pulls down. `-9.81` is Earth, `-3` is low gravity, `0` is weightless, and a positive value pulls up. It replaces the level's gravity inside the volume. A script's `setGravity` changes the level's gravity everywhere else, never inside a gravity volume. |
+| `push` | `push_volume` | three floats | **required** | An acceleration in **m/s²**, in map axes (X, Y, Z, with Z up, as TrenchBroom shows them). `0 0 15` is an updraft, `8 0 0` a wind toward +X, `0 6 0` a current toward +Y. A push never changes which way is down. |
+| `priority` | all three | integer | `0` | Which volume wins where volumes that set the same key overlap. Higher wins. |
+
+`gravity` and `push` are in metres per second squared, not map units. Earth gravity is 9.81 m/s².
+
+A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, or a volume entity with no brush fails the build, and the error names the entity.
+
+### How overlapping volumes combine
+
+Volumes may overlap freely. Each key resolves on its own, among the volumes that set it:
+
+1. The highest `priority` wins.
+2. On a tie, the smallest volume wins. Size is the total volume of the entity's brushes. A pool inside a room needs no priority to win over the room.
+3. On an exact tie, the entity that comes first in the `.map` file wins.
+
+Where no volume sets a key, the level's own value applies: worldspawn `initialGravity` (or whatever a script last set with `setGravity`), no push, and no fluid.
+
+Because each key resolves separately, volumes that set different keys combine. A water pool inside a low-gravity room is wet, and it has low gravity. Gravity and push apply at the player's position. A fluid applies wherever it covers part of the player's body from feet to head, and how deep the player is counts only the winning fluid's brushes.
+
+Push is one winner, never a sum. That gives you two patterns:
+
+- **A calm pocket.** Put a `push_volume` with `push` `0 0 0` inside a wind, at a higher `priority`. Nothing pushes inside the pocket.
+- **Lift and drift together.** A shaft that should both lift and drift sideways is one `push_volume` carrying the combined vector, such as `4 0 15`.
+
+A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push.
+
+### What the player feels
+
+- **Fluids.** A player whose descriptor has a `movement.swim` block swims once deep enough, and can jump out from the surface. A player without one walks along the bottom.
+- **Gravity.** The player falls, jumps and swims under the volume's gravity. Leaving the volume brings the level's gravity back at once.
+- **Push.** A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
+
+Enemies take only a volume's gravity, and only when it pulls down: in a volume whose gravity pulls up, an enemy behaves as if weightless. Enemies ignore push, do not swim, and walk along the bottom of a fluid. Projectiles are not affected by any volume.
+
+### Fluid surfaces
+
+The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent, warped, and visible from both above and below.
+
+- A face flush against solid world draws nothing, so a pool sunk into the floor shows only its top. A face partly against solid world draws only its open part.
+- A face shared by two brushes of the same `fluid_volume` draws nothing.
+- **Build one pool as one entity.** A pool made from two `fluid_volume` entities draws a surface where they meet. Give one entity several brushes instead.
+
+### Tips
+
+- **Sink pools into the floor.** Cut a pit into the world brushwork and fill it with the fluid brush. Leave the surface a little below the rim so swimmers can climb out with a jump.
+- **Mind the depth.** A player starts swimming only once the fluid covers the share of their body that the player descriptor's `enterDepth` names; at `0.5`, about waist deep. Shallower is wading.
+- **Push is acceleration.** `8` is a firm wind; `15` up is enough to lift a player against Earth gravity. Start small and tune by feel.
+- **Keep volumes clear of walls you don't mean.** Like fog, a volume does not stop at a wall.
+
+---
+
 ## SH Probe Protection Volumes
 
 Adaptive SH probe density is enabled by default. The compiler stores each

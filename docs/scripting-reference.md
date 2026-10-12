@@ -655,7 +655,7 @@ movement updates carry the resulting momentum through client reconciliation.
 
 ### Reserved engine-fired reaction addresses
 
-The engine owns the following 22 bare addresses. A mod may register one or more
+The engine owns the following 24 bare addresses. A mod may register one or more
 reactions at any of them, but should not use one as a private address: the
 engine may fire it whenever the listed gameplay event occurs. All other
 mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
@@ -665,7 +665,7 @@ mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
 | Level lifecycle | `levelLoad` |
 | Weapon fire | `activate`, `dry_fire`, `overheat`, `impact`, `spawned` |
 | Weapon reload | `reload_started`, `reload_shell_loaded`, `reload_completed`, `reload_cancelled`, `reload_blocked_full`, `reload_blocked_empty` |
-| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended` |
+| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended`, `swim_started`, `swim_ended` |
 | Enemy AI | `enemyAttack` |
 
 Movement addresses fire only for the local player pawn. A state change emits
@@ -2728,6 +2728,222 @@ true while that inventory has an accepted in-flight target. `pending` is the
 input cursor's selection and is initially the empty string until the input
 producer supplies it. They are readonly from scripts and are published locally
 on every role rather than replicated from the host.
+
+## Fluids and swimming
+
+A map places water and other fluids with `fluid_volume` brushes
+([level design reference](level_design.md#environment-volumes-fluids-gravity-and-push)).
+The volume names a fluid; the mod says what that fluid is like, and the player
+descriptor says how the player swims.
+
+```typescript
+// start-script.ts
+import {
+  becomes, defineEntity, defineFluid, defineMod, defineReaction, defineStore, getGameState, players, read,
+} from "postretro";
+import type { PlayerEventParams } from "postretro";
+import { onStateCrossing, playSound } from "postretro/ui";
+
+const player = getGameState().player;
+
+// Host-local count of each player's dives.
+const swimStats = defineStore("swimStats", {
+  dives: { type: "number", default: 0, perOwner: true },
+});
+const markSwimming = defineReaction("swim.markSwimming", (on: PlayerEventParams) =>
+  on.player.addSlot(swimStats.dives, 1),
+);
+const splashSound = defineReaction("swim.splash", playSound("sfx/splash"));
+
+export default defineMod({
+  name: "MyMod",
+  id: "example.my-mod",
+  version: "1.0.0",
+  fluids: [
+    defineFluid({
+      name: "water",
+      viscosity: 2.0,
+      viewTint: [0.1, 0.3, 0.4, 0.35],
+      muffle: 0.8,
+      surfaceOpacity: 0.6,
+      enterSound: "sfx/splash_in",
+      exitSound: "sfx/splash_out",
+    }),
+  ],
+  entities: [
+    defineEntity({
+      canonicalName: "player",
+      components: {
+        movement: {
+          // ...capsule, ground, air, fall...
+          swim: {
+            speed: 4.5,
+            accel: 6.0,
+            sinkSpeed: 0.8,
+            enterDepth: 0.5,
+            exitDepth: 0.35,
+            fluidJumpVelocity: 6.5,
+          },
+        },
+      },
+    }),
+  ],
+  stores: [swimStats],
+  reactions: [markSwimming, splashSound],
+  // The host decides, once per player.
+  playerEvents: [players().on(becomes(read(player.swimming)), [markSwimming])],
+  // Feedback on your own state stays on your machine.
+  crossings: [onStateCrossing(read(player.swimming), [splashSound])],
+});
+```
+
+```lua
+-- start-script.luau
+local Postretro = require("postretro")
+local UI = require("postretro/ui")
+local player = Postretro.getGameState().player
+local read = Postretro.read
+
+local swimStats = Postretro.defineStore("swimStats", {
+  dives = { type = "number", default = 0, perOwner = true },
+})
+local markSwimming = Postretro.defineReaction("swim.markSwimming", function(on)
+  return on.player:addSlot(swimStats.dives, 1)
+end)
+local splashSound = Postretro.defineReaction("swim.splash", UI.playSound("sfx/splash"))
+
+return Postretro.defineMod({
+  name = "MyMod",
+  id = "example.my-mod",
+  version = "1.0.0",
+  fluids = {
+    Postretro.defineFluid({
+      name = "water",
+      viscosity = 2.0,
+      viewTint = { 0.1, 0.3, 0.4, 0.35 },
+      muffle = 0.8,
+      surfaceOpacity = 0.6,
+      enterSound = "sfx/splash_in",
+      exitSound = "sfx/splash_out",
+    }),
+  },
+  -- entities: the same `movement.swim` block, with `=` for `:`.
+  stores = { swimStats },
+  reactions = { markSwimming, splashSound },
+  playerEvents = { Postretro.players():on(Postretro.becomes(read(player.swimming)), { markSwimming }) },
+  crossings = { UI.onStateCrossing(read(player.swimming), { splashSound }) },
+})
+```
+
+### `defineFluid`
+
+Declare fluids under the manifest's `fluids` array. A `fluid_volume` names one
+through its `fluid` key. Each field is checked when the mod loads:
+
+| Field | Type | Range | What it does |
+|---|---|---|---|
+| `name` | string | non-empty | The name a map's `fluid_volume` uses. |
+| `viscosity` | number | `≥ 0` | Drag while swimming, per second. Higher is thicker: speed bleeds off faster, and a current drifts a swimmer at about push ÷ viscosity. |
+| `viewTint` | `[r, g, b, strength]` | each `0`–`1` | Full-screen tint while the camera is inside the fluid. `strength` `0` is no tint. |
+| `muffle` | number | `0`–`1` | Low-pass on world sounds while the camera is inside. `0` is none, `1` the most. Music and UI sounds are never muffled. |
+| `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
+| `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
+| `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
+
+A field out of range, an unknown field, or a second fluid with a name already
+declared rejects that one declaration, with a warning naming the field. The
+first declaration of a name stands, and the rest of the manifest loads. A
+`fluid_volume` naming a fluid the mod does not declare loads dry, with a
+warning.
+
+**In co-op,** everyone swims by the host's fluids: the host's `viscosity`
+drives movement on every machine. The tint, muffle, surface opacity and sounds
+come from each machine's own declaration of that name, the way sound keys do,
+so a player whose mod lacks the fluid still swims in it but sees no tint.
+Fluid declarations do not affect who can join.
+
+### `movement.swim`
+
+Add a `swim` block to the player descriptor's `movement` to let the player swim.
+Without one the player cannot swim and walks along the bottom of any fluid,
+which suits a wade-only game; loading a level with fluids for such a player
+logs one warning. All six fields are required:
+
+| Field | Units | Range | What it does |
+|---|---|---|---|
+| `speed` | m/s | `≥ 0` | Target swim speed. |
+| `accel` | m/s² | `≥ 0` | How fast the swimmer reaches that speed. |
+| `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at Earth gravity (9.81 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
+| `enterDepth` | fraction | `0`–`1` | How much of the body, feet to head, must be in the fluid to start swimming. |
+| `exitDepth` | fraction | `0`–`1`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
+| `fluidJumpVelocity` | m/s | `≥ 0` | Upward speed of a jump out of the fluid. |
+
+`exitDepth` at or above `enterDepth` rejects the descriptor, naming
+`movement.swim.exitDepth`; any other field out of range names that field.
+
+How swimming plays:
+
+- **Entering.** Reaching `enterDepth` starts swimming from any state. A
+  crouching, sliding or dashing player stands up as they start swimming, when
+  there is headroom.
+- **Steering.** The swimmer moves toward where they look. Jump swims up and
+  crouch swims down. The fluid's `viscosity` is the drag.
+- **Jumping out.** Pressing jump with the eye above the surface sets the upward
+  speed to `fluidJumpVelocity` and ends the swim, with no ground needed. Swimming
+  cannot start again until immersion has dropped below `exitDepth`, so the jump
+  is never cancelled by the water it leaves. Fully under the surface, jump only
+  swims up.
+- **Currents.** A `push_volume` over the fluid pushes swimmers along.
+- **Maps cannot change swim tuning.** It belongs to the descriptor.
+
+Starting and stopping a swim fire the reserved `swim_started` and `swim_ended`
+addresses, and play the fluid's `enterSound` and `exitSound`.
+
+### The readonly `player.swimming` and `player.immersion` slots
+
+| Slot | Type | Meaning |
+|---|---|---|
+| `player.swimming` | `boolean` | True while the player is swimming. |
+| `player.immersion` | `number`, `0`–`1` | How much of the player's body, feet to head, is in a fluid. It reads while wading too, before the player swims. `0` when dry. |
+
+Both are engine-owned and readonly. They are per-player: the host has one value
+for each player, and each client sees only its own player's values.
+
+- **A plain read means your player.** A HUD bind, `bindState`, or a local
+  `onStateCrossing` reads the player on that machine.
+- **In a player event's condition, a read means the player being checked.**
+  `players().on(becomes(read(player.swimming)), …)` fires on the host once for
+  each player who starts swimming, and `ceases(…)` once for each who stops.
+- **In a reaction a player event fires, read with `byPlayer(on.player)`:**
+  `read(player.immersion.byPlayer(on.player))`.
+- **Own-state feedback is a local crossing.** A splash sound or an
+  underwater HUD for a player's own swim is
+  `onStateCrossing(read(player.swimming), […])`. It runs on each machine, for
+  that machine's player, with no round trip to the host.
+
+### Drowning and air meters
+
+The engine has no air supply and no fluid damage. A mod builds them from the
+pieces above:
+
+- **Hurt a player who goes under.** A player event decided on the host:
+
+  ```typescript
+  const gasp = defineReaction("air.gasp", (on: PlayerEventParams) => on.player.damage(5));
+  // In the manifest:
+  playerEvents: [players().on(becomes(read(player.immersion).ge(1)), [gasp])],
+  ```
+
+  It fires each time a player's head goes fully under.
+- **A fluid that burns.** Put a `trigger_volume` on the same brush as the
+  `fluid_volume` and damage its activators from its enter event (see
+  [Trigger events](#trigger-events)).
+- **Warn the player locally.** `onStateCrossing(read(player.immersion).ge(1), [holdBreath])`
+  plays a vignette or sound on the submerged player's own machine.
+
+A countdown that drains each player's air over time is not buildable yet: it
+needs a per-player slot with `accumulate`, and `defineStore` rejects
+`perOwner` together with `accumulate`.
 
 ## Input commands and the `input` block
 

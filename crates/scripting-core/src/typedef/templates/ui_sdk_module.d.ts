@@ -264,8 +264,8 @@ declare module "postretro/ui" {
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
   export function onStateCrossing(ref: ComputedRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
-  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
-  export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
+  /** Build a watcher from a Bool-valued predicate over live store slots: a fluent value such as `read(player.swimming)` or `read(player.health).lt(25)`, or a raw `runtime.*` node. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
+  export function onStateCrossing(predicate: RuntimeValue | BoolRef, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
   export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
   export type PresentationOptions = { audience?: PresentationAudience };

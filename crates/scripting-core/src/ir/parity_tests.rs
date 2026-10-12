@@ -430,6 +430,58 @@ fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn fluent_predicate_crossings_lower_to_the_same_ir_in_both_runtimes() {
+    // The predicate overload accepts a fluent Bool value (`read(ref)` and its
+    // operators), lowering it to the IR node behind it as `updateState` does,
+    // so `onStateCrossing(read(player.swimming), […])` is the predicate form.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { read } from "postretro";
+        import { onStateCrossing } from "postretro/ui";
+
+        const swimming = { slot: "player.swimming", kind: "boolean" };
+        const health = { slot: "player.health", kind: "number" };
+        const plain = onStateCrossing(read(swimming), ["splash"]);
+        const composed = onStateCrossing(read(health).lt(25), ["bleed"], { edge: "both" });
+        JSON.stringify({ plain, composed });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local Ui = require("postretro/ui")
+        local swimming = { slot = "player.swimming", kind = "boolean" }
+        local health = { slot = "player.health", kind = "number" }
+        local plain = Ui.onStateCrossing(Postretro.read(swimming), { "splash" })
+        local composed = Ui.onStateCrossing(Postretro.read(health):lt(25), { "bleed" }, { edge = "both" })
+        return { plain = plain, composed = composed }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "TS and Luau fluent predicate crossings diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "plain": {
+                "predicate": { "op": "input", "name": "player.swimming" },
+                "fire": ["splash"],
+            },
+            "composed": {
+                "predicate": {
+                    "op": "lt",
+                    "a": { "op": "input", "name": "player.health" },
+                    "b": { "op": "const", "value": 25 },
+                },
+                "fire": ["bleed"],
+                "edge": "both",
+            },
+        }),
+        "a fluent predicate lowers to its IR node, never a threshold slot"
+    );
+}
+
+#[test]
 fn faction_sentiment_reaction_builders_match_across_authoring_runtimes() {
     // The TypeScript fixture travels through scripts-build before it reaches
     // QuickJS; the Luau fixture loads the same public virtual UI module. Pin

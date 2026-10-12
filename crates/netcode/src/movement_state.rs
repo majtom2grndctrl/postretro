@@ -35,6 +35,7 @@ pub(crate) fn movement_state_to_wire(
             component.velocity.z,
         ],
         knockback_velocity: component.knockback_velocity.to_array(),
+        push_velocity: component.push_velocity.to_array(),
         ground: ground_ref_to_wire(component.ground),
         air_jumps_remaining: component.air_jumps_remaining,
         air_dashes_remaining: component.air_dashes_remaining,
@@ -44,6 +45,7 @@ pub(crate) fn movement_state_to_wire(
         coyote_timer_ms: component.coyote_timer_ms,
         jump_buffer_timer_ms: component.jump_buffer_timer_ms,
         jump_spent: component.jump_spent,
+        swim_reentry_latched: component.swim_reentry_latched,
         capsule_half_height: component.capsule.half_height,
         capsule_eye_height: component.capsule.eye_height,
         aim_pitch,
@@ -70,6 +72,7 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     };
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
     component.knockback_velocity = Vec3::from_array(wire.knockback_velocity);
+    component.push_velocity = Vec3::from_array(wire.push_velocity);
     component.ground = ground;
     component.air_jumps_remaining = wire.air_jumps_remaining;
     component.air_dashes_remaining = wire.air_dashes_remaining;
@@ -83,12 +86,32 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     component.coyote_timer_ms = wire.coyote_timer_ms;
     component.jump_buffer_timer_ms = wire.jump_buffer_timer_ms;
     component.jump_spent = wire.jump_spent;
+    component.swim_reentry_latched = wire.swim_reentry_latched;
     // The live capsule dimensions are mutable tick state (the crouch intent
     // shrinks them); the standing reference dimensions are descriptor-owned and
     // deliberately not touched.
     component.capsule.half_height = wire.capsule_half_height;
     component.capsule.eye_height = wire.capsule_eye_height;
     true
+}
+
+/// Carry a pawn's live tick state onto a movement component just rebuilt from
+/// new descriptor tuning (a client's tuning rebuild). The carried subset is
+/// exactly what the wire mirrors — what a reconcile would restore from the host
+/// — plus the forwarded floor normal, so the rebuild changes tuning and nothing
+/// the host's pawn still holds: swim state, the re-entry latch and the 3D drift
+/// layer included. A swimmer whose new tuning has no `swim` block then leaves
+/// swim as an exit does
+/// (`PlayerMovementComponent::leave_swim_without_swim_block`).
+pub(crate) fn carry_live_tick_state(
+    rebuilt: &mut PlayerMovementComponent,
+    live: &PlayerMovementComponent,
+) {
+    let wire = movement_state_to_wire(live, 0.0);
+    // The live ground reference names a mover this client already resolved.
+    merge_wire_into_movement_state_checked(rebuilt, &wire, |_| true);
+    rebuilt.last_floor_normal = live.last_floor_normal;
+    rebuilt.leave_swim_without_swim_block();
 }
 
 /// Map the engine `MovementState` to its wire mirror. Exhaustive (no `_` arm) so
@@ -115,6 +138,7 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
             // enum-only mirror total for the engine variant drift guard.
             floor_normal: None,
         },
+        MovementState::Swim { fluid } => WireMovementState::Swim { fluid },
     }
 }
 
@@ -138,6 +162,7 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             boost: Vec3::new(boost[0], boost[1], boost[2]),
             eye_current,
         },
+        WireMovementState::Swim { fluid } => MovementState::Swim { fluid },
     }
 }
 
@@ -237,6 +262,7 @@ mod tests {
                 entry_boost: 1.0,
                 min_duration_ms: 100.0,
             }),
+            swim: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -250,6 +276,7 @@ mod tests {
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
+            push_velocity: [0.0; 3],
             velocity: [1.0, -2.0, 3.5],
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,
@@ -263,10 +290,86 @@ mod tests {
             coyote_timer_ms: 12.0,
             jump_buffer_timer_ms: 8.0,
             jump_spent: true,
+            swim_reentry_latched: true,
             capsule_half_height: 0.4,
             capsule_eye_height: 0.25,
             aim_pitch: 0.75,
         }
+    }
+
+    fn swimming_descriptor() -> PlayerMovementDescriptor {
+        let mut desc = rich_descriptor();
+        desc.swim = Some(postretro_foundation::SwimParams {
+            speed: 4.5,
+            accel: 6.0,
+            sink_speed: 0.8,
+            enter_depth: 0.5,
+            exit_depth: 0.35,
+            fluid_jump_velocity: 6.5,
+        });
+        desc
+    }
+
+    fn live_swimmer() -> PlayerMovementComponent {
+        let mut live = PlayerMovementComponent::from_descriptor(&swimming_descriptor());
+        live.movement_state = MovementState::Swim { fluid: 2 };
+        live.velocity = Vec3::new(1.0, 0.6, 0.0);
+        live.push_velocity = Vec3::new(0.5, 2.0, 0.0);
+        live.swim_reentry_latched = true;
+        live.air_ticks = 4;
+        live
+    }
+
+    // A client tuning rebuild (a weapon pickup, a host reload)
+    // keeps a swimmer swimming with its velocity, 3D drift and latch, and takes
+    // the new tuning.
+    #[test]
+    fn tuning_rebuild_carries_a_swimmers_live_tick_state() {
+        let mut retuned = swimming_descriptor();
+        retuned.ground.speed.run += 2.0;
+        let mut rebuilt = PlayerMovementComponent::from_descriptor(&retuned);
+        let live = live_swimmer();
+        carry_live_tick_state(&mut rebuilt, &live);
+        assert_eq!(rebuilt.movement_state, MovementState::Swim { fluid: 2 });
+        assert_eq!(rebuilt.velocity, live.velocity);
+        assert_eq!(rebuilt.push_velocity, live.push_velocity);
+        assert!(rebuilt.swim_reentry_latched);
+        assert_eq!(rebuilt.air_ticks, 4);
+        assert_eq!(rebuilt.ground_params.speed.run, retuned.ground.speed.run);
+    }
+
+    // New tuning without a swim block leaves swim as an exit does: `Normal`, the
+    // vertical drift folded into total velocity, the latch cleared.
+    #[test]
+    fn tuning_rebuild_without_a_swim_block_leaves_swim_and_folds_vertical_drift() {
+        let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        let live = live_swimmer();
+        carry_live_tick_state(&mut rebuilt, &live);
+        assert_eq!(rebuilt.movement_state, MovementState::Normal);
+        assert_eq!(rebuilt.push_velocity, Vec3::new(0.5, 0.0, 0.0));
+        assert_eq!(rebuilt.velocity, live.velocity, "total velocity unchanged");
+        assert!(!rebuilt.swim_reentry_latched);
+    }
+
+    // While swimming the drift layer is 3D; its vertical part crosses the
+    // wire and merges back, so a reconcile replay restores the current.
+    #[test]
+    fn swimming_component_round_trips_its_vertical_drift() {
+        let mut component = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        component.movement_state = MovementState::Swim { fluid: 1 };
+        component.push_velocity = Vec3::new(0.5, 2.0, -0.25);
+        component.velocity = Vec3::new(0.5, 0.4, -0.25);
+
+        let wire = movement_state_to_wire(&component, 0.0);
+        assert_eq!(wire.push_velocity, [0.5, 2.0, -0.25]);
+        let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        assert!(merge_wire_into_movement_state_checked(
+            &mut rebuilt,
+            &wire,
+            |_| true
+        ));
+        assert_eq!(rebuilt.push_velocity, component.push_velocity);
+        assert_eq!(rebuilt.movement_state, component.movement_state);
     }
 
     #[test]
@@ -276,6 +379,7 @@ mod tests {
         // back into a fresh component and confirm the subset survives.
         component.velocity = Vec3::new(2.0, -0.5, 9.0);
         component.knockback_velocity = Vec3::new(1.0, 0.0, 6.0);
+        component.push_velocity = Vec3::new(-2.5, 0.0, 0.75);
         component.set_grounded(false);
         component.air_jumps_remaining = 1;
         component.air_dashes_remaining = 1;
@@ -290,6 +394,7 @@ mod tests {
         component.coyote_timer_ms = 50.0;
         component.jump_buffer_timer_ms = 20.0;
         component.jump_spent = true;
+        component.swim_reentry_latched = true;
         component.capsule.half_height = 0.4;
         component.capsule.eye_height = 0.25;
 
@@ -303,6 +408,7 @@ mod tests {
 
         assert!((rebuilt.velocity - component.velocity).length() < EPSILON);
         assert!((rebuilt.knockback_velocity - component.knockback_velocity).length() < EPSILON);
+        assert!((rebuilt.push_velocity - component.push_velocity).length() < EPSILON);
         assert_eq!(rebuilt.is_grounded(), component.is_grounded());
         assert_eq!(rebuilt.air_jumps_remaining, component.air_jumps_remaining);
         assert_eq!(rebuilt.air_dashes_remaining, component.air_dashes_remaining);
@@ -313,6 +419,7 @@ mod tests {
         assert!((rebuilt.coyote_timer_ms - component.coyote_timer_ms).abs() < EPSILON);
         assert!((rebuilt.jump_buffer_timer_ms - component.jump_buffer_timer_ms).abs() < EPSILON);
         assert_eq!(rebuilt.jump_spent, component.jump_spent);
+        assert_eq!(rebuilt.swim_reentry_latched, component.swim_reentry_latched);
         assert!((rebuilt.capsule.half_height - component.capsule.half_height).abs() < EPSILON);
         assert!((rebuilt.capsule.eye_height - component.capsule.eye_height).abs() < EPSILON);
     }
@@ -361,6 +468,7 @@ mod tests {
         assert!((component.coyote_timer_ms - 12.0).abs() < EPSILON);
         assert!((component.jump_buffer_timer_ms - 8.0).abs() < EPSILON);
         assert!(component.jump_spent);
+        assert!(component.swim_reentry_latched);
         assert!((component.capsule.half_height - 0.4).abs() < EPSILON);
         assert!((component.capsule.eye_height - 0.25).abs() < EPSILON);
 
@@ -401,7 +509,7 @@ mod tests {
         assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
-    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding) through the
+    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim) through the
     /// wire enum. Constructed from the source enum via an exhaustive list so a new
     /// variant must be added here to compile-cover it.
     #[test]
@@ -418,6 +526,7 @@ mod tests {
                 boost: Vec3::new(4.0, 0.0, -2.0),
                 eye_current: 0.75,
             },
+            MovementState::Swim { fluid: 2 },
         ];
         for state in variants {
             let wire = movement_state_enum_to_wire(state);

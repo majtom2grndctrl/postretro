@@ -30,7 +30,7 @@ When done:
   - Steady-state spawn, integrate and expire perform no per-particle heap allocation.
 - **Capacity.** A global live-particle budget of 65,536. Past it, new spawns drop with a rate-limited warning; live particles are never evicted. The per-emitter cap and its headroom tally are kept.
 - **Simulation timing is unchanged.** The sim steps once per rendered frame on frame time, after the emitter bridge and before the light bridge. The doc drift ("every game-logic tick") is fixed at promotion.
-- **E24 composes on the pool** (`research.md` §E24 reconciliation).
+- **E24 composes on the pool** (`research.md` §E24 reconciliation). E24 has landed (`plans/done/E24--water-and-environment-volumes`) without its particle rows, which this brief now owns as its final slice: fill each particle's gravity and push from `postretro_collision::resolve_environment` against the level's installed `EnvironmentView`, at the particle's post-step position. Position integrates first; that step's velocity update then uses the gravity and push at the post-step position.
   - The step takes per-particle gravity and push, not a scalar: E24 resolves both per particle, at its position, every step.
   - This brief's `particle_sim` budget excludes E24's nested environment-resolve stage, which E24 budgets separately and which is measured nested.
   - The pool lands before E24's particle rows, which are written against it.
@@ -62,12 +62,16 @@ When done:
 - [ ] The collector packs the current rule's set minus only particles whose quads lie wholly outside the view frustum: in visible cells, in culled cells, drifted from their emitter, orphaned, draw-all frames. A particle centred just outside the frustum whose quad overlaps it is still drawn. Batching and the 32-byte instance stride are unchanged.
 - [ ] A script naming the `particle_state` kind is rejected by type-check and by the FFI.
 - [ ] Existing emitter-bridge, particle-sim, particle-render and impact suites pass, re-pointed at the pool.
+- [ ] *(From E24.)* A particle in a push volume accelerates by the push regardless of its buoyancy.
+- [ ] *(From E24.)* A particle inside a low-gravity volume accelerates at that volume's gravity times its buoyancy. On the particle step it drifts out, it takes level gravity. A zero-buoyancy particle floats in every volume.
+- [ ] *(From E24.)* On the step a particle's position crosses a volume boundary, that step's velocity update uses the gravity at its post-step position.
 ### Manual
 - [ ] Stress, pinned per `testing_guide.md` §Resource bounds:
   - **Run:** `stress-env-volumes.prl` recompiled from the committed map, mixed pose `114.60,2.44,-138.99,45,0`, release with dev-tools on this Intel Mac, `caffeinate`, window frontmost, no screen saver or lock, at least five 120-frame windows after warmup, load average recorded, live count read from the window.
   - **Baseline (2026-10-05), about 10k live:** `particle_sim` 3.5–3.8, `particle_collect` 2.8–2.9 and `particle_emit` 0.24 ms per frame; `sim_tick` 9.8 ms per tick.
   - **Budget at 10k:** `particle_sim` ≤ 0.6 ms excluding any nested environment-resolve stage, `particle_collect` ≤ 1.0 ms, `particle_emit` ≤ 0.3 ms.
   - **Upstream limit:** the GPU-bound smoke frame caps `total`, so judge stage costs.
+  - **E24 particle environment stage (from E24):** a stage nested in `particle_sim` times the per-particle environment resolve; budget under 0.5 ms per frame at 10k live particles, excluded from `particle_sim`'s own budget.
   - **Cleanup:** sweep maps and their PRLs deleted.
 - [ ] Particle-independent tick: the same run with zero, about 10k and about 20k live particles (emitter-rate sweep). `sim_tick` per tick differs by no more than 10% across the three. Baseline 3.4, 9.8 and 15.2 ms.
 - [ ] Visual: smoke, sparks and impact bursts look unchanged in the particle zone (d) and a weapon test room. Check spin, drift through doorways, culling at portal edges and particles at the screen edge.

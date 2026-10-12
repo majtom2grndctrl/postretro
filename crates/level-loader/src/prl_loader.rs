@@ -2591,26 +2591,27 @@ pub(crate) fn load_prl_from_container(
         trigger_volumes.len(),
     );
 
-    // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
-    // rejected so the engine never silently falls back to a hardcoded default.
-    let (fog_volumes, fog_pixel_scale, initial_gravity): (Vec<FogVolumeRecord>, u32, f32) =
+    // Required, and checked before FogVolumes: it carries the level default
+    // gravity, and its absence marks a PRL whose FogVolumes uses the retired
+    // gravity-carrying layout, which must fail with the recompile message.
+    let environment_volumes = crate::prl_environment::decode_environment_volumes(read_section(
+        SectionId::EnvironmentVolumes,
+    )?)?;
+
+    // Required — carries the worldspawn fog pixel scale even with no fog volumes.
+    let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
         match read_section(SectionId::FogVolumes)? {
             Some(data) => {
                 let section = FogVolumesSection::from_bytes(&data)
                     .map_err(|err| section_validation_from_error("FogVolumes", err))?;
                 log::info!(
-                    "[PRL] FogVolumes: {} volumes, pixel_scale={}, initial_gravity={}",
+                    "[PRL] FogVolumes: {} volumes, pixel_scale={}",
                     section.volumes.len(),
                     section.pixel_scale,
-                    section.initial_gravity,
                 );
-                (
-                    section.volumes,
-                    section.pixel_scale,
-                    section.initial_gravity,
-                )
+                (section.volumes, section.pixel_scale)
             }
-            None => return Err(PrlLoadError::NoWorldspawnGravity),
+            None => return Err(stale_section("FogVolumes", SectionId::FogVolumes)),
         };
 
     // Required when FogVolumes contains canonical fog entities; optional only
@@ -3000,7 +3001,7 @@ pub(crate) fn load_prl_from_container(
         trigger_volumes,
         fog_volumes,
         fog_pixel_scale,
-        initial_gravity,
+        environment_volumes,
         fog_cell_masks,
         navmesh,
         cell_draw_index,

@@ -23,6 +23,7 @@ pub mod delta_sh_volumes;
 pub mod direct_sh_delta_volumes;
 pub mod direct_sh_volume;
 pub mod entity_shadow_lights;
+pub mod environment_volumes;
 pub mod fog_cell_masks;
 pub mod fog_volumes;
 pub mod geometry;

@@ -34,10 +34,10 @@ use crate::{
     animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps,
     billboard_direct_scatter_bake, bvh_build, cache, cell_draw_index_bake, cell_residency_bake,
     cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
-    entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
-    lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_analyze,
-    sh_bake, sh_coarsen, sh_density, sh_group, texture_mips, texture_validation, trigger_volumes,
-    visibility,
+    entity_shadow_select, environment_volumes, fog_cell_masks, geometry, kinematic_geometry,
+    light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals,
+    sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group, texture_mips,
+    texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -1881,11 +1881,8 @@ fn run_after_parsing(
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
     let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
-    let fog_volumes_section = pack::encode_fog_volumes(
-        &map_data.fog_volumes,
-        map_data.fog_pixel_scale,
-        map_data.initial_gravity,
-    );
+    let fog_volumes_section =
+        pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
     let fog_cell_masks_section =
         fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
 
@@ -2044,6 +2041,16 @@ fn run_after_parsing(
     // order is not load-bearing for its cache.
     animated_atlas_stage::stamp_animated_blocks(&mut geo_result, animated_face_blocks.as_ref());
 
+    // Fluid surfaces intern their textures here, after geometry and movers and
+    // just before the mip bake reads the table: a fluid-only texture appends
+    // past every world entry, and no earlier stage's cache key sees it.
+    let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
+        &map_data.environment_volumes,
+        map_data.initial_gravity,
+        &map_data.brush_volumes,
+        &mut geo_result.texture_names,
+    );
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
     let (name_to_key, mut texture_bytes) = texture_mips::bake_world_texture_mips(
@@ -2138,6 +2145,7 @@ fn run_after_parsing(
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),
         trigger_volumes: trigger_volumes_section.as_ref(),
+        environment_volumes: &environment_volumes_section,
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
         cell_residency_set: cell_residency_set_section.as_ref(),

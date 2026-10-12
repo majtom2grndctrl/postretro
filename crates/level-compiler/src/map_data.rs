@@ -224,6 +224,41 @@ pub struct MapTriggerVolume {
     pub on_exit: String,
 }
 
+/// One canonical environment volume: a static region that overrides gravity,
+/// adds a push, or holds a fluid. Format adapters translate their authoring
+/// vocabulary into this record with only the fields the source entity sets;
+/// no downstream stage sees which source entity kind produced it. Like
+/// [`MapTriggerVolume`], it retains no [`BrushVolume`], so the static BSP,
+/// collision, lightmap, SDF and navmesh inputs never see it.
+#[derive(Debug, Clone)]
+pub struct MapEnvironmentVolume {
+    /// Source map entity index, so every diagnostic can name the entity.
+    pub source_entity: u32,
+    /// Overlap-rule priority; higher wins.
+    pub priority: i32,
+    /// Gravity override, m/s², signed vertical (negative = downward).
+    pub gravity: Option<f32>,
+    /// Push acceleration, m/s², engine axes (Y-up).
+    pub push: Option<glam::Vec3>,
+    /// Fluid name the mod manifest resolves.
+    pub fluid: Option<String>,
+    /// One convex leaf per authored brush, in authored order.
+    pub brushes: Vec<MapEnvironmentBrush>,
+}
+
+/// One convex environment-volume leaf in engine space (Y-up, meters).
+#[derive(Debug, Clone)]
+pub struct MapEnvironmentBrush {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Convex hull planes `[nx, ny, nz, d]`. A point `p` is inside when
+    /// `dot(p, n) - d <= 0` for every plane.
+    pub planes: Vec<[f32; 4]>,
+    /// Textured sides, the input to the fluid surface. Only a fluid volume
+    /// draws a surface, so a dry volume's brushes carry none.
+    pub sides: Vec<BrushSide>,
+}
+
 /// Light shape. Governs which fields of `MapLight` are meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
@@ -619,6 +654,9 @@ pub struct MapData {
     pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
     /// Invisible `trigger_volume` brush entities, emitted as PRL AABBs only.
     pub trigger_volumes: Vec<MapTriggerVolume>,
+    /// Static regional gravity, push and fluid volumes in source map entity
+    /// order, which is the overlap rule's final tiebreak.
+    pub environment_volumes: Vec<MapEnvironmentVolume>,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.

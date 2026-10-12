@@ -3,10 +3,13 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use crate::AttenuationCurve;
 use crate::volume::linear_volume_to_decibels;
+use kira::AudioManagerSettings;
 use kira::backend::mock::MockBackend;
 use kira::backend::{Backend, Renderer};
 
+mod muffle;
 mod spatial;
 
 /// A test backend that captures kira's [`Renderer`] so a test can pull the
@@ -19,8 +22,8 @@ mod spatial;
 /// backend by value, so a custom backend can hold it and expose the samples.
 /// This is the load-bearing readout for the volume→amplitude AC: it is the
 /// only way to observe that lowering a bus's volume reduces the signal that
-/// would reach the OS. `Audio<B>` being generic over the backend is what
-/// lets a test construct `Audio<CapturingBackend>` and drive it device-free.
+/// would reach the OS. `AudioCore<B>` being generic over the backend is what
+/// lets a test construct `AudioCore<CapturingBackend>` and drive it device-free.
 pub(super) struct CapturingBackend {
     renderer: Option<Renderer>,
 }
@@ -81,6 +84,16 @@ impl CapturingBackend {
         (rms(0), rms(1))
     }
 
+    /// Drain queued commands and render `frame_count` stereo frames,
+    /// returning the interleaved samples.
+    pub(super) fn capture_samples(&mut self, frame_count: usize) -> Vec<f32> {
+        let renderer = self.renderer.as_mut().expect("renderer started");
+        renderer.on_start_processing();
+        let mut out = vec![0.0_f32; frame_count * 2];
+        renderer.process(&mut out, 2);
+        out
+    }
+
     pub(super) fn capture_rms(&mut self, frame_count: usize) -> f32 {
         let renderer = self.renderer.as_mut().expect("renderer started");
         renderer.on_start_processing();
@@ -96,22 +109,17 @@ impl CapturingBackend {
 /// loaded. The 8 kHz rate matches the `test_tone.wav` fixture so rendered
 /// frames carry the tone at full resolution (kira's `MockBackend` defaults
 /// to 1 Hz, which would resample the clip away to near-nothing).
-pub(super) fn capturing_audio() -> Audio<CapturingBackend> {
-    let mono = mono::MonoFoldHandle::default();
+pub(super) fn capturing_audio() -> AudioCore<CapturingBackend> {
+    let mono = MonoFoldHandle::default();
     let settings = AudioManagerSettings::<CapturingBackend> {
-        capacities: Audio::CAPACITIES,
-        main_track_builder: Audio::main_track_builder(&mono),
+        capacities: CAPACITIES,
+        main_track_builder: main_track_builder(&mono),
         backend_settings: 8_000,
         ..Default::default()
     };
-    let mut manager =
+    let manager =
         AudioManager::<CapturingBackend>::new(settings).expect("capturing backend starts");
-    let listener = manager
-        .add_listener([0.0_f32, 0.0, 0.0], Audio::IDENTITY_ORIENTATION)
-        .expect("listener allocates");
-    let buses = BusTree::build(&mut manager).expect("bus tree builds");
-
-    let mut audio = Audio::from_parts(manager, listener, buses, mono);
+    let mut audio = AudioCore::assemble(manager, mono).expect("listener and bus tree build");
     audio.load_level_sounds(&dev_content_root());
     audio
 }
@@ -131,21 +139,16 @@ pub(super) fn dev_content_root() -> std::path::PathBuf {
 /// Exercises the production code paths without a sound device. Returns the
 /// `Audio` and its `MockBackend` manager pieces — kira's mock backend lives
 /// inside the manager, reached via `manager.backend_mut()`.
-pub(super) fn mock_audio() -> Audio<MockBackend> {
-    let mono = mono::MonoFoldHandle::default();
+pub(super) fn mock_audio() -> AudioCore<MockBackend> {
+    let mono = MonoFoldHandle::default();
     let settings = AudioManagerSettings::<MockBackend> {
-        capacities: Audio::CAPACITIES,
-        main_track_builder: Audio::main_track_builder(&mono),
+        capacities: CAPACITIES,
+        main_track_builder: main_track_builder(&mono),
         ..Default::default()
     };
-    let mut manager =
-        AudioManager::<MockBackend>::new(settings).expect("mock backend always starts");
-    let listener = manager
-        .add_listener([0.0_f32, 0.0, 0.0], Audio::IDENTITY_ORIENTATION)
-        .expect("listener allocates under mock backend");
-    let buses = BusTree::build(&mut manager).expect("bus tree builds under mock backend");
-
-    let mut audio = Audio::from_parts(manager, listener, buses, mono);
+    let manager = AudioManager::<MockBackend>::new(settings).expect("mock backend always starts");
+    let mut audio =
+        AudioCore::assemble(manager, mono).expect("listener and bus tree build under mock");
     audio.load_level_sounds(&dev_content_root());
     audio
 }
@@ -318,12 +321,12 @@ fn play_drops_request_when_bus_is_at_its_voice_cap() {
 
 #[test]
 fn shutdown_drops_cleanly_after_playing() {
-    // `shutdown` consumes `Audio`, tearing down the manager (and its
-    // listener/tracks/voices). Playing first, then shutting down, must not
-    // panic — the device-free analog of a clean engine exit.
+    // Dropping the core tears down the manager (and its listener, tracks and
+    // voices), as `Audio::shutdown` does. Playing first, then dropping, must
+    // not panic — the device-free analog of a clean engine exit.
     let mut audio = mock_audio();
     audio.play(sfx_request()).expect("fixture plays");
-    audio.shutdown();
+    drop(audio);
 }
 
 #[test]
@@ -484,7 +487,7 @@ pub(super) fn forward_listener() -> ListenerState {
 /// Step the mock renderer so queued play commands take effect and playback
 /// advances. `on_start_processing` drains command buffers; `process` advances
 /// audio time. Interleaved `steps` times.
-pub(super) fn advance_playback(audio: &mut Audio<MockBackend>, steps: usize) {
+pub(super) fn advance_playback(audio: &mut AudioCore<MockBackend>, steps: usize) {
     for _ in 0..steps {
         audio.manager.backend_mut().on_start_processing();
         audio.manager.backend_mut().process();

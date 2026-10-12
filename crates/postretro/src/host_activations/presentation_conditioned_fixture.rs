@@ -263,7 +263,7 @@ impl Peer {
             &session.hit_zone_store,
             None,
             &self.app.collision_world,
-            0.0,
+            &self.app.environment_volumes,
             DT as f32,
             Duration::from_secs_f64(DT),
             None,
@@ -799,6 +799,7 @@ fn movement() -> PlayerMovementComponent {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     })
 }

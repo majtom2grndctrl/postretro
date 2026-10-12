@@ -123,23 +123,26 @@ export function onStateCrossing(
   condition: CrossingCondition,
   fire: CrossingReaction[],
 ): CrossingDescriptor;
-/** Build a crossing watcher from a Bool-valued runtime predicate over live
- * store slots. It fires only on false-to-true edges and re-arms on false. A
- * predicate already true at registration only arms; it must become false, then
- * true, before it fires. */
+/** Build a crossing watcher from a Bool-valued predicate over live store
+ * slots: a fluent value such as `read(player.swimming)` or
+ * `read(player.health).lt(25)`, or a raw `runtime.*` node. It fires only on
+ * false-to-true edges and re-arms on false. A predicate already true at
+ * registration only arms; it must become false, then true, before it fires. */
 export function onStateCrossing(
-  predicate: RuntimeValue,
+  predicate: RuntimeValue | BoolRef,
   fire: CrossingReaction[],
   options?: CrossingOptions,
 ): CrossingDescriptor;
 export function onStateCrossing(
-  refOrPredicate: ComputedRef<number> | RuntimeValue,
+  refOrPredicate: ComputedRef<number> | RuntimeValue | BoolRef,
   conditionOrFire: CrossingCondition | CrossingReaction[],
   fireOrOptions?: CrossingReaction[] | CrossingOptions,
 ): CrossingDescriptor {
   if (Array.isArray(conditionOrFire)) {
+    // A fluent predicate lowers to its IR node, as `updateState` lowers a
+    // fluent value; a raw node passes through unchanged.
     const descriptor: PredicateCrossingDescriptor = {
-      predicate: refOrPredicate as RuntimeValue,
+      predicate: loweredValue(refOrPredicate) as RuntimeValue,
       fire: crossingFireNames(conditionOrFire),
     };
     const options = fireOrOptions as CrossingOptions | undefined;

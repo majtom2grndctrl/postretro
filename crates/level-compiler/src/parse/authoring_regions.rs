@@ -37,7 +37,7 @@ pub(super) fn resolve_brush_region_bounds(
     resolve_brush_region_bounds_with_empty_policy(geo_map, brush_ids, scale, classname, true)
 }
 
-fn resolve_brush_region_bounds_with_empty_policy(
+pub(super) fn resolve_brush_region_bounds_with_empty_policy(
     geo_map: &GeoMap,
     brush_ids: &[BrushId],
     scale: f64,

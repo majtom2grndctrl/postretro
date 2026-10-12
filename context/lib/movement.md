@@ -27,7 +27,7 @@ Authors tune and compose movement through descriptor data — never per-tick imp
 
 States live natively in Rust. Authors tune enabled native states through descriptor data. They do **not** write per-tick movement callbacks.
 
-**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — no script surface writes the movement component, and the one planned read is a readonly per-player swim projection (decided, not yet built; `entity_model.md` §7b).
+**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — no script surface writes the movement component. Its one exception is a readonly per-player projection: `player.swimming` reads the movement state and `player.immersion` an output-only component the tick writes (`entity_model.md` §7b, `scripting.md` §5). No intent, reconcile replay or wire merge reads either back.
 
 ### The shape of the surface
 
@@ -73,6 +73,35 @@ The movement tick splits into two halves with a clean seam between them.
 
 Today's walk/run/jump/air-control is the baseline `Normal` state; later states (crouch, slide, wall-run, vault) plug in behind the same seam. Ability budgets (air-jump, air-dash) refresh through one landing-refresh point so they reset uniformly.
 
+### Environment resolution
+
+The tick resolves the pawn's environment once, at its tick-start position, before the state intent: gravity (signed vertical), push (a vector), the winning fluid, its viscosity, immersion, and whether the tick eye is inside that fluid. Resolution is one pure function of position, capsule, the level's static volumes and the level gravity (`entity_model.md` §7, Environment Volumes). Host movement, client prediction and reconcile replay all call it through the tick, so they agree by construction. Intents receive the resolved value and never query it. The forward-contact rule above does not govern it: environment is a function of position and static data, not of a collision result.
+
+Gravity keeps its meaning in every state. Push never defines "down": ground classification, the capsule, step-up, ground-stick, camera and navmesh keep +Y as up. Slide's slope boost reads gravity only, so push never feeds it.
+
+### Swim
+
+`Swim` is a native state, entered and left by immersion — the fraction of the capsule's vertical segment, feet to head, the winning fluid covers. The edge applies at the seam, after the protected layers are peeled and before the intent, so the entered state owns its first tick.
+
+- **Hysteresis.** Any state enters at immersion ≥ `enterDepth`. `Swim` leaves below `exitDepth`; exactly at it stays. Between the two nothing toggles.
+- **Standing capsule.** Entry is tested against the standing capsule's immersion. A crouched pawn (crouch or slide) stands up about the anchor its crouch entered with: feet when grounded, head when airborne. Feet-anchoring an airborne crouch would lift the capsule by twice the crouch shrink, so a diver crouching out of a floating block would stand straight back into it. The growth must pass a clearance sweep in the direction it grows; a blocked growth stays crouched, wades, and retries every tick.
+- **Fluid jump.** Fires only from `Swim` at tick start, with jump held, the tick eye — never the presented camera eye — out of the fluid, and a rise that clears the water: the ballistic rise under the tick-start gravity plus vertical push must uncover the capsule below `exitDepth`, and a headroom sweep must allow that rise. Otherwise jump at the surface only treads. A clearing jump wins over exit on the same tick. It sets vertical velocity to `fluidJumpVelocity`, discards the vertical parts of the drift and knockback layers, leaves to airborne `Normal`, and arms a re-entry latch. The latch blocks swim entry until immersion first falls below `exitDepth`. Without the clearance rule a jump that could not leave the water would latch swim off with the pawn still submerged.
+- **Locomotion.** The fluid's viscosity is the only drag while swimming, a linear fraction per tick on all three axes; a swimmer on the pool floor gets no ground friction. Acceleration toward the 3D wish (pitch-following, jump up, crouch down) only adds speed along the wish, so carried momentum is never clipped. With no vertical input the swimmer drifts at `sinkSpeed` scaled by resolved gravity over standard gravity (−9.81 m/s²): zero gravity floats, upward gravity rises. While the tick eye is out the wish never points up, so leaving the water is the fluid jump. A pool-floor swimmer stays grounded for collision, not for its medium, and swim fires no `landed`.
+- **No swim block.** The pawn never swims and walks fluid floors, a legitimate wade-only design. Host and offline warn once when a level with fluid volumes loads for such a player.
+
+The `movement.swim` descriptor block is optional. A block failing validation is dropped with a warning naming the field, and the player wades; the rest of the descriptor loads.
+
+| Field | Unit | Valid |
+|---|---|---|
+| `speed` | m/s target swim speed | finite, ≥ 0 |
+| `accel` | m/s² toward the wish | finite, ≥ 0 |
+| `sinkSpeed` | m/s with no vertical input, at standard gravity | finite, ≥ 0 |
+| `enterDepth` | immersion fraction | (0, 1] |
+| `exitDepth` | immersion fraction | (0, 1], strictly below `enterDepth` |
+| `fluidJumpVelocity` | m/s upward | finite, > 0 |
+
+`Swim` and its fluid, the re-entry latch and the drift layer are wire-mirrored tick state: predicted, reconciled, and carried across movement-component rebuilds (hot reload, client tuning install).
+
 ## 5. Design north-stars
 
 | Reference | Borrow |
@@ -94,6 +123,21 @@ Combat adds authored velocity changes to a protected knockback layer on players 
 
 Character descriptors author response scale, ground/air drag, and locomotion control during a shove. Drag removes a linear fraction per fixed tick (`max(0, 1 - drag * dt)`); zero drag preserves momentum. Control scales steering and acceleration while protected velocity remains, leaving jump/dash activation available. Upward impulses release ground attachment; mover launches preserve the prior base long enough to transfer its release velocity once. Mutable knockback velocity participates in player prediction and reconciliation. No runtime script callback or rigid-body solver is involved.
 
+### Regional gravity and push
+
+Gravity is one signed vertical scalar per body per tick: a gravity volume's value inside it, the level gravity outside. It keeps its meaning in every state, and upward level gravity with no push still never lifts a grounded body.
+
+A push volume adds an acceleration in any direction. It is static map data, never a script primitive that forces a body, so it stays clear of the §3 guardrail. Push lands after the state intent, in a second protected layer beside knockback — the **drift layer**:
+
+- **Horizontal on land.** Outside water, horizontal push accrues in the drift layer. Intent speed caps and steering act on locomotion only, so an air cap never re-clips a wind. Vertical push joins locomotion directly; no intent caps vertical speed, and while grounded the floor bears it.
+- **3D while swimming.** In `Swim` the whole push accrues in the layer, so a current settles at push / viscosity in every direction and swim steering never fights it. The layer's speed is capped at terminal velocity by magnitude. On every edge out of `Swim` its vertical part folds into vertical velocity, and the layer is horizontal again.
+- **Decay by medium.** Ground friction while grounded (steady drift ≈ push / ground stop friction), the fluid's viscosity while swimming, nothing airborne: momentum carries out of a wind until landing.
+- **Collision.** The layer rejoins before the one collision sweep, which projects it like knockback, so walls absorb it. While swimming, floors and ceilings never absorb its vertical part, so a downward current presses a swimmer into the floor and an upward one lifts it off once total vertical motion points up.
+- **Lift-off.** A grounded dry body leaves the ground when the push points up harder than gravity pulls down, as a knockback launch does: grounded clears before the intent, and the substrate skips the upward clamp and ground-stick. Only gravity's downward part resists.
+- **Terminal speed.** Speed along the push direction is capped at the descriptor's terminal fall velocity, so an updraft never accelerates a body forever. The excess comes from the drift layer first, then knockback, then locomotion, as the fall clamp does.
+
+The drift layer is predicted and reconciled like knockback velocity and rides the wire (`networking.md` §Game-logic-owned apply invariant). Push resolves by one winner like every regional field, never a sum: a zero push carves a calm pocket inside wind.
+
 ### Moving bases
 
 Player grounded state is a `GroundRef`: `Airborne`, `World`, or `Mover(mover_id)`. Scripting-facing `grounded` stays a bool projection (`ground != Airborne`), and AI agent grounding remains separate.
@@ -104,5 +148,5 @@ The movement query surface combines static world collision with active mover col
 
 - Rigid-body dynamics for the player (forces, mass, restitution, constraint solving).
 - Per-tick script-authored movement (imperative callbacks). The author surface is declarative.
-- Map-overridable per-archetype movement tuning — movement physics, swim tuning included, is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes (decided, not yet built; `entity_model.md` §4).
+- Map-overridable per-archetype movement tuning — movement physics, swim tuning included, is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes (`entity_model.md` §4).
 - Rollback or deterministic lockstep. Pawn and mover prediction/reconciliation are in scope for authoritative co-op, but not rollback.

@@ -6,27 +6,39 @@
 use std::collections::HashMap;
 
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::immersion::ImmersionComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::data_descriptors::{HealthDescriptor, WeaponDescriptor};
 use postretro_entities::engine_state_catalog::{EngineStateValueType, engine_state_catalog};
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry, SlotTable, SlotValue, Transform};
+use postretro_foundation::MovementState;
 use postretro_net::state_slots::WireSlotValue;
 use postretro_scripting_core::player_slots::{PlayerSlot, player_slot_value};
 
 use super::{HostStateReplication, ReplicatedSlotIdentity, ReplicatedSlotSchema};
 use crate::netcode::command_queue::{MovementOwners, WeaponOwners};
+use crate::predict_reconcile_harness_test_fixtures::component as movement_component;
 
 const CLIENT_A: u64 = 1;
 const CLIENT_B: u64 = 2;
 
 /// One pawn's component state: health plus an optional active weapon in slot
-/// 0 and an ammo reserve.
+/// 0, an ammo reserve, and optionally movement with its swim state and the
+/// output-only immersion host movement last wrote.
 struct PawnState {
     health: (f32, f32),
     weapon: Option<WeaponComponent>,
     reserve: u32,
+    swim: Option<SwimState>,
+}
+
+/// A movement pawn's swim state and resolved immersion.
+#[derive(Clone, Copy)]
+struct SwimState {
+    swimming: bool,
+    immersion: f32,
 }
 
 impl PawnState {
@@ -35,6 +47,7 @@ impl PawnState {
             health: (current, max),
             weapon: None,
             reserve: 0,
+            swim: None,
         }
     }
 
@@ -43,6 +56,18 @@ impl PawnState {
             health: (100.0, 100.0),
             weapon: Some(weapon),
             reserve: 0,
+            swim: None,
+        }
+    }
+
+    /// An unarmed movement pawn: the swim slots resolve before any weapon.
+    fn moving(swimming: bool, immersion: f32) -> Self {
+        Self {
+            swim: Some(SwimState {
+                swimming,
+                immersion,
+            }),
+            ..Self::healthy(100.0, 100.0)
         }
     }
 }
@@ -157,6 +182,8 @@ fn differing_states(slot: PlayerSlot) -> [PawnState; 2] {
             PawnState::wielding(cooling(42.0)),
             PawnState::wielding(cooling(10.0)),
         ],
+        PlayerSlot::Swimming => [PawnState::moving(true, 0.8), PawnState::moving(false, 0.2)],
+        PlayerSlot::Immersion => [PawnState::moving(true, 0.8), PawnState::moving(false, 0.0)],
     }
 }
 
@@ -172,6 +199,20 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
     let mut reserve = AmmoReserve::new();
     reserve.credit("rounds", state.reserve);
     registry.set_component(pawn, reserve).unwrap();
+    if let Some(SwimState {
+        swimming,
+        immersion,
+    }) = state.swim
+    {
+        let mut movement = movement_component();
+        if swimming {
+            movement.movement_state = MovementState::Swim { fluid: 0 };
+        }
+        registry.set_component(pawn, movement).unwrap();
+        registry
+            .set_component(pawn, ImmersionComponent { immersion })
+            .unwrap();
+    }
     if let Some(weapon) = state.weapon {
         let weapon_id = registry.spawn(Transform::default());
         registry.set_component(weapon_id, weapon).unwrap();
@@ -183,11 +224,12 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
     pawn
 }
 
-/// The scalar a replicated owner-private record carries: plain for health,
-/// the value half of `[slot, value]` for weapon slots.
+/// The scalar a replicated owner-private record carries: plain for the
+/// pawn-component slots, the value half of `[slot, value]` for weapon slots.
 fn wire_scalar(value: &WireSlotValue) -> f32 {
     match value {
         WireSlotValue::Number(number) => *number,
+        WireSlotValue::Boolean(flag) => f32::from(u8::from(*flag)),
         WireSlotValue::Array(pair) if pair.len() == 2 => pair[1],
         other => panic!("unexpected owner-private wire value {other:?}"),
     }

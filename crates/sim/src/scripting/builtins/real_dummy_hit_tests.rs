@@ -298,6 +298,7 @@ fn player_movement() -> PlayerMovementDescriptor {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }
@@ -349,6 +350,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     };
@@ -357,7 +359,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
             &mut component,
             &input,
             &floor,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             1.0 / 60.0,
             transform.position,
         )

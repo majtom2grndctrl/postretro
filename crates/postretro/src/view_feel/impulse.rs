@@ -69,13 +69,15 @@ fn apply_edge(
     is_exit: bool,
     age: f32,
 ) {
-    let Some(kick) = state_params(params, state_key)
+    let Some(index) = state_index(state_key) else {
+        return;
+    };
+    let Some(kick) = state_params_by_index(params, index)
         .and_then(|entry| if is_exit { entry.exit } else { entry.enter })
     else {
         return;
     };
 
-    let index = state_index(state_key);
     let tension = state_tension(params, index);
     let mut aged_position = kick;
     let mut aged_velocity = zero_channels();
@@ -95,13 +97,6 @@ fn state_tension(params: &ImpulseParams, index: usize) -> f32 {
         .unwrap_or(params.tension)
 }
 
-fn state_params(
-    params: &ImpulseParams,
-    state: MovementStateKind,
-) -> Option<&postretro_foundation::ImpulseStateParams> {
-    state_params_by_index(params, state_index(state))
-}
-
 fn state_params_by_index(
     params: &ImpulseParams,
     index: usize,
@@ -115,12 +110,16 @@ fn state_params_by_index(
     }
 }
 
-fn state_index(state: MovementStateKind) -> usize {
+/// The spring a state key drives. `Swim` has no authored impulse key yet
+/// (`viewFeel.impulse.states` names the four land states), so edges into and
+/// out of swim kick nothing; the other end of such an edge still kicks.
+fn state_index(state: MovementStateKind) -> Option<usize> {
     match state {
-        MovementStateKind::Normal => 0,
-        MovementStateKind::Dash => 1,
-        MovementStateKind::Crouch => 2,
-        MovementStateKind::Slide => 3,
+        MovementStateKind::Normal => Some(0),
+        MovementStateKind::Dash => Some(1),
+        MovementStateKind::Crouch => Some(2),
+        MovementStateKind::Slide => Some(3),
+        MovementStateKind::Swim => None,
     }
 }
 

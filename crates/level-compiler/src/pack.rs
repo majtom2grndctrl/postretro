@@ -35,6 +35,7 @@ use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSe
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::{FogVolumeRecord, FogVolumesSection};
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
@@ -231,14 +232,13 @@ pub fn encode_map_entities(
     Some(MapEntitySection { entries })
 }
 
-/// Encode the resolved fog volume entities and the worldspawn-scoped scalars
-/// (`fog_pixel_scale` and `initial_gravity`) into a `FogVolumesSection`.
-/// Always produces a section so the worldspawn data is honoured at runtime,
-/// even when the map carries no fog brushes.
+/// Encode the resolved fog volume entities and the worldspawn
+/// `fog_pixel_scale` into a `FogVolumesSection`. Always produces a section so
+/// the pixel scale is honoured at runtime, even when the map carries no fog
+/// brushes.
 pub fn encode_fog_volumes(
     fog_volumes: &[crate::map_data::MapFogVolume],
     fog_pixel_scale: u32,
-    initial_gravity: f32,
 ) -> FogVolumesSection {
     let volumes = fog_volumes
         .iter()
@@ -300,7 +300,6 @@ pub fn encode_fog_volumes(
         .collect();
     FogVolumesSection {
         pixel_scale: fog_pixel_scale,
-        initial_gravity,
         volumes,
     }
 }
@@ -449,6 +448,9 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         &AnimatedBillboardDirectScatterDeltaVolumesSection,
     >,
 ) -> anyhow::Result<()> {
+    // This standalone helper has no parsed map, so it writes the always-present
+    // environment section with no volumes at the default level gravity.
+    let environment_volumes = EnvironmentVolumesSection::default();
     pack_and_write_portals_with_billboard_scatter_finalized(
         output,
         geo_result,
@@ -480,6 +482,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         navmesh,
         kinematic_geometry,
         trigger_volumes,
+        &environment_volumes,
         cell_draw_index_section,
         cell_visibility_section,
         None,
@@ -522,6 +525,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
+    environment_volumes: &EnvironmentVolumesSection,
     // CellDrawIndex (id 37), or `None` for zero-leaf maps. Emission is
     // independent of portal presence.
     cell_draw_index_section: Option<&CellDrawIndexSection>,
@@ -659,6 +663,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         navmesh,
         kinematic_geometry,
         trigger_volumes,
+        environment_volumes,
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
         cell_residency_set: cell_residency_set_section,
@@ -1365,8 +1370,13 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
         // Baseline modern sections plus CellVisibility, section 45,
-        // always-emitted FogVolumes, and the required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 17);
+        // always-emitted FogVolumes and EnvironmentVolumes, and the required
+        // CellDrawIndex.
+        assert_eq!(meta.header.section_count, 18);
+        assert!(
+            meta.find_section(SectionId::EnvironmentVolumes as u32)
+                .is_some()
+        );
         assert!(
             meta.find_section(SectionId::ClusterDirectory as u32)
                 .is_some()
@@ -2324,8 +2334,13 @@ mod tests {
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
 
-        // Baseline modern sections plus always-emitted FogVolumes and required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 15);
+        // Baseline modern sections plus always-emitted FogVolumes and
+        // EnvironmentVolumes, and required CellDrawIndex.
+        assert_eq!(meta.header.section_count, 16);
+        assert!(
+            meta.find_section(SectionId::EnvironmentVolumes as u32)
+                .is_some()
+        );
         assert!(
             meta.find_section(SectionId::ClusterDirectory as u32)
                 .is_some()

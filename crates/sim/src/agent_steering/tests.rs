@@ -528,7 +528,13 @@ fn run_until_stuck_threshold(
 ) {
     for _ in 0..max_ticks {
         let before = agent_position(registry, id);
-        tick(registry, world, None, GRAVITY, DT);
+        tick(
+            registry,
+            world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
             let after = agent_position(registry, id);
@@ -571,7 +577,13 @@ fn agent_path_following_speed_accelerates_over_multiple_ticks() {
 
     let mut speeds = Vec::new();
     for _ in 0..12 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         speeds.push(steer_speed(&registry, id));
         if speeds.last().copied().unwrap() >= 4.0 - EPS {
             break;
@@ -616,7 +628,13 @@ fn steer_velocity_ramps_independently_of_wall_clamped_collision_velocity() {
     let mut steer_speeds = Vec::new();
     let mut post_collision_speeds = Vec::new();
     for _ in 0..10 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         steer_speeds.push(xz_length(agent.steer_velocity));
         post_collision_speeds.push(xz_length(agent.velocity));
@@ -729,7 +747,13 @@ fn funnel_path_routes_concave_corner_without_stuck_detection() {
         // assertion exercises the funnel/capsule route rather than a separate
         // floor-settling contact tick. Ground-stick remains active here; the
         // harness's gravity and settling behavior are covered independently.
-        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if tick_index == 0 {
             assert!(
@@ -817,7 +841,13 @@ fn full_speed_agent_rounds_concave_corner_mandatory_vertices_without_crawling() 
     for tick_index in 0..600 {
         // Neutral vertical channel, matching the sibling no-stuck tests, so this
         // exercises the funnel/capsule route rather than a floor-settling tick.
-        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry
             .get_component::<AgentComponent>(id)
             .unwrap()
@@ -956,7 +986,13 @@ fn slow_agent_funnel_path_routes_concave_corner_without_stuck_detection() {
     for tick_index in 0..4000 {
         // Neutral vertical channel, matching the canonical no-stuck test, so the
         // assertion exercises the funnel/capsule route rather than floor settle.
-        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if tick_index == 0 {
             assert!(
@@ -1020,7 +1056,13 @@ fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
     set_destination(&mut registry, id, Vec3::new(5.0, rest_y(&params), 5.0));
 
     for tick_index in 0..4000 {
-        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if tick_index == 0 {
             assert!(
@@ -1075,7 +1117,13 @@ fn slow_agent_arrives_on_open_floor_without_stuck_detection() {
     }
 
     for tick_index in 0..4000 {
-        tick(&mut registry, &world, None, 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         assert!(
             agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
@@ -1114,7 +1162,13 @@ fn very_slow_agent_cruises_on_open_floor_without_stuck_detection() {
     }
 
     for tick_index in 0..1200 {
-        tick(&mut registry, &world, None, 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         assert!(
             agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
@@ -1193,7 +1247,13 @@ fn chasing_agent_follows_moving_target_around_concave_corner_without_stalling() 
 
         let before = agent_position(&registry, id);
         // Neutral vertical channel, matching the sibling no-stuck tests.
-        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(0.0),
+            DT,
+        );
         let after = agent_position(&registry, id);
 
         let state = path_state(&registry, id).unwrap();
@@ -1259,7 +1319,13 @@ fn stuck_detection_reaches_threshold_then_recovery_fires_next_tick() {
         assert!(!agent.blocked);
     }
 
-    tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
     assert_eq!(agent.stuck_ticks, 0, "recovery fire resets detector");
@@ -1301,7 +1367,13 @@ fn slow_agent_wall_wedge_reaches_threshold_then_recovery_fires_next_tick() {
         STUCK_TICKS_THRESHOLD
     );
 
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     assert_ne!(
         registry
             .get_component::<AgentComponent>(id)
@@ -1328,7 +1400,13 @@ fn recovery_window_escapes_concave_corner_with_goal_projected_progress() {
     let goal_dir = Vec3::new(destination.x - start.x, 0.0, destination.z - start.z).normalize();
 
     for _ in 0..UNSTICK_WINDOW {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
 
     let end = agent_position(&registry, id);
@@ -1379,7 +1457,13 @@ fn recovery_escape_path_is_deterministic_for_identical_inputs() {
 
         let mut positions = Vec::new();
         for _ in 0..UNSTICK_WINDOW {
-            tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+            tick(
+                &mut registry,
+                &world,
+                Some(&graph),
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            );
             positions.push(agent_position(&registry, id));
         }
         positions
@@ -1413,7 +1497,13 @@ fn stuck_detection_resets_for_idle_blocked_and_arrived_gates() {
         agent.unstick_window_remaining = 3;
         idle_registry.set_component(idle, agent).unwrap();
     }
-    tick(&mut idle_registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut idle_registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let agent = idle_registry.get_component::<AgentComponent>(idle).unwrap();
     assert_eq!(
         agent.stuck_ticks, 0,
@@ -1441,7 +1531,13 @@ fn stuck_detection_resets_for_idle_blocked_and_arrived_gates() {
         agent.unstick_window_remaining = 3;
         blocked_registry.set_component(blocked, agent).unwrap();
     }
-    tick(&mut blocked_registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut blocked_registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let agent = blocked_registry
         .get_component::<AgentComponent>(blocked)
         .unwrap();
@@ -1470,7 +1566,13 @@ fn stuck_detection_resets_for_idle_blocked_and_arrived_gates() {
         agent.unstick_window_remaining = 3;
         arrived_registry.set_component(arrived, agent).unwrap();
     }
-    tick(&mut arrived_registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut arrived_registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let agent = arrived_registry
         .get_component::<AgentComponent>(arrived)
         .unwrap();
@@ -1513,7 +1615,13 @@ fn failed_replan_keeps_stale_path_and_recovery_still_fires() {
         registry.set_component(id, agent).unwrap();
     }
 
-    let result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
     assert_eq!(
@@ -1567,7 +1675,13 @@ fn pathless_blocked_agent_does_not_drift_from_stale_steer_or_tangent() {
 
     let start = agent_position(&registry, id);
     // No nav graph: the first (drift-admitted) plan fails with no prior path.
-    let result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let end = agent_position(&registry, id);
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
@@ -1615,7 +1729,13 @@ fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
         registry.set_component(id, agent).unwrap();
     }
 
-    let fire_result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let fire_result = tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     {
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         assert_eq!(
@@ -1633,7 +1753,13 @@ fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
         );
     }
 
-    let replan_result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let replan_result = tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     {
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
@@ -1662,7 +1788,13 @@ fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
         );
     }
 
-    let followup_result = tick(&mut registry, &world, None, GRAVITY, DT);
+    let followup_result = tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     assert_eq!(
         followup_result.replans, 0,
         "the failed-plan cooldown blocks an immediate re-retry"
@@ -1687,7 +1819,13 @@ fn agent_decelerates_inside_arrival_band_before_hard_stop() {
     let mut arrival_band_speeds = Vec::new();
     let mut last_pre_stop_speed = None;
     for _ in 0..300 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let state = path_state(&registry, id).unwrap();
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if agent.arrived {
@@ -1747,7 +1885,13 @@ fn arrived_agent_displaced_outside_final_radius_resumes_steering() {
     );
 
     for _ in 0..180 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         if registry
             .get_component::<AgentComponent>(id)
             .unwrap()
@@ -1768,7 +1912,13 @@ fn arrived_agent_displaced_outside_final_radius_resumes_steering() {
     transform.position.x = destination.x - ARRIVAL_RADIUS_FACTOR * params.radius - 0.25;
     registry.set_component(id, transform).unwrap();
 
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
     assert!(
@@ -1806,7 +1956,13 @@ fn steer_heading_rotates_by_at_most_turn_rate_each_tick() {
         registry.set_component(id, agent).unwrap();
     }
 
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let heading = registry
         .get_component::<AgentComponent>(id)
@@ -2002,7 +2158,13 @@ fn crowd_separation_does_not_reverse_goal_progress() {
     }
 
     let start = agent_position(&registry, chaser);
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let end = agent_position(&registry, chaser);
 
     assert!(
@@ -2031,7 +2193,13 @@ fn overlapping_agents_gain_separation_before_accel_ramp_completes() {
         distance_xz(pa, pb)
     };
     for _ in 0..2 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     let end_gap = {
         let pa = path_state(&registry, a).unwrap().position;
@@ -2063,7 +2231,13 @@ fn agent_steers_around_l_wall_without_penetrating_it() {
     // (center x + radius) must never cross it while z is still within the box
     // band. That is the "does not penetrate the wall" invariant.
     for _ in 0..600 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let state = path_state(&registry, id).unwrap();
         let p = state.position;
         // While the agent is still beside the box (z < bz1), it must stay left
@@ -2126,7 +2300,13 @@ fn freestanding_wall_chaser_reaches_far_side_without_blocking() {
     set_destination(&mut registry, chaser, target);
 
     for tick_index in 0..2400 {
-        let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        let result = tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let state = path_state(&registry, chaser).expect("chaser stays live");
         let agent = registry.get_component::<AgentComponent>(chaser).unwrap();
 
@@ -2213,7 +2393,13 @@ fn agent_reaching_destination_reports_arrived() {
 
     let mut arrived = false;
     for _ in 0..600 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         if path_state(&registry, id).unwrap().arrived {
             arrived = true;
             break;
@@ -2252,7 +2438,13 @@ fn idle_agent_without_destination_still_settles_to_ground() {
     }
 
     for _ in 0..60 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
 
     let state = path_state(&registry, id).unwrap();
@@ -2287,7 +2479,13 @@ fn agent_with_no_path_reports_blocked_and_holds_position() {
     set_destination(&mut registry, id, Vec3::new(1.0, rest_y(&params), 20.0));
 
     for _ in 0..120 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
 
     let state = path_state(&registry, id).unwrap();
@@ -2321,7 +2519,13 @@ fn drifted_destination_replan_failure_keeps_agent_moving_on_stale_path() {
     let good_destination = Vec3::new(7.0, rest_y(&params), 6.0);
     set_destination(&mut registry, id, good_destination);
     for _ in 0..10 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     assert!(
         path_state(&registry, id).unwrap().has_path,
@@ -2333,7 +2537,13 @@ fn drifted_destination_replan_failure_keeps_agent_moving_on_stale_path() {
     let unroutable = Vec3::new(7.0, rest_y(&params), 20.0);
     set_destination(&mut registry, id, unroutable);
     let before = agent_position(&registry, id);
-    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let after = agent_position(&registry, id);
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
@@ -2374,7 +2584,13 @@ fn arrived_path_replan_failure_clears_completed_state_and_holds_position() {
     set_destination(&mut registry, id, reachable);
 
     for _ in 0..600 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         if path_state(&registry, id).unwrap().arrived {
             break;
         }
@@ -2389,7 +2605,13 @@ fn arrived_path_replan_failure_clears_completed_state_and_holds_position() {
     let unroutable = Vec3::new(7.0, rest_y(&params), 20.0);
     set_destination(&mut registry, id, unroutable);
     let before = agent_position(&registry, id);
-    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     let state = path_state(&registry, id).unwrap();
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
 
@@ -2405,7 +2627,13 @@ fn arrived_path_replan_failure_clears_completed_state_and_holds_position() {
     assert_eq!(agent.unstick_window_remaining, 0);
 
     for _ in 0..10 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     let after = agent_position(&registry, id);
     assert!(
@@ -2433,7 +2661,13 @@ fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     let old_destination = Vec3::new(1.0, rest_y(&params), 6.0);
     set_destination(&mut registry, id, old_destination);
 
-    let failed = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let failed = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     assert_eq!(failed.replans, 1, "first tick attempts the bad plan");
     {
         let state = path_state(&registry, id).unwrap();
@@ -2459,7 +2693,13 @@ fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     );
 
     set_destination(&mut registry, id, live_destination);
-    let recovered = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let recovered = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     assert_eq!(
         recovered.replans, 1,
@@ -2512,7 +2752,13 @@ fn two_agents_to_same_destination_separate_from_overlap() {
     );
 
     for _ in 0..300 {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
 
     let pa = path_state(&registry, a).unwrap().position;
@@ -2577,7 +2823,13 @@ fn replans_are_bounded_by_budget_per_tick() {
         set_destination(&mut registry, id, Vec3::new(7.0, rest_y(&params), 6.0));
     }
 
-    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     assert_eq!(
         result.replans, REPLAN_BUDGET_PER_TICK,
         "first tick should replan exactly the budget, not all {count} agents"
@@ -2621,7 +2873,13 @@ fn blocked_agents_do_not_starve_reachable_agent_replan() {
     let bound = (blocked_count / REPLAN_BUDGET_PER_TICK + 2) as usize;
     let mut got_path = false;
     for _ in 0..bound {
-        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         if path_state(&registry, reachable).unwrap().has_path {
             got_path = true;
             break;
@@ -2698,7 +2956,13 @@ fn drift_driven_replan_beats_staleness_refreshers_for_budget() {
         "test setup: destination must have drifted past the threshold"
     );
 
-    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
     assert_eq!(
         result.replans, REPLAN_BUDGET_PER_TICK,
         "the budget is fully spent ({REPLAN_BUDGET_PER_TICK} replans)"
@@ -2747,7 +3011,13 @@ fn topology_changed_destination_replans_below_euclidean_threshold() {
     set_manual_path(&mut registry, id, vec![old_dest]);
     set_destination(&mut registry, id, new_dest);
 
-    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let result = tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     assert_eq!(
         result.replans, 1,
@@ -2814,7 +3084,13 @@ fn arrived_agent_reacquires_moved_destination_this_tick() {
         "test setup: destination must have moved past the threshold"
     );
 
-    tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let agent = registry.get_component::<AgentComponent>(arrived).unwrap();
     assert!(
@@ -2868,7 +3144,13 @@ fn knockback_moves_idle_agent_and_wall_contact_consumes_it() {
     agent.add_knockback(Vec3::X * 12.0);
     registry.set_component(id, agent).unwrap();
     for _ in 0..45 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     let pos = registry.get_component::<Transform>(id).unwrap().position;
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
@@ -2876,7 +3158,13 @@ fn knockback_moves_idle_agent_and_wall_contact_consumes_it() {
     assert!(agent.knockback_velocity.x.abs() < EPS);
     assert!(agent.velocity.x.abs() < EPS);
     for _ in 0..15 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     let settled = registry.get_component::<Transform>(id).unwrap().position;
     assert!((pos.x - settled.x).abs() < EPS);
@@ -2903,7 +3191,13 @@ fn knockback_survives_path_steering_and_vertical_launch_lands() {
     agent.add_knockback(Vec3::new(1.0, 6.0, 0.0));
     registry.set_component(id, agent).unwrap();
     for _ in 0..10 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
     }
     let pos = registry.get_component::<Transform>(id).unwrap().position;
     assert!(pos.x > 1.1 && pos.y > rest_y(&params) + 0.5);
@@ -2915,7 +3209,13 @@ fn knockback_survives_path_steering_and_vertical_launch_lands() {
     let mut before_release = pos;
     let mut release = None;
     for _ in 0..180 {
-        tick(&mut registry, &world, None, GRAVITY, DT);
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         let after = registry.get_component::<Transform>(id).unwrap().position;
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
         if agent.knockback_velocity == Vec3::ZERO {
@@ -2970,7 +3270,13 @@ fn partial_knockback_control_scales_turn_rate_and_preserves_steer_speed() {
     assert!(agent.add_knockback(Vec3::Y));
     registry.set_component(id, agent).unwrap();
 
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    tick(
+        &mut registry,
+        &world,
+        None,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        DT,
+    );
 
     let velocity = registry
         .get_component::<AgentComponent>(id)

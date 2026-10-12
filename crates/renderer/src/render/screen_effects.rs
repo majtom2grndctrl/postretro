@@ -35,8 +35,8 @@ const COVERS_HUD: CoversHud = CoversHud {
 /// `screen_effects.wgsl`. At-rest slot values pack to the identity uniform and
 /// every effect term ALU-collapses to a no-op.
 ///
-/// **Photosensitivity limiter.** The channel clamp limits the packed flash and
-/// vignette before the uniform is written. It is CPU-only; the GPU sees an
+/// **Photosensitivity limiter.** The channel clamp limits the packed flash,
+/// vignette and fluid tint before the uniform is written. It is CPU-only; the GPU sees an
 /// ordinary effect uniform.
 pub struct ScreenEffectsPass {
     /// Linear HDR scene target at the scene extent. Scene passes render here;
@@ -61,6 +61,9 @@ pub struct ScreenEffectsPass {
     /// The photosensitivity limiter: `screen.flash` / `screen.vignette` limited
     /// as they pack. CPU-side history, advanced once per resolve frame.
     channel_clamp: ChannelClamp,
+    /// The engine-owned fluid view tint the App last set (rgb + blend
+    /// strength); packed beside the slots, never written to one.
+    fluid_tint: [f32; 4],
     /// [`COVERS_HUD`]; a field so a test can turn one switch on.
     covers_hud: CoversHud,
 }
@@ -158,6 +161,7 @@ impl ScreenEffectsPass {
             capture_pipeline,
             effect_buffer,
             channel_clamp: ChannelClamp::default(),
+            fluid_tint: [0.0; 4],
             covers_hud: COVERS_HUD,
         }
     }
@@ -211,6 +215,12 @@ impl ScreenEffectsPass {
         );
     }
 
+    /// Store the fluid view tint the next resolves pack. Held until replaced;
+    /// `[0.0; 4]` is dry.
+    pub(super) fn set_fluid_tint(&mut self, tint: [f32; 4]) {
+        self.fluid_tint = tint;
+    }
+
     #[cfg(test)]
     pub(super) fn set_covers_hud(&mut self, covers_hud: CoversHud) {
         self.covers_hud = covers_hud;
@@ -228,8 +238,10 @@ impl ScreenEffectsPass {
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]
     /// and the WGSL), so only the tonemap changes an at-rest scene.
     ///
-    /// The channel clamp limits the packed flash and vignette against
-    /// `limiter_frame`'s presented-frame time before the uniform is written.
+    /// The fluid tint set by [`Self::set_fluid_tint`] packs beside the slots.
+    /// The channel clamp limits the packed flash, vignette and fluid tint
+    /// against `limiter_frame`'s presented-frame time before the uniform is
+    /// written.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_resolve(
         &mut self,
@@ -244,7 +256,7 @@ impl ScreenEffectsPass {
         let frame = self
             .channel_clamp
             .begin_frame(limiter_frame, flash_limiter_enabled(slot_values));
-        let mut uniform = pack_effect_uniform(slot_values);
+        let mut uniform = pack_effect_uniform(slot_values, self.fluid_tint);
         self.channel_clamp.apply(&mut uniform, &frame);
         uniform.covers_hud = self.covers_hud.packed();
         uniform.scene_divisor = scene_divisor;
@@ -476,5 +488,73 @@ mod tests {
             .any(|ep| ep.name == "fs_main" && ep.stage == naga::ShaderStage::Fragment);
         assert!(has_vs, "screen_effects.wgsl must export @vertex vs_main");
         assert!(has_fs, "screen_effects.wgsl must export @fragment fs_main");
+    }
+
+    /// The WGSL `EffectUniform` validates and lays out exactly as the Rust
+    /// struct the resolve uploads: same size, same member offsets.
+    #[test]
+    fn screen_effects_wgsl_effect_uniform_matches_the_rust_layout() {
+        use postretro_render_cpu::screen_effects::EffectUniform;
+        let src = include_str!("../shaders/screen_effects.wgsl");
+        let module = naga::front::wgsl::parse_str(src).expect("parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("screen_effects.wgsl validates");
+        let (span, members) = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { members, span }
+                    if ty.name.as_deref() == Some("EffectUniform") =>
+                {
+                    Some((*span, members.clone()))
+                }
+                _ => None,
+            })
+            .expect("EffectUniform struct");
+        assert_eq!(span as usize, std::mem::size_of::<EffectUniform>());
+        let offset = |name: &str| {
+            members
+                .iter()
+                .find(|member| member.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("member {name}"))
+                .offset as usize
+        };
+        assert_eq!(offset("flash"), std::mem::offset_of!(EffectUniform, flash));
+        assert_eq!(
+            offset("vignette"),
+            std::mem::offset_of!(EffectUniform, vignette)
+        );
+        assert_eq!(
+            offset("fluid_tint"),
+            std::mem::offset_of!(EffectUniform, fluid_tint)
+        );
+        assert_eq!(offset("shake"), std::mem::offset_of!(EffectUniform, shake));
+        assert_eq!(
+            offset("covers_hud"),
+            std::mem::offset_of!(EffectUniform, covers_hud)
+        );
+        assert_eq!(
+            offset("scene_divisor"),
+            std::mem::offset_of!(EffectUniform, scene_divisor)
+        );
+    }
+
+    /// Shader side: the fluid tint composes over the mod's scene
+    /// flash and vignette, before the UI composite, so it tints over the
+    /// mod's tint and the HUD stays clear.
+    #[test]
+    fn screen_effects_fluid_tint_composes_after_the_mod_tint_and_before_the_ui() {
+        let src = include_str!("../shaders/screen_effects.wgsl");
+        let body = &src[src.find("fn fs_main").expect("fs_main")..];
+        let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        let tint = at("color = apply_fluid_tint(color);");
+        assert!(at("color = apply_vignette(color, in.uv);") < tint);
+        assert!(at("color = apply_flash(color);") < tint);
+        assert!(tint < at("load_clamped(ui_layer_tex"));
+        assert_eq!(body.matches("apply_fluid_tint(").count(), 1);
     }
 }

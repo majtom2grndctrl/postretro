@@ -15,7 +15,7 @@ Audio is a self-contained subsystem in its own crate, `postretro-audio` (`crates
 | **Receives** | Listener pose and the pawn it is attached to, sound requests, a per-frame entity-position resolver, the mod's attenuation |
 | **Produces** | Audio output (mixed and delivered to the OS by kira internally) |
 
-The boundary carries primitive types only: no glam, no kira, no engine ids.
+The boundary carries primitive types only: no glam, no kira, no engine ids. The public `Audio` type is concrete over kira's default backend; a crate-private generic core lets in-crate tests drive capturing and mock backends, so no kira type crosses the public API (an xtask gate pins it).
 
 - `ListenerState`: position and forward/up as `[f32; 3]` (world up is `[0, 1, 0]`), plus the opaque key of the pawn the listener is attached to.
 - `SoundRequest`: target bus, sound key, looping flag, and an optional `SoundAnchor`.
@@ -34,6 +34,8 @@ kira's main track serves as Master. SFX, Music, and UI hang off it as sub-tracks
 **The voice counter never disagrees with kira.** A request is admitted only when both the engine's voice counter and kira's live slot occupancy on that bus have room. kira frees a finished sound's slot on its own audio thread, after the engine reclaims the voice, so a slot kira still holds counts as occupied. Positional voices admitted but not yet started count too. Each bus's kira pools — sounds, and for SFX the spatial child tracks — are sized to twice its voice cap, so a full cap of new requests finds slots while kira releases the previous cap's. Over the cap a request is refused with a warning, never queued. A request the counter admits never fails for want of a kira slot.
 
 Master, SFX, Music, and UI volumes are player options (`player_options.md` §5) — Master scales the main track, each other scales its own bus. The App applies them, with mono, at session build and again whenever the resolved preferences change. Volumes are stored linear `[0, 1]` and mapped here on the perceptual taper, 40·log₁₀ v dB (gain v²); 0 silences, 1.0 is unity gain. A mono option folds left and right in an effect on the main track, after spatialization, so a hard-panned source reaches both ears. Toggling it crossfades over 20 ms rather than stepping (the floor is 10 ms), and a toggle reversed mid-crossfade turns back from the current mix. Settled stereo passes through the effect untouched.
+
+**World muffle.** A low-pass effect on the SFX bus muffles world sound, positional voices included, while the camera eye is in a fluid. Music and UI are never filtered, and no per-voice filter is added; a later per-voice occlusion filter sits on each voice's spatial track, so the two compose by construction. The amount is a primitive `0..=1`, set from the local fluid's `muffle` through the camera-eye trigger and ramp the fluid view tint uses (`rendering_pipeline.md` §7.8). The cutoff falls log-linearly from 20 kHz at 0 to 300 Hz at 1; 0 passes the bus dry. The effect also ramps on the audio thread, so a change reversed mid-ramp turns back from where it is, never stepping.
 
 ---
 
@@ -85,6 +87,7 @@ There are two authoring paths. When both name the same event, both play; neither
 | Weapon | `sounds` { `fire`, `dryFire`, `impact`, `reloadStart`, `reloadShell`, `reloadComplete`, `overheat` } | Fire, dry fire, impact, reload start / shell loaded / completed, overheat |
 | Weapon action | `primary` / `secondary` `sounds` { `fire`, `impact` } | Overrides that action's fire/impact defaults |
 | Player movement | `movement.sounds` { `land`, `jump` } | Landing, jumping |
+| Fluid | the local fluid declaration's `enterSound`, `exitSound` (`scripting.md` §2) | Swim entry, swim exit, in that fluid |
 | Enemy attack | the attack's `sound` | That attack's `enemyAttack` |
 | Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored |
 | Mover | FGD `open_sound`, `close_sound`, `blocked_sound`, `crush_sound` (PRL KinematicGeometry v7, `build_pipeline.md`) | The matching mover edge; crush once per victim |
@@ -96,7 +99,7 @@ Every sound field is optional; an unknown key inside `sounds` is rejected. An ev
 - **Anchors:**
   - Fire, dry fire, overheat and reload anchor at the firing pawn.
   - Enemy attack and activity entry anchor at the enemy.
-  - Movement events anchor at the local pawn.
+  - Movement events anchor at the local pawn, swim entry and exit included.
   - An impact anchors at its contact set.
   - A mover anchors at the center of its current world bounds, because mover transforms are origin-relative.
   - A player pawn places at its eye; any other entity at its transform origin.
@@ -106,8 +109,8 @@ Every sound field is optional; an unknown key inside `sounds` is rejected. An ev
   - Every scheduled shot resolves and declares through local execution prediction. Replicated resource/reload samples choose cosmetics only while naming the local active slot. Insufficient ammo/cell presents a dry-fire sound; a reload or overheat refusal presents nothing; otherwise frozen fire/impact keys and muzzle FX play. Hitscan keeps world contacts and normals. A cosmetically hidden predicted projectile still sweeps and declares contacts; authoritative denial ends future work (`networking.md` §Combat authority).
   - Reload edges derive from the replicated owner-private reload and ammo slots, attributed to the weapon the client holds in the host wieldable slot the reload flag names (every value read must name that slot; a frame mixing slots is held), plus that weapon's reload style and capacity, one round trip late. Start is the reload flag rising, unless the rise shows full progress — a replayed completion endpoint. A shell is ammo rising during a per-shell reload; shells that arrive in one snapshot sound once. Complete is the flag falling after the last sample held while reloading showed completion — magazine full, reserve empty, or a magazine reload at full progress — or a fall in which ammo rose by exactly what the reserve fell while the client wields that weapon. Any other fall — a cancel, a switch the host performs — plays nothing; a switch the host refuses keeps the reload tracked. Only a reload whose start the client saw on the projected weapon yields shells or a complete.
   - The overheat cue is the replicated overheat latch rising on the weapon the client holds in the named slot, while that slot is its active one. A frame whose heat values name different slots is held, and a latch first seen already raised plays nothing.
-  - Landing and jumping come from its predicted movement. Movement sounds never ride the tuning payload, so the client resolves them from its local descriptor.
-  - Remote players' and enemies' weapon fire/impact arrive as reliable ordered observer cues with frozen sound keys, aliases, shot identity, and captured anchors. The firing owner is excluded; it already predicts these cues. Receivers resolve local sound assets and deliver each built-in and alias at the captured emitter. Enemy attack sounds may accompany the weapon cue. Other remote movement, behavior-entry, and mover sounds remain host-only.
+  - Landing, jumping and swim edges come from its forward prediction, never from reconcile replay. Movement sounds never ride the tuning payload, so the client resolves them from its local descriptor, and a swim edge's sound from its own declaration of the host-named fluid; a fluid it does not declare plays nothing.
+  - Remote players' and enemies' weapon fire/impact arrive as reliable ordered observer cues with frozen sound keys, aliases, shot identity, and captured anchors. The firing owner is excluded; it already predicts these cues. Receivers resolve local sound assets and deliver each built-in and alias at the captured emitter. Enemy attack sounds may accompany the weapon cue. Behavior-entry and mover sounds remain host-only. No machine plays another player's movement sounds: the host emits movement events for its own local pawn only, never for remote pawns it simulates.
 
 ---
 

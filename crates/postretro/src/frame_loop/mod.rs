@@ -446,11 +446,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
             );
             command.activation.cancel = Some(token);
-            let _ = netcode::client_send_input_command(
-                session.net_endpoint.as_mut(),
-                &command,
-                app.camera.pitch,
-            );
+            let _ = netcode::client_send_input_command(session.net_endpoint.as_mut(), &command);
         }
     }
 
@@ -735,23 +731,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     app.client_predict_movement_tick(&command, tick_dt)
                 };
                 if let Some(prediction_tick) = prediction_tick {
-                    let mut addresses = Vec::new();
-                    prediction_tick
-                        .movement_events
-                        .append_named_events(&mut addresses);
-                    // Predicted movement sounds from the local pawn.
+                    // Predicted movement sounds from the local pawn, swim
+                    // entry and exit included. Forward prediction is the
+                    // client's only route here; reconcile replay emits none.
                     if let Some(emitter) = app.session.as_ref().and_then(|session| {
                         let registry = session.scripting.script_ctx.registry.borrow();
                         registry
                             .local_player_movement_pawn()
                             .map(|pawn| postretro_sim::emission::entity_emitter(&registry, pawn))
                     }) {
-                        pending_movement_events.extend(addresses.into_iter().map(|address| {
-                            postretro_sim::emission::MovementEmission {
-                                address,
-                                emitter: emitter.clone(),
-                            }
-                        }));
+                        postretro_sim::emission::append_movement_emissions(
+                            &prediction_tick.movement_events,
+                            &emitter,
+                            &mut pending_movement_events,
+                        );
                     }
                     pending_movement_edges.extend(
                         prediction_tick
@@ -855,6 +848,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let descriptor_generation = data_registry.entity_types_generation();
             let default_weapon_placement = data_registry.default_weapon_placement.as_ref();
             let collision_world = &app.collision_world;
+            let environment_volumes = &app.environment_volumes;
+            let environment_fluid_viscosity = app.environment_fluids.viscosities();
             let session = app.session.as_mut().expect("running session installed");
             let net_endpoint = &mut session.net_endpoint;
             let hit_zone_store = &session.hit_zone_store;
@@ -896,7 +891,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 collision_world,
                 hit_zone_store,
                 app.nav_graph.as_ref(),
-                script_ctx.gravity.get(),
+                postretro_collision::EnvironmentView::new(
+                    script_ctx.gravity.get(),
+                    environment_volumes,
+                    environment_fluid_viscosity,
+                ),
                 app.switching.block_during_reload,
                 frame_anim_time,
                 presentation_camera_aim,
@@ -1187,11 +1186,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .collect();
         if let Some(session) = app.session.as_ref() {
             let table = &session.scripting.descriptor_sounds;
-            requests.extend(
-                pending_movement_events
-                    .iter()
-                    .filter_map(|emission| sound_events::movement_sound(emission, &mut scene)),
-            );
+            // Swim edges resolve their fluid by name in this machine's own
+            // manifest, through the active (host, on a client) table.
+            let data_registry = session.scripting.script_ctx.data_registry.borrow();
+            let fluids = sound_events::LocalFluids {
+                active: &app.environment_fluids,
+                local: &data_registry.fluids,
+            };
+            for emission in &pending_movement_events {
+                requests.extend(sound_events::movement_sound(emission, fluids, &mut scene));
+            }
+            drop(data_registry);
             for emission in &pending_ai_events {
                 requests.extend(sound_events::ai_sounds(table, emission, &mut scene));
             }
@@ -1582,6 +1587,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Audio);
 
+    // Camera-eye fluid tint and muffle key on this same effective render eye,
+    // advanced once per presented frame, ahead of the audio step.
+    app.update_fluid_eye(render_eye_position, frame_dt);
+
     // Audio step — third in frame order (Input → Game logic →
     // Audio → Render → Present, development_guide.md §4.3). Runs after
     // game logic settles every entity and before render. The listener
@@ -1610,6 +1619,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             world: app.level.as_ref(),
             movers: &mut app.kinematic_mover_render,
         };
+        if let Some(muffle) = app.fluid_eye.take_muffle_change() {
+            audio.set_world_muffle(muffle);
+        }
         audio.update(listener, frame_dt, |key| {
             scene.presented_point(key, frame_result.alpha)
         });
@@ -2063,6 +2075,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 app.kinematic_mover_render.shadow_instances(),
             );
             renderer.set_mover_occluder_aabbs(app.kinematic_mover_render.occluder_aabbs());
+            let local = script_ctx.data_registry.borrow();
+            renderer.set_fluid_surface_draws(
+                crate::fluid_presentation::collect_fluid_surface_draws(
+                    &mut app.fluid_surface_render,
+                    world,
+                    &visible_cells,
+                    render_eye_position,
+                    &app.environment_volumes,
+                    &app.environment_fluids,
+                    &local.fluids,
+                ),
+            );
+        } else {
+            renderer.set_fluid_surface_draws(&[]);
         }
 
         #[cfg(feature = "dev-tools")]
@@ -2381,6 +2407,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         renderer.set_ui_snapshot(ui_snapshot);
         let limiter_frame = App::next_limiter_frame(&mut app.last_resolve_at, now);
         renderer.set_limiter_frame(limiter_frame);
+        // Rewritten every frame with the effect uniform it rides, so a
+        // recreated renderer picks it up on its first frame.
+        renderer.set_fluid_view_tint(app.fluid_eye.tint());
 
         drop(stage_scope.take());
         let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);

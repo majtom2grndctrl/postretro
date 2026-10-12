@@ -1,0 +1,13 @@
+[package]
+name = "postretro-collision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Pure collision geometry queries over level data: environment volumes and their resolve"
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

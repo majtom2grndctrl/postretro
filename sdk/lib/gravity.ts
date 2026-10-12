@@ -4,18 +4,22 @@
 import { worldGetGravity, worldSetGravity } from "postretro";
 
 /**
- * Current world gravity in m/s². Negative = downward (Earth = -9.81),
- * positive = upward. Seeded from the worldspawn `initialGravity` KVP at
- * level load and persists until the next level load or `setGravity` call.
+ * Level default gravity in m/s²: the gravity outside every gravity volume.
+ * Negative = downward (Earth = -9.81), positive = upward. Seeded from the
+ * worldspawn `initialGravity` KVP at level load and persists until the next
+ * level load or `setGravity` call. Inside a `gravity_volume` the volume's own
+ * value holds; this still returns the level default.
  */
 export function getGravity(): number {
   return worldGetGravity();
 }
 
 /**
- * Set the world gravity in m/s². Negative = downward, positive = upward.
- * NaN and non-finite values are ignored with a warning. Effect is immediate
- * and persists until the next level load or another `setGravity` call.
+ * Set the level default gravity in m/s²: the gravity outside every gravity
+ * volume. Negative = downward, positive = upward. A `gravity_volume`'s value
+ * holds inside it regardless. NaN and non-finite values are ignored with a
+ * warning. Effect is immediate and persists until the next level load or
+ * another `setGravity` call.
  */
 export function setGravity(value: number): void {
   worldSetGravity(value);

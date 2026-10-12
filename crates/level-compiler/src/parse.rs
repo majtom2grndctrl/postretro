@@ -20,13 +20,17 @@ use crate::map_data::{
     MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
-use postretro_level_format::fog_volumes::{
-    DEFAULT_WORLD_GRAVITY_MPS2, MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME,
-};
+use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
+use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 #[path = "parse/authoring_regions.rs"]
 mod authoring_regions;
+#[cfg(test)]
+#[path = "parse/environment_volume_tests.rs"]
+mod environment_volume_tests;
+#[path = "parse/environment_volumes.rs"]
+mod environment_volumes;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
@@ -834,6 +838,10 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut stream_resident_regions: Vec<MapStreamingHintRegion> = Vec::new();
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
+    let mut environment_volumes = Vec::new();
+    // Parallel to `environment_volumes`: each volume's authored brush ids, kept
+    // until the fluid volumes' textured sides are built in one pass.
+    let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1094,6 +1102,22 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // Semantic brush entities are resolved by dedicated compiler/runtime
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
+
+        // Environment volumes are non-solid: their brushes never join the
+        // static world set, so they seal no cell and reach no bake.
+        if environment_volumes::is_environment_volume_classname(&classname) {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            environment_volumes.push(environment_volumes::resolve_environment_volume(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                &classname,
+                entities.len() - 1,
+            )?);
+            environment_volume_brush_ids.push(brush_ids);
+            continue;
+        }
 
         // Streaming hints are compiler-only brush entities. Reject a point
         // entity before the generic `has_brushes` branch so it cannot fall
@@ -1484,6 +1508,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             ))
     );
 
+    environment_volumes::attach_fluid_surface_sides(
+        &geo_map,
+        &mut environment_volumes,
+        &environment_volume_brush_ids,
+        scale,
+    );
     let world_hulls = build_brush_volumes_with_ids(&geo_map, &world_brush_ids, scale);
     // Kinematic mover brushes never reach the world set, but a switch mounted on a
     // door or lift must still clamp against its mount. Their hulls exist only for
@@ -1545,6 +1575,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Entity classnames: {}", entity_classnames.join(", "));
     log::info!("Lights: {}", lights.len());
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
+    log::info!("Environment volumes: {}", environment_volumes.len());
 
     Ok(MapData {
         brush_volumes,
@@ -1561,6 +1592,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_movers,
         kinematic_waypoints,
         trigger_volumes,
+        environment_volumes,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,
@@ -6765,7 +6797,7 @@ mod tests {
         // Compose with pack.rs to confirm `inv_half_ext` lands at
         // `1 / ((max - min) * 0.5)`. This locks the end-to-end contract that
         // the ellipsoid shader path depends on.
-        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1, -9.81);
+        let section = crate::pack::encode_fog_volumes(std::slice::from_ref(&v), 1);
         assert_eq!(section.volumes.len(), 1);
         let rec = &section.volumes[0];
         for i in 0..3 {

@@ -1591,6 +1591,7 @@ mod tests {
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
+            postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
@@ -1811,6 +1812,7 @@ mod tests {
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             &wall_world(),
+            postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
@@ -1841,6 +1843,7 @@ mod tests {
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
+            postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
@@ -1869,6 +1872,7 @@ mod tests {
             &command,
             &postretro_foundation::WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
+            postretro_collision::EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
             result.authorization,
@@ -3818,6 +3822,139 @@ mod tests {
         );
     }
 
+    /// One host tick in which the local shooter fires a hitscan straight down
+    /// into a pool from above its surface.
+    fn local_hitscan_into_a_pool_tick(timing: crate::sim::TimingGate) -> crate::sim::TickEvents {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        {
+            let mut registry = registry.borrow_mut();
+            let (pawn, _) = spawn_reload_pair(&mut registry, 10, 8, 1000, 8);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+        }
+        let pool = postretro_collision::EnvironmentVolumes::build(vec![
+            postretro_collision::EnvironmentVolume {
+                source_entity: 1,
+                priority: 0,
+                gravity: None,
+                push: None,
+                fluid: Some(4),
+                brushes: vec![postretro_collision::ConvexLeaf {
+                    planes: [
+                        (Vec3::X, 5.0),
+                        (Vec3::NEG_X, 5.0),
+                        (Vec3::Y, 2.0),
+                        (Vec3::NEG_Y, 200.0),
+                        (Vec3::Z, 5.0),
+                        (Vec3::NEG_Z, 5.0),
+                    ]
+                    .into_iter()
+                    .map(|(normal, distance)| postretro_collision::LeafPlane { normal, distance })
+                    .collect(),
+                    aabb_min: Vec3::new(-5.0, -200.0, -5.0),
+                    aabb_max: Vec3::new(5.0, 2.0, 5.0),
+                }],
+            },
+        ]);
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_runtime = postretro_ai::AiRuntime::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let mut touch_system = crate::sim::touch::TouchSystem::default();
+        let edges = std::collections::HashMap::new();
+
+        crate::sim::simulate_tick_with_presentation_aim(
+            registry,
+            &world,
+            &hit_zones,
+            None,
+            postretro_collision::EnvironmentView::new(-9.81, &pool, &[]),
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            postretro_ai::test_tick_runner!(&mut ai_runtime),
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(true, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::new(1.0, 5.0, 0.0),
+                aim_direction: Vec3::NEG_Y,
+            },
+            0.016,
+            &mut touch_system,
+            &[],
+            0,
+            &postretro_entities::FactionRegistry::default(),
+            &RefCell::new(postretro_entities::FactionSentimentState::default()),
+            None,
+            &edges,
+            &edges,
+            None,
+            |_, _| {},
+            |_| {},
+            timing,
+        )
+    }
+
+    // The host weapon stage carries the local shooter's hitscan fluid splashes
+    // out of the tick beside its impact emission.
+    #[test]
+    fn local_hitscan_into_a_pool_surfaces_its_fluid_splash_in_tick_events() {
+        let events = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::OFF);
+
+        assert_eq!(
+            crate::emission::weapon_addresses(&events.weapon),
+            vec!["activate"],
+            "the pellet ends underwater, so it raises no impact"
+        );
+        assert_eq!(
+            events.weapon_fluid_splashes,
+            vec![weapon::FluidSplashFact {
+                point: Vec3::new(1.0, 2.0, 0.0),
+                normal: Vec3::Y,
+                fluid: 4,
+            }]
+        );
+    }
+
+    // Stress-run instrumentation (rendering_pipeline.md §12): the hitscan's
+    // fluid-crossing query reports inside `sim_weapons`, and the pawn's
+    // environment resolve inside `sim_tick`; untimed, neither appears.
+    #[test]
+    fn timed_hitscan_tick_reports_fluid_crossings_inside_weapons() {
+        use crate::sim::cpu_stages::SimStage;
+
+        let events = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::ON);
+        assert_eq!(events.weapon_fluid_splashes.len(), 1, "the shot crossed");
+        let value = |stage| {
+            events
+                .cpu
+                .value(stage)
+                .unwrap_or_else(|| panic!("{stage:?} ran"))
+        };
+        let tick = value(SimStage::Tick);
+        let weapons = value(SimStage::Weapons);
+        let crossings = value(SimStage::WeaponFluidCrossings);
+        let environment = value(SimStage::Environment);
+        assert!(
+            crossings <= weapons,
+            "{crossings} ns exceeds weapons {weapons} ns"
+        );
+        assert!(weapons <= tick);
+        assert!(
+            environment <= tick,
+            "{environment} ns exceeds tick {tick} ns"
+        );
+
+        let untimed = local_hitscan_into_a_pool_tick(crate::sim::TimingGate::OFF);
+        assert_eq!(untimed.weapon_fluid_splashes, events.weapon_fluid_splashes);
+        assert_eq!(untimed.cpu.value(SimStage::WeaponFluidCrossings), None);
+        assert_eq!(untimed.cpu.value(SimStage::Environment), None);
+    }
+
     #[test]
     fn local_reload_routes_to_local_pawn_reserve_before_fire() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -3839,7 +3976,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             Some(weapon),
             0.0,
             &mut progress,

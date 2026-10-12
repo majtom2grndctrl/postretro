@@ -60,6 +60,7 @@ impl PrototypeCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                facing_pitch: 0.0,
                 use_pressed: self.use_pressed,
                 drop_pressed: self.drop_pressed,
             },
@@ -153,7 +154,7 @@ impl PrototypeHarness {
             &self.world,
             &self.hit_zones,
             None,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             None,
             0.0,
             &mut self.progress,
@@ -464,6 +465,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
         }),
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }

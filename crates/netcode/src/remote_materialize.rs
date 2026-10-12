@@ -167,12 +167,32 @@ pub(super) fn materialize_armed_local_pawn(
             .and_then(|descriptor| descriptor.movement.as_ref());
         movement.view_feel = local.and_then(|descriptor| descriptor.view_feel.clone());
         movement.sounds = local.and_then(|descriptor| descriptor.sounds.clone());
+        // A rebuild changes descriptor-owned tuning only (a weapon pickup, a host
+        // reload): the live tick state carries onto the new component, as the
+        // host's own pawn keeps it, so prediction neither resets the pawn nor
+        // re-takes a swim edge before the next reconcile.
+        let live = rebuild_movement
+            .then(|| {
+                registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(armed.entity_id)
+                    .ok()
+                    .cloned()
+            })
+            .flatten();
         crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component_from_tuning(
             &movement,
             registry,
             armed.entity_id,
             rebuild_movement,
         );
+        if let Some(live) = live
+            && let Ok(rebuilt) = registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(armed.entity_id)
+        {
+            let mut rebuilt = rebuilt.clone();
+            super::movement_state::carry_live_tick_state(&mut rebuilt, &live);
+            let _ = registry.set_component(armed.entity_id, rebuilt);
+        }
     } else {
         if rebuild_movement {
             let _ = registry
@@ -411,6 +431,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         });
         descriptor

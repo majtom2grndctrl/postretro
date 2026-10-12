@@ -8,11 +8,14 @@
 
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::health::HealthComponent;
+use crate::components::immersion::ImmersionComponent;
 use crate::components::inventory::Inventory;
+use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::weapon::{ReloadFeedbackConsumer, WeaponComponent};
 use crate::ir::IrType;
 use crate::registry::{EntityId, EntityRegistry};
 use crate::slot_table::SlotValue;
+use postretro_foundation::MovementStateKind;
 
 /// An owner-private engine player slot. The engine-state catalog marks
 /// exactly these (`ReplicationScope::OwnerPrivatePlayer`); a catalog test
@@ -31,6 +34,8 @@ pub enum PlayerSlot {
     ReloadActive,
     ReloadProgress,
     WeaponCooldownMs,
+    Swimming,
+    Immersion,
 }
 
 impl PlayerSlot {
@@ -47,6 +52,8 @@ impl PlayerSlot {
         PlayerSlot::ReloadActive,
         PlayerSlot::ReloadProgress,
         PlayerSlot::WeaponCooldownMs,
+        PlayerSlot::Swimming,
+        PlayerSlot::Immersion,
     ];
 
     /// The stable dotted wire name.
@@ -64,13 +71,17 @@ impl PlayerSlot {
             PlayerSlot::ReloadActive => "player.reloadActive",
             PlayerSlot::ReloadProgress => "player.reloadProgress",
             PlayerSlot::WeaponCooldownMs => "player.weaponCooldownMs",
+            PlayerSlot::Swimming => "player.swimming",
+            PlayerSlot::Immersion => "player.immersion",
         }
     }
 
     /// The IR type the slot projects to.
     pub const fn ir_type(self) -> IrType {
         match self {
-            PlayerSlot::Overheated | PlayerSlot::ReloadActive => IrType::Bool,
+            PlayerSlot::Overheated | PlayerSlot::ReloadActive | PlayerSlot::Swimming => {
+                IrType::Bool
+            }
             PlayerSlot::Health
             | PlayerSlot::MaxHealth
             | PlayerSlot::Ammo
@@ -80,7 +91,29 @@ impl PlayerSlot {
             | PlayerSlot::Cell
             | PlayerSlot::CellCapacity
             | PlayerSlot::ReloadProgress
-            | PlayerSlot::WeaponCooldownMs => IrType::Number,
+            | PlayerSlot::WeaponCooldownMs
+            | PlayerSlot::Immersion => IrType::Number,
+        }
+    }
+
+    /// Whether the slot reads the pawn's active weapon. The others read the
+    /// pawn's own components, so an unarmed pawn has them.
+    pub const fn reads_active_weapon(self) -> bool {
+        match self {
+            PlayerSlot::Health
+            | PlayerSlot::MaxHealth
+            | PlayerSlot::Swimming
+            | PlayerSlot::Immersion => false,
+            PlayerSlot::Ammo
+            | PlayerSlot::AmmoReserve
+            | PlayerSlot::Heat
+            | PlayerSlot::OverheatAt
+            | PlayerSlot::Overheated
+            | PlayerSlot::Cell
+            | PlayerSlot::CellCapacity
+            | PlayerSlot::ReloadActive
+            | PlayerSlot::ReloadProgress
+            | PlayerSlot::WeaponCooldownMs => true,
         }
     }
 
@@ -144,6 +177,8 @@ pub fn player_slot_value(
 /// read as another player's, or as zero:
 ///
 /// - health slots need a `HealthComponent`;
+/// - `swimming` needs a `PlayerMovementComponent` (true in its `Swim` state),
+///   and `immersion` the output-only `ImmersionComponent` host movement writes;
 /// - every weapon slot needs a live weapon in the active wieldable slot;
 /// - ammo and reserve need an ammo weapon, heat numbers a heat weapon, cell
 ///   numbers a cell weapon. `overheated` is false for any other weapon;
@@ -154,14 +189,29 @@ pub fn player_slot_value_with(
     pawn: EntityId,
     reload: ReloadRead,
 ) -> Option<SlotValue> {
-    if let PlayerSlot::Health | PlayerSlot::MaxHealth = slot {
-        let health = registry.get_component::<HealthComponent>(pawn).ok()?;
-        let value = if slot == PlayerSlot::Health {
-            health.current
-        } else {
-            health.max
-        };
-        return Some(SlotValue::Number(value));
+    match slot {
+        PlayerSlot::Health | PlayerSlot::MaxHealth => {
+            let health = registry.get_component::<HealthComponent>(pawn).ok()?;
+            let value = if slot == PlayerSlot::Health {
+                health.current
+            } else {
+                health.max
+            };
+            return Some(SlotValue::Number(value));
+        }
+        PlayerSlot::Swimming => {
+            let movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()?;
+            return Some(SlotValue::Boolean(
+                movement.movement_state.kind() == MovementStateKind::Swim,
+            ));
+        }
+        PlayerSlot::Immersion => {
+            let immersion = registry.get_component::<ImmersionComponent>(pawn).ok()?;
+            return Some(SlotValue::Number(immersion.immersion));
+        }
+        _ => {}
     }
 
     let ActiveWeapon { weapon, .. } = active_weapon(registry, pawn)?;
@@ -170,8 +220,8 @@ pub fn player_slot_value_with(
 }
 
 /// The value a weapon slot holds for the pawn wielding `weapon` as its active
-/// weapon, with that pawn's `reserve`. `None` for the health slots and for a
-/// weapon slot this weapon has no source for (see [`player_slot_value_with`]).
+/// weapon, with that pawn's `reserve`. `None` for the pawn-component slots and
+/// for a weapon slot this weapon has no source for (see [`player_slot_value_with`]).
 pub fn weapon_slot_value(
     weapon: &WeaponComponent,
     reserve: Option<&AmmoReserve>,
@@ -180,7 +230,10 @@ pub fn weapon_slot_value(
 ) -> Option<SlotValue> {
     let number = |value: f32| Some(SlotValue::Number(value));
     match slot {
-        PlayerSlot::Health | PlayerSlot::MaxHealth => None,
+        PlayerSlot::Health
+        | PlayerSlot::MaxHealth
+        | PlayerSlot::Swimming
+        | PlayerSlot::Immersion => None,
         PlayerSlot::Ammo => weapon
             .effective()
             .ammo

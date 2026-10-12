@@ -424,6 +424,7 @@ impl ScriptRuntime {
                 next_factions,
                 next_entity_faction_names,
                 next_maps,
+                next_fluids,
                 next_default_weapon_placement,
                 next_global_reactions,
                 next_global_crossings,
@@ -457,6 +458,7 @@ impl ScriptRuntime {
                         manifest.factions.clone(),
                         manifest.entity_faction_names.clone(),
                         manifest.maps.clone(),
+                        manifest.fluids.clone(),
                         manifest.default_weapon_placement.clone(),
                         manifest.reactions.clone(),
                         manifest.crossings.clone(),
@@ -490,6 +492,7 @@ impl ScriptRuntime {
                         crate::data_registry::FactionRegistry::default(),
                         Vec::new(),
                         Vec::new(),
+                        crate::data_descriptors::FluidRegistry::default(),
                         None,
                         Vec::new(),
                         Vec::new(),
@@ -705,6 +708,9 @@ impl ScriptRuntime {
                 data_registry.replace_entity_types(next_descriptors);
                 data_registry.replace_factions(next_factions, &mut faction_sentiment);
                 data_registry.replace_maps(next_maps);
+                // Fluids may change freely across reloads; the binary
+                // re-resolves the installed level's volumes against them.
+                data_registry.replace_fluids(next_fluids);
                 data_registry.set_default_weapon_placement(next_default_weapon_placement);
                 data_registry.replace_global_reactions(next_global_reactions);
                 data_registry.replace_global_crossings(next_global_crossings);
@@ -1966,6 +1972,68 @@ mod tests {
             !runtime.install_deferred_mesh_descriptors(&ctx),
             "the deferred snapshot is consumed by one level install"
         );
+    }
+
+    #[test]
+    fn staged_commit_replaces_fluids_even_when_it_adds_and_reorders_them() {
+        let mod_root = temp_mod_root("fluids");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "ReloadedFluids",
+                    id: "reloaded-fluids",
+                    version: "1",
+                    fluids: [
+                        { name: "lava", viscosity: 9, viewTint: [1, 0.2, 0, 0.8], muffle: 0.5, surfaceOpacity: 1 },
+                        { name: "water", viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, surfaceOpacity: 0.6 },
+                    ],
+                };
+            "#,
+        )
+        .expect("staged mod manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(
+            matches!(result.status, StagedManifestBuildStatus::Built(_)),
+            "staged manifest must build before its replacement can commit: {result:?}",
+        );
+
+        let ctx = ScriptCtx::new();
+        ctx.data_registry.borrow_mut().replace_fluids(
+            crate::data_descriptors::FluidRegistry::from_declarations(
+                "test",
+                [Ok(crate::data_descriptors::FluidDescriptor {
+                    name: "water".to_string(),
+                    viscosity: 2.0,
+                    view_tint: [0.1, 0.3, 0.4, 0.35],
+                    muffle: 0.8,
+                    surface_opacity: 0.6,
+                    enter_sound: None,
+                    exit_sound: None,
+                })],
+            ),
+        );
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("script runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        let outcome = runtime.commit_staged_manifest_result(
+            &result,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        assert!(matches!(
+            outcome,
+            StagedManifestCommitOutcome::Committed { generation: 1, .. }
+        ));
+        assert_eq!(
+            ctx.data_registry.borrow().fluids.names(),
+            ["lava", "water"],
+            "unlike factions, a reload may add and reorder fluids",
+        );
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 
     #[test]

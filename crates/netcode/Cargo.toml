@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+postretro-collision.workspace = true
 postretro-combat-model.workspace = true
 postretro-entities.workspace = true
 postretro-foundation.workspace = true

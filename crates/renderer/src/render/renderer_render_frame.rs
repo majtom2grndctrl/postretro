@@ -646,6 +646,47 @@ impl Renderer {
             self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
         }
 
+        // Fluid surfaces: translucent, after every opaque pass and before
+        // billboards, so smoke above the water draws over it undimmed (and
+        // smoke below it does too, the accepted draw-order limit). Gated on
+        // its own visible draws, never on the smoke pass's particle gate.
+        if render_world && self.full().fluid_surface.has_draws() {
+            let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
+            let fluid_ts = self
+                .full()
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_FLUID_SURFACE));
+            let mut fluid_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Fluid Surface Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.full().depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: fluid_ts,
+                ..Default::default()
+            });
+            fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+            fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
+            fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
+            self.full()
+                .fluid_surface
+                .record_draws(&mut fluid_pass, &self.full().gpu_textures);
+        }
+
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
         if render_world
             && self.full().smoke_pass.has_any_sheet()

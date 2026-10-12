@@ -308,6 +308,7 @@ fn player_movement_descriptor() -> PlayerMovementDescriptor {
         }),
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }
@@ -2210,6 +2211,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -2229,7 +2231,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         &world,
         &hit_zones,
         None,
-        0.0,
+        postretro_collision::EnvironmentView::level_only(0.0),
         false,
         0.0,
         (0.0, 0.0),
@@ -2413,7 +2415,7 @@ impl FactionSentimentHarness {
             &self.world,
             &self.hit_zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             false,
             0.0,
             (0.0, 0.0),
@@ -2436,6 +2438,7 @@ impl FactionSentimentHarness {
                     running: false,
                     crouch_intent: false,
                     facing_yaw: 0.0,
+                    facing_pitch: 0.0,
                     use_pressed: false,
                     drop_pressed: false,
                 },
@@ -2825,7 +2828,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         &world,
         &hit_zones,
         None,
-        0.0,
+        postretro_collision::EnvironmentView::level_only(0.0),
         false,
         0.0,
         (0.0, 0.0),
@@ -2848,6 +2851,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -5164,7 +5168,13 @@ fn closed_enemy_with_no_destination_is_not_separation_nudged() {
     agent_steering::set_destination(&mut reg, moving, Vec3::new(16.0, chaser_rest_y(), 8.0));
     let start = *reg.get_component::<Transform>(sealed).unwrap();
 
-    agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+    agent_steering::tick(
+        &mut reg,
+        &world,
+        Some(&graph),
+        postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+        STEER_DT,
+    );
 
     let end = reg.get_component::<Transform>(sealed).unwrap();
     assert!(
@@ -5205,7 +5215,13 @@ fn separation_excludes_the_chase_target_so_enemies_close_to_contact() {
         player_pos,
     );
     for tick_index in 0..120 {
-        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        agent_steering::tick(
+            &mut reg,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
         let state = agent_steering::path_state(&reg, enemy).unwrap();
         let dist = distance_xz(state.position, player_pos);
         assert!(
@@ -5542,7 +5558,13 @@ fn ai_corral_target_rejects_wall_side_slots_and_reports_raw_destination_blocked(
 
     for tick_index in 0..3 {
         run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
-        let tick = agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        let tick = agent_steering::tick(
+            &mut reg,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
         if tick_index == 0 {
             assert_eq!(
                 tick.replans, 1,
@@ -5832,7 +5854,13 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     let ticks = 200;
     for tick_index in 0..ticks {
         run_ai_tick(&mut reg, &mut warned, STEER_DT);
-        let result = agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        let result = agent_steering::tick(
+            &mut reg,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
         total_replans += result.replans;
 
         // After the first few ticks every chaser should hold a live path toward
@@ -5955,7 +5983,13 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
         move_player_to(&mut reg, player, p.x, next_z);
 
         run_ai_tick(&mut reg, &mut warned, STEER_DT);
-        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        agent_steering::tick(
+            &mut reg,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
     }
 
     let player_end = reg.get_component::<Transform>(player).unwrap().position;
@@ -6562,7 +6596,13 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
         // The REAL per-tick loop: FSM (with combat-slot selector inputs, as the
         // sim runs it) then steering.
         run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
-        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        agent_steering::tick(
+            &mut reg,
+            &world,
+            Some(&graph),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            STEER_DT,
+        );
 
         let state = agent_steering::path_state(&reg, enemy).unwrap();
         let brain_state = enemy_state_name(&reg, enemy);

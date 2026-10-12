@@ -79,6 +79,7 @@ fn neutral() -> sim::SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -156,6 +157,7 @@ fn movement() -> PlayerMovementComponent {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     })
 }
@@ -670,15 +672,20 @@ impl Fixture {
             },
         };
         if let Some(receive) = self.receive.as_mut() {
+            let no_volumes = postretro_collision::EnvironmentVolumes::empty();
+            // The send seam reads pitch off the command, as the app's camera
+            // stamps it there.
+            let mut command = command.clone();
+            command.movement.facing_pitch = self.aim_pitch;
             let result = netcode::client_predict_tick(
                 &mut self.local.borrow_mut(),
                 &mut self.client,
                 &mut receive.prediction,
                 netcode::ClientPredictionTickContext {
-                    command,
-                    aim_pitch: self.aim_pitch,
+                    command: &command,
                     collision: &self.world,
-                    gravity: 0.0,
+                    environment_volumes: &no_volumes,
+                    host_tuning: receive.tuning.as_ref(),
                     tick_dt: DT,
                 },
             );
@@ -765,6 +772,7 @@ impl Fixture {
                 Vec3::NEG_Z,
                 &queued.placement,
                 &self.world,
+                postretro_collision::EnvironmentView::level_only(0.0),
                 &self.local.borrow(),
                 &self.zones,
                 0.0,
@@ -965,7 +973,7 @@ impl Fixture {
             &self.world,
             &self.zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             false,
             0.0,
             (0.0, 0.0),
@@ -1765,6 +1773,7 @@ fn conditioned_activation_edge_overflow_and_unknown_declaration_expiry_link_to_t
                 zone: None,
             }],
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             projectile_launch: None,
         },
         0.0,
@@ -1873,6 +1882,7 @@ fn conditioned_activation_stale_full_projection_refuses_damage_and_old_verdict_p
         Vec3::NEG_Z,
         &WeaponPlacementDescriptor::default(),
         &fixture.world,
+        postretro_collision::EnvironmentView::level_only(0.0),
         &fixture.local.borrow(),
         &fixture.zones,
         0.0,

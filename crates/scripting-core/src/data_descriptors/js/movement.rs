@@ -191,6 +191,24 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `swim` is optional: absence means the pawn cannot swim. A present block
+    // that fails parsing or validation is dropped with a warning and the rest
+    // of the descriptor loads, so the player wades.
+    let swim = if obj.contains_key("swim").map_err(js_err)? {
+        let raw: JsValue = obj.get("swim").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let parsed = match Object::from_value(raw) {
+                Ok(swim_obj) => swim_params_from_js(&swim_obj),
+                Err(_) => Err(swim_block_not_an_object()),
+            };
+            keep_or_drop_swim_block(parsed)
+        }
+    } else {
+        None
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if obj.contains_key("viewFeel").map_err(js_err)? {
@@ -248,6 +266,7 @@ pub fn movement_descriptor_from_js<'js>(
         forgiveness,
         crouch,
         slide,
+        swim,
         view_feel,
         sounds,
     })
@@ -451,6 +470,28 @@ pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, Descr
         steer_rate,
         entry_boost,
         min_duration_ms,
+    })
+}
+
+/// Parse a `swim` sub-object. All six fields are required; ranges and the
+/// `exitDepth < enterDepth` order are checked by [`SwimParams::validated`].
+/// Every error names its field as `movement.swim.<field>`, worded exactly as
+/// [`swim_params_from_lua`] words it.
+pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, DescriptorError> {
+    swim_params_from_fields(|field| {
+        if !obj.contains_key(field).map_err(js_err)? {
+            return Err(swim_field_missing(field));
+        }
+        let raw: JsValue = obj.get(field).map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            return Err(swim_field_missing(field));
+        }
+        if let Some(i) = raw.as_int() {
+            return Ok(i as f32);
+        }
+        raw.as_float()
+            .map(|f| f as f32)
+            .ok_or_else(|| swim_field_not_a_number(field))
     })
 }
 

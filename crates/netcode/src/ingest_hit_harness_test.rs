@@ -97,7 +97,7 @@ impl HostSimulation {
             &self.world,
             &self.hit_zones,
             None,
-            0.0,
+            postretro_collision::EnvironmentView::level_only(0.0),
             false,
             0.0,
             (0.0, 0.0),
@@ -143,6 +143,7 @@ fn neutral_command() -> SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -222,6 +223,7 @@ fn movement() -> PlayerMovementComponent {
         forgiveness: None,
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     })
 }

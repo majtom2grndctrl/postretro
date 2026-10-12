@@ -11,6 +11,9 @@ use postretro_entities::{
     BlockPolicy, ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
 };
+use postretro_level_format::environment_volumes::{
+    EnvironmentBrush, EnvironmentPlane, EnvironmentVolumeRecord, EnvironmentVolumesSection,
+};
 use postretro_level_loader::{
     KinematicGeometry, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
 };
@@ -71,7 +74,7 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 /// deterministic prediction or collision. The net crate treats the digest as
 /// opaque; keeping the byte recipe engine-side preserves that boundary.
 pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWorld) -> [u8; 32] {
-    const FINGERPRINT_EPOCH: u32 = 2;
+    const FINGERPRINT_EPOCH: u32 = 3;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-kinematic-static");
@@ -127,7 +130,58 @@ pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWo
         hash_u32(&mut hasher, *index);
     }
 
+    hash_environment_volumes(&mut hasher, &world.environment_volumes);
+
     *hasher.finalize().as_bytes()
+}
+
+/// Every body resolves gravity, push and fluid against these records each
+/// tick, so they are prediction inputs. Denylist recipe: each record is
+/// destructured exhaustively, so a new field fails to compile until it is
+/// hashed or named as a skip. Named skips: the header's `level_gravity`, which
+/// the host sends (a client never predicts with its own), and each volume's
+/// `surface_faces`, which only draw. Fluid presentation lives in the mod
+/// manifest and never reaches this function.
+fn hash_environment_volumes(hasher: &mut blake3::Hasher, section: &EnvironmentVolumesSection) {
+    let EnvironmentVolumesSection {
+        level_gravity: _,
+        volumes,
+    } = section;
+    hash_len(hasher, volumes.len());
+    for volume in volumes {
+        let EnvironmentVolumeRecord {
+            source_entity,
+            priority,
+            gravity,
+            push,
+            fluid,
+            brushes,
+            surface_faces: _,
+        } = volume;
+        hash_u32(hasher, *source_entity);
+        hasher.update(&priority.to_le_bytes());
+        hasher.update(&[u8::from(gravity.is_some())]);
+        hash_f32(hasher, gravity.unwrap_or(0.0));
+        hasher.update(&[u8::from(push.is_some())]);
+        hash_vec3(hasher, Vec3::from(push.unwrap_or([0.0; 3])));
+        hash_str(hasher, fluid);
+        hash_len(hasher, brushes.len());
+        for brush in brushes {
+            let EnvironmentBrush {
+                aabb_min,
+                aabb_max,
+                planes,
+            } = brush;
+            hash_vec3(hasher, Vec3::from(*aabb_min));
+            hash_vec3(hasher, Vec3::from(*aabb_max));
+            hash_len(hasher, planes.len());
+            for plane in planes {
+                let EnvironmentPlane { normal, distance } = plane;
+                hash_vec3(hasher, Vec3::from(*normal));
+                hash_f32(hasher, *distance);
+            }
+        }
+    }
 }
 
 pub(crate) struct KinematicMoverRenderCollector {
@@ -842,6 +896,157 @@ pub(crate) mod tests {
             digest,
             level_content_digest(&geometry, &changed_entities),
             "non-prediction entity placements are outside the level digest"
+        );
+    }
+
+    fn environment_volume(
+        source_entity: u32,
+        min: [f32; 3],
+    ) -> postretro_level_format::environment_volumes::EnvironmentVolumeRecord {
+        use postretro_level_format::environment_volumes::{
+            EnvironmentBrush, EnvironmentPlane, EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+            EnvironmentVolumeRecord,
+        };
+        let max = [min[0] + 2.0, min[1] + 2.0, min[2] + 2.0];
+        let mut planes = Vec::new();
+        for axis in 0..3 {
+            let mut normal = [0.0; 3];
+            normal[axis] = 1.0;
+            planes.push(EnvironmentPlane {
+                normal,
+                distance: max[axis],
+            });
+            normal[axis] = -1.0;
+            planes.push(EnvironmentPlane {
+                normal,
+                distance: -min[axis],
+            });
+        }
+        let vertex = |position: [f32; 3], uv: [f32; 2]| EnvironmentSurfaceVertex { position, uv };
+        EnvironmentVolumeRecord {
+            source_entity,
+            priority: 1,
+            gravity: Some(-3.0),
+            push: Some([0.0, 15.0, 0.0]),
+            fluid: "water".to_string(),
+            brushes: vec![EnvironmentBrush {
+                aabb_min: min,
+                aabb_max: max,
+                planes,
+            }],
+            surface_faces: vec![EnvironmentSurfaceFace {
+                texture_index: 0,
+                vertices: vec![
+                    vertex(min, [0.0, 0.0]),
+                    vertex([max[0], min[1], min[2]], [1.0, 0.0]),
+                    vertex([max[0], min[1], max[2]], [1.0, 1.0]),
+                ],
+            }],
+        }
+    }
+
+    fn environment_world() -> LevelWorld {
+        let mut world = single_cell_world(KinematicGeometry::default());
+        world.environment_volumes.volumes = vec![
+            environment_volume(3, [0.0, 0.0, 0.0]),
+            environment_volume(5, [10.0, 0.0, 0.0]),
+        ];
+        world
+    }
+
+    #[test]
+    fn level_content_digest_changes_with_environment_volume_shape_priority_gravity_push_and_fluid()
+    {
+        let geometry = KinematicGeometry::default();
+        let base = environment_world();
+        let digest = level_content_digest(&geometry, &base);
+        assert_eq!(
+            digest,
+            level_content_digest(&geometry, &environment_world())
+        );
+
+        type Edit = fn(&mut postretro_level_format::environment_volumes::EnvironmentVolumeRecord);
+        let edits: [(&str, Edit); 12] = [
+            ("source entity", |v| v.source_entity = 4),
+            ("priority", |v| v.priority = 2),
+            ("gravity value", |v| v.gravity = Some(-4.0)),
+            ("gravity presence", |v| v.gravity = None),
+            ("push value", |v| v.push = Some([8.0, 0.0, 0.0])),
+            ("push presence", |v| v.push = None),
+            ("fluid name", |v| v.fluid = "sludge".to_string()),
+            ("brush AABB min", |v| v.brushes[0].aabb_min[1] = -1.0),
+            ("brush AABB max", |v| v.brushes[0].aabb_max[2] = 3.0),
+            ("plane normal", |v| {
+                v.brushes[0].planes[0].normal = [0.6, 0.8, 0.0]
+            }),
+            ("plane distance", |v| v.brushes[0].planes[2].distance = 2.5),
+            ("brush count", |v| {
+                let extra = v.brushes[0].clone();
+                v.brushes.push(extra);
+            }),
+        ];
+        for (field, edit) in edits {
+            let mut changed = environment_world();
+            edit(&mut changed.environment_volumes.volumes[1]);
+            assert_ne!(
+                digest,
+                level_content_digest(&geometry, &changed),
+                "changing a volume's {field} must change the level content digest"
+            );
+        }
+
+        let mut removed = environment_world();
+        removed.environment_volumes.volumes.pop();
+        assert_ne!(digest, level_content_digest(&geometry, &removed));
+    }
+
+    #[test]
+    fn level_content_digest_ignores_level_default_gravity() {
+        let geometry = KinematicGeometry::default();
+        let base = environment_world();
+        let mut retuned = environment_world();
+        retuned.environment_volumes.level_gravity = 4.0;
+        assert_eq!(
+            level_content_digest(&geometry, &base),
+            level_content_digest(&geometry, &retuned),
+            "the header's default gravity is sent in the tuning payload, never hashed"
+        );
+    }
+
+    #[test]
+    fn level_content_digest_changes_when_two_environment_volumes_swap_map_order() {
+        let geometry = KinematicGeometry::default();
+        let base = environment_world();
+        let mut swapped = environment_world();
+        swapped.environment_volumes.volumes.swap(0, 1);
+        assert_ne!(
+            level_content_digest(&geometry, &base),
+            level_content_digest(&geometry, &swapped),
+            "map order is the overlap rule's final tiebreak, so it is prediction input"
+        );
+    }
+
+    #[test]
+    fn level_content_digest_ignores_environment_surface_texture_and_uv() {
+        let geometry = KinematicGeometry::default();
+        let digest = level_content_digest(&geometry, &environment_world());
+
+        let mut retextured = environment_world();
+        retextured.environment_volumes.volumes[0].surface_faces[0].texture_index = 7;
+        assert_eq!(digest, level_content_digest(&geometry, &retextured));
+
+        let mut remapped = environment_world();
+        remapped.environment_volumes.volumes[0].surface_faces[0].vertices[1].uv = [0.25, 4.0];
+        assert_eq!(digest, level_content_digest(&geometry, &remapped));
+
+        let mut faceless = environment_world();
+        faceless.environment_volumes.volumes[0]
+            .surface_faces
+            .clear();
+        assert_eq!(
+            digest,
+            level_content_digest(&geometry, &faceless),
+            "surface faces only draw; they are a named skip"
         );
     }
 

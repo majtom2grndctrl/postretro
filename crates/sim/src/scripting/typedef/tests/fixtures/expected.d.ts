@@ -836,6 +836,8 @@ declare module "postretro" {
     crouch?: CrouchParams;
     /** Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required. */
     slide?: SlideParams;
+    /** Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map. */
+    swim?: SwimParams;
     /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated. */
@@ -952,6 +954,22 @@ declare module "postretro" {
     entryBoost: number;
     /** Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0. */
     minDurationMs: number;
+  };
+
+  /** Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades. */
+  export type SwimParams = {
+    /** Target swim speed in metres/sec. Must be finite and ≥ 0. */
+    speed: number;
+    /** Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0. */
+    accel: number;
+    /** Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0. */
+    sinkSpeed: number;
+    /** Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1. */
+    enterDepth: number;
+    /** Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`. */
+    exitDepth: number;
+    /** Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0. */
+    fluidJumpVelocity: number;
   };
 
   /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion. */
@@ -1367,6 +1385,24 @@ declare module "postretro" {
     decay?: number;
   };
 
+  /** A substance declared in `ModManifest.fluids`, built with `defineFluid`. A map's `fluid_volume` names it through its `fluid` key; the volume owns the place, this owns what being in it is like. Declaration order assigns each fluid's index. A field out of range, or a second declaration of an existing name, is rejected with a warning naming the field; the first declaration stands and the rest of the manifest is kept. Fluids never affect co-op compatibility. */
+  export type FluidDescriptor = {
+    /** Non-empty name a `fluid_volume`'s `fluid` key refers to. Unique within the manifest; a later duplicate is rejected. */
+    name: string;
+    /** Drag while swimming, 1/s. Finite and >= 0. A volume naming no declared fluid loads dry. */
+    viscosity: number;
+    /** Full-screen tint while the camera eye is inside: red, green, blue, then strength. Each finite and in [0, 1]. */
+    viewTint: readonly [number, number, number, number];
+    /** World-sound low-pass while the camera eye is inside: 0 none, 1 maximum. Finite and in [0, 1]. */
+    muffle: number;
+    /** Opacity of the fluid's visible surface faces. Finite and in [0, 1]. */
+    surfaceOpacity: number;
+    /** Optional sound key played when a swim starts in this fluid. */
+    enterSound?: string;
+    /** Optional sound key played when a swim in this fluid ends. */
+    exitSound?: string;
+  };
+
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed. */
   export type ModManifest = {
     /** Human-readable mod name used for diagnostics and UI. Required. */
@@ -1395,6 +1431,8 @@ declare module "postretro" {
     sentiment?: ReadonlyArray<FactionSentimentDescriptor>;
     /** Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it. */
     factionSentimentDecay?: number;
+    /** Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids. */
+    fluids?: ReadonlyArray<FluidDescriptor>;
     /** Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot. */
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
@@ -1520,10 +1558,10 @@ declare module "postretro" {
   /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
   export function storeWrite(name: string, value: unknown): void;
 
-  /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The SDK wraps this as `getGravity`. */
+  /** Return the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. Inside a `gravity_volume` the volume's own value holds; this still returns the level default. The SDK wraps this as `getGravity`. */
   export function worldGetGravity(): number;
 
-  /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`. */
+  /** Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. NaN and non-finite values are ignored with a warning so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`. */
   export function worldSetGravity(value: number): void;
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
@@ -1578,12 +1616,14 @@ declare module "postretro" {
       readonly cellCapacity: PlayerComputedRef<number>;
       readonly health: PlayerComputedRef<number>;
       readonly heat: PlayerComputedRef<number>;
+      readonly immersion: PlayerComputedRef<number>;
       readonly maxHealth: PlayerComputedRef<number>;
       readonly overheatAt: PlayerComputedRef<number>;
       readonly overheated: PlayerComputedRef<boolean>;
       readonly reloadActive: PlayerComputedRef<boolean>;
       readonly reloadProgress: PlayerComputedRef<number>;
       readonly spread: ComputedRef<number>;
+      readonly swimming: PlayerComputedRef<boolean>;
       readonly weapon: {
         readonly current: ComputedRef<string>;
         readonly pending: ComputedRef<string>;
@@ -1717,9 +1757,9 @@ declare module "postretro" {
   /** Return the map-placed members of `kind`, optionally only those carrying `tag`, in authored map order. Membership is fixed at install: an instance a runtime spawn carries never appears. Returns `[]` on no match. Callable only inside a level's data script (module evaluation or `setupLevel`); elsewhere it raises. */
   export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];
 
-  /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+  /** Level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. Inside a `gravity_volume` the volume's own value holds; this still returns the level default. */
   export function getGravity(): number;
-  /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are ignored with a warning. Effect is immediate and persists until the next level load or another `setGravity` call. */
+  /** Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. NaN and non-finite values are ignored with a warning. Effect is immediate and persists until the next level load or another `setGravity` call. */
   export function setGravity(value: number): void;
 
   /** Per-channel keyframe accepted by `timeline` / `sequence`. */
@@ -2352,12 +2392,14 @@ declare module "postretro" {
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;
   /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
   export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
+  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. */
+  export function defineFluid(desc: FluidDescriptor): FluidDescriptor;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
   /** Pure identity builder for reusable first-person weapon placement data. The returned descriptor may be shared by weapon `placement` fields and `defineMod({ defaultWeaponPlacement })`; it performs no FFI or registration. */
@@ -2877,8 +2919,8 @@ declare module "postretro/ui" {
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
   export function onStateCrossing(ref: ComputedRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
-  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
-  export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
+  /** Build a watcher from a Bool-valued predicate over live store slots: a fluent value such as `read(player.swimming)` or `read(player.health).lt(25)`, or a raw `runtime.*` node. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
+  export function onStateCrossing(predicate: RuntimeValue | BoolRef, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
   export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
   export type PresentationOptions = { audience?: PresentationAudience };

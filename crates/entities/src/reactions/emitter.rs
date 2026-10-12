@@ -61,6 +61,11 @@ impl ImpactContact {
 pub struct MovementEmission {
     pub address: &'static str,
     pub emitter: Emitter,
+    /// The fluid a swim edge (`swim_started` / `swim_ended`) entered or left,
+    /// as an index into the active fluid table; `None` on every other address.
+    /// Stamped at the tick, so the drain resolves the fluid's sounds after the
+    /// pawn is dry.
+    pub fluid: Option<u16>,
 }
 
 /// A weapon event: fire, dry fire, spawn, impact, or a reload outcome. `weapon`

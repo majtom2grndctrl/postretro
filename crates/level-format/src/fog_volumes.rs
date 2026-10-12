@@ -1,17 +1,16 @@
-// FogVolumes PRL section (ID 30): per-region volumetric fog parameters,
-// the worldspawn `fog_pixel_scale` downscale factor, and the worldspawn
-// `initial_gravity` scalar (m/s², negative = downward).
+// FogVolumes PRL section (ID 30): per-region volumetric fog parameters and
+// the worldspawn `fog_pixel_scale` downscale factor.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 
+/// Section-internal format epoch; any other version is rejected. Level gravity
+/// is not here: it lives in the EnvironmentVolumes header.
+pub const FOG_VOLUMES_VERSION: u16 = 1;
+
 /// Maximum number of fog volumes per level. Authoritative definition; the engine
 /// re-exports this via `crate::fx::fog_volume::MAX_FOG_VOLUMES`.
 pub const MAX_FOG_VOLUMES: usize = 16;
-
-/// Default starting world gravity in meters per second squared. Negative values
-/// accelerate downward in engine space.
-pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -9.81_f32;
 
 /// Maximum number of bounding planes per fog volume. Brushes with more faces
 /// are rejected by the level compiler; the runtime never sees `plane_count`
@@ -122,8 +121,8 @@ impl Default for FogVolumeRecord {
 /// FogVolumes PRL section.
 ///
 /// On-disk layout (little-endian):
+///   u16  version (FOG_VOLUMES_VERSION)
 ///   u32  pixel_scale
-///   f32  initial_gravity
 ///   u32  volume_count
 ///   repeat volume_count:
 ///     f32  min_x, min_y, min_z
@@ -149,17 +148,11 @@ impl Default for FogVolumeRecord {
 ///     repeat tag_count:
 ///       u32  tag_byte_len; u8[] tag_utf8
 ///
-/// Always emitted so the worldspawn `fog_pixel_scale` and `initial_gravity`
-/// are honoured even when no `fog_volume` brushes are present (12-byte
-/// overhead for the empty case).
+/// Always emitted so the worldspawn `fog_pixel_scale` is honoured even when no
+/// `fog_volume` brushes are present (10-byte overhead for the empty case).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FogVolumesSection {
     pub pixel_scale: u32,
-    /// Worldspawn `initialGravity` (m/s²). Negative = downward (Earth = -9.81),
-    /// positive = upward. When the KVP is absent, `prl-build` uses
-    /// [`DEFAULT_WORLD_GRAVITY_MPS2`]; the engine consumes the packed value as
-    /// the starting value for the runtime gravity register.
-    pub initial_gravity: f32,
     pub volumes: Vec<FogVolumeRecord>,
 }
 
@@ -167,28 +160,31 @@ impl Default for FogVolumesSection {
     fn default() -> Self {
         Self {
             pixel_scale: 4,
-            initial_gravity: DEFAULT_WORLD_GRAVITY_MPS2,
             volumes: Vec::new(),
         }
     }
 }
 
+/// Header bytes: version, pixel scale, volume count.
+const HEADER_SIZE: usize = 2 + 4 + 4;
+
 impl FogVolumesSection {
     pub fn byte_len(&self) -> usize {
-        12 + self
-            .volumes
-            .iter()
-            .map(|volume| {
-                112 + volume.planes.len() * 16
-                    + volume.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
-            })
-            .sum::<usize>()
+        HEADER_SIZE
+            + self
+                .volumes
+                .iter()
+                .map(|volume| {
+                    112 + volume.planes.len() * 16
+                        + volume.tags.iter().map(|tag| 4 + tag.len()).sum::<usize>()
+                })
+                .sum::<usize>()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.byte_len());
+        buf.extend_from_slice(&FOG_VOLUMES_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.pixel_scale.to_le_bytes());
-        buf.extend_from_slice(&self.initial_gravity.to_le_bytes());
         buf.extend_from_slice(&(self.volumes.len() as u32).to_le_bytes());
         for v in &self.volumes {
             for c in v.min {
@@ -235,8 +231,14 @@ impl FogVolumesSection {
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut o = 0usize;
+        let version = read_u16(data, &mut o, "version")?;
+        if version != FOG_VOLUMES_VERSION {
+            return Err(FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("fog volumes: unsupported version {version}"),
+            )));
+        }
         let pixel_scale = read_u32(data, &mut o, "pixel_scale")?;
-        let initial_gravity = read_f32(data, &mut o, "initial_gravity")?;
         let count = read_u32(data, &mut o, "volume count")? as usize;
         if count > MAX_FOG_VOLUMES {
             return Err(FormatError::Io(std::io::Error::new(
@@ -343,10 +345,21 @@ impl FogVolumesSection {
 
         Ok(Self {
             pixel_scale,
-            initial_gravity,
             volumes,
         })
     }
+}
+
+fn read_u16(data: &[u8], o: &mut usize, ctx: &str) -> crate::Result<u16> {
+    if *o + 2 > data.len() {
+        return Err(FormatError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("fog volumes: truncated {ctx}"),
+        )));
+    }
+    let v = u16::from_le_bytes([data[*o], data[*o + 1]]);
+    *o += 2;
+    Ok(v)
 }
 
 fn read_u32(data: &[u8], o: &mut usize, ctx: &str) -> crate::Result<u32> {
@@ -414,22 +427,14 @@ mod tests {
     fn round_trip_empty() {
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![],
         };
         let bytes = section.to_bytes();
-        // 4 (pixel_scale) + 4 (initial_gravity) + 4 (volume_count) = 12 bytes overhead.
-        assert_eq!(bytes.len(), 12);
+        // 2 (version) + 4 (pixel_scale) + 4 (volume_count) = 10 bytes overhead.
+        assert_eq!(bytes.len(), 10);
+        assert_eq!(section.byte_len(), 10);
         let restored = FogVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(section, restored);
-    }
-
-    #[test]
-    fn default_uses_default_world_gravity() {
-        assert_eq!(
-            FogVolumesSection::default().initial_gravity,
-            DEFAULT_WORLD_GRAVITY_MPS2,
-        );
     }
 
     #[test]
@@ -446,7 +451,6 @@ mod tests {
     fn byte_len_matches_tagged_fog_volume_payload() {
         let section = FogVolumesSection {
             pixel_scale: 8,
-            initial_gravity: -9.81,
             volumes: vec![
                 FogVolumeRecord {
                     min: [-2.0, 0.0, -2.0],
@@ -505,12 +509,11 @@ mod tests {
         volume.ambient_scatter = 0.25;
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![volume],
         };
 
         let bytes = section.to_bytes();
-        let record_offset = 12;
+        let record_offset = HEADER_SIZE;
         let anisotropy_offset = record_offset + 24 * 4;
         let ambient_scatter_offset = record_offset + 25 * 4;
         assert_eq!(
@@ -545,7 +548,6 @@ mod tests {
     fn pixel_scale_round_trips_independently() {
         let section = FogVolumesSection {
             pixel_scale: 1,
-            initial_gravity: -9.81,
             volumes: vec![],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -553,31 +555,35 @@ mod tests {
     }
 
     #[test]
-    fn initial_gravity_round_trips_independently() {
-        let section = FogVolumesSection {
-            pixel_scale: 4,
-            initial_gravity: 12.5,
-            volumes: vec![],
-        };
-        let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
-        assert!(
-            (restored.initial_gravity - 12.5).abs() < 1e-6,
-            "initial_gravity round-trip: got {}",
-            restored.initial_gravity
-        );
+    fn rejects_truncated_header() {
+        let mut buf = FOG_VOLUMES_VERSION.to_le_bytes().to_vec();
+        buf.extend_from_slice(&[0u8; 4]); // pixel_scale, no volume count
+        let err = FogVolumesSection::from_bytes(&buf).unwrap_err();
+        assert!(err.to_string().contains("truncated"));
     }
 
+    // Regression guard: the unversioned layout led with `u32 pixel_scale, f32
+    // initial_gravity`; its low pixel-scale bytes read as an unknown version.
     #[test]
-    fn rejects_truncated_header() {
-        let err = FogVolumesSection::from_bytes(&[0u8; 4]).unwrap_err();
-        assert!(err.to_string().contains("truncated"));
+    fn fog_volumes_decode_rejects_unknown_and_unversioned_layouts() {
+        let mut future = FogVolumesSection::default().to_bytes();
+        future[..2].copy_from_slice(&(FOG_VOLUMES_VERSION + 1).to_le_bytes());
+        let err = FogVolumesSection::from_bytes(&future).unwrap_err();
+        assert!(err.to_string().contains("unsupported version"), "{err}");
+
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&4u32.to_le_bytes()); // pixel_scale
+        legacy.extend_from_slice(&(-9.81f32).to_le_bytes()); // initial_gravity
+        legacy.extend_from_slice(&0u32.to_le_bytes()); // volume count
+        let err = FogVolumesSection::from_bytes(&legacy).unwrap_err();
+        assert!(err.to_string().contains("unsupported version 4"), "{err}");
     }
 
     #[test]
     fn rejects_implausible_volume_count() {
         let mut buf = Vec::new();
+        buf.extend_from_slice(&FOG_VOLUMES_VERSION.to_le_bytes());
         buf.extend_from_slice(&4u32.to_le_bytes()); // pixel_scale
-        buf.extend_from_slice(&(-9.81f32).to_le_bytes()); // initial_gravity
         buf.extend_from_slice(&u32::MAX.to_le_bytes()); // count = u32::MAX
         let err = FogVolumesSection::from_bytes(&buf).unwrap_err();
         assert!(err.to_string().contains("exceeds"));
@@ -587,7 +593,6 @@ mod tests {
     fn rejects_volume_count_over_renderer_slot_cap() {
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![FogVolumeRecord::default(); MAX_FOG_VOLUMES + 1],
         };
         let err = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap_err();
@@ -631,7 +636,6 @@ mod tests {
         ];
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), vec![])],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -658,7 +662,6 @@ mod tests {
         ];
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), vec![])],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -677,7 +680,6 @@ mod tests {
     fn round_trip_zero_plane_volume_round_trips() {
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![make_volume(vec![], vec![])],
         };
         let bytes = section.to_bytes();
@@ -697,7 +699,6 @@ mod tests {
         let tags = vec!["smoke".to_string(), "indoor".to_string()];
         let section = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![make_volume(planes.clone(), tags.clone())],
         };
         let restored = FogVolumesSection::from_bytes(&section.to_bytes()).unwrap();
@@ -711,7 +712,6 @@ mod tests {
         // Build a section with one volume whose density field is NaN.
         let valid = FogVolumesSection {
             pixel_scale: 4,
-            initial_gravity: -9.81,
             volumes: vec![FogVolumeRecord {
                 min: [0.0, 0.0, 0.0],
                 density: 0.5,
@@ -735,15 +735,15 @@ mod tests {
             }],
         };
         let mut bytes = valid.to_bytes();
-        // density is at offset: 4 (pixel_scale) + 4 (initial_gravity) + 4 (count) + 12 (min xyz) = 24
+        // density is at offset: 2 (version) + 4 (pixel_scale) + 4 (count) + 12 (min xyz) = 22
         let nan_bytes = f32::NAN.to_le_bytes();
-        bytes[24..28].copy_from_slice(&nan_bytes);
+        bytes[22..26].copy_from_slice(&nan_bytes);
         let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
         assert!(err.to_string().contains("non-finite"));
 
         // Also test infinity.
         let inf_bytes = f32::INFINITY.to_le_bytes();
-        bytes[24..28].copy_from_slice(&inf_bytes);
+        bytes[22..26].copy_from_slice(&inf_bytes);
         let err = FogVolumesSection::from_bytes(&bytes).unwrap_err();
         assert!(err.to_string().contains("non-finite"));
     }

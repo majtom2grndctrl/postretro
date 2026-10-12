@@ -10,6 +10,7 @@ mod crouching;
 mod dash;
 mod normal;
 mod slide;
+mod swim;
 
 pub(super) use crouching::crouching_intent;
 #[cfg(test)]
@@ -19,17 +20,21 @@ pub(super) use normal::normal_intent;
 #[cfg(test)]
 pub(super) use slide::SLIDE_MAX_MS;
 pub(super) use slide::sliding_intent;
+pub(super) use swim::{fluid_jump_input, leave_swim, swim_intent};
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
 /// stop/slide-threshold friction model. Value matches Quake's default
-/// `sv_friction` (6.0). Two use sites:
-///   1. `Normal` step 6 / `apply_normal_horizontal_decay`: grounded with no
-///      movement input held — the stop-friction that bleeds idle speed. Gated
-///      on no-input because `pm_accelerate` already caps in-band grounded speed.
-///   2. `dash_intent`'s `dash_drag == 0` grounded boost path: applied
-///      UNCONDITIONALLY (no no-input gate). The boost deliberately sits above
-///      the grounded cap, so the no-input gate cannot apply — a held stick must
-///      still bleed the over-cap boost rather than freezing it.
+/// `sv_friction` (6.0). Uses:
+///   - `Normal` step 6 / `apply_normal_horizontal_decay`: grounded with no
+///     movement input held — the stop-friction that bleeds idle speed. Gated
+///     on no-input because `pm_accelerate` already caps in-band grounded speed.
+///   - `dash_intent`'s `dash_drag == 0` grounded boost path: applied
+///     UNCONDITIONALLY (no no-input gate). The boost deliberately sits above
+///     the grounded cap, so the no-input gate cannot apply — a held stick must
+///     still bleed the over-cap boost rather than freezing it.
+///   - The push drift layer's grounded decay (`push::decay_drift`), also
+///     unconditional: drift is never voluntary, so a steady push settles at
+///     push / `GROUND_STOP_FRICTION`.
 ///
 /// Promote to `GroundParams` if per-entity friction tuning becomes necessary.
 pub(super) const GROUND_STOP_FRICTION: f32 = 6.0;

@@ -7,6 +7,8 @@ use kira::backend::Backend;
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, ResourceLimitReached, Tween};
 
+use crate::muffle::{WorldMuffleBuilder, WorldMuffleHandle};
+
 /// The three controllable mixer buses. Master is kira's main track and is
 /// controlled via `Audio::set_main_volume`, so it has no `BusId` variant here —
 /// every routable in-world/UI sound targets one of these.
@@ -94,6 +96,9 @@ pub(crate) struct BusTree {
 
 impl BusTree {
     /// Build SFX/Music/UI as sub-tracks of `manager`'s main track (Master).
+    /// The SFX bus carries the world muffle `muffle` controls, so it filters
+    /// that bus's sounds and every positional voice's child track; Music and
+    /// UI carry no effect.
     ///
     /// Generic over the backend so tests drive it with `MockBackend` while the
     /// engine uses `DefaultBackend`. Each sub-track starts at unity gain (0 dB)
@@ -106,6 +111,7 @@ impl BusTree {
     /// in 0.12, so we route through the manager rather than `main_track()`.
     pub(crate) fn build<B: Backend>(
         manager: &mut AudioManager<B>,
+        muffle: &WorldMuffleHandle,
     ) -> Result<Self, ResourceLimitReached> {
         debug_assert!(
             Self::caps_within_capacity(),
@@ -113,9 +119,9 @@ impl BusTree {
         );
 
         // Build in `BusId::ALL` order so the array lines up with `index()`.
-        let sfx = Self::build_bus(manager, BusId::Sfx)?;
-        let music = Self::build_bus(manager, BusId::Music)?;
-        let ui = Self::build_bus(manager, BusId::UI)?;
+        let sfx = Self::build_bus(manager, BusId::Sfx, Some(muffle))?;
+        let music = Self::build_bus(manager, BusId::Music, None)?;
+        let ui = Self::build_bus(manager, BusId::UI, None)?;
 
         Ok(Self {
             tracks: [sfx, music, ui],
@@ -126,12 +132,16 @@ impl BusTree {
     fn build_bus<B: Backend>(
         manager: &mut AudioManager<B>,
         bus: BusId,
+        muffle: Option<&WorldMuffleHandle>,
     ) -> Result<TrackHandle, ResourceLimitReached> {
         // 0 dB == unity gain; volume is set in decibels (kira's `Value<Decibels>`).
-        let builder = TrackBuilder::new()
+        let mut builder = TrackBuilder::new()
             .volume(0.0)
             .sound_capacity(bus.track_sound_capacity())
             .sub_track_capacity(bus.track_sub_track_capacity());
+        if let Some(muffle) = muffle {
+            builder = builder.with_effect(WorldMuffleBuilder::new(muffle.clone()));
+        }
         let handle = manager.add_sub_track(builder)?;
 
         debug_assert!(
@@ -240,7 +250,8 @@ mod tests {
     #[test]
     fn bus_tree_builds_all_three_buses_under_mock_backend() {
         let mut manager = mock_manager();
-        let tree = BusTree::build(&mut manager).expect("bus tree builds under mock backend");
+        let tree = BusTree::build(&mut manager, &WorldMuffleHandle::default())
+            .expect("bus tree builds under mock backend");
 
         // Three sub-tracks were created off the main track.
         assert_eq!(manager.num_sub_tracks(), BusId::ALL.len());
@@ -253,7 +264,8 @@ mod tests {
     #[test]
     fn each_bus_track_sound_capacity_covers_its_voice_cap() {
         let mut manager = mock_manager();
-        let tree = BusTree::build(&mut manager).expect("bus tree builds");
+        let tree =
+            BusTree::build(&mut manager, &WorldMuffleHandle::default()).expect("bus tree builds");
 
         // The kira sound pool must be at least the voice cap so an accepted
         // play never hits kira's per-track sound limit.
@@ -276,7 +288,8 @@ mod tests {
         // commits a command through a processing tick (no panic, command
         // buffer not overflowed).
         let mut manager = mock_manager();
-        let mut tree = BusTree::build(&mut manager).expect("bus tree builds");
+        let mut tree =
+            BusTree::build(&mut manager, &WorldMuffleHandle::default()).expect("bus tree builds");
 
         tree.set_volume(BusId::Sfx, -6.0);
         tree.set_volume(BusId::Music, 0.0);
@@ -288,7 +301,8 @@ mod tests {
     #[test]
     fn voice_counter_increments_and_decrements() {
         let mut manager = mock_manager();
-        let mut tree = BusTree::build(&mut manager).expect("bus tree builds");
+        let mut tree =
+            BusTree::build(&mut manager, &WorldMuffleHandle::default()).expect("bus tree builds");
 
         assert!(tree.try_acquire_voice(BusId::Sfx));
         assert!(tree.try_acquire_voice(BusId::Sfx));
@@ -304,7 +318,8 @@ mod tests {
     #[test]
     fn voice_counter_rejects_at_cap_and_recovers_after_release() {
         let mut manager = mock_manager();
-        let mut tree = BusTree::build(&mut manager).expect("bus tree builds");
+        let mut tree =
+            BusTree::build(&mut manager, &WorldMuffleHandle::default()).expect("bus tree builds");
 
         // Fill the Music bus exactly to its cap.
         let cap = BusId::Music.voice_cap();
@@ -326,7 +341,8 @@ mod tests {
     #[test]
     fn release_with_no_active_voices_is_a_saturating_noop() {
         let mut manager = mock_manager();
-        let mut tree = BusTree::build(&mut manager).expect("bus tree builds");
+        let mut tree =
+            BusTree::build(&mut manager, &WorldMuffleHandle::default()).expect("bus tree builds");
 
         tree.release_voice(BusId::UI);
         assert_eq!(tree.active_voices(BusId::UI), 0);

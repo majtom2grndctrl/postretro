@@ -792,6 +792,9 @@ impl Renderer {
             geometry.kinematic_geometry,
             geometry.texture_materials.len(),
         );
+        // Fluid surfaces install after this through `install_fluid_surfaces`;
+        // every geometry install (unload included) drops the previous level's.
+        full.fluid_surface.clear();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
             &mut full.kinematic_mover_shadow_draws,

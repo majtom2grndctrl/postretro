@@ -74,9 +74,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
-    & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
+    & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
   playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
@@ -133,9 +133,9 @@ export type PostretroModule = {
   --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
   --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
-  --- Current world gravity in m/s².
+  --- Level default gravity in m/s² (negative = downward): the gravity outside every gravity volume. Inside a `gravity_volume` the volume's own value holds; this still returns the level default.
   getGravity: typeof(getGravity),
-  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  --- Set the level default gravity in m/s²: the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. Non-finite values are ignored with a warning.
   setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
@@ -166,6 +166,8 @@ export type PostretroModule = {
   defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),
+  --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
+  defineFluid: typeof(defineFluid),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

@@ -87,6 +87,18 @@ impl App {
         // Share interpolation and mover carry with the view, while keeping
         // cosmetic view feel out of fire origin and authored muzzle placement.
         let (origin, direction) = presented_aim.aim_ray();
+        // Predicted pellets cross the same digest-bound volumes the host holds.
+        // Fluid crossings read only the volumes, so the view's gravity and
+        // viscosities are inert here; they are still the host's installed
+        // values, never this client's own: the gravity from the payload (inert
+        // zero before one installs), the viscosities from the table the
+        // volumes resolved against, which on a client is the host's.
+        let level_gravity = self
+            .session
+            .as_ref()
+            .and_then(|session| session.net_endpoint.as_ref())
+            .and_then(netcode::NetEndpoint::client_host_environment)
+            .map_or(0.0, |environment| environment.level_gravity);
         for mut queued in std::mem::take(&mut self.client_weapon.due) {
             if !self
                 .client_weapon
@@ -109,6 +121,11 @@ impl App {
                     direction,
                     &queued.placement,
                     &self.collision_world,
+                    postretro_collision::EnvironmentView::new(
+                        level_gravity,
+                        &self.environment_volumes,
+                        self.environment_fluids.viscosities(),
+                    ),
                     &registry,
                     &self
                         .session

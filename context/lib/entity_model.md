@@ -32,6 +32,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 |-----------|---------|
 | Transform | World-space position, rotation, scale |
 | PlayerMovement | Capsule physics state for the player pawn |
+| Immersion | Output-only: the fraction of the pawn's capsule its winning fluid covered on the last authoritative movement tick. Written by host movement; read only by the `player.immersion` slot (§7b). Never replicated |
 | Light | Dynamic point-light parameters |
 | BillboardEmitter | Particle emitter configuration |
 | ParticleState | Per-particle simulation state for registry-managed presentation entities |
@@ -132,7 +133,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (decided, not yet built); any further regional field needs its own amendment, and gas and haze stay with fog volumes. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 ---
 
@@ -217,13 +218,34 @@ Entity descriptors select the volume shape and fixed dimensions. Touchable items
 
 World collision resolves inline during each entity's movement — the entity slides along or stops at world geometry within its update step. Trigger-volume overlap runs after player movement, and touchable-item sphere/capsule overlap runs immediately after that trigger stage and before AI: only player pawns and stationary world items participate, so this narrower placement observes every relevant movement without delaying the touch to the next tick. Other entity-entity overlap tests run as a separate pass after all relevant entity updates complete. This prevents update-order-dependent collision results: every participating entity moves first, then overlaps are detected and resolved.
 
+### Environment Volumes
+
+Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` §Custom FGD, id 52). They are non-solid: no collision, cell, portal, lightmap, SDF or navmesh role. `postretro-collision` answers every query over them: pure geometry over level data, no movement or entities. Each authored brush is a convex leaf — a plane set with bounds and a contents mask naming the fields its volume sets — indexed by an AABB tree built at level install, not baked. Queries take a contents mask and never see a volume whose contents miss it. The tree is built after static collision, before the level content digest publishes and before the first tick; installing another level replaces it whole, and unload clears it.
+
+**One overlap rule per field.** A field's value comes from the winning volume among those that set it and are in reach; with none, the level default applies (level gravity, zero push, dry). The winner is the highest priority, then the smallest summed brush volume — so a pool inside a room wins without priorities — then the earliest map entity. Fields resolve independently: a pool with no gravity inside a low-gravity room takes the pool's fluid and the room's gravity.
+
+- **Gravity and push** reach is the body's position.
+- **Fluid** reach is the capsule's vertical segment, feet to head. A fluid volume is in reach only when it covers a positive length of the segment, so feet resting on the surface stay dry. Immersion is the segment's coverage by the union of every in-reach volume carrying the winner's fluid, so a pool split into several entities of one fluid reads whole, a different fluid never adds, and leaving through any face, bottom included, drops it.
+- A non-finite probe resolves the defaults, dry. Resolution is deterministic and allocation-free; its result never depends on tree shape or visit order.
+
+**Who resolves what.** Each body resolves at its own tick-start position, every tick.
+
+| Body | Resolves |
+|---|---|
+| Player pawn | The full environment (`movement.md` §4, §6) |
+| AI agent | Gravity only, clamped to its downward part. Agent collide-and-slide adds gravity every tick, grounded included, so upward gravity would lift it off the navmesh; in an upward-gravity volume it behaves as in zero gravity. Agents ignore push, never swim, and walk fluid floors |
+| Projectile | Nothing; projectiles apply no gravity |
+| Particle | Level gravity only; volumes are planned (§8) |
+
+**Hitscan splash facts.** A hitscan pellet reports each fluid-surface crossing strictly before its blocking hit as a fact: point, outward normal of the crossed face, fluid. A ray starting on a face never splashes there, a face shared by two brushes of one volume is no crossing, and two adjacent fluid entities give two. The fact is presentation: never replicated or hashed. Nothing consumes it yet.
+
 ---
 
 ## 7b. Player Movement Component
 
 The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining, active movement-state variant, air-dashes remaining, dash cooldown timer).
 
-Movement is engine-internal. No script surface writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. Scripts read one readonly projection per player (decided, not yet built): whether the pawn swims, from this component, and how deep, from a separate output-only component. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
+Movement is engine-internal. No script surface writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. Scripts read one readonly projection per player: `player.swimming` from this component's movement state, and `player.immersion` from the separate `Immersion` component (`scripting.md` §5). Immersion is its own component because `PlayerMovement` is cloned into reconcile replay and merged from the wire; host movement writes it after each authoritative tick, and no state intent, replay or wire merge reads it. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
 
 Movement design intent — the custom-kinematic foundation, the declarative author surface, the state-machine seam, and the FPS-flexibility band — lives in `movement.md`. This section covers only the component's place in the entity model.
 
@@ -266,7 +288,7 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns particles each rendered frame; the simulation expires them. Scripts never observe or manipulate individual particles.
 
-The particle simulation runs in Rust once per rendered frame, on frame time: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
+The particle simulation runs in Rust once per rendered frame, on frame time: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. Particles take only the level gravity today. Particle gravity and push from environment volumes are planned and wait on the pooled particle step: each step will resolve gravity and push at the particle's post-step position from the same pure resolve as bodies (§7), with buoyancy scaling gravity and push unscaled. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
 
 The parent emitter entity carries `BillboardEmitterComponent`. Particles back-reference their parent via `ParticleState.emitter` (for spin-rate lookup); orphaned particles (emitter despawned) complete their lifetime at their last rotation angle.
 

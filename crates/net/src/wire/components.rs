@@ -80,6 +80,12 @@ pub enum WireMovementState {
         /// validation accepts only absence or a bounded near-unit vector.
         floor_normal: Option<[f32; 3]>,
     },
+    /// Swimming in fluid `fluid` (an index into the host's fluid table, the
+    /// table the client resolves against). Presentation names the edge sounds'
+    /// fluid from it; the re-entry latch rides the outer state.
+    Swim {
+        fluid: u16,
+    },
 }
 
 /// Squared-length tolerance for collision-produced floor normals. Bitcode
@@ -121,6 +127,10 @@ pub struct WirePlayerMovementState {
     pub velocity: [f32; 3],
     /// Protected impulse contribution already included in total velocity.
     pub knockback_velocity: [f32; 3],
+    /// Protected push-drift contribution already included in total velocity.
+    /// Its vertical part is non-zero only while swimming, where the layer
+    /// carries the full push; outside `Swim` it is 0.
+    pub push_velocity: [f32; 3],
     pub ground: WireGroundRef,
     pub air_jumps_remaining: u32,
     pub air_dashes_remaining: u32,
@@ -130,6 +140,9 @@ pub struct WirePlayerMovementState {
     pub coyote_timer_ms: f32,
     pub jump_buffer_timer_ms: f32,
     pub jump_spent: bool,
+    /// The fluid-jump re-entry latch: swim cannot re-enter until immersion
+    /// first falls below the swimmer's exit depth.
+    pub swim_reentry_latched: bool,
     pub capsule_half_height: f32,
     pub capsule_eye_height: f32,
     /// Camera pitch from the movement owner's latest resolved input. It is
@@ -145,7 +158,7 @@ impl WireMovementState {
     #[must_use]
     fn all_finite(&self) -> bool {
         match self {
-            WireMovementState::Normal => true,
+            WireMovementState::Normal | WireMovementState::Swim { .. } => true,
             WireMovementState::Dash { elapsed_ms, boost } => {
                 elapsed_ms.is_finite() && boost.iter().all(|c| c.is_finite())
             }
@@ -175,7 +188,8 @@ impl WireMovementState {
         match self {
             WireMovementState::Normal
             | WireMovementState::Dash { .. }
-            | WireMovementState::Crouching { .. } => true,
+            | WireMovementState::Crouching { .. }
+            | WireMovementState::Swim { .. } => true,
             WireMovementState::Sliding {
                 boost,
                 floor_normal,
@@ -192,7 +206,7 @@ impl WireMovementState {
 
 impl WirePlayerMovementState {
     /// Whether every replicated float is finite (no NaN/inf): velocity, protected
-    /// knockback velocity, all live timers, capsule dimensions, aim pitch, and the
+    /// knockback and push-drift velocity, all live timers, capsule dimensions, aim pitch, and the
     /// active state's payload. Checked at `validate` so a non-finite movement state is
     /// rejected before typed apply and never reaches the registry. Integer counters and
     /// bools cannot be non-finite, so they are not checked.
@@ -200,6 +214,7 @@ impl WirePlayerMovementState {
     fn all_finite(&self) -> bool {
         self.velocity.iter().all(|c| c.is_finite())
             && self.knockback_velocity.iter().all(|c| c.is_finite())
+            && self.push_velocity.iter().all(|c| c.is_finite())
             && self.dash_cooldown_ms.is_finite()
             && self.coyote_timer_ms.is_finite()
             && self.jump_buffer_timer_ms.is_finite()
@@ -685,6 +700,7 @@ mod tests {
                 eye_current: 0.5,
                 floor_normal: Some([0.0, 1.0, 0.0]),
             },
+            WireMovementState::Swim { fluid: 3 },
         ];
         for state in variants {
             // A finite instance of every variant must pass the finiteness gate.
@@ -692,17 +708,21 @@ mod tests {
             // The number of float fields each variant carries — derived from the
             // source enum so adding a variant (or a float field) forces an update.
             let float_field_count = match state {
-                WireMovementState::Normal => 0,
+                WireMovementState::Normal | WireMovementState::Swim { .. } => 0,
                 WireMovementState::Dash { .. } => 4, // elapsed_ms + 3 boost components
                 WireMovementState::Crouching { .. } => 1,
                 WireMovementState::Sliding { floor_normal, .. } => {
                     5 + floor_normal.map_or(0, |_| 3)
                 }
             };
-            // Non-`Normal` variants carry floats and so are non-finite-detectable.
+            // Every variant but the payload-free `Normal` and `Swim` carries
+            // floats and so is non-finite-detectable.
             assert_eq!(
                 float_field_count > 0,
-                !matches!(state, WireMovementState::Normal)
+                !matches!(
+                    state,
+                    WireMovementState::Normal | WireMovementState::Swim { .. }
+                )
             );
         }
     }

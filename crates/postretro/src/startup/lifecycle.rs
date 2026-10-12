@@ -3,6 +3,9 @@
 
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
+#[cfg(test)]
+#[path = "lifecycle_environment_install_tests.rs"]
+mod lifecycle_environment_install_tests;
 #[path = "lifecycle_model_sweep.rs"]
 mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]
@@ -545,6 +548,12 @@ impl App {
         // Committed just before segment B.
         let static_collision = crate::collision::CollisionWorld::from_level(&world)?;
         self.level_timings.record("static_collision");
+        // Before the parity digest is published and before any tick: a peer
+        // admitted on this level's digest, and the first tick, resolve against
+        // this level's volumes, never an empty or stale set. Assigned whole, so
+        // no earlier level's volume survives; the renderer-less return below
+        // keeps it installed.
+        self.install_environment_volumes(&world);
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
@@ -712,6 +721,9 @@ impl App {
             let geometry = render::level_world_to_geometry(&world, &texture_materials);
             renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
             self.level_timings.record("geometry_upload");
+            // Fluid surfaces after textures (their UVs normalize by the
+            // installed dimensions) and geometry (which drops the last level's).
+            renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
 
             // Reseed the SH diagnostic per-light visibility bitmap to match the
             // freshly-installed level's animated-light count. Reset `seeded` so the
@@ -916,6 +928,7 @@ impl App {
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         self.warn_hosted_trigger_machine_local();
+        self.warn_if_local_player_cannot_swim();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -1124,7 +1137,9 @@ pub(crate) fn install_world_gravity_and_nav(
     world: &postretro_level_loader::LevelWorld,
     script_ctx: &postretro_entities::ScriptCtx,
 ) -> Option<crate::nav::NavGraph> {
-    script_ctx.gravity.set(world.initial_gravity);
+    script_ctx
+        .gravity
+        .set(world.environment_volumes.level_gravity);
     world
         .navmesh
         .as_ref()
@@ -1890,10 +1905,16 @@ pub(crate) mod tests {
             ui_focused_id: None,
             particle_live_counts: std::collections::HashMap::new(),
             collision_world: crate::collision::CollisionWorld::new(),
+            environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
+            environment_fluids: Default::default(),
+            environment_fluid_source: Default::default(),
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
+            fluid_surface_render:
+                postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
+            fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
@@ -2277,7 +2298,7 @@ pub(crate) mod tests {
             trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
-            initial_gravity: -9.8,
+            environment_volumes: Default::default(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -3688,6 +3709,7 @@ pub(crate) mod tests {
                 sentiment: Vec::new(),
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
+                fluids: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),

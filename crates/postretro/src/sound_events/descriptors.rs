@@ -5,13 +5,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use postretro_audio::SoundRequest;
+use postretro_combat_model::FluidMovementTable;
 use postretro_entities::components::brain::activity_at_path;
 use postretro_entities::{
     AiCue, AiEmission, ComponentKind, ComponentValue, EntityTypeDescriptor, MovementEmission,
     ReactionDescriptor, ScriptCtx, WeaponEmission,
 };
 use postretro_foundation::{
-    BehaviorActivityDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
+    BehaviorActivityDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor, FluidRegistry,
     PlayerMovementComponent, WeaponSounds,
 };
 
@@ -150,26 +151,55 @@ pub(crate) fn weapon_emission_sound(
     )
 }
 
-/// The sound a movement event plays: the pawn's own movement sounds.
+/// What a swim edge resolves its fluid's sounds against: the active fluid
+/// table its index points into (the host's, on a connected client) and this
+/// machine's own fluid declarations, which supply the keys by name.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalFluids<'a> {
+    pub(crate) active: &'a FluidMovementTable,
+    pub(crate) local: &'a FluidRegistry,
+}
+
+/// The sound a movement event plays: the pawn's own movement sounds for a
+/// landing or jump, or the swim edge's fluid's local `enterSound` /
+/// `exitSound`. A fluid this machine does not declare, or one naming no sound,
+/// plays nothing.
 pub(crate) fn movement_sound(
     emission: &MovementEmission,
+    fluids: LocalFluids<'_>,
     scene: &mut AnchorScene<'_>,
 ) -> Option<SoundRequest> {
     let postretro_entities::Emitter::Entity { id, .. } = emission.emitter else {
         return None;
     };
-    let sounds = scene
-        .registry
-        .get_component::<PlayerMovementComponent>(id)
-        .ok()?
-        .sounds
-        .clone()?;
+    // The registry reference outlives the scene borrow `frozen_sound` takes.
+    let registry = scene.registry;
     let key = match emission.address {
-        "landed" => sounds.land?,
-        "jumped" => sounds.jump?,
+        "landed" | "jumped" => {
+            let sounds = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .ok()?
+                .sounds
+                .as_ref()?;
+            if emission.address == "landed" {
+                sounds.land.as_deref()?
+            } else {
+                sounds.jump.as_deref()?
+            }
+        }
+        "swim_started" | "swim_ended" => {
+            let fluid = fluids
+                .active
+                .local_presentation(emission.fluid?, fluids.local)?;
+            if emission.address == "swim_started" {
+                fluid.enter_sound.as_deref()?
+            } else {
+                fluid.exit_sound.as_deref()?
+            }
+        }
         _ => return None,
     };
-    Some(frozen_sound(&key, &emission.emitter, scene))
+    Some(frozen_sound(key, &emission.emitter, scene))
 }
 
 /// The sounds an enemy event plays. An attack plays its own `sound` and, when
@@ -272,6 +302,16 @@ pub(crate) fn warn_unknown_sound_keys(
                 }
             }
             collect_activity_sounds(&graph.envelope, owner, "behavior", &mut name);
+        }
+    }
+    for fluid in data_registry.fluids.descriptors() {
+        for (field, key) in [
+            ("enterSound", fluid.enter_sound.as_deref()),
+            ("exitSound", fluid.exit_sound.as_deref()),
+        ] {
+            if let Some(key) = key {
+                name(key, format!("fluid `{}` {field}", fluid.name));
+            }
         }
     }
     for reaction in &data_registry.reactions {
@@ -382,6 +422,7 @@ mod tests {
         KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, NamedReaction,
         PrimitiveDescriptor, Transform,
     };
+    use postretro_foundation::FluidDescriptor;
     use postretro_test_log_capture::LogCapture;
 
     use super::*;
@@ -834,16 +875,313 @@ mod tests {
         let event = |address| MovementEmission {
             address,
             emitter: emitter(&registry, pawn),
+            fluid: None,
         };
-        let landed = movement_sound(&event("landed"), &mut scene).expect("landing plays");
+        let (active, local) = (FluidMovementTable::default(), FluidRegistry::default());
+        let fluids = LocalFluids {
+            active: &active,
+            local: &local,
+        };
+        let landed = movement_sound(&event("landed"), fluids, &mut scene).expect("landing plays");
         assert_eq!(landed.sound, "sfx/land");
         assert_eq!(
             landed.anchor,
             entity_anchor(pawn, Vec3::new(0.0, 1.0 + eye_height, 0.0)),
             "a player pawn sounds from its eye",
         );
-        assert_eq!(movement_sound(&event("jumped"), &mut scene), None);
-        assert_eq!(movement_sound(&event("dash_started"), &mut scene), None);
+        assert_eq!(movement_sound(&event("jumped"), fluids, &mut scene), None);
+        assert_eq!(
+            movement_sound(&event("dash_started"), fluids, &mut scene),
+            None
+        );
+    }
+
+    fn fluid(name: &str, enter: Option<&str>, exit: Option<&str>) -> FluidDescriptor {
+        FluidDescriptor {
+            name: name.to_string(),
+            viscosity: 2.0,
+            view_tint: [0.1, 0.3, 0.4, 0.35],
+            muffle: 0.8,
+            surface_opacity: 0.6,
+            enter_sound: enter.map(str::to_string),
+            exit_sound: exit.map(str::to_string),
+        }
+    }
+
+    fn fluid_registry(fluids: Vec<FluidDescriptor>) -> FluidRegistry {
+        FluidRegistry::from_declarations("test", fluids.into_iter().map(Ok))
+    }
+
+    /// The active table a host whose manifest declares `sludge`, then `water`
+    /// installs: water is index 1.
+    fn host_table() -> FluidMovementTable {
+        FluidMovementTable::from_registry(&fluid_registry(vec![
+            fluid("sludge", None, None),
+            fluid("water", None, None),
+        ]))
+    }
+
+    /// This machine's own declarations: water in another order, with sounds.
+    fn local_water() -> FluidRegistry {
+        fluid_registry(vec![
+            fluid("water", Some("sfx/splash_in"), Some("sfx/splash_out")),
+            fluid("sludge", Some("sfx/gloop"), None),
+        ])
+    }
+
+    fn sounds_of(
+        emissions: &[MovementEmission],
+        fluids: LocalFluids<'_>,
+        scene: &mut AnchorScene<'_>,
+    ) -> Vec<String> {
+        emissions
+            .iter()
+            .filter_map(|emission| movement_sound(emission, fluids, scene))
+            .map(|request| request.sound)
+            .collect()
+    }
+
+    // A swim edge plays its fluid's enter or exit sound at the pawn's eye,
+    // resolved by the active table's name in this machine's own manifest. One
+    // tick carrying both edges (enter, then a fluid jump out) plays both.
+    #[test]
+    fn swim_edges_play_the_fluids_local_enter_and_exit_sounds_at_the_pawns_eye() {
+        use postretro_foundation::MovementStateKind::{Normal, Swim};
+        let descriptor = crate::mod_digest::tests::movement_descriptor();
+        let eye_height = descriptor.capsule.eye_height;
+        let (mut registry, pawn) = scene_parts(Vec3::new(2.0, 1.0, 0.0));
+        registry
+            .set_component(pawn, PlayerMovementComponent::from_descriptor(&descriptor))
+            .expect("movement attaches");
+        let mut movers = KinematicMoverRenderCollector::new();
+        let mut scene = AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        let (active, local) = (host_table(), local_water());
+        let fluids = LocalFluids {
+            active: &active,
+            local: &local,
+        };
+        let pawn_emitter = emitter(&registry, pawn);
+        let edge = |from, to| postretro_physics::movement::MovementStateEdge { from, to };
+
+        let mut emissions = Vec::new();
+        postretro_sim::emission::append_movement_emissions(
+            &postretro_physics::movement::MovementEvents {
+                state_edges: vec![edge(Normal, Swim)],
+                swim_fluid: Some(1),
+                ..Default::default()
+            },
+            &pawn_emitter,
+            &mut emissions,
+        );
+        let entered = movement_sound(&emissions[0], fluids, &mut scene).expect("entry plays");
+        assert_eq!(entered.sound, "sfx/splash_in");
+        assert_eq!(
+            entered.anchor,
+            entity_anchor(pawn, Vec3::new(2.0, 1.0 + eye_height, 0.0)),
+            "a swim edge sounds from the pawn's eye",
+        );
+
+        emissions.clear();
+        postretro_sim::emission::append_movement_emissions(
+            &postretro_physics::movement::MovementEvents {
+                landed: true,
+                state_edges: vec![edge(Normal, Swim), edge(Swim, Normal)],
+                swim_fluid: Some(1),
+                ..Default::default()
+            },
+            &pawn_emitter,
+            &mut emissions,
+        );
+        assert_eq!(
+            emissions
+                .iter()
+                .map(|emission| (emission.address, emission.fluid))
+                .collect::<Vec<_>>(),
+            [
+                ("landed", None),
+                ("swim_started", Some(1)),
+                ("swim_ended", Some(1))
+            ],
+            "only swim edges carry the fluid",
+        );
+        assert_eq!(
+            sounds_of(&emissions, fluids, &mut scene),
+            ["sfx/splash_in", "sfx/splash_out"],
+            "both edges of one tick play, once each",
+        );
+    }
+
+    // A fluid this machine does not declare, a declared fluid naming no
+    // sound for the edge, and an edge with no fluid all play nothing, silently.
+    #[test]
+    fn a_swim_edge_without_a_local_fluid_or_sound_plays_nothing_and_warns_nothing() {
+        let (registry, pawn) = scene_parts(Vec3::ZERO);
+        let mut movers = KinematicMoverRenderCollector::new();
+        let mut scene = AnchorScene {
+            registry: &registry,
+            world: None,
+            movers: &mut movers,
+        };
+        let active = host_table();
+        let event = |address, fluid| MovementEmission {
+            address,
+            emitter: emitter(&registry, pawn),
+            fluid,
+        };
+        let capture = LogCapture::start();
+
+        let without_water = fluid_registry(vec![fluid("sludge", Some("sfx/gloop"), None)]);
+        let fluids = LocalFluids {
+            active: &active,
+            local: &without_water,
+        };
+        assert_eq!(
+            movement_sound(&event("swim_started", Some(1)), fluids, &mut scene),
+            None,
+            "the local manifest lacks water",
+        );
+        let local = local_water();
+        let fluids = LocalFluids {
+            active: &active,
+            local: &local,
+        };
+        assert_eq!(
+            movement_sound(&event("swim_ended", Some(0)), fluids, &mut scene),
+            None,
+            "sludge names no exit sound",
+        );
+        assert_eq!(
+            movement_sound(&event("swim_started", None), fluids, &mut scene),
+            None
+        );
+        assert_eq!(
+            movement_sound(&event("swim_started", Some(7)), fluids, &mut scene),
+            None,
+            "an index past the active table",
+        );
+        capture.assert_not_logged(log::Level::Warn, "");
+    }
+
+    // Through the host's local movement seam: one sound per swim transition,
+    // none while immersion bobs between the thresholds.
+    #[test]
+    fn swim_sounds_play_once_per_transition_and_never_while_bobbing_between_thresholds() {
+        use postretro_collision::{
+            ConvexLeaf, EnvironmentView, EnvironmentVolume, EnvironmentVolumes, LeafPlane,
+        };
+        const SURFACE: f32 = 0.0;
+        let mut descriptor = crate::mod_digest::tests::movement_descriptor();
+        descriptor.swim = Some(postretro_foundation::SwimParams {
+            speed: 4.5,
+            accel: 6.0,
+            sink_speed: 0.8,
+            enter_depth: 0.5,
+            exit_depth: 0.35,
+            fluid_jump_velocity: 6.5,
+        });
+        let reach = descriptor.capsule.half_height + descriptor.capsule.radius;
+        let (min, max) = (
+            Vec3::new(-50.0, -200.0, -50.0),
+            Vec3::new(50.0, SURFACE, 50.0),
+        );
+        let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
+        let volumes = EnvironmentVolumes::build(vec![EnvironmentVolume {
+            source_entity: 1,
+            priority: 0,
+            gravity: None,
+            push: None,
+            fluid: Some(1),
+            brushes: vec![ConvexLeaf {
+                planes: vec![
+                    plane(Vec3::X, max.x),
+                    plane(Vec3::NEG_X, -min.x),
+                    plane(Vec3::Y, max.y),
+                    plane(Vec3::NEG_Y, -min.y),
+                    plane(Vec3::Z, max.z),
+                    plane(Vec3::NEG_Z, -min.z),
+                ],
+                aabb_min: min,
+                aabb_max: max,
+            }],
+        }]);
+        let view = EnvironmentView::new(-20.0, &volumes, &[6.5, 2.0]);
+        let world = crate::collision::CollisionWorld::new();
+        let idle = postretro_physics::movement::MovementInput {
+            wish_dir: glam::Vec2::ZERO,
+            jump_pressed: false,
+            dash_pressed: false,
+            running: false,
+            crouch_intent: false,
+            facing_yaw: 0.0,
+            facing_pitch: 0.0,
+            use_pressed: false,
+            drop_pressed: false,
+        };
+        let (mut registry, pawn) = scene_parts(Vec3::ZERO);
+        registry
+            .set_component(pawn, PlayerMovementComponent::from_descriptor(&descriptor))
+            .expect("movement attaches");
+        let (active, local) = (host_table(), local_water());
+        let fluids = LocalFluids {
+            active: &active,
+            local: &local,
+        };
+        // Wade in, bob between the thresholds, rise out, bob below the entry
+        // threshold, wade back in.
+        let script = [
+            0.2, 0.4, 0.49, 0.6, 0.45, 0.55, 0.4, 0.36, 0.45, 0.3, 0.4, 0.45, 0.49, 0.55,
+        ];
+        let mut played = Vec::new();
+        for immersion in script {
+            // Place the pawn at this tick's immersion, as the physics crate's swim
+            // hysteresis test does, then run the host's local movement seam.
+            let center = SURFACE - immersion * 2.0 * reach + reach;
+            registry
+                .set_component(
+                    pawn,
+                    Transform {
+                        position: Vec3::new(0.0, center, 0.0),
+                        ..Transform::default()
+                    },
+                )
+                .expect("pawn transform");
+            let ticks = postretro_sim::sim::run_host_movement_tick(
+                &mut registry,
+                &world,
+                view,
+                &[(pawn, idle.clone())],
+                1.0 / 60.0,
+            );
+            let mut emissions = Vec::new();
+            for (id, events) in ticks {
+                postretro_sim::emission::append_movement_emissions(
+                    &events,
+                    &emitter(&registry, id),
+                    &mut emissions,
+                );
+            }
+            let mut movers = KinematicMoverRenderCollector::new();
+            let mut scene = AnchorScene {
+                registry: &registry,
+                world: None,
+                movers: &mut movers,
+            };
+            for sound in sounds_of(&emissions, fluids, &mut scene) {
+                played.push((immersion, sound));
+            }
+        }
+        assert_eq!(
+            played,
+            [
+                (0.6, "sfx/splash_in".to_string()),
+                (0.3, "sfx/splash_out".to_string()),
+                (0.55, "sfx/splash_in".to_string()),
+            ],
+        );
     }
 
     #[test]
@@ -880,6 +1218,11 @@ mod tests {
         let mut sounds = shotgun_sounds();
         sounds.impact = Some("sfx/missing_hit".to_string());
         ctx.data_registry.borrow_mut().entities = vec![weapon_descriptor("shotgun", sounds)];
+        ctx.data_registry.borrow_mut().fluids = fluid_registry(vec![fluid(
+            "water",
+            Some("sfx/missing_splash"),
+            Some("sfx/click"),
+        )]);
         ctx.data_registry.borrow_mut().populate_level(
             vec![NamedReaction {
                 name: "door.open".to_string(),
@@ -927,8 +1270,15 @@ mod tests {
 
         let capture = LogCapture::start();
         let unknown = warn_unknown_sound_keys(&ctx, |key| known.contains(&key));
-        assert_eq!(unknown, ["sfx/door_creak", "sfx/missing_hit"]);
+        assert_eq!(
+            unknown,
+            ["sfx/door_creak", "sfx/missing_hit", "sfx/missing_splash"]
+        );
         capture.assert_logged_once(log::Level::Warn, "unknown sound key `sfx/missing_hit`");
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "unknown sound key `sfx/missing_splash` (named by fluid `water` enterSound)",
+        );
         capture.assert_logged_once(log::Level::Warn, "unknown sound key `sfx/door_creak`");
         for key in known {
             capture.assert_not_logged(log::Level::Warn, &format!("`{key}`"));

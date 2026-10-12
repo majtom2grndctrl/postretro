@@ -25,8 +25,8 @@ use super::movement_state::movement_state_to_wire;
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
     ROTATING_PLATFORM_RIDER_START, component as player_component, downhill_facet_normal,
-    faceted_floor_height, faceted_slope_world, forward_command, idle_command, input_at,
-    use_command,
+    faceted_floor_height, faceted_slope_world, forward_command, gravity_box_volume, idle_command,
+    input_at, light_link, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -57,19 +57,6 @@ fn mandated_link() -> LinkConfig {
         jitter: 60,
         loss_probability: 0.05,
         seed: 0x1502,
-    }
-}
-
-/// A near-perfect link for the scenario tests that exercise the gap policy /
-/// stale / duplicate seams deterministically without the full latency profile's
-/// loss obscuring the assertion. A small fixed delay keeps the predict→ack loop
-/// realistic (the client predicts ahead of the host) without jitter or loss.
-fn light_link() -> LinkConfig {
-    LinkConfig {
-        delay: 32,
-        jitter: 0,
-        loss_probability: 0.0,
-        seed: 0x6010,
     }
 }
 
@@ -492,7 +479,7 @@ fn unknown_local_mapping_reconcile_is_no_op() {
         None,
         Some(0),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
     assert!(
@@ -524,8 +511,7 @@ fn dash_correction_classifies_as_dash_and_smooths() {
     // Predict a dash tick locally WITHOUT delivering its ack yet, so the dash entry
     // stays unacked and replays during reconcile (the unacked window crosses a dash).
     let dash_tick = h.prediction.next_client_tick();
-    let dash_input =
-        super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick, 0.0);
+    let dash_input = super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick);
     let prev = (
         *h.client_registry.get_component::<Transform>(pawn).unwrap(),
         h.client_registry
@@ -535,7 +521,13 @@ fn dash_correction_classifies_as_dash_and_smooths() {
     );
     let (t, m) = h
         .prediction
-        .predict_tick(dash_input, prev, &h.world, GRAVITY, DT)
+        .predict_tick(
+            dash_input,
+            prev,
+            &h.world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        )
         .expect("armed dash predicts");
     h.client_registry.set_component(pawn, t).unwrap();
     h.client_registry.set_component(pawn, m).unwrap();
@@ -566,7 +558,7 @@ fn dash_correction_classifies_as_dash_and_smooths() {
         None,
         Some(dash_tick.saturating_sub(1)),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     )
     .expect("armed pawn reconciles");
@@ -615,7 +607,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
     let mut ticks = Vec::new();
     for _ in 0..3 {
         let tick = h.prediction.next_client_tick();
-        let input = super::wire_convert::sim_command_to_input(&command, tick, 0.0);
+        let input = super::wire_convert::sim_command_to_input(&command, tick);
         let prev = (
             *h.client_registry.get_component::<Transform>(pawn).unwrap(),
             h.client_registry
@@ -625,7 +617,13 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
         );
         let (transform, movement) = h
             .prediction
-            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .predict_tick(
+                input,
+                prev,
+                &h.world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .expect("armed pawn predicts pending movement");
         h.client_registry.set_component(pawn, transform).unwrap();
         h.client_registry.set_component(pawn, movement).unwrap();
@@ -641,7 +639,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
             expected_movement,
             command.movement.clone(),
             &h.world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         expected_transform = replayed.0;
@@ -661,7 +659,7 @@ fn authoritative_knockback_survives_replay_without_duplicate_impulse() {
                 Some(&wire),
                 Some(ticks[0] - 1),
                 &h.world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             )
             .is_some()
@@ -716,7 +714,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
     slide.movement.crouch_intent = true;
     let _ = h.prediction.next_client_tick();
     let slide_tick = h.prediction.next_client_tick();
-    let input = super::wire_convert::sim_command_to_input(&slide, slide_tick, 0.0);
+    let input = super::wire_convert::sim_command_to_input(&slide, slide_tick);
     let predicted_prev = (
         *h.client_registry.get_component::<Transform>(pawn).unwrap(),
         h.client_registry
@@ -726,7 +724,13 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
     );
     let (predicted_transform, predicted_movement) = h
         .prediction
-        .predict_tick(input, predicted_prev, &h.world, GRAVITY, DT)
+        .predict_tick(
+            input,
+            predicted_prev,
+            &h.world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        )
         .expect("armed slide predicts");
     h.client_registry
         .set_component(pawn, predicted_transform)
@@ -756,7 +760,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
         authoritative_movement,
         slide.movement.clone(),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
     let class = reconcile_local_pawn(
@@ -767,7 +771,7 @@ fn sliding_authoritative_baseline_restores_older_facet_normal_before_replay() {
         Some(&wire),
         Some(slide_tick - 1),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
 
@@ -815,7 +819,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
     let mut inputs = Vec::new();
     for _ in 0..3 {
         let tick = h.prediction.next_client_tick();
-        let input = super::wire_convert::sim_command_to_input(&slide, tick, 0.0);
+        let input = super::wire_convert::sim_command_to_input(&slide, tick);
         let prev = (
             *h.client_registry.get_component::<Transform>(pawn).unwrap(),
             h.client_registry
@@ -825,7 +829,13 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
         );
         let (next_transform, next_movement) = h
             .prediction
-            .predict_tick(input, prev, &h.world, GRAVITY, DT)
+            .predict_tick(
+                input,
+                prev,
+                &h.world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .expect("armed slide-entry tick predicts");
         h.client_registry
             .set_component(pawn, next_transform)
@@ -861,7 +871,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
             expected_movement,
             slide.movement.clone(),
             &h.world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         expected_transform = replayed.0;
@@ -880,7 +890,7 @@ fn slide_entered_inside_replay_recomputes_the_faceted_floor_normal() {
         Some(&wire),
         Some(inputs[0] - 1),
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     );
 
@@ -940,7 +950,7 @@ fn teleport_correction_snaps_without_smoothing() {
         None,
         ack,
         &h.world,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         DT,
     )
     .expect("armed pawn reconciles");
@@ -1341,6 +1351,470 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
         host_release_velocity.x
     );
     assert!(h.bystanders_alive());
+}
+
+/// Low-gravity volume for the crossing scenario: a slab across the forward
+/// (-Z) path from 16 m to 24 m ahead of the start, tall enough to hold every
+/// jump. The pawn runs up on the ground, then bunny-hops through it, so it
+/// crosses the far face mid-air.
+const LOW_GRAVITY: f32 = -8.0;
+const LOW_GRAVITY_MIN: Vec3 = Vec3::new(-50.0, -1.0, -24.0);
+const LOW_GRAVITY_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
+/// Push crossing scenario: a sideways wind slab across the forward path from
+/// 16 m to 24 m ahead, then an updraft from 32 m to 40 m whose push beats
+/// gravity, capped low so the pawn lifts off, rises out through its top face,
+/// falls back in, and lands beyond it.
+const WIND_PUSH: Vec3 = Vec3::new(6.0, 0.0, 0.0);
+const WIND_MIN: Vec3 = Vec3::new(-50.0, -1.0, -24.0);
+const WIND_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
+const UPDRAFT_PUSH: Vec3 = Vec3::new(0.0, 30.0, 0.0);
+const UPDRAFT_MIN: Vec3 = Vec3::new(-50.0, -1.0, -40.0);
+const UPDRAFT_MAX: Vec3 = Vec3::new(50.0, 3.0, -32.0);
+/// "No corrections": every recorded correction is at most
+/// this many metres under `light_link`.
+const NO_CORRECTION_M: f32 = 1.0e-4;
+
+fn in_box(position: Vec3, (min, max): (Vec3, Vec3)) -> bool {
+    position.cmpge(min).all() && position.cmple(max).all()
+}
+
+fn jumping_forward_command() -> SimCommand {
+    let mut command = forward_command(false);
+    command.movement.jump_pressed = true;
+    command
+}
+
+fn push_box_volume(min: Vec3, max: Vec3, push: Vec3) -> postretro_collision::EnvironmentVolume {
+    postretro_collision::EnvironmentVolume {
+        gravity: None,
+        push: Some(push),
+        ..gravity_box_volume(min, max, 0.0)
+    }
+}
+
+/// One tracked region of a crossing run (the box of one volume).
+#[derive(Default)]
+struct RegionCrossings {
+    /// Client ticks whose predicted pose first lies inside / first lies outside
+    /// the region after being on the other side.
+    entry_ticks: Vec<u32>,
+    exit_ticks: Vec<u32>,
+    host_was_inside: bool,
+}
+
+struct VolumeCrossingRun {
+    final_host_position: Vec3,
+    max_host_y: f32,
+    corrections: Vec<f32>,
+    reconcile_windows: Vec<(Option<u32>, Option<u32>)>,
+    regions: Vec<RegionCrossings>,
+    /// Client ticks whose predicted pawn was airborne carrying push drift.
+    airborne_drift_ticks: Vec<u32>,
+}
+
+/// Drive the harness through `steps` commands with `volumes` installed on both
+/// peers, recording every correction and each region's client crossing ticks.
+fn run_volume_crossing(
+    volumes: Vec<postretro_collision::EnvironmentVolume>,
+    regions: &[(Vec3, Vec3)],
+    steps: u32,
+    command_for_step: impl Fn(u32) -> SimCommand,
+) -> VolumeCrossingRun {
+    let mut h = LoopbackHarness::with_environment_volumes(light_link(), volumes);
+    h.step_until_armed(&idle_command());
+    let mut run = VolumeCrossingRun {
+        final_host_position: Vec3::ZERO,
+        max_host_y: f32::NEG_INFINITY,
+        corrections: Vec::new(),
+        reconcile_windows: Vec::new(),
+        regions: regions.iter().map(|_| RegionCrossings::default()).collect(),
+        airborne_drift_ticks: Vec::new(),
+    };
+    let mut client_inside: Vec<bool> = regions
+        .iter()
+        .map(|region| h.client_position().is_some_and(|p| in_box(p, *region)))
+        .collect();
+    for step in 0..steps {
+        h.step(&command_for_step(step));
+        run.corrections
+            .extend(h.latest_local_corrections.iter().copied());
+        run.reconcile_windows
+            .extend(h.latest_reconcile_windows.iter().copied());
+        run.max_host_y = run.max_host_y.max(h.host_position().y);
+        let client_movement = h.client_pawn.and_then(|pawn| {
+            h.client_registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()
+        });
+        if let Some(movement) = client_movement
+            && !movement.is_grounded()
+            && movement.push_velocity.length() > 1.0e-3
+        {
+            run.airborne_drift_ticks.push(
+                h.last_sent_client_tick
+                    .expect("client sent this step's command"),
+            );
+        }
+        for (index, region) in regions.iter().enumerate() {
+            let crossings = &mut run.regions[index];
+            crossings.host_was_inside |= in_box(h.host_position(), *region);
+            let inside = h.client_position().is_some_and(|p| in_box(p, *region));
+            if inside != client_inside[index] {
+                let tick = h
+                    .last_sent_client_tick
+                    .expect("client sent this step's command");
+                if inside {
+                    crossings.entry_ticks.push(tick);
+                } else {
+                    crossings.exit_ticks.push(tick);
+                }
+                client_inside[index] = inside;
+            }
+        }
+    }
+    run.final_host_position = h.host_position();
+    run
+}
+
+fn some_replay_spans(windows: &[(Option<u32>, Option<u32>)], tick: u32) -> bool {
+    windows.iter().any(|window| {
+        matches!(*window, (Some(acked), Some(last_sent)) if acked < tick && tick <= last_sent)
+    })
+}
+
+/// The shared "no corrections" gate: reconciles ran throughout, none exceeded
+/// `NO_CORRECTION_M`, and every region was crossed both ways with some
+/// reconcile's replay window spanning each crossing tick.
+fn assert_crossings_reconcile_without_correction(run: &VolumeCrossingRun) {
+    assert!(
+        run.corrections.len() > 30,
+        "reconciles must run throughout the scenario; saw {}",
+        run.corrections.len()
+    );
+    let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+    assert!(
+        worst <= NO_CORRECTION_M,
+        "every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+    );
+    for (index, region) in run.regions.iter().enumerate() {
+        assert!(
+            region.host_was_inside,
+            "fixture: the host pawn must pass through region {index}"
+        );
+        assert!(
+            !region.entry_ticks.is_empty() && !region.exit_ticks.is_empty(),
+            "the client must cross into and out of region {index}: entries {:?}, exits {:?}",
+            region.entry_ticks,
+            region.exit_ticks
+        );
+        for tick in region.entry_ticks.iter().chain(&region.exit_ticks) {
+            assert!(
+                some_replay_spans(&run.reconcile_windows, *tick),
+                "some reconcile's replay window must span region {index} crossing tick {tick}"
+            );
+        }
+    }
+}
+
+/// Run up on the ground first, then bunny-hop: jumping from rest keeps the pawn
+/// slow, since air control barely accelerates it.
+fn run_then_hop(step: u32) -> SimCommand {
+    if step < 60 {
+        forward_command(false)
+    } else {
+        jumping_forward_command()
+    }
+}
+
+// Per-tick resolution keeps host and client identical across a
+// low-gravity volume, so crossing in and out costs no reconciliation correction,
+// including reconciles whose replay window spans a crossing.
+#[test]
+fn low_gravity_volume_crossings_reconcile_without_correction_under_light_link() {
+    let region = [(LOW_GRAVITY_MIN, LOW_GRAVITY_MAX)];
+    let volume_run = run_volume_crossing(
+        vec![gravity_box_volume(
+            LOW_GRAVITY_MIN,
+            LOW_GRAVITY_MAX,
+            LOW_GRAVITY,
+        )],
+        &region,
+        180,
+        run_then_hop,
+    );
+    let baseline_run = run_volume_crossing(Vec::new(), &region, 180, run_then_hop);
+
+    assert!(
+        (volume_run.final_host_position - baseline_run.final_host_position).length() > 0.05,
+        "the volume must change the trajectory: with {:?}, without {:?}",
+        volume_run.final_host_position,
+        baseline_run.final_host_position
+    );
+    assert_crossings_reconcile_without_correction(&volume_run);
+}
+
+// Push keeps prediction exact: a drift built hopping through a sideways wind and
+// carried out of it airborne, then an updraft lift-off, rise out through its top,
+// fall back and landing, all predicted by the client with no reconciliation
+// correction, including replays that start from an airborne drift baseline.
+#[test]
+fn push_volume_crossings_reconcile_without_correction_under_light_link() {
+    let regions = [(WIND_MIN, WIND_MAX), (UPDRAFT_MIN, UPDRAFT_MAX)];
+    let push_run = run_volume_crossing(
+        vec![
+            push_box_volume(WIND_MIN, WIND_MAX, WIND_PUSH),
+            push_box_volume(UPDRAFT_MIN, UPDRAFT_MAX, UPDRAFT_PUSH),
+        ],
+        &regions,
+        300,
+        run_then_hop,
+    );
+    let baseline_run = run_volume_crossing(Vec::new(), &regions, 300, run_then_hop);
+
+    assert!(
+        (push_run.final_host_position.x - baseline_run.final_host_position.x).abs() > 0.05,
+        "the wind must drift the pawn sideways: with {:?}, without {:?}",
+        push_run.final_host_position,
+        baseline_run.final_host_position
+    );
+    assert!(
+        push_run.max_host_y > baseline_run.max_host_y + 0.5,
+        "the updraft must lift the pawn: max y {} vs {}",
+        push_run.max_host_y,
+        baseline_run.max_host_y
+    );
+    assert!(
+        push_run.final_host_position.z < UPDRAFT_MIN.z,
+        "fixture: the pawn must pass the updraft, ended at {:?}",
+        push_run.final_host_position
+    );
+    assert!(
+        push_run
+            .airborne_drift_ticks
+            .iter()
+            .any(|tick| some_replay_spans(&push_run.reconcile_windows, *tick)),
+        "some reconcile's replay window must span an airborne tick carrying drift: {:?}",
+        push_run.airborne_drift_ticks
+    );
+    assert_crossings_reconcile_without_correction(&push_run);
+}
+
+/// One level-gravity run: every correction, the host trajectory and what the
+/// client installed from the host's tuning payload.
+struct LevelGravityRun {
+    corrections: Vec<f32>,
+    max_host_y: f32,
+    final_host_position: Vec3,
+    client_installed_gravity: Option<f32>,
+    client_tuning_installs: u32,
+    client_own_gravity: f32,
+}
+
+/// How a host `setGravity` lands in a level-gravity run.
+#[derive(Clone, Copy)]
+enum GravityChange {
+    /// Before the given step's host frame, as a reaction on the previous tick.
+    BeforeStep(u32, f32),
+    /// During the first of two ticks in a catch-up host frame, which sends one
+    /// snapshot after both: the first step at or after the given one whose host
+    /// pawn is rising, so both ticks integrate gravity.
+    CatchUpFrame(u32, f32),
+}
+
+/// Arm, then drive `steps` run-then-hop commands, applying `change` if any.
+fn run_level_gravity(
+    mut h: LoopbackHarness,
+    steps: u32,
+    change: Option<GravityChange>,
+) -> LevelGravityRun {
+    h.step_until_armed(&idle_command());
+    let mut run = LevelGravityRun {
+        corrections: Vec::new(),
+        max_host_y: f32::NEG_INFINITY,
+        final_host_position: Vec3::ZERO,
+        client_installed_gravity: None,
+        client_tuning_installs: 0,
+        client_own_gravity: h.client_level_gravity,
+    };
+    let mut changed = false;
+    for step in 0..steps {
+        match change {
+            Some(GravityChange::BeforeStep(at, gravity)) if step == at => {
+                h.host_level_gravity = gravity;
+                h.step(&run_then_hop(step));
+            }
+            Some(GravityChange::CatchUpFrame(at, gravity))
+                if !changed && step >= at && host_pawn_rising(&h) =>
+            {
+                changed = true;
+                let command = run_then_hop(step);
+                h.step_catch_up([&command, &command], |h, tick| {
+                    if tick == 0 {
+                        h.host_level_gravity = gravity;
+                    }
+                });
+            }
+            _ => h.step(&run_then_hop(step)),
+        }
+        run.corrections
+            .extend(h.latest_local_corrections.iter().copied());
+        run.max_host_y = run.max_host_y.max(h.host_position().y);
+    }
+    run.final_host_position = h.host_position();
+    run.client_installed_gravity = h.client_installed_level_gravity();
+    run.client_tuning_installs = h.client_tuning_installs;
+    run
+}
+
+fn host_pawn_rising(h: &LoopbackHarness) -> bool {
+    h.host_registry
+        .get_component::<PlayerMovementComponent>(h.host_pawn)
+        .is_ok_and(|movement| !movement.is_grounded() && movement.velocity.y > 1.0)
+}
+
+fn corrections_over(run: &LevelGravityRun, limit: f32) -> usize {
+    run.corrections.iter().filter(|c| **c > limit).count()
+}
+
+const HOST_LEVEL_GRAVITY: f32 = -12.0;
+
+// Host and client hold different level gravity, and the
+// client's comes only through the tuning-payload install. Joining a host whose
+// `initialGravity` differs, or whose script changed it before the join, the
+// client predicts with the host's value and takes no correction.
+#[test]
+fn client_joining_host_with_different_level_gravity_predicts_host_value_without_correction() {
+    assert_ne!(HOST_LEVEL_GRAVITY, GRAVITY);
+    let by_initial_gravity = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), HOST_LEVEL_GRAVITY, GRAVITY),
+        180,
+        None,
+    );
+    let mut before_join = LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY);
+    // A host `setGravity` before this client's participation send.
+    before_join.host_level_gravity = HOST_LEVEL_GRAVITY;
+    let by_script_before_join = run_level_gravity(before_join, 180, None);
+    let at_client_gravity = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        180,
+        None,
+    );
+
+    assert!(
+        by_initial_gravity.max_host_y > at_client_gravity.max_host_y + 0.1,
+        "fixture: the host's lighter gravity must change the hop: max y {} vs {}",
+        by_initial_gravity.max_host_y,
+        at_client_gravity.max_host_y
+    );
+    for (name, run) in [
+        ("initialGravity", &by_initial_gravity),
+        ("script change before join", &by_script_before_join),
+    ] {
+        assert_eq!(
+            run.client_installed_gravity,
+            Some(HOST_LEVEL_GRAVITY),
+            "{name}: the client installs the host's level gravity"
+        );
+        assert_eq!(
+            run.client_own_gravity, GRAVITY,
+            "{name}: the client's own level gravity stays its own"
+        );
+        assert_eq!(run.client_tuning_installs, 1, "{name}: one join send");
+        assert!(
+            run.corrections.len() > 30,
+            "{name}: reconciles must run throughout; saw {}",
+            run.corrections.len()
+        );
+        let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+        assert!(
+            worst <= NO_CORRECTION_M,
+            "{name}: every correction must be at most {NO_CORRECTION_M} m; worst {worst}"
+        );
+    }
+    assert!(
+        (by_initial_gravity.final_host_position - by_script_before_join.final_host_position)
+            .length()
+            < 1.0e-4,
+        "both routes to the same host gravity yield the same host trajectory"
+    );
+}
+
+// A host `setGravity` mid-level, while the client hops, reaches the joined
+// client through a resent tuning payload; the client applies it on arrival and
+// takes at most one correction for the change.
+#[test]
+fn host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction() {
+    const CHANGE_STEP: u32 = 100;
+    let changed = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        Some(GravityChange::BeforeStep(CHANGE_STEP, HOST_LEVEL_GRAVITY)),
+    );
+    let unchanged = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        None,
+    );
+
+    assert!(
+        (changed.final_host_position - unchanged.final_host_position).length() > 0.05,
+        "fixture: the mid-level change must alter the host trajectory: {:?} vs {:?}",
+        changed.final_host_position,
+        unchanged.final_host_position
+    );
+    assert_eq!(
+        changed.client_tuning_installs, 2,
+        "the join send, then exactly one resend for the change"
+    );
+    assert_eq!(changed.client_installed_gravity, Some(HOST_LEVEL_GRAVITY));
+    assert!(changed.corrections.len() > 30);
+    assert_one_correction_for_the_change(&changed);
+}
+
+// Catch-up frame: the host runs two ticks before one snapshot send, with the
+// `setGravity` on the first, so the one snapshot already reflects the new
+// gravity. The changed tuning is queued ahead of that snapshot, so the client
+// still takes exactly one correction.
+// Regression: with the resend at the host poll (frame start), that snapshot
+// reached the client a flush before the tuning, costing a second correction.
+#[test]
+fn host_set_gravity_in_a_catch_up_frame_reaches_client_with_exactly_one_correction() {
+    const CHANGE_STEP: u32 = 100;
+    let changed = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        Some(GravityChange::CatchUpFrame(CHANGE_STEP, HOST_LEVEL_GRAVITY)),
+    );
+    let unchanged = run_level_gravity(
+        LoopbackHarness::with_level_gravity(light_link(), GRAVITY, GRAVITY),
+        220,
+        None,
+    );
+
+    assert!(
+        (changed.final_host_position - unchanged.final_host_position).length() > 0.05,
+        "fixture: the catch-up change must alter the host trajectory"
+    );
+    assert_eq!(changed.client_tuning_installs, 2);
+    assert_eq!(changed.client_installed_gravity, Some(HOST_LEVEL_GRAVITY));
+    assert!(changed.corrections.len() > 30);
+    assert_one_correction_for_the_change(&changed);
+}
+
+/// The mid-level `setGravity` bound: one gravity change costs exactly one correction over
+/// `NO_CORRECTION_M` (the change does move the airborne pawn, so zero would mean
+/// the client already had the new value before the host simulated it).
+fn assert_one_correction_for_the_change(run: &LevelGravityRun) {
+    let over = corrections_over(run, NO_CORRECTION_M);
+    assert_eq!(
+        over,
+        1,
+        "exactly one correction over {NO_CORRECTION_M} m for one gravity change; saw {over}: {:?}",
+        run.corrections
+            .iter()
+            .filter(|c| **c > NO_CORRECTION_M)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -1828,6 +2302,7 @@ fn scripted_command(tick: u32) -> SimCommand {
             running: phase < 100,
             crouch_intent: false,
             facing_yaw,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -1992,6 +2467,7 @@ impl LoopbackHarness {
         let mut took_teleport = false;
         let mut max_correction = 0.0_f32;
         let mut acks = Vec::new();
+        self.client_drain_control();
         for packet in self.to_client.take_ready() {
             let Ok(raw) =
                 postretro_net::wire::decode::<postretro_net::wire::RawSnapshotMessage>(&packet)
@@ -2018,7 +2494,12 @@ impl LoopbackHarness {
                     armed.entity_id,
                 );
             }
-            if let Some(reconcile) = outcome.local_reconcile {
+            if let Some(reconcile) = outcome.local_reconcile
+                && let Some(environment) = crate::netcode::client_environment_view(
+                    self.client_tuning.as_deref(),
+                    &self.client_environment_volumes,
+                )
+            {
                 let class = reconcile_local_pawn(
                     &mut self.client_registry,
                     &mut self.prediction,
@@ -2027,7 +2508,7 @@ impl LoopbackHarness {
                     reconcile.movement.as_ref(),
                     reconcile.acked_tick,
                     &self.world,
-                    GRAVITY,
+                    environment,
                     DT,
                 );
                 match class {

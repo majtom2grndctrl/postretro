@@ -29,7 +29,7 @@ fn listener_at(position: [f32; 3], forward: [f32; 3]) -> ListenerState {
     }
 }
 
-fn sfx_sub_tracks<B: kira::backend::Backend>(audio: &Audio<B>) -> usize {
+fn sfx_sub_tracks<B: kira::backend::Backend>(audio: &AudioCore<B>) -> usize {
     audio.buses.track(BusId::Sfx).num_sub_tracks()
 }
 
@@ -38,7 +38,7 @@ fn sfx_sub_tracks<B: kira::backend::Backend>(audio: &Audio<B>) -> usize {
 fn channel_rms_of(
     listener: ListenerState,
     request: SoundRequest,
-    setup: impl FnOnce(&mut Audio<CapturingBackend>),
+    setup: impl FnOnce(&mut AudioCore<CapturingBackend>),
 ) -> (f32, f32) {
     let mut audio = capturing_audio();
     audio.update(listener, 1.0 / 60.0, |_| None);

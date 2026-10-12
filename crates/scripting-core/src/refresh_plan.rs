@@ -538,12 +538,14 @@ fn plan_movement_replace(
     }
 
     let mut refreshed = PlayerMovementComponent::from_descriptor(descriptor);
-    // Preserve live physics integration, including the external-impulse layer.
-    // Dropping that layer would reclassify the shove as voluntary velocity and
-    // let the next movement tick erase it through ordinary speed caps.
+    // Preserve live physics integration, including the external-impulse and
+    // push-drift layers. Dropping either would reclassify it as voluntary
+    // velocity and let the next movement tick erase it through ordinary speed
+    // caps.
     // Descriptor-derived response tuning reseeds from the new descriptor.
     refreshed.velocity = live.velocity;
     refreshed.knockback_velocity = live.knockback_velocity;
+    refreshed.push_velocity = live.push_velocity;
     refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
@@ -554,7 +556,20 @@ fn plan_movement_replace(
     // in-flight `Dash` survives with a refreshed budget and cleared cooldown. This
     // is what makes an authored change to `air.jumps` (or the dash budget) take
     // effect immediately on save instead of only after the next landing.
-    refreshed.movement_state = MovementState::Normal;
+    //
+    // `Swim` is the exception: it is the pawn's medium, entered by immersion, not
+    // an ability with a budget. A swimmer whose new descriptor still swims keeps
+    // `Swim` and its fluid, so the reload re-emits no `swim_started` and its
+    // 3D drift layer stays coherent. The fluid-jump re-entry latch is live
+    // position history, not a budget: it carries too, so a reload mid-leap cannot
+    // drop the pawn straight back into swim. A new descriptor without a `swim`
+    // block leaves swim as an exit does (`leave_swim_without_swim_block`).
+    refreshed.movement_state = match live.movement_state {
+        MovementState::Swim { fluid } => MovementState::Swim { fluid },
+        _ => MovementState::Normal,
+    };
+    refreshed.swim_reentry_latched = live.swim_reentry_latched;
+    refreshed.leave_swim_without_swim_block();
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
 }
 
@@ -953,6 +968,7 @@ mod tests {
                 forgiveness: None,
                 crouch: None,
                 slide: None,
+                swim: None,
                 view_feel: None,
             }),
             weapon: None,
@@ -1562,6 +1578,109 @@ mod tests {
         assert_eq!(component.velocity, Vec3::new(1.0, 2.0, 3.0));
         assert!(component.is_grounded());
         assert_eq!(component.air_ticks, 7);
+    }
+
+    fn swim_params() -> postretro_foundation::SwimParams {
+        postretro_foundation::SwimParams {
+            speed: 4.5,
+            accel: 6.0,
+            sink_speed: 0.8,
+            enter_depth: 0.5,
+            exit_depth: 0.35,
+            fluid_jump_velocity: 6.5,
+        }
+    }
+
+    /// Plan the movement refresh of one pawn whose live component is `live`,
+    /// from `old` to `new`, and return the replacement component.
+    fn refreshed_movement(
+        old: &[EntityTypeDescriptor],
+        new: &[EntityTypeDescriptor],
+        live: PlayerMovementComponent,
+    ) -> PlayerMovementComponent {
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+        let plan = plan_descriptor_refresh(old, new, &registry);
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement");
+        };
+        (**component).clone()
+    }
+
+    // Review panel 1: hot reload of a swimming pawn keeps `Swim`, its fluid, the
+    // 3D drift layer and the re-entry latch, so the next movement tick takes no
+    // swim edge and re-emits no `swim_started`.
+    #[test]
+    fn movement_refresh_keeps_a_swimmer_swimming_with_its_drift_and_latch() {
+        let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        old[0].movement.as_mut().unwrap().swim = Some(swim_params());
+        let mut new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        new[0].movement.as_mut().unwrap().swim = Some(swim_params());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.velocity = Vec3::new(0.5, 1.2, 0.0);
+        live.push_velocity = Vec3::new(0.25, 2.0, 0.0);
+        live.movement_state = MovementState::Swim { fluid: 3 };
+        live.swim_reentry_latched = true;
+
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Swim { fluid: 3 });
+        assert_eq!(component.push_velocity, Vec3::new(0.25, 2.0, 0.0));
+        assert_eq!(component.velocity, Vec3::new(0.5, 1.2, 0.0));
+        assert!(component.swim_reentry_latched);
+        assert_eq!(component.dash.as_ref().unwrap().air_dashes, 2);
+        assert_eq!(component.air.jumps, 3, "tuning still reseeds");
+    }
+
+    // A reload that removes the swim block leaves swim as an exit does: `Normal`,
+    // the vertical drift folded into total velocity, the latch cleared.
+    #[test]
+    fn movement_refresh_without_a_swim_block_drops_swim_to_normal_and_folds_vertical_drift() {
+        let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        old[0].movement.as_mut().unwrap().swim = Some(swim_params());
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.velocity = Vec3::new(0.5, -0.8, 0.0);
+        live.push_velocity = Vec3::new(0.25, 1.5, 0.0);
+        live.movement_state = MovementState::Swim { fluid: 0 };
+        live.swim_reentry_latched = true;
+
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert_eq!(component.push_velocity, Vec3::new(0.25, 0.0, 0.0));
+        assert_eq!(
+            component.velocity,
+            Vec3::new(0.5, -0.8, 0.0),
+            "total velocity is unchanged; the drift's y is now locomotion"
+        );
+        assert!(!component.swim_reentry_latched);
+    }
+
+    // The latch is live position history: a non-swimming pawn mid-leap keeps it
+    // across a reload that still swims.
+    #[test]
+    fn movement_refresh_keeps_the_reentry_latch_of_a_leaping_pawn() {
+        let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        old[0].movement.as_mut().unwrap().swim = Some(swim_params());
+        let new = old.clone();
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.velocity = Vec3::new(0.0, 5.0, 0.0);
+        live.swim_reentry_latched = true;
+
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert!(component.swim_reentry_latched);
     }
 
     // Regression: movement hot reload reset gameplay state without invalidating its presentation impulses.

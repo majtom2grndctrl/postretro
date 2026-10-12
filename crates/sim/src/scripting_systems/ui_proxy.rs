@@ -1,5 +1,5 @@
 // Player state publisher. Host publishes authoritative health at each impact seam and
-// republishes health, ammo, heat/cell, and reload slots for HUD consumers after game logic;
+// republishes health, swim, ammo, heat/cell, and reload slots for HUD consumers after game logic;
 // every role publishes local weapon names, spread, charging and resource-kind slots.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
@@ -366,6 +366,7 @@ impl PlayerHudStatePublisher {
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
+        self.publish_swim_values();
 
         match (sampled_weapon, ammo) {
             (_, Some((magazine, reserve))) => {
@@ -439,6 +440,30 @@ impl PlayerHudStatePublisher {
                     "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
                 );
                 self.invalid_max_warned_for = Some(pawn);
+            }
+        }
+    }
+
+    /// Publish the local pawn's `player.swimming` and `player.immersion`
+    /// through the shared per-pawn lookup. A slot whose source the pawn lacks
+    /// (no pawn, no movement or immersion component) keeps its last value.
+    fn publish_swim_values(&mut self) {
+        let (swimming, immersion) = {
+            let registry = self.ctx.registry.borrow();
+            let Some(pawn) = registry.local_player_movement_pawn() else {
+                return;
+            };
+            (
+                player_slot_value(&registry, PlayerSlot::Swimming, pawn),
+                player_slot_value(&registry, PlayerSlot::Immersion, pawn),
+            )
+        };
+        for (slot, value) in [
+            (PlayerSlot::Swimming, swimming),
+            (PlayerSlot::Immersion, immersion),
+        ] {
+            if let Some(value) = value {
+                self.write_hud_slot(slot.name(), value);
             }
         }
     }
@@ -567,6 +592,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

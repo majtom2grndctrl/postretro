@@ -765,6 +765,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.",
         )
         .field(
+            "swim?",
+            "SwimParams",
+            "Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.",
+        )
+        .field(
             "viewFeel?",
             "ViewFeelParams",
             "Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.",
@@ -860,6 +865,16 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("steerRate", "f32", "Maximum in-slide steering rate in degrees/sec. Must be finite and ≥ 0.")
         .field("entryBoost", "f32", "Horizontal entry-speed kick in metres/sec. Must be finite and ≥ 0.")
         .field("minDurationMs", "f32", "Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0.")
+        .finish();
+    registry
+        .register_type("SwimParams")
+        .doc("Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades.")
+        .field("speed", "f32", "Target swim speed in metres/sec. Must be finite and ≥ 0.")
+        .field("accel", "f32", "Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.")
+        .field("sinkSpeed", "f32", "Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.")
+        .field("enterDepth", "f32", "Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.")
+        .field("exitDepth", "f32", "Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.")
+        .field("fluidJumpVelocity", "f32", "Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0.")
         .finish();
     registry
         .register_type("ViewFeelParams")

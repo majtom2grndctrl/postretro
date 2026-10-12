@@ -129,14 +129,18 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
 
---- Current world gravity in m/s² (negative = downward; positive = upward).
---- Seeded from the worldspawn `initialGravity` KVP at level load and
---- persists until the next level load or `setGravity` call.
+--- Level default gravity in m/s² (negative = downward; positive = upward):
+--- the gravity outside every gravity volume. Seeded from the worldspawn
+--- `initialGravity` KVP at level load and persists until the next level load
+--- or `setGravity` call. Inside a `gravity_volume` the volume's own value
+--- holds; this still returns the level default.
 declare function getGravity(): number
 
---- Set world gravity in m/s² (negative = downward; positive = upward).
---- NaN and non-finite values are ignored with a warning. Effect is immediate
---- and persists until the next level load or another `setGravity` call.
+--- Set the level default gravity in m/s² (negative = downward; positive =
+--- upward): the gravity outside every gravity volume. A `gravity_volume`'s
+--- value holds inside it regardless. NaN and non-finite values are ignored
+--- with a warning. Effect is immediate and persists until the next level load
+--- or another `setGravity` call.
 declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.
@@ -859,7 +863,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -874,6 +878,11 @@ declare function defineFaction(name: string): FactionDescriptor
 --- Optional non-negative `decay` overrides the global return rate; zero holds
 --- this pair after a runtime change.
 declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
+--- Pure identity builder for a fluid declaration in `fluids` on the returned
+--- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
+--- declaration order assigns its index. A field out of range, or a repeated
+--- name, is rejected with a warning naming the field; the first stands.
+declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -887,13 +896,14 @@ declare function defineWeaponPlacement(desc: WeaponPlacementDescriptor): WeaponP
 declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
 
 --- Build a state-crossing watcher. The threshold form watches a numeric slot;
---- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. A
+--- the predicate form fires on a false-to-true edge of a Bool predicate, a
+--- fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A
 --- predicate already true at registration only arms; it must return false,
 --- then true, to fire. Each `fire` entry is a `defineReaction` handle or a
 --- bare reaction name, reduced to its wire string.
 declare onStateCrossing: (
   ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
-  & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
+  & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
 )
 
 --- System-reaction body: play `sound` through the audio module. Pure: returns
@@ -1123,6 +1133,7 @@ export type ModManifestInput = {
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
+  fluids: {FluidDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,

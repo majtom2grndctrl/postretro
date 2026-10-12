@@ -446,6 +446,7 @@ mod tests {
                 "defineMod",
                 "defineFaction",
                 "sentiment",
+                "defineFluid",
                 "defineMapCatalog",
                 "defineWeaponPlacement",
                 "defineTriggerPool",

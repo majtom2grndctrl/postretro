@@ -109,7 +109,7 @@ pub(crate) fn try_enter_dash(
         scope.refresh_with_total_velocity(
             component,
             0.0,
-            component.velocity + component.knockback_velocity,
+            component.velocity + component.knockback_velocity + component.push_velocity,
         );
         // `boostSpeed`: floor 0 (an EXPRESSION evaluating to 0 yields a
         // zero-boost dash; a literal 0 was already rejected at declaration — its
@@ -250,7 +250,7 @@ pub(crate) fn dash_intent(
         scope.refresh_with_total_velocity(
             component,
             *elapsed_ms,
-            component.velocity + component.knockback_velocity,
+            component.velocity + component.knockback_velocity + component.push_velocity,
         );
         // `steerControl` ∈ [0, 1]; `dashDrag` ≥ 0.
         let steer_control = resolve_number(

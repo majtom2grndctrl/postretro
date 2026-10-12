@@ -4,13 +4,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::KnockbackResponse;
+use crate::data_descriptors::DescriptorError;
 use crate::ir::IrNode;
 
 /// Authored player-movement component preset. The four core sub-objects
 /// (`capsule`, `ground`, `air`, `fall`) are required when `movement` is
 /// present; `dash` is optional — its absence disables dash entirely; `crouch`
 /// is optional — its absence disables crouch entirely; `slide` is optional —
-/// its absence disables slide entirely. The data-archetype
+/// its absence disables slide entirely; `swim` is optional — its absence
+/// means the pawn cannot swim. The data-archetype
 /// spawn path materializes the runtime movement component from this.
 /// `ground.max_slope` is in degrees on the wire and converted to a cosine at
 /// materialization (not here).
@@ -47,6 +49,9 @@ pub struct PlayerMovementDescriptor {
     /// materialized). When present, all of its fields are required, matching
     /// the present-then-all-required discipline of `dash`/`crouch`.
     pub slide: Option<SlideParams>,
+    /// Optional swim tuning. Absent ⇒ the pawn cannot swim and walks fluid
+    /// floors. When present, all of its fields are required and validated.
+    pub swim: Option<SwimParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway, state-transition impulse). Absent ⇒ view feel disabled (no
     /// `ViewFeelParams` materialized).
@@ -336,6 +341,68 @@ pub struct SlideParams {
     pub min_duration_ms: f32,
 }
 
+/// Swim tuning. Optional on [`PlayerMovementDescriptor`] (absent: the pawn
+/// cannot swim); when present, all fields are required and validated. Field
+/// names are camelCase on the wire (`sinkSpeed`, `enterDepth`, …) and
+/// snake_case in Rust. Never map-overridable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwimParams {
+    /// Target swim speed, metres/sec. Finite and ≥ 0.
+    pub speed: f32,
+    /// Acceleration toward the wish velocity, metres/sec². Finite and ≥ 0.
+    pub accel: f32,
+    /// Drift along gravity with no vertical input, metres/sec at standard
+    /// gravity (−9.81 m/s²). Finite and ≥ 0.
+    pub sink_speed: f32,
+    /// Immersion fraction at which any state enters swim. Finite, `(0, 1]`:
+    /// zero would enter swim at any immersion, even dry.
+    pub enter_depth: f32,
+    /// Immersion fraction below which swim leaves. Finite, `(0, 1]`, and
+    /// strictly less than `enter_depth`. Zero would make swim unleavable by
+    /// immersion and leave the fluid-jump re-entry latch one that can never
+    /// clear.
+    pub exit_depth: f32,
+    /// Upward velocity a jump from the surface sets, metres/sec. Finite and
+    /// > 0: a zero jump could never clear `exit_depth`.
+    pub fluid_jump_velocity: f32,
+}
+
+impl SwimParams {
+    /// Range-check every field, naming the first bad one as
+    /// `movement.swim.<field>`. Shared by the QuickJS and Luau parsers.
+    pub fn validated(self) -> Result<Self, DescriptorError> {
+        use crate::data_descriptors::{
+            validate_in_range_finite_exclusive_min, validate_non_negative_finite,
+            validate_positive_finite,
+        };
+        validate_non_negative_finite(self.speed, "movement.swim.speed")?;
+        validate_non_negative_finite(self.accel, "movement.swim.accel")?;
+        validate_non_negative_finite(self.sink_speed, "movement.swim.sinkSpeed")?;
+        validate_in_range_finite_exclusive_min(
+            self.enter_depth,
+            0.0,
+            1.0,
+            "movement.swim.enterDepth",
+        )?;
+        validate_in_range_finite_exclusive_min(
+            self.exit_depth,
+            0.0,
+            1.0,
+            "movement.swim.exitDepth",
+        )?;
+        if self.exit_depth >= self.enter_depth {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.swim.exitDepth` must be less than `movement.swim.enterDepth`, got exitDepth {} with enterDepth {}",
+                    self.exit_depth, self.enter_depth,
+                ),
+            });
+        }
+        validate_positive_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
+        Ok(self)
+    }
+}
+
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,
 /// strafe tilt, ambient sway, state-transition impulse, sustained slide). OPTIONAL on [`PlayerMovementDescriptor`] — absent
 /// disables view feel entirely (no `ViewFeelParams` materialized). When present,
@@ -511,4 +578,77 @@ pub struct SwayParams {
 impl SwayParams {
     /// Default `groundedOnly` gate applied when the wire field is absent.
     pub const DEFAULT_GROUNDED_ONLY: bool = false;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn swim() -> SwimParams {
+        SwimParams {
+            speed: 4.5,
+            accel: 6.0,
+            sink_speed: 0.8,
+            enter_depth: 0.5,
+            exit_depth: 0.35,
+            fluid_jump_velocity: 6.5,
+        }
+    }
+
+    fn rejection_reason(params: SwimParams) -> String {
+        match params.validated() {
+            Err(DescriptorError::InvalidShape { reason }) => reason,
+            other => panic!("expected an InvalidShape rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn swim_validation_accepts_the_brief_example_block() {
+        assert_eq!(swim().validated().expect("valid swim block"), swim());
+    }
+
+    // A zero exit depth makes swim unleavable by immersion and leaves the
+    // fluid-jump re-entry latch one that can never clear.
+    #[test]
+    fn swim_validation_rejects_zero_exit_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            exit_depth: 0.0,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.exitDepth"), "{reason}");
+    }
+
+    // A zero fluid jump never clears the surface, so the jump never fires.
+    #[test]
+    fn swim_validation_rejects_zero_fluid_jump_velocity_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            fluid_jump_velocity: 0.0,
+            ..swim()
+        });
+        assert!(
+            reason.contains("movement.swim.fluidJumpVelocity"),
+            "{reason}"
+        );
+    }
+
+    // A zero enter depth would enter swim at any immersion; the rejection names
+    // enterDepth rather than reporting exitDepth ≥ enterDepth.
+    #[test]
+    fn swim_validation_rejects_zero_enter_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            enter_depth: 0.0,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.enterDepth"), "{reason}");
+        assert!(!reason.contains("movement.swim.exitDepth"), "{reason}");
+    }
+
+    #[test]
+    fn swim_validation_rejects_exit_depth_at_enter_depth_naming_the_field() {
+        let reason = rejection_reason(SwimParams {
+            exit_depth: 0.5,
+            ..swim()
+        });
+        assert!(reason.contains("movement.swim.exitDepth"), "{reason}");
+    }
 }

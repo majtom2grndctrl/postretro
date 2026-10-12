@@ -25,6 +25,7 @@ use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::immersion::ImmersionComponent;
 #[cfg(test)]
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
@@ -502,6 +503,8 @@ pub(crate) fn attach_descriptor_components(
     if let Some(movement_desc) = descriptor.movement.as_ref() {
         let component = PlayerMovementComponent::from_descriptor(movement_desc);
         let _ = registry.set_component(id, component);
+        // Dry until host movement's first tick writes the resolved immersion.
+        let _ = registry.set_component(id, ImmersionComponent::default());
         owned_components.insert(DescriptorComponentKind::Movement);
     }
 
@@ -2260,6 +2263,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

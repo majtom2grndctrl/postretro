@@ -686,6 +686,14 @@ mod tests {
     use postretro_test_log_capture::LogCapture;
     use std::collections::HashMap;
 
+    /// These fixtures exercise pawn tuning; the level state is incidental.
+    fn test_environment() -> postretro_combat_model::EnvironmentTuning {
+        postretro_combat_model::EnvironmentTuning {
+            level_gravity: -9.81,
+            fluids: Default::default(),
+        }
+    }
+
     /// Minimal in-memory descriptor carrying only a mesh block. `animated` selects
     /// between a stateless mesh (model only) and a two-state animated mesh
     /// (`idle` default + `attack`), mirroring the validated descriptor shape.
@@ -1326,6 +1334,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -1539,7 +1548,7 @@ mod tests {
             raise_ms,
             block_during_reload: None,
         });
-        TuningPayload::new(None, wieldables)
+        TuningPayload::new(None, wieldables, test_environment())
     }
 
     #[test]
@@ -2265,7 +2274,8 @@ mod tests {
         let weapon_id = reg.get_component::<Inventory>(pawn).unwrap().wieldables[0]
             .expect("descriptor inventory materializes its default wieldable");
 
-        let empty_tuning = TuningPayload::new(None, std::array::from_fn(|_| None));
+        let empty_tuning =
+            TuningPayload::new(None, std::array::from_fn(|_| None), test_environment());
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
             "player",
             &descriptors,
@@ -2336,7 +2346,7 @@ mod tests {
             raise_ms: tuning_weapon.raise_ms,
             block_during_reload: tuning_weapon.block_during_reload,
         });
-        let tuning = TuningPayload::new(None, wieldables);
+        let tuning = TuningPayload::new(None, wieldables, test_environment());
         assert!(materialize_net_local_wieldable_inventory_from_tuning(
             "player",
             &descriptors,

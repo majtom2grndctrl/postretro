@@ -347,6 +347,69 @@ fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_ver
     assert_eq!(forward_pipeline_sampled_texture_count(true), 16);
 }
 
+// The fluid surface pipeline lights per fragment on the billboard's shared
+// camera, lighting and SH groups, which already hold the whole FRAGMENT
+// storage budget. Its world-material and per-volume parameter groups must
+// therefore add no storage buffer; derived from the same GPU-free builders the
+// layout is created from, so a widened entry fails here before a real GPU.
+#[cfg(debug_assertions)]
+#[test]
+fn fluid_pipeline_fragment_storage_request_matches_bgl_definitions() {
+    let groups = fluid_surface::fluid_pipeline_bind_group_layout_entries();
+    let per_group: Vec<u32> = groups
+        .iter()
+        .map(|entries| fragment_storage_buffers(entries))
+        .collect();
+    // 0 camera, 1 world material, 2 lighting, 3 SH volume, 4 per-volume params.
+    assert_eq!(
+        per_group,
+        [0, 0, 5, 3, 0],
+        "fluid BGL fragment storage-buffer inventory changed"
+    );
+    let derived: u32 = per_group.iter().sum();
+    assert_eq!(
+        fluid_surface::fluid_pipeline_stage_count(fragment_storage_buffers),
+        derived
+    );
+    assert_eq!(
+        derived, 8,
+        "the fluid pipeline sits exactly at the downlevel fragment storage limit"
+    );
+    // Same shared groups as the billboard pipeline.
+    assert_eq!(derived, billboard_pipeline_fragment_storage_buffer_count());
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
+    let groups = fluid_surface::fluid_pipeline_bind_group_layout_entries();
+    let per_group = |count: fn(&[wgpu::BindGroupLayoutEntry]) -> u32| -> Vec<u32> {
+        groups.iter().map(|entries| count(entries)).collect()
+    };
+
+    // Group 2's light/chunk buffers are VERTEX | FRAGMENT for billboards; the
+    // fluid vertex stage reads none of them but is still charged for them.
+    let vertex_storage = per_group(vertex_storage_buffers);
+    assert_eq!(vertex_storage, [0, 0, 5, 0, 0]);
+    assert!(vertex_storage.iter().sum::<u32>() <= 8);
+
+    // Albedo, emissive, specular and normal (group 1) plus the SH atlas, depth
+    // moments and direct atlas (group 3).
+    let fragment_sampled = per_group(fragment_sampled_textures);
+    assert_eq!(fragment_sampled, [0, 4, 0, 3, 0]);
+    let fragment_total: u32 = fragment_sampled.iter().sum();
+    assert_eq!(
+        fluid_surface::fluid_pipeline_stage_count(fragment_sampled_textures),
+        fragment_total
+    );
+    assert!(fragment_total <= FORWARD_SAMPLED_TEXTURE_BUDGET);
+
+    // Group 3's VERTEX-visible textures, the billboard scatter volume included.
+    let vertex_sampled = per_group(vertex_sampled_textures);
+    assert_eq!(vertex_sampled, [0, 0, 0, 4, 0]);
+    assert!(vertex_sampled.iter().sum::<u32>() <= 16);
+}
+
 /// Per-stage binding inventory of one BGL: (sampled textures, storage
 /// buffers, uniform buffers, samplers) visible to `stage`.
 fn stage_inventory(entries: &[wgpu::BindGroupLayoutEntry], stage: wgpu::ShaderStages) -> [u32; 4] {

@@ -7,6 +7,8 @@ mod install;
 #[cfg(test)]
 mod semantics_tests;
 #[cfg(test)]
+mod swim_slot_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 mod validate;
 pub use validate::{

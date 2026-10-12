@@ -192,6 +192,16 @@ pub fn movement_descriptor_from_lua(
         None
     };
 
+    // `swim` is optional: absence means the pawn cannot swim. A present block
+    // that fails parsing or validation is dropped with a warning and the rest
+    // of the descriptor loads, mirroring the JS path.
+    let raw: LuaValue = table.get("swim").map_err(lua_err)?;
+    let swim = match raw {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => keep_or_drop_swim_block(swim_params_from_lua(&t)),
+        _ => keep_or_drop_swim_block(Err(swim_block_not_an_object())),
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
@@ -245,6 +255,7 @@ pub fn movement_descriptor_from_lua(
         forgiveness,
         crouch,
         slide,
+        swim,
         view_feel,
         sounds,
     })
@@ -420,6 +431,20 @@ pub fn slide_params_from_lua(table: &Table) -> Result<SlideParams, DescriptorErr
         steer_rate,
         entry_boost,
         min_duration_ms,
+    })
+}
+
+/// Mirror of [`swim_params_from_js`] for Luau tables. All six fields are
+/// required when `movement.swim` is present; errors are worded identically.
+pub fn swim_params_from_lua(table: &Table) -> Result<SwimParams, DescriptorError> {
+    swim_params_from_fields(|field| {
+        let raw: LuaValue = table.get(field).map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => Err(swim_field_missing(field)),
+            LuaValue::Integer(i) => Ok(i as f32),
+            LuaValue::Number(f) => Ok(f as f32),
+            _ => Err(swim_field_not_a_number(field)),
+        }
     })
 }
 

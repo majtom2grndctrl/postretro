@@ -506,6 +506,16 @@ pub(crate) fn build_full_renderer(
         promoted_spot_cache,
         promoted_cube_cache,
     );
+    // Fluid surfaces share the camera, world-material, lighting and SH
+    // layouts. See: context/lib/rendering_pipeline.md §7.3a, §10
+    let fluid_surface = fluid_surface::FluidSurfacePass::new(
+        device,
+        DEPTH_FORMAT,
+        &uniform_bind_group_layout,
+        &texture_bind_group_layout,
+        &lighting_bind_group_layout,
+        &sh_volume_resources.bind_group_layout,
+    );
     let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
         device,
         crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,
@@ -659,6 +669,7 @@ pub(crate) fn build_full_renderer(
         spot_shadow_pool,
         cube_shadow_pool,
         kinematic_brush,
+        fluid_surface,
         rigid_occluder_depth,
         promoted_static_states: vec![
             PromotedBakedLightState::default();

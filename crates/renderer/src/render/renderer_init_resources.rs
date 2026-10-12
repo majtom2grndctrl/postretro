@@ -154,6 +154,22 @@ pub(crate) fn request_renderer_device(
             MAX_FRAGMENT_STORAGE_BUFFERS,
         );
     }
+    // The fluid surface pipeline composes the same camera, lighting and SH
+    // groups, so it sits at the same eight FRAGMENT storage buffers; its own
+    // material and parameter groups must add none.
+    #[cfg(debug_assertions)]
+    {
+        const MAX_FRAGMENT_STORAGE_BUFFERS: u32 = 8;
+        let fluid_fragment_storage =
+            super::fluid_surface::fluid_pipeline_stage_count(fragment_storage_buffers);
+        debug_assert!(
+            fluid_fragment_storage <= MAX_FRAGMENT_STORAGE_BUFFERS,
+            "fluid surface pipeline FRAGMENT-visible storage-buffer count ({fluid_fragment_storage}) \
+             exceeds the downlevel-default max_storage_buffers_per_shader_stage \
+             ({MAX_FRAGMENT_STORAGE_BUFFERS}); its material and parameter groups must hold \
+             textures, samplers and uniforms only",
+        );
+    }
     const REQUIRED_STORAGE_TEXTURES: u32 = 4;
     // Stopgap: SH compose's flat delta-probe storage buffer outgrows the
     // WebGPU spec floor (128 MiB) on maps with many animated lights because
@@ -616,6 +632,7 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_DYNAMIC_SPOT_DEPTH] = "dynamic_spot_depth_upper";
         pass_labels[TIMING_PAIR_DYNAMIC_CUBE_DEPTH] = "dynamic_cube_depth_upper";
         pass_labels[TIMING_PAIR_RESOLVE] = "resolve";
+        pass_labels[TIMING_PAIR_FLUID_SURFACE] = "fluid_surface";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None

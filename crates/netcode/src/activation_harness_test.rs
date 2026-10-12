@@ -36,6 +36,7 @@ fn command(tick: u32, activation: ActivationInput) -> wire::InputCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -54,7 +55,7 @@ fn command(tick: u32, activation: ActivationInput) -> wire::InputCommand {
         use_pressed: false,
         drop_pressed: false,
     };
-    wire_convert::sim_command_to_input(&command, tick, 0.0)
+    wire_convert::sim_command_to_input(&command, tick)
 }
 fn token(start_tick: u32) -> ActivationToken {
     ActivationToken {

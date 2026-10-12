@@ -4,6 +4,7 @@ members = [
     "crates/audio",
     "crates/ai",
     "crates/physics",
+    "crates/collision",
     "crates/sim",
     "crates/netcode",
     "crates/ui",
@@ -198,6 +199,7 @@ postretro-scripting-core = { path = "crates/scripting-core" }
 postretro-ui = { path = "crates/ui" }
 postretro-net = { path = "crates/net" }
 postretro-physics = { path = "crates/physics" }
+postretro-collision = { path = "crates/collision" }
 postretro-ai = { path = "crates/ai" }
 postretro-sim = { path = "crates/sim" }
 postretro-netcode = { path = "crates/netcode" }

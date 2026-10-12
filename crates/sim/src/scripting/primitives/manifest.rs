@@ -117,6 +117,17 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("decay?", "f32", "Optional non-negative rate that eases this live pair back to its authored sentiment. Overrides `factionSentimentDecay`; zero holds this pair.")
         .finish();
     registry
+        .register_type("FluidDescriptor")
+        .doc("A substance declared in `ModManifest.fluids`, built with `defineFluid`. A map's `fluid_volume` names it through its `fluid` key; the volume owns the place, this owns what being in it is like. Declaration order assigns each fluid's index. A field out of range, or a second declaration of an existing name, is rejected with a warning naming the field; the first declaration stands and the rest of the manifest is kept. Fluids never affect co-op compatibility.")
+        .field("name", "String", "Non-empty name a `fluid_volume`'s `fluid` key refers to. Unique within the manifest; a later duplicate is rejected.")
+        .field("viscosity", "f32", "Drag while swimming, 1/s. Finite and >= 0. A volume naming no declared fluid loads dry.")
+        .field("viewTint", "[f32; 4]", "Full-screen tint while the camera eye is inside: red, green, blue, then strength. Each finite and in [0, 1].")
+        .field("muffle", "f32", "World-sound low-pass while the camera eye is inside: 0 none, 1 maximum. Finite and in [0, 1].")
+        .field("surfaceOpacity", "f32", "Opacity of the fluid's visible surface faces. Finite and in [0, 1].")
+        .field("enterSound?", "String", "Optional sound key played when a swim starts in this fluid.")
+        .field("exitSound?", "String", "Optional sound key played when a swim in this fluid ends.")
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -179,6 +190,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "factionSentimentDecay?",
             "f32",
             "Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.",
+        )
+        .field(
+            "fluids?",
+            "Vec<FluidDescriptor>",
+            "Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.",
         )
         .field(
             "uiTrees?",
@@ -492,6 +508,7 @@ fn register_input_types(registry: &mut PrimitiveRegistry) {
 mod tests {
     use super::*;
     use postretro_entities::{FactionRegistry, slot_table::StoreDeclarationSet};
+    use postretro_foundation::FluidRegistry;
     use postretro_scripting_core::data_descriptors::{
         ModFontAssets, ModThemeTokens, PresentationOverlay, PresentationTemplate,
         SwitchingDescriptor,
@@ -534,6 +551,7 @@ mod tests {
             sentiment: Vec::new(),
             faction_sentiment_decay: 0.0,
             entity_faction_names: Vec::new(),
+            fluids: FluidRegistry::default(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::<PresentationTemplate>::new(),
             presentation_overlays: Vec::<PresentationOverlay>::new(),
@@ -565,6 +583,7 @@ mod tests {
             "factions",
             "sentiment",
             "factionSentimentDecay",
+            "fluids",
             "uiTrees",
             "presentationTemplates",
             "presentationOverlays",

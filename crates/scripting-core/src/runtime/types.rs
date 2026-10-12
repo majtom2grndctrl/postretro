@@ -14,7 +14,7 @@ use super::input_block::ModInputBlock;
 use super::loading_screen::ModLoading;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
+    EntityTypeDescriptor, FluidRegistry, ImpactEventDescriptor, ModFontAssets, ModThemeTokens,
     PlayerEventDescriptor, PresentationOverlay, PresentationTemplate, RegisteredUiTree,
     SwitchingDescriptor, TriggerEventDescriptor, TriggerPoolDescriptor, WeaponPlacementDescriptor,
 };
@@ -161,6 +161,10 @@ pub struct ModManifestResult {
     /// each descriptor. Private runtime plumbing keeps named authoring out of
     /// `EntityTypeDescriptor`, whose `faction` field is resolved f32 storage.
     pub entity_faction_names: Vec<Option<String>>,
+    /// Manifest `fluids`, indexed by declaration order. Out-of-range entries
+    /// and later duplicate names were warned and dropped at drain; the rest of
+    /// the manifest stands.
+    pub fluids: FluidRegistry,
     /// UI trees registered via the mod manifest's `uiTrees` field (each a name +
     /// `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Empty when absent. A malformed entry is
     /// logged and skipped at parse time (`ui.md` §1.1). Drained into the app-side

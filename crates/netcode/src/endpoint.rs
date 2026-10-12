@@ -4,7 +4,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
-use postretro_combat_model::TuningPayload;
+use postretro_combat_model::{EnvironmentTuning, TuningPayload};
 use postretro_foundation::Seat;
 use postretro_net::wire::JoinSeedValue;
 
@@ -785,6 +785,17 @@ impl NetEndpoint {
         time_sync.weapon_cues.clear();
     }
 
+    /// The host's level state (level gravity and fluid table) from this
+    /// client's installed tuning payload. `None` on a host, or on a client
+    /// before a payload installs; a client never substitutes its own level
+    /// gravity or fluid registry.
+    pub fn client_host_environment(&self) -> Option<&EnvironmentTuning> {
+        match self {
+            Self::Client { tuning, .. } => tuning.as_deref().map(|payload| &payload.environment),
+            Self::Host { .. } => None,
+        }
+    }
+
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
@@ -801,22 +812,28 @@ impl NetEndpoint {
         else {
             return;
         };
+        let generation_before = *tuning_generation;
         let result = replace_client_tuning(tuning, tuning_generation, bytes);
-        if let Some(armed) = replication.armed_local_pawn() {
-            apply_installed_movement_tuning_to_armed_pawn(
-                &armed,
-                tuning.as_deref(),
-                *tuning_generation,
-                applied_movement_tuning_generation,
-                descriptors,
-                registry,
-            );
-        } else if tuning
-            .as_deref()
-            .and_then(|payload| payload.movement.as_ref())
-            .is_none()
-        {
-            *applied_movement_tuning_generation = *tuning_generation;
+        // An environment-only change keeps the generation: nothing pawn-side to
+        // rematerialize, and prediction reads the new level gravity next tick.
+        let pawn_tuning_changed = *tuning_generation != generation_before;
+        if pawn_tuning_changed {
+            if let Some(armed) = replication.armed_local_pawn() {
+                apply_installed_movement_tuning_to_armed_pawn(
+                    &armed,
+                    tuning.as_deref(),
+                    *tuning_generation,
+                    applied_movement_tuning_generation,
+                    descriptors,
+                    registry,
+                );
+            } else if tuning
+                .as_deref()
+                .and_then(|payload| payload.movement.as_ref())
+                .is_none()
+            {
+                *applied_movement_tuning_generation = *tuning_generation;
+            }
         }
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
@@ -872,6 +889,92 @@ mod tests {
             unreachable!();
         };
         assert_eq!(time_sync.drain_weapon_cues().count(), 0);
+    }
+
+    // The client stores the host's level gravity and fluid table with its
+    // installed tuning and never substitutes its own; an environment-only resend
+    // keeps both generations, so no pawn rebuild is queued for it.
+    #[test]
+    fn client_installs_host_environment_without_queueing_a_pawn_rebuild() {
+        use postretro_combat_model::{FluidMovementTable, FluidMovementTuning};
+
+        let mut endpoint = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut registry = EntityRegistry::new();
+        assert!(endpoint.client_host_environment().is_none());
+
+        let payload = |level_gravity: f32, fluids: &[&str]| {
+            crate::tuning_payload::encode_tuning_payload(&TuningPayload::new(
+                None,
+                std::array::from_fn(|_| None),
+                EnvironmentTuning {
+                    level_gravity,
+                    fluids: FluidMovementTable::new(
+                        fluids
+                            .iter()
+                            .map(|name| FluidMovementTuning {
+                                name: name.to_string(),
+                                viscosity: 2.0,
+                            })
+                            .collect(),
+                    )
+                    .unwrap(),
+                },
+            ))
+        };
+        let generations = |endpoint: &NetEndpoint| match endpoint {
+            NetEndpoint::Client {
+                tuning_generation,
+                applied_movement_tuning_generation,
+                ..
+            } => (*tuning_generation, *applied_movement_tuning_generation),
+            NetEndpoint::Host { .. } => unreachable!(),
+        };
+        let installed = |endpoint: &NetEndpoint| {
+            endpoint.client_host_environment().map(|environment| {
+                (
+                    environment.level_gravity,
+                    environment.fluids.names().to_vec(),
+                )
+            })
+        };
+
+        endpoint.install_tuning_payload(&payload(-12.0, &["water"]), &mut registry, &[]);
+        assert_eq!(
+            installed(&endpoint),
+            Some((-12.0, vec!["water".to_string()]))
+        );
+        let first = generations(&endpoint);
+
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        assert_eq!(
+            installed(&endpoint),
+            Some((-4.5, vec!["water".to_string()]))
+        );
+        endpoint.install_tuning_payload(&payload(-4.5, &["water", "lava"]), &mut registry, &[]);
+        assert_eq!(
+            installed(&endpoint),
+            Some((-4.5, vec!["water".to_string(), "lava".to_string()]))
+        );
+        assert_eq!(generations(&endpoint), first);
+
+        // Demotion drops the installed table with the rest of the tuning.
+        endpoint.demote_client_state(&mut registry);
+        assert!(endpoint.client_host_environment().is_none());
+
+        let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            host.client_host_environment().is_none(),
+            "the host reads its own level state, never a payload"
+        );
     }
 
     #[test]

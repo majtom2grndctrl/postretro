@@ -244,7 +244,6 @@ mod tests {
         let mut command = crate::netcode::wire_convert::sim_command_to_input(
             &neutral_sim_command(0.0),
             client_tick,
-            0.0,
         );
         command.movement.wish_dir = [1.0, 0.0];
         command

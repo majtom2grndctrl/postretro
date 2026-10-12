@@ -2708,6 +2708,7 @@ mod tests {
     ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
+            push_velocity: [0.0; 3],
             velocity,
             ground: WireGroundRef::World,
             air_jumps_remaining: 1,
@@ -2718,6 +2719,7 @@ mod tests {
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
+            swim_reentry_latched: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
             aim_pitch,

@@ -333,11 +333,8 @@ mod tests {
 
     /// A command at `tick` naming `slot`, carrying a start when `starts`.
     fn command(tick: u32, slot: u8, starts: bool) -> InputCommand {
-        let mut command = crate::netcode::wire_convert::sim_command_to_input(
-            &neutral_sim_command(0.0),
-            tick,
-            0.0,
-        );
+        let mut command =
+            crate::netcode::wire_convert::sim_command_to_input(&neutral_sim_command(0.0), tick);
         command.movement.firing_slot = slot;
         if starts {
             command.activation.initiation = Some(WireActivationToken {

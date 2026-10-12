@@ -21,6 +21,7 @@ use postretro_net::wire::{InputCommand, NetworkId};
 
 use crate::movement::{self, MovementCollisionSource, MovementEvents, MovementInput};
 use crate::netcode::wire_convert::input_command_to_sim;
+use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, Transform};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
@@ -296,10 +297,10 @@ impl ClientPrediction {
         command: InputCommand,
         prev: (Transform, PlayerMovementComponent),
         collision: &impl MovementCollisionSource,
-        gravity: f32,
+        environment: EnvironmentView<'_>,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent)> {
-        self.predict_tick_with_events(command, prev, collision, gravity, dt)
+        self.predict_tick_with_events(command, prev, collision, environment, dt)
             .map(|(transform, movement, _)| (transform, movement))
     }
 
@@ -312,7 +313,7 @@ impl ClientPrediction {
         command: InputCommand,
         prev: (Transform, PlayerMovementComponent),
         collision: &impl MovementCollisionSource,
-        gravity: f32,
+        environment: EnvironmentView<'_>,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
         // Inert until armed: before the local_player baseline, drive no pawn.
@@ -332,7 +333,7 @@ impl ClientPrediction {
             start_movement,
             sim.movement,
             collision,
-            gravity,
+            environment,
             dt,
         );
 
@@ -464,14 +465,14 @@ pub(crate) fn replay(
     mut movement: PlayerMovementComponent,
     input: MovementInput,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     dt: f32,
 ) -> (Transform, PlayerMovementComponent, MovementEvents) {
     let (new_position, events) = movement::tick(
         &mut movement,
         &input,
         collision,
-        gravity,
+        environment,
         dt,
         transform.position,
     );
@@ -562,6 +563,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -662,12 +664,19 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.65,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         };
 
-        let (transform, movement, _events) =
-            replay(start_transform(), component(), input, &world, GRAVITY, DT);
+        let (transform, movement, _events) = replay(
+            start_transform(),
+            component(),
+            input,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
 
         // The pair advanced: forward locomotion retained a negative-Z component at
         // this yaw, and the movement component is the same owned value
@@ -708,7 +717,7 @@ mod tests {
                 forward_command(tick, false),
                 prev.clone(),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             );
             let (t, m) = out.expect("armed prediction advances the pawn");
@@ -740,8 +749,13 @@ mod tests {
         assert!(!prediction.is_armed());
 
         let prev = (start_transform(), component());
-        let out =
-            prediction.predict_tick(forward_command(0, false), prev.clone(), &world, GRAVITY, DT);
+        let out = prediction.predict_tick(
+            forward_command(0, false),
+            prev.clone(),
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         assert!(out.is_none(), "unarmed prediction returns no driven state");
         assert!(
             prediction.history().is_empty(),
@@ -750,7 +764,13 @@ mod tests {
 
         // After arming, the same call drives the pawn and records history.
         prediction.arm(NetworkId(1), EntityId::from_raw(0));
-        let out = prediction.predict_tick(forward_command(0, false), prev, &world, GRAVITY, DT);
+        let out = prediction.predict_tick(
+            forward_command(0, false),
+            prev,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         assert!(out.is_some(), "armed prediction drives the pawn");
         assert_eq!(prediction.history().len(), 1);
     }
@@ -768,7 +788,7 @@ mod tests {
                 forward_command(tick, false),
                 prev.clone(),
                 &world,
-                GRAVITY,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
                 DT,
             );
         }
@@ -813,7 +833,13 @@ mod tests {
         initial_movement.set_grounded(true);
         let prev = (start_transform(), initial_movement);
         let (_, _, events) = prediction
-            .predict_tick_with_events(forward_command(0, true), prev, &world, GRAVITY, DT)
+            .predict_tick_with_events(
+                forward_command(0, true),
+                prev,
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
             .expect("armed prediction advances the local pawn");
         assert_eq!(
             events.state_edges,
@@ -840,7 +866,7 @@ mod tests {
             forward_command(0, false),
             (start_transform(), sliding_component()),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         assert!(output.is_some(), "armed sliding pawn predicts a tick");
@@ -940,7 +966,7 @@ mod tests {
             forward_command(0, false),
             (start_transform(), component()),
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
         prediction.seed_presentation_offset(Vec3::new(1.0, 0.0, 0.0));
@@ -964,8 +990,20 @@ mod tests {
         prediction.arm(NetworkId(5), EntityId::from_raw(2));
 
         let prev = (start_transform(), component());
-        prediction.predict_tick(forward_command(0, false), prev.clone(), &world, GRAVITY, DT);
-        prediction.predict_tick(forward_command(1, false), prev.clone(), &world, GRAVITY, DT);
+        prediction.predict_tick(
+            forward_command(0, false),
+            prev.clone(),
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        prediction.predict_tick(
+            forward_command(1, false),
+            prev.clone(),
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
         assert_eq!(prediction.history().len(), 2);
 
         // A periodic re-baseline for the SAME pawn must not wipe unacked predictions.
@@ -1026,7 +1064,7 @@ mod tests {
                     forward_command(tick, false),
                     prev.clone(),
                     &world,
-                    GRAVITY,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
                     DT,
                 )
                 .unwrap();

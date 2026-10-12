@@ -117,7 +117,7 @@ pub fn extract_geometry(
         // f32 at the PRL vertex buffer write.
         for &v in &face.vertices {
             let quake_pos = engine_to_quake(v) * inverse_scale;
-            let (u, v_coord) = compute_texel_uv(quake_pos, face);
+            let (u, v_coord) = compute_texel_uv(quake_pos, face.normal, &face.tex_projection);
             vertices.push(Vertex::new(
                 [v.x as f32, v.y as f32, v.z as f32],
                 [u as f32, v_coord as f32],
@@ -216,7 +216,7 @@ pub fn extract_kinematic_mover_geometry(
         for &world_vertex in &side.vertices {
             let local_vertex = world_vertex - origin;
             let quake_pos = engine_to_quake(world_vertex) * inverse_scale;
-            let (u, v_coord) = compute_texel_uv(quake_pos, &face);
+            let (u, v_coord) = compute_texel_uv(quake_pos, face.normal, &face.tex_projection);
             vertices.push(Vertex::new(
                 [
                     local_vertex.x as f32,
@@ -361,12 +361,29 @@ fn standard_uv_axes(quake_normal: DVec3, angle: f64) -> (DVec3, DVec3) {
     (s, t)
 }
 
+/// Texel-space UV of an engine-space point on a brush side with outward
+/// `normal` and `projection`: the derivation static world and mover faces
+/// use, for surfaces built outside geometry extraction.
+pub fn brush_side_texel_uv(
+    engine_pos: DVec3,
+    normal: DVec3,
+    projection: &TextureProjection,
+) -> [f32; 2] {
+    let inverse_scale: f64 = 1.0 / MapFormat::IdTech2.units_to_meters();
+    let (u, v) = compute_texel_uv(
+        engine_to_quake(engine_pos) * inverse_scale,
+        normal,
+        projection,
+    );
+    [u as f32, v as f32]
+}
+
 /// Compute un-normalized texel-space UV for a vertex in Quake space.
 ///
 /// Returns (u, v) in texel units. The engine normalizes by dividing by
 /// texture width/height at load time.
-fn compute_texel_uv(quake_pos: DVec3, face: &Face) -> (f64, f64) {
-    match &face.tex_projection {
+fn compute_texel_uv(quake_pos: DVec3, normal: DVec3, projection: &TextureProjection) -> (f64, f64) {
+    match projection {
         TextureProjection::Standard {
             u_offset,
             v_offset,
@@ -374,7 +391,7 @@ fn compute_texel_uv(quake_pos: DVec3, face: &Face) -> (f64, f64) {
             scale_u,
             scale_v,
         } => {
-            let quake_normal = engine_normal_to_quake(face.normal);
+            let quake_normal = engine_normal_to_quake(normal);
             standard_texel_uv(
                 quake_pos,
                 quake_normal,

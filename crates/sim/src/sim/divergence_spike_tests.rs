@@ -70,6 +70,7 @@ impl RecordedCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -188,7 +189,7 @@ impl SimHarness {
             &self.world,
             &self.hit_zones,
             None,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
@@ -338,6 +339,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
         }),
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }

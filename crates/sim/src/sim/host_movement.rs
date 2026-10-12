@@ -1,7 +1,8 @@
 // Host-side multi-pawn movement seam (M15 Phase 3 Task 4). Advances an explicit
 // set of `(EntityId, MovementInput)` pairs through `movement::tick`, writing each
-// resulting `Transform` + `PlayerMovementComponent` back to the registry and
-// retaining per-pawn movement events for the caller to scope.
+// resulting `Transform` + `PlayerMovementComponent` (and the output-only
+// `ImmersionComponent`) back to the registry and retaining per-pawn movement
+// events for the caller to scope.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // This is the authoritative-host counterpart to `simulate_tick`'s single-pawn
@@ -17,14 +18,17 @@
 use glam::{Quat, Vec3};
 
 use crate::movement::{
-    MovementCollisionSource, MovementEvents, MovementInput, tick as movement_tick,
+    MovementCollisionSource, MovementEvents, MovementInput, tick_with_immersion,
 };
+use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::PlayerMovementComponent;
+use postretro_foundation::{ImmersionComponent, PlayerMovementComponent};
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
-/// the resulting `Transform` plus movement component back, and returns one
+/// the resulting `Transform` plus movement component back, stores the tick's resolved
+/// immersion in the pawn's output-only `ImmersionComponent` (the `player.immersion`
+/// slot's source; this authoritative seam is its only writer), and returns one
 /// pawn-identified event record per successfully advanced pawn in input order. The
 /// caller owns event scope: host gameplay selects only its local pawn, while client
 /// prediction advances exactly one local pawn. Reading all pawns before writing any
@@ -45,7 +49,7 @@ use postretro_foundation::PlayerMovementComponent;
 pub fn run_host_movement_tick(
     registry: &mut EntityRegistry,
     collision: &impl MovementCollisionSource,
-    gravity: f32,
+    environment: EnvironmentView<'_>,
     pawn_inputs: &[(EntityId, MovementInput)],
     tick_dt: f32,
 ) -> Vec<(EntityId, MovementEvents)> {
@@ -66,11 +70,11 @@ pub fn run_host_movement_tick(
 
     let mut events_out = Vec::with_capacity(snapshots.len());
     for (id, mut component, position, input) in snapshots {
-        let (new_pos, events) = movement_tick(
+        let (new_pos, events, immersion) = tick_with_immersion(
             &mut component,
             &input,
             collision,
-            gravity,
+            environment,
             tick_dt,
             position,
         );
@@ -89,6 +93,7 @@ pub fn run_host_movement_tick(
             let _ = registry.set_component(id, t);
         }
         let _ = registry.set_component(id, component);
+        let _ = registry.set_component(id, ImmersionComponent { immersion });
         events_out.push((id, events));
     }
 
@@ -158,6 +163,7 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -181,6 +187,7 @@ mod tests {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -194,6 +201,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         }
@@ -222,12 +230,18 @@ mod tests {
         let _ = run_host_movement_tick(
             &mut registry,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             &[(driven, idle_input())],
             DT,
         );
         let inputs = vec![(driven, forward_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &inputs, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &inputs,
+            DT,
+        );
 
         // The driven pawn moved along -Z (facing 0 looks down -Z) and its movement
         // component reflects a grounded tick (Transform + component both written).
@@ -261,7 +275,13 @@ mod tests {
         let mut input = idle_input();
         input.facing_yaw = 0.8;
 
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(pawn, input)], DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(pawn, input)],
+            DT,
+        );
 
         let transform = registry.get_component::<Transform>(pawn).unwrap();
         let (yaw, _, _) = transform.rotation.to_euler(glam::EulerRot::YXZ);
@@ -280,13 +300,25 @@ mod tests {
         // forward input only gets air control: 9.7e-5 of travel, under
         // `EPSILON`.
         let settle = vec![(mover, idle_input()), (idler, idle_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &settle, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &settle,
+            DT,
+        );
 
         let mover_before = registry.get_component::<Transform>(mover).unwrap().position;
         let idler_before = registry.get_component::<Transform>(idler).unwrap().position;
 
         let inputs = vec![(mover, forward_input()), (idler, idle_input())];
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &inputs, DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &inputs,
+            DT,
+        );
 
         let mover_after = registry.get_component::<Transform>(mover).unwrap().position;
         let idler_after = registry.get_component::<Transform>(idler).unwrap().position;
@@ -324,14 +356,26 @@ mod tests {
             .unwrap();
 
         // First tick: settle grounded.
-        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(id, idle_input())], DT);
+        let _ = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(id, idle_input())],
+            DT,
+        );
 
         // Second tick: jump.
         let jump = MovementInput {
             jump_pressed: true,
             ..idle_input()
         };
-        let events = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(id, jump)], DT);
+        let events = run_host_movement_tick(
+            &mut registry,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            &[(id, jump)],
+            DT,
+        );
         assert!(
             events
                 .iter()
@@ -351,7 +395,7 @@ mod tests {
         let events = run_host_movement_tick(
             &mut registry,
             &world,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             &[(bare, forward_input())],
             DT,
         );

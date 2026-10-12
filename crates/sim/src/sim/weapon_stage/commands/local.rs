@@ -27,6 +27,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         command,
         reload_pressed,
         collision_world,
+        EnvironmentView::level_only(0.0),
         hit_zone_store,
         anim_time,
         tick_dt,
@@ -36,8 +37,9 @@ pub(in crate::sim) fn run_local_weapon_command(
 }
 
 /// Local authoritative command with the descriptor context required to resolve
-/// steady placement for a projectile muzzle. The wrapper above keeps headless
-/// test fixtures on their explicit no-content path.
+/// steady placement for a projectile muzzle, and the environment its hitscan
+/// pellets cross for fluid splashes. The wrapper above keeps headless test
+/// fixtures on their explicit no-content path, with no volumes.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::sim) fn run_local_weapon_command_with_content(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -49,6 +51,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     command: &WeaponFireCommand,
     reload_pressed: bool,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
@@ -65,6 +68,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         command,
         reload_pressed,
         collision_world,
+        environment,
         hit_zone_store,
         anim_time,
         tick_dt,
@@ -96,6 +100,8 @@ pub(in crate::sim) fn run_client_weapon_equip(
         command,
         false,
         collision_world,
+        // Equip never fires, so no pellet crosses a volume.
+        EnvironmentView::level_only(0.0),
         hit_zone_store,
         anim_time,
         tick_dt,
@@ -116,6 +122,7 @@ fn run_local_weapon_command_inner(
     command: &WeaponFireCommand,
     reload_pressed: bool,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
@@ -276,6 +283,7 @@ fn run_local_weapon_command_inner(
             command,
             &placement,
             collision_world,
+            environment,
             hit_zone_store,
             anim_time,
             shot,
@@ -290,6 +298,7 @@ fn run_local_weapon_command_inner(
             command,
             &placement,
             collision_world,
+            environment,
             hit_zone_store,
             anim_time,
             machine.authorization,
@@ -388,6 +397,7 @@ fn run_local_weapon_command_inner(
         reload_deliveries: machine.deliveries,
         reload_emissions,
         weapon_events: events.emissions(&shooter, weapon_name),
+        fluid_splashes: events.fluid_splashes,
         repointed_pawn,
         projectile_spawns,
         #[cfg(test)]

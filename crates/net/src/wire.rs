@@ -341,7 +341,9 @@ impl WeaponCuesMessage {
 ///
 /// Bumped to 16 for the protected knockback velocity in player movement state.
 /// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
-pub const SNAPSHOT_VERSION: u16 = 18;
+/// Bumped to 19 for the protected push-drift velocity in player movement state;
+/// `WireMovementState::Swim` and the swim re-entry latch share that bump.
+pub const SNAPSHOT_VERSION: u16 = 19;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -1314,6 +1316,7 @@ mod tests {
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
             knockback_velocity: [0.0; 3],
+            push_velocity: [0.0; 3],
             velocity: [0.0, 3.5, -1.0],
             ground: WireGroundRef::Airborne,
             air_jumps_remaining: 1,
@@ -1327,6 +1330,7 @@ mod tests {
             coyote_timer_ms: 80.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: true,
+            swim_reentry_latched: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
             aim_pitch: -0.45,
@@ -1593,13 +1597,32 @@ mod tests {
                 eye_current: 0.8,
                 floor_normal: None,
             },
+            WireMovementState::Swim { fluid: 2 },
         ] {
-            let movement = WirePlayerMovementState {
-                movement_state: state,
-                ..sample_movement()
-            };
-            assert!(round_trips(&movement));
+            for swim_reentry_latched in [false, true] {
+                let movement = WirePlayerMovementState {
+                    movement_state: state,
+                    swim_reentry_latched,
+                    ..sample_movement()
+                };
+                assert!(round_trips(&movement));
+            }
         }
+    }
+
+    // A swimmer's drift layer carries vertical push; all three axes cross the
+    // wire.
+    #[test]
+    fn swimming_movement_state_round_trips_its_vertical_drift() {
+        let movement = WirePlayerMovementState {
+            movement_state: WireMovementState::Swim { fluid: 0 },
+            push_velocity: [1.5, -2.25, 0.5],
+            ..sample_movement()
+        };
+        assert!(round_trips(&movement));
+        let bytes = encode(&movement);
+        let decoded: WirePlayerMovementState = decode(&bytes).expect("decodes");
+        assert_eq!(decoded.push_velocity, [1.5, -2.25, 0.5]);
     }
 
     #[test]
@@ -1844,10 +1867,12 @@ mod tests {
 
     #[test]
     fn presentation_message_payloads_round_trip_on_current_snapshot_version() {
-        assert_eq!(
-            SNAPSHOT_VERSION, 18,
-            "presentation state and clock require snapshot version 18"
-        );
+        const {
+            assert!(
+                SNAPSHOT_VERSION >= 18,
+                "presentation state and clock require snapshot version 18"
+            );
+        }
 
         let spawn = ServerPresentationMessage {
             payload: ServerPresentationPayload::Spawn {
@@ -2336,10 +2361,12 @@ mod tests {
     #[test]
     fn knockback_snapshot_version_rejects_immediately_previous_layout() {
         const PRE_KNOCKBACK_SNAPSHOT_VERSION: u16 = 15;
-        assert_eq!(
-            SNAPSHOT_VERSION, 18,
-            "presentation state retains the protected knockback layout at snapshot version 18"
-        );
+        const {
+            assert!(
+                SNAPSHOT_VERSION > PRE_KNOCKBACK_SNAPSHOT_VERSION,
+                "later layouts retain the protected knockback field"
+            );
+        }
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
             version: PRE_KNOCKBACK_SNAPSHOT_VERSION,
@@ -2947,8 +2974,11 @@ mod tests {
     /// field.
     #[test]
     fn non_finite_movement_state_rejects_each_field() {
-        let mutators: [fn(&mut WirePlayerMovementState); 17] = [
+        let mutators: [fn(&mut WirePlayerMovementState); 20] = [
             |m| m.knockback_velocity[0] = f32::NAN,
+            |m| m.push_velocity[0] = f32::NAN,
+            |m| m.push_velocity[1] = f32::INFINITY,
+            |m| m.push_velocity[2] = f32::NEG_INFINITY,
             |m| m.knockback_velocity[1] = f32::INFINITY,
             |m| m.knockback_velocity[2] = f32::NEG_INFINITY,
             |m| m.velocity[0] = f32::NAN,
@@ -3551,12 +3581,13 @@ mod tests {
             Err(ValidationError::NonFiniteScriptTime)
         );
         snapshot.server_script_time = 0.0;
-        snapshot.version = 17;
+        // The layout before the push-drift layer.
+        snapshot.version = 18;
         assert!(matches!(
             snapshot.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 18,
-                received: 17
+                expected: 19,
+                received: 18
             })
         ));
     }

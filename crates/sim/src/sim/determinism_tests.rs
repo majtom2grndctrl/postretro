@@ -151,6 +151,7 @@ impl RecordedCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -701,7 +702,7 @@ impl SimHarness {
             &self.world,
             &self.hit_zones,
             None,
-            GRAVITY,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
@@ -1352,6 +1353,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
         }),
         crouch: None,
         slide: None,
+        swim: None,
         view_feel: None,
     }
 }
@@ -1736,6 +1738,7 @@ fn run_driven_agent_sim_tick(
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -1754,7 +1757,7 @@ fn run_driven_agent_sim_tick(
         world,
         hit_zones,
         Some(nav_graph),
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         None,
         anim_time,
         progress,
@@ -3607,11 +3610,18 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     };
 
-    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+    let events = super::run_movement_tick(
+        &registry,
+        &floor_world(),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        &input,
+        DT,
+    );
 
     assert_eq!(
         events
@@ -3676,11 +3686,18 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     };
 
-    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+    let events = super::run_movement_tick(
+        &registry,
+        &floor_world(),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        &input,
+        DT,
+    );
 
     assert_eq!(
         events
@@ -3742,11 +3759,18 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        facing_pitch: 0.0,
         use_pressed: false,
         drop_pressed: false,
     };
 
-    let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
+    let events = super::run_movement_tick(
+        &registry,
+        &floor_world(),
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
+        &input,
+        DT,
+    );
 
     assert_eq!(
         events
@@ -3807,6 +3831,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -3826,7 +3851,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         &world,
         &hit_zones,
         None,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         Some(weapon),
         0.0,
         &mut progress,
@@ -3889,6 +3914,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -3908,7 +3934,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         &world,
         &hit_zones,
         None,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         Some(weapon),
         0.0,
         &mut progress,
@@ -3977,6 +4003,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -3996,7 +4023,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         &world,
         &hit_zones,
         None,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         Some(weapon),
         0.0,
         &mut progress,
@@ -4070,6 +4097,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            facing_pitch: 0.0,
             use_pressed: false,
             drop_pressed: false,
         },
@@ -4089,7 +4117,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         &world,
         &hit_zones,
         None,
-        GRAVITY,
+        postretro_collision::EnvironmentView::level_only(GRAVITY),
         Some(weapon),
         0.0,
         &mut progress,

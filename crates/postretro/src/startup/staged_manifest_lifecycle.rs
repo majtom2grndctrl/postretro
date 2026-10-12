@@ -300,6 +300,11 @@ impl App {
             if committed && self.has_installed_level() {
                 self.rebuild_reactions_after_staged_commit();
             }
+            if committed {
+                // A reload that declares, drops or reorders fluids re-resolves
+                // the installed level's fluid volumes against the new table.
+                self.refresh_environment_fluids();
+            }
             // Ahead of the UI commit so the first frame that presents the
             // reloaded UI already renders through the reloaded bloom profile.
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
@@ -385,6 +390,7 @@ mod tests {
                 sentiment: Vec::new(),
                 faction_sentiment_decay: 0.0,
                 entity_faction_names: Vec::new(),
+                fluids: Default::default(),
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),

@@ -22,6 +22,7 @@ use crate::scripting_systems::hit_zones::nearest_entity_hit;
 use crate::scripting_systems::hit_zones::{
     EntityRayHit, HitZoneStore, nearest_entity_hit_ignoring,
 };
+use postretro_collision::EnvironmentView;
 
 pub mod activation_prediction;
 pub mod execution;
@@ -35,6 +36,9 @@ pub use client_resolution::resolve_client_shot;
 pub use client_resolution::resolve_test_client_shot;
 mod client_pull;
 mod damage;
+mod fluid_splash;
+#[cfg(test)]
+mod fluid_splash_tests;
 mod impact;
 pub mod spread;
 
@@ -44,6 +48,7 @@ pub use client_pull::{
 };
 
 pub use damage::DamagePayload;
+pub use fluid_splash::FluidSplashFact;
 pub use impact::{
     IMPACT_PARTICLE_COUNT, lifetime as impact_lifetime, spawn_impact_effect_at,
     spawn_impact_effects_for_contacts, spawn_projectile_impact_light,
@@ -146,6 +151,10 @@ pub struct ClientFireResolution {
     /// Predicted world contacts, declared alongside `hits` so the host sees
     /// every contact of the shot.
     pub world_contacts: Vec<WorldContact>,
+    /// Fluid surfaces the predicted pellets crossed before their blocking
+    /// hits, nearest first per pellet. Presentation only: never declared to
+    /// the host, which resolves no splash for a client's shot.
+    pub fluid_splashes: Vec<FluidSplashFact>,
     /// A projectile launch is deferred to the connected client's post-loop
     /// presentation path. It must not produce a same-frame hit declaration.
     pub projectile_launch: Option<ProjectileLaunch>,
@@ -445,6 +454,9 @@ pub struct WeaponFireEvents {
     pub resolved_shot: Option<ResolvedWeaponShot>,
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impacts: Vec<WeaponImpact>,
+    /// Fluid surfaces each hitscan pellet crossed before its blocking hit, in
+    /// pellet order and nearest first within a pellet.
+    pub(crate) fluid_splashes: Vec<FluidSplashFact>,
     pub(crate) projectile_launches: Vec<ProjectileLaunch>,
     /// Filled only by the mutable caller after it materializes a launch intent.
     pub(crate) spawned: Vec<ActivationOutcome>,
@@ -577,6 +589,7 @@ pub fn tick_resolved(
         command,
         &WeaponPlacementDescriptor::default(),
         collision_world,
+        EnvironmentView::level_only(0.0),
         hit_zone_store,
         anim_time,
         fire,
@@ -596,6 +609,7 @@ pub fn tick_resolved_component(
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     fire: WeaponFireAuthorization,
@@ -647,6 +661,7 @@ pub fn tick_resolved_component(
                 origin,
                 direction,
                 collision_world,
+                environment,
                 registry,
                 hit_zone_store,
                 anim_time,
@@ -687,6 +702,7 @@ pub fn resolve_activation_shot(
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     shot: ResolvedWeaponShot,
@@ -700,6 +716,7 @@ pub fn resolve_activation_shot(
         command,
         placement,
         collision_world,
+        environment,
         hit_zone_store,
         anim_time,
         shot,
@@ -717,6 +734,7 @@ pub fn resolve_activation_shot_owned(
     command: &WeaponFireCommand,
     placement: &WeaponPlacementDescriptor,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     shot: ResolvedWeaponShot,
@@ -733,6 +751,7 @@ pub fn resolve_activation_shot_owned(
         command,
         placement,
         collision_world,
+        environment,
         hit_zone_store,
         anim_time,
         WeaponFireAuthorization::Accepted,
@@ -782,6 +801,7 @@ fn fire_hitscan(
     origin: Vec3,
     direction: Vec3,
     collision_world: &CollisionWorld,
+    environment: EnvironmentView<'_>,
     registry: &EntityRegistry,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
@@ -802,6 +822,8 @@ fn fire_hitscan(
         resolved_shot: None,
         activate: Some(WeaponActivation { origin, direction }),
         impacts: Vec::with_capacity(pellet_count as usize),
+        // Most shots cross no fluid, so this allocates only on a first splash.
+        fluid_splashes: Vec::new(),
         projectile_launches: Vec::new(),
         spawned: Vec::new(),
         dry_fire: false,
@@ -822,7 +844,7 @@ fn fire_hitscan(
                     pellet_rng.next_f32(),
                     pellet_rng.next_f32(),
                 );
-                let mut impact = match resolve_nearest_hit(NearestHitQuery {
+                let nearest = resolve_nearest_hit(NearestHitQuery {
                     owner_pawn,
                     origin,
                     direction: pellet_direction,
@@ -831,7 +853,16 @@ fn fire_hitscan(
                     hit_zone_store,
                     anim_time,
                     range,
-                }) {
+                });
+                fluid_splash::collect_pellet_splashes(
+                    environment,
+                    origin,
+                    pellet_direction,
+                    nearest.as_ref().map(NearestHit::toi),
+                    range,
+                    &mut events.fluid_splashes,
+                );
+                let mut impact = match nearest {
                     Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
                     Some(NearestHit::World(world)) => WeaponImpact {
                         point: world.point,
@@ -1056,6 +1087,16 @@ struct WorldHit {
 enum NearestHit {
     World(WorldHit),
     Entity(EntityRayHit),
+}
+
+impl NearestHit {
+    /// Ray parameter of the blocking hit, in units of the fire direction.
+    fn toi(&self) -> f32 {
+        match self {
+            NearestHit::World(hit) => hit.toi,
+            NearestHit::Entity(hit) => hit.toi,
+        }
+    }
 }
 
 /// Cast the fire ray against world geometry and the nearest targetable entity,
@@ -1778,6 +1819,7 @@ pub(crate) mod tests {
             &command,
             &placement,
             &CollisionWorld::new(),
+            EnvironmentView::level_only(0.0),
             &HitZoneStore::new(),
             0.0,
             WeaponFireAuthorization::Accepted,
@@ -2599,6 +2641,7 @@ pub(crate) mod tests {
             &command,
             &WeaponPlacementDescriptor::default(),
             &CollisionWorld::new(),
+            EnvironmentView::level_only(0.0),
             &zones,
             0.0,
             WeaponFireAuthorization::Accepted,
@@ -3323,6 +3366,7 @@ pub(crate) mod tests {
         let target = EntityId::from_raw(2);
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3382,6 +3426,7 @@ pub(crate) mod tests {
     fn predicted_projectile_impact_marks_hitmarker_after_later_resolution() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: Vec::new(),
             projectile_launch: None,
@@ -3415,6 +3460,7 @@ pub(crate) mod tests {
     fn shot_verdict_accept_confirms_predicted_markers() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3454,6 +3500,7 @@ pub(crate) mod tests {
     fn shot_verdict_authorized_miss_keeps_fire_state_and_retracts_hitmarker() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3493,6 +3540,7 @@ pub(crate) mod tests {
     fn shot_verdict_reject_retracts_presentation_and_keeps_correlated_recovery() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3534,6 +3582,7 @@ pub(crate) mod tests {
     fn shot_verdict_reject_removes_only_matching_predicted_projectile() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: Vec::new(),
             projectile_launch: None,
@@ -3623,6 +3672,7 @@ pub(crate) mod tests {
     fn duplicate_or_late_reject_does_not_undo_accepted_predicted_shot() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3667,6 +3717,7 @@ pub(crate) mod tests {
     fn hit_refusal_retires_feedback_keeps_flight_and_later_fire_denial_retracts_it() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,
@@ -3786,6 +3837,7 @@ pub(crate) mod tests {
     fn stale_reject_does_not_overwrite_fresh_authoritative_cooldown() {
         let resolution = ClientFireResolution {
             world_contacts: Vec::new(),
+            fluid_splashes: Vec::new(),
             client_tick: 9,
             hits: vec![LocalHitRecord {
                 normal: Vec3::Y,

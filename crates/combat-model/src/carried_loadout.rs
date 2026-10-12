@@ -10,6 +10,8 @@ use postretro_foundation::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::FluidMovementTable;
+
 /// State retained by a session seat when its current pawn leaves a level.
 ///
 /// A missing record deliberately seeds no defaults on a fresh seat.
@@ -54,7 +56,7 @@ pub fn restore_carried_health(
 
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 10;
+pub const TUNING_PAYLOAD_EPOCH: u32 = 11;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -155,18 +157,38 @@ impl WieldableTuningPayload {
 /// positions. `movement.view_feel` and `movement.sounds` are always cleared
 /// because they are local presentation rather than predicted simulation tuning;
 /// this tuning payload omits sound keys. Observer cues carry frozen effective
-/// sound keys separately.
+/// sound keys separately. `environment` is the host's level state the client
+/// predicts against ([`EnvironmentTuning`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuningPayload {
     epoch: u32,
     pub movement: Option<PlayerMovementDescriptor>,
     pub wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+    pub environment: EnvironmentTuning,
+}
+
+/// Host level state a connected client resolves environment volumes against.
+///
+/// It rides every pawn's payload because the client never reads its own copy:
+/// prediction and reconcile replay build their environment view from the
+/// installed value. Whole-struct `PartialEq` dedupe on the host resends the
+/// payload whenever a field here changes. Level-scoped, not pawn-scoped, so a
+/// change here alone never rebuilds the client's pawn tuning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvironmentTuning {
+    /// The level default gravity, signed vertical m/s² (worldspawn
+    /// `initialGravity`, then `setGravity`). Never a volume's gravity.
+    pub level_gravity: f32,
+    /// The host's fluid table, movement fields only: a connected client
+    /// resolves level fluid names against this, never its own registry.
+    pub fluids: FluidMovementTable,
 }
 
 impl TuningPayload {
     pub fn new(
         mut movement: Option<PlayerMovementDescriptor>,
         mut wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+        environment: EnvironmentTuning,
     ) -> Self {
         if let Some(descriptor) = movement.as_mut() {
             descriptor.view_feel = None;
@@ -182,7 +204,15 @@ impl TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            environment,
         }
+    }
+
+    /// Whether `other` carries the same pawn-scoped tuning (movement and
+    /// wieldables), whatever its environment. A client keeps its live
+    /// descriptor-derived pawn state across an environment-only change.
+    pub fn same_pawn_tuning(&self, other: &Self) -> bool {
+        self.movement == other.movement && self.wieldables == other.wieldables
     }
 
     /// Construct the only intentionally non-canonical payload shape used by
@@ -192,11 +222,13 @@ impl TuningPayload {
     pub fn new_for_test_preserving_view_feel(
         movement: Option<PlayerMovementDescriptor>,
         wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+        environment: EnvironmentTuning,
     ) -> Self {
         Self {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            environment,
         }
     }
 
@@ -217,5 +249,52 @@ impl TuningPayload {
 
     pub fn muzzle_for_slot(&self, slot: usize) -> Option<&[f32; 3]> {
         self.wieldables.get(slot)?.as_ref()?.muzzle_offset.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::FluidMovementTuning;
+
+    fn payload_with(level_gravity: f32, fluids: &[(&str, f32)]) -> TuningPayload {
+        let fluids = FluidMovementTable::new(
+            fluids
+                .iter()
+                .map(|&(name, viscosity)| FluidMovementTuning {
+                    name: name.to_string(),
+                    viscosity,
+                })
+                .collect(),
+        )
+        .expect("valid fixture table");
+        TuningPayload::new(
+            None,
+            std::array::from_fn(|_| None),
+            EnvironmentTuning {
+                level_gravity,
+                fluids,
+            },
+        )
+    }
+
+    // The host resends on whole-struct inequality, so a level-gravity or
+    // fluid-table change alone must read as a new payload while leaving pawn
+    // tuning untouched: the client applies it without rebuilding its pawn.
+    #[test]
+    fn environment_change_is_a_new_payload_with_the_same_pawn_tuning() {
+        let water = [("water", 2.0)];
+        let before = payload_with(-9.81, &water);
+        for after in [
+            payload_with(-3.0, &water),
+            payload_with(-9.81, &[("water", 2.0), ("lava", 9.0)]),
+            payload_with(-9.81, &[("water", 4.0)]),
+            payload_with(-9.81, &[]),
+        ] {
+            assert_ne!(before, after, "host dedupe must resend the change");
+            assert!(before.same_pawn_tuning(&after));
+        }
+        assert_eq!(before, payload_with(-9.81, &water));
     }
 }

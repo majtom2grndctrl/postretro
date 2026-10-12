@@ -835,6 +835,8 @@ export type PlayerMovementDescriptor = {
   crouch: CrouchParams?,
   --- Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.
   slide: SlideParams?,
+  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.
+  swim: SwimParams?,
   --- Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional.
   viewFeel: ViewFeelParams?,
   --- Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated.
@@ -951,6 +953,22 @@ export type SlideParams = {
   entryBoost: number,
   --- Minimum duration before ordinary exits may apply, in milliseconds. Must be finite and ≥ 0.
   minDurationMs: number,
+}
+
+--- Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades.
+export type SwimParams = {
+  --- Target swim speed in metres/sec. Must be finite and ≥ 0.
+  speed: number,
+  --- Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.
+  accel: number,
+  --- Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.
+  sinkSpeed: number,
+  --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.
+  enterDepth: number,
+  --- Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.
+  exitDepth: number,
+  --- Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0.
+  fluidJumpVelocity: number,
 }
 
 --- First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion.
@@ -1366,6 +1384,24 @@ export type FactionSentimentDescriptor = {
   decay: number?,
 }
 
+--- A substance declared in `ModManifest.fluids`, built with `defineFluid`. A map's `fluid_volume` names it through its `fluid` key; the volume owns the place, this owns what being in it is like. Declaration order assigns each fluid's index. A field out of range, or a second declaration of an existing name, is rejected with a warning naming the field; the first declaration stands and the rest of the manifest is kept. Fluids never affect co-op compatibility.
+export type FluidDescriptor = {
+  --- Non-empty name a `fluid_volume`'s `fluid` key refers to. Unique within the manifest; a later duplicate is rejected.
+  name: string,
+  --- Drag while swimming, 1/s. Finite and >= 0. A volume naming no declared fluid loads dry.
+  viscosity: number,
+  --- Full-screen tint while the camera eye is inside: red, green, blue, then strength. Each finite and in [0, 1].
+  viewTint: {number},
+  --- World-sound low-pass while the camera eye is inside: 0 none, 1 maximum. Finite and in [0, 1].
+  muffle: number,
+  --- Opacity of the fluid's visible surface faces. Finite and in [0, 1].
+  surfaceOpacity: number,
+  --- Optional sound key played when a swim starts in this fluid.
+  enterSound: string?,
+  --- Optional sound key played when a swim in this fluid ends.
+  exitSound: string?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -1394,6 +1430,8 @@ export type ModManifest = {
   sentiment: {FactionSentimentDescriptor}?,
   --- Optional non-negative default rate for live faction sentiment to ease back to authored baselines. Defaults to 0 (hold); an authored pair `decay` overrides it.
   factionSentimentDecay: number?,
+  --- Engine-global fluid declarations, each built with `defineFluid`. Optional; declaration order assigns each fluid's index. A rejected entry warns and is skipped without rejecting the manifest. A hot reload may add, remove or retune fluids.
+  fluids: {FluidDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + optional `alwaysOn` / `hideBelow`). Optional; malformed entries are logged and skipped without aborting boot.
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
@@ -1519,10 +1557,10 @@ declare function storeRead(name: string): any
 --- Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Per-owner slots require an owner-addressed write and are rejected. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts.
 declare function storeWrite(name: string, value: any): ()
 
---- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The SDK wraps this as `getGravity`.
+--- Return the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. Inside a `gravity_volume` the volume's own value holds; this still returns the level default. The SDK wraps this as `getGravity`.
 declare function worldGetGravity(): number
 
---- Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`.
+--- Set the level default gravity in m/s² (negative = downward; positive = upward): the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. NaN and non-finite values are ignored with a warning so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The SDK wraps this as `setGravity`.
 declare function worldSetGravity(value: number): ()
 --- Generated engine-owned state reference tree returned by `getGameState()`.
 export type GameStateRefs = {
@@ -1577,12 +1615,14 @@ export type GameStateRefs = {
     cellCapacity: PlayerComputedRef<number>,
     health: PlayerComputedRef<number>,
     heat: PlayerComputedRef<number>,
+    immersion: PlayerComputedRef<number>,
     maxHealth: PlayerComputedRef<number>,
     overheatAt: PlayerComputedRef<number>,
     overheated: PlayerComputedRef<boolean>,
     reloadActive: PlayerComputedRef<boolean>,
     reloadProgress: PlayerComputedRef<number>,
     spread: ComputedRef<number>,
+    swimming: PlayerComputedRef<boolean>,
     weapon: {
       current: ComputedRef<string>,
       pending: ComputedRef<string>,
@@ -1751,14 +1791,18 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
 
---- Current world gravity in m/s² (negative = downward; positive = upward).
---- Seeded from the worldspawn `initialGravity` KVP at level load and
---- persists until the next level load or `setGravity` call.
+--- Level default gravity in m/s² (negative = downward; positive = upward):
+--- the gravity outside every gravity volume. Seeded from the worldspawn
+--- `initialGravity` KVP at level load and persists until the next level load
+--- or `setGravity` call. Inside a `gravity_volume` the volume's own value
+--- holds; this still returns the level default.
 declare function getGravity(): number
 
---- Set world gravity in m/s² (negative = downward; positive = upward).
---- NaN and non-finite values are ignored with a warning. Effect is immediate
---- and persists until the next level load or another `setGravity` call.
+--- Set the level default gravity in m/s² (negative = downward; positive =
+--- upward): the gravity outside every gravity volume. A `gravity_volume`'s
+--- value holds inside it regardless. NaN and non-finite values are ignored
+--- with a warning. Effect is immediate and persists until the next level load
+--- or another `setGravity` call.
 declare function setGravity(value: number): ()
 
 --- Per-channel keyframe accepted by `timeline` / `sequence`.
@@ -2481,7 +2525,7 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`;
 --- `:` is not allowed, and the id may not consist entirely of dots.
 --- `version` is displayed and never compared; neither field is a
---- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `maps`, `uiTrees`,
+--- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
 --- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
@@ -2496,6 +2540,11 @@ declare function defineFaction(name: string): FactionDescriptor
 --- Optional non-negative `decay` overrides the global return rate; zero holds
 --- this pair after a runtime change.
 declare function sentiment(fromFaction: string, toFaction: string, values: { sentiment: number, tolerance: number, decay: number? }): FactionSentimentDescriptor
+--- Pure identity builder for a fluid declaration in `fluids` on the returned
+--- mod manifest. A map's `fluid_volume` names it through its `fluid` key;
+--- declaration order assigns its index. A field out of range, or a repeated
+--- name, is rejected with a warning naming the field; the first stands.
+declare function defineFluid(desc: FluidDescriptor): FluidDescriptor
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
@@ -2585,6 +2634,7 @@ export type ModManifestInput = {
   factions: {FactionDescriptor}?,
   sentiment: {FactionSentimentDescriptor}?,
   factionSentimentDecay: number?,
+  fluids: {FluidDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
   presentationOverlays: PresentationOverlay?,
@@ -3188,9 +3238,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
-    & ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
+    & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
   playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
@@ -3247,9 +3297,9 @@ export type PostretroModule = {
   --- Map-placed members of one kind (`mover`, `trigger`, `light`, `fog`, `emitter`, `spawner`), as handles.
   --- Callable only inside a level's data script (module evaluation or `setupLevel`).
   getMapEntities: typeof(getMapEntities),
-  --- Current world gravity in m/s².
+  --- Level default gravity in m/s² (negative = downward): the gravity outside every gravity volume. Inside a `gravity_volume` the volume's own value holds; this still returns the level default.
   getGravity: typeof(getGravity),
-  --- Set world gravity in m/s²; non-finite values are ignored with a warning.
+  --- Set the level default gravity in m/s²: the gravity outside every gravity volume. A `gravity_volume`'s value holds inside it regardless. Non-finite values are ignored with a warning.
   setGravity: typeof(setGravity),
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
@@ -3280,6 +3330,8 @@ export type PostretroModule = {
   defineFaction: typeof(defineFaction),
   --- Build one directed faction relationship for a mod manifest.
   sentiment: typeof(sentiment),
+  --- Pure identity builder for a fluid declaration in a mod manifest's `fluids`.
+  defineFluid: typeof(defineFluid),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
   --- Pure identity builder for reusable first-person weapon placement data.

@@ -13,6 +13,7 @@ use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsValidationInputs, cluster_sh_isolated_atlas_array_layout,
     source_metadata_from_sections,
 };
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
@@ -202,6 +203,11 @@ pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
             SectionId::FogVolumes,
             1,
             FogVolumesSection::default().to_bytes(),
+        ),
+        blob(
+            SectionId::EnvironmentVolumes,
+            1,
+            EnvironmentVolumesSection::default().to_bytes(),
         ),
         blob(SectionId::OctahedralShVolume, 1, base.to_bytes()),
         blob(

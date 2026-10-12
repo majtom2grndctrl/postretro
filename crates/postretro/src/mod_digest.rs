@@ -40,6 +40,10 @@ pub(crate) fn mod_compatibility_digest(
 }
 
 /// Produce the compatibility digest from committed mod-global registry state.
+///
+/// Named skip: `registry.fluids`. A client resolves fluid names only against
+/// the host's table from the tuning payload, never its own declarations, so
+/// fluids that differ from the host's must not demote participation.
 pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
     mod_compatibility_digest(
         &registry.factions,
@@ -358,6 +362,7 @@ pub(crate) mod tests {
             sentiment: Vec::new(),
             faction_sentiment_decay: 0.0,
             entity_faction_names: vec![None],
+            fluids: Default::default(),
             ui_trees: Vec::new(),
             presentation_templates: Vec::new(),
             presentation_overlays: Vec::new(),
@@ -390,6 +395,7 @@ pub(crate) mod tests {
         registry.replace_global_crossings(manifest.crossings.clone());
         registry.replace_global_trigger_events(manifest.trigger_events.clone());
         registry.replace_global_trigger_pools(manifest.trigger_pools.clone());
+        registry.replace_fluids(manifest.fluids.clone());
         mod_compatibility_digest_from_registry(&registry)
     }
 
@@ -448,6 +454,7 @@ pub(crate) mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -871,6 +878,61 @@ pub(crate) mod tests {
                 expected,
                 manifest_digest(&changed),
                 "entity descriptor {field} is intentionally outside the mod digest"
+            );
+        }
+    }
+
+    // Fluid declarations never demote a client whose fluids differ from the host's.
+    #[test]
+    fn digest_ignores_adding_removing_reordering_and_retuning_fluids() {
+        fn fluid(name: &str, viscosity: f32) -> postretro_foundation::FluidDescriptor {
+            postretro_foundation::FluidDescriptor {
+                name: name.to_string(),
+                viscosity,
+                view_tint: [0.1, 0.3, 0.4, 0.35],
+                muffle: 0.8,
+                surface_opacity: 0.6,
+                enter_sound: None,
+                exit_sound: None,
+            }
+        }
+        fn fluids(
+            entries: Vec<postretro_foundation::FluidDescriptor>,
+        ) -> postretro_foundation::FluidRegistry {
+            postretro_foundation::FluidRegistry::from_declarations(
+                "digest",
+                entries.into_iter().map(Ok),
+            )
+        }
+
+        let mut baseline = manifest();
+        baseline.fluids = fluids(vec![fluid("water", 2.0), fluid("sludge", 6.0)]);
+        let expected = manifest_digest(&baseline);
+
+        let mut retinted = fluid("water", 2.0);
+        retinted.view_tint = [1.0, 0.0, 0.0, 1.0];
+        retinted.enter_sound = Some("sfx/splash_in".to_string());
+        for (edit, edited) in [
+            (
+                "added",
+                vec![
+                    fluid("water", 2.0),
+                    fluid("sludge", 6.0),
+                    fluid("lava", 9.0),
+                ],
+            ),
+            ("removed", vec![fluid("water", 2.0)]),
+            ("reordered", vec![fluid("sludge", 6.0), fluid("water", 2.0)]),
+            ("retuned", vec![fluid("water", 3.5), fluid("sludge", 6.0)]),
+            ("restyled", vec![retinted, fluid("sludge", 6.0)]),
+            ("cleared", Vec::new()),
+        ] {
+            let mut changed = baseline.clone();
+            changed.fluids = fluids(edited);
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "{edit} fluids are intentionally outside the mod digest"
             );
         }
     }

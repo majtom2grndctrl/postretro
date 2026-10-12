@@ -12,7 +12,7 @@ use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
 };
-use postretro_foundation::{GroundRef, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
@@ -164,6 +164,10 @@ pub(super) fn integrate_collision(
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
     let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
+    // The drift layer is 3D only while swimming (`push::apply`), and contact
+    // leaves its vertical part to the fluid (`push::project_drift`); the state
+    // does not change inside the substrate.
+    let drift_is_3d = matches!(component.movement_state, MovementState::Swim { .. });
 
     let mut current_pos = apply_mover_carry(position, previous_ground, collision);
     current_pos =
@@ -262,6 +266,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal, drift_is_3d);
                     component.velocity.y = 0.0;
                     component.knockback_velocity.y = 0.0;
                     if toi <= 1e-6 {
@@ -326,6 +331,7 @@ pub(super) fn integrate_collision(
                     let v_dot_n = component.velocity.dot(normal);
                     component.velocity -= normal * v_dot_n;
                     super::knockback::project(&mut component.knockback_velocity, normal);
+                    super::push::project_drift(&mut component.push_velocity, normal, drift_is_3d);
                     if toi <= 1e-6 {
                         // Separation nudge, not a physics step: see floor
                         // branch above for rationale. Zero remaining_dt
@@ -350,7 +356,8 @@ pub(super) fn integrate_collision(
     // distinct wall projections (commonly perpendicular interior corners)
     // without making meaningful forward progress.
     //
-    // When triggered we zero `velocity.x`/`velocity.z` and roll back the
+    // When triggered we zero the horizontal part of `velocity` and of both
+    // protected layers (knockback and drift) and roll back the
     // horizontal component of `current_pos` to its pre-slide value, killing
     // the residual XZ wobble that wall nudges and alternating projections
     // leave at a corner wedge. `velocity.y` and any vertical motion from
@@ -369,6 +376,10 @@ pub(super) fn integrate_collision(
             component.velocity.z = 0.0;
             component.knockback_velocity.x = 0.0;
             component.knockback_velocity.z = 0.0;
+            // Horizontal only, like the lines above: a swimmer's drift keeps
+            // its vertical current (`push::project_drift`).
+            component.push_velocity.x = 0.0;
+            component.push_velocity.z = 0.0;
             current_pos.x = slide_start_xz.x;
             current_pos.z = slide_start_xz.y;
         }
@@ -607,21 +618,104 @@ pub(super) fn standup_clearance_probe(
     standing_half_height: f32,
 ) -> bool {
     let head_rise = 2.0 * (standing_half_height - crouched_half_height);
-    if head_rise <= 0.0 {
-        // Already standing-or-taller: no growth needed, so nothing to clear.
+    upward_clearance_probe(
+        component,
+        collision,
+        position,
+        crouched_half_height,
+        head_rise,
+    )
+}
+
+/// Stand-up clearance in the direction `anchor` grows the capsule: `Feet`
+/// raises the head by `2 × (standing_half_height − crouched_half_height)`, the
+/// upward sweep [`standup_clearance_probe`] runs; `Head` lowers the feet by the
+/// same distance, so the crouched capsule sweeps down instead. The swim seam
+/// stands a crouched pawn up with the anchor its crouch entered with, so an
+/// airborne pawn tests the floor below it, not the ceiling above. Returns
+/// `true` when the growth is CLEAR.
+pub(super) fn anchored_standup_clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    crouched_half_height: f32,
+    standing_half_height: f32,
+    anchor: ResizeAnchor,
+) -> bool {
+    let growth = 2.0 * (standing_half_height - crouched_half_height);
+    let direction = match anchor {
+        ResizeAnchor::Feet => Vec3::Y,
+        ResizeAnchor::Head => Vec3::NEG_Y,
+    };
+    clearance_probe(
+        component,
+        collision,
+        position,
+        crouched_half_height,
+        direction,
+        growth,
+    )
+}
+
+/// Upward headroom probe: can a capsule of `half_height` (the live radius)
+/// centred at `position` rise `rise` metres straight up without hitting
+/// anything? Sweeps that capsule up by `rise`; a hit strictly within it blocks.
+/// A rise of zero or less needs nothing cleared. Shared by crouch stand-up
+/// (through [`standup_clearance_probe`]) and the swim seam's fluid-jump
+/// qualification. Returns `true` when headroom is CLEAR.
+pub(super) fn upward_clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    half_height: f32,
+    rise: f32,
+) -> bool {
+    clearance_probe(component, collision, position, half_height, Vec3::Y, rise)
+}
+
+/// Can a capsule of `half_height` (the live radius) centred at `position`
+/// sweep `distance` metres along the unit vertical `direction` without hitting
+/// anything? A hit strictly within the distance blocks; a distance of zero or
+/// less needs nothing cleared.
+fn clearance_probe(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    half_height: f32,
+    direction: Vec3,
+    distance: f32,
+) -> bool {
+    if distance <= 0.0 {
         return true;
     }
-    // Build the crouched-size parry capsule (radius unchanged). The parry
-    // shape stays inside this collision-boundary call; the result crosses back
-    // as a plain bool.
-    let capsule = Capsule::new_y(crouched_half_height, component.capsule.radius);
-    let hit = cast_capsule_query(collision, position, &capsule, Vec3::Y, head_rise);
-    // A hit strictly within the head-rise distance blocks standing. `None`
-    // (nothing within range) or a hit at/after the full rise is clear.
+    // The parry shape stays inside this collision-boundary call; the result
+    // crosses back as a plain bool.
+    let capsule = Capsule::new_y(half_height, component.capsule.radius);
+    let hit = cast_capsule_query(collision, position, &capsule, direction, distance);
+    // `None` (nothing within range) or a hit at/after the full distance is clear.
     match hit {
-        Some(h) => h.time_of_impact >= head_rise,
+        Some(h) => h.time_of_impact >= distance,
         None => true,
     }
+}
+
+/// Ceiling contact probe: does a downward-facing surface bear the capsule
+/// centred at `position` from above? The slide loop leaves a body pressed into
+/// a ceiling `SKIN_DISTANCE` short of it, so a sweep up by one more skin width
+/// hits that ceiling at once; a body that has moved clear of it misses. Only a
+/// hit whose normal points down counts. Movement does not track ceiling
+/// contact between ticks, so the swim drift cap asks here, and only on a tick
+/// the cap changes the drift's vertical part (`push::cap_swim_drift`).
+pub(super) fn touches_ceiling(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+) -> bool {
+    let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
+    matches!(
+        cast_capsule_query(collision, position, &capsule, Vec3::Y, SKIN_DISTANCE),
+        Some(h) if h.normal.y < 0.0
+    )
 }
 
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge

@@ -150,6 +150,7 @@ impl PreparedCapture {
             streaming.pool_cap_layers = cap;
         }
         renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
+        renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
         let forced_active_writes = install_forced_active_animation_descriptors(
             &mut renderer,
             &world.lights,
@@ -234,6 +235,20 @@ impl PreparedCapture {
             mover_collector.shadow_instances(),
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
+        // Capture loads no manifest, so every fluid volume draws at the fixed
+        // capture opacity.
+        let mut fluid_collector =
+            postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new();
+        renderer.set_fluid_surface_draws(fluid_collector.collect(
+            &world.environment_volumes.volumes,
+            &visible_render.visible_cells,
+            |cell| world.cell_bounds(cell as usize),
+            eye,
+            |volume| {
+                (!world.environment_volumes.volumes[volume].fluid.is_empty())
+                    .then_some(crate::fluid_presentation::CAPTURE_FLUID_SURFACE_OPACITY)
+            },
+        ));
         renderer.set_mesh_draws(mesh_collector.instances());
         let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
 

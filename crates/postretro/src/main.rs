@@ -9,6 +9,7 @@ mod app;
 mod camera;
 #[cfg(test)]
 mod coop_fixture_tests;
+mod fluid_presentation;
 mod frame_eye;
 mod frame_loop;
 mod host_activations;
@@ -275,6 +276,10 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
                 app.observer_weapon_cues.clear();
+                // Demotion dropped the host's tuning: until the next one
+                // installs, this client's volumes keep gravity and push but
+                // every fluid is dry.
+                app.refresh_environment_fluids();
             }
             ServerControlMessage::Tuning(bytes) => {
                 let script_ctx = app
@@ -291,6 +296,10 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
                     endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
                 }
+                // The host's fluid table rides this payload. Re-resolve the
+                // installed volumes against it before any prediction or replay
+                // this frame reads them with the payload's viscosities.
+                app.refresh_environment_fluids();
             }
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
@@ -971,6 +980,19 @@ pub(crate) struct App {
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
+    /// The level's environment volumes (gravity, push, fluid regions). Empty until
+    /// a level installs volumes and after unload; every movement and agent step
+    /// resolves against it beside the level gravity.
+    environment_volumes: postretro_collision::EnvironmentVolumes,
+    /// The fluid table `environment_volumes` resolved its fluid names against:
+    /// the host's own registry offline or hosting, the host's table from the
+    /// installed tuning on a connected client (empty before one installs).
+    /// Fluid indices in the volumes, and every view's viscosities, index it.
+    environment_fluids: postretro_combat_model::FluidMovementTable,
+    /// Where `environment_fluids` came from. A connected client awaiting the
+    /// host's table builds every volume with its fluid dry, so gravity and
+    /// push still hold; the host's table re-resolves the fluids on arrival.
+    environment_fluid_source: startup::environment_install::FluidTableSource,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes
@@ -982,6 +1004,10 @@ pub(crate) struct App {
     mover_yaw_carry_ground: postretro_foundation::GroundRef,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
+    /// Render-stage CPU collector for the level's visible fluid surfaces.
+    fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
+    /// The camera eye's fluid presentation: view tint and world muffle.
+    fluid_eye: fluid_presentation::FluidEye,
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
@@ -1457,6 +1483,7 @@ fn build_sim_command(
             running: sprint,
             crouch_intent,
             facing_yaw: camera.yaw,
+            facing_pitch: camera.pitch,
             use_pressed,
             drop_pressed,
         },
@@ -2025,6 +2052,7 @@ impl ApplicationHandler for App {
         self.clear_net_level_parity();
         self.discard_pending_system_commands();
         self.clear_surface_lifetime_level_state();
+        self.clear_fluid_eye_presentation();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
         // worker; holding a stale receiver/handle would either block install
@@ -3806,11 +3834,12 @@ impl App {
         client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
-        // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
-        // through `client_receive_and_apply`. Capture the gravity scalar before the
-        // endpoint borrow (a `Cell` copy); the collision world is read by-reference
-        // inside the client arm (a disjoint `self` field from `self.session`).
-        let gravity = script_ctx.gravity.get();
+        // M15 Phase 3 Task 5: the client reconcile replay threads collision and the
+        // environment through `client_receive_and_apply`, which takes the level
+        // gravity from the host's installed tuning, never this process's own. The
+        // collision world and the environment volumes are read by-reference inside
+        // the client arm (disjoint `self` fields from `self.session`).
+        let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
@@ -4159,11 +4188,15 @@ impl App {
                                     hit_zone_store,
                                     pawn,
                                 );
+                                // The materialization send reads the level
+                                // gravity live, so a pawn gained after a
+                                // mid-level `setGravity` predicts with it.
                                 let payload = netcode::tuning_payload_for_pawn(
                                     &registry,
                                     pawn,
                                     &net_descriptors,
                                     net_default_weapon_placement.as_ref(),
+                                    &netcode::host_environment_tuning(&script_ctx),
                                 );
                                 netcode::host_send_tuning_if_changed(
                                     server,
@@ -4202,29 +4235,8 @@ impl App {
                         }
                     }
                 }
-                // Inventory changes have no separate dirty protocol. Rebuild every
-                // participating pawn's small fixed tuning payload each host poll;
-                // `host_send_tuning_if_changed` remains the final wire dedupe.
-                {
-                    let registry = script_ctx.registry.borrow();
-                    for client_id in server.participating_clients() {
-                        let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-                            continue;
-                        };
-                        let payload = netcode::tuning_payload_for_pawn(
-                            &registry,
-                            pawn,
-                            &net_descriptors,
-                            net_default_weapon_placement.as_ref(),
-                        );
-                        netcode::host_send_tuning_if_changed(
-                            server,
-                            last_sent_tuning,
-                            client_id,
-                            payload,
-                        );
-                    }
-                }
+                // Changed tuning for already-pawned slots is resent in
+                // `net_serialize_and_send`, just before the snapshot send.
                 // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo
@@ -4357,7 +4369,7 @@ impl App {
                         hit_zone_store,
                         host_agent_params,
                         &combined_collision,
-                        gravity,
+                        environment_volumes,
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
                         mover_target_tick,
@@ -4671,7 +4683,7 @@ impl App {
             last_emitted_snapshot_tick,
             replication,
             replicable,
-            slot_pawns: _,
+            slot_pawns,
             command_queues,
             owners,
             weapon_owners,
@@ -4683,7 +4695,7 @@ impl App {
             loaded_movers: _,
             demo_mover,
             state_slots,
-            last_sent_tuning: _,
+            last_sent_tuning,
             join_seeds: _,
             missing_identity_warned: _,
             client_pawn_presentation: _,
@@ -4727,6 +4739,21 @@ impl App {
             // projections read the live components directly, so replication observes
             // this frame's settled authoritative state.
             let registry = script_ctx.registry.borrow();
+            // Tuning changed by any of this frame's ticks (inventory, a host
+            // `setGravity`) is queued ahead of the snapshot that first reflects
+            // it, so a catch-up frame cannot deliver that snapshot a flush early.
+            {
+                let data_registry = script_ctx.data_registry.borrow();
+                netcode::host_resend_changed_tuning(
+                    server,
+                    slot_pawns,
+                    last_sent_tuning,
+                    &registry,
+                    &data_registry.entities,
+                    data_registry.default_weapon_placement.as_ref(),
+                    &netcode::host_environment_tuning(&script_ctx),
+                );
+            }
             let slot_table = script_ctx.slot_table.borrow();
             let faction_sentiment = script_ctx.faction_sentiment.borrow();
             let bindings = crate::scripting_systems::presentation_bindings::PresentationBindings {
@@ -5578,13 +5605,15 @@ impl App {
         command: &sim::SimCommand,
         tick_dt: f32,
     ) -> Option<netcode::ClientPredictionTickResult> {
-        let aim_pitch = self.camera.pitch;
         let script_ctx = self
             .session
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())?;
         let Some(netcode::NetEndpoint::Client {
-            client, prediction, ..
+            client,
+            prediction,
+            tuning,
+            ..
         }) = self
             .session
             .as_mut()
@@ -5592,7 +5621,6 @@ impl App {
         else {
             return None;
         };
-        let gravity = script_ctx.gravity.get();
         let mut registry = script_ctx.registry.borrow_mut();
         let mut command = command.clone();
         command.firing_slot = registry
@@ -5615,9 +5643,9 @@ impl App {
             prediction,
             netcode::ClientPredictionTickContext {
                 command: &command,
-                aim_pitch,
                 collision: &combined_collision,
-                gravity,
+                environment_volumes: &self.environment_volumes,
+                host_tuning: tuning.as_deref(),
                 tick_dt,
             },
         ))
@@ -7303,7 +7331,14 @@ mod tests {
             raise_ms: 0,
             block_during_reload: None,
         });
-        let initial = postretro_combat_model::TuningPayload::new(None, slots.clone());
+        let initial = postretro_combat_model::TuningPayload::new(
+            None,
+            slots.clone(),
+            postretro_combat_model::EnvironmentTuning {
+                level_gravity: -9.81,
+                fluids: Default::default(),
+            },
+        );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
         assert_eq!(terms.placement, host_placement);
         assert_eq!(terms.muzzle_offset, Some(Vec3::from_array(host_muzzle)));
@@ -7323,7 +7358,14 @@ mod tests {
         // snapshot refresh. The old component/data values remain irrelevant.
         slots[0].as_mut().unwrap().placement = replacement_placement.clone();
         slots[0].as_mut().unwrap().muzzle_offset = Some(replacement_muzzle);
-        let replacement = postretro_combat_model::TuningPayload::new(None, slots);
+        let replacement = postretro_combat_model::TuningPayload::new(
+            None,
+            slots,
+            postretro_combat_model::EnvironmentTuning {
+                level_gravity: -9.81,
+                fluids: Default::default(),
+            },
+        );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");
         assert_eq!(terms.placement, replacement_placement);
         assert_eq!(
@@ -7712,6 +7754,7 @@ mod tests {
             weapon_a,
             &weapon::ClientFireResolution {
                 world_contacts: Vec::new(),
+                fluid_splashes: Vec::new(),
                 client_tick: 3,
                 hits: Vec::new(),
                 projectile_launch: None,
@@ -7794,6 +7837,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }
@@ -8212,6 +8256,7 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -8237,7 +8282,7 @@ mod tests {
                 &world,
                 &hit_zones,
                 None,
-                -9.81,
+                postretro_collision::EnvironmentView::level_only(-9.81),
                 None,
                 0.0,
                 &mut progress,
@@ -9391,6 +9436,7 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                facing_pitch: 0.0,
                 use_pressed: false,
                 drop_pressed: false,
             },
@@ -9411,7 +9457,7 @@ mod tests {
             &world,
             &hit_zones,
             None,
-            -9.81,
+            postretro_collision::EnvironmentView::level_only(-9.81),
             None,
             0.0,
             &mut progress,
@@ -11067,6 +11113,7 @@ mod tests {
                     sentiment: Vec::new(),
                     faction_sentiment_decay: 0.0,
                     entity_faction_names: Vec::new(),
+                    fluids: Default::default(),
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
@@ -12098,6 +12145,17 @@ mod tests {
             Some(&SlotValue::Boolean(false)),
             "engine-owned player.overheated defaults false and is cloned",
         );
+        // The swim slots default dry, so both are value-bearing.
+        assert_eq!(
+            snapshot.get("player.swimming"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.swimming defaults false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.immersion"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.immersion defaults 0 and is cloned",
+        );
         assert!(
             !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
@@ -12126,7 +12184,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            60,
+            62,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::KnockbackResponse;
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, ViewFeelParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SwimParams, ViewFeelParams,
 };
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
@@ -124,10 +124,11 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// The player's active movement state. Mutually-exclusive: exactly one state
 /// owns the per-tick velocity intent at a time. `tick` dispatches to the
 /// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Four states exist today:
+/// applies any transition the intent returns. Five states exist today:
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
 /// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
-/// shrunk collision capsule), and `Sliding` (speed-preserving crouched motion).
+/// shrunk collision capsule), `Sliding` (speed-preserving crouched motion) and
+/// `Swim` (3D fluid locomotion, entered by immersion rather than input).
 /// Later states (wall-run, vault) plug in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
@@ -140,6 +141,7 @@ pub enum MovementStateKind {
     Dash,
     Crouch,
     Slide,
+    Swim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -180,6 +182,18 @@ pub enum MovementState {
         boost: Vec3,
         eye_current: f32,
     },
+    /// Swimming in a fluid volume. Entered from any state when the tick's
+    /// resolved immersion reaches the descriptor's `swim.enter_depth`, left when
+    /// it falls below `swim.exit_depth` or on a fluid jump. The fluid jump fires
+    /// only from a pawn already in `Swim` at tick start, never on the tick it
+    /// enters. `fluid` is the fluid
+    /// index (into the active fluid table: the host's on a connected client) the
+    /// swimmer is in, set on entry and followed while it swims, so the exit edge
+    /// still names the fluid left after the pawn is already dry. Presentation
+    /// reads it; movement never does (drag comes from each tick's resolve). The
+    /// capsule is always standing size, and the re-entry latch outlives the
+    /// state, so it lives on the component.
+    Swim { fluid: u16 },
 }
 
 impl MovementState {
@@ -190,6 +204,7 @@ impl MovementState {
             Self::Dash { .. } => MovementStateKind::Dash,
             Self::Crouching { .. } => MovementStateKind::Crouch,
             Self::Sliding { .. } => MovementStateKind::Slide,
+            Self::Swim { .. } => MovementStateKind::Swim,
         }
     }
 }
@@ -225,6 +240,9 @@ pub struct PlayerMovementComponent {
     /// dimensions, so a descriptor that enables slide without crouch visibly
     /// degrades to this disabled state during materialization.
     pub slide: Option<SlideParams>,
+    /// Optional swim tuning, materialized from the descriptor's `swim` field.
+    /// `None` ⇒ the pawn cannot swim and walks fluid floors.
+    pub swim: Option<SwimParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
@@ -245,10 +263,20 @@ pub struct PlayerMovementComponent {
     /// to when standing. Seeded from `desc.capsule.eye_height`, never mutated.
     pub standing_eye_height: f32,
     pub ground: GroundRef,
-    /// Total collision-resolved velocity, including the protected knockback layer.
+    /// Total collision-resolved velocity, including the protected knockback and
+    /// push-drift layers.
     pub velocity: Vec3,
     #[serde(default)]
     pub knockback_velocity: Vec3,
+    /// Protected drift a push volume's push has built up, already included in
+    /// `velocity`. While swimming it carries the full 3D push; outside `Swim`
+    /// it is horizontal (`y` is 0), since vertical push joins locomotion
+    /// directly there, and leaving swim folds its `y` into locomotion. Intent
+    /// speed caps and steering never see it; collision projects it like
+    /// knockback, and the medium decays it: the fluid's viscosity while
+    /// swimming, ground friction while grounded, nothing airborne.
+    #[serde(default)]
+    pub push_velocity: Vec3,
     #[serde(default)]
     pub knockback: KnockbackResponse,
     /// The most recent walkable floor-contact normal, forwarded by the
@@ -321,6 +349,11 @@ pub struct PlayerMovementComponent {
     /// the landing-refresh point. Gates coyote so it cannot re-arm once a jump
     /// has been spent for the current airborne stretch.
     pub jump_spent: bool,
+    /// Set by a fluid jump: swim cannot re-enter until the tick's immersion
+    /// first falls below `swim.exit_depth`, which clears it. Predicted state,
+    /// replicated and restored by the reconcile merge like `jump_spent`.
+    #[serde(default)]
+    pub swim_reentry_latched: bool,
 }
 
 impl PlayerMovementComponent {
@@ -376,6 +409,7 @@ impl PlayerMovementComponent {
             dash_programs,
             crouch: desc.crouch.clone(),
             slide,
+            swim: desc.swim.clone(),
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
@@ -389,6 +423,7 @@ impl PlayerMovementComponent {
             ground: GroundRef::Airborne,
             velocity: Vec3::ZERO,
             knockback_velocity: Vec3::ZERO,
+            push_velocity: Vec3::ZERO,
             knockback: desc.knockback,
             last_floor_normal: None,
             air_jumps_remaining,
@@ -406,6 +441,7 @@ impl PlayerMovementComponent {
             coyote_timer_ms: 0.0,
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
+            swim_reentry_latched: false,
         }
     }
 
@@ -464,6 +500,28 @@ impl PlayerMovementComponent {
         // edge derivation, not here.
         self.jump_spent = false;
         self.coyote_timer_ms = 0.0;
+    }
+
+    /// Settle swim state on a component rebuilt from a descriptor (hot reload, a
+    /// client's tuning rebuild) after the live tick state was carried onto it.
+    /// Without a `swim` block the pawn cannot swim, so a carried `Swim` leaves
+    /// as a swim exit does: `Normal`, the drift layer's vertical part folded
+    /// into locomotion, the re-entry latch cleared. `velocity` is total here
+    /// (protected layers included), so the fold zeroes only the layer's `y`;
+    /// total vertical velocity is unchanged. With a `swim` block nothing changes.
+    ///
+    /// The state changes with no exit edge: no `swim_ended` (or any other state
+    /// edge) is emitted on this path. It only follows a dev-time descriptor swap,
+    /// so reactions keyed on the exit never see it.
+    pub fn leave_swim_without_swim_block(&mut self) {
+        if self.swim.is_some() {
+            return;
+        }
+        if matches!(self.movement_state, MovementState::Swim { .. }) {
+            self.movement_state = MovementState::Normal;
+        }
+        self.push_velocity.y = 0.0;
+        self.swim_reentry_latched = false;
     }
 
     pub fn is_grounded(&self) -> bool {
@@ -532,6 +590,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            swim: None,
             view_feel: None,
         }
     }

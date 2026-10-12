@@ -981,11 +981,8 @@ mod tests {
         // The client fires slot 1 at ticks 2 and 18, one recovery apart, then
         // switches to slot 0 from tick 19.
         let stamped = |tick: u32| {
-            let mut command = crate::netcode::wire_convert::sim_command_to_input(
-                &neutral_sim_command(0.0),
-                tick,
-                0.0,
-            );
+            let mut command =
+                crate::netcode::wire_convert::sim_command_to_input(&neutral_sim_command(0.0), tick);
             command.movement.firing_slot = u8::from(tick <= SECOND);
             if tick == 2 || tick == SECOND {
                 command.activation.initiation = Some(postretro_net::wire::WireActivationToken {

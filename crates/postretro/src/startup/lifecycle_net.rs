@@ -56,6 +56,7 @@ impl App {
                 registry.default_weapon_placement.clone(),
             )
         };
+        let environment = crate::netcode::host_environment_tuning(&session.scripting.script_ctx);
         let registry = session.scripting.script_ctx.registry.borrow();
         let Some(crate::netcode::NetEndpoint::Host {
             server,
@@ -66,23 +67,15 @@ impl App {
         else {
             return;
         };
-        for client_id in server.participating_clients() {
-            let Some(pawn) = slot_pawns.pawn_for(client_id) else {
-                continue;
-            };
-            let payload = crate::netcode::tuning_payload_for_pawn(
-                &registry,
-                pawn,
-                &descriptors,
-                default_weapon_placement.as_ref(),
-            );
-            crate::netcode::host_send_tuning_if_changed(
-                server,
-                last_sent_tuning,
-                client_id,
-                payload,
-            );
-        }
+        crate::netcode::host_resend_changed_tuning(
+            server,
+            slot_pawns,
+            last_sent_tuning,
+            &registry,
+            &descriptors,
+            default_weapon_placement.as_ref(),
+            &environment,
+        );
     }
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
@@ -129,6 +122,7 @@ impl App {
         self.kinematic_mover_tick_states.clear();
         self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
+        self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
@@ -184,6 +178,11 @@ impl App {
         self.level = None;
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
+        // No volume of this level may resolve after it unloads; the next install
+        // supplies its own set.
+        self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();
+        // Nor may its fluid tint or muffle.
+        self.clear_fluid_eye_presentation();
         // The registry is cleared below, retiring the chase agent's entity slot;
         // drop the handle so a stale id is never re-targeted after unload.
         #[cfg(feature = "dev-tools")]

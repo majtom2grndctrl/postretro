@@ -1199,6 +1199,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 forgiveness: None,
                 crouch: None,
                 slide: None,
+                swim: None,
                 view_feel: None,
             }),
         )

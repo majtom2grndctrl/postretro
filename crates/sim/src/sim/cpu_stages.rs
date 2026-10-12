@@ -34,6 +34,16 @@ pub enum SimStage {
     SteerPose,
     /// Inside `Steering`: auto-close timers and the mover blocking pass.
     SteerMovers,
+    /// Inside `Tick`: per-body environment resolution (gravity, push, fluid)
+    /// for every body that resolves this tick — host movement's local and
+    /// remote pawns (inside `Movement`) and agent gravity (inside
+    /// `SteerAgents`). It spans two siblings, so it sits under `Tick` and
+    /// overlaps them: never add it to its siblings. Absent when no body
+    /// resolved.
+    Environment,
+    /// Inside `Weapons`: hitscan pellets' fluid-crossing queries for splash
+    /// facts. Absent in a tick that fired no hitscan.
+    WeaponFluidCrossings,
     /// Player-event evaluation and in-tick fires, after the tick settles.
     /// Runs outside `Tick`, so it reports beside it.
     PlayerEvents,
@@ -52,6 +62,8 @@ impl StageSet for SimStage {
         Self::SteerAgents,
         Self::SteerPose,
         Self::SteerMovers,
+        Self::Environment,
+        Self::WeaponFluidCrossings,
         Self::PlayerEvents,
     ];
 
@@ -72,6 +84,8 @@ impl StageSet for SimStage {
             Self::SteerAgents => "sim_steer_agents",
             Self::SteerPose => "sim_steer_pose",
             Self::SteerMovers => "sim_steer_movers",
+            Self::Environment => "sim_environment",
+            Self::WeaponFluidCrossings => "sim_weapon_fluid_crossings",
             Self::PlayerEvents => "sim_player_events",
         }
     }
@@ -80,7 +94,38 @@ impl StageSet for SimStage {
         match self {
             Self::Tick | Self::PlayerEvents => None,
             Self::SteerAgents | Self::SteerPose | Self::SteerMovers => Some(Self::Steering),
+            Self::WeaponFluidCrossings => Some(Self::Weapons),
             _ => Some(Self::Tick),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_stages_are_registered_with_their_labels_and_parents() {
+        assert!(SimStage::ALL.contains(&SimStage::Environment));
+        assert!(SimStage::ALL.contains(&SimStage::WeaponFluidCrossings));
+        assert_eq!(SimStage::Environment.label(), "sim_environment");
+        assert_eq!(
+            SimStage::WeaponFluidCrossings.label(),
+            "sim_weapon_fluid_crossings"
+        );
+        // Player resolves run inside `Movement` and agent resolves inside
+        // `SteerAgents`, so the one stage summing both nests under the tick.
+        assert_eq!(SimStage::Environment.parent(), Some(SimStage::Tick));
+        assert_eq!(
+            SimStage::WeaponFluidCrossings.parent(),
+            Some(SimStage::Weapons)
+        );
+    }
+
+    #[test]
+    fn index_matches_position_in_all() {
+        for (position, &stage) in SimStage::ALL.iter().enumerate() {
+            assert_eq!(stage.index(), position, "{stage:?}");
         }
     }
 }

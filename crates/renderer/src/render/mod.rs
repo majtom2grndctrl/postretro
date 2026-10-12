@@ -15,6 +15,7 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_surface;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
@@ -77,6 +78,8 @@ mod shadowmask_union_test;
 mod world_specular_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+#[cfg(test)]
+mod fluid_surface_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]
@@ -218,6 +221,7 @@ pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_range
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
+pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub use renderer_geometry::level_world_to_geometry;
 pub(crate) use renderer_geometry::{
     SPEC_OWNER_STRIDE, build_default_view_projection, build_line_indices_from_triangles,

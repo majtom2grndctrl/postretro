@@ -5,9 +5,14 @@ use glam::Vec3;
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
-use crate::movement::intents::{crouching_intent, dash_intent, normal_intent, sliding_intent};
-use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
-use crate::movement::{MovementEvents, MovementInput, Transition};
+use crate::movement::intents::{
+    crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent,
+};
+use crate::movement::push::{fold_vertical_drift, held_by_contact};
+use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule, touches_ceiling};
+use crate::movement::swim_transition::{SwimSeam, environment_transition};
+use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
+use postretro_collision::{EnvironmentView, ResolvedEnvironment};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
 
 /// Resize the live capsule from the crouched size back to the configured
@@ -65,6 +70,8 @@ fn outgoing_boost(state: &MovementState) -> Vec3 {
         // impulse. `keepBoost`/drop operate on a zero boost (a no-op), matching
         // `Normal`.
         MovementState::Crouching { .. } => Vec3::ZERO,
+        // `Swim` has no boost layer: drag acts on all of its locomotion.
+        MovementState::Swim { .. } => Vec3::ZERO,
     }
 }
 
@@ -86,6 +93,58 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
     *velocity = base + carried_boost;
 }
 
+/// The fluid a swim state is in; `None` for every other state.
+fn swim_fluid(state: &MovementState) -> Option<u16> {
+    match state {
+        MovementState::Swim { fluid } => Some(*fluid),
+        _ => None,
+    }
+}
+
+/// Apply this tick's environment-driven transition — swim entry or exit by
+/// immersion (`swim_transition`) — at the tick seam, before the intent runs, so
+/// the state it enters owns this tick's velocity. Like an intent-returned edge,
+/// the carry rule applies here to the outgoing (protected-layer-peeled)
+/// velocity, reading the outgoing state's live boost, and the edge is recorded
+/// for reactions. `resolved` may be replaced: entry from a crouched capsule
+/// stands it up and re-resolves at the standing capsule.
+///
+/// Returns whether the swim intent fires a fluid jump this tick: the seam
+/// decides it, since qualifying needs a headroom cast an intent may not make.
+pub(super) fn apply_environment_transition(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    view: EnvironmentView<'_>,
+    resolved: &mut ResolvedEnvironment,
+    collision: &CombinedCollisionWorld<'_>,
+    position: &mut Vec3,
+    events: &mut MovementEvents,
+) -> bool {
+    let SwimSeam {
+        transition,
+        fluid_jump,
+    } = environment_transition(component, input, view, resolved, collision, position);
+    let Some(Transition { next, carry }) = transition else {
+        return fluid_jump;
+    };
+    let from = component.movement_state.kind();
+    events.swim_fluid = swim_fluid(&next).or(swim_fluid(&component.movement_state));
+    apply_carry(
+        carry,
+        &mut component.velocity,
+        outgoing_boost(&component.movement_state),
+    );
+    if swim_fluid(&component.movement_state).is_some() {
+        fold_vertical_drift(component);
+    }
+    component.movement_state = next;
+    events.state_edges.push(MovementStateEdge {
+        from,
+        to: next.kind(),
+    });
+    fluid_jump
+}
+
 /// Run the active state's velocity intent, resolving the
 /// component-vs-active-state borrow ONCE so each state owns its live data in
 /// place behind one uniform convention.
@@ -105,9 +164,19 @@ fn apply_carry(rule: CarryRule, velocity: &mut Vec3, boost: Vec3) {
 /// application will come up empty by design — it lives here. Velocity carry is
 /// owned by this dispatch point, never by a state intent (D6).
 ///
+/// `environment` is the tick's resolved environment, computed once by `tick` at
+/// the tick-start position. Intents receive its values and never query volumes;
+/// every existing state integrates `environment.gravity` exactly as it did the
+/// level scalar.
+///
 /// `jump_edges` are the forgiveness-derived jump edges `tick` computed once
 /// before dispatch; both `normal_intent` and `crouching_intent` consume them
-/// (the `Dash` state drops jump input by design).
+/// (the `Dash` state drops jump input by design). `fluid_jump` is the swim
+/// seam's verdict on this tick's fluid jump, which only `swim_intent` reads.
+///
+/// An edge out of `Swim` folds the drift layer's vertical part into locomotion
+/// here, after the carry (`push::fold_vertical_drift`), so outside water the
+/// layer is horizontal again.
 ///
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
@@ -119,7 +188,8 @@ pub(super) fn dispatch_state_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     jump_edges: JumpEdges,
-    gravity: f32,
+    environment: &ResolvedEnvironment,
+    fluid_jump: bool,
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
@@ -128,6 +198,7 @@ pub(super) fn dispatch_state_intent(
     // Resolve the borrow once: move the live state into a local so its data can
     // be borrowed `&mut` independently of `&mut component`. The `Normal`
     // placeholder left behind is overwritten below (write-back or transition).
+    let gravity = environment.gravity;
     let mut state = std::mem::replace(&mut component.movement_state, MovementState::Normal);
     let transition = match &mut state {
         MovementState::Normal => {
@@ -164,6 +235,21 @@ pub(super) fn dispatch_state_intent(
             boost,
             eye_current,
         ),
+        MovementState::Swim { fluid } => {
+            let held = held_by_contact(component, |component| {
+                touches_ceiling(component, collision, *position)
+            });
+            swim_intent(
+                component,
+                input,
+                environment,
+                fluid_jump,
+                held,
+                dt,
+                events,
+                fluid,
+            )
+        }
     };
     match transition {
         Some(Transition { next, carry }) => {
@@ -171,6 +257,10 @@ pub(super) fn dispatch_state_intent(
             // OUTGOING velocity, reading the outgoing state's live boost before
             // `state` is dropped. The new state is then handed to `tick`.
             apply_carry(carry, &mut component.velocity, outgoing_boost(&state));
+            if let Some(fluid) = swim_fluid(&state) {
+                events.swim_fluid = Some(fluid);
+                fold_vertical_drift(component);
+            }
             Some(next)
         }
         None => {

@@ -24,6 +24,8 @@ use postretro_scripting_core::player_slots::{
 #[cfg(test)]
 mod player_slot_lookup_test;
 mod resource_projection;
+#[cfg(test)]
+mod swim_slots_test;
 use resource_projection::{ResourceSlotProjection, record_resource_sample};
 
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
@@ -923,7 +925,9 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 
 /// The per-owner source value for an owner-private slot. Descriptor-fed player slots
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
-/// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, heat,
+/// from the owning pawn's live `HealthComponent`, `player.swimming` /
+/// `player.immersion` from its movement state and output-only immersion component;
+/// weapon cooldown, ammo, heat,
 /// cell, and reload state resolve through its `Inventory` to the sibling
 /// `WeaponComponent`;
 /// ammo reserve reads the owning pawn's `AmmoReserve`. Per-owner mod slots read
@@ -938,9 +942,9 @@ fn owner_private_source_value(
     _weapon_owners: &WeaponOwners,
     weapon_slots: &WeaponSlotProjection,
 ) -> Option<WireSlotValue> {
-    if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
-        // A pawn with no health source sends nothing rather than falling
-        // through to the global scalar, which is the host's own value.
+    if let Some(value) = pawn_component_slot_for_pawn(registry, name, pawn) {
+        // A pawn with no source sends nothing rather than falling through to
+        // the global scalar, which is the host's own value.
         return value.as_ref().and_then(slot_value_to_wire);
     }
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn) {
@@ -1098,20 +1102,17 @@ impl WeaponSlotProjection {
     }
 }
 
-/// Read the health value for `name` from `pawn` through the shared per-pawn
-/// lookup. The outer option names the health slots; the inner one is `None`
-/// for a pawn carrying no `HealthComponent`. Each owned pawn is read per-owner,
-/// so each client's snapshot carries its own health.
-fn descriptor_health_for_pawn(
+/// Read a pawn-component slot (health, max health, swimming, immersion) for
+/// `name` from `pawn` through the shared per-pawn lookup. The outer option
+/// names those slots; the inner one is `None` for a pawn carrying no source
+/// component. Each owned pawn is read per-owner, so each client's snapshot
+/// carries its own value.
+fn pawn_component_slot_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
 ) -> Option<Option<SlotValue>> {
-    let slot = match name {
-        "player.health" => PlayerSlot::Health,
-        "player.maxHealth" => PlayerSlot::MaxHealth,
-        _ => return None,
-    };
+    let slot = PlayerSlot::from_name(name).filter(|slot| !slot.reads_active_weapon())?;
     Some(player_slot_value(registry, slot, pawn))
 }
 
@@ -1811,11 +1812,13 @@ mod tests {
                 "player.cellCapacity",
                 "player.health",
                 "player.heat",
+                "player.immersion",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
+                "player.swimming",
                 "player.weaponCooldownMs",
                 "net.alpha",
                 "net.bravo",
@@ -1841,11 +1844,13 @@ mod tests {
                 "player.cellCapacity",
                 "player.health",
                 "player.heat",
+                "player.immersion",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",
                 "player.reloadActive",
                 "player.reloadProgress",
+                "player.swimming",
                 "player.weaponCooldownMs",
             ]
         );
@@ -1901,8 +1906,8 @@ mod tests {
         let schema = build_test_schema(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
-        // Two mod slots plus the twelve owner-private engine player slots.
-        assert_eq!(net.len(), 14);
+        // Two mod slots plus every owner-private engine player slot.
+        assert_eq!(net.len(), 2 + PlayerSlot::ALL.len());
         let alpha = net
             .descriptor(schema.id_for("net.alpha").expect("alpha descriptor exists"))
             .expect("alpha descriptor exists");
@@ -2097,21 +2102,8 @@ mod tests {
     #[test]
     fn wire_shape_uses_the_authored_name_not_the_replication_identity() {
         let mut cooldown = SlotTable::new();
-        for name in [
-            "player.ammo",
-            "player.ammoReserve",
-            "player.health",
-            "player.maxHealth",
-            "player.reloadActive",
-            "player.reloadProgress",
-            "player.heat",
-            "player.overheatAt",
-            "player.overheated",
-            "player.cell",
-            "player.cellCapacity",
-            WEAPON_COOLDOWN_SLOT,
-        ] {
-            cooldown.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        for slot in PlayerSlot::ALL {
+            cooldown.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
         let cooldown_record = cooldown.get_mut(WEAPON_COOLDOWN_SLOT).unwrap();
         cooldown_record.schema.ownership = SlotOwnership::Mod;
@@ -2122,21 +2114,8 @@ mod tests {
             "renamedCooldown",
             ReplicationScope::OwnerPrivatePlayer,
         );
-        for name in [
-            "player.ammo",
-            "player.ammoReserve",
-            "player.health",
-            "player.maxHealth",
-            "player.reloadActive",
-            "player.reloadProgress",
-            "player.heat",
-            "player.overheatAt",
-            "player.overheated",
-            "player.cell",
-            "player.cellCapacity",
-            WEAPON_COOLDOWN_SLOT,
-        ] {
-            renamed.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        for slot in PlayerSlot::ALL {
+            renamed.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
         let cooldown_identity = replication_identity(
             "test.wire-shape",
@@ -2189,21 +2168,8 @@ mod tests {
     /// slots are disabled so these round-trip tests cover exactly the two mod slots.
     fn shared_and_private_table() -> SlotTable {
         let mut table = SlotTable::new();
-        for name in [
-            "player.ammo",
-            "player.ammoReserve",
-            "player.health",
-            "player.maxHealth",
-            "player.reloadActive",
-            "player.reloadProgress",
-            "player.heat",
-            "player.overheatAt",
-            "player.overheated",
-            "player.cell",
-            "player.cellCapacity",
-            "player.weaponCooldownMs",
-        ] {
-            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        for slot in PlayerSlot::ALL {
+            table.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
         table
             .insert_namespace(
@@ -2240,21 +2206,8 @@ mod tests {
     /// the behavior harness observes exactly these mod-owned records.
     fn per_owner_currency_table() -> SlotTable {
         let mut table = SlotTable::new();
-        for name in [
-            "player.ammo",
-            "player.ammoReserve",
-            "player.health",
-            "player.maxHealth",
-            "player.reloadActive",
-            "player.reloadProgress",
-            "player.heat",
-            "player.overheatAt",
-            "player.overheated",
-            "player.cell",
-            "player.cellCapacity",
-            "player.weaponCooldownMs",
-        ] {
-            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        for slot in PlayerSlot::ALL {
+            table.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
         table
             .insert_namespace(

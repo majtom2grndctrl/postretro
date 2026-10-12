@@ -219,7 +219,7 @@ World collision resolves inline during each entity's movement — the entity sli
 
 The dominant engine entity today is the player pawn. It carries a `PlayerMovement` component alongside its `Transform`. The component holds the capsule geometry, per-axis physics parameters (ground, air, fall), and mutable tick state (velocity, grounded flag, air-jumps remaining, active movement-state variant, air-dashes remaining, dash cooldown timer).
 
-Movement is engine-internal. No script surface writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. The one read is a readonly per-player projection: whether the pawn swims and how deep (decided, not yet built). The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
+Movement is engine-internal. No script surface writes `PlayerMovement` — `getMapEntities` exposes map-placed kinds only; the movement system owns it exclusively. Scripts read one readonly projection per player (decided, not yet built): whether the pawn swims, from this component, and how deep, from a separate output-only component. The camera follows the pawn's position each tick (eye-height offset above capsule center); yaw and pitch remain mouse-driven.
 
 Movement design intent — the custom-kinematic foundation, the declarative author surface, the state-machine seam, and the FPS-flexibility band — lives in `movement.md`. This section covers only the component's place in the entity model.
 
@@ -260,7 +260,7 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 ## 8. Particles
 
-Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns and despawns particles each tick; scripts never observe or manipulate individual particles.
+Each live particle is a registry-managed presentation entity carrying `Transform`, `ParticleState`, and `SpriteVisual`. The emitter bridge spawns particles each rendered frame; the simulation expires them. Scripts never observe or manipulate individual particles.
 
 The particle simulation runs in Rust once per rendered frame, on frame time: velocity integration, buoyancy/drag, curve-evaluated size and opacity, spin rotation. Per-particle `on_tick` script callbacks are not supported. The particle render collector walks all `ParticleState` entities each render frame, buckets by sprite collection, and hands packed byte slices to the billboard pass.
 

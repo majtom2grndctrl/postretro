@@ -27,7 +27,7 @@ Authors tune and compose movement through descriptor data — never per-tick imp
 
 States live natively in Rust. Authors tune enabled native states through descriptor data. They do **not** write per-tick movement callbacks.
 
-**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — no script surface writes the movement component, and the only read is a readonly per-player swim projection (`entity_model.md` §7b).
+**Why.** Movement runs every tick in the fixed game-logic step (`entity_model.md` §5, update order 1, before camera follow). Driving state logic through QuickJS/Luau per tick would add FFI cost and determinism risk on the hottest path. It also holds the standing invariant that movement is engine-internal — no script surface writes the movement component, and the one planned read is a readonly per-player swim projection (decided, not yet built; `entity_model.md` §7b).
 
 ### The shape of the surface
 
@@ -104,5 +104,5 @@ The movement query surface combines static world collision with active mover col
 
 - Rigid-body dynamics for the player (forces, mass, restitution, constraint solving).
 - Per-tick script-authored movement (imperative callbacks). The author surface is declarative.
-- Map-overridable per-archetype movement tuning — movement physics is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes (`entity_model.md` §4). Swim tuning is never map-overridable.
+- Map-overridable per-archetype movement tuning — movement physics, swim tuning included, is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes (decided, not yet built; `entity_model.md` §4).
 - Rollback or deterministic lockstep. Pawn and mover prediction/reconciliation are in scope for authoritative co-op, but not rollback.

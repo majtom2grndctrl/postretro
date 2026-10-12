@@ -313,7 +313,7 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
     }
 }
 
-/// C3 restated: a fluid whose surface texture the world does not use changes
+/// A fluid whose surface texture the world does not use changes
 /// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
 /// texture, appended after every world entry.
 #[test]

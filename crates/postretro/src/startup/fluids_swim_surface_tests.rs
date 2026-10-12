@@ -97,7 +97,7 @@ fn mutate(source: &str, from: &str, to: &str) -> String {
     source.replacen(from, to, 1)
 }
 
-// AC P9: the Scripting surface example runs as a content/dev fixture in
+// The fluids-and-swimming example runs as a content/dev fixture in
 // TypeScript and Luau, and both declare the same manifest.
 #[test]
 fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
@@ -170,7 +170,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
     assert_eq!(names, ["swim.markSwimming", "swim.splash"]);
 }
 
-// AC P11: content/dev's existing TypeScript manifest and player descriptor
+// content/dev's existing TypeScript manifest and player descriptor
 // carry the example's fluids, swim block and swim wiring, under its mod id.
 #[test]
 fn dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_id() {
@@ -198,8 +198,8 @@ fn dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_
     }
 }
 
-// AC P9 (validation half, at the fixture): a negative viscosity rejects that
-// fluid with a warning naming the field, in both runtimes; the rest stands.
+// At the fixture: a negative viscosity rejects that fluid with a warning
+// naming the field, in both runtimes; the rest stands.
 #[test]
 fn fluids_swim_twin_with_negative_water_viscosity_drops_water_naming_the_field() {
     let capture = LogCapture::start();
@@ -236,10 +236,9 @@ fn fluids_swim_twin_with_negative_water_viscosity_drops_water_naming_the_field()
     assert_eq!(rejections.len(), 2, "one per runtime: {rejections:?}");
 }
 
-// AC P9 (validation half, at the fixture), owner ruling Q4: a swim block whose
-// `exitDepth` is not below `enterDepth` is dropped with a warning naming the
-// field, in both runtimes; the descriptor and the mod load, so the player
-// wades.
+// At the fixture: a swim block whose `exitDepth` is not below `enterDepth` is
+// dropped with a warning naming the field, in both runtimes; the descriptor
+// and the mod load, so the player wades.
 #[test]
 fn fluids_swim_twin_with_exit_depth_at_enter_depth_drops_the_swim_block_naming_exit_depth() {
     let capture = LogCapture::start();

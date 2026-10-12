@@ -186,9 +186,9 @@ impl Session {
     }
 }
 
-// S1 (dry and swimming values, each client's HUD reads its own) and S3 (a
-// local crossing on `player.swimming` fires on each machine for that
-// machine's own player only).
+// Dry and swimming values, each client's HUD reading its own, and a local
+// crossing on `player.swimming` firing on each machine for that machine's own
+// player only.
 #[test]
 fn each_machine_reads_and_crosses_on_its_own_players_swim_slots() {
     let mut session = Session::new();

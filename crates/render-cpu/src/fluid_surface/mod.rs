@@ -1,6 +1,6 @@
 // Fluid surface data logic: environment-volume surface faces packed into one
 // shared mesh, each frame's visible fluid draws, and per-volume draw slots.
-// See: context/lib/rendering_pipeline.md §7.4
+// See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;

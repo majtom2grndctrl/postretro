@@ -1,5 +1,5 @@
 // Hitscan fluid splash facts: each pellet's fluid-face crossings before its blocking hit.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions (Presentation — Splash)
+// See: context/lib/entity_model.md §7 (Environment Volumes: Hitscan splash facts)
 
 use glam::Vec3;
 use postretro_collision::{CROSSING_START_EPSILON, EnvironmentView, visit_fluid_crossings};
@@ -7,8 +7,8 @@ use postretro_collision::{CROSSING_START_EPSILON, EnvironmentView, visit_fluid_c
 /// A crossing within this distance, in metres, of the pellet's blocking hit is
 /// not a splash. A pool's bottom face buried in the floor coincides with the
 /// floor hit, and the two are measured by different queries (brush planes
-/// against the static trimesh), so they agree only to float noise
-/// (`research.md` P6). A real surface this close in front of a wall is not
+/// against the static trimesh), so they agree only to float noise; a buried
+/// face never splashes. A real surface this close in front of a wall is not
 /// worth a splash either. The same face-noise tolerance the crossing query
 /// applies at the ray's start, here at its blocking end, so it is that constant.
 pub(crate) const SPLASH_BLOCKING_EPSILON: f32 = CROSSING_START_EPSILON;

@@ -1,5 +1,5 @@
 // The output-only immersion component under predict and reconcile: host movement writes it, and no state intent, replay or wire merge reads it.
-// See: context/lib/entity_model.md §7b · context/plans/in-progress/E24--water-and-environment-volumes/index.md (Decisions: Scripts read the environment per player)
+// See: context/lib/entity_model.md §7b · context/lib/scripting.md §5
 
 #![cfg(test)]
 
@@ -68,7 +68,7 @@ fn immersion(registry: &EntityRegistry, pawn: EntityId) -> Option<f32> {
         .map(|component| component.immersion)
 }
 
-// S4: a stale immersion component on both peers changes nothing. The client's
+// A stale immersion component on both peers changes nothing. The client's
 // forward prediction and every reconcile replay (each run with the stale
 // value in place) agree with the host to within the no-correction bound, the
 // wire merge never overwrites the client's stale value, and host movement

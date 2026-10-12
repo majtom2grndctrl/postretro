@@ -1,5 +1,5 @@
 // Load-time bounding-volume tree over axis-aligned entry bounds, generic over the leaf payload.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/research.md §Bake versus load-time build
+// See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §PRL section IDs (EnvironmentVolumes)
 
 use glam::Vec3;
 

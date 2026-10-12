@@ -1253,9 +1253,8 @@ mod tests {
         }
     }
 
-    // AC P9 (validation half), owner ruling Q4: a bad swim block is dropped
-    // with a warning naming the field; the descriptor and the mod still load,
-    // and the player wades.
+    // A bad swim block is dropped with a warning naming the field; the
+    // descriptor and the mod still load, and the player wades.
     #[test]
     fn mod_init_drops_a_swim_block_whose_exit_depth_is_not_below_enter_depth_and_loads_the_mod() {
         let registry = PrimitiveRegistry::new();

@@ -1,5 +1,5 @@
 // Adapter from loaded EnvironmentVolumes records (PRL id 52) to the collision crate's query set.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §PRL section IDs (EnvironmentVolumes)
 
 use glam::Vec3;
 use postretro_collision::{ConvexLeaf, EnvironmentVolume, EnvironmentVolumes, LeafPlane};

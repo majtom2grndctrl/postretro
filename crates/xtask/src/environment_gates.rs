@@ -2,7 +2,7 @@
 // environment query, no volume FGD key authors swim tuning, and the audio
 // crate's public API (the muffle included) names no kira type. Run by
 // preflight's `cargo test`, beside the scripting surface gates.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions
+// See: context/lib/entity_model.md §7 (Environment Volumes) · context/lib/build_pipeline.md §Custom FGD · context/lib/audio.md §1
 
 use std::path::{Path, PathBuf};
 

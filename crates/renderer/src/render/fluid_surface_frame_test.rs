@@ -1,5 +1,5 @@
 //! Adapter-backed fluid surface draw through the production capture recorder.
-//! See: context/lib/rendering_pipeline.md §7.4
+//! See: context/lib/rendering_pipeline.md §7.3a
 
 use super::{ClearColor, FluidSurfaceDraw, Renderer, ShSampleRegionSets};
 use glam::{Mat4, Vec3};

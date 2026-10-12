@@ -1,6 +1,6 @@
 // Local fluid presentation at the App: the camera eye's view tint and world
 // muffle, and the per-frame fluid surface draws.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions (Presentation)
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
 mod eye;
 

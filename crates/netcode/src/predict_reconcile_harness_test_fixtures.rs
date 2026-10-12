@@ -66,7 +66,7 @@ use postretro_foundation::{
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
-/// "No corrections" (E24 brief, Co-op parity): every recorded correction is at
+/// "No corrections": every recorded correction is at
 /// most this many metres under [`light_link`].
 pub(crate) const NO_CORRECTION_M: f32 = 1.0e-4;
 pub(crate) const GRAVITY: f32 = -20.0;

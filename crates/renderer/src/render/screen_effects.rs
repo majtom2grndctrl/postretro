@@ -543,7 +543,7 @@ mod tests {
         );
     }
 
-    /// E24 P6, shader half: the fluid tint composes over the mod's scene
+    /// Shader side: the fluid tint composes over the mod's scene
     /// flash and vignette, before the UI composite, so it tints over the
     /// mod's tint and the HUD stays clear.
     #[test]

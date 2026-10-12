@@ -941,7 +941,7 @@ mod tests {
             .collect()
     }
 
-    // P5: a swim edge plays its fluid's enter or exit sound at the pawn's eye,
+    // A swim edge plays its fluid's enter or exit sound at the pawn's eye,
     // resolved by the active table's name in this machine's own manifest. One
     // tick carrying both edges (enter, then a fluid jump out) plays both.
     #[test]
@@ -1015,7 +1015,7 @@ mod tests {
         );
     }
 
-    // P5: a fluid this machine does not declare, a declared fluid naming no
+    // A fluid this machine does not declare, a declared fluid naming no
     // sound for the edge, and an edge with no fluid all play nothing, silently.
     #[test]
     fn a_swim_edge_without_a_local_fluid_or_sound_plays_nothing_and_warns_nothing() {
@@ -1066,8 +1066,8 @@ mod tests {
         capture.assert_not_logged(log::Level::Warn, "");
     }
 
-    // P5, bobbing half, through the host's local movement seam: one sound per
-    // swim transition, none while immersion bobs between the thresholds.
+    // Through the host's local movement seam: one sound per swim transition,
+    // none while immersion bobs between the thresholds.
     #[test]
     fn swim_sounds_play_once_per_transition_and_never_while_bobbing_between_thresholds() {
         use postretro_collision::{
@@ -1137,8 +1137,8 @@ mod tests {
         ];
         let mut played = Vec::new();
         for immersion in script {
-            // Place the pawn at this tick's immersion, as the M1 movement row
-            // does, then run the host's local movement seam.
+            // Place the pawn at this tick's immersion, as the physics crate's swim
+            // hysteresis test does, then run the host's local movement seam.
             let center = SURFACE - immersion * 2.0 * reach + reach;
             registry
                 .set_component(

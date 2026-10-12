@@ -1,5 +1,5 @@
 // Push volumes in player movement: lift-off, the protected drift layer, its medium decay and terminal speed along the push.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/plan.md (Owner ruling 2026-10-11)
+// See: context/lib/movement.md §6 (Regional gravity and push)
 
 use glam::{Vec2, Vec3};
 

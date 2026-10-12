@@ -1,5 +1,5 @@
 // Movement in fluid volumes: swim thresholds, drag, sink, current, fluid jump and its re-entry latch, standing capsule, wade-only.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md (Decisions: Swim is a native movement state)
+// See: context/lib/movement.md §4 (Swim)
 
 use glam::{Vec2, Vec3};
 
@@ -211,7 +211,7 @@ fn grounded_pawn(
     (component, position)
 }
 
-// M1: thresholds with hysteresis, and the swim addresses the edges dispatch.
+// Thresholds with hysteresis, and the swim addresses the edges dispatch.
 #[test]
 fn swim_enters_at_enter_depth_and_leaves_below_exit_depth_without_toggling_between() {
     use MovementStateKind::{Normal, Swim};
@@ -257,7 +257,7 @@ fn swim_enters_at_enter_depth_and_leaves_below_exit_depth_without_toggling_betwe
     assert_eq!(addresses, ["swim_started", "swim_ended", "swim_started"]);
 }
 
-// M1: immersion exactly at `enter_depth` enters.
+// Immersion exactly at `enter_depth` enters.
 #[test]
 fn immersion_exactly_at_enter_depth_enters_swim() {
     let volumes = open_water(0.0);
@@ -300,7 +300,7 @@ fn immersion_exactly_at_enter_depth_enters_swim() {
     }
 }
 
-// M2: immersion exactly at `exit_depth` stays in swim.
+// Immersion exactly at `exit_depth` stays in swim.
 #[test]
 fn immersion_exactly_at_exit_depth_stays_in_swim() {
     let volumes = open_water(0.0);
@@ -343,7 +343,7 @@ fn immersion_exactly_at_exit_depth_stays_in_swim() {
     }
 }
 
-// M3, swim half: viscosity is the swimmer's drag.
+// Viscosity is the swimmer's drag.
 #[test]
 fn no_input_swimmer_loses_speed_faster_in_the_more_viscous_fluid() {
     // A weightless pool isolates drag: with no input and zero gravity the wish
@@ -392,7 +392,7 @@ fn no_input_swimmer_loses_speed_faster_in_the_more_viscous_fluid() {
     }
 }
 
-// M3, wading half: viscosity only acts while swimming.
+// Viscosity only acts while swimming.
 #[test]
 fn wading_below_enter_depth_walks_identically_in_fluids_of_any_viscosity() {
     let world = floor_world();
@@ -420,7 +420,7 @@ fn wading_below_enter_depth_walks_identically_in_fluids_of_any_viscosity() {
     assert_eq!(water_velocity, sludge_velocity);
 }
 
-// M4: the fluid jump from the surface, and none fully submerged.
+// The fluid jump from the surface, and none fully submerged.
 #[test]
 fn fluid_jump_with_the_tick_eye_out_sets_jump_velocity_and_leaves_swim() {
     let volumes = open_water(0.0);
@@ -456,7 +456,7 @@ fn fluid_jump_with_the_tick_eye_out_sets_jump_velocity_and_leaves_swim() {
     );
 }
 
-// M5 / P10: the re-entry latch.
+// The fluid-jump re-entry latch.
 #[test]
 fn fluid_jump_latches_swim_reentry_until_immersion_falls_below_exit_depth() {
     let volumes = open_water(0.0);
@@ -497,7 +497,7 @@ fn fluid_jump_latches_swim_reentry_until_immersion_falls_below_exit_depth() {
     assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
 }
 
-// Q1 (review panel 1): a fluid jump in open water rises clear of `exit_depth`,
+// A fluid jump in open water rises clear of `exit_depth`,
 // so its latch clears on the way up and the pawn swims again when it falls
 // back in. No latch outlives the leap.
 #[test]
@@ -567,7 +567,7 @@ fn holds_jump_at_the_surface(
     false
 }
 
-// Q1: a ceiling too low for the jump to clear the water keeps the swimmer
+// A ceiling too low for the jump to clear the water keeps the swimmer
 // treading, never latched; with headroom the same jump fires.
 #[test]
 fn fluid_jump_under_a_low_ceiling_does_nothing_and_keeps_swimming() {
@@ -583,7 +583,7 @@ fn fluid_jump_under_a_low_ceiling_does_nothing_and_keeps_swimming() {
     assert!(holds_jump_at_the_surface(&ceiling_world(1.8), view, 0.6, 1));
 }
 
-// Q1: under strong gravity the ballistic rise falls short of what clearing
+// Under strong gravity the ballistic rise falls short of what clearing
 // exit_depth needs, so jump at the surface does nothing.
 #[test]
 fn fluid_jump_under_strong_gravity_does_nothing_and_keeps_swimming() {
@@ -610,7 +610,7 @@ fn fluid_jump_under_strong_gravity_does_nothing_and_keeps_swimming() {
     ));
 }
 
-// Q1: a downward push above the surface adds to gravity in the ballistic rise.
+// A downward push above the surface adds to gravity in the ballistic rise.
 #[test]
 fn fluid_jump_under_a_downward_push_above_the_surface_does_nothing() {
     let world = CollisionWorld::new();
@@ -648,7 +648,7 @@ fn fluid_jump_under_a_downward_push_above_the_surface_does_nothing() {
     ));
 }
 
-// Review panel 1: no same-tick trampoline. A pawn falling into water with jump
+// No same-tick trampoline. A pawn falling into water with jump
 // held enters swim on that tick and does not bounce straight back out; the
 // fluid jump needs swim at tick start.
 #[test]
@@ -678,7 +678,7 @@ fn pawn_falling_into_water_with_jump_held_enters_swim_without_bouncing_out() {
     assert!(component.velocity.y < 0.0, "vy={}", component.velocity.y);
 }
 
-// M6: exit and fluid jump on one tick, the jump wins.
+// Exit and fluid jump on one tick: the jump wins.
 #[test]
 fn fluid_jump_wins_over_exit_on_the_same_tick() {
     let volumes = open_water(0.0);
@@ -709,7 +709,7 @@ fn fluid_jump_wins_over_exit_on_the_same_tick() {
     assert!(!component.swim_reentry_latched);
 }
 
-// M7: sink scales with the resolved gravity.
+// Sink scales with the resolved gravity.
 #[test]
 fn swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity() {
     for gravity in [
@@ -762,7 +762,7 @@ fn swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity() {
     }
 }
 
-// M7: a fluid with a coincident push volume is a current.
+// A fluid with a coincident push volume is a current.
 #[test]
 fn swimmer_in_a_fluid_with_a_coincident_push_volume_drifts_with_the_current() {
     let push = Vec3::new(3.0, 0.0, 0.0);
@@ -799,7 +799,7 @@ fn swimmer_in_a_fluid_with_a_coincident_push_volume_drifts_with_the_current() {
     );
 }
 
-// M8: crouch, dash and slide all enter swim at standing size.
+// Crouch, dash and slide all enter swim at standing size.
 #[test]
 fn crouching_dashing_and_sliding_players_enter_swim_with_a_standing_capsule() {
     use MovementStateKind::{Crouch, Dash, Slide, Swim};
@@ -851,7 +851,7 @@ fn crouching_dashing_and_sliding_players_enter_swim_with_a_standing_capsule() {
     });
 }
 
-// M8: blocked headroom keeps the crouch; swim waits for standing room.
+// Blocked headroom keeps the crouch; swim waits for standing room.
 #[test]
 fn crouched_pawn_in_a_flooded_crawlspace_stays_crouched_until_it_can_stand() {
     let world = floor_and_crawlspace_world(2.0);
@@ -890,7 +890,7 @@ fn crouched_pawn_in_a_flooded_crawlspace_stays_crouched_until_it_can_stand() {
     assert!((component.capsule.half_height - 0.8).abs() < 1e-6);
 }
 
-// M9, physics half: no swim block means wading.
+// No swim block means wading.
 #[test]
 fn player_without_a_swim_block_walks_the_pool_floor() {
     let world = floor_world();
@@ -911,7 +911,7 @@ fn player_without_a_swim_block_walks_the_pool_floor() {
     assert!(deepest > 0.8, "fixture: the pool is deep, {deepest}");
 }
 
-// M10 / P5: the fluid jump keys on the tick eye, never the camera eye.
+// The fluid jump keys on the tick eye, never the camera eye.
 #[test]
 fn fluid_jump_keys_on_the_tick_eye_never_the_presented_camera_eye() {
     // `movement::tick` takes no camera eye: it resolves the tick eye from the
@@ -962,7 +962,7 @@ fn floating_block() -> EnvironmentVolumes {
     )])
 }
 
-// M11: out through the bottom of a floating block.
+// Out through the bottom of a floating block.
 #[test]
 fn swimming_down_out_of_a_floating_block_leaves_swim_and_level_gravity_applies() {
     let volumes = floating_block();
@@ -1079,7 +1079,7 @@ fn airborne_crouched_pawn_falling_into_water_enters_swim_with_its_head_pinned() 
     assert!(entered, "the falling pawn must enter swim (vy {start_vy})");
 }
 
-// M12: up into the bottom of a floating block.
+// Up into the bottom of a floating block.
 #[test]
 fn jumping_up_into_a_floating_block_enters_swim_once_immersion_reaches_enter_depth() {
     let volumes = floating_block();
@@ -1107,7 +1107,7 @@ fn jumping_up_into_a_floating_block_enters_swim_once_immersion_reaches_enter_dep
     assert!(entered, "the rising pawn must reach enter_depth");
 }
 
-// The swim edges carry their fluid for presentation (Task 11's enter and exit
+// The swim edges carry their fluid for presentation (the enter and exit
 // sounds): the entered fluid, and the one left even when the exit tick starts
 // already dry, as leaving a pool through its side face does.
 #[test]
@@ -1205,7 +1205,7 @@ fn level_sink() -> f32 {
     0.8 * LEVEL_GRAVITY / STANDARD_GRAVITY
 }
 
-// Q2 (review panel 1): while swimming the drift layer carries vertical push
+// While swimming the drift layer carries vertical push
 // too, so an upward current lifts a mid-water swimmer and its drift settles at
 // push / viscosity vertically, while swim steering keeps sinking locomotion.
 #[test]
@@ -1268,7 +1268,7 @@ fn swimmer_on_the_pool_floor(
     (component, position)
 }
 
-// Q2: the same current lifts a swimmer resting on the pool floor. Its drift
+// The same current lifts a swimmer resting on the pool floor. Its drift
 // builds toward push / viscosity whether or not the floor bears it, so a
 // current whose settled drift outruns the sink lifts from the floor as it does
 // mid-water — here one whose push
@@ -1342,7 +1342,7 @@ fn upward_current_lifts_a_swimmer_resting_on_the_pool_floor() {
     );
 }
 
-// Q2: leaving the water upward carries the vertical drift on as vertical
+// Leaving the water upward carries the vertical drift on as vertical
 // velocity: total velocity is continuous across the exit edge, and outside
 // water the drift layer is horizontal again.
 #[test]
@@ -1391,7 +1391,7 @@ fn leaving_the_water_upward_keeps_the_vertical_drift_as_velocity_y() {
     panic!("the current must carry the swimmer out of the water");
 }
 
-// Review panel 1: a swimmer settling onto the pool floor fires no `landed`.
+// A swimmer settling onto the pool floor fires no `landed`.
 #[test]
 fn swimmer_settling_onto_the_pool_floor_fires_no_landed_event() {
     let world = floor_world();
@@ -1495,7 +1495,7 @@ fn swim_off_into_still_water(
     }
 }
 
-// Review panel 2: a floor never absorbs a swimmer's vertical drift, so in an
+// A floor never absorbs a swimmer's vertical drift, so in an
 // inviscid downward current the layer used to grow without bound while
 // locomotion held the opposite; swimming off the floor then sank the swimmer
 // at drift plus sink. The drift is capped at terminal speed, and the fall cap
@@ -1532,7 +1532,7 @@ fn inviscid_downward_current_on_the_pool_floor_keeps_drift_and_sinking_within_te
     );
 }
 
-// Review panel 2: the ceiling mirror of the floor case — an inviscid upward
+// The ceiling mirror of the floor case — an inviscid upward
 // current pressing a swimmer into a ceiling keeps its drift within terminal
 // speed, and swimming out from under the ceiling stays within it.
 #[test]
@@ -1623,7 +1623,7 @@ fn turn_a_saturated_drift_against_a_contact(
     );
 }
 
-// Review panel 3: a floor holds a swimmer's vertical drift through locomotion,
+// A floor holds a swimmer's vertical drift through locomotion,
 // so when a horizontal current made the cap rotate a saturated sink current,
 // the shrinking drift.y left locomotion pointing up and lifted the swimmer off
 // the floor.
@@ -1643,7 +1643,7 @@ fn horizontal_current_turning_a_saturated_drift_leaves_a_floor_swimmer_grounded(
     );
 }
 
-// Review panel 3: the ceiling mirror — the shrinking upward drift left
+// The ceiling mirror — the shrinking upward drift left
 // locomotion pointing down and pulled a neutrally buoyant swimmer off the
 // ceiling the current had pressed it into.
 #[test]
@@ -1702,7 +1702,7 @@ fn still_water_floor_swim_speed() -> f32 {
     })
 }
 
-// Review panel 3: a floor holds a swimmer's vertical drift through locomotion,
+// A floor holds a swimmer's vertical drift through locomotion,
 // and swim steering read that held part as the swimmer's own motion. Projected
 // onto a wish with a sink, it read as speed the swimmer lacked, so a floor
 // swimmer in a saturated downward current accelerated horizontally toward the
@@ -1732,7 +1732,7 @@ fn floor_swimmer_held_by_a_saturated_downward_current_swims_as_fast_as_on_a_stil
     );
 }
 
-// Review panel 3: the ceiling mirror — an upward current pressing a swimmer
+// The ceiling mirror — an upward current pressing a swimmer
 // into a ceiling made steering read the held part as sinking it already had,
 // so the swimmer fell short of the speed it swims along any contact.
 #[test]
@@ -1764,7 +1764,7 @@ fn ceiling_swimmer_held_by_a_saturated_upward_current_swims_as_fast_as_on_a_stil
     );
 }
 
-// Review panel 2: the fluid jump discards vertical knockback as it discards the
+// The fluid jump discards vertical knockback as it discards the
 // drift's vertical current, so a swimmer shoved downward still leaves at the
 // velocity the seam's clearance test assumed. It clears the water and its
 // latch clears on the way up; it is never latched while still immersed.
@@ -1823,7 +1823,7 @@ fn corner_walls() -> CollisionWorld {
     )
 }
 
-// Review panel 2: the corner-wedge stuck-stop zeroes horizontal motion only, so
+// The corner-wedge stuck-stop zeroes horizontal motion only, so
 // a swimmer wedged in a corner keeps its vertical current.
 #[test]
 fn swimmer_wedged_in_a_corner_keeps_its_vertical_drift() {
@@ -1854,7 +1854,7 @@ fn swimmer_wedged_in_a_corner_keeps_its_vertical_drift() {
     );
 }
 
-// Review panel 2: a swimmer's one lift-off rule is the settled-total release,
+// A swimmer's one lift-off rule is the settled-total release,
 // never the gravity-based push lift-off. An upward current stronger than
 // gravity whose drift (25 / 20 = 1.25 m/s) stays below the sink (1.63 m/s)
 // leaves the swimmer on the floor, grounded for the whole tick, so a shove

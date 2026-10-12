@@ -1,5 +1,5 @@
 // Co-op swim parity through the loopback harness: swim entry and exit, the fluid jump and its latch, and fluid crossings into low gravity, all predicted with no correction.
-// See: context/lib/networking.md · context/plans/in-progress/E24--water-and-environment-volumes/index.md (Co-op parity)
+// See: context/lib/networking.md · context/lib/movement.md §4 (Swim)
 
 #![cfg(test)]
 
@@ -259,7 +259,7 @@ fn swim_through_then_hop(position: Vec3) -> SimCommand {
     command
 }
 
-// N1 (fluid half) and N2 (P3, P4): a client swims into a pool, on through
+// A client swims into a pool, on through
 // shallows that only a swimmer stays swimming in, out of their far face and
 // straight into a low-gravity room, with zero corrections; reconciles replay
 // across the swim entry from a `Normal` baseline and across the exit plus the
@@ -284,12 +284,12 @@ fn swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link(
         .expect("the client reached the low-gravity room");
     assert!(swim_entry < swim_exit && swim_exit <= low_gravity_entry + 1);
 
-    // P3: acked baseline `Normal`, replay enters swim.
+    // Acked baseline `Normal`, replay enters swim.
     assert!(
         windows_spanning(&run, &[swim_entry], MovementStateKind::Normal) > 0,
         "a replay from a Normal baseline must span swim entry tick {swim_entry}"
     );
-    // P4: acked baseline `Swim`, replay exits swim and enters the room.
+    // Acked baseline `Swim`, replay exits swim and enters the room.
     assert!(
         windows_spanning(
             &run,
@@ -324,7 +324,7 @@ fn swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link(
     );
 }
 
-// P5, replay half: the client's movement drain receives exactly one swim
+// Swim sounds never come from a replay: the client's movement drain receives exactly one swim
 // entry and one swim exit, each from the forward-predicted tick that crossed,
 // naming the host's `water` (index 0). Reconciles replay across both crossings
 // (from a `Normal` baseline into swim, from a `Swim` baseline out of it) and
@@ -371,7 +371,7 @@ fn latched_deep_ticks(run: &SwimRun) -> Vec<u32> {
         .collect()
 }
 
-// Fluid jumps and the P10 re-entry latch predict exactly, and a reconcile
+// Fluid jumps and the re-entry latch predict exactly, and a reconcile
 // whose replay starts from a latched baseline restores the latch from the wire.
 #[test]
 fn fluid_jump_and_reentry_latch_reconcile_without_correction_under_light_link() {
@@ -411,7 +411,7 @@ fn fluid_jump_and_reentry_latch_reconcile_without_correction_under_light_link() 
     );
 }
 
-// N10, corrections half: the client predicts swim with the host's fluid,
+// The client predicts swim with the host's fluid,
 // whatever its own manifest declares.
 #[test]
 fn client_with_differing_fluid_declarations_swims_with_zero_corrections() {
@@ -474,7 +474,7 @@ fn walk_into_the_current(position: Vec3) -> SimCommand {
     }
 }
 
-// Q2 (review panel 1): a vertical current while swimming lands in the 3D drift
+// A vertical current while swimming lands in the 3D drift
 // layer, lifts the swimmer out of the water (folding the drift into vertical
 // velocity) and back in, over and over, and the client predicts all of it with
 // zero corrections: the drift's vertical part crosses the wire.
@@ -528,7 +528,7 @@ fn swim_forward(_position: Vec3) -> SimCommand {
     forward_command(false)
 }
 
-// Review panel 1: a pawn-tuning change (a weapon pickup) arriving while the
+// A pawn-tuning change (a weapon pickup) arriving while the
 // client swims rebuilds its movement component through the production rebuild,
 // which carries the live tick state: no correction, and no second swim entry,
 // even when the rebuild lands in a frame with no snapshot to reconcile against.

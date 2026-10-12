@@ -1,5 +1,5 @@
 // Per-frame fluid surface culling against the visible cells' bounds.
-// See: context/lib/rendering_pipeline.md §7.4
+// See: context/lib/rendering_pipeline.md §7.3a
 
 use glam::Vec3;
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;

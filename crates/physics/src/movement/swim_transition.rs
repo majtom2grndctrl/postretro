@@ -46,7 +46,7 @@ impl SwimSeam {
 /// replay take the same edges on the same ticks.
 ///
 /// - **Latch.** The fluid-jump latch clears on any tick whose immersion is below
-///   `exit_depth`; while set, swim cannot re-enter (`research.md` P10).
+///   `exit_depth`; while set, swim cannot re-enter.
 /// - **Fluid jump.** Qualifies only for a pawn already in `Swim` at tick start
 ///   (never on the tick it enters, so a pawn falling in with jump held cannot
 ///   bounce straight back out), with jump held and the tick eye out, and only
@@ -160,8 +160,8 @@ pub(super) fn environment_transition(
 /// Whether a fluid jump from the tick-start pose clears the water: rises far
 /// enough for immersion to fall below `exit_depth`, which also clears the
 /// re-entry latch it arms. A jump that cannot clear would latch swim off with
-/// the pawn still in the water, sinking it unable to swim (`research.md` P10's
-/// soft-lock), so it does not fire.
+/// the pawn still in the water, sinking it unable to swim (a soft-lock), so
+/// it does not fire.
 ///
 /// - **Required rise.** Immersion is the fraction of the capsule's vertical
 ///   segment (feet to head, `2 × (half_height + radius)`) the fluid covers.

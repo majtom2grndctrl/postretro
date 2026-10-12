@@ -1,5 +1,5 @@
 // Ray crossings of fluid-volume boundaries, the geometric fact under hitscan splash.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions (Presentation — Splash)
+// See: context/lib/entity_model.md §7 (Environment Volumes — Hitscan splash facts)
 
 use glam::Vec3;
 
@@ -53,13 +53,14 @@ pub struct FluidCrossing {
 /// `origin + t * dir` with `CROSSING_START_EPSILON / |dir| < t <= max_t`.
 ///
 /// The boundary is that of the union of each fluid volume's brushes: a face
-/// shared by two brushes of one volume is no crossing (`research.md` P7), while
+/// shared by two brushes of one volume is no crossing, while
 /// two adjacent fluid volumes give an exit from one and an entry into the other
 /// at their shared face. Each volume is measured on its own, carrying its own
 /// fluid, never an overlap winner. A ray only touching a brush at a point (an
 /// edge or corner) crosses nothing; a ray lying in a face's plane is inside, as
 /// a point on a face is. The caller handles a blocking hit that
-/// coincides with a crossing (`research.md` P6).
+/// coincides with a crossing: a face buried in the blocking surface never
+/// splashes.
 ///
 /// Order: increasing `t` within one volume; across volumes unspecified (the
 /// same on every peer, since the tree build is deterministic). Allocation-free.

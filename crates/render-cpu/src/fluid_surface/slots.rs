@@ -1,5 +1,5 @@
 // Renderer-side fluid draw slots and their per-volume parameter rows.
-// See: context/lib/rendering_pipeline.md §7.4
+// See: context/lib/rendering_pipeline.md §7.3a
 
 use std::ops::Range;
 

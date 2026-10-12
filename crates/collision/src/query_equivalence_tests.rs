@@ -1,5 +1,5 @@
 // Tree-backed queries against a brute-force scan of every leaf, plus the zero-volume set.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/research.md §Ordering pins (P9)
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 use proptest::prelude::*;
@@ -182,7 +182,7 @@ fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> Resolve
                     .is_empty()
             }),
         );
-        // Q3: the union of every volume carrying the winner's fluid.
+        // The union of every volume carrying the winner's fluid.
         let covered: f32 = winner
             .and_then(|i| volumes.volume(i).unwrap().fluid)
             .map(|fluid| {
@@ -447,7 +447,6 @@ fn assert_resolves_match(
     Ok(())
 }
 
-// Q6
 #[test]
 fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
     let config = Config {
@@ -524,7 +523,7 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
         .unwrap();
 }
 
-// Q6, at a leaf count deep enough for many tree levels.
+// At a leaf count deep enough for many tree levels.
 #[test]
 fn tree_queries_match_brute_force_scan_over_a_dense_volume_field() {
     let mut runner = TestRunner::new_with_rng(
@@ -610,7 +609,7 @@ fn resolve_matches_brute_force_when_the_segment_meets_more_fluid_brushes_than_it
     }
 }
 
-// Q5, research.md P9
+// A level with no volumes: an empty tree, defaults everywhere, no crossing.
 #[test]
 fn zero_volume_set_builds_an_empty_tree_and_every_query_returns_level_defaults() {
     let volumes = EnvironmentVolumes::build(Vec::new());

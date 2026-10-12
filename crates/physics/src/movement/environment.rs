@@ -1,5 +1,5 @@
 // Movement's one environment resolve per tick, at the tick-start position.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/movement.md §4 (Environment resolution)
 
 use glam::Vec3;
 

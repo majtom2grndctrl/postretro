@@ -1,6 +1,6 @@
 // Camera-eye fluid presentation against head bob, the photosensitivity limiter
 // and the mod's screen tint, plus the per-frame fluid surface draws.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Acceptance
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint, Photosensitivity limiter)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -258,7 +258,7 @@ fn present(
     uniform
 }
 
-// E24 P7: content/dev's bob stays inside the band, so treading at the surface
+// The content/dev head bob stays inside the band, so treading at the surface
 // never flickers the tint.
 #[test]
 fn eye_bobbing_across_the_surface_at_dev_head_bob_toggles_the_tint_at_most_once() {
@@ -301,7 +301,7 @@ fn eye_bobbing_across_the_surface_at_dev_head_bob_toggles_the_tint_at_most_once(
     }
 }
 
-// E24 P7: an eye strobing across the band at 5 Hz presents at most three tint
+// An eye strobing across the band at 5 Hz presents at most three tint
 // flashes a second, counted on presented-frame time, at any frame rate.
 #[test]
 fn eye_oscillating_past_the_band_at_5hz_presents_at_most_three_tint_flashes_a_second() {
@@ -348,7 +348,7 @@ fn eye_oscillating_past_the_band_at_5hz_presents_at_most_three_tint_flashes_a_se
     }
 }
 
-// E24 P7: with the limiter off nothing is held, yet the bob still toggles at
+// With the limiter off nothing is held, yet the bob still toggles at
 // most once and the toggle still ramps.
 #[test]
 fn with_the_limiter_off_the_bob_toggles_at_most_once_and_each_toggle_ramps() {
@@ -453,7 +453,7 @@ fn screen_slots(snapshot: &HashMap<String, SlotValue>) -> Vec<(String, SlotValue
     screen
 }
 
-// E24 P6: the fluid tint composes over the mod's tint, a script write while
+// The fluid tint composes over the mod's tint, a script write while
 // under takes effect without clearing it, leaving restores the mod's tint, and
 // no `screen.*` slot ever holds anything but what the mod last wrote.
 #[test]
@@ -610,7 +610,7 @@ fn descriptor(name: &str, surface_opacity: f32) -> FluidDescriptor {
     }
 }
 
-// Task 10 wiring: an installed level's fluid surfaces draw through the
+// App wiring: an installed level's fluid surfaces draw through the
 // per-frame path only where the fluid has a local presentation.
 #[test]
 fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation() {

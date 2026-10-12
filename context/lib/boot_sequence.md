@@ -146,13 +146,13 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 
 | Order | Stage |
 |-------|-------|
-| 1 | Seed world gravity from the level's authored value (before scripts run) |
+| 1 | Seed the level default gravity from the EnvironmentVolumes header (before scripts run) |
 | 2 | Texture upload from `.prm` sidecars |
 | 3 | UV normalize using uploaded texture dimensions |
-| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed) |
+| 4 | Apply the current player shadow tier at the renderer boundary, then upload geometry (rebuilding the spot-shadow pool and resolution-coupled caches only when the retained resolution changed), then fluid surfaces, whose UVs normalize by the uploaded texture sizes |
 | 5 | World mesh spawn (see seam note below) |
 | 6 | Light bridge: one light entity per map-authored light |
-| 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh — a defensive route, see `entity_model.md` §7 — fails the load before any mutation) |
+| 7 | Collision world committed from static geometry (separate from BSP; built before stage 1, so a rejected mesh — a defensive route, see `entity_model.md` §7 — fails the load before any mutation), then the environment volume set and its query tree, replaced whole. Both exist before the level content digest publishes and before the first tick, on the renderer-less path too |
 | 8 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
 | 9 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
 | 10 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; rebuild reaction subscribers, then `TriggerBindingTable::build` from the final active reactions |
@@ -234,7 +234,7 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision, th
 | `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.global_reactions` / `global_crossings` / `global_trigger_events` / `global_trigger_pools` (definitions from `ModManifest.reactions` / `crossings` / `triggerEvents` / `triggerPools`) | Engine-global. Survive level unload; survive platform suspend. |
 | Active per-level reactions/crossings/trigger events/trigger pools (`data_registry.reactions` / `crossings` / `trigger_events` / `trigger_pools`), accumulator bindings, level-scope UI trees, and frame-end death-event carryover | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
-| Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
+| Level world, collision world, environment volumes, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer bloom profile (`ModManifest.render.bloom`) | Engine-global. Survives level load/unload and full-renderer rebuild; re-applied from the manifest by `run_deferred_mod_init` on resume, after the renderer is recreated. A committed staged reload replaces it (no start script restores the default); failed, rejected, or stale reloads leave it alone. |
 | Renderer device/queue, window | Dropped on exit; cleared on suspend and rebuilt on resume. (Audio is session-owned — see the session-lifetime row; it survives suspend.) |
 

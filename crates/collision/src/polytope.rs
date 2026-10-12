@@ -1,5 +1,5 @@
 // Exact convex-polytope volume from a plane set, by clipping its bounding box.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 

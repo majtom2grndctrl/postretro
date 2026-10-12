@@ -103,7 +103,7 @@ fn absent_fluids_declare_none() {
     assert!(drain_lua("return {}").is_empty());
 }
 
-// AC P10: an out-of-range presentation field rejects that fluid only, naming the field.
+// An out-of-range presentation field rejects that fluid only, naming the field.
 #[test]
 fn out_of_range_view_tint_muffle_or_surface_opacity_rejects_that_fluid_naming_the_field() {
     for (field, js_value) in [
@@ -139,7 +139,7 @@ fn out_of_range_view_tint_muffle_or_surface_opacity_rejects_that_fluid_naming_th
     }
 }
 
-// AC P9 (validation half): negative viscosity rejects the fluid, naming the field.
+// Negative viscosity rejects the fluid, naming the field.
 #[test]
 fn negative_viscosity_rejects_the_fluid_naming_the_field() {
     let capture = LogCapture::start();
@@ -151,7 +151,7 @@ fn negative_viscosity_rejects_the_fluid_naming_the_field() {
     assert_eq!(rejected.len(), 2, "{rejected:?}");
 }
 
-// AC P10: a second declaration of a name is rejected; the first declaration stands.
+// A second declaration of a name is rejected; the first declaration stands.
 #[test]
 fn a_second_define_fluid_with_an_existing_name_is_rejected_and_the_first_stands() {
     let capture = LogCapture::start();

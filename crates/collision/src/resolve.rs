@@ -1,5 +1,5 @@
 // The pure environment resolve: a body's position and capsule plus the volumes give gravity, push and fluid.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 
@@ -106,7 +106,8 @@ pub struct ResolvedEnvironment {
     /// Whether the tick eye (`position.y + eye_height` at the probe's x/z) lies
     /// inside the union of the brushes of every volume carrying the winning
     /// fluid, a face counting as inside. Always false when dry. The fluid jump
-    /// keys on this, never on the presented camera eye (`research.md` P5).
+    /// keys on this, never on the presented camera eye, so host and client
+    /// agree on it (`movement.md` §4, Swim).
     pub tick_eye_in_fluid: bool,
 }
 

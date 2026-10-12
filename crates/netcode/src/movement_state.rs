@@ -320,7 +320,7 @@ mod tests {
         live
     }
 
-    // Review panel 1: a client tuning rebuild (a weapon pickup, a host reload)
+    // A client tuning rebuild (a weapon pickup, a host reload)
     // keeps a swimmer swimming with its velocity, 3D drift and latch, and takes
     // the new tuning.
     #[test]
@@ -351,7 +351,7 @@ mod tests {
         assert!(!rebuilt.swim_reentry_latched);
     }
 
-    // Q2: while swimming the drift layer is 3D; its vertical part crosses the
+    // While swimming the drift layer is 3D; its vertical part crosses the
     // wire and merges back, so a reconcile replay restores the current.
     #[test]
     fn swimming_component_round_trips_its_vertical_drift() {

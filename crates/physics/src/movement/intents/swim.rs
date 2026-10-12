@@ -17,7 +17,7 @@ const STANDARD_GRAVITY: f32 = 9.81;
 /// The input half of a fluid jump: jump held with the TICK eye (the tick-start
 /// resolve's `position.y + eye_height`) outside the fluid. The presented camera
 /// eye, view feel included, never reaches movement, so host, prediction and
-/// replay agree on it (`research.md` P5). Jump is the same level bit every other
+/// replay agree on it (`movement.md` §4, Swim). Jump is the same level bit every other
 /// jump fires off (`MovementInput::jump_pressed`): held at the surface it leaps
 /// out, held underwater it swims up. The swim seam adds the rest — swimming at
 /// tick start, and a rise that clears the water — and hands the intent the
@@ -103,7 +103,7 @@ pub(crate) fn swim_intent(
     // Vertical: locomotion is motion relative to the water, held part
     // included, so a swimmer the floor holds against an upward current is
     // already sinking through the water at that current and leaves the floor
-    // once the current outruns its sink (Q2, `push::release_rising_swimmer`).
+    // once the current outruns its sink (`push::release_rising_swimmer`).
     let mut relative = component.velocity;
     accelerate_toward(&mut relative, target, accel, dt);
     // Horizontal: steering reads the swimmer's own motion only. The held part

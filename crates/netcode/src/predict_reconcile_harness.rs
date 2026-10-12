@@ -1353,7 +1353,7 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
     assert!(h.bystanders_alive());
 }
 
-/// Low-gravity volume for the N1 crossing scenario: a slab across the forward
+/// Low-gravity volume for the crossing scenario: a slab across the forward
 /// (-Z) path from 16 m to 24 m ahead of the start, tall enough to hold every
 /// jump. The pawn runs up on the ground, then bunny-hops through it, so it
 /// crosses the far face mid-air.
@@ -1370,7 +1370,7 @@ const WIND_MAX: Vec3 = Vec3::new(50.0, 20.0, -16.0);
 const UPDRAFT_PUSH: Vec3 = Vec3::new(0.0, 30.0, 0.0);
 const UPDRAFT_MIN: Vec3 = Vec3::new(-50.0, -1.0, -40.0);
 const UPDRAFT_MAX: Vec3 = Vec3::new(50.0, 3.0, -32.0);
-/// "No corrections" (brief Co-op Decision): every recorded correction is at most
+/// "No corrections": every recorded correction is at most
 /// this many metres under `light_link`.
 const NO_CORRECTION_M: f32 = 1.0e-4;
 
@@ -1526,7 +1526,7 @@ fn run_then_hop(step: u32) -> SimCommand {
     }
 }
 
-// N1, gravity half: per-tick resolution keeps host and client identical across a
+// Per-tick resolution keeps host and client identical across a
 // low-gravity volume, so crossing in and out costs no reconciliation correction,
 // including reconciles whose replay window spans a crossing.
 #[test]
@@ -1678,7 +1678,7 @@ fn corrections_over(run: &LevelGravityRun, limit: f32) -> usize {
 
 const HOST_LEVEL_GRAVITY: f32 = -12.0;
 
-// N5, N7 (gravity half): host and client hold different level gravity, and the
+// Host and client hold different level gravity, and the
 // client's comes only through the tuning-payload install. Joining a host whose
 // `initialGravity` differs, or whose script changed it before the join, the
 // client predicts with the host's value and takes no correction.
@@ -1739,7 +1739,7 @@ fn client_joining_host_with_different_level_gravity_predicts_host_value_without_
     );
 }
 
-// N6: a host `setGravity` mid-level, while the client hops, reaches the joined
+// A host `setGravity` mid-level, while the client hops, reaches the joined
 // client through a resent tuning payload; the client applies it on arrival and
 // takes at most one correction for the change.
 #[test]
@@ -1771,7 +1771,7 @@ fn host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction(
     assert_one_correction_for_the_change(&changed);
 }
 
-// N6, catch-up frame: the host runs two ticks before one snapshot send, with the
+// Catch-up frame: the host runs two ticks before one snapshot send, with the
 // `setGravity` on the first, so the one snapshot already reflects the new
 // gravity. The changed tuning is queued ahead of that snapshot, so the client
 // still takes exactly one correction.
@@ -1801,7 +1801,7 @@ fn host_set_gravity_in_a_catch_up_frame_reaches_client_with_exactly_one_correcti
     assert_one_correction_for_the_change(&changed);
 }
 
-/// N6's bound: one gravity change costs exactly one correction over
+/// The mid-level `setGravity` bound: one gravity change costs exactly one correction over
 /// `NO_CORRECTION_M` (the change does move the airborne pawn, so zero would mean
 /// the client already had the new value before the host simulated it).
 fn assert_one_correction_for_the_change(run: &LevelGravityRun) {

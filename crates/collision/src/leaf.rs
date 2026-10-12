@@ -1,5 +1,5 @@
 // Convex leaves (plane sets with bounds) and the contents mask that filters queries over them.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use std::ops::{BitOr, BitOrAssign};
 

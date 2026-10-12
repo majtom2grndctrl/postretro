@@ -35,13 +35,13 @@ You spawn in the pool room, facing the pool.
 
 ## Manual checks
 
-- **X3, swim and fluid jump:** in the pool, swim, tread at the surface, and
+- **Swim and fluid jump:** in the pool, swim, tread at the surface, and
   fluid-jump onto each ledge. The jump should feel reliable, and the ledges
   within reach should be climbable with it. Record which ledge heights you
   reach.
-- **X4, low-gravity room:** jump and fall in the low-gravity room, swim its
+- **Low-gravity room:** jump and fall in the low-gravity room, swim its
   pool, and reach and leave its floating block. Walk out through a doorway and
   confirm normal gravity returns at once.
-- **X5, co-op:** host this map, join with a second client, and repeat the swim,
+- **Co-op:** host this map, join with a second client, and repeat the swim,
   the low-gravity room, the updraft, the wind corridor and the current on the
   client. The client should show no visible corrections.

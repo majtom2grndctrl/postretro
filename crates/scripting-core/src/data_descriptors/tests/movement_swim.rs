@@ -38,7 +38,7 @@ fn lua_movement_with_swim(swim_body: &str) -> String {
     )
 }
 
-/// The brief's Scripting surface block, one `(key, value)` per field.
+/// content/dev's example swim block (`scripts/player.ts`), one `(key, value)` per field.
 const SWIM: [(&str, &str); 6] = [
     ("speed", "4.5"),
     ("accel", "6.0"),
@@ -161,9 +161,9 @@ fn movement_without_a_swim_block_cannot_swim() {
     assert!(js.movement.expect("movement present").swim.is_none());
 }
 
-// AC P9 (validation half), owner ruling Q4: a swim block whose `exitDepth` is
-// not below `enterDepth` is dropped with a warning naming the field; the rest
-// of the descriptor loads and the player wades.
+// A swim block whose `exitDepth` is not below `enterDepth` is dropped with a
+// warning naming the field; the rest of the descriptor loads and the player
+// wades.
 #[test]
 fn swim_block_with_exit_depth_at_or_above_enter_depth_is_dropped_naming_exit_depth() {
     for exit in ["0.5", "0.75"] {

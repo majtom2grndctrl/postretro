@@ -1,7 +1,7 @@
 // Environment volumes through the real level install: built before the parity
 // digest and the first tick, replaced whole on the next level, and resolved
 // against the script gravity register the way every tick call site builds it.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/boot_sequence.md §3 · context/lib/entity_model.md §7 (Environment Volumes)
 
 use std::path::PathBuf;
 
@@ -317,7 +317,7 @@ fn a_declared_fluid_resolves_to_its_declaration_order_index() {
     assert_eq!(resolved.fluid, Some(1));
 }
 
-// AC N12: an undeclared fluid name loads dry and warns, naming the entity and the fluid.
+// An undeclared fluid name loads dry and warns, naming the entity and the fluid.
 #[test]
 fn a_fluid_volume_naming_an_undeclared_fluid_loads_dry_and_warns_naming_entity_and_fluid() {
     let capture = postretro_test_log_capture::LogCapture::start();
@@ -336,7 +336,7 @@ fn a_fluid_volume_naming_an_undeclared_fluid_loads_dry_and_warns_naming_entity_a
     capture.assert_not_logged(log::Level::Warn, "undeclared fluid 'water'");
 }
 
-// AC N9 (host half): the real staged reload route declares the missing fluid.
+// Host side: the real staged reload route declares the missing fluid.
 #[test]
 fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
     let mod_root = tempfile::tempdir().expect("temporary mod root");
@@ -499,10 +499,10 @@ fn client_resolve_at(app: &App, position: Vec3) -> Option<ResolvedEnvironment> {
     ))
 }
 
-// N7, N9 and N11 through the App: a connected client's volumes resolve dry
-// until the host's table arrives with tuning, then only against that table,
-// never the client's own manifest; a table without the fluid, or a demotion,
-// makes the volume dry again.
+// Through the App: a connected client's volumes resolve dry until the host's
+// table arrives with tuning, then only against that table, never the client's
+// own manifest; a table without the fluid, or a demotion, makes the volume dry
+// again.
 #[test]
 fn a_connected_client_resolves_fluid_volumes_only_against_the_installed_host_table() {
     let mut app = test_app();
@@ -535,13 +535,13 @@ fn a_connected_client_resolves_fluid_volumes_only_against_the_installed_host_tab
     let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
     assert_eq!((resolved.fluid, resolved.viscosity), (Some(0), 1.25));
 
-    // N11: a host table without water leaves the volume dry on this client,
+    // A host table without water leaves the volume dry on this client,
     // though its own manifest declares water.
     deliver_host_fluids(&mut app, &[("lava", 9.0)]);
     let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
     assert_eq!((resolved.fluid, resolved.viscosity), (None, 0.0));
 
-    // N9 (client half): the host's reload adds water back; the volume follows.
+    // The host's reload adds water back; the volume follows.
     deliver_host_fluids(&mut app, &[("lava", 9.0), ("water", 2.0)]);
     let resolved = client_resolve_at(&app, SUBMERGED).expect("host tuning installed");
     assert_eq!((resolved.fluid, resolved.viscosity), (Some(1), 2.0));
@@ -650,9 +650,9 @@ fn a_connected_clients_install_and_demotion_log_no_undeclared_fluid_warning() {
     capture.assert_not_logged(log::Level::Warn, UNDECLARED_FLUID_WARNING);
 }
 
-// Owner ruling (fixes list): a fluid-table rename moves fluid indices, so a
-// pawn swimming through the reload is remapped by name and its exit edge plays
-// the fluid it was in, not the one that took its old index.
+// A fluid-table reorder moves fluid indices, so a pawn swimming through the
+// reload is remapped by name and its exit edge plays the fluid it was in, not
+// the one that took its old index.
 #[test]
 fn a_host_reload_that_reorders_fluids_mid_swim_keeps_the_swimmers_fluid() {
     use postretro_foundation::{
@@ -812,7 +812,7 @@ fn fluid_presentation<T>(
         .map(read)
 }
 
-// N8 through the App: the presentation lookup maps the active table's index to
+// Through the App: the presentation lookup maps the active table's index to
 // a name and the LOCAL manifest's declaration of it.
 #[test]
 fn fluid_presentation_resolves_the_active_fluid_against_the_local_manifest() {
@@ -924,7 +924,7 @@ fn swim_block() -> postretro_foundation::SwimParams {
 
 const WADE_ONLY_WARNING: &str = "has no movement.swim block; this level has fluid volumes";
 
-// AC M9: a level with fluid volumes, loaded for a player whose descriptor has
+// A level with fluid volumes, loaded for a player whose descriptor has
 // no swim block, warns once naming the descriptor.
 #[test]
 fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descriptor() {

@@ -1,5 +1,5 @@
 // Movement under resolved environment volumes: per-tick gravity resolution at the tick-start position.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/movement.md §4 (Environment resolution), §6 (Regional gravity and push)
 
 use glam::{Vec2, Vec3};
 
@@ -189,7 +189,8 @@ fn player_keeps_vertical_velocity_inside_zero_gravity_volume() {
     }
 }
 
-// Ordering pin P1: the environment resolves once, at the tick-start position.
+// The environment resolves once, at the tick-start position, so the crossing
+// tick still integrates the volume's gravity.
 #[test]
 fn player_crossing_out_of_gravity_volume_integrates_volume_gravity_then_level_gravity() {
     // The pawn starts 5 cm above the volume's floor face, falling at 6 m/s: the

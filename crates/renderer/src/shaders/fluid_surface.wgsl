@@ -1,6 +1,6 @@
 // Fluid surface pass: translucent, two-sided, turbulently warped fluid faces,
 // lit per fragment by baked SH indirect, baked direct SH, and dynamic lights.
-// See: context/lib/rendering_pipeline.md §7.4
+// See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---
 // Field offsets mirror the Rust `Uniforms` writer; see billboard.wgsl.

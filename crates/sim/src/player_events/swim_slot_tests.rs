@@ -238,7 +238,7 @@ impl Pool {
     }
 }
 
-// S1, host half: the swim slots read false and 0 for a dry pawn, and true and
+// Host side: the swim slots read false and 0 for a dry pawn, and true and
 // the tick's resolved immersion fraction for a swimming one, per pawn.
 #[test]
 fn swim_slots_read_each_pawns_dry_and_swimming_values_from_host_movement() {
@@ -285,7 +285,7 @@ fn swim_slots_read_each_pawns_dry_and_swimming_values_from_host_movement() {
     );
 }
 
-// S2, and S1's `byPlayer(on.player)` half: `becomes(read(player.swimming))`
+// Through `byPlayer(on.player)`: `becomes(read(player.swimming))`
 // fires once for the player who enters swim, naming them as `on.player` and
 // reading their own immersion; `ceases` fires once when they leave; the other
 // player's later entry fires once more, for them; and a player first observed

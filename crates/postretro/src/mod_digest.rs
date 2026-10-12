@@ -882,7 +882,7 @@ pub(crate) mod tests {
         }
     }
 
-    // AC N13: fluid declarations never demote a client whose fluids differ from the host's.
+    // Fluid declarations never demote a client whose fluids differ from the host's.
     #[test]
     fn digest_ignores_adding_removing_reordering_and_retuning_fluids() {
         fn fluid(name: &str, viscosity: f32) -> postretro_foundation::FluidDescriptor {

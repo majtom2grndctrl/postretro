@@ -119,7 +119,7 @@ fn client_presentation(h: &LoopbackHarness, fluid: u16) -> Option<&FluidDescript
         .local_presentation(fluid, &h.client_fluids)
 }
 
-// N7 (fluid half): host and client hold different fluid tables. The client's
+// Host and client hold different fluid tables. The client's
 // volumes resolve dry until the host's table installs through the tuning
 // payload, then resolve every fluid at the host's index with the host's
 // viscosity; the client's own declarations never enter resolution.
@@ -188,7 +188,7 @@ fn client_resolves_fluids_only_through_the_host_table_installed_by_tuning() {
     );
 }
 
-// N8: a client whose manifest gives `water` a different tint predicts with the
+// A client whose manifest gives `water` a different tint predicts with the
 // host's viscosity and shows its own tint; a client with no `water` shows no
 // tint and still resolves the host's water for movement.
 #[test]
@@ -228,7 +228,7 @@ fn client_predicts_host_viscosity_and_presents_its_own_fluid_declaration() {
     );
 }
 
-// N9 (client half): a host manifest reload that adds a fluid resends the table;
+// A host manifest reload that adds a fluid resends the table;
 // the client installs it and re-resolves its volumes, so a volume naming the new
 // fluid is no longer dry on the client either.
 #[test]
@@ -264,10 +264,10 @@ fn host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry_on_the_
     );
 }
 
-// N10: a client whose manifest declares different `water` numbers, lacks
+// A client whose manifest declares different `water` numbers, lacks
 // `water`, or declares its fluids in another order resolves every point exactly
 // as the host does: same fluid index, same viscosity, same immersion. The
-// zero-corrections half rides on swim (Task 7).
+// zero-corrections half is in the swim harness.
 #[test]
 fn client_with_differing_fluid_declarations_resolves_every_point_like_the_host() {
     let client_manifests = [
@@ -317,7 +317,7 @@ fn client_with_differing_fluid_declarations_resolves_every_point_like_the_host()
     }
 }
 
-// N11: a volume naming a fluid the host lacks is dry on the client too, even
+// A volume naming a fluid the host lacks is dry on the client too, even
 // when the client's own manifest declares it; its gravity still applies.
 #[test]
 fn volume_naming_a_fluid_the_host_lacks_is_dry_on_the_client_even_when_declared_locally() {

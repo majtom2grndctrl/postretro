@@ -1,6 +1,6 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
 // two-sided and warped after skinned meshes and before billboards.
-// See: context/lib/rendering_pipeline.md §7.4
+// See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
 

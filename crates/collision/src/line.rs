@@ -1,5 +1,5 @@
 // Line-versus-convex-leaf clipping and allocation-free unions of the resulting intervals.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 

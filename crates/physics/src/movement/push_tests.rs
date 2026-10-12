@@ -1,5 +1,5 @@
 // Movement under push volumes: lift-off, terminal speed, the protected drift layer (caps, decay, walls), slide isolation, upward level gravity.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md (Decisions: gravity and push)
+// See: context/lib/movement.md §6 (Regional gravity and push)
 
 use glam::{Vec2, Vec3};
 
@@ -71,7 +71,7 @@ fn grounded_pawn(
     (component, position)
 }
 
-// M14: lift-off.
+// Lift-off.
 #[test]
 fn grounded_player_lifts_off_and_rises_in_updraft_stronger_than_gravity() {
     let world = floor_world();
@@ -120,7 +120,7 @@ fn grounded_player_lifts_off_and_rises_in_updraft_stronger_than_gravity() {
     assert!(position.y > rest_y + 1.0, "the pawn rose: y={}", position.y);
 }
 
-// M14: terminal speed along the push.
+// Terminal speed along the push.
 #[test]
 fn tall_updraft_caps_speed_along_push_at_fall_terminal_velocity() {
     let desc = descriptor();
@@ -163,7 +163,7 @@ fn tall_updraft_caps_speed_along_push_at_fall_terminal_velocity() {
     );
 }
 
-// M14: a weak upward push leaves the player grounded.
+// A weak upward push leaves the player grounded.
 #[test]
 fn grounded_player_stays_grounded_under_upward_push_weaker_than_gravity() {
     let world = floor_world();
@@ -188,7 +188,7 @@ fn grounded_player_stays_grounded_under_upward_push_weaker_than_gravity() {
     }
 }
 
-// M15: a standing player drifts with a sideways push and settles.
+// A standing player drifts with a sideways push and settles.
 #[test]
 fn standing_player_drifts_with_sideways_push_and_settles_at_steady_speed() {
     let world = floor_world();
@@ -248,7 +248,7 @@ fn forward_input() -> MovementInput {
     }
 }
 
-// M15: airborne with movement input held, the air cap never clips the push.
+// Airborne with movement input held, the air cap never clips the push.
 #[test]
 fn airborne_push_grows_past_air_cap_with_input_held_until_terminal_speed() {
     let desc = descriptor();
@@ -308,7 +308,7 @@ fn airborne_push_grows_past_air_cap_with_input_held_until_terminal_speed() {
     );
 }
 
-// M15: drift carries out of a wind airborne, and ground friction bleeds it on landing.
+// Drift carries out of a wind airborne, and ground friction bleeds it on landing.
 #[test]
 fn drift_carries_out_of_wind_until_landing_then_ground_friction_decays_it() {
     // A wind band from 12 m up; the pawn falls from inside it to the floor.
@@ -489,7 +489,7 @@ fn slide_through(
     (boosts, component)
 }
 
-// M16: push never feeds the slide's slope boost.
+// Push never feeds the slide's slope boost.
 #[test]
 fn slide_in_push_volume_gets_no_slope_boost_from_push() {
     // A push along the slide on a flat floor: were the push projected onto the
@@ -522,7 +522,7 @@ fn slide_in_push_volume_gets_no_slope_boost_from_push() {
     );
 }
 
-// M18: upward level gravity alone never lifts a grounded player.
+// Upward level gravity alone never lifts a grounded player.
 #[test]
 fn upward_level_gravity_keeps_grounded_player_grounded_until_it_jumps() {
     let world = floor_world();

@@ -534,9 +534,10 @@ fn replace_client_tuning(
 /// digest-bound volumes, whose fluid names resolved against the HOST's fluid
 /// table ([`client_fluid_table`]), under the host's level gravity and fluid
 /// viscosities from the installed tuning payload. The client never reads its
-/// own level gravity or fluid registry (E24 Co-op parity), so there is no local
-/// fallback: `None` until a payload installs, and movement prediction and
-/// reconcile stay off until then, as movement tuning already gates them.
+/// own level gravity or fluid registry (`networking.md` §What gates, and what
+/// replicates instead), so there is no local fallback: `None` until a payload
+/// installs, and movement prediction and reconcile stay off until then, as
+/// movement tuning already gates them.
 pub fn client_environment_view<'a>(
     host_tuning: Option<&'a TuningPayload>,
     volumes: &'a EnvironmentVolumes,
@@ -3377,10 +3378,9 @@ mod tests {
         );
     }
 
-    // Executor check (E24 research, fifth direction review): the per-poll resend
-    // skips a participating slot with no pawn, so a slot that gains its pawn after
-    // a mid-level `setGravity` must get the current value from its materialization
-    // send. Both sends share one dedupe.
+    // The per-poll resend skips a participating slot with no pawn, so a slot
+    // that gains its pawn after a mid-level `setGravity` must get the current
+    // value from its materialization send. Both sends share one dedupe.
     #[test]
     fn tuning_send_reaches_a_pawn_gained_after_set_gravity_with_the_current_value() {
         let mut registry = EntityRegistry::new();

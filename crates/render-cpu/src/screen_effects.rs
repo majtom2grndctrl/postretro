@@ -226,7 +226,7 @@ mod tests {
         assert!((halved[1] - 0.05).abs() < 1e-6);
     }
 
-    // E24 P6, pack half: the fluid tint is its own input. It packs beside the
+    // Pack side: the fluid tint is its own input. It packs beside the
     // mod's tint without changing it, a slot write still lands while it is
     // on, and zeroing it restores exactly the slot-only uniform.
     #[test]

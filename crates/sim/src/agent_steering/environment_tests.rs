@@ -1,5 +1,5 @@
 // Agent gravity under environment volumes (per agent, tick-start position, downward part only; push ignored) and the resolve's no-allocation guard.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 
@@ -99,7 +99,8 @@ fn agent_falls_at_volume_gravity_inside_low_gravity_volume() {
     }
 }
 
-// Ordering pin P1, agent half: gravity resolves at the agent's tick-start position.
+// Gravity resolves once, at the agent's tick-start position, so the crossing
+// tick still integrates the volume's gravity.
 #[test]
 fn agent_crossing_out_of_gravity_volume_integrates_volume_gravity_then_level_gravity() {
     let volumes = EnvironmentVolumes::build(vec![gravity_volume(
@@ -206,7 +207,7 @@ fn walk_path(environment: EnvironmentView<'_>, ticks: usize) -> Vec<(Vec3, bool)
         .collect()
 }
 
-// M17: agents ignore push.
+// Agents ignore push.
 #[test]
 fn agent_in_push_volume_walks_its_path_unaffected() {
     // Sideways and upward, stronger than gravity: a player here would lift off
@@ -236,7 +237,7 @@ fn agent_in_push_volume_walks_its_path_unaffected() {
     );
 }
 
-// M17: upward gravity never lifts a grounded agent.
+// Upward gravity never lifts a grounded agent.
 #[test]
 fn grounded_agent_in_upward_gravity_volume_stays_grounded() {
     let volumes = EnvironmentVolumes::build(vec![gravity_volume(

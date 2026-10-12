@@ -1,5 +1,5 @@
 // Camera-eye fluid query for presentation: which fluid the eye is in and its signed depth there.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Decisions (Presentation)
+// See: context/lib/rendering_pipeline.md §7.8 (Fluid view tint)
 
 use glam::Vec3;
 
@@ -31,7 +31,8 @@ pub struct EyeFluid {
 /// The fluid at the presented camera eye: the overlap-rule winner among fluid
 /// volumes one of whose brushes contains `eye` (a face counts as inside), or
 /// `None`. A non-finite eye is in no fluid. This is a presentation query;
-/// movement keys on the resolve's tick eye instead (`research.md` P5).
+/// movement keys on the resolve's tick eye instead, so host and
+/// client agree on it (`movement.md` §4, Swim).
 ///
 /// Hysteresis for tint and muffle: while off, turn on when this returns a
 /// fluid whose `signed_depth >= margin`. While on in a fluid, turn off when
@@ -284,7 +285,7 @@ mod tests {
         assert!((tilted_plane - 0.5 / 2.0_f32.sqrt()).abs() < EPS);
     }
 
-    // Q3: the eye depth runs through every volume of the winner's fluid, never
+    // The eye depth runs through every volume of the winner's fluid, never
     // through another fluid.
     #[test]
     fn eye_depth_runs_through_stacked_entities_of_one_fluid_and_stops_at_another_fluid() {

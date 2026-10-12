@@ -1,5 +1,5 @@
 // Environment volume records and the installed volume set with its tree-backed leaf queries.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 

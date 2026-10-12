@@ -1,5 +1,5 @@
 // Hitscan fluid splash facts through the real fire path: counts, the buried-floor and shared-face rules, and host/client parity.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/research.md §Ordering pins (P6, P7)
+// See: context/lib/entity_model.md §7 (Environment Volumes: Hitscan splash facts)
 
 use super::tests::weapon_component;
 use super::*;
@@ -141,7 +141,7 @@ fn assert_splash(fact: &FluidSplashFact, point: Vec3, normal: Vec3, fluid: u16) 
     assert_eq!(fact.fluid, fluid);
 }
 
-// P1: air into a deep pool, the pellet's range ending underwater.
+// Air into a deep pool, the pellet's range ending underwater.
 #[test]
 fn hitscan_from_air_into_fluid_emits_one_splash_at_the_surface() {
     let found = splashes(
@@ -155,7 +155,7 @@ fn hitscan_from_air_into_fluid_emits_one_splash_at_the_surface() {
     assert_splash(&found[0], Vec3::new(1.0, 2.0, 0.0), Vec3::Y, WATER);
 }
 
-// P1: a shot from underwater out through the surface.
+// A shot from underwater out through the surface.
 #[test]
 fn hitscan_from_inside_fluid_out_through_a_face_emits_one_splash() {
     let found = splashes(
@@ -169,7 +169,7 @@ fn hitscan_from_inside_fluid_out_through_a_face_emits_one_splash() {
     assert_splash(&found[0], Vec3::new(1.0, 2.0, 0.0), Vec3::Y, WATER);
 }
 
-// P1: a floating block gives an entry and an exit, nearest first.
+// A floating block gives an entry and an exit, nearest first.
 #[test]
 fn hitscan_through_a_floating_fluid_block_emits_two_splashes_in_order() {
     let block = volumes(vec![fluid_volume(
@@ -192,7 +192,7 @@ fn hitscan_through_a_floating_fluid_block_emits_two_splashes_in_order() {
     assert_splash(&found[1], Vec3::new(0.5, 2.0, 0.0), Vec3::NEG_Y, WATER);
 }
 
-// P1: a wall in front of the pool stops the pellet before any fluid face.
+// A wall in front of the pool stops the pellet before any fluid face.
 #[test]
 fn hitscan_blocked_before_a_fluid_face_emits_no_splash() {
     let found = splashes(
@@ -205,7 +205,7 @@ fn hitscan_blocked_before_a_fluid_face_emits_no_splash() {
     assert!(found.is_empty(), "{found:?}");
 }
 
-// P1: a pellet that passes beside the pool, and one in a level with no
+// A pellet that passes beside the pool, and one in a level with no
 // volumes, cross nothing.
 #[test]
 fn hitscan_that_never_crosses_a_fluid_face_emits_no_splash() {
@@ -227,7 +227,7 @@ fn hitscan_that_never_crosses_a_fluid_face_emits_no_splash() {
     assert!(dry.is_empty(), "{dry:?}");
 }
 
-// P2 / P6: the pool's bottom face is buried in the floor the pellet stops
+// The pool's bottom face is buried in the floor the pellet stops
 // on. Its exit crossing coincides with the blocking hit and never splashes;
 // the same holds when the brush is sunk below the floor.
 #[test]
@@ -257,7 +257,7 @@ fn hitscan_stopping_on_a_pool_floor_emits_one_splash_at_the_top() {
     assert_splash(&found[0], Vec3::new(0.25, 2.0, 0.0), Vec3::Y, WATER);
 }
 
-// P2 / P7: one pool entity of two brushes splashes at its outer faces only,
+// One pool entity of two brushes splashes at its outer faces only,
 // each fact carrying the crossing point, the crossed face's outward normal
 // and the fluid.
 #[test]
@@ -282,7 +282,7 @@ fn hitscan_through_a_two_brush_pool_emits_no_splash_at_the_shared_face() {
     assert_splash(&found[1], Vec3::new(5.0, 1.0, 0.0), Vec3::X, WATER);
 }
 
-// P3: a pellet starting exactly on the surface, leaving or entering through
+// A pellet starting exactly on the surface, leaving or entering through
 // it, never splashes there.
 #[test]
 fn hitscan_from_an_origin_on_a_fluid_face_never_splashes_at_that_face() {
@@ -298,7 +298,7 @@ fn hitscan_from_an_origin_on_a_fluid_face_never_splashes_at_that_face() {
     }
 }
 
-// P3: two adjacent fluid entities give an exit from one and an entry into
+// Two adjacent fluid entities give an exit from one and an entry into
 // the other at their shared face.
 #[test]
 fn hitscan_across_two_adjacent_fluid_entities_emits_two_splashes_at_the_shared_face() {

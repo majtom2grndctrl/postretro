@@ -14,7 +14,7 @@
 
 When adding a feel detail, design to the spectrum: name its axis, expose it as a tunable or scriptable parameter, seed the default. Expose the axis, not a catalog of points along it — breadth grows with demand, not ahead of it. The spectrum is bounded by quality: every point is a valid feel, not a degenerate one. A jitter bug is not the low end of a sway range. This governs taste, not correctness: the floor above has no spectrum — owned, not exposed.
 
-Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection. The QuickJS and Luau descriptor parsers are behavioral twins — same validation, same degradation: a malformed field that warns-and-degrades on one must never abort on the other. Both lower authored values through one JSON bridge, which rejects non-finite numbers (`Infinity`, `-Infinity`, `NaN`) and names the path to the field. JSON cannot spell them, so degrading would emit null — indistinguishable from an unauthored optional field, and a silent default where every other bad number is a clean error.
+Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection. The QuickJS and Luau descriptor parsers are behavioral twins — same validation, same degradation: a malformed field that warns-and-degrades on one must never abort on the other. An optional block whose loss leaves a legitimate design may drop alone: a `movement.swim` block failing validation is dropped with a warning naming the field, and the player wades while the rest of the descriptor loads (`movement.md` §4). Both lower authored values through one JSON bridge, which rejects non-finite numbers (`Infinity`, `-Infinity`, `NaN`) and names the path to the field. JSON cannot spell them, so degrading would emit null — indistinguishable from an unauthored optional field, and a silent default where every other bad number is a clean error.
 
 All engine capabilities are exposed through a **primitive registry** — a shared table of registered Rust functions. Register a primitive once and it installs in every future QuickJS and Luau context. Scripts call primitives as global functions.
 
@@ -54,6 +54,8 @@ Presentation template ids below `postretro.builtin.` are engine-owned. QuickJS a
 Luau manifest validation reject author templates in that namespace before commit.
 
 **Mod identity.** Every manifest requires `name`, `id`, and `version`. The id gates multiplayer admission. The version is display-only and never compared. The first committed id and version remain active across staged reloads.
+
+**Fluid declarations.** `ModManifest.fluids` declares the mod's fluids with `defineFluid`, a pure SDK identity helper: `name`, `viscosity` (drag while swimming, 1/s, ≥ 0), `viewTint` (rgb plus strength, each in [0, 1]), `muffle` and `surfaceOpacity` (each in [0, 1]), and optional `enterSound` and `exitSound` keys. A map's `fluid_volume` names a fluid; declaration order assigns its index. Policy is warn-and-drop: a malformed or out-of-range entry, or a later duplicate name, is dropped with a warning naming `fluids[i].<field>`, the first declaration of a name stands, and the rest of the manifest commits. The array holds at most 4,096 slots, holes included; past that the whole field warns once and is ignored. Both runtimes judge each entry through one shared parser. Fluids commit with the manifest and replace on staged reload; a reload that changes the fluid table re-resolves the level's volumes. Fluid declarations stay out of the mod compatibility digest: a client never resolves level fluids against its own registry (`networking.md` §What gates, and what replicates instead), so a differing declaration cannot desync prediction. Its presentation fields (tint, muffle, opacity, sounds) resolve locally by name.
 
 **Mod render profile.** `ModManifest.render.bloom` is optional static mod data.
 It accepts `resolution: "half" | "quarter" | "eighth"` and
@@ -175,6 +177,8 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().player.weapon.current` | `player.weapon.current` |
 | `getGameState().player.weapon.pending` | `player.weapon.pending` |
 | `getGameState().player.weapon.switching` | `player.weapon.switching` |
+| `getGameState().player.swimming` | `player.swimming` |
+| `getGameState().player.immersion` | `player.immersion` |
 | `getGameState().session.openSeats` | `session.openSeats` |
 | `getGameState().session.hostAddress` | `session.hostAddress` |
 | `getGameState().session.hosting` | `session.hosting` |
@@ -190,7 +194,7 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 
 `player.weaponCharging` and `player.weaponChargeProgress` are readonly local HUD facts for the active weapon on every role. Progress is normalized `[0, 1]`, derived from fixed-tick charge time, and remains full while held. Render-only frames do not advance it. Release, cancellation, switching, death, and input suspension clear charging and reset progress to zero. These facts do not replicate and are distinct from the cell resource's stored charge.
 
-**Per-player engine slots.** The catalog marks the owner-private engine player slots (health and the weapon resources). On the host each is per-player through one lookup from pawn to value that reads the pawn's components (`scripting-core` `player_slots`). Owner-private replication, the host HUD publisher, player-event condition reads and `byPlayer` reads (§12) all call it, so no stored per-player copy can drift; replication keeps only its wire shaping, and the HUD and replication keep their own reload-feedback cursors while per-tick readers read the weapon's current state. A value the pawn has no source for is absent, never a default: health needs a health component, every weapon slot a live active weapon, and each resource number a weapon of that kind (`overheated` reads false for any other weapon). Outside a player-event condition a plain read keeps meaning the local player: HUD binds, `bindState`, local crossings and impact-policy ambient reads are unchanged. `byPlayer` on these refs takes `on.player` or `impact.source`.
+**Per-player engine slots.** The catalog marks the owner-private engine player slots (health, the weapon resources, and `player.swimming` / `player.immersion`). On the host each is per-player through one lookup from pawn to value that reads the pawn's components (`scripting-core` `player_slots`). Owner-private replication, the host HUD publisher, player-event condition reads and `byPlayer` reads (§12) all call it, so no stored per-player copy can drift; replication keeps only its wire shaping, and the HUD and replication keep their own reload-feedback cursors while per-tick readers read the weapon's current state. A value the pawn has no source for is absent, never a default: health needs a health component, every weapon slot a live active weapon, and each resource number a weapon of that kind (`overheated` reads false for any other weapon). The swim slots need no weapon: `player.swimming` (bool) reads the movement state and `player.immersion` (0..=1) the output-only immersion component written after each authoritative movement tick (`entity_model.md` §7b). They are the only script-visible projection of movement state, and readonly. Outside a player-event condition a plain read keeps meaning the local player: HUD binds, `bindState`, local crossings and impact-policy ambient reads are unchanged. `byPlayer` on these refs takes `on.player` or `impact.source`.
 
 `session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and never carries player claims or display names. The roster Control message remains its only transport path.
 
@@ -230,7 +234,7 @@ Higher-level vocabulary (`getMapEntities`, `npcs`, `timeline`, `sequence`, etc.)
 **Module layout.** SDK source under `sdk/lib/` is organized as:
 
 - `sdk/lib/map_entities.{ts,luau}` — `getMapEntities(kind, { tag? })`: maps each member kind to its engine component, runs the private raw query, and wraps every snapshot in that kind's member handle from `entities/`.
-- `sdk/lib/gravity.{ts,luau}` — `getGravity()` and `setGravity(v)` over the raw gravity primitives.
+- `sdk/lib/gravity.{ts,luau}` — `getGravity()` and `setGravity(v)` over the raw gravity primitives. They read and set the level default gravity: the gravity outside every gravity volume. A gravity volume's value is absolute and holds inside it whatever `setGravity` sets.
 - `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: `LightEntityHandle` wrapper with `pulse`, `fade`, `flicker`, `colorShift`, `sweep` methods.
 - `sdk/lib/entities/emitters.{ts,luau}` — emitter vocabulary: the `emitter()` component constructor plus `smokeEmitter`, `sparkEmitter`, `dustEmitter` presets.
 - `sdk/lib/entities/fog_volumes.{ts,luau}` — fog volume vocabulary: `FogVolumeHandle` wrapper with density-curve methods.
@@ -396,8 +400,9 @@ the active level by the same `levels` selector as reactions.
 
 **State crossings are edge watchers.** The threshold form
 `onStateCrossing(ref, { above | below }, fire)` watches one Number slot. The
-predicate overload `onStateCrossing(predicate, fire)` watches a Bool
-`RuntimeValue` over live store slots. Both forms observe their initial state
+predicate overload `onStateCrossing(predicate, fire)` watches a Bool predicate
+over live store slots: a fluent value such as `read(player.swimming)`, which
+lowers to its IR node, or a raw `RuntimeValue`. Both forms observe their initial state
 only to arm; an initially satisfied condition does not fire. Thereafter a
 predicate fires on a false-to-true transition and re-arms after returning
 false. A predicate that cannot bind or does not produce Bool warns and does

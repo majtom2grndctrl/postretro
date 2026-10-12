@@ -1,5 +1,5 @@
 // Pure collision geometry over level data: convex leaves, environment volumes, and the environment resolve.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 #![deny(unsafe_code)]
 

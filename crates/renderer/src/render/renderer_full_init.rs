@@ -507,7 +507,7 @@ pub(crate) fn build_full_renderer(
         promoted_cube_cache,
     );
     // Fluid surfaces share the camera, world-material, lighting and SH
-    // layouts. See: context/lib/rendering_pipeline.md §7.4
+    // layouts. See: context/lib/rendering_pipeline.md §7.3a, §10
     let fluid_surface = fluid_surface::FluidSurfacePass::new(
         device,
         DEPTH_FORMAT,

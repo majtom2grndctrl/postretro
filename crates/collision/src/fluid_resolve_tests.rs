@@ -1,5 +1,5 @@
 // Point containment, contents masks, the overlap rule across fields, and the capsule-segment fluid rule.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/index.md §Acceptance (Queries and resolution)
+// See: context/lib/entity_model.md §7 (Environment Volumes)
 
 use glam::Vec3;
 
@@ -57,7 +57,6 @@ fn containing(volumes: &EnvironmentVolumes, point: Vec3, mask: ContentsMask) -> 
     hits
 }
 
-// Q1
 #[test]
 fn volume_point_query_reports_inside_on_face_and_outside_a_tilted_convex_volume() {
     // The unit cube cut by x + y <= 1 (an unnormalized normal): a wedge.
@@ -91,7 +90,6 @@ fn volume_point_query_reports_inside_on_face_and_outside_a_tilted_convex_volume(
     );
 }
 
-// Q1
 #[test]
 fn fluid_volume_is_reported_under_a_fluid_mask_and_never_under_a_gravity_only_mask() {
     let volumes = EnvironmentVolumes::build(vec![pool(0.0, 4.0, 2)]);
@@ -105,7 +103,6 @@ fn fluid_volume_is_reported_under_a_fluid_mask_and_never_under_a_gravity_only_ma
     assert_eq!(resolve(&volumes, point).fluid, Some(2));
 }
 
-// Q2
 #[test]
 fn pool_inside_lower_priority_low_gravity_room_resolves_pool_fluid_and_room_gravity() {
     let room = EnvironmentVolume {
@@ -148,7 +145,6 @@ fn resolve_gravity_matches_the_full_resolve_gravity_at_every_point() {
     }
 }
 
-// Q7
 #[test]
 fn immersion_is_zero_with_feet_at_fluid_top_one_with_head_below_and_proportional_between() {
     let volumes = EnvironmentVolumes::build(vec![pool(0.0, 4.0, 5)]);
@@ -181,7 +177,6 @@ fn immersion_is_zero_with_feet_at_fluid_top_one_with_head_below_and_proportional
     }
 }
 
-// Q7
 #[test]
 fn floating_fluid_block_counts_only_the_contained_fraction_when_the_capsule_pokes_out_the_bottom() {
     // A block floating in mid-air, y 2..5. The capsule (1.5..3.5) hangs out of
@@ -197,7 +192,6 @@ fn floating_fluid_block_counts_only_the_contained_fraction_when_the_capsule_poke
     assert!(below.immersion.abs() < EPS);
 }
 
-// Q7
 #[test]
 fn wading_capsule_with_body_point_above_a_shallow_pool_resolves_the_pool_fluid() {
     let volumes = EnvironmentVolumes::build(vec![pool(0.0, 0.3, 4)]);
@@ -212,7 +206,6 @@ fn wading_capsule_with_body_point_above_a_shallow_pool_resolves_the_pool_fluid()
     assert!(!resolved.tick_eye_in_fluid);
 }
 
-// Q7
 #[test]
 fn capsule_spanning_two_fluids_resolves_the_overlap_winner_and_counts_only_its_brushes() {
     // Equal priority: the smaller volume (fluid 1, y 0..1) wins over the larger
@@ -255,7 +248,6 @@ fn multi_brush_fluid_counts_overlapping_brushes_once() {
     assert!((resolved.immersion - 1.0).abs() < EPS);
 }
 
-// Q8
 #[test]
 fn capsule_whose_side_overlaps_a_fluid_while_its_vertical_segment_misses_resolves_dry() {
     let volumes = EnvironmentVolumes::build(vec![fluid_box(
@@ -359,7 +351,7 @@ fn resolved_viscosity_is_the_winning_fluid_entry_of_the_view_table() {
     assert_eq!((level_only.fluid, level_only.viscosity), (None, 0.0));
 }
 
-// Q3: a pool split into two stacked entities of one fluid reads as one pool,
+// A pool split into two stacked entities of one fluid reads as one pool,
 // whichever entity wins the overlap rule.
 #[test]
 fn pool_split_into_two_stacked_entities_of_one_fluid_reads_full_immersion_and_eye_in() {
@@ -390,7 +382,7 @@ fn pool_split_into_two_stacked_entities_of_one_fluid_reads_full_immersion_and_ey
     assert!(!surfacing.tick_eye_in_fluid);
 }
 
-// Q3: a narrow stream volume of water dipping into a water pool adds to it; a
+// A narrow stream volume of water dipping into a water pool adds to it; a
 // stream of another fluid wins the fluid and counts alone.
 #[test]
 fn stream_of_one_fluid_dipping_into_a_pool_of_the_same_fluid_adds_up() {

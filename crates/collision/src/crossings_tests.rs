@@ -1,5 +1,5 @@
 // Fluid boundary crossings along a ray: entity unions, adjacent entities, the start-on-face rule.
-// See: context/plans/in-progress/E24--water-and-environment-volumes/research.md §Ordering pins (P6, P7)
+// See: context/lib/entity_model.md §7 (Environment Volumes — Hitscan splash facts)
 
 use glam::Vec3;
 
@@ -103,7 +103,7 @@ fn ray_through_a_floating_block_crosses_twice_with_each_faces_normal() {
     assert_crossing(&found[1], 3.0, Vec3::Y, false, 1, 0);
 }
 
-// Ordering pin P7: the union of one entity's brushes.
+// Crossings follow the union of one entity's brushes.
 #[test]
 fn ray_across_two_brushes_of_one_fluid_entity_has_no_crossing_at_their_shared_face() {
     let volumes = EnvironmentVolumes::build(vec![fluid(

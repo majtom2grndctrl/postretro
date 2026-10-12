@@ -206,7 +206,7 @@ fn gravity_and_push_volumes_emit_no_surface() {
     assert!(section.volumes.iter().all(|v| v.surface_faces.is_empty()));
 }
 
-/// C4: one face flush against a solid wall and one shared with a sibling
+/// One face flush against a solid wall and one shared with a sibling
 /// brush of the same entity draw nothing; every other face draws whole.
 #[test]
 fn fluid_faces_flush_against_solid_or_shared_with_a_sibling_emit_no_surface() {
@@ -241,7 +241,7 @@ fn fluid_faces_flush_against_solid_or_shared_with_a_sibling_emit_no_surface() {
     }
 }
 
-/// C5: a face partly flush against solid draws only its exposed part, and no
+/// A face partly flush against solid draws only its exposed part, and no
 /// piece reaches into the buried region.
 #[test]
 fn fluid_face_partly_flush_against_solid_emits_only_its_exposed_part() {

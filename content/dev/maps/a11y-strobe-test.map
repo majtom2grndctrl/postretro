@@ -8,7 +8,6 @@
 // Run: cargo run -p xtask -- run content/dev/maps/a11y-strobe-test.prl
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/a11y-strobe-test.ts"
 "_tb_mod" "dev"

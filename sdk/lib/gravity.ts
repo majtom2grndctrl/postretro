@@ -5,7 +5,7 @@ import { worldGetGravity, worldSetGravity } from "postretro";
 
 /**
  * Level default gravity in m/s²: the gravity outside every gravity volume.
- * Negative = downward (Earth = -9.81), positive = upward. Seeded from the
+ * Negative = downward (default -20.32), positive = upward. Seeded from the
  * worldspawn `initialGravity` KVP at level load and persists until the next
  * level load or `setGravity` call. Inside a `gravity_volume` the volume's own
  * value holds; this still returns the level default.

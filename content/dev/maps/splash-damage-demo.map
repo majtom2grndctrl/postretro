@@ -9,7 +9,6 @@
 // XP once and despawns; a pistol kill leaves the dummy to recover and pay again.
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "data_script" "../scripts/player-events.ts"
 "wad" ""
 "_tb_mod" "dev"

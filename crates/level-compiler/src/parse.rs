@@ -983,7 +983,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     };
 
     // Worldspawn `initialGravity` (m/s², negative = downward). Absence uses
-    // the documented Earth-gravity default; supplied values remain strict so
+    // the documented default gravity; supplied values remain strict so
     // malformed map data cannot reach the runtime gravity register.
     let initial_gravity: f32 = {
         if let Some(raw) = get_property(&geo_map, &worldspawn_id, "initialGravity") {
@@ -6939,7 +6939,7 @@ mod tests {
     #[test]
     fn parse_map_file_defaults_missing_initial_gravity() {
         // A map can omit `initialGravity`; the parser seeds the runtime
-        // register with the canonical Earth-gravity default.
+        // register with `DEFAULT_WORLD_GRAVITY_MPS2`.
         let map_text = "\
 // entity 0
 {

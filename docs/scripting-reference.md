@@ -1907,25 +1907,25 @@ Read and write the level's default gravity at runtime: the gravity everywhere ou
 
 Inside a `gravity_volume` the volume's own `gravity` holds. `setGravity` never reaches inside one, and `getGravity` keeps returning the level default even while the player stands in one ([level design reference](level_design.md#environment-volumes-fluids-gravity-and-push)).
 
-**Sign convention:** negative = downward, positive = upward. Standard Earth gravity is `-9.81` m/s².
+**Sign convention:** negative = downward, positive = upward. The default is `-20.32` m/s², Quake's 800 units/s² at the map scale — about twice Earth's −9.81, so jumps land quickly.
 
 ```typescript
 // TypeScript
 import { getGravity, setGravity } from "postretro";
 
-const g = getGravity();   // → -9.81 at level load (from initialGravity KVP)
-setGravity(-4.9);         // half gravity — effect is immediate
+const g = getGravity();   // → -20.32 at level load (from initialGravity KVP)
+setGravity(-10.16);       // half the default — effect is immediate
 ```
 
 ```lua
 -- Luau
-local g = Postretro.getGravity()   -- → -9.81 at level load
-Postretro.setGravity(-4.9)
+local g = Postretro.getGravity()   -- → -20.32 at level load
+Postretro.setGravity(-10.16)
 ```
 
 `setGravity` rejects `NaN` and non-finite values silently (a warning is logged) so a misbehaving script cannot break particle physics. The value persists until the next level load or another `setGravity` call.
 
-**TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses standard Earth gravity (`-9.81`). Supplied malformed or non-finite values are compile errors. Example: `"initialGravity" "-9.81"`.
+**TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses the default `-20.32`. Supplied malformed or non-finite values are compile errors. Example, Earth gravity: `"initialGravity" "-9.81"`.
 
 **Particle effect:** `setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
 
@@ -2784,7 +2784,7 @@ export default defineMod({
             sinkSpeed: 0.8,
             enterDepth: 0.5,
             exitDepth: 0.35,
-            fluidJumpVelocity: 6.5,
+            fluidJumpVelocity: 9.35,
           },
         },
       },
@@ -2877,7 +2877,7 @@ logs one warning. All six fields are required:
 |---|---|---|---|
 | `speed` | m/s | `≥ 0` | Target swim speed. |
 | `accel` | m/s² | `≥ 0` | How fast the swimmer reaches that speed. |
-| `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at Earth gravity (9.81 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
+| `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at the default level gravity (−20.32 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
 | `enterDepth` | fraction | above `0`, up to `1` | How much of the body, feet to head, must be in the fluid to start swimming. |
 | `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
 | `fluidJumpVelocity` | m/s | above `0` | Upward speed of a jump out of the fluid. |

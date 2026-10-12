@@ -15,6 +15,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use mlua::chunk::Compiler as LuaCompiler;
 use mlua::{Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue};
 use postretro_foundation::data_descriptors::validate::consequential::validate_consequential_args;
+use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 use postretro_level_format::light_membership::{
     LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightMembershipRecord,
     LightTable, LightTableLight, MapMember, MapMemberKind,
@@ -322,7 +323,7 @@ impl<'js> IntoJs<'js> for StubReturn {
         match self {
             Self::Null => Ok(JsValue::new_null(ctx.clone())),
             Self::False => false.into_js(ctx),
-            Self::Gravity => (-9.81_f64).into_js(ctx),
+            Self::Gravity => f64::from(DEFAULT_WORLD_GRAVITY_MPS2).into_js(ctx),
         }
     }
 }
@@ -530,7 +531,7 @@ fn install_lua_primitives(
             match returns {
                 StubReturn::Null => Ok(LuaValue::Nil),
                 StubReturn::False => Ok(LuaValue::Boolean(false)),
-                StubReturn::Gravity => Ok(LuaValue::Number(-9.81)),
+                StubReturn::Gravity => Ok(LuaValue::Number(f64::from(DEFAULT_WORLD_GRAVITY_MPS2))),
             }
         })?;
         globals.set(*name, f)?;

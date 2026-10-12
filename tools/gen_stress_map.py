@@ -1928,7 +1928,6 @@ def write_map(path, brushes, spawn, nx, ny, nz, entities, data_script):
     lines.append("// entity 0")
     lines.append("{")
     lines.append('"classname" "worldspawn"')
-    lines.append('"initialGravity" "-9.81"')
     lines.append('"ambient_color" "64 64 72"')
     # The navmesh bake is unconditional and scales with footprint/cell_size^2; at
     # the default 0.25 m it dominates compile time for a map this large (minutes).

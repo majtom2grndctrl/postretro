@@ -9,10 +9,11 @@ use crate::movement::carry::CarryRule;
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_collision::ResolvedEnvironment;
 use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 
-/// Standard gravity's magnitude, m/s². `swim.sink_speed` is authored at this
-/// gravity and scales linearly with the resolved gravity.
-const STANDARD_GRAVITY: f32 = 9.81;
+/// Default level gravity's magnitude, m/s². `swim.sink_speed` is authored at
+/// this gravity and scales linearly with the resolved gravity.
+const REFERENCE_GRAVITY: f32 = -DEFAULT_WORLD_GRAVITY_MPS2;
 
 /// The input half of a fluid jump: jump held with the TICK eye (the tick-start
 /// resolve's `position.y + eye_height`) outside the fluid. The presented camera
@@ -131,9 +132,10 @@ pub(crate) fn leave_swim() -> Transition {
 /// (`facing_pitch`, positive looks up), strafe stays horizontal, jump held
 /// swims up and crouch held swims down. Any input swims at full `speed` along
 /// the combined direction. With neither jump nor crouch held, the sink velocity
-/// `sink_speed * gravity / 9.81` joins the vertical part: a swimmer sinks at
-/// `sink_speed` under standard gravity, floats with zero gravity and rises under
-/// upward gravity. With the tick eye out of the fluid the wish never points up,
+/// `sink_speed * gravity / REFERENCE_GRAVITY` joins the vertical part: a swimmer
+/// sinks at `sink_speed` under default level gravity, floats with zero gravity
+/// and rises under upward gravity. With the tick eye out of the fluid the wish
+/// never points up,
 /// so a swimmer treads at the surface instead of swimming out of it; the fluid
 /// jump is the way out.
 fn wish_velocity(
@@ -154,7 +156,7 @@ fn wish_velocity(
     let direction = forward * input.wish_dir.y + right * input.wish_dir.x + Vec3::Y * vertical;
     let mut target = direction.normalize_or_zero() * speed;
     if !input.jump_pressed && !input.crouch_intent {
-        target.y += sink_speed * (environment.gravity / STANDARD_GRAVITY);
+        target.y += sink_speed * (environment.gravity / REFERENCE_GRAVITY);
     }
     if !environment.tick_eye_in_fluid {
         target.y = target.y.min(0.0);

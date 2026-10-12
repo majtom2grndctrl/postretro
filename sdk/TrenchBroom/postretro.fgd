@@ -15,10 +15,10 @@
     // target; 8 = coarsest. Coarser is faster but blockier near edges.
     // See context/lib/build_pipeline.md for full semantics.
     fog_pixel_scale(integer) : "Fog low-resolution downscale factor (1=full-res, 8=coarsest)" : 4
-    // Starting gravity in m/s². Negative = downward (Earth = -9.81), positive
-    // = upward acceleration. Absent uses standard Earth gravity. May be changed
-    // at runtime via setGravity().
-    initialGravity(float) : "Starting gravity (m/s²; default −9.81/Earth); negative = downward, positive = upward. May be changed at runtime via setGravity()." : -9.81
+    // Starting gravity in m/s². Negative = downward, positive = upward
+    // acceleration. Absent uses the engine default, -20.32 (about twice
+    // Earth's). May be changed at runtime via setGravity().
+    initialGravity(float) : "Starting gravity (m/s²; default −20.32, about twice Earth); negative = downward, positive = upward. May be changed at runtime via setGravity()." : -20.32
     // Per-map lightmap density opt-in (meters per texel). Smaller = finer
     // shadows but larger atlas. Default 0.04 m/texel; only fidelity-critical
     // maps need to author this. Non-finite / <= 0 values are warned and the
@@ -576,7 +576,7 @@
     color(160 80 220)
     = gravity_volume : "Regional gravity (brush)"
 [
-    gravity(float) : "Gravity (m/s²)" : "" : "Required. One signed vertical number, like worldspawn initialGravity: negative pulls down. \"-3\" is low gravity, \"0\" is weightless, \"-9.81\" is Earth, a positive value pulls up. It replaces level gravity inside the volume, and setGravity() never reaches inside. Blank, or more than one number, fails the build."
+    gravity(float) : "Gravity (m/s²)" : "" : "Required. One signed vertical number, like worldspawn initialGravity: negative pulls down. \"-6\" is low gravity, \"0\" is weightless, \"-20.32\" is the level default, a positive value pulls up. It replaces level gravity inside the volume, and setGravity() never reaches inside. Blank, or more than one number, fails the build."
     priority(integer) : "Overlap priority" : 0 : "Default 0. Where volumes setting the same field overlap, the highest priority wins; on a tie the smaller volume wins, then the earlier entity in map order."
 ]
 
@@ -584,7 +584,7 @@
     color(120 220 80)
     = push_volume : "Regional push: updraft, wind or current (brush)"
 [
-    push(string) : "Push (m/s², map axes)" : "" : "Required. Three numbers, an acceleration in map axes in m/s². \"0 0 15\" is an updraft, \"8 0 0\" a wind along +X. A push never changes which way is down. \"0 0 0\" carves a calm pocket inside a stronger push. Pair with a coincident fluid_volume for a current. Blank, or any count but three numbers, fails the build."
+    push(string) : "Push (m/s², map axes)" : "" : "Required. Three numbers, an acceleration in map axes in m/s². \"0 0 25\" is an updraft, \"8 0 0\" a wind along +X. A push never changes which way is down. \"0 0 0\" carves a calm pocket inside a stronger push. Pair with a coincident fluid_volume for a current. Blank, or any count but three numbers, fails the build."
     priority(integer) : "Overlap priority" : 0 : "Default 0. Where volumes setting the same field overlap, the highest priority wins; on a tie the smaller volume wins, then the earlier entity in map order."
 ]
 

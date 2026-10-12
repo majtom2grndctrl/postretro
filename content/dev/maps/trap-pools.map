@@ -9,7 +9,6 @@
 // mod-global ambush_trap pool, selected only when this map's catalog tag matches.
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/trap-pools.ts"
 "_tb_mod" "dev"

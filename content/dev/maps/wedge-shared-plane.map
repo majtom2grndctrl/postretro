@@ -5,7 +5,6 @@
 // plane is x=z with normal (1, 0, -1) / sqrt(2).
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 // wedge A: qx <= qy
 {

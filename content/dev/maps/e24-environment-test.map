@@ -8,7 +8,6 @@
 // Fluids `water` and `sludge` are declared in content/dev/start-script.ts.
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "_tb_mod" "dev"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
@@ -335,10 +334,10 @@
 ( 496 400 112 ) ( 496 496 208 ) ( 496 496 112 ) DebugTextures/debug_floor_blue 0 0 0 1 1
 }
 }
-// Low-gravity room: gravity -3 m/s^2 over the whole room, its pit included.
+// Low-gravity room: gravity -6.8 m/s^2 (a third of default) over the whole room, its pit included.
 {
 "classname" "gravity_volume"
-"gravity" "-3"
+"gravity" "-6.8"
 {
 ( 528 512 -112 ) ( 528 0 512 ) ( 528 0 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 528 0 -112 ) ( 1024 0 512 ) ( 1024 0 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
@@ -387,10 +386,10 @@
 ( 1408 128 -112 ) ( 1408 384 -16 ) ( 1408 384 -112 ) DebugTextures/debug_floor_green 0 0 0 1 1
 }
 }
-// Updraft shaft: push 15 m/s^2 up, against 9.81 down, to z 352.
+// Updraft shaft: push 25.5 m/s^2 up, against 20.32 down, to z 352.
 {
 "classname" "push_volume"
-"push" "0 0 15"
+"push" "0 0 25.5"
 {
 ( 128 960 0 ) ( 128 832 352 ) ( 128 832 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 ( 128 832 0 ) ( 256 832 352 ) ( 256 832 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1

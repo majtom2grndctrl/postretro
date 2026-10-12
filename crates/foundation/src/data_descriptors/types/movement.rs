@@ -351,8 +351,8 @@ pub struct SwimParams {
     pub speed: f32,
     /// Acceleration toward the wish velocity, metres/sec². Finite and ≥ 0.
     pub accel: f32,
-    /// Drift along gravity with no vertical input, metres/sec at standard
-    /// gravity (−9.81 m/s²). Finite and ≥ 0.
+    /// Drift along gravity with no vertical input, metres/sec at the default
+    /// level gravity (−20.32 m/s²). Finite and ≥ 0.
     pub sink_speed: f32,
     /// Immersion fraction at which any state enters swim. Finite, `(0, 1]`:
     /// zero would enter swim at any immersion, even dry.

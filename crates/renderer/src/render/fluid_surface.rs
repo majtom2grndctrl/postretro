@@ -18,6 +18,7 @@ use super::*;
 pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
 /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
 /// 2 lighting, 3 SH volume, 4 per-volume parameters.
+#[cfg(any(test, debug_assertions))]
 pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 5;
 
 const SHADER_SOURCE: &str = concat!(
@@ -54,6 +55,7 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
 /// Every BGL entry set the fluid pipeline layout composes, in group order.
 /// GPU-free, so the budget tests and the init-time debug assert derive the
 /// per-stage inventory from the same builders the layout is created from.
+#[cfg(any(test, debug_assertions))]
 pub(crate) fn fluid_pipeline_bind_group_layout_entries()
 -> [Vec<wgpu::BindGroupLayoutEntry>; FLUID_BIND_GROUP_COUNT] {
     [

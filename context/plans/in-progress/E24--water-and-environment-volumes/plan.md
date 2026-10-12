@@ -171,3 +171,11 @@ Hot paths and constraints, carried into every delegated task: `resolve_environme
    - Particle metric: deferred with Task 14.
    Record results in the AC table, then delete the scratch logs.
 
+## Preflight (2026-10-12)
+- ✓ `cargo fmt --check` (after `cargo fmt` reformatted 4 files: `frame_loop/mod.rs`, `sound_events/mod.rs`, `startup/session.rs`, `renderer/src/render/mod.rs`)
+- ✓ `cargo clippy --workspace --all-targets --features postretro/dev-tools --target-dir target/preflight-clippy -- -D warnings`
+- ✓ `cargo test --workspace --features postretro/dev-tools`: 10,771 passed, 0 failed, 46 ignored
+- ✓ `cargo check --release --workspace` (after gating two debug/test-only renderer items, `FLUID_BIND_GROUP_COUNT` and `fluid_pipeline_bind_group_layout_entries`, on `cfg(any(test, debug_assertions))`)
+- ✓ `cargo run -p xtask -- crate-graph --check`
+- Pre-existing, not E24: `cargo check --release --all-targets` fails in `scripting-core` `runtime/core.rs` tests that name the debug-only staged-manifest types (blame 2026-09-06, before E24's base).
+

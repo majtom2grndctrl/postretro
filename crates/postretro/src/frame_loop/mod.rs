@@ -2076,15 +2076,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             );
             renderer.set_mover_occluder_aabbs(app.kinematic_mover_render.occluder_aabbs());
             let local = script_ctx.data_registry.borrow();
-            renderer.set_fluid_surface_draws(crate::fluid_presentation::collect_fluid_surface_draws(
-                &mut app.fluid_surface_render,
-                world,
-                &visible_cells,
-                render_eye_position,
-                &app.environment_volumes,
-                &app.environment_fluids,
-                &local.fluids,
-            ));
+            renderer.set_fluid_surface_draws(
+                crate::fluid_presentation::collect_fluid_surface_draws(
+                    &mut app.fluid_surface_render,
+                    world,
+                    &visible_cells,
+                    render_eye_position,
+                    &app.environment_volumes,
+                    &app.environment_fluids,
+                    &local.fluids,
+                ),
+            );
         } else {
             renderer.set_fluid_surface_draws(&[]);
         }

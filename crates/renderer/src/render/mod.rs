@@ -78,6 +78,8 @@ mod shadowmask_union_test;
 mod world_specular_test;
 
 // --- Extracted submodules (module root is slim; impls split by concern) ---
+#[cfg(test)]
+mod fluid_surface_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]
@@ -113,8 +115,6 @@ mod shadow_reach_probes;
 mod shadow_world_draws;
 #[cfg(test)]
 mod shadow_world_frame_tests;
-#[cfg(test)]
-mod fluid_surface_frame_test;
 #[cfg(test)]
 mod visible_span_frame_tests;
 
@@ -219,9 +219,9 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 // `render::*` paths (external callers and sibling render modules depend on these).
 pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
-pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
+pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub use renderer_geometry::level_world_to_geometry;
 pub(crate) use renderer_geometry::{
     SPEC_OWNER_STRIDE, build_default_view_projection, build_line_indices_from_triangles,

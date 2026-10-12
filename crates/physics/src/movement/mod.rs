@@ -222,6 +222,8 @@ pub fn tick_with_immersion(
         && component.knockback_velocity.y > 0.0
         && component.velocity.y > 0.0;
     // Push lift-off leaves the ground the same way a knockback launch does.
+    // It reads the tick-start state, before the swim seam, so on a swim entry
+    // or exit tick it applies the outgoing state's rule (`push::lifts_off`).
     let push_launch = component.is_grounded() && push::lifts_off(component, &resolved_environment);
     let launched = knockback_launch || push_launch;
     if launched {
@@ -284,8 +286,12 @@ pub fn tick_with_immersion(
 
     // Push lands after the intent: horizontal push (all of it while swimming) in
     // the protected drift layer, vertical push otherwise in locomotion. Terminal
-    // speed along the push is held beside the fall clamp.
-    push::apply(component, &resolved_environment, dt);
+    // speed along the push is held beside the fall clamp. The swim drift cap
+    // asks for ceiling contact at the post-intent position.
+    let cap_position = position;
+    push::apply(component, &resolved_environment, dt, |component| {
+        substrate::touches_ceiling(component, &collision, cap_position)
+    });
     // An intent or push that cleared grounded launched the body: a jump, or a
     // swimmer rising off the pool floor. The substrate must not clamp the rise.
     let left_ground = previous_ground.is_grounded() && !component.is_grounded();

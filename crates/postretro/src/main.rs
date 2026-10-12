@@ -989,8 +989,9 @@ pub(crate) struct App {
     /// installed tuning on a connected client (empty before one installs).
     /// Fluid indices in the volumes, and every view's viscosities, index it.
     environment_fluids: postretro_combat_model::FluidMovementTable,
-    /// Where `environment_fluids` came from; a connected client awaiting the
-    /// host's table leaves `environment_volumes` unbuilt.
+    /// Where `environment_fluids` came from. A connected client awaiting the
+    /// host's table builds every volume with its fluid dry, so gravity and
+    /// push still hold; the host's table re-resolves the fluids on arrival.
     environment_fluid_source: startup::environment_install::FluidTableSource,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,

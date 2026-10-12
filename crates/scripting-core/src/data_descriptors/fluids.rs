@@ -1,6 +1,7 @@
 // `fluids` manifest drain: each VM converts one entry at a time to JSON and
-// both parse it here, so the two runtimes accept and reject the same entries
-// with the same diagnostics. Range policy lives on `FluidRegistry`.
+// both parse it here, so the two runtimes judge each entry with the same
+// diagnostics. Which keys count as entries differs at the container (see
+// `drain_fluids_lua`). Range policy lives on `FluidRegistry`.
 // See: context/lib/scripting.md §2 (Mod-init context lifecycle)
 
 use super::player_events::{js_conversion_error, lua_conversion_error};
@@ -132,21 +133,33 @@ fn oversized_field(scope: &str) -> FluidRegistry {
 }
 
 /// Whether a non-array JS value is a plain empty object: `{}` (or a
-/// null-prototype object with no own keys). A function, `Map`, `Date` or other
-/// built-in has no own keys either, but is not a list.
-fn is_plain_empty_object<'js>(ctx: &Ctx<'js>, raw: &JsValue<'js>) -> Result<bool, DescriptorError> {
+/// null-prototype object with no own keys). A function, `Map`, `Date`,
+/// `Proxy` or other exotic object has no own keys either, but is not a list.
+///
+/// Never fails, so the check cannot reject the manifest: a value it cannot
+/// read is "not a plain empty object", and the field warns and is ignored.
+/// A proxy is refused before any of its traps run (rquickjs's
+/// `get_prototype` cannot report a throwing `getPrototypeOf` trap), so only an
+/// ordinary object, whose prototype read cannot throw, gets that far. The
+/// built-in `Object.prototype` comes from a fresh object, never the mutable
+/// global `Object`, which a mod may have replaced.
+fn is_plain_empty_object<'js>(ctx: &Ctx<'js>, raw: &JsValue<'js>) -> bool {
+    if raw.is_proxy() {
+        return false;
+    }
     let Some(object) = raw.as_object() else {
-        return Ok(false);
+        return false;
     };
     if object.keys::<String>().next().is_some() {
-        return Ok(false);
+        return false;
     }
     let Some(prototype) = object.get_prototype() else {
-        return Ok(true);
+        return true;
     };
-    let object_constructor: Object = ctx.globals().get("Object").map_err(js_err)?;
-    let object_prototype: Object = object_constructor.get("prototype").map_err(js_err)?;
-    Ok(prototype.as_value() == object_prototype.as_value())
+    Object::new(ctx.clone())
+        .ok()
+        .and_then(|plain| plain.get_prototype())
+        .is_some_and(|object_prototype| prototype.as_value() == object_prototype.as_value())
 }
 
 /// Drain `fluids` from a QuickJS manifest object. Entries convert one at a
@@ -167,16 +180,21 @@ pub fn drain_fluids_js<'js>(
     }
     let Some(entries) = raw.as_array() else {
         // An empty object reads as an empty list, as an empty Luau table does.
-        if is_plain_empty_object(ctx, &raw)? {
+        if is_plain_empty_object(ctx, &raw) {
             return Ok(FluidRegistry::default());
         }
         return Ok(ignored_field(scope));
     };
-    if entries.len() > MAX_FLUID_CONTAINER_ENTRIES {
+    // Read `length` as a number: past `i32::MAX` QuickJS stores it as a
+    // float64, which `Array::len` asserts against. A JS array's length is an
+    // integer below 2^32, so the comparison is exact.
+    let length: f64 = entries.as_object().get("length").map_err(js_err)?;
+    if length > MAX_FLUID_CONTAINER_ENTRIES as f64 {
         return Ok(oversized_field(scope));
     }
-    let mut converted = Vec::with_capacity(entries.len());
-    for index in 0..entries.len() {
+    let len = length as usize;
+    let mut converted = Vec::with_capacity(len);
+    for index in 0..len {
         let entry: JsValue = entries.get(index).map_err(js_err)?;
         converted.push(
             conv::js_to_json(ctx, entry)
@@ -187,12 +205,19 @@ pub fn drain_fluids_js<'js>(
     Ok(FluidRegistry::from_declarations(scope, converted))
 }
 
-/// Drain `fluids` from a Luau manifest table. Mirrors [`drain_fluids_js`]:
+/// Drain `fluids` from a Luau manifest table. Like [`drain_fluids_js`],
 /// every slot up to the highest index is an entry, so a `nil` hole is one
 /// malformed entry, as a JS hole is, and its siblings keep their indices.
-/// Diagnostics count entries from 0, matching the QuickJS drain. A
-/// non-sequence table (a non-integer or non-positive key) or one keyed past
-/// [`MAX_FLUID_CONTAINER_ENTRIES`] warns once and ignores the field.
+/// Diagnostics count entries from 0, matching the QuickJS drain. A table
+/// keyed past [`MAX_FLUID_CONTAINER_ENTRIES`] warns once and ignores the
+/// field, as an over-long JS array does.
+///
+/// The runtimes diverge on keys that are not slots. A JS array keeps a
+/// negative, fractional or named key, and an index at or past 2^32 − 1, as a
+/// plain property outside its length, so the drain never sees it and the
+/// array's entries stand. Luau has no such split: a table with any key that
+/// is not a positive integer is not a sequence, so the whole field warns that
+/// it must be an array and is ignored.
 pub fn drain_fluids_lua(table: &Table, scope: &str) -> Result<FluidRegistry, DescriptorError> {
     let raw: LuaValue = table.get("fluids").map_err(lua_err)?;
     let entries = match raw {

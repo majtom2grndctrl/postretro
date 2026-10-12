@@ -204,3 +204,15 @@ Panel: movement tracer, collision/eye adversarial, app/scripting contract verifi
 - Owner notes (behavior per the brief and Q3, not changed): a small different-fluid volume can win the overlap rule on size and drop a swimmer out of a surrounding lake; a pool split into same-fluid entities reads as one for movement and the eye but still splashes at the internal shared face (AC P3: adjacent entities give two splashes).
 - Proof: physics 270, collision 61, scripting-core 863, workspace check clean.
 
+### Review panel 3 (fix diff 5248ce94c..530ff71a7) and fixes
+Panel: movement tracer + collision/app adversarial (opus). Findings narrowed to edge cases; fixed:
+- The swim-drift magnitude cap no longer lifts a floor swimmer or pulls one off a ceiling: in contact, the cap's vertical change moves into locomotion (`substrate::touches_ceiling` probe, replay-identical; `push::held_by_contact`).
+- Swim horizontal acceleration excludes the contact-held reaction (`-drift.y`), so a swimmer held by a current swims as fast as on a still floor; vertical acceleration keeps the held part (Q2 floor lift-off needs it).
+- JS `fluids` length read as f64 (no rquickjs `Array::len` panic past INT32_MAX); `is_plain_empty_object` uses the built-in prototype, never rejects the manifest, refuses proxies before traps run; fluids drain docs state the JS/Luau non-index-key divergence; `environment_fluid_source` doc.
+- Documented (accepted): `lifts_off` reads tick-start state, so swim entry/exit ticks use the dry rule for one tick; in inviscid water a swimmer leaving a current keeps drift and opposing locomotion.
+- Proof: physics 274, scripting-core 865, workspace check, clippy, fmt clean.
+- Follow-ups (outside E24): the same rquickjs `Array::len` panic in `js/manifest.rs` `drain_impact_events_js`, `player_events.rs`, `input_block.rs` — route them through the existing `safe_js_array_len`.
+- For the owner's X3 playtest: a swimmer touching a floor or ceiling reaches ≈ 5.1 m/s horizontal at `swim.speed` 4.5 with the default sink (the contact erases the wish's downward part each tick); planar steering in contact would bring it to 4.5 and changes floor swimming generally — an owner call if it feels wrong.
+
+Loop stopped: round 3 findings were narrow edge cases, now fixed.
+

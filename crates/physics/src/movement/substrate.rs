@@ -654,6 +654,25 @@ pub(super) fn upward_clearance_probe(
     }
 }
 
+/// Ceiling contact probe: does a downward-facing surface bear the capsule
+/// centred at `position` from above? The slide loop leaves a body pressed into
+/// a ceiling `SKIN_DISTANCE` short of it, so a sweep up by one more skin width
+/// hits that ceiling at once; a body that has moved clear of it misses. Only a
+/// hit whose normal points down counts. Movement does not track ceiling
+/// contact between ticks, so the swim drift cap asks here, and only on a tick
+/// the cap changes the drift's vertical part (`push::cap_swim_drift`).
+pub(super) fn touches_ceiling(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+) -> bool {
+    let capsule = Capsule::new_y(component.capsule.half_height, component.capsule.radius);
+    matches!(
+        cast_capsule_query(collision, position, &capsule, Vec3::Y, SKIN_DISTANCE),
+        Some(h) if h.normal.y < 0.0
+    )
+}
+
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge
 /// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
 /// The budget itself replenishes on floor contact via `refresh_on_landing`, so

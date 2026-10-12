@@ -45,18 +45,27 @@ pub(crate) fn fluid_jump_input(input: &MovementInput, environment: &ResolvedEnvi
 ///    by knockback control) up to `swim.speed`. Like `pm_accelerate` it only
 ///    adds speed along the wish direction, so carried momentum above `speed` is
 ///    never clipped; drag alone bleeds it. Gravity is not integrated: with no
-///    vertical input the wish's vertical part is the sink velocity.
+///    vertical input the wish's vertical part is the sink velocity. While a
+///    floor or ceiling holds part of locomotion against the drift layer
+///    (`held_by_contact`, from `push::held_by_contact`), the horizontal result
+///    comes from accelerating locomotion with that part excluded, and the
+///    vertical result from locomotion whole (motion relative to the water,
+///    which decides lift-off). Mid-water the part is zero and both agree.
 ///
 /// A swimmer touching the pool floor stays grounded for collision (ground
 /// reference, landing refresh, mover carry, step-up) but not for its medium:
 /// no ground friction, and its push drift decays at the fluid's viscosity. It
 /// leaves the floor once its total vertical motion, current included, points
 /// up (`push::apply`).
+// One more input than the clippy default: the contact's held reaction comes
+// from dispatch, which owns the collision handles its ceiling probe needs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn swim_intent(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     environment: &ResolvedEnvironment,
     fluid_jump: bool,
+    held_by_contact: f32,
     dt: f32,
     events: &mut MovementEvents,
     fluid: &mut u16,
@@ -86,11 +95,26 @@ pub(crate) fn swim_intent(
         return Some(leave_swim());
     }
 
-    component.velocity *= (1.0 - environment.viscosity * dt).max(0.0);
+    let drag = (1.0 - environment.viscosity * dt).max(0.0);
+    component.velocity *= drag;
 
     let target = wish_velocity(input, speed, sink_speed, environment);
     let accel = accel * component.knockback_control();
-    accelerate_toward(&mut component.velocity, target, accel, dt);
+    // Vertical: locomotion is motion relative to the water, held part
+    // included, so a swimmer the floor holds against an upward current is
+    // already sinking through the water at that current and leaves the floor
+    // once the current outruns its sink (Q2, `push::release_rising_swimmer`).
+    let mut relative = component.velocity;
+    accelerate_toward(&mut relative, target, accel, dt);
+    // Horizontal: steering reads the swimmer's own motion only. The held part
+    // is vertical motion the contact pins, not speed along the wish; projected
+    // onto a wish with a vertical part it would read as speed the swimmer
+    // lacks, and horizontal speed would climb past `swim.speed` to make it up.
+    // It scales with drag as the drift it cancels does (`push::decay_drift`).
+    let held = Vec3::new(0.0, held_by_contact * drag, 0.0);
+    let mut own = component.velocity - held;
+    accelerate_toward(&mut own, target, accel, dt);
+    component.velocity = Vec3::new(own.x, relative.y, own.z);
     None
 }
 

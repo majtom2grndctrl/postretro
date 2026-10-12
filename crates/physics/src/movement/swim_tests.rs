@@ -14,7 +14,7 @@ use postretro_foundation::{
 
 use super::environment_tests::{box_leaf, descriptor, idle_input, push_box};
 use super::{MovementEvents, MovementInput, MovementStateEdge, tick, tick_with_immersion};
-use crate::collision::CollisionWorld;
+use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 
 const DT: f32 = 1.0 / 60.0;
 const LEVEL_GRAVITY: f32 = -20.0;
@@ -1483,6 +1483,206 @@ fn inviscid_upward_current_under_a_ceiling_keeps_drift_and_speed_within_terminal
     );
 
     swim_off_into_still_water(&mut component, &world, view, &mut position);
+}
+
+/// Deep inviscid water with surface `top`, a uniform `push` everywhere in it.
+fn inviscid_water_with_a_uniform_current(top: f32, push: Vec3) -> EnvironmentVolumes {
+    EnvironmentVolumes::build(vec![
+        fluid_box(
+            Vec3::new(-200.0, -1000.0, -200.0),
+            Vec3::new(200.0, top, 200.0),
+            None,
+        ),
+        push_box(
+            Vec3::new(-200.0, -1000.0, -200.0),
+            Vec3::new(200.0, top, 200.0),
+            push,
+        ),
+    ])
+}
+
+/// Saturate an idle swimmer's drift in a vertical current of `push_y` that
+/// presses it against a contact, then turn the current horizontal (20 m/s²
+/// toward +x) and idle 10 s while the drift cap rotates the saturated drift
+/// horizontal. `in_contact` is asserted every tick of the turn.
+fn turn_a_saturated_drift_against_a_contact(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    top: f32,
+    push_y: f32,
+    position: &mut Vec3,
+    in_contact: impl Fn(&PlayerMovementComponent, Vec3) -> bool,
+) {
+    let vertical = inviscid_water_with_a_uniform_current(top, Vec3::new(0.0, push_y, 0.0));
+    let horizontal = inviscid_water_with_a_uniform_current(top, Vec3::new(20.0, 0.0, 0.0));
+    let vertical = EnvironmentView::new(LEVEL_GRAVITY, &vertical, &[0.0]);
+    let horizontal = EnvironmentView::new(LEVEL_GRAVITY, &horizontal, &[0.0]);
+    for _ in 0..600 {
+        step(component, world, vertical, &idle_input(), position);
+    }
+    assert!(
+        (component.push_velocity - Vec3::new(0.0, push_y.signum() * DRIFT_TERMINAL, 0.0)).length()
+            < VEL_EPS,
+        "fixture: the vertical drift saturates at the cap: {:?}",
+        component.push_velocity
+    );
+    assert!(in_contact(component, *position), "fixture: in contact");
+
+    for tick in 0..600 {
+        step(component, world, horizontal, &idle_input(), position);
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+        assert!(
+            in_contact(component, *position),
+            "tick {tick}: the cap moved the swimmer off its contact: {position:?}, drift {:?}",
+            component.push_velocity
+        );
+    }
+    assert!(
+        (component.push_velocity - Vec3::new(DRIFT_TERMINAL, 0.0, 0.0)).length() < 1.0e-2,
+        "fixture: the cap turned the drift horizontal: {:?}",
+        component.push_velocity
+    );
+}
+
+// Review panel 3: a floor holds a swimmer's vertical drift through locomotion,
+// so when a horizontal current made the cap rotate a saturated sink current,
+// the shrinking drift.y left locomotion pointing up and lifted the swimmer off
+// the floor.
+#[test]
+fn horizontal_current_turning_a_saturated_drift_leaves_a_floor_swimmer_grounded() {
+    let world = floor_world();
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(0.0, REACH + 0.01, 0.0);
+    let floor_y = REACH + SKIN_DISTANCE;
+    turn_a_saturated_drift_against_a_contact(
+        &mut component,
+        &world,
+        5.0,
+        -20.0,
+        &mut position,
+        |component, position| component.is_grounded() && (position.y - floor_y).abs() < 1.0e-3,
+    );
+}
+
+// Review panel 3: the ceiling mirror — the shrinking upward drift left
+// locomotion pointing down and pulled a neutrally buoyant swimmer off the
+// ceiling the current had pressed it into.
+#[test]
+fn horizontal_current_turning_a_saturated_drift_keeps_a_neutral_swimmer_at_the_ceiling() {
+    let world = ceiling_world(3.0);
+    let mut component = drift_capped_swimmer();
+    // Neutral buoyancy: nothing but the cap can move it off the ceiling.
+    component.swim.as_mut().expect("swim block").sink_speed = 0.0;
+    let mut position = Vec3::new(0.0, 3.0 - REACH - 0.05, 0.0);
+    // Sliding along the ceiling leaves sub-millimetre contact noise in an
+    // inviscid fluid; contact is the resting height within one skin width.
+    let ceiling_y = 3.0 - REACH - SKIN_DISTANCE;
+    turn_a_saturated_drift_against_a_contact(
+        &mut component,
+        &world,
+        50.0,
+        20.0,
+        &mut position,
+        |_, position| (position.y - ceiling_y).abs() < SKIN_DISTANCE,
+    );
+}
+
+/// Swim forward (level view, so the wish's vertical part is the sink) for
+/// 10 s from where the fixture left the swimmer, asserting it stays swimming
+/// and in `in_contact`; returns the settled horizontal speed.
+fn settled_forward_swim_speed(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    view: EnvironmentView<'_>,
+    position: &mut Vec3,
+    in_contact: impl Fn(&PlayerMovementComponent) -> bool,
+) -> f32 {
+    let forward = input(|i| i.wish_dir = Vec2::new(0.0, 1.0));
+    for tick in 0..600 {
+        step(component, world, view, &forward, position);
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+        assert!(in_contact(component), "tick {tick}: left the contact");
+    }
+    let locomotion = component.velocity - component.push_velocity - component.knockback_velocity;
+    Vec2::new(locomotion.x, locomotion.z).length()
+}
+
+/// The settled forward speed of a swimmer on the floor of still inviscid
+/// water: the contact reference a held swimmer must match.
+fn still_water_floor_swim_speed() -> f32 {
+    let world = floor_world();
+    let volumes = inviscid_water_with_a_uniform_current(5.0, Vec3::ZERO);
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[0.0]);
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(0.0, REACH + 0.01, 0.0);
+    for _ in 0..60 {
+        step(&mut component, &world, view, &idle_input(), &mut position);
+    }
+    settled_forward_swim_speed(&mut component, &world, view, &mut position, |c| {
+        c.is_grounded()
+    })
+}
+
+// Review panel 3: a floor holds a swimmer's vertical drift through locomotion,
+// and swim steering read that held part as the swimmer's own motion. Projected
+// onto a wish with a sink, it read as speed the swimmer lacked, so a floor
+// swimmer in a saturated downward current accelerated horizontally toward the
+// drift's speed (8 m/s) instead of its swim speed.
+#[test]
+fn floor_swimmer_held_by_a_saturated_downward_current_swims_as_fast_as_on_a_still_floor() {
+    let world = floor_world();
+    let volumes = inviscid_water_with_a_uniform_current(5.0, Vec3::new(0.0, -20.0, 0.0));
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[0.0]);
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(0.0, REACH + 0.01, 0.0);
+    for _ in 0..600 {
+        step(&mut component, &world, view, &idle_input(), &mut position);
+    }
+    assert!(
+        (component.push_velocity.y + DRIFT_TERMINAL).abs() < VEL_EPS,
+        "fixture: the drift saturates at the cap: {:?}",
+        component.push_velocity
+    );
+    let held = settled_forward_swim_speed(&mut component, &world, view, &mut position, |c| {
+        c.is_grounded()
+    });
+    let still = still_water_floor_swim_speed();
+    assert!(
+        (held - still).abs() < 1.0e-3,
+        "held by the current {held} m/s, on a still floor {still} m/s"
+    );
+}
+
+// Review panel 3: the ceiling mirror — an upward current pressing a swimmer
+// into a ceiling made steering read the held part as sinking it already had,
+// so the swimmer fell short of the speed it swims along any contact.
+#[test]
+fn ceiling_swimmer_held_by_a_saturated_upward_current_swims_as_fast_as_on_a_still_floor() {
+    let world = ceiling_world(3.0);
+    let volumes = inviscid_water_with_a_uniform_current(50.0, Vec3::new(0.0, 20.0, 0.0));
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[0.0]);
+    let mut component = drift_capped_swimmer();
+    let mut position = Vec3::new(0.0, 3.0 - REACH - 0.05, 0.0);
+    for _ in 0..600 {
+        step(&mut component, &world, view, &idle_input(), &mut position);
+    }
+    assert!(
+        (component.push_velocity.y - DRIFT_TERMINAL).abs() < VEL_EPS,
+        "fixture: the drift saturates at the cap: {:?}",
+        component.push_velocity
+    );
+    let ceiling_y = 3.0 - REACH - SKIN_DISTANCE;
+    let held = settled_forward_swim_speed(&mut component, &world, view, &mut position, |_| true);
+    assert!(
+        (position.y - ceiling_y).abs() < SKIN_DISTANCE,
+        "fixture: still at the ceiling: {position:?}"
+    );
+    // Sliding along the ceiling leaves millimetre-per-second contact noise.
+    let still = still_water_floor_swim_speed();
+    assert!(
+        (held - still).abs() < 1.0e-2,
+        "held by the current {held} m/s, on a still floor {still} m/s"
+    );
 }
 
 // Review panel 2: the fluid jump discards vertical knockback as it discards the

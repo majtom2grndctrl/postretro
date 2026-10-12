@@ -8,8 +8,8 @@ use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{
     crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent,
 };
-use crate::movement::push::fold_vertical_drift;
-use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule};
+use crate::movement::push::{fold_vertical_drift, held_by_contact};
+use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule, touches_ceiling};
 use crate::movement::swim_transition::{SwimSeam, environment_transition};
 use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
@@ -236,7 +236,19 @@ pub(super) fn dispatch_state_intent(
             eye_current,
         ),
         MovementState::Swim { fluid } => {
-            swim_intent(component, input, environment, fluid_jump, dt, events, fluid)
+            let held = held_by_contact(component, |component| {
+                touches_ceiling(component, collision, *position)
+            });
+            swim_intent(
+                component,
+                input,
+                environment,
+                fluid_jump,
+                held,
+                dt,
+                events,
+                fluid,
+            )
         }
     };
     match transition {

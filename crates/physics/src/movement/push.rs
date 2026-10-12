@@ -24,6 +24,14 @@ const DRIFT_STOP_SPEED_SQ: f32 = 1.0e-6;
 /// its sink and the current, not one tick of gravity, so its one lift-off rule
 /// is [`release_rising_swimmer`], which reads the total vertical motion after
 /// the drift accrues.
+///
+/// Because this reads the tick-start state, the two rules disagree for one
+/// tick at a swim edge. On the tick a grounded pawn enters `Swim` this dry
+/// gravity rule still decides, then [`apply`] treats the pawn as swimming; on
+/// the tick it leaves `Swim` neither rule lifts it (this one skips the
+/// tick-start swimmer, [`apply`] takes the dry path), so an updraft stronger
+/// than gravity lifts it one tick later. Both are deterministic and replay
+/// identically; accepted.
 pub(super) fn lifts_off(
     component: &PlayerMovementComponent,
     environment: &ResolvedEnvironment,
@@ -48,16 +56,21 @@ pub(super) fn lifts_off(
 ///   While the body stays grounded the floor bears the vertical part, exactly as
 ///   every intent gates gravity on airborne; a push strong enough to lift has
 ///   already cleared grounded through [`lifts_off`].
+///
+/// `ceiling_contact` answers whether a ceiling bears the body at the
+/// post-intent position; only the swim drift cap asks, and only on a tick it
+/// changes the drift's vertical part ([`cap_swim_drift`]).
 pub(super) fn apply(
     component: &mut PlayerMovementComponent,
     environment: &ResolvedEnvironment,
     dt: f32,
+    ceiling_contact: impl FnOnce(&PlayerMovementComponent) -> bool,
 ) {
     let push = environment.push;
     decay_drift(component, environment.viscosity, dt);
     if is_swimming(component) {
         component.push_velocity += push * dt;
-        cap_swim_drift(component);
+        cap_swim_drift(component, ceiling_contact);
         release_rising_swimmer(component);
         return;
     }
@@ -76,9 +89,63 @@ pub(super) fn apply(
 /// vertical current would accrue without limit, then spill out once the
 /// swimmer leaves the contact. A mid-water current settling below terminal
 /// speed is untouched.
-fn cap_swim_drift(component: &mut PlayerMovementComponent) {
+///
+/// In contact, the cap leaves total vertical speed unchanged. A floor or
+/// ceiling holds the layer's vertical part through locomotion (`-drift.y`), so
+/// when the cap rotates or shrinks a saturated drift (a horizontal current
+/// reaching a floor swimmer whose sink current is at terminal speed), a
+/// shrinking `drift.y` with locomotion left alone would turn the contact's
+/// reaction into motion: rising off the floor (ungrounding it through
+/// [`release_rising_swimmer`]) or pulling away from the ceiling. So while
+/// grounded, or while `ceiling_contact` reports a ceiling bearing the body,
+/// locomotion takes the opposite of the cap's vertical change; the contact's
+/// reaction shrinks with the drift it holds. The ceiling probe runs only on a
+/// tick the cap changes `drift.y` while airborne. Mid-water the cap's change
+/// stands: there it is the current's speed that is bounded.
+fn cap_swim_drift(
+    component: &mut PlayerMovementComponent,
+    ceiling_contact: impl FnOnce(&PlayerMovementComponent) -> bool,
+) {
     let terminal = component.fall.terminal_velocity;
+    let before = component.push_velocity.y;
     component.push_velocity = component.push_velocity.clamp_length_max(terminal);
+    let change = component.push_velocity.y - before;
+    if change != 0.0 && contact_holds_drift(component, ceiling_contact) {
+        component.velocity.y -= change;
+    }
+}
+
+/// Whether a floor or ceiling bears the swimmer, holding the drift layer's
+/// vertical part through locomotion (`project_drift`): grounded, or, failing
+/// that, `ceiling_contact` reports a ceiling (asked only when not grounded).
+fn contact_holds_drift(
+    component: &PlayerMovementComponent,
+    ceiling_contact: impl FnOnce(&PlayerMovementComponent) -> bool,
+) -> bool {
+    component.is_grounded() || ceiling_contact(component)
+}
+
+/// The vertical part of a swimmer's locomotion that a contact holds against
+/// the drift layer, not the swimmer's own motion. A floor or ceiling stops
+/// total vertical velocity but never absorbs the drift's vertical part
+/// (`project_drift`), so locomotion carries `-drift.y` while the contact
+/// lasts. The swim intent's horizontal steering excludes it, so a swimmer held
+/// on the pool floor by a current swims as fast as on a still pool floor; its
+/// vertical acceleration keeps it, since relative to the water the swimmer
+/// really is moving at that speed.
+/// Zero with no vertical drift, and mid-water. The ceiling probe runs only
+/// when the drift has a vertical part and the swimmer is not grounded. Called
+/// by dispatch before the swim intent, with the tick-start contact.
+pub(super) fn held_by_contact(
+    component: &PlayerMovementComponent,
+    ceiling_contact: impl FnOnce(&PlayerMovementComponent) -> bool,
+) -> f32 {
+    let drift_y = component.push_velocity.y;
+    if drift_y != 0.0 && contact_holds_drift(component, ceiling_contact) {
+        -drift_y
+    } else {
+        0.0
+    }
 }
 
 /// A swimmer resting on the pool floor leaves it once its total vertical
@@ -140,6 +207,13 @@ fn drift_medium(component: &PlayerMovementComponent, viscosity: f32) -> DriftMed
 /// `GROUND_STOP_FRICTION`. A fluid removes the same linear fraction per tick,
 /// on all three axes, as the swim intent's drag on locomotion
 /// (`max(0, 1 - viscosity * dt)`).
+///
+/// An inviscid fluid (viscosity 0) removes nothing, from the drift or from
+/// locomotion. A swimmer that leaves a current there keeps its drift, and a
+/// swimmer that held against a floor or ceiling keeps the locomotion that
+/// opposed it (`project_drift`): only its sink acceleration and later
+/// contacts change either. Deterministic, and accepted for a fluid authored
+/// without drag.
 fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32) {
     let medium = drift_medium(component, viscosity);
     let drift = &mut component.push_velocity;

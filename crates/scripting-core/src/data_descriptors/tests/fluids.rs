@@ -13,6 +13,17 @@ fn drain_js(src: &str) -> FluidRegistry {
     })
 }
 
+/// [`drain_js`], also asserting the drain left no exception pending on the
+/// context for later manifest reads to trip over.
+fn drain_js_leaving_no_exception(src: &str) -> FluidRegistry {
+    eval_js(src, |ctx, value| {
+        let obj = rquickjs::Object::from_value(value).unwrap();
+        let registry = drain_fluids_js(ctx, &obj, SCOPE).unwrap();
+        assert!(!ctx.has_exception(), "the drain left an exception pending");
+        registry
+    })
+}
+
 fn drain_lua(src: &str) -> FluidRegistry {
     eval_lua(src, |value| {
         let LuaValue::Table(table) = value else {
@@ -242,6 +253,38 @@ fn an_empty_fluids_object_declares_none_without_a_warning() {
     assert!(warnings(&capture, "fluids").is_empty());
 }
 
+// Review panel 3: the plain-object check read the mutable global `Object`, so
+// a mod that replaced it turned `fluids: {}` into a rejected manifest.
+#[test]
+fn an_empty_fluids_object_declares_none_after_the_global_object_is_replaced() {
+    let capture = LogCapture::start();
+    for replaced in ["undefined", "{ prototype: null }"] {
+        let registry = drain_js_leaving_no_exception(&format!(
+            "(() => {{ const fluids = {{}}; globalThis.Object = {replaced}; return {{ fluids }}; }})()"
+        ));
+        assert!(registry.is_empty(), "Object = {replaced}");
+    }
+    assert!(warnings(&capture, "fluids").is_empty());
+}
+
+// Review panel 3: a proxy whose trap throws made the plain-object check reject
+// the manifest. It warns and ignores the field, with no exception left pending.
+#[test]
+fn a_fluids_proxy_whose_trap_throws_warns_and_is_ignored() {
+    for trap in ["getPrototypeOf", "ownKeys"] {
+        let capture = LogCapture::start();
+        let registry = drain_js_leaving_no_exception(&format!(
+            "({{ fluids: new Proxy({{}}, {{ {trap}() {{ throw new Error('trap'); }} }}) }})"
+        ));
+        assert!(registry.is_empty(), "{trap}");
+        let ignored = warnings(
+            &capture,
+            "mod manifest: `fluids` must be an array of fluids; ignoring the field",
+        );
+        assert_eq!(ignored.len(), 1, "{trap}: {ignored:?}");
+    }
+}
+
 // Only a plain `{}` reads as an empty list: a function, Map or Date has no own
 // keys either, but warns like a Luau non-table field.
 #[test]
@@ -284,12 +327,20 @@ fn a_fluids_array_past_4096_slots_warns_once_and_is_ignored_in_both_runtimes() {
         "return {{ fluids = {{ [2 ^ 53] = {} }} }}",
         lua_fluid("water", &[])
     ));
+    // Regression: past `i32::MAX` QuickJS stores the length as a float64, and
+    // reading it through `Array::len` panicked at mod-init before the cap.
+    let js_float_index = drain_js(&format!(
+        "(() => {{ const fluids = []; fluids[2 ** 31] = {water}; return {{ fluids }}; }})()"
+    ));
+    let js_float_length =
+        drain_js("(() => { const fluids = []; fluids.length = 2 ** 31; return { fluids }; })()");
     assert!(js.is_empty() && lua.is_empty() && lua_huge_key.is_empty());
+    assert!(js_float_index.is_empty() && js_float_length.is_empty());
     let oversized = warnings(
         &capture,
         "mod manifest: `fluids` exceeds 4096 array slots; ignoring the field",
     );
-    assert_eq!(oversized.len(), 3, "one per drain: {oversized:?}");
+    assert_eq!(oversized.len(), 5, "one per drain: {oversized:?}");
     assert!(oversized.iter().all(|warning| *warning == oversized[0]));
     assert!(
         warnings(&capture, "is malformed").is_empty(),

@@ -496,8 +496,8 @@ fn captured_streams_auto_select_plain_reporter_before_fast_pipeline_failure() {
         std::fs::read_to_string(workspace.join("content/dev/maps/wedge-shared-plane.map"))
             .expect("read tiny map fixture");
     let fixture = fixture.replace(
-        "\"initialGravity\" \"-9.81\"",
-        "\"initialGravity\" \"-9.81\"\n\"data_script\" \"missing.luau\"",
+        "\"classname\" \"worldspawn\"",
+        "\"classname\" \"worldspawn\"\n\"data_script\" \"missing.luau\"",
     );
     assert!(
         fixture.contains("\"data_script\" \"missing.luau\""),

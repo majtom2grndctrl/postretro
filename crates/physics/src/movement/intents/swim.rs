@@ -133,8 +133,9 @@ pub(crate) fn leave_swim() -> Transition {
 /// swims up and crouch held swims down. Any input swims at full `speed` along
 /// the combined direction. With neither jump nor crouch held, the sink velocity
 /// `sink_speed * gravity / REFERENCE_GRAVITY` joins the vertical part: a swimmer
-/// sinks at `sink_speed` under default level gravity, floats with zero gravity and rises under
-/// upward gravity. With the tick eye out of the fluid the wish never points up,
+/// sinks at `sink_speed` under default level gravity, floats with zero gravity
+/// and rises under upward gravity. With the tick eye out of the fluid the wish
+/// never points up,
 /// so a swimmer treads at the surface instead of swimming out of it; the fluid
 /// jump is the way out.
 fn wish_velocity(

@@ -142,7 +142,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: 9.35,
         })
     );
 

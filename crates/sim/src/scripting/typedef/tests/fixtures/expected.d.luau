@@ -961,7 +961,7 @@ export type SwimParams = {
   speed: number,
   --- Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.
   accel: number,
-  --- Drift along gravity with no vertical input in metres/sec, at standard gravity (9.81 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.
+  --- Drift along gravity with no vertical input in metres/sec, at the default level gravity (−20.32 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.
   sinkSpeed: number,
   --- Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.
   enterDepth: number,

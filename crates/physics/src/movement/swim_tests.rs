@@ -19,7 +19,8 @@ use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 const DT: f32 = 1.0 / 60.0;
 const LEVEL_GRAVITY: f32 = -20.0;
 /// `swim.sink_speed` is authored at default level gravity.
-const REFERENCE_GRAVITY: f32 = -postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
+const REFERENCE_GRAVITY: f32 =
+    -postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 /// Fixture sink at default gravity; under `LEVEL_GRAVITY` it settles near 1.57 m/s,
 /// which the current fixtures below are sized against.
 const SINK_SPEED: f32 = 1.6;

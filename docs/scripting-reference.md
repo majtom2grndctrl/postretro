@@ -1914,18 +1914,18 @@ Inside a `gravity_volume` the volume's own `gravity` holds. `setGravity` never r
 import { getGravity, setGravity } from "postretro";
 
 const g = getGravity();   // → -20.32 at level load (from initialGravity KVP)
-setGravity(-4.9);         // half gravity — effect is immediate
+setGravity(-10.16);       // half the default — effect is immediate
 ```
 
 ```lua
 -- Luau
 local g = Postretro.getGravity()   -- → -20.32 at level load
-Postretro.setGravity(-4.9)
+Postretro.setGravity(-10.16)
 ```
 
 `setGravity` rejects `NaN` and non-finite values silently (a warning is logged) so a misbehaving script cannot break particle physics. The value persists until the next level load or another `setGravity` call.
 
-**TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses the default `-20.32`. Supplied malformed or non-finite values are compile errors. Example: `"initialGravity" "-9.81"`.
+**TrenchBroom KVP:** optionally set `initialGravity` (float, m/s²) on the `worldspawn` entity. When absent, prl-build uses the default `-20.32`. Supplied malformed or non-finite values are compile errors. Example, Earth gravity: `"initialGravity" "-9.81"`.
 
 **Particle effect:** `setGravity` directly affects particle buoyancy. Particles with `buoyancy < 0` (heavier-than-air) fall faster under stronger gravity; particles with `buoyancy > 0` (lighter-than-air) float less.
 
@@ -2784,7 +2784,7 @@ export default defineMod({
             sinkSpeed: 0.8,
             enterDepth: 0.5,
             exitDepth: 0.35,
-            fluidJumpVelocity: 6.5,
+            fluidJumpVelocity: 9.35,
           },
         },
       },

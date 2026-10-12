@@ -329,7 +329,6 @@ pub(crate) fn build_session() -> Result<BootSession> {
         accessibility_panel_was_open: false,
         pending_exit_to_desktop: false,
         ui_focused_id: None,
-        particle_live_counts: std::collections::HashMap::new(),
         collision_world: collision::CollisionWorld::new(),
         environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
         environment_fluids: Default::default(),

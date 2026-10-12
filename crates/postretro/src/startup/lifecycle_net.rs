@@ -189,7 +189,6 @@ impl App {
         {
             self.debug_chase_agent = None;
         }
-        self.particle_live_counts.clear();
         if let Some(session) = self.session.as_mut() {
             session
                 .scripting
@@ -208,6 +207,8 @@ impl App {
             session.hit_zone_store.clear();
             session.mesh_render.clear();
             session.emitter_bridge.clear();
+            session.particle_pool.clear();
+            session.impact_particle_requests.clear();
             session.progress_tracker.clear();
             session.pending_death_events.clear();
             session.crossing_detector.clear();

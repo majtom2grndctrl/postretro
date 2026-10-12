@@ -21,3 +21,6 @@ log.workspace = true
 postretro-foundation = { path = "../foundation", default-features = false }
 rquickjs = { workspace = true, optional = true }
 mlua = { workspace = true, optional = true }
+
+[dev-dependencies]
+postretro-test-log-capture = { path = "../test-log-capture" }

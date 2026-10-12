@@ -1173,10 +1173,15 @@ mod tests {
         // Observers take the splash burst from the impact cue, so the host's own
         // simulation spawns exactly one and queues no second presentation route.
         assert_eq!(
-            splash_registry
-                .borrow()
-                .iter_with_kind(ComponentKind::ParticleState)
-                .count(),
+            {
+                let mut pool = crate::particle_pool::ParticlePool::new();
+                weapon::drain_impact_particle_requests(
+                    &mut splash_registry.borrow_mut(),
+                    &mut pool,
+                    &mut Vec::new(),
+                );
+                pool.len()
+            },
             weapon::IMPACT_PARTICLE_COUNT,
             "a host-local splash detonation bursts exactly once"
         );

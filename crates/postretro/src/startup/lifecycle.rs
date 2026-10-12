@@ -1856,6 +1856,8 @@ pub(crate) mod tests {
                 trigger_system: crate::trigger_system::TriggerSystem::default(),
                 touch_system: crate::sim::touch::TouchSystem::default(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+                particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
+                impact_particle_requests: Vec::new(),
                 particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
                 mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),
@@ -1903,7 +1905,6 @@ pub(crate) mod tests {
             accessibility_panel_was_open: false,
             pending_exit_to_desktop: false,
             ui_focused_id: None,
-            particle_live_counts: std::collections::HashMap::new(),
             collision_world: crate::collision::CollisionWorld::new(),
             environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
             environment_fluids: Default::default(),
@@ -3179,6 +3180,28 @@ pub(crate) mod tests {
         );
         assert_eq!(app.collision_world.triangle_count(), 2);
 
+        // A live puff, reusable drain scratch, and a final-tick request all
+        // belong to the retiring level, even when the next install is immediate.
+        {
+            let session = app.session.as_mut().unwrap();
+            assert!(
+                session
+                    .particle_pool
+                    .spawn_impact(glam::Vec3::ZERO, glam::Vec3::Y, 0)
+            );
+            let request = postretro_foundation::ImpactParticleRequest {
+                point: glam::Vec3::ZERO,
+                normal: glam::Vec3::Y,
+            };
+            session.impact_particle_requests.push(request);
+            session
+                .scripting
+                .script_ctx
+                .registry
+                .borrow_mut()
+                .push_impact_particle_request(request);
+        }
+
         app.unload_level();
 
         install_cpu_fixture(
@@ -3193,6 +3216,36 @@ pub(crate) mod tests {
                 triangle_count: 1,
             },
         );
+
+        {
+            let session = app.session.as_mut().unwrap();
+            assert!(session.particle_pool.is_empty());
+            assert_eq!(
+                session.particle_pool.parameter_block_count(),
+                crate::weapon::IMPACT_PARTICLE_COUNT
+            );
+            assert!(session.impact_particle_requests.is_empty());
+            let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+            crate::weapon::drain_impact_particle_requests(
+                &mut registry,
+                &mut session.particle_pool,
+                &mut session.impact_particle_requests,
+            );
+            assert!(
+                session.particle_pool.is_empty(),
+                "the retiring request never reaches the new level"
+            );
+            crate::weapon::spawn_impact_effect_at(&mut registry, glam::Vec3::X, glam::Vec3::Y);
+            crate::weapon::drain_impact_particle_requests(
+                &mut registry,
+                &mut session.particle_pool,
+                &mut session.impact_particle_requests,
+            );
+            assert_eq!(
+                session.particle_pool.len(),
+                crate::weapon::IMPACT_PARTICLE_COUNT
+            );
+        }
 
         let ctx = script_ctx(&app);
         let data_registry = ctx.data_registry.borrow();

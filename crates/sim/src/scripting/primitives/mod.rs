@@ -45,7 +45,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("transform", "")
         .variant("light", "")
         .variant("billboard_emitter", "")
-        .variant("particle_state", "")
         .variant("sprite_visual", "")
         .variant("fog_volume", "")
         .finish();
@@ -55,7 +54,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("transform", "Transform", "")
         .variant("light", "LightComponent", "")
         .variant("billboard_emitter", "BillboardEmitterComponent", "")
-        .variant("particle_state", "ParticleState", "")
         .variant("sprite_visual", "SpriteVisual", "")
         .variant("fog_volume", "FogVolumeComponent", "")
         .finish();
@@ -174,20 +172,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("ParticleState")
-        .doc("Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.")
-        .field("velocity", "[f32; 3]", "Current particle velocity in metres/sec.")
-        .field("age", "f32", "Seconds elapsed since the particle spawned.")
-        .field("lifetime", "f32", "Total particle lifetime in seconds; the particle despawns once `age` reaches it.")
-        .field("buoyancy", "f32", "Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).")
-        .field("drag", "f32", "Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.")
-        .field("size_curve", "Vec<f32>", "Normalized-lifetime billboard size curve, sampled evenly from spawn to death.")
-        .field("opacity_curve", "Vec<f32>", "Normalized-lifetime opacity curve, sampled evenly from spawn to death.")
-        .field("emitter", "Option<EntityId>", "Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).")
-        .finish();
-    registry
         .register_type("SpriteVisual")
-        .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.")
+        .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by projectile presentation and consumed by the billboard render integration.")
         .field("collection", "String", "Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path.")
         .field("size", "f32", "Billboard size multiplier for this frame.")
         .field("opacity", "f32", "Billboard opacity for this frame, in [0, 1].")

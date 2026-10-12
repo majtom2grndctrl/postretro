@@ -195,6 +195,8 @@ pub(crate) struct Session {
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
     pub(crate) emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge,
+    pub(crate) particle_pool: postretro_sim::particle_pool::ParticlePool,
+    pub(crate) impact_particle_requests: Vec<postretro_foundation::ImpactParticleRequest>,
 
     /// Packs `SpriteInstance` bytes per collection in the Render stage; never
     /// touches wgpu directly. See: context/lib/scripting.md.
@@ -770,6 +772,8 @@ impl Session {
             ),
             touch_system: crate::sim::touch::TouchSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
+            particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
+            impact_particle_requests: Vec::new(),
             particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
             mesh_clip_tables: scripting_systems::mesh_anim::MeshClipTables::new(),

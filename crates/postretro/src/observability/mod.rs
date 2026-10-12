@@ -42,7 +42,6 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Transform,
     ComponentKind::Light,
     ComponentKind::BillboardEmitter,
-    ComponentKind::ParticleState,
     ComponentKind::SpriteVisual,
     ComponentKind::FogVolume,
     ComponentKind::PlayerMovement,
@@ -78,7 +77,6 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Transform => "transform",
         ComponentKind::Light => "light",
         ComponentKind::BillboardEmitter => "billboard_emitter",
-        ComponentKind::ParticleState => "particle_state",
         ComponentKind::SpriteVisual => "sprite_visual",
         ComponentKind::FogVolume => "fog_volume",
         ComponentKind::PlayerMovement => "player_movement",
@@ -161,7 +159,6 @@ mod tests {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
     use postretro_entities::components::mesh::MeshComponent;
-    use postretro_entities::components::particle::ParticleState;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::components::sprite_visual::SpriteVisual;
@@ -259,17 +256,6 @@ mod tests {
                     spin_animation: None,
                 })
             }
-            ComponentKind::ParticleState => ComponentValue::ParticleState(ParticleState {
-                velocity: [0.0, 0.0, 0.0],
-                age: 0.0,
-                lifetime: 1.0,
-                buoyancy: 0.0,
-                drag: 0.0,
-                size_curve: [1.0].into(),
-                opacity_curve: [1.0].into(),
-                spin_rate: 0.0,
-                emitter: None,
-            }),
             ComponentKind::SpriteVisual => ComponentValue::SpriteVisual(SpriteVisual {
                 collection: "sprite".into(),
                 size: 1.0,

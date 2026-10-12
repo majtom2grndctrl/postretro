@@ -132,11 +132,41 @@ fn resolve_environment_untimed(
     if !probe.position.is_finite() {
         return level_defaults(view.level_gravity);
     }
+    let (gravity, push) = resolve_particle_acceleration_untimed(view, probe.position);
+    let fluid = resolve_fluid(view, probe);
+    let viscosity = fluid
+        .fluid
+        .and_then(|index| view.fluid_viscosity.get(usize::from(index)))
+        .copied()
+        .unwrap_or(0.0);
+
+    ResolvedEnvironment {
+        gravity,
+        push,
+        fluid: fluid.fluid,
+        viscosity,
+        immersion: fluid.immersion,
+        tick_eye_in_fluid: fluid.tick_eye_in_fluid,
+    }
+}
+
+/// Point gravity and push under the full resolve's per-field overlap rule.
+/// Anonymous particles read neither fluids nor capsule immersion.
+pub fn resolve_particle_acceleration(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
+    timed(view.timer, QueryFamily::BodyResolve, || {
+        resolve_particle_acceleration_untimed(view, position)
+    })
+}
+
+fn resolve_particle_acceleration_untimed(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
+    if !position.is_finite() {
+        return (view.level_gravity, Vec3::ZERO);
+    }
     let volumes = view.volumes;
     let mut gravity_winner: Option<usize> = None;
     let mut push_winner: Option<usize> = None;
     volumes.visit_volumes_containing_point(
-        probe.position,
+        position,
         ContentsMask::GRAVITY | ContentsMask::PUSH,
         |index| {
             let Some(volume) = volumes.volume(index) else {
@@ -159,21 +189,7 @@ fn resolve_environment_untimed(
         .and_then(|index| volumes.volume(index))
         .and_then(|volume| volume.push)
         .unwrap_or(Vec3::ZERO);
-    let fluid = resolve_fluid(view, probe);
-    let viscosity = fluid
-        .fluid
-        .and_then(|index| view.fluid_viscosity.get(usize::from(index)))
-        .copied()
-        .unwrap_or(0.0);
-
-    ResolvedEnvironment {
-        gravity,
-        push,
-        fluid: fluid.fluid,
-        viscosity,
-        immersion: fluid.immersion,
-        tick_eye_in_fluid: fluid.tick_eye_in_fluid,
-    }
+    (gravity, push)
 }
 
 /// Gravity alone at `position`, by the same point rule as `resolve_environment`.

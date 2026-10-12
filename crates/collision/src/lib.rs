@@ -32,5 +32,6 @@ pub use leaf::{ContentsMask, ConvexLeaf, LeafPlane};
 pub use query_timer::EnvironmentQueryTimer;
 pub use resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
+    resolve_particle_acceleration,
 };
 pub use volumes::{EnvironmentVolume, EnvironmentVolumes};

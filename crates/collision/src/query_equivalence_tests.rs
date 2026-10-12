@@ -15,6 +15,7 @@ use crate::leaf::{ContentsMask, ConvexLeaf, LeafPlane};
 use crate::line::{LineInterval, clip_line};
 use crate::resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
+    resolve_particle_acceleration,
 };
 use crate::test_fixtures::axis_box;
 use crate::volumes::{EnvironmentVolume, EnvironmentVolumes};
@@ -482,7 +483,7 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
                         mask
                     );
                 }
-                let reference_gravity = reference_resolve(
+                let reference_point = reference_resolve(
                     &volumes,
                     &BodyProbe {
                         position: point,
@@ -490,9 +491,11 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
                         radius: 0.0,
                         eye_height: 0.0,
                     },
-                )
-                .gravity;
-                prop_assert_eq!(resolve_gravity(view, point), reference_gravity);
+                );
+                prop_assert_eq!(resolve_gravity(view, point), reference_point.gravity);
+                let (gravity, push) = resolve_particle_acceleration(view, point);
+                prop_assert_eq!(gravity, reference_point.gravity);
+                prop_assert_eq!(push, reference_point.push);
                 let eye = fluid_at_eye(view, point);
                 let reference_eye = reference_winner(
                     &volumes,

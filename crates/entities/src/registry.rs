@@ -1,10 +1,13 @@
 // Entity/component registry: the scripting surface that scripts address.
 // See: context/lib/scripting.md
 
+#[cfg(test)]
+mod impact_particle_tests;
 mod inventory_ownership;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -25,7 +28,6 @@ use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::map_ordinal::MapOrdinal;
 use crate::components::mesh::MeshComponent;
-use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
 use crate::components::spawner::SpawnerComponent;
@@ -34,7 +36,10 @@ use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
-use postretro_foundation::{MAX_PENDING_PRESENTATION_SPAWNS, PresentationSpawn, Seat};
+use postretro_foundation::{
+    ImpactParticleRequest, MAX_PENDING_IMPACT_PARTICLE_REQUESTS, MAX_PENDING_PRESENTATION_SPAWNS,
+    PresentationSpawn, Seat,
+};
 
 /// Packed entity identifier: `index: 16 | generation: 16`.
 ///
@@ -109,52 +114,51 @@ pub enum ComponentKind {
     Transform = 0,
     Light = 1,
     BillboardEmitter = 2,
-    ParticleState = 3,
-    SpriteVisual = 4,
-    FogVolume = 5,
-    PlayerMovement = 6,
-    Weapon = 7,
-    DescriptorProvenance = 8,
-    Mesh = 9,
-    Health = 10,
+    SpriteVisual = 3,
+    FogVolume = 4,
+    PlayerMovement = 5,
+    Weapon = 6,
+    DescriptorProvenance = 7,
+    Mesh = 8,
+    Health = 9,
     /// Movable navigation agent (engine-internal, like `PlayerMovement` — never
     /// reachable through `worldQuery`). See `components::agent`.
-    Agent = 11,
+    Agent = 10,
     /// Engine-owned AI brain: the retained behavior graph, its current state
     /// index, and per-instance timers (engine-internal, like
     /// `PlayerMovement`/`Agent` — never reachable through `worldQuery`). See
     /// `components::brain`.
-    Brain = 12,
+    Brain = 11,
     /// Deterministic linear mover. Scripts address movers as
     /// `getMapEntities("mover")` member handles; raw phase remains
     /// engine-owned and non-attachable.
-    KinematicMover = 13,
+    KinematicMover = 12,
     /// Engine-owned trigger configuration and mutable arming state.
-    TriggerVolume = 14,
+    TriggerVolume = 13,
     /// Pawn-owned ammunition balances pooled by authored ammo type.
-    AmmoReserve = 15,
+    AmmoReserve = 14,
     /// Map-authored, fixed-tick enemy-spawn configuration. The resolved
     /// descriptor remains in the session spawn context, not this serde value.
-    Spawner = 16,
+    Spawner = 15,
     /// Per-instance modder-owned numeric fields. Every entity receives an
     /// empty component at spawn; fields emerge on first write.
-    EntityState = 17,
+    EntityState = 16,
     /// Per-entity deferred impact-effect queue and terminal inert flag.
     /// Every entity receives an empty component at spawn so effects do not
     /// depend on an AI brain being present.
-    DeferredEffect = 18,
+    DeferredEffect = 17,
     /// Pawn-owned ordered wieldable instances and in-flight switch target.
-    Inventory = 19,
+    Inventory = 18,
     /// Host-local interaction tuning for a world touchable entity.
-    Touchable = 20,
+    Touchable = 19,
     /// Engine-owned direct-impact projectile flight state.
-    Projectile = 21,
+    Projectile = 20,
     /// Query-only display-copy geometry, never authoritative Health.
-    HitVolume = 22,
-    MapOrdinal = 23,
+    HitVolume = 21,
+    MapOrdinal = 22,
     /// Output-only resolved immersion from the pawn's last authoritative
     /// movement tick (engine-internal; read only by `player.immersion`).
-    Immersion = 24,
+    Immersion = 23,
 }
 
 impl ComponentKind {
@@ -167,7 +171,6 @@ impl ComponentKind {
             ComponentKind::Transform,
             ComponentKind::Light,
             ComponentKind::BillboardEmitter,
-            ComponentKind::ParticleState,
             ComponentKind::SpriteVisual,
             ComponentKind::FogVolume,
             ComponentKind::PlayerMovement,
@@ -231,7 +234,6 @@ pub enum ComponentValue {
     Transform(Transform),
     Light(LightComponent),
     BillboardEmitter(BillboardEmitterComponent),
-    ParticleState(ParticleState),
     SpriteVisual(SpriteVisual),
     FogVolume(FogVolumeComponent),
     // Boxed: `PlayerMovementComponent` is large (~400+ bytes — the dash
@@ -271,7 +273,6 @@ impl ComponentValue {
             ComponentValue::Transform(_) => ComponentKind::Transform,
             ComponentValue::Light(_) => ComponentKind::Light,
             ComponentValue::BillboardEmitter(_) => ComponentKind::BillboardEmitter,
-            ComponentValue::ParticleState(_) => ComponentKind::ParticleState,
             ComponentValue::SpriteVisual(_) => ComponentKind::SpriteVisual,
             ComponentValue::FogVolume(_) => ComponentKind::FogVolume,
             ComponentValue::PlayerMovement(_) => ComponentKind::PlayerMovement,
@@ -410,21 +411,6 @@ impl Component for BillboardEmitterComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::BillboardEmitter(self)
-    }
-}
-
-impl Component for ParticleState {
-    const KIND: ComponentKind = ComponentKind::ParticleState;
-
-    fn from_value(value: &ComponentValue) -> Option<&Self> {
-        match value {
-            ComponentValue::ParticleState(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    fn into_value(self) -> ComponentValue {
-        ComponentValue::ParticleState(self)
     }
 }
 
@@ -823,6 +809,10 @@ pub struct EntityRegistry {
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
     /// state.
     presentation_spawns: Vec<PresentationSpawn>,
+    /// Local impact intake; never visited by presentation transport routing.
+    impact_particle_requests: Vec<ImpactParticleRequest>,
+    dropped_impact_particle_requests: usize,
+    last_impact_particle_warning: Option<Instant>,
     /// Prefix already offered to transport, retained until local frame intake.
     routed_presentation_spawns: usize,
     /// Sparse worklist for entities with non-empty deferred-effect queues.
@@ -854,6 +844,9 @@ impl EntityRegistry {
             inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
+            impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
+            dropped_impact_particle_requests: 0,
+            last_impact_particle_warning: None,
             routed_presentation_spawns: 0,
             active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
@@ -1237,6 +1230,44 @@ impl EntityRegistry {
         std::mem::take(&mut self.impact_dispatches)
     }
 
+    /// Queue one local cosmetic impact burst, preserving raise order across ticks.
+    /// Overflow drops the newest request; producers never access the frame pool.
+    pub fn push_impact_particle_request(&mut self, request: ImpactParticleRequest) {
+        if self.impact_particle_requests.len() < MAX_PENDING_IMPACT_PARTICLE_REQUESTS {
+            self.impact_particle_requests.push(request);
+        } else {
+            self.dropped_impact_particle_requests =
+                self.dropped_impact_particle_requests.saturating_add(1);
+        }
+    }
+
+    /// Move local impact requests into retained frame scratch. Overflow diagnostics
+    /// run here, once per frame, rather than on the fixed-tick producer path.
+    pub fn drain_impact_particle_requests_into(&mut self, out: &mut Vec<ImpactParticleRequest>) {
+        self.drain_impact_particle_requests_at(out, Instant::now());
+    }
+
+    fn drain_impact_particle_requests_at(
+        &mut self,
+        out: &mut Vec<ImpactParticleRequest>,
+        now: Instant,
+    ) {
+        out.clear();
+        out.append(&mut self.impact_particle_requests);
+        if self.dropped_impact_particle_requests != 0
+            && self
+                .last_impact_particle_warning
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1))
+        {
+            log::warn!(
+                "[Particles] impact particle request queue full; dropped {} bursts",
+                self.dropped_impact_particle_requests
+            );
+            self.last_impact_particle_warning = Some(now);
+            self.dropped_impact_particle_requests = 0;
+        }
+    }
+
     /// Publish one transient presentation spawn for the app-side frame pool.
     /// Producers deliberately provide facts and an anchor, but no spawn time:
     /// the pool stamps its own frame-time clock when it drains this queue.
@@ -1399,6 +1430,9 @@ impl EntityRegistry {
         );
         self.impact_dispatches.clear();
         self.clear_presentation_spawns();
+        self.impact_particle_requests.clear();
+        self.dropped_impact_particle_requests = 0;
+        self.last_impact_particle_warning = None;
         self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
@@ -1656,7 +1690,6 @@ mod tests {
 
     use super::*;
     use crate::components::billboard_emitter::{BillboardEmitterComponent, SpinAnimation};
-    use crate::components::particle::ParticleState;
     use crate::components::sprite_visual::SpriteVisual;
     use crate::data_descriptors::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
@@ -2175,27 +2208,6 @@ mod tests {
         };
         reg.set_component(id, value.clone()).unwrap();
         let back = reg.get_component::<BillboardEmitterComponent>(id).unwrap();
-        assert_eq!(*back, value);
-    }
-
-    #[test]
-    fn particle_state_set_get_round_trip() {
-        let mut reg = EntityRegistry::new();
-        let parent = reg.spawn(Transform::default());
-        let id = reg.spawn(Transform::default());
-        let value = ParticleState {
-            velocity: [0.5, 1.5, -0.25],
-            age: 0.4,
-            lifetime: 2.5,
-            buoyancy: -1.0,
-            drag: 0.3,
-            size_curve: [0.2, 1.0, 0.5].into(),
-            opacity_curve: [0.0, 1.0, 0.0].into(),
-            spin_rate: 1.25,
-            emitter: Some(parent),
-        };
-        reg.set_component(id, value.clone()).unwrap();
-        let back = reg.get_component::<ParticleState>(id).unwrap();
         assert_eq!(*back, value);
     }
 

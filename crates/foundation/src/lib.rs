@@ -7,6 +7,7 @@ pub mod brain;
 pub mod candidate;
 pub mod data_descriptors;
 pub mod foundation_pods;
+pub mod impact_particles;
 pub mod ir;
 pub mod movement;
 pub mod pose;
@@ -51,3 +52,5 @@ pub use presentation::{
 };
 pub use seat::Seat;
 pub use value_types::{EulerDegrees, Vec3Lit};
+
+pub use impact_particles::{ImpactParticleRequest, MAX_PENDING_IMPACT_PARTICLE_REQUESTS};

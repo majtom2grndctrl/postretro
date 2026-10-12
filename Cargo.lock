@@ -4493,6 +4493,7 @@ dependencies = [
  "log",
  "mlua",
  "postretro-foundation",
+ "postretro-test-log-capture",
  "rquickjs",
  "serde",
  "serde_json",

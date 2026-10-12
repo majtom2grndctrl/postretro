@@ -4,6 +4,7 @@
 use glam::Vec3;
 
 use crate::leaf::ContentsMask;
+use crate::line::{clip_line, union_length};
 use crate::volumes::EnvironmentVolumes;
 
 static NO_VOLUMES: EnvironmentVolumes = EnvironmentVolumes::empty();
@@ -56,18 +57,25 @@ pub struct ResolvedEnvironment {
     pub gravity: f32,
     /// Extra acceleration in any direction, m/s². Never defines "down".
     pub push: Vec3,
-    /// The winning fluid, if any.
+    /// The winning fluid, if any. `None` exactly when `immersion` is 0.
     pub fluid: Option<u16>,
-    /// Coverage of the capsule's vertical segment by the winning fluid, 0..=1.
+    /// Fraction of the capsule's vertical segment, feet to head, covered by the
+    /// union of the winning fluid volume's brushes, 0..=1.
     pub immersion: f32,
+    /// Whether the tick eye (`position.y + eye_height` at the probe's x/z) lies
+    /// inside the union of the winning fluid volume's brushes, a face counting as
+    /// inside. Always false when dry. The fluid jump keys on this, never on the
+    /// presented camera eye (`research.md` P5).
+    pub tick_eye_in_fluid: bool,
 }
 
 /// Resolve `probe`'s environment. Gravity and push are point rules at
 /// `probe.position`: for each field, the winner among volumes that set it and
 /// contain the point (`EnvironmentVolumes::outranks`); with none, the level
-/// default gravity and zero push. Deterministic and allocation-free: the result
-/// never depends on visit order, and the only float math is the volumes' own
-/// containment tests.
+/// default gravity and zero push. The fluid follows the capsule-segment rule
+/// (`resolve_fluid`). Deterministic and allocation-free: the overlap order is
+/// total and every reduction is order-independent, so the result never depends
+/// on tree shape or visit order.
 pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> ResolvedEnvironment {
     let volumes = view.volumes;
     let mut gravity_winner: Option<usize> = None;
@@ -96,28 +104,138 @@ pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> Reso
         .and_then(|index| volumes.volume(index))
         .and_then(|volume| volume.push)
         .unwrap_or(Vec3::ZERO);
-    let (fluid, immersion) = resolve_fluid(view, probe);
+    let fluid = resolve_fluid(view, probe);
 
     ResolvedEnvironment {
         gravity,
         push,
-        fluid,
-        immersion,
+        fluid: fluid.fluid,
+        immersion: fluid.immersion,
+        tick_eye_in_fluid: fluid.tick_eye_in_fluid,
     }
 }
 
-fn beats(volumes: &EnvironmentVolumes, candidate: usize, incumbent: Option<usize>) -> bool {
+/// Gravity alone at `position`, by the same point rule as `resolve_environment`.
+/// For bodies that read only gravity (AI agents), so they never pay for the push
+/// reduction or the fluid's segment query.
+pub fn resolve_gravity(view: EnvironmentView<'_>, position: Vec3) -> f32 {
+    let volumes = view.volumes;
+    let mut winner: Option<usize> = None;
+    volumes.visit_volumes_containing_point(position, ContentsMask::GRAVITY, |index| {
+        if volumes.volume(index).is_some_and(|v| v.gravity.is_some())
+            && beats(volumes, index, winner)
+        {
+            winner = Some(index);
+        }
+    });
+    winner
+        .and_then(|index| volumes.volume(index))
+        .and_then(|volume| volume.gravity)
+        .unwrap_or(view.level_gravity)
+}
+
+pub(crate) fn beats(
+    volumes: &EnvironmentVolumes,
+    candidate: usize,
+    incumbent: Option<usize>,
+) -> bool {
     match incumbent {
         None => true,
         Some(incumbent) => volumes.outranks(candidate, incumbent),
     }
 }
 
-/// The fluid rule's one home: fluid reach is the capsule's vertical segment, and
-/// immersion is that segment's coverage by the winner's brushes. This slice
-/// carries no capsule-segment query yet, so every body resolves dry.
-fn resolve_fluid(_view: EnvironmentView<'_>, _probe: &BodyProbe) -> (Option<u16>, f32) {
-    (None, 0.0)
+struct FluidResolve {
+    fluid: Option<u16>,
+    immersion: f32,
+    tick_eye_in_fluid: bool,
+}
+
+const DRY: FluidResolve = FluidResolve {
+    fluid: None,
+    immersion: 0.0,
+    tick_eye_in_fluid: false,
+};
+
+/// The fluid rule's one home. Fluid reach is the capsule's vertical segment at
+/// the probe's x/z, feet (`y - half_height - radius`) to head
+/// (`y + half_height + radius`). A fluid volume is in reach when its brushes
+/// cover a positive length of the segment, so a segment that only touches a
+/// face (feet exactly on the surface) stays dry. The fluid is the overlap-rule
+/// winner among volumes in reach; immersion is the segment's coverage by the
+/// union of the winner's brushes alone, so leaving through any face, bottom
+/// included, drops it and overlapping brushes count once. A degenerate segment
+/// (zero or negative length) falls back to the point rule at `position`:
+/// immersion 1 inside a fluid, 0 outside.
+fn resolve_fluid(view: EnvironmentView<'_>, probe: &BodyProbe) -> FluidResolve {
+    let volumes = view.volumes;
+    if volumes.is_empty() {
+        return DRY;
+    }
+    let reach = probe.half_height + probe.radius;
+    let feet = Vec3::new(probe.position.x, probe.position.y - reach, probe.position.z);
+    let length = 2.0 * reach;
+    let eye = probe.position + Vec3::new(0.0, probe.eye_height, 0.0);
+
+    if !(length > 0.0 && length.is_finite()) {
+        return point_fluid(volumes, probe.position, eye);
+    }
+
+    let mut winner: Option<usize> = None;
+    volumes.visit_brushes_on_line(
+        feet,
+        Vec3::Y,
+        0.0,
+        length,
+        ContentsMask::FLUID,
+        |index, _, brush| {
+            if volumes.volume(index).is_none_or(|v| v.fluid.is_none())
+                || !beats(volumes, index, winner)
+            {
+                return;
+            }
+            if clip_line(&brush.planes, feet, Vec3::Y, 0.0, length)
+                .is_some_and(|interval| interval.has_length())
+            {
+                winner = Some(index);
+            }
+        },
+    );
+    let Some(winner) = winner else {
+        return DRY;
+    };
+    let covered = union_length(|sink| {
+        volumes.volume_line_intervals(winner, feet, Vec3::Y, 0.0, length, sink)
+    });
+    FluidResolve {
+        fluid: volumes.volume(winner).and_then(|v| v.fluid),
+        immersion: (covered / length).clamp(0.0, 1.0),
+        tick_eye_in_fluid: volumes.volume_contains_point(winner, eye),
+    }
+}
+
+/// The point rule for a body with no vertical extent.
+fn point_fluid(volumes: &EnvironmentVolumes, point: Vec3, eye: Vec3) -> FluidResolve {
+    let Some(winner) = fluid_winner_at_point(volumes, point) else {
+        return DRY;
+    };
+    FluidResolve {
+        fluid: volumes.volume(winner).and_then(|v| v.fluid),
+        immersion: 1.0,
+        tick_eye_in_fluid: volumes.volume_contains_point(winner, eye),
+    }
+}
+
+/// The overlap-rule winner among fluid volumes containing `point`.
+pub(crate) fn fluid_winner_at_point(volumes: &EnvironmentVolumes, point: Vec3) -> Option<usize> {
+    let mut winner: Option<usize> = None;
+    volumes.visit_volumes_containing_point(point, ContentsMask::FLUID, |index| {
+        if volumes.volume(index).is_some_and(|v| v.fluid.is_some()) && beats(volumes, index, winner)
+        {
+            winner = Some(index);
+        }
+    });
+    winner
 }
 
 #[cfg(test)]

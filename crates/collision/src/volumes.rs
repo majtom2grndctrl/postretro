@@ -1,9 +1,11 @@
-// Environment volume records and the installed volume set with its point query.
+// Environment volume records and the installed volume set with its tree-backed leaf queries.
 // See: context/plans/in-progress/E24--water-and-environment-volumes/index.md
 
 use glam::Vec3;
 
+use crate::bvh::{AabbTree, TreeEntry};
 use crate::leaf::{ContentsMask, ConvexLeaf};
+use crate::line::{BrushInterval, clip_line};
 
 /// One canonical environment volume: a place that may set gravity, push and a
 /// fluid. A field left `None` is not set by this volume, so overlapping volumes
@@ -48,23 +50,23 @@ struct VolumeRecord {
     summed_brush_volume: f32,
 }
 
-/// One brush of one volume, as the query sees it.
+/// The tree payload: one brush of one volume, with its volume's contents so a
+/// masked query skips it without touching the volume.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct LeafEntry {
-    volume_index: u32,
-    brush_index: u32,
+struct LeafRef {
+    volume: u32,
+    brush: u32,
     contents: ContentsMask,
-    bounds_min: Vec3,
-    bounds_max: Vec3,
 }
 
 /// The installed set of environment volumes for one level. Built once at
-/// install; queries borrow it and never allocate.
+/// install, with every brush a leaf of a load-time tree; queries borrow it and
+/// never allocate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvironmentVolumes {
     volumes: Vec<EnvironmentVolume>,
     records: Vec<VolumeRecord>,
-    leaves: Vec<LeafEntry>,
+    tree: AabbTree<LeafRef>,
 }
 
 impl Default for EnvironmentVolumes {
@@ -73,8 +75,8 @@ impl Default for EnvironmentVolumes {
     }
 }
 
-/// Prefilter bounds are widened by this relative margin so rounding in a
-/// supplied AABB can never reject a point the planes contain.
+/// Leaf bounds are widened by this relative margin so rounding in a supplied
+/// AABB can never reject a point or line the planes contain.
 const BOUNDS_RELATIVE_PAD: f32 = 1.0e-5;
 
 impl EnvironmentVolumes {
@@ -83,15 +85,16 @@ impl EnvironmentVolumes {
         Self {
             volumes: Vec::new(),
             records: Vec::new(),
-            leaves: Vec::new(),
+            tree: AabbTree::empty(),
         }
     }
 
-    /// Build the query set. Precomputes each volume's contents and summed brush
-    /// volume, and flattens every brush into a prefiltered leaf entry.
+    /// Build the query set: precompute each volume's summed brush volume and
+    /// build the leaf tree over every brush's padded bounds. Deterministic in the
+    /// volume list, so every peer builds the same set.
     pub fn build(volumes: Vec<EnvironmentVolume>) -> Self {
         let mut records = Vec::with_capacity(volumes.len());
-        let mut leaves = Vec::new();
+        let mut entries = Vec::new();
         for (volume_index, volume) in volumes.iter().enumerate() {
             let contents = volume.contents();
             let summed_brush_volume = volume.brushes.iter().map(ConvexLeaf::volume).sum();
@@ -106,19 +109,21 @@ impl EnvironmentVolumes {
                         .max(brush.aabb_max.abs())
                         .max_element()
                         .max(1.0);
-                leaves.push(LeafEntry {
-                    volume_index: volume_index as u32,
-                    brush_index: brush_index as u32,
-                    contents,
-                    bounds_min: brush.aabb_min - Vec3::splat(pad),
-                    bounds_max: brush.aabb_max + Vec3::splat(pad),
+                entries.push(TreeEntry {
+                    min: brush.aabb_min - Vec3::splat(pad),
+                    max: brush.aabb_max + Vec3::splat(pad),
+                    payload: LeafRef {
+                        volume: volume_index as u32,
+                        brush: brush_index as u32,
+                        contents,
+                    },
                 });
             }
         }
         Self {
             volumes,
             records,
-            leaves,
+            tree: AabbTree::build(entries),
         }
     }
 
@@ -128,6 +133,11 @@ impl EnvironmentVolumes {
 
     pub fn is_empty(&self) -> bool {
         self.volumes.is_empty()
+    }
+
+    /// Number of brush leaves in the query tree.
+    pub fn leaf_count(&self) -> usize {
+        self.tree.len()
     }
 
     /// The volume at map-order `index`.
@@ -143,33 +153,103 @@ impl EnvironmentVolumes {
     }
 
     /// Call `visit` with the map-order index of every volume whose contents
-    /// intersect `mask` and one of whose brushes contains `point`. A volume with
-    /// several brushes containing the point may be visited more than once;
-    /// visit order is unspecified, so callers must reduce order-independently.
+    /// intersect `mask` and one of whose brushes contains `point` (a point on a
+    /// face is inside). A volume with several brushes containing the point may be
+    /// visited more than once; visit order is unspecified, so callers must reduce
+    /// order-independently.
     pub fn visit_volumes_containing_point(
         &self,
         point: Vec3,
         mask: ContentsMask,
         mut visit: impl FnMut(usize),
     ) {
-        for leaf in &self.leaves {
-            if !leaf.contents.intersects(mask)
-                || point.cmplt(leaf.bounds_min).any()
-                || point.cmpgt(leaf.bounds_max).any()
-            {
-                continue;
+        self.tree.visit_point(point, |leaf| {
+            if !leaf.contents.intersects(mask) {
+                return;
             }
-            let volume_index = leaf.volume_index as usize;
-            let brush = &self.volumes[volume_index].brushes[leaf.brush_index as usize];
-            if brush.contains_point(point) {
-                visit(volume_index);
+            if self.brush(leaf).contains_point(point) {
+                visit(leaf.volume as usize);
             }
-        }
+        });
+    }
+
+    /// Call `visit(volume, brush_index, brush)` for every brush of a volume whose
+    /// contents intersect `mask` and whose padded bounds meet the segment
+    /// `origin + t * dir`, `t` in `[t_min, t_max]`. A prefilter: the caller clips
+    /// the brush itself. Order unspecified.
+    pub(crate) fn visit_brushes_on_line(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+        mask: ContentsMask,
+        mut visit: impl FnMut(usize, u32, &ConvexLeaf),
+    ) {
+        self.tree.visit_line(origin, dir, t_min, t_max, |leaf| {
+            if leaf.contents.intersects(mask) {
+                visit(leaf.volume as usize, leaf.brush, self.brush(leaf));
+            }
+        });
+    }
+
+    /// Feed `sink` the clipped interval of every brush of volume `volume` along
+    /// `origin + t * dir`, `t` in `[t_min, t_max]`. Order unspecified; brushes the
+    /// line misses yield nothing.
+    pub(crate) fn volume_line_intervals(
+        &self,
+        volume: usize,
+        origin: Vec3,
+        dir: Vec3,
+        t_min: f32,
+        t_max: f32,
+        sink: &mut dyn FnMut(BrushInterval),
+    ) {
+        self.tree.visit_line(origin, dir, t_min, t_max, |leaf| {
+            if leaf.volume as usize != volume {
+                return;
+            }
+            if let Some(interval) = clip_line(&self.brush(leaf).planes, origin, dir, t_min, t_max) {
+                sink(BrushInterval {
+                    brush: leaf.brush,
+                    interval,
+                });
+            }
+        });
+    }
+
+    /// Whether any brush of volume `volume` contains `point` (on a face counts).
+    pub(crate) fn volume_contains_point(&self, volume: usize, point: Vec3) -> bool {
+        let mut inside = false;
+        self.tree.visit_point(point, |leaf| {
+            if !inside && leaf.volume as usize == volume {
+                inside = self.brush(leaf).contains_point(point);
+            }
+        });
+        inside
+    }
+
+    /// Signed depth of `point` in the union of volume `index`'s brushes, metres:
+    /// the maximum over its brushes of the brush's smallest normalized plane
+    /// distance `-(dot(p, n̂) - d̂)`. Positive inside, zero on the boundary,
+    /// negative outside. Both signs are conservative: the magnitude never
+    /// exceeds the true distance to the union's boundary, and equals it for a
+    /// point straight off one face of a lone brush (a point above a pool's flat
+    /// top reads minus its height above it). Inside near a seam between two
+    /// brushes of one volume it reads no deeper than the distance to the seam.
+    /// `None` for an index out of range or a volume with no brushes.
+    pub fn signed_depth(&self, index: usize, point: Vec3) -> Option<f32> {
+        let volume = self.volumes.get(index)?;
+        volume
+            .brushes
+            .iter()
+            .map(|brush| brush_signed_depth(brush, point))
+            .reduce(f32::max)
     }
 
     /// Whether volume `a` beats volume `b` under the overlap rule: higher
     /// priority, then smaller summed brush volume, then earlier map order. The
-    /// map-order key decides exact ties only.
+    /// map-order key decides exact ties only, so the order is total.
     pub(crate) fn outranks(&self, a: usize, b: usize) -> bool {
         let priority_a = self.volumes[a].priority;
         let priority_b = self.volumes[b].priority;
@@ -183,4 +263,21 @@ impl EnvironmentVolumes {
         }
         a < b
     }
+
+    fn brush(&self, leaf: &LeafRef) -> &ConvexLeaf {
+        &self.volumes[leaf.volume as usize].brushes[leaf.brush as usize]
+    }
+}
+
+/// A brush's smallest normalized inward plane distance at `point`. A plane with
+/// a zero or non-finite normal bounds nothing and is skipped.
+fn brush_signed_depth(brush: &ConvexLeaf, point: Vec3) -> f32 {
+    brush
+        .planes
+        .iter()
+        .filter_map(|plane| {
+            let length = plane.normal.length();
+            (length > 0.0 && length.is_finite()).then(|| -plane.side(point) / length)
+        })
+        .fold(f32::INFINITY, f32::min)
 }

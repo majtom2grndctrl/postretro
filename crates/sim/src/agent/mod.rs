@@ -15,7 +15,7 @@
 use glam::Vec3;
 
 use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray};
-use postretro_collision::{BodyProbe, EnvironmentView, resolve_environment};
+use postretro_collision::{EnvironmentView, resolve_gravity};
 
 /// Iteration cap for the slide loop — bounds work when a capsule wedges into a
 /// corner. Matches the player substrate's budget; four projections resolve any
@@ -104,7 +104,7 @@ pub(crate) fn collide_and_slide(
     dt: f32,
 ) -> SlideResult {
     let collision_shape = capsule.collision_shape();
-    let gravity = agent_gravity(environment, capsule, position);
+    let gravity = agent_gravity(environment, position);
 
     // Compose the tick velocity: steering horizontal + integrated gravity. The
     // horizontal Y is dropped — steering never authors vertical motion.
@@ -214,18 +214,10 @@ pub(crate) fn collide_and_slide(
 /// agent's own tick-start position, downward part only. The slide below adds it
 /// every tick, grounded included, with no clamp, so upward gravity would lift the
 /// agent off the navmesh; in an upward-gravity volume the agent behaves as in zero
-/// gravity. Agents ignore push.
-fn agent_gravity(environment: EnvironmentView<'_>, capsule: &AgentCapsule, position: Vec3) -> f32 {
-    let resolved = resolve_environment(
-        environment,
-        &BodyProbe {
-            position,
-            half_height: capsule.half_height,
-            radius: capsule.radius,
-            eye_height: 0.0,
-        },
-    );
-    resolved.gravity.min(0.0)
+/// gravity. Agents resolve gravity alone: they ignore push and never swim, so
+/// they skip the fluid's capsule-segment query.
+fn agent_gravity(environment: EnvironmentView<'_>, position: Vec3) -> f32 {
+    resolve_gravity(environment, position).min(0.0)
 }
 
 /// Step-up probe: returns the lifted position when horizontal motion is blocked

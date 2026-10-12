@@ -40,8 +40,8 @@ read at: db24d5b65
 | 22 | Pool/collision push test independent of buoyancy | achievable as stated | pass |
 | 23 | Pool/collision low-gravity, exit and zero-buoyancy tests | achievable as stated | pass |
 | 24 | Post-position boundary gravity test | achievable as stated | pass |
-| 25 | Owner: pinned release stress run, five windows; sim/collect/emit and nested environment budgets | manual, blocking | outstanding manual proof |
-| 26 | Owner: pinned 0/~10k/~20k emitter sweep, sim_tick within 10% | manual, blocking | outstanding manual proof |
+| 25 | Executor-run release stress measurement with owner maintaining frontmost/unlocked Mac; 20 post-warmup windows | measured, blocking | fail: exclusive sim and environment exceed budgets; emit/collect pass |
+| 26 | Executor-run 0/~10k/~20k emitter sweep; 21/20/20 post-warmup windows | measured | pass: 3.42% spread in per-tick cost |
 | 27 | Owner: particle zone and weapon room visual checks | manual, blocking | outstanding manual proof |
 
 ## Tasks
@@ -64,7 +64,7 @@ read at: db24d5b65
 - Recompile committed `stress-env-volumes.map`; release + dev-tools; `caffeinate`; frontmost, unlocked Intel Mac; pose `114.60,2.44,-138.99,45,0`; record load average and at least five 120-frame windows after warmup.
 - At ~10k: particle_sim exclusive ≤0.6 ms, particle_collect ≤1.0 ms, particle_emit ≤0.3 ms; nested environment ≤0.5 ms. Compare sim_tick/ticks at zero/~10k/~20k (≤10%). Delete temporary sweep maps/PRLs.
 - Smoke/sparks/impacts visually unchanged in particle zone (d) and weapon room, including spin, doorway drift, portal edges and screen edges.
-- No landing until blocking manual results arrive; then wait for owner “land the plane”.
+- No landing until AC25 meets its budgets and AC27's blocking visual result arrives; then wait for owner “land the plane”.
 
 ## Verification evidence (implementation)
 - `cargo check -p postretro --features dev-tools`: pass.
@@ -104,4 +104,43 @@ For the tick sweep, make task-owned map copies beside the fixture, changing only
 - Final logs: `/tmp/postretro-particle-preflight-fmt-final.log`, `/tmp/postretro-particle-preflight-clippy-final.log`, `/tmp/postretro-particle-preflight-focused-final.log`, `/tmp/postretro-particle-preflight-test-final.log`.
 - Review/fix loop resolved three panel findings and the full-gate stale assertion; no unresolved code findings or Decision/Acceptance changes. Durable context reconciliation remains reserved for the authorized landing step.
 - Final disk check: 21 GiB available; no cache cleanup needed.
-- Branch: `perf-particle-sim-cost`. ACs 1–24 pass; ACs 25–27 await owner execution of the external runbook above. Remain in `in-progress/` at `test-ready` until the blocking proof arrives; then wait for owner “land the plane”.
+- Branch: `perf-particle-sim-cost`. ACs 1–24 pass. Subsequent AC25/AC26 results are recorded below; AC27 remains outstanding. Remain in `in-progress/` at `test-ready` while the performance failure and visual gate block landing.
+
+## AC25 / AC26 execution — 2026-10-12
+
+The owner authorized the executor to run both measurements and maintained the Mac unlocked, with the engine frontmost and no other heavy workloads. The executor ran three sequential cases at implementation commit `c091463d2` without source changes or concurrent builds. Evidence, all sampled windows, machine snapshots, fixture/binary hashes and exact commands are in [`acceptance-2026-10-12.json`](acceptance-2026-10-12.json).
+
+- Machine: Intel i9-9980HK, 8 physical / 16 logical CPUs, 32 GiB RAM, AMD Radeon Pro 5300M / Metal, macOS 26.6.2, AC power. `CPU_Speed_Limit=100` and no thermal/performance warnings before and after each run. `ScreenSaverEngine` was absent before each launch and at every CPU window.
+- Release build with dev-tools and release scripts-build sidecar; direct engine launch after build is equivalent to the recorded xtask launch, with no Cargo work during measurements. `POSTRETRO_CPU_TIMING=1`, `RUST_LOG=info`, `caffeinate -dimsu`; no Rayon, backend or validation overrides.
+- All three maps rebaked with `--sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache`. Loader confirmed 1,000 environment volumes and the pinned pose for every case. The two temporary maps changed only the rate of all 40 emitters to 0 or 100; inverse replacement exactly recovered the committed 50-rate source.
+- Existing display settings stayed unchanged across cases: exclusive 3584×2240 display mode, `render_resolution="third"`, vsync on.
+- Discarded the first two 120-frame windows and every window starting before 30 seconds. Retained every complete window ending by 140 seconds of in-level elapsed time. No timing windows were cherry-picked; 20/21/20 windows were retained for rates 50/0/100. Per-tick cost is summed `sim_tick` averages divided by summed `ticks` averages. Timing log precision is 0.001 ms and 0.1 ticks.
+
+### AC25 — fail
+
+20 retained windows at a mean of 9,954 live particles. Values are milliseconds per frame; ranges are window averages. Exclusive particle simulation subtracts the nested environment time from its parent in each window.
+
+| Stage | Mean | Window-average range | Budget | Result |
+|---|---|---|---|---|
+| particle_sim, exclusive | 0.818 | 0.726–0.834 | ≤0.600 | fail |
+| particle_environment | 1.617 | 1.435–1.646 | <0.500 | fail |
+| particle_collect | 0.508 | 0.455–0.517 | ≤1.000 | pass |
+| particle_emit | 0.063 | 0.059–0.065 | ≤0.300 | pass |
+
+The inclusive particle_sim mean was 2.435 ms. The failure is measured proof: AC25 needs optimization and another pinned run before landing; automated correctness results do not establish its performance budgets.
+
+### AC26 — pass
+
+| Emitter rate | Mean live particles | Retained windows | sim_tick per tick (ms) | Load before → after (1 / 5 / 15 min) |
+|---|---|---|---|---|
+| 0 | 0 | 21 | 3.271 | 3.68 / 8.03 / 10.41 → 3.46 / 6.26 / 9.30 |
+| 50 | 9,954 | 20 | 3.163 | 3.68 / 11.32 / 11.88 → 3.01 / 8.05 / 10.45 |
+| 100 | 19,907 | 20 | 3.197 | 3.31 / 6.13 / 9.22 → 2.72 / 4.84 / 8.21 |
+
+Maximum/minimum per-tick cost differs by **3.42%**, below the 10% limit. Runs occurred at 14:42–14:49 America/Los_Angeles; elevated longer-term load averages include preparation builds and bakes, which had finished before measurements.
+
+### Cleanup and remaining work
+
+- Engine test processes stopped after sampling. Temporary rate-0/rate-100 maps and PRLs deleted; committed-map rebake retained as a normal ignored build product. Scratch measurement logs and runner scripts removed after preserving durable evidence.
+- Only the acceptance record and this plan changed after implementation; no source behavior changed in this measurement session.
+- AC25 fails, AC26 passes, AC27 remains outstanding. Status stays `test-ready`; the brief is not ready to land.

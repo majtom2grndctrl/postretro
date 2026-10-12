@@ -260,7 +260,7 @@ A targeted check, not a sixth direction review. Read at `cfd2d861d` on `codex/co
 - scriptable fluid effects are curves and reaction verbs aimed at a target fixed at install, with existing number and bool conditions deciding when;
 - lava cooling to stone is runtime-mutable volume state, the mover pattern this brief already defers, plus a kinematic brush for solidity.
 
-The identity seam (a compared name binds as an engine-interned number) is recorded in `scripting.md` §11 as not yet built. `E16--persistent-firing-modes` is its first consumer. Fluids adopt it if a condition ever needs fluid identity; the host's fluid table in the tuning payload already supplies a session-stable index.
+The identity seam (a compared name binds as an engine-interned number) is recorded in `scripting.md` §11 as not yet built; `E16--persistent-firing-modes` plans to use it. Fluids adopt it if a condition ever needs fluid identity; the host's fluid table in the tuning payload already supplies a session-stable index.
 
 Engineering calls, made on precedent:
 - **The output-only record is its own component, not a field on `PlayerMovementComponent`.** That struct passes through reconcile clones and the wire merge, which must never read the record; a separate component makes that hold by construction.

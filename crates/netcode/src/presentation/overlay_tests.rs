@@ -50,6 +50,30 @@ fn overlay_template() -> PresentationTemplate {
     .unwrap()
 }
 
+fn overlay_declaration(cap: usize, linger_ms: u32, template: &str) -> PresentationOverlay {
+    serde_json::from_value(json!({
+        "over": { "kind": "damagedEnemies", "lingerMs": linger_ms,
+            "hideAtFull": true,
+            "shield": {
+                "value": { "op": "input", "name": "@state.shield" },
+                "max": { "op": "input", "name": "@state.shieldMax" }
+            } },
+        "template": template, "maxVisible": cap
+    }))
+    .unwrap()
+}
+
+fn authored_client_config(cap: usize, linger_ms: u32, template_id: &str) -> ClientOverlayConfig {
+    let mut runtime = ImpactPolicyRuntime::new(ScriptCtx::new());
+    let mut template = overlay_template();
+    template.id = template_id.to_string();
+    runtime.replace_presentation_templates(vec![template]);
+    runtime.replace_presentation_overlays(vec![overlay_declaration(cap, linger_ms, template_id)]);
+    runtime
+        .client_overlay_config()
+        .expect("compatible client declaration binds")
+}
+
 fn descriptor() -> EntityTypeDescriptor {
     EntityTypeDescriptor {
         faction: None,
@@ -99,17 +123,11 @@ impl Host {
         let ctx = ScriptCtx::new();
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
         runtime.replace_presentation_templates(vec![overlay_template()]);
-        let overlay: PresentationOverlay = serde_json::from_value(json!({
-            "over": { "kind": "damagedEnemies", "lingerMs": linger_ms,
-                "hideAtFull": true,
-                "shield": {
-                    "value": { "op": "input", "name": "@state.shield" },
-                    "max": { "op": "input", "name": "@state.shieldMax" }
-                } },
-            "template": "test.enemy-status", "maxVisible": cap
-        }))
-        .unwrap();
-        runtime.replace_presentation_overlays(vec![overlay]);
+        runtime.replace_presentation_overlays(vec![overlay_declaration(
+            cap,
+            linger_ms,
+            "test.enemy-status",
+        )]);
         // This consequence deliberately restores the final health fraction on
         // every hit. Refresh therefore cannot be inferred from fraction changes.
         runtime.replace_global_events(vec![ImpactEventDescriptor {
@@ -224,6 +242,7 @@ impl Host {
                 let id = self.allocator.network_id_for_entity(damage.entity).unwrap();
                 self.tracker.record_damage(
                     registry,
+                    &self.allocator,
                     id,
                     damage,
                     config.linger_seconds,
@@ -247,6 +266,7 @@ impl Host {
             &mut self.tracker,
             &mut self.runtime,
             &self.ctx.registry.borrow(),
+            &self.allocator,
             &self.replicable,
             &mut self.pool,
             &self.zones,
@@ -254,11 +274,150 @@ impl Host {
             time,
             time,
         );
-        let cap = self.runtime.client_overlay_config().unwrap().max_visible;
+        let cap = self
+            .runtime
+            .client_overlay_config()
+            .map_or(0, |config| config.max_visible);
         assert!(self.tracker.live.len() <= cap);
         assert!(self.tracker.roster.entries.len() <= cap);
         assert!(self.tracker.scratch.len() <= cap);
         assert!(self.pool.live_counts().1 <= cap);
+    }
+
+    fn replace_authoring(&mut self, cap: usize, linger_ms: u32, template_id: &str) {
+        let mut template = overlay_template();
+        template.id = template_id.to_string();
+        self.runtime.replace_presentation_templates(vec![template]);
+        self.runtime
+            .replace_presentation_overlays(vec![overlay_declaration(cap, linger_ms, template_id)]);
+        self.pool.clear_overlays();
+        self.tracker.clear_for_authoring();
+        // Cosmetic edits retain compatibility and must not demote participants.
+        self.server.set_mod_digest(Some([7; 32]));
+    }
+
+    fn sweep(&mut self) {
+        crate::host_register_descriptor_entities(
+            &self.ctx.registry.borrow(),
+            &mut self.allocator,
+            &mut self.replicable,
+            &mut self.tracked,
+            &mut self.overrides,
+        );
+    }
+
+    fn weapon_target(&mut self) -> EntityId {
+        use postretro_entities::components::{
+            touchable::TouchableComponent, weapon::WeaponComponent,
+        };
+        use postretro_foundation::data_descriptors::TouchMode;
+        let target = self.target(false);
+        let mut registry = self.ctx.registry.borrow_mut();
+        let descriptor = serde_json::from_value(json!({
+            "damage": 48.0,
+            "range": 20.0,
+            "primary": postretro_foundation::WeaponActivationDescriptor::single(
+                postretro_foundation::ActivationTrigger::Press,
+                100.0,
+            ),
+            "resolution": postretro_foundation::ResolutionMode::Hitscan
+        }))
+        .unwrap();
+        registry
+            .set_component(target, WeaponComponent::from_descriptor(&descriptor))
+            .unwrap();
+        registry
+            .set_component(
+                target,
+                TouchableComponent {
+                    mode: TouchMode::Auto,
+                    radius: 32.0,
+                },
+            )
+            .unwrap();
+        let mut provenance = registry
+            .get_component::<DescriptorProvenance>(target)
+            .unwrap()
+            .clone();
+        provenance.owned_components.extend([
+            DescriptorComponentKind::Weapon,
+            DescriptorComponentKind::Touchable,
+        ]);
+        registry.set_component(target, provenance).unwrap();
+        target
+    }
+
+    fn acquire_and_drop_between_draws(
+        &mut self,
+        peer: &mut Peer,
+        tracker: &mut ServerReplication,
+        item: EntityId,
+        time: f64,
+    ) -> NetworkId {
+        use postretro_entities::components::{inventory::Inventory, touchable::TouchableComponent};
+        use postretro_foundation::data_descriptors::TouchMode;
+        let old_id = self.id(item);
+        let holder = {
+            let mut registry = self.ctx.registry.borrow_mut();
+            let holder = registry.spawn(Transform::default());
+            let mut inventory = Inventory::default();
+            inventory.wieldables[4] = Some(item);
+            registry.set_component(holder, inventory).unwrap();
+            registry
+                .remove_component::<TouchableComponent>(item)
+                .unwrap();
+            assert!(registry.is_inventory_owned(item));
+            holder
+        };
+        self.sweep();
+        assert!(self.allocator.network_id_for_entity(item).is_none());
+        self.snapshot_tracked(peer, tracker, 2, time, 10.0);
+        assert!(
+            peer.replication.entity_for_network_id(old_id).is_none(),
+            "pickup tombstones old world identity"
+        );
+        {
+            let mut registry = self.ctx.registry.borrow_mut();
+            registry
+                .set_component(holder, Inventory::default())
+                .unwrap();
+            registry
+                .set_component(
+                    item,
+                    TouchableComponent {
+                        mode: TouchMode::Auto,
+                        radius: 32.0,
+                    },
+                )
+                .unwrap();
+            let mut pose = *registry.get_component::<Transform>(item).unwrap();
+            pose.position = Vec3::new(7.0, 0.0, 0.0);
+            registry.set_component(item, pose).unwrap();
+            assert!(!registry.is_inventory_owned(item));
+        }
+        self.sweep();
+        let fresh_id = self.id(item);
+        assert!(fresh_id.0 > old_id.0);
+        self.snapshot_tracked(peer, tracker, 3, time, 10.0);
+        assert!(peer.replication.entity_for_network_id(old_id).is_none());
+        let remote = peer
+            .replication
+            .entity_for_network_id(fresh_id)
+            .expect("drop creates new baseline");
+        approx(
+            peer.registry
+                .get_component::<Transform>(remote)
+                .unwrap()
+                .position
+                .x,
+            7.0,
+        );
+        assert!(
+            peer.registry
+                .get_component::<HealthComponent>(remote)
+                .is_err()
+        );
+        fresh_id
     }
 
     fn packets(&mut self, peer: &Peer) -> Vec<Vec<u8>> {
@@ -266,6 +425,19 @@ impl Host {
     }
 
     fn snapshot(&mut self, peer: &mut Peer, sequence: u32, host_time: f64, local_time: f64) {
+        let mut tracker = ServerReplication::new();
+        tracker.register_client(peer.id);
+        self.snapshot_tracked(peer, &mut tracker, sequence, host_time, local_time);
+    }
+
+    fn snapshot_tracked(
+        &mut self,
+        peer: &mut Peer,
+        tracker: &mut ServerReplication,
+        sequence: u32,
+        host_time: f64,
+        local_time: f64,
+    ) {
         // Derive the baseline from the registry-owning production collector,
         // then use the actual net tracker, codec and framed Snapshot channel.
         let snapshots = produce_owned_snapshots(
@@ -275,8 +447,6 @@ impl Host {
             &MovementOwners::new(),
             &HostCommandQueues::new(),
         );
-        let mut tracker = ServerReplication::new();
-        tracker.register_client(peer.id);
         tracker.ingest_tick(snapshots);
         let mut raw = tracker.encode_for_client(peer.id, sequence).unwrap();
         raw.sequence = sequence;
@@ -370,6 +540,15 @@ impl Peer {
     }
 
     fn intake(&mut self, config: &ClientOverlayConfig, local_time: f64, rtt: Option<f64>) -> usize {
+        self.intake_optional(Some(config), local_time, rtt)
+    }
+
+    fn intake_optional(
+        &mut self,
+        config: Option<&ClientOverlayConfig>,
+        local_time: f64,
+        rtt: Option<f64>,
+    ) -> usize {
         let messages = self.net.drain_presentation();
         let count = messages.len();
         ingest_client_presentation_messages(
@@ -380,35 +559,45 @@ impl Peer {
             &mut self.state,
             &self.replication,
             &mut self.pool,
-            Some(config),
+            config,
             &HitZoneStore::new(),
             None,
             local_time,
             local_time,
             rtt,
         );
-        self.assert_bounds(config.max_visible);
+        self.assert_bounds();
         count
     }
 
     fn project(&mut self, config: &ClientOverlayConfig, local_time: f64, rtt: Option<f64>) {
+        self.project_optional(Some(config), local_time, rtt);
+    }
+
+    fn project_optional(
+        &mut self,
+        config: Option<&ClientOverlayConfig>,
+        local_time: f64,
+        rtt: Option<f64>,
+    ) {
         update_client_overlay_anchors(
             &self.registry,
             &[descriptor()],
             &mut self.state,
             &self.replication,
             &mut self.pool,
-            Some(config),
+            config,
             &HitZoneStore::new(),
             None,
             local_time,
             local_time,
             rtt,
         );
-        self.assert_bounds(config.max_visible);
+        self.assert_bounds();
     }
 
-    fn assert_bounds(&self, cap: usize) {
+    fn assert_bounds(&self) {
+        let cap = wire::MAX_OVERLAY_ROSTER_ENTRIES;
         assert!(
             self.state
                 .roster
@@ -705,7 +894,7 @@ fn synchronized_time_highwater_prevents_stale_snapshot_or_repair_resurrection_af
     // A later accepted snapshot can still carry a regressed host clock after a
     // host stall. Equal-state repair plus RTT correction cannot rewind expiry.
     host.snapshot(&mut peer, 3, 4.2, 11.2);
-    assert!(!peer.state.receive(original.clone(), config.max_visible));
+    assert!(!peer.state.receive(original.clone()));
     peer.project(&config, 11.2, Some(0.0));
     assert!(peer.ids().is_empty());
     let stale = SnapshotMessage {
@@ -718,7 +907,7 @@ fn synchronized_time_highwater_prevents_stale_snapshot_or_repair_resurrection_af
         faction_sentiment_record: None,
     };
     peer.apply_snapshot(&stale, 11.3);
-    peer.state.receive(original, config.max_visible);
+    peer.state.receive(original);
     peer.project(&config, 11.3, Some(0.0));
     assert!(peer.ids().is_empty());
     assert!(peer.state.roster.as_ref().unwrap().entries.is_empty());
@@ -1014,5 +1203,405 @@ fn encoded_roster_cost_and_fragment_loss_repair_are_bounded_and_atomic() {
             peer.project(&config, 0.25, Some(0.0));
             assert_eq!(peer.ids().len(), cap);
         }
+    }
+}
+
+// Regression: a host-only cosmetic reload reset revisions while peers stayed participating.
+#[test]
+fn compatible_host_authoring_reload_retires_and_reenrolls_through_transport() {
+    let mut host = Host::new(1, 2_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let target = host.target(false);
+    let original_config = host.runtime.client_overlay_config().unwrap();
+    for step in 0..4 {
+        let time = 1.0 + f64::from(step) * 0.1;
+        host.hit(target, None, time, 1.0);
+        host.frame(time);
+        peer.deliver(host.packets(&peer));
+        assert_eq!(peer.intake(&original_config, 10.0, Some(0.0)), 1);
+    }
+    host.snapshot(&mut peer, 1, 1.3, 10.0);
+    peer.project(&original_config, 10.0, Some(0.0));
+    assert_eq!(peer.ids(), [host.id(target)]);
+    let before = peer.state.revision().unwrap();
+    let stale = host.tracker.roster.clone();
+    host.replace_authoring(1, 2_000, "test.restyled-status");
+    assert!(host.server.is_participating(peer.id));
+    host.frame(1.4);
+    peer.deliver(host.packets(&peer));
+    assert!(peer.net.is_participating());
+    assert_eq!(peer.intake(&original_config, 10.1, Some(0.0)), 1);
+    assert!(peer.state.revision().unwrap() > before);
+    assert!(
+        peer.ids().is_empty(),
+        "reload publishes newer empty retirement"
+    );
+    host.hit(target, None, 1.5, 1.0);
+    host.frame(1.5);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&original_config, 10.2, Some(0.0)), 1);
+    assert_eq!(
+        peer.ids(),
+        [host.id(target)],
+        "peer converges without its own reload"
+    );
+    let fresh_revision = peer.state.revision().unwrap();
+    host.server
+        .broadcast_presentation(ServerPresentationMessage {
+            payload: ServerPresentationPayload::OverlayRoster(stale),
+        });
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&original_config, 10.2, Some(0.0)), 1);
+    assert_eq!(peer.state.revision(), Some(fresh_revision));
+    assert!((peer.state.roster.as_ref().unwrap().entries[0].damaged_at - 1.5).abs() < 1.0e-9);
+}
+
+// Regression: client template replacement erased retirement and expiry fences.
+#[test]
+fn compatible_client_authoring_reload_restyles_without_reviving_retired_or_expired_state() {
+    let mut host = Host::new(2, 1_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let first = host.target(false);
+    let second = host.target(false);
+    host.hit(first, None, 4.0, 1.0);
+    host.hit(second, None, 4.0, 1.0);
+    host.frame(4.0);
+    let original = host.tracker.roster.clone();
+    let config = host.runtime.client_overlay_config().unwrap();
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.0, Some(0.0));
+    host.snapshot(&mut peer, 1, 4.0, 10.0);
+    peer.project(&config, 10.0, Some(0.0));
+    assert_eq!(peer.ids().len(), 2);
+    let revision = peer.state.revision().unwrap();
+    let restyled = authored_client_config(1, 1_000, "test.client-restyled");
+    peer.pool.clear_overlays();
+    peer.state.clear_projections();
+    peer.net.set_mod_digest(Some([7; 32]));
+    assert!(peer.net.is_participating());
+    host.frame(4.25);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&restyled, 10.25, Some(0.0)), 1);
+    assert_eq!(peer.state.revision(), Some(revision));
+    assert_eq!(
+        peer.ids().len(),
+        2,
+        "same-revision repair rebuilds complete host membership"
+    );
+    let inputs = peer.pool.advance_and_collect_inputs(
+        &mut peer.registry,
+        0.0,
+        glam::Mat4::IDENTITY,
+        [800, 600],
+        crate::presentation_pool::MotionPreference::Full,
+    );
+    assert_eq!(inputs.len(), 2);
+    assert!(
+        inputs
+            .iter()
+            .all(|input| input.template == restyled.template)
+    );
+
+    host.ctx.registry.borrow_mut().despawn(first).unwrap();
+    host.frame(4.4);
+    peer.deliver(host.packets(&peer));
+    peer.intake_optional(None, 10.4, Some(0.0));
+    let retired_revision = peer.state.revision().unwrap();
+    assert!(retired_revision > revision);
+    assert!(
+        peer.ids().is_empty(),
+        "disabled local configuration keeps pool empty"
+    );
+    peer.state.clear_projections();
+    host.server
+        .broadcast_presentation(ServerPresentationMessage {
+            payload: ServerPresentationPayload::OverlayRoster(original),
+        });
+    peer.deliver(host.packets(&peer));
+    peer.intake_optional(None, 10.5, Some(0.0));
+    peer.project(&restyled, 10.5, Some(0.0));
+    assert_eq!(
+        peer.ids(),
+        [host.id(second)],
+        "newer retirement received while disabled survives re-enable"
+    );
+
+    peer.project_optional(None, 11.2, Some(0.0));
+    assert!(peer.state.roster.as_ref().unwrap().entries.is_empty());
+    let expired_revision = peer.state.revision().unwrap();
+    peer.pool.clear_overlays();
+    peer.state.clear_projections();
+    host.snapshot(&mut peer, 2, 4.45, 11.2);
+    // A fresh packet with the current host revision still contains the entry
+    // that this client's high-water has already expired.
+    host.server
+        .broadcast_presentation(ServerPresentationMessage {
+            payload: ServerPresentationPayload::OverlayRoster(host.tracker.roster.clone()),
+        });
+    peer.deliver(host.packets(&peer));
+    peer.intake(&restyled, 11.2, Some(0.0));
+    assert_eq!(peer.state.revision(), Some(expired_revision));
+    assert!(
+        peer.ids().is_empty(),
+        "regressed clock and same-state repair cannot restart linger"
+    );
+}
+
+// Regression: disabling the host config silently cleared live state and reset ordering every frame.
+#[test]
+fn disabled_host_overlay_retires_once_repairs_empty_and_reenable_preserves_order() {
+    let mut host = Host::new(1, 2_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let target = host.target(false);
+    host.hit(target, None, 1.0, 1.0);
+    host.frame(1.0);
+    let config = host.runtime.client_overlay_config().unwrap();
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.0, Some(0.0));
+    host.snapshot(&mut peer, 1, 1.0, 10.0);
+    peer.project(&config, 10.0, Some(0.0));
+    let before = peer.state.revision().unwrap();
+    host.runtime.replace_presentation_overlays(Vec::new());
+    host.server.set_mod_digest(Some([7; 32]));
+    host.frame(1.05);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(
+        peer.intake(&config, 10.05, Some(0.0)),
+        0,
+        "disable retains publication pacing"
+    );
+    host.frame(1.1);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&config, 10.1, Some(0.0)), 1);
+    assert!(peer.ids().is_empty());
+    let empty_revision = peer.state.revision().unwrap();
+    assert!(empty_revision > before);
+    for time in [1.15, 1.2, 1.3] {
+        host.frame(time);
+        peer.deliver(host.packets(&peer));
+        assert_eq!(peer.intake(&config, 10.0 + time - 1.0, Some(0.0)), 0);
+        assert_eq!(host.tracker.roster.revision, empty_revision);
+    }
+    host.frame(1.35);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(
+        peer.intake(&config, 10.35, Some(0.0)),
+        1,
+        "empty repairs remain 4Hz"
+    );
+    host.replace_authoring(1, 2_000, "test.enemy-status");
+    host.hit(target, None, 1.5, 1.0);
+    host.frame(1.5);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&config, 10.5, Some(0.0)), 1);
+    assert!(peer.state.revision().unwrap() > empty_revision);
+    assert_eq!(peer.ids(), [host.id(target)]);
+}
+
+// Regression: compatible client K rejected or re-capped the complete host-selected roster.
+#[test]
+fn host_cap_controls_membership_with_different_compatible_client_caps_and_repairs() {
+    for (host_cap, client_cap) in [(2, 1), (1, 2)] {
+        let mut host = Host::new(host_cap, 2_000);
+        let mut peer = Peer::connect(&mut host, 41);
+        let first = host.target(false);
+        let second = host.target(false);
+        host.hit(first, None, 1.0, 1.0);
+        host.hit(second, None, 1.0, 1.0);
+        host.frame(1.0);
+        let client_config = authored_client_config(client_cap, 2_000, "test.enemy-status");
+        peer.deliver(host.packets(&peer));
+        assert_eq!(peer.intake(&client_config, 10.0, Some(0.0)), 1);
+        host.snapshot(&mut peer, 1, 1.0, 10.0);
+        peer.project(&client_config, 10.0, Some(0.0));
+        let expected = if host_cap == 2 {
+            vec![host.id(first), host.id(second)]
+        } else {
+            vec![host.id(second)]
+        };
+        assert_eq!(peer.ids(), expected);
+        host.frame(1.25);
+        peer.deliver(host.packets(&peer));
+        assert_eq!(peer.intake(&client_config, 10.25, Some(0.0)), 1);
+        assert_eq!(
+            peer.ids(),
+            expected,
+            "repair respects host K={host_cap}, client K={client_cap}"
+        );
+    }
+}
+
+// Regression: pickup/drop in successive catch-up ticks retained an unmappable old identity.
+#[test]
+fn acquired_dropped_weapon_without_rehit_retires_old_overlay_after_new_baseline() {
+    let mut host = Host::new(1, 2_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let item = host.weapon_target();
+    let old_id = host.id(item);
+    host.hit(item, None, 4.0, 10.0);
+    host.frame(4.0);
+    let config = host.runtime.client_overlay_config().unwrap();
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.0, Some(0.0));
+    let mut tracker = ServerReplication::new();
+    tracker.register_client(peer.id);
+    host.snapshot_tracked(&mut peer, &mut tracker, 1, 4.0, 10.0);
+    peer.project(&config, 10.0, Some(0.0));
+    assert_eq!(peer.ids(), [old_id]);
+    host.acquire_and_drop_between_draws(&mut peer, &mut tracker, item, 4.0);
+    host.frame(4.1);
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.1, Some(0.0));
+    assert!(host.tracker.roster.entries.is_empty());
+    assert_eq!(host.pool.live_counts().1, 0);
+    assert!(peer.ids().is_empty());
+    approx(
+        host.ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(item)
+            .unwrap()
+            .current,
+        90.0,
+    );
+    host.frame(4.35);
+    peer.deliver(host.packets(&peer));
+    assert_eq!(peer.intake(&config, 10.35, Some(0.0)), 1);
+    assert!(
+        peer.ids().is_empty(),
+        "repair cannot rebind the old linger to the drop identity"
+    );
+}
+
+// Regression: stale high-id selection rejected an equal-time lower-id contender before final prune.
+#[test]
+fn acquired_dropped_weapon_does_not_reject_equal_time_lower_id_contender_at_cap_one() {
+    let mut host = Host::new(1, 2_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let contender = host.target(false);
+    let item = host.weapon_target();
+    assert!(host.id(contender).0 < host.id(item).0);
+    host.hit(item, None, 4.0, 10.0);
+    host.frame(4.0);
+    let config = host.runtime.client_overlay_config().unwrap();
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.0, Some(0.0));
+    let mut tracker = ServerReplication::new();
+    tracker.register_client(peer.id);
+    host.snapshot_tracked(&mut peer, &mut tracker, 1, 4.0, 10.0);
+    peer.project(&config, 10.0, Some(0.0));
+    host.acquire_and_drop_between_draws(&mut peer, &mut tracker, item, 4.0);
+    host.hit(contender, None, 4.0, 10.0);
+    host.frame(4.1);
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.1, Some(0.0));
+    assert_eq!(
+        host.tracker
+            .roster
+            .entries
+            .iter()
+            .map(|entry| entry.enemy_id)
+            .collect::<Vec<_>>(),
+        [host.id(contender)]
+    );
+    assert_eq!(peer.ids(), [host.id(contender)]);
+}
+
+// Regression: a re-hit after pickup/drop duplicated one EntityId and evicted a distinct target.
+#[test]
+fn acquired_dropped_weapon_rehit_uses_only_fresh_id_without_evicting_distinct_target_at_cap_two() {
+    let mut host = Host::new(2, 2_000);
+    let mut peer = Peer::connect(&mut host, 41);
+    let distinct = host.target(false);
+    let item = host.weapon_target();
+    host.hit(distinct, None, 4.0, 10.0);
+    host.hit(item, None, 4.0, 10.0);
+    host.frame(4.0);
+    let config = host.runtime.client_overlay_config().unwrap();
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.0, Some(0.0));
+    let mut tracker = ServerReplication::new();
+    tracker.register_client(peer.id);
+    host.snapshot_tracked(&mut peer, &mut tracker, 1, 4.0, 10.0);
+    peer.project(&config, 10.0, Some(0.0));
+    let fresh_id = host.acquire_and_drop_between_draws(&mut peer, &mut tracker, item, 4.0);
+    host.hit(item, None, 4.0, 10.0);
+    host.frame(4.1);
+    peer.deliver(host.packets(&peer));
+    peer.intake(&config, 10.1, Some(0.0));
+    assert_eq!(
+        host.tracker
+            .live
+            .iter()
+            .filter(|entry| entry.entity == item)
+            .count(),
+        1
+    );
+    assert_eq!(peer.ids(), [host.id(distinct), fresh_id]);
+    assert_eq!(host.pool.live_counts().1, 2);
+    approx(number(peer.facts(fresh_id), "healthFraction"), 0.8);
+}
+
+// Regression: accepted negative numeric shield expressions invalidated the whole roster.
+#[test]
+fn authored_negative_shield_samples_normalize_without_losing_other_targets_over_transport() {
+    for constant in [false, true] {
+        let mut host = Host::new(2, 2_000);
+        let mut peer = Peer::connect(&mut host, 41);
+        if constant {
+            let mut declaration =
+                serde_json::to_value(overlay_declaration(2, 2_000, "test.enemy-status")).unwrap();
+            declaration["over"]["shield"] = json!({
+                "value": { "op": "const", "value": -1.0 },
+                "max": { "op": "const", "value": 100.0 }
+            });
+            host.runtime
+                .replace_presentation_overlays(vec![serde_json::from_value(declaration).unwrap()]);
+            assert!(
+                host.runtime.client_overlay_config().is_some(),
+                "numeric constant binds as authored"
+            );
+        }
+        let negative = host.target(false);
+        let valid = host.target(false);
+        {
+            let mut registry = host.ctx.registry.borrow_mut();
+            for (entity, shield) in [(negative, -1.0), (valid, 75.0)] {
+                let mut state = registry
+                    .get_component::<EntityStateComponent>(entity)
+                    .unwrap()
+                    .clone();
+                state.set("shield", shield);
+                registry.set_component(entity, state).unwrap();
+            }
+        }
+        host.hit(negative, None, 1.0, 10.0);
+        host.hit(valid, None, 1.0, 10.0);
+        host.frame(1.0);
+        assert!(host.tracker.roster.is_valid());
+        let config = host.runtime.client_overlay_config().unwrap();
+        peer.deliver(host.packets(&peer));
+        assert_eq!(peer.intake(&config, 10.0, Some(0.0)), 1);
+        host.snapshot(&mut peer, 1, 1.0, 10.0);
+        peer.project(&config, 10.0, Some(0.0));
+        assert_eq!(peer.ids(), [host.id(negative), host.id(valid)]);
+        approx(number(peer.facts(host.id(negative)), "shieldFraction"), 0.0);
+        approx(
+            number(peer.facts(host.id(valid)), "shieldFraction"),
+            if constant { 0.0 } else { 1.5 },
+        );
+        assert_eq!(
+            peer.facts(host.id(negative)).get("hasShield"),
+            Some(&PresentationFact::Bool(true))
+        );
+        approx(
+            host.ctx
+                .registry
+                .borrow()
+                .get_component::<EntityStateComponent>(negative)
+                .unwrap()
+                .get("shield"),
+            -1.0,
+        );
     }
 }

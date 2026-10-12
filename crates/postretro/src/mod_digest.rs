@@ -875,6 +875,40 @@ pub(crate) mod tests {
         }
     }
 
+    // Regression: cosmetic overlay edits keep participation, so their ordering cannot reset on reload.
+    #[test]
+    fn digest_ignores_overlay_template_cap_linger_and_disable() {
+        let baseline = manifest();
+        let expected = manifest_digest(&baseline);
+        for (template_id, cap, linger) in [("first", 1, 500), ("restyled", 2, 2_000)] {
+            let mut changed = baseline.clone();
+            changed.presentation_templates = vec![serde_json::from_value(serde_json::json!({
+                "id": template_id,
+                "root": { "kind": "text", "content": "enemy", "fontSize": 12, "color": [1,1,1,1] },
+                "lifetimeMs": 500, "motion": { "rise": 0, "easing": "linear" },
+                "fade": { "startMs": 0 }, "spawnScatter": { "radius": 0 },
+                "worldAnchor": { "socket": "head", "offsetY": 0 },
+            })).unwrap()];
+            changed.presentation_overlays =
+                vec![serde_json::from_value(serde_json::json!({
+                "over": { "kind": "damagedEnemies", "lingerMs": linger, "hideAtFull": true },
+                "template": template_id, "maxVisible": cap,
+            })).unwrap()];
+            changed.presentation_overlays[0].validate().unwrap();
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "compatible cosmetic configuration"
+            );
+            changed.presentation_overlays.clear();
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "disabling an overlay remains compatible"
+            );
+        }
+    }
+
     #[test]
     fn digest_ignores_declared_reaction_and_impact_event_lanes() {
         let baseline = manifest();

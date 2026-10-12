@@ -372,20 +372,6 @@ impl PresentationPool {
         overlay.suppressed = suppressed;
     }
 
-    /// Move one keyed overlay to a replacement local entity without changing
-    /// its facts or last-damage clock. Client baseline repair can replace the
-    /// local `EntityId` while retaining the host's stable `NetworkId`.
-    pub fn rekey_overlay(&mut self, previous: EntityId, current: EntityId) -> bool {
-        if previous == current {
-            return self.overlays.contains_key(&current);
-        }
-        let Some(overlay) = self.overlays.remove(&previous) else {
-            return false;
-        };
-        self.overlays.insert(current, overlay);
-        true
-    }
-
     /// Update only the moving world anchor and anchor-derived suppression.
     /// Value-only network facts must not reset the last-damage linger clock.
     pub fn update_overlay_anchor(

@@ -20,7 +20,7 @@ use crate::impact_policy::{
 };
 use crate::presentation_pool::PresentationPool;
 use crate::scripting_systems::hit_zones::HitZoneStore;
-use crate::{ClientReplication, ReplicableSet};
+use crate::{ClientReplication, NetworkIdAllocator, ReplicableSet};
 
 /// Changed state is capped at ten publications/second. Full current state is
 /// repaired four times/second, including empty state and new participants.
@@ -68,11 +68,23 @@ impl HostOverlayFactTracker {
         *self = Self::default();
     }
 
+    /// Cosmetic reloads retire the selection within the same participation.
+    /// Keep revision and publication pacing so peers can order the empty repair.
+    pub fn clear_for_authoring(&mut self) {
+        if !self.live.is_empty() || !self.roster.entries.is_empty() {
+            self.roster.revision = self.roster.revision.saturating_add(1);
+        }
+        self.live.clear();
+        self.roster.entries.clear();
+        self.scratch.clear();
+    }
+
     /// Called synchronously after each impact policy. No per-hit queue or
     /// recipient map accumulates. Equal-time overflow keeps the highest ids.
     pub fn record_damage(
         &mut self,
         registry: &EntityRegistry,
+        allocator: &NetworkIdAllocator,
         network_id: NetworkId,
         damage: DamagedEnemyOverlayDamage,
         linger_seconds: f64,
@@ -84,12 +96,16 @@ impl HostOverlayFactTracker {
             || now < 0.0
             || !linger_seconds.is_finite()
             || linger_seconds <= 0.0
+            || allocator.network_id_for_entity(damage.entity) != Some(network_id)
             || !eligible(registry, damage.entity)
         {
             return;
         }
-        self.live
-            .retain(|entry| entry.expires_at > now && eligible(registry, entry.entity));
+        self.live.retain(|entry| {
+            entry.expires_at > now
+                && allocator.network_id_for_entity(entry.entity) == Some(entry.network_id)
+                && eligible(registry, entry.entity)
+        });
         let expires_at = now + linger_seconds;
         if !expires_at.is_finite() {
             return;
@@ -133,9 +149,16 @@ impl HostOverlayFactTracker {
         });
     }
 
-    fn prune(&mut self, registry: &EntityRegistry, replicable: &ReplicableSet, now: f64) {
+    fn prune(
+        &mut self,
+        registry: &EntityRegistry,
+        allocator: &NetworkIdAllocator,
+        replicable: &ReplicableSet,
+        now: f64,
+    ) {
         self.live.retain(|entry| {
             entry.expires_at > now
+                && allocator.network_id_for_entity(entry.entity) == Some(entry.network_id)
                 && replicable.contains(entry.entity)
                 && eligible(registry, entry.entity)
         });
@@ -210,6 +233,7 @@ pub fn update_host_overlay_roster(
     tracker: &mut HostOverlayFactTracker,
     runtime: &mut ImpactPolicyRuntime,
     registry: &EntityRegistry,
+    allocator: &NetworkIdAllocator,
     replicable: &ReplicableSet,
     pool: &mut PresentationPool,
     hit_zones: &HitZoneStore,
@@ -218,11 +242,14 @@ pub fn update_host_overlay_roster(
     anim_time: f64,
 ) {
     let Some(config) = runtime.client_overlay_config() else {
-        tracker.clear();
+        tracker.clear_for_authoring();
         pool.clear_overlays();
+        if let Some(message) = tracker.publication(now) {
+            server.broadcast_presentation(message);
+        }
         return;
     };
-    tracker.prune(registry, replicable, now);
+    tracker.prune(registry, allocator, replicable, now);
     let facts = runtime.sample_damaged_enemy_overlay_facts(
         registry,
         tracker.live.iter().map(|entry| entry.entity),
@@ -284,8 +311,13 @@ impl ClientOverlayFactState {
         self.host_time_high_water = None;
     }
 
-    pub fn receive(&mut self, roster: WireOverlayRoster, max_visible: usize) -> bool {
-        if !roster.is_valid() || roster.entries.len() > max_visible {
+    /// Local template replacement cannot erase accepted ordering or expiry.
+    pub fn clear_projections(&mut self) {
+        self.projected.clear();
+    }
+
+    pub fn receive(&mut self, roster: WireOverlayRoster) -> bool {
+        if !roster.is_valid() {
             return false;
         }
         match self.roster.as_mut() {
@@ -334,11 +366,10 @@ pub fn update_client_overlay_anchors(
     local_script_time: f64,
     rtt_micros: Option<f64>,
 ) {
-    let Some(config) = config else {
-        state.clear();
+    if config.is_none() {
+        state.clear_projections();
         pool.clear_overlays();
-        return;
-    };
+    }
     let Some(roster) = state.roster.as_mut() else {
         return;
     };
@@ -352,6 +383,9 @@ pub fn update_client_overlay_anchors(
         .max(state.host_time_high_water.unwrap_or(0.0));
     state.host_time_high_water = Some(host_now);
     roster.entries.retain(|entry| entry.expires_at > host_now);
+    let Some(config) = config else {
+        return;
+    };
     state.projected.retain(|network_id, _| {
         roster
             .entries
@@ -373,7 +407,10 @@ pub fn update_client_overlay_anchors(
         let Some(&entity) = state.projected.get(&entry.enemy_id) else {
             continue;
         };
-        if !pool.upsert_authoritative_overlay(entity, config.template.clone(), config.max_visible) {
+        // The compatible local manifest may author a different K. Membership
+        // and its cap belong to the host; local configuration only styles it.
+        if !pool.upsert_authoritative_overlay(entity, config.template.clone(), roster.entries.len())
+        {
             continue;
         }
         let anchor = client_overlay_anchor(

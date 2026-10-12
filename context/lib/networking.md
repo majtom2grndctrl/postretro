@@ -35,15 +35,16 @@ Four channels, fixed layout, agreed by both peers (the layout is folded into the
 | Control | reliable-ordered | join traffic both ways: compatibility declarations and join seed client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input/activation commands, HIT declarations, repair/acks and time sync; host activation outcomes, shot verdicts and observer weapon cues |
-| Presentation | unreliable | host-addressed presentation to one client: passive events (damage numbers, damaged-enemy facts) and player-addressed presentation commands |
+| Presentation | unreliable | participation-epoch-framed host presentation: disposable damage-number spawns, recoverable damaged-enemy rosters, and player-addressed presentation commands |
 
 Reliability is matched to the data: control state and client→server repair/ack traffic must arrive ordered; snapshots are disposable because missing entity or state baselines are repaired by explicit refresh requests.
-Presentation is a separate event lane: it is addressed to one client, fire-and-forget,
-and never participates in ack, resend, reconciliation, or participation-epoch
-bookkeeping. A lost packet simply produces no cosmetic, and a late joiner receives no
-buffered event.
-The host's frame bridge is bounded and keeps the oldest events in a burst. Overflow
-drops the newest events silently; memory stays bounded. Clients reject non-finite presentation anchors before local intake.
+Presentation is an unreliable lane, and every payload is framed by the current
+participation epoch. Disposable damage-number spawns and private commands are offered
+once: they have no per-message ack, resend, replay, or history. A lost payload produces
+no cosmetic, and a late joiner receives no buffered event. The host's bounded frame
+bridge keeps the oldest disposable events in a burst and silently drops newer events on
+overflow. Damaged-enemy rosters are bounded separately and recover from complete-state
+repairs. Clients reject non-finite presentation anchors before local intake.
 
 ## Wire/codec invariants
 
@@ -168,7 +169,7 @@ The digest is deliberately not a hash of the compiled level bytes. That would tu
 
 ### Presentation events vs. replicated state
 
-Combat feedback the player reads and forgets — floating damage numbers and damaged-enemy health or shield facts — is **presented, not replicated**. The host sends it as transient events on a dedicated unreliable channel; loss and reordering are acceptable. Impact-policy `present` spawns (damage numbers) reach the listen host and every currently participating client, including enemy-on-enemy hits and impacts without a source. Each spawn is offered to transport once even if local rendering skips intake; held/demoted clients receive nothing, and late joiners get no replay. Personal damage-number display preferences are deferred. Damaged-enemy overlays use recoverable shared expiring state, as below; XP/reward ownership and player-event audiences are unchanged. Enemy health and state stay host-only. Clients display the pushed facts without simulating them, so cosmetics never enter a digest or block a join.
+Combat feedback is presentation, not gameplay replication. Floating damage-number spawns are disposable events: the host offers each once to the listen host and every participating client, even if local rendering skips intake, including for enemy-on-enemy hits and impacts without a source. Loss or reordering may omit or reorder a number; held/demoted clients receive none, and late joiners get no replay. Personal damage-number display preferences are deferred. Damaged-enemy health and shield bars use bounded, recoverable shared expiring state, as below. XP/reward ownership and player-event audiences retain their existing contracts. Enemy health and state stay host-only; clients display host-sampled bar facts without simulating them, so these cosmetics do not enter a digest or block a join.
 
 **Impact bursts follow the same rule: one per contact on every peer, spawned locally.** The built-in spark burst never crosses the wire. The firing peer's own simulation spawns it: the host's local fire, or the client's predicted hitscan and projectile contact, gated like its `impact` event, so a dry or silent pull shows none and a later rejection does not retract it. Every other client spawns it from the reliable observer impact cue's contacts, using each contact's normal, and the host spawns it for a client's shot at HIT ingestion from the validated contacts. One route per peer is the invariant: splash sends no Presentation-channel burst, since it would double the cue's. An impact that publishes no cue (no `shot_id`, or more contacts than a cue carries) shows no burst to observers.
 
@@ -184,19 +185,26 @@ The dedicated unreliable Presentation lane carries complete sorted rosters
 (`WireOverlayRoster`), including revision, publication script time, original hit
 time and expiry. Changes publish at most ten times per second; unchanged state
 repairs every 250 ms, including empty state. A new participant receives the next
-current publication with remaining lifetime. Clients retain only the latest
-roster (at most authored K, hard wire limit 64), wait for entity baselines and the
-existing snapshot/RTT presentation clock, and project facts onto local display
-copies. They retain no Health or damage authority. Older revisions cannot
-resurrect removals; equal-revision repair cannot restart expiry. A monotonic
-presentation-clock high-water mark prevents clock re-anchoring from reviving a
-bar. Pools project the selection without applying another cap ranking or timer.
+current publication with remaining lifetime. The host applies its authored cap K
+once. Clients accept the host's complete roster up to the hard wire limit of 64,
+even when compatible local cosmetic configuration specifies a different K; they
+do not reject or re-cap host membership. They wait for entity baselines and the
+existing snapshot/RTT presentation clock, then project facts onto local display
+copies using local templates, anchors and accessibility settings. They retain no
+Health or damage authority. Older revisions cannot resurrect removals;
+equal-revision repair cannot restart expiry. A monotonic presentation-clock
+high-water mark prevents clock re-anchoring from reviving a bar. Pools project
+the selection without applying another cap ranking or timer. A compatible
+cosmetic-only refresh within the same participation rebuilds local projections
+while preserving revision and expiry fences; level and participation resets
+clear them.
 
-All Presentation payloads, including disposable damage-number spawns and private
-commands, carry the existing participation epoch. The client accepts only its
-active epoch, so packets from before demotion are rejected after re-promotion.
-This framing adds no replay or reliability to disposable events. XP/reward
-ownership, hit confirmation and private player feedback retain their audiences.
+All Presentation payloads, including disposable damage-number spawns, recoverable
+rosters and private commands, carry the existing participation epoch. The client
+accepts only its active epoch, so packets from before demotion are rejected after
+re-promotion. Epoch framing adds no per-message reliability or replay to disposable
+events; roster recovery comes from complete-state repair. XP/reward ownership, hit
+confirmation and private player feedback retain their audiences.
 
 **The player's damage bearing is the declared exception (decided, not yet built).** It is transient feedback, yet it rides owner-private replicated slots, never the Presentation channel, and adds no message kind. It is a continuous fact a HUD binds, not a one-shot command: a per-owner slot binds directly to a HUD widget and holds the latest value until the next hit. The host computes, at the damage chokepoint, a per-owner latest bearing in a frame the client can re-project, a source-known flag (damage need not have a spatial source — `entity_model.md` §7c), and a recency signal. Slots reach the client at snapshot cadence carrying only the latest value, so recency changes on every hit and holds until the next — a count or elapsed time, never a one-tick pulse a snapshot can straddle. Within one tick the last-applied hit wins. The owning client re-projects the bearing against its current view every frame into a client-local, unreplicated, readonly slot. A non-owning client never receives it. The mod HUD draws the indicator; the engine publishes the fact, not the policy.
 

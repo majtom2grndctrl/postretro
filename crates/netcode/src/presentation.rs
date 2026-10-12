@@ -135,9 +135,7 @@ pub fn ingest_client_presentation_messages(
                 });
             }
             ServerPresentationPayload::OverlayRoster(roster) => {
-                if let Some(config) = overlay_config {
-                    overlay_state.receive(roster, config.max_visible);
-                }
+                overlay_state.receive(roster);
             }
         }
     }

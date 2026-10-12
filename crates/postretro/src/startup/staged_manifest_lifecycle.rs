@@ -42,8 +42,8 @@ fn clear_replaced_presentation_overlay_state(
     host_facts: &mut crate::netcode::HostOverlayFactTracker,
 ) {
     pool.clear_overlays();
-    client_facts.clear();
-    host_facts.clear();
+    client_facts.clear_projections();
+    host_facts.clear_for_authoring();
 }
 
 /// Renderer bloom profile a staged manifest result commits, if any.
@@ -788,10 +788,9 @@ mod tests {
         }
     }
 
-    // Regression: replacing overlay templates cleared the pool but retained a
-    // client terminal/pending fact stream that could target the new template.
+    // Regression: a cosmetic reload erased same-participation roster ordering.
     #[test]
-    fn overlay_authoring_replacement_clears_client_fact_lifecycle() {
+    fn overlay_authoring_replacement_clears_projections_but_preserves_revision() {
         let entity = postretro_entities::EntityId::from_raw(4);
         let mut pool = crate::presentation_pool::PresentationPool::new(1);
         pool.refresh_overlay(
@@ -802,20 +801,33 @@ mod tests {
             u64::from(entity.to_raw()),
         );
         let mut client_facts = crate::netcode::ClientOverlayFactState::default();
-        assert!(client_facts.receive(
-            postretro_net::wire::WireOverlayRoster {
+        assert!(
+            client_facts.receive(postretro_net::wire::WireOverlayRoster {
                 revision: 7,
                 server_script_time: 1.0,
                 entries: Vec::new(),
-            },
-            1,
-        ));
+            },)
+        );
         let mut host_facts = crate::netcode::HostOverlayFactTracker::default();
 
         clear_replaced_presentation_overlay_state(&mut pool, &mut client_facts, &mut host_facts);
 
         assert_eq!(pool.live_counts(), (0, 0));
-        assert_eq!(client_facts.revision(), None);
+        assert_eq!(client_facts.revision(), Some(7));
         assert_eq!(client_facts.pending_len(), 0);
+        let stale = postretro_net::wire::WireOverlayRoster {
+            revision: 6,
+            server_script_time: 1.1,
+            entries: Vec::new(),
+        };
+        assert!(
+            !client_facts.receive(stale.clone()),
+            "cosmetic replacement preserves ordering"
+        );
+        client_facts.clear();
+        assert!(
+            client_facts.receive(stale),
+            "true participation reset starts a fresh lifecycle"
+        );
     }
 }

@@ -1621,6 +1621,63 @@ mod tests {
         }
     }
 
+    // Regression: accepted negative shield expressions must reach presentation normalization in both runtimes.
+    #[test]
+    fn negative_shield_overlay_factories_match_across_sdk_runtimes() {
+        let js = r#"
+            function setupLevel() {
+              const template = definePresentationTemplate("enemyStatus", {
+                root: { kind: "text", content: "enemy", fontSize: 12, color: [1,1,1,1] },
+                lifetimeMs: 500, motion: { rise: 0, easing: "linear" },
+                fade: { startMs: 0 }, spawnScatter: { radius: 0 },
+                worldAnchor: { socket: "head", offsetY: 0 },
+              });
+              return { presentationOverlays: defineOverlay({
+                over: damagedEnemies({ lingerMs: 500, hideAtFull: true, shield: {
+                  value: () => runtime.constant(-1), max: () => runtime.constant(100),
+                }}), template, maxVisible: 2,
+              }) };
+            }
+        "#;
+        let luau = r#"
+            local P = require("postretro")
+            local Ui = require("postretro/ui")
+            function setupLevel()
+              local template = Ui.definePresentationTemplate("enemyStatus", {
+                root = { kind = "text", content = "enemy", fontSize = 12, color = {1,1,1,1} },
+                lifetimeMs = 500, motion = { rise = 0, easing = "linear" },
+                fade = { startMs = 0 }, spawnScatter = { radius = 0 },
+                worldAnchor = { socket = "head", offsetY = 0 },
+              })
+              return { presentationOverlays = Ui.defineOverlay({
+                over = Ui.damagedEnemies({ lingerMs = 500, hideAtFull = true, shield = {
+                  value = function() return P.runtime.constant(-1) end,
+                  max = function() return P.runtime.constant(100) end,
+                }}), template = template, maxVisible = 2,
+              }) }
+            end
+        "#;
+        let world = || Rc::new(BuildWorld::new(&table()).unwrap());
+        let stubs = || Rc::new(RefCell::new(BTreeSet::new()));
+        let ts = evaluate_quickjs(js, Path::new("negative-shield.ts"), world(), stubs()).unwrap();
+        let lua = evaluate_luau(
+            luau,
+            Path::new("negative-shield.luau"),
+            Path::new("."),
+            world(),
+            stubs(),
+        )
+        .unwrap();
+        assert_eq!(ts, lua);
+        assert_eq!(
+            ts["presentationOverlays"]["over"]["shield"],
+            json!({
+                "value": { "op": "const", "value": -1 },
+                "max": { "op": "const", "value": 100 },
+            })
+        );
+    }
+
     #[test]
     fn quickjs_collects_static_and_dynamic_membership_from_light_handles() {
         let source = r#"

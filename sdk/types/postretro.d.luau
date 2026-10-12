@@ -1398,7 +1398,7 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
-  --- One fact-driven enemy-status overlay. Host/single-player presentation only; arrays and malformed descriptors are ignored with a warning.
+  --- One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.
   presentationOverlays: PresentationOverlay?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
@@ -3167,7 +3167,7 @@ export type PostretroUiModule = {
     text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
     bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
   },
-  --- Build a target-keyed host/single-player damaged-enemy source.
+  --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.
   defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,

@@ -73,9 +73,8 @@ pub struct DamagedEnemyOverlayFact {
     pub alive: bool,
 }
 
-/// The post-tick handoff from the host overlay lifecycle to the remote
-/// presentation sender. It contains no wire identity: only netcode owns the
-/// `EntityId` to non-recycled `NetworkId` conversion.
+/// Damage edges and sampled facts from the local single-player overlay update.
+/// Hosted selection consumes damage synchronously and samples its roster separately.
 #[derive(Debug, Default)]
 pub struct DamagedEnemyOverlayFrame {
     pub damage: Vec<DamagedEnemyOverlayDamage>,
@@ -979,7 +978,7 @@ fn sample_overlay_fact(
         let max = number_from_ir(eval_value(&shield.max, &binding.scope));
         fact.has_shield = max.is_finite() && max > 0.0;
         if fact.has_shield {
-            fact.shield_fraction = fraction_or_zero(value, max);
+            fact.shield_fraction = fraction_or_zero(value, max).max(0.0);
         }
     }
     fact.alive = true;

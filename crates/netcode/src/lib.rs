@@ -6012,8 +6012,8 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            27,
-            "presentation state, bindings, clock and positioned sounds require wire version 27"
+            28,
+            "participation-framed shared roster requires wire version 28"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,

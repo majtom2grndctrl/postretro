@@ -5331,7 +5331,7 @@ impl App {
                 &mut script_ctx.presentation_overrides.borrow_mut(),
             );
         }
-        let accepted = netcode::host_ingest_ready_hit_declarations(
+        netcode::host_ingest_ready_hit_declarations(
             server,
             &mut registry,
             &self.collision_world,
@@ -5360,8 +5360,7 @@ impl App {
             },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
-        );
-        accepted
+        )
     }
 
     fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {

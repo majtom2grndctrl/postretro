@@ -156,7 +156,7 @@ declare module "postretro/ui" {
   }>;
   /** TypeScript derives the stable id from a direct const binding. */
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
-  /** Build an event-driven target source for a host/single-player status overlay. */
+  /** Build a damaged-enemy source selected by the host in co-op or locally in single player. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
   /** Bind an overlay source to a world-anchored presentation template. */
   export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;

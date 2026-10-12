@@ -1427,13 +1427,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let session = app.session.as_mut().expect("running session installed");
         let registry = script_ctx.registry.borrow();
         if let Some(netcode::NetEndpoint::Host {
-            server, replicable, ..
+            server,
+            allocator,
+            replicable,
+            ..
         }) = session.net_endpoint.as_mut()
         {
             netcode::update_host_overlay_roster(
                 &mut session.host_overlay_fact_tracker,
                 &mut session.scripting.impact_policy_runtime,
                 &registry,
+                allocator,
                 replicable,
                 &mut session.presentation_pool,
                 &session.hit_zone_store,

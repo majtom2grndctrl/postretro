@@ -2996,14 +2996,15 @@ pub(crate) mod tests {
                 fade: postretro_foundation::PresentationFade::default(),
                 scatter_radius: 0.0,
             });
-            assert!(session.client_overlay_facts.receive(
-                postretro_net::wire::WireOverlayRoster {
-                    revision: 91,
-                    server_script_time: 1.0,
-                    entries: Vec::new(),
-                },
-                1,
-            ));
+            assert!(
+                session
+                    .client_overlay_facts
+                    .receive(postretro_net::wire::WireOverlayRoster {
+                        revision: 91,
+                        server_script_time: 1.0,
+                        entries: Vec::new(),
+                    },)
+            );
         }
 
         let slots_before = slot_snapshot(&app);

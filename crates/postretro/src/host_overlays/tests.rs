@@ -107,7 +107,6 @@ fn normal_host_damage_registers_same_tick_spawn_without_local_notice_backlog() {
         .expect("same-tick damage stamps canonical identity");
     assert_eq!(tracker.tracked_len(), 1);
     assert!(runtime.take_damaged_enemy_overlay_damage().is_empty());
-    drop(identities);
     assert!(tracked.contains(&target));
     assert_eq!(allocator.network_id_for_entity(target), Some(network_id));
 }
@@ -143,6 +142,5 @@ fn remote_hit_registration_covers_fresh_splash_targets_during_immutable_intake()
     assert_eq!(tracker.tracked_len(), 2);
     assert!(runtime.take_damaged_enemy_overlay_damage().is_empty());
     drop(intake_allocator);
-    drop(identities);
     assert_eq!(tracked.len(), 2);
 }

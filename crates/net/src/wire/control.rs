@@ -382,8 +382,8 @@ pub(crate) struct ServerControlFrame {
     pub payload: Option<Vec<u8>>,
 }
 
-/// Transport-owned frame around Snapshot and client Input payloads. The engine
-/// payload remains opaque so participation lifecycle gating stays registry-blind.
+/// Transport-owned frame around Snapshot, client Input, and server Presentation
+/// payloads. Engine payloads remain opaque so participation gating stays registry-blind.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub(crate) struct ParticipationFrame {
     pub participation_epoch: u64,

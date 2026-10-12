@@ -99,6 +99,7 @@ impl<'a> HostOverlayIdentities<'a> {
         };
         tracker.record_damage(
             registry,
+            &self.allocator(),
             network_id,
             damage,
             config.linger_seconds,

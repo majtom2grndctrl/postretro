@@ -53,7 +53,7 @@ export type PostretroUiModule = {
     text: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
     bool: (name: string, options: { format: string? }?) -> FactBindRef & { format: string? },
   },
-  --- Build a target-keyed host/single-player damaged-enemy source.
+  --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
   --- Bind an overlay source to a socket-anchored presentation template.
   defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,

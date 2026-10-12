@@ -181,11 +181,11 @@ Automated:
 
 - [ ] 24. Host, two clients, NPC and absent-source hits produce the same bounded damaged-enemy health/shield roster and fractions, including K+1 equal-time hits and a later equal-fraction hit refreshing the original host expiry. Loss, duplication, reorder, delayed baseline, death before baseline, rendering stalls and level changes cannot permanently strand stale bars or revive retired targets. Late join/re-promotion restore only still-live bars with remaining lifetime. Selection/fact reads run once per update, with state bounded by authored K plus bounded delivery bookkeeping; measured encoded bytes and update/repair cadence cover representative player/target counts. No client authority components, personal XP or private HUD are broadened.
 
-Manual (owner, Mac↔Windows on `content/dev/maps/splash-damage-demo.map` and the co-op test fixture from Task 12):
+External proof (owner, Mac↔Windows on `content/dev/maps/splash-damage-demo.map` and the co-op test fixture from Task 12; M3 accepts automated proof as noted below):
 
 - [ ] M1. Client pistol kills on dummies credit XP to the client; a dummy either player kills plays its death animation and disappears after its linger on both machines; client impact bursts land on the dummy; the client can hit the invisible health-only target. A health-bearing weapon disappears as a world item when either player picks it up, remains usable after holstering and re-equipping, and returns at its drop pose with retained state on both machines. Damage numbers and recently damaged-enemy health/shield bars from either player's hits and enemy-on-enemy hits appear consistently on both machines, including still-live bars on late join; swap host/client roles (owner amendments, 2026-10-11).
 - [ ] M2. A trigger dims lights, changes fog, stops an emitter, switches a prop's animation state, and changes a networked lit prop's light for both players, including a client that joins after the trigger; a looping light pulses in visible sync on both screens.
-- [ ] M3. A pressure-plate flash plays only for the player who stepped on it; its alarm sound plays for both.
+- [ ] M3. A pressure-plate flash plays only for the player who stepped on it; its alarm sound plays for both. Owner accepts existing automated producer→transport→presentation-intake integration coverage instead of an external run (2026-10-11). This does not claim hardware playback was manually observed.
 - [ ] M4. E16 M1 (level-up and scald on the affected machine only; vignette local, no delay) and E16 M2 (flash limiter and reduce motion apply to a forwarded flash and shake on a client).
 
 ## Tasks

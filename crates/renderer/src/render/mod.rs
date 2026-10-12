@@ -15,6 +15,7 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_surface;
 mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
@@ -112,6 +113,8 @@ mod shadow_reach_probes;
 mod shadow_world_draws;
 #[cfg(test)]
 mod shadow_world_frame_tests;
+#[cfg(test)]
+mod fluid_surface_frame_test;
 #[cfg(test)]
 mod visible_span_frame_tests;
 
@@ -216,6 +219,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 // `render::*` paths (external callers and sibling render modules depend on these).
 pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
+pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use renderer_geometry::level_world_to_geometry;

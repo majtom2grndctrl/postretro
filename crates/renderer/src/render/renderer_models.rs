@@ -462,7 +462,7 @@ fn log_texture_install_timing(
     );
 }
 
-fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32; 2]> {
+pub(super) fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32; 2]> {
     textures
         .iter()
         .map(|tex| [tex.diffuse_texture.width(), tex.diffuse_texture.height()])

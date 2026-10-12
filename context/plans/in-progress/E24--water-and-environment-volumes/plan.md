@@ -58,82 +58,82 @@ Source re-read by three read-only agents at 08822b8a4. No Decision premise is fa
 ## AC-to-proof
 Row ids follow the brief's Acceptance order.
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| Q1 | point inside/on-face/outside; contents mask | `volume_point_query_reports_inside_on_face_and_outside…`, `fluid_volume_is_reported_under_a_fluid_mask…` | proven (T2) |
-| Q2 | pool + room fields; equal-priority smaller; identical → earlier; none → defaults | `pool_inside_lower_priority_low_gravity_room…`, `resolve_gravity_prefers_smaller_volume…`, `…breaks_exact_tie…`, `…no_volume_returns_level_defaults` | proven (T2) |
-| Q3 | large high-priority beats small low-priority | `resolve_gravity_prefers_higher_priority_over_smaller_volume` | proven (T2) |
-| Q4 | two-brush summed volume loses to single brush | `resolve_gravity_ranks_by_summed_brush_volume_across_brushes` | proven (T2) |
-| Q5 | zero volumes → empty BVH, defaults | `zero_volume_set_builds_an_empty_tree…` | proven (T2) |
-| Q6 | BVH ≡ brute force, seeded, faces and AABB boundaries | `tree_queries_match_brute_force_scan_over_random_overlapping_volumes`, `…over_a_dense_volume_field` | proven (T2) |
-| Q7 | immersion 0/1/proportional; floating block; wading; two fluids | `immersion_is_zero_with_feet_at_fluid_top…`, `floating_fluid_block_counts_only…`, `wading_capsule…`, `capsule_spanning_two_fluids…` | proven (T2) |
-| Q8 | side overlap only → dry | `capsule_whose_side_overlaps_a_fluid…resolves_dry` | proven (T2) |
-| Q9 | volumes built before digest and first tick; second level clears first (P8) | `level_install_builds_environment_volumes_before_parity_digest_and_any_tick`, `installing_a_second_level_leaves_none…` | proven (T3b) |
-| C1 | gravity/push shapes compile or fail naming entity | `prl-build` bin test `environment_volume*` | proven (3a) |
-| C2 | volume leaves cells/portals/collision/navmesh identical | `level-compiler --test environment_volumes_compile` | proven (3a) |
-| C3 | other PRL sections byte-identical, texture tables gain only appended fluid textures (restated); section carries record | `environment_volumes_compile` doorway test + `fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section` | proven (3a, T9) |
-| C4 | buried and sibling-shared faces emit no surface | `fluid_faces_flush_against_solid_or_shared_with_a_sibling_emit_no_surface` | proven (T9) |
-| C5 | partly buried face emits exposed part | `fluid_face_partly_flush_against_solid_emits_only_its_exposed_part` | proven (T9) |
-| C6 | blank `fluid`/`gravity` fails naming entity | `prl-build` bin test `environment_volume*` | proven (3a) |
-| M1 | enter at/above enterDepth, leave below exitDepth, no toggling between | `swim_enters_at_enter_depth_and_leaves_below_exit_depth_without_toggling_between`, `immersion_exactly_at_enter_depth_enters_swim` | proven (T7) |
-| M2 | exactly exitDepth stays in swim | `immersion_exactly_at_exit_depth_stays_in_swim` | proven (T7) |
-| M3 | viscosity drag only while swimming | `no_input_swimmer_loses_speed_faster_in_the_more_viscous_fluid`, `wading_below_enter_depth_walks_identically…` | proven (T7) |
-| M4 | fluid jump eye-out; none submerged | `fluid_jump_with_the_tick_eye_out_sets_jump_velocity_and_leaves_swim` | proven (T7) |
-| M5 | re-entry latch (P10) | `fluid_jump_latches_swim_reentry_until_immersion_falls_below_exit_depth` | proven (T7) |
-| M6 | exit + jump same tick → jump | `fluid_jump_wins_over_exit_on_the_same_tick` | proven (T7) |
-| M7 | sink scales with gravity; current drift | `swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity`, `…drifts_with_the_current` | proven (T7) |
-| M8 | crouch/dash/slide enter swim, standing capsule | `crouching_dashing_and_sliding_players_enter_swim_with_a_standing_capsule` | proven (T7) |
-| M9 | no swim block walks pool floor; warns once | `player_without_a_swim_block_walks_the_pool_floor`, `a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descriptor` | proven (T7) |
-| M10 | jump uses tick eye, not camera eye (P5) | `fluid_jump_keys_on_the_tick_eye_never_the_presented_camera_eye` | proven (T7) |
-| M11 | swim out of floating block bottom → level gravity | `swimming_down_out_of_a_floating_block_leaves_swim_and_level_gravity_applies` | proven (T7) |
-| M12 | jump into floating block bottom → swim | `jumping_up_into_a_floating_block_enters_swim_once_immersion_reaches_enter_depth` | proven (T7) |
-| M13 | low/zero gravity volume; leaving → level gravity; agent too | `physics` `player_falls_at_volume_gravity…`, `player_keeps_vertical_velocity…`; `sim` `agent_falls_at_volume_gravity…` | proven (T1) |
-| M14 | push lift-off, no ground-stick snap, terminal cap; weak push stays grounded | `grounded_player_lifts_off_and_rises_in_updraft…`, `tall_updraft_caps_speed_along_push…`, `…stays_grounded_under_upward_push_weaker…` | proven (T4) |
-| M15 | sideways push drift settles; not clipped by air cap | `standing_player_drifts_with_sideways_push…`, `airborne_push_grows_past_air_cap_with_input_held_until_terminal_speed`, `drift_carries_out_of_wind_until_landing…`, `wall_absorbs_push_drift` | proven (T4) |
-| M16 | slide gets no push slope boost | `slide_in_push_volume_gets_no_slope_boost_from_push` | proven (T4) |
-| M17 | agent ignores push; low gravity; upward-gravity agent grounded/holds vy | `agent_in_push_volume_walks_its_path_unaffected`, `grounded_agent_in_upward_gravity_volume_stays_grounded`, `agent_in_upward_gravity_volume_keeps_vertical_velocity` | proven (T4) |
-| M18 | upward `initialGravity` unchanged behavior | `upward_level_gravity_keeps_grounded_player_grounded_until_it_jumps` | proven (T4) |
-| M19 | particle push regardless of buoyancy | particle-pool step test | **waits on particle pool** |
-| M20 | crossing tick integrates volume gravity, next tick level (P1); agent too | `physics` `player_crossing_out_of_gravity_volume…`; `sim` `agent_crossing_out_of_gravity_volume…` | proven (T1) |
-| M21 | particle low gravity × buoyancy; drift out; zero buoyancy floats | particle-pool step test | **waits on particle pool** |
-| M22 | particle crossing step uses post-step gravity (P2) | particle-pool step test | **waits on particle pool** |
-| M23 | setGravity outside volumes only; initialGravity-only map; old PRL recompile message | `set_gravity_changes_gravity_outside_volumes_and_never_inside…`, `level_install_seeds_script_gravity_from_the_environment_header`, `load_prl_without_environment_section_fails_with_recompile_message` | proven (T3b) |
-| M24 | two setGravity one tick → later wins; volume holds | `two_set_gravity_calls_in_one_turn_leave_the_later_value_and_the_volume_holds` | proven (T3b) |
-| N1 | harness: fluid + low-gravity crossings zero corrections, incl. replay spanning both | `low_gravity_volume_crossings…` (T1), `swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link` | proven (T1, T7) |
-| N2 | harness: Swim-acked replay exits; Normal-acked replay enters (P3, P4) | `swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link` (P3/P4 windows asserted), `fluid_jump_and_reentry_latch_reconcile_without_correction_under_light_link` | proven (T7) |
-| N3 | digest changes on shape/priority/gravity/fluid name; not on default gravity/presentation | `level_content_digest_changes_with_environment_volume_shape_priority_gravity_push_and_fluid`, `…ignores_level_default_gravity` | proven (T3b) |
-| N4 | map-order swap changes digest; surface texture/UV not; skips named | `level_content_digest_changes_when_two_environment_volumes_swap_map_order`, `…ignores_environment_surface_texture_and_uv` | proven (T3b) |
-| N5 | join with differing level gravity predicts host value, zero corrections | `client_joining_host_with_different_level_gravity_predicts_host_value_without_correction` | proven (T5) |
-| N6 | mid-level setGravity reaches client, ≤ 1 correction | `host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction`, `host_set_gravity_in_a_catch_up_frame_reaches_client_with_exactly_one_correction` | proven (T5) |
-| N7 | harness seeds different gravity and fluids; installs via tuning path | `LoopbackHarness::with_level_gravity`; `client_resolves_fluids_only_through_the_host_table_installed_by_tuning` | proven (T5, 6b) |
-| N8 | client tint differs → host viscosity, own tint; no `water` → no tint, still swims | `client_predicts_host_viscosity_and_presents_its_own_fluid_declaration`, `fluid_presentation_resolves_the_active_fluid_against_the_local_manifest` | proven (6b) |
-| N9 | host manifest reload adds fluid → no longer dry, host and client | `a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry` (host), `host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry_on_the_client` | proven (6a, 6b) |
-| N10 | client numbers/order/absence differ → host values, zero corrections | `client_with_differing_fluid_declarations_resolves_every_point_like_the_host`, `client_with_differing_fluid_declarations_swims_with_zero_corrections` | proven (6b, T7) |
-| N11 | host lacks fluid → dry on client even if client declares it | `volume_naming_a_fluid_the_host_lacks_is_dry_on_the_client_even_when_declared_locally` | proven (6b) |
-| N12 | undeclared fluid loads dry, warns with entity index and name | `a_fluid_volume_naming_an_undeclared_fluid_loads_dry_and_warns_naming_entity_and_fluid` | proven (6a) |
-| N13 | fluid declaration changes leave mod digest unchanged | `digest_ignores_adding_removing_reordering_and_retuning_fluids` | proven (6a) |
-| P1 | splash counts: air→fluid, out, floating block, blocked, none | `hitscan_from_air_into_fluid…`, `…from_inside_fluid_out…`, `…through_a_floating_fluid_block…`, `…blocked_before…`, `…never_crosses…` | proven (T12) |
-| P2 | pool floor one splash (P6); two-brush shared face none (P7); fact fields | `hitscan_stopping_on_a_pool_floor_emits_one_splash_at_the_top`, `…two_brush_pool_emits_no_splash_at_the_shared_face` | proven (T12) |
-| P3 | origin on face no splash; adjacent entities two | `hitscan_from_an_origin_on_a_fluid_face…`, `hitscan_across_two_adjacent_fluid_entities…` | proven (T12) |
-| P4 | muffle on world bus; UI/music unfiltered; no per-voice filter; reversal smooth; no kira in public API | audio `world_muffle_filters_the_sfx_bus…`, `…no_per_voice_filter`, `a_muffle_toggle_reversed_mid_ramp_turns_back_without_a_step`; xtask `audio_public_api_names_no_kira_type` | proven (11a) |
-| P5 | entry/exit sounds once per transition; never bobbing; never replay | `swim_sounds_play_once_per_transition_and_never_while_bobbing_between_thresholds`, `swim_edges_play_the_fluids_local_enter_and_exit_sounds_at_the_pawns_eye`, `reconcile_replay_across_swim_edges_adds_no_swim_emission` | proven (11b) |
-| P6 | fluid tint composes over mod tint; `screen.*` untouched | `fluid_tint_composes_over_the_mods_screen_tint_and_never_writes_a_screen_slot`, `fluid_tint_packs_beside_the_mod_tint_and_leaves_it_unchanged` | proven (11a) |
-| P7 | bob toggles ≤ 1; 5 Hz → ≤ 3 flashes/s on presented time; limiter off still ≤ 1 and ramps | `eye_bobbing_across_the_surface_at_dev_head_bob_toggles_the_tint_at_most_once`, `eye_oscillating_past_the_band_at_5hz_presents_at_most_three_tint_flashes_a_second`, `with_the_limiter_off_the_bob_toggles_at_most_once_and_each_toggle_ramps` | proven (11a) |
-| P8 | grep gates: projectile flight no resolve; FGD keys name no swim field | xtask `projectile_flight_makes_no_environment_query`, `volume_fgd_keys_name_no_swim_field` | proven (T12) |
-| P9 | Scripting surface fixture TS + Luau; negative viscosity / bad depths rejected naming field | `fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface`, `…negative_water_viscosity_drops_water_naming_the_field`, `…exit_depth_at_enter_depth_is_rejected_naming_exit_depth`; 6a validation tests | proven (6a, T13, review: warn-and-drop per Q4) |
-| P10 | out-of-range fluid / duplicate rejected with warning; first stands | `tests::fluids` (out-of-range viewTint/muffle/surfaceOpacity, duplicate; TS + Luau, log capture) | proven (6a) |
-| P11 | fluids + swim land in content/dev manifest and descriptor, TS + Luau; mod id kept | `dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_id`, `fluids_swim_twins_run_as_mod_manifests…` | proven (T13) |
-| S1 | slots read dry/swimming values; two players own HUD; host `byPlayer` | `each_machine_reads_and_crosses_on_its_own_players_swim_slots`, `swim_slots_read_each_pawns_dry_and_swimming_values_from_host_movement` | proven (T8) |
-| S2 | `players().on(becomes/ceases)` per player; first sight fires once | `swim_player_events_fire_once_per_player_per_edge_and_read_that_players_immersion` | proven (T8) |
-| S3 | local `onStateCrossing` fires only for own player | `each_machine_reads_and_crosses_on_its_own_players_swim_slots` | proven (T8) |
-| S4 | immersion component never read by intents/replay/merge | `a_stale_immersion_component_changes_no_prediction_replay_or_merge` | proven (T8) |
-| S5 | E16 catalog-derived per-player tests cover both slots | `player_slot_lookup_test.rs` catalog-derived tests with `Swimming`/`Immersion` arms | proven (T8) |
-| X1 | fluid faces look and composite right | owner, in-engine | manual |
-| X2 | tint/muffle on/off, no flicker or pumping | owner, in-engine | manual |
-| X3 | swim and fluid-jump playtest | owner, in-engine | manual |
-| X4 | low-gravity room playtest with pool and floating block | owner, in-engine | manual |
-| X5 | co-op client swims and crosses gravity, no visible corrections | owner, in-engine | manual |
-| X6 | stress run: bodies < 0.25 ms/tick, particles < 0.5 ms/frame, BVH < 2 ms | owner's Mac, release + dev-tools | manual; particle metric **waits on particle pool** |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| Q1 | point inside/on-face/outside; contents mask | `volume_point_query_reports_inside_on_face_and_outside…`, `fluid_volume_is_reported_under_a_fluid_mask…` | proven (T2) | pass |
+| Q2 | pool + room fields; equal-priority smaller; identical → earlier; none → defaults | `pool_inside_lower_priority_low_gravity_room…`, `resolve_gravity_prefers_smaller_volume…`, `…breaks_exact_tie…`, `…no_volume_returns_level_defaults` | proven (T2) | pass |
+| Q3 | large high-priority beats small low-priority | `resolve_gravity_prefers_higher_priority_over_smaller_volume` | proven (T2) | pass |
+| Q4 | two-brush summed volume loses to single brush | `resolve_gravity_ranks_by_summed_brush_volume_across_brushes` | proven (T2) | pass |
+| Q5 | zero volumes → empty BVH, defaults | `zero_volume_set_builds_an_empty_tree…` | proven (T2) | pass |
+| Q6 | BVH ≡ brute force, seeded, faces and AABB boundaries | `tree_queries_match_brute_force_scan_over_random_overlapping_volumes`, `…over_a_dense_volume_field` | proven (T2) | pass |
+| Q7 | immersion 0/1/proportional; floating block; wading; two fluids | `immersion_is_zero_with_feet_at_fluid_top…`, `floating_fluid_block_counts_only…`, `wading_capsule…`, `capsule_spanning_two_fluids…` | proven (T2) | pass |
+| Q8 | side overlap only → dry | `capsule_whose_side_overlaps_a_fluid…resolves_dry` | proven (T2) | pass |
+| Q9 | volumes built before digest and first tick; second level clears first (P8) | `level_install_builds_environment_volumes_before_parity_digest_and_any_tick`, `installing_a_second_level_leaves_none…` | proven (T3b) | pass |
+| C1 | gravity/push shapes compile or fail naming entity | `prl-build` bin test `environment_volume*` | proven (3a) | pass |
+| C2 | volume leaves cells/portals/collision/navmesh identical | `level-compiler --test environment_volumes_compile` | proven (3a) | pass |
+| C3 | other PRL sections byte-identical, texture tables gain only appended fluid textures (restated); section carries record | `environment_volumes_compile` doorway test + `fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section` | proven (3a, T9) | pass |
+| C4 | buried and sibling-shared faces emit no surface | `fluid_faces_flush_against_solid_or_shared_with_a_sibling_emit_no_surface` | proven (T9) | pass |
+| C5 | partly buried face emits exposed part | `fluid_face_partly_flush_against_solid_emits_only_its_exposed_part` | proven (T9) | pass |
+| C6 | blank `fluid`/`gravity` fails naming entity | `prl-build` bin test `environment_volume*` | proven (3a) | pass |
+| M1 | enter at/above enterDepth, leave below exitDepth, no toggling between | `swim_enters_at_enter_depth_and_leaves_below_exit_depth_without_toggling_between`, `immersion_exactly_at_enter_depth_enters_swim` | proven (T7) | pass |
+| M2 | exactly exitDepth stays in swim | `immersion_exactly_at_exit_depth_stays_in_swim` | proven (T7) | pass |
+| M3 | viscosity drag only while swimming | `no_input_swimmer_loses_speed_faster_in_the_more_viscous_fluid`, `wading_below_enter_depth_walks_identically…` | proven (T7) | pass |
+| M4 | fluid jump eye-out; none submerged | `fluid_jump_with_the_tick_eye_out_sets_jump_velocity_and_leaves_swim` | proven (T7) | pass |
+| M5 | re-entry latch (P10) | `fluid_jump_latches_swim_reentry_until_immersion_falls_below_exit_depth` | proven (T7) | pass |
+| M6 | exit + jump same tick → jump | `fluid_jump_wins_over_exit_on_the_same_tick` | proven (T7) | pass |
+| M7 | sink scales with gravity; current drift | `swimmer_sinks_at_sink_speed_scaled_by_the_resolved_gravity`, `…drifts_with_the_current` | proven (T7) | pass |
+| M8 | crouch/dash/slide enter swim, standing capsule | `crouching_dashing_and_sliding_players_enter_swim_with_a_standing_capsule` | proven (T7) | pass |
+| M9 | no swim block walks pool floor; warns once | `player_without_a_swim_block_walks_the_pool_floor`, `a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descriptor` | proven (T7) | pass |
+| M10 | jump uses tick eye, not camera eye (P5) | `fluid_jump_keys_on_the_tick_eye_never_the_presented_camera_eye` | proven (T7) | pass |
+| M11 | swim out of floating block bottom → level gravity | `swimming_down_out_of_a_floating_block_leaves_swim_and_level_gravity_applies` | proven (T7) | pass |
+| M12 | jump into floating block bottom → swim | `jumping_up_into_a_floating_block_enters_swim_once_immersion_reaches_enter_depth` | proven (T7) | pass |
+| M13 | low/zero gravity volume; leaving → level gravity; agent too | `physics` `player_falls_at_volume_gravity…`, `player_keeps_vertical_velocity…`; `sim` `agent_falls_at_volume_gravity…` | proven (T1) | pass |
+| M14 | push lift-off, no ground-stick snap, terminal cap; weak push stays grounded | `grounded_player_lifts_off_and_rises_in_updraft…`, `tall_updraft_caps_speed_along_push…`, `…stays_grounded_under_upward_push_weaker…` | proven (T4) | pass |
+| M15 | sideways push drift settles; not clipped by air cap | `standing_player_drifts_with_sideways_push…`, `airborne_push_grows_past_air_cap_with_input_held_until_terminal_speed`, `drift_carries_out_of_wind_until_landing…`, `wall_absorbs_push_drift` | proven (T4) | pass |
+| M16 | slide gets no push slope boost | `slide_in_push_volume_gets_no_slope_boost_from_push` | proven (T4) | pass |
+| M17 | agent ignores push; low gravity; upward-gravity agent grounded/holds vy | `agent_in_push_volume_walks_its_path_unaffected`, `grounded_agent_in_upward_gravity_volume_stays_grounded`, `agent_in_upward_gravity_volume_keeps_vertical_velocity` | proven (T4) | pass |
+| M18 | upward `initialGravity` unchanged behavior | `upward_level_gravity_keeps_grounded_player_grounded_until_it_jumps` | proven (T4) | pass |
+| M19 | particle push regardless of buoyancy | particle-pool step test | **waits on particle pool** | deferred — waits on the particle pool (`perf-particle-sim-cost`) |
+| M20 | crossing tick integrates volume gravity, next tick level (P1); agent too | `physics` `player_crossing_out_of_gravity_volume…`; `sim` `agent_crossing_out_of_gravity_volume…` | proven (T1) | pass |
+| M21 | particle low gravity × buoyancy; drift out; zero buoyancy floats | particle-pool step test | **waits on particle pool** | deferred — waits on the particle pool (`perf-particle-sim-cost`) |
+| M22 | particle crossing step uses post-step gravity (P2) | particle-pool step test | **waits on particle pool** | deferred — waits on the particle pool (`perf-particle-sim-cost`) |
+| M23 | setGravity outside volumes only; initialGravity-only map; old PRL recompile message | `set_gravity_changes_gravity_outside_volumes_and_never_inside…`, `level_install_seeds_script_gravity_from_the_environment_header`, `load_prl_without_environment_section_fails_with_recompile_message` | proven (T3b) | pass |
+| M24 | two setGravity one tick → later wins; volume holds | `two_set_gravity_calls_in_one_turn_leave_the_later_value_and_the_volume_holds` | proven (T3b) | pass |
+| N1 | harness: fluid + low-gravity crossings zero corrections, incl. replay spanning both | `low_gravity_volume_crossings…` (T1), `swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link` | proven (T1, T7) | pass |
+| N2 | harness: Swim-acked replay exits; Normal-acked replay enters (P3, P4) | `swim_and_low_gravity_crossings_reconcile_without_correction_under_light_link` (P3/P4 windows asserted), `fluid_jump_and_reentry_latch_reconcile_without_correction_under_light_link` | proven (T7) | pass |
+| N3 | digest changes on shape/priority/gravity/fluid name; not on default gravity/presentation | `level_content_digest_changes_with_environment_volume_shape_priority_gravity_push_and_fluid`, `…ignores_level_default_gravity` | proven (T3b) | pass |
+| N4 | map-order swap changes digest; surface texture/UV not; skips named | `level_content_digest_changes_when_two_environment_volumes_swap_map_order`, `…ignores_environment_surface_texture_and_uv` | proven (T3b) | pass |
+| N5 | join with differing level gravity predicts host value, zero corrections | `client_joining_host_with_different_level_gravity_predicts_host_value_without_correction` | proven (T5) | pass |
+| N6 | mid-level setGravity reaches client, ≤ 1 correction | `host_set_gravity_mid_level_reaches_joined_client_with_exactly_one_correction`, `host_set_gravity_in_a_catch_up_frame_reaches_client_with_exactly_one_correction` | proven (T5) | pass |
+| N7 | harness seeds different gravity and fluids; installs via tuning path | `LoopbackHarness::with_level_gravity`; `client_resolves_fluids_only_through_the_host_table_installed_by_tuning` | proven (T5, 6b) | pass |
+| N8 | client tint differs → host viscosity, own tint; no `water` → no tint, still swims | `client_predicts_host_viscosity_and_presents_its_own_fluid_declaration`, `fluid_presentation_resolves_the_active_fluid_against_the_local_manifest` | proven (6b) | pass |
+| N9 | host manifest reload adds fluid → no longer dry, host and client | `a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry` (host), `host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry_on_the_client` | proven (6a, 6b) | pass |
+| N10 | client numbers/order/absence differ → host values, zero corrections | `client_with_differing_fluid_declarations_resolves_every_point_like_the_host`, `client_with_differing_fluid_declarations_swims_with_zero_corrections` | proven (6b, T7) | pass |
+| N11 | host lacks fluid → dry on client even if client declares it | `volume_naming_a_fluid_the_host_lacks_is_dry_on_the_client_even_when_declared_locally` | proven (6b) | pass |
+| N12 | undeclared fluid loads dry, warns with entity index and name | `a_fluid_volume_naming_an_undeclared_fluid_loads_dry_and_warns_naming_entity_and_fluid` | proven (6a) | pass |
+| N13 | fluid declaration changes leave mod digest unchanged | `digest_ignores_adding_removing_reordering_and_retuning_fluids` | proven (6a) | pass |
+| P1 | splash counts: air→fluid, out, floating block, blocked, none | `hitscan_from_air_into_fluid…`, `…from_inside_fluid_out…`, `…through_a_floating_fluid_block…`, `…blocked_before…`, `…never_crosses…` | proven (T12) | pass |
+| P2 | pool floor one splash (P6); two-brush shared face none (P7); fact fields | `hitscan_stopping_on_a_pool_floor_emits_one_splash_at_the_top`, `…two_brush_pool_emits_no_splash_at_the_shared_face` | proven (T12) | pass |
+| P3 | origin on face no splash; adjacent entities two | `hitscan_from_an_origin_on_a_fluid_face…`, `hitscan_across_two_adjacent_fluid_entities…` | proven (T12) | pass |
+| P4 | muffle on world bus; UI/music unfiltered; no per-voice filter; reversal smooth; no kira in public API | audio `world_muffle_filters_the_sfx_bus…`, `…no_per_voice_filter`, `a_muffle_toggle_reversed_mid_ramp_turns_back_without_a_step`; xtask `audio_public_api_names_no_kira_type` | proven (11a) | pass |
+| P5 | entry/exit sounds once per transition; never bobbing; never replay | `swim_sounds_play_once_per_transition_and_never_while_bobbing_between_thresholds`, `swim_edges_play_the_fluids_local_enter_and_exit_sounds_at_the_pawns_eye`, `reconcile_replay_across_swim_edges_adds_no_swim_emission` | proven (11b) | pass |
+| P6 | fluid tint composes over mod tint; `screen.*` untouched | `fluid_tint_composes_over_the_mods_screen_tint_and_never_writes_a_screen_slot`, `fluid_tint_packs_beside_the_mod_tint_and_leaves_it_unchanged` | proven (11a) | pass |
+| P7 | bob toggles ≤ 1; 5 Hz → ≤ 3 flashes/s on presented time; limiter off still ≤ 1 and ramps | `eye_bobbing_across_the_surface_at_dev_head_bob_toggles_the_tint_at_most_once`, `eye_oscillating_past_the_band_at_5hz_presents_at_most_three_tint_flashes_a_second`, `with_the_limiter_off_the_bob_toggles_at_most_once_and_each_toggle_ramps` | proven (11a) | pass |
+| P8 | grep gates: projectile flight no resolve; FGD keys name no swim field | xtask `projectile_flight_makes_no_environment_query`, `volume_fgd_keys_name_no_swim_field` | proven (T12) | pass |
+| P9 | Scripting surface fixture TS + Luau; negative viscosity / bad depths rejected naming field | `fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface`, `…negative_water_viscosity_drops_water_naming_the_field`, `…exit_depth_at_enter_depth_is_rejected_naming_exit_depth`; 6a validation tests | proven (6a, T13, review: warn-and-drop per Q4) | pass |
+| P10 | out-of-range fluid / duplicate rejected with warning; first stands | `tests::fluids` (out-of-range viewTint/muffle/surfaceOpacity, duplicate; TS + Luau, log capture) | proven (6a) | pass |
+| P11 | fluids + swim land in content/dev manifest and descriptor, TS + Luau; mod id kept | `dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_id`, `fluids_swim_twins_run_as_mod_manifests…` | proven (T13) | pass |
+| S1 | slots read dry/swimming values; two players own HUD; host `byPlayer` | `each_machine_reads_and_crosses_on_its_own_players_swim_slots`, `swim_slots_read_each_pawns_dry_and_swimming_values_from_host_movement` | proven (T8) | pass |
+| S2 | `players().on(becomes/ceases)` per player; first sight fires once | `swim_player_events_fire_once_per_player_per_edge_and_read_that_players_immersion` | proven (T8) | pass |
+| S3 | local `onStateCrossing` fires only for own player | `each_machine_reads_and_crosses_on_its_own_players_swim_slots` | proven (T8) | pass |
+| S4 | immersion component never read by intents/replay/merge | `a_stale_immersion_component_changes_no_prediction_replay_or_merge` | proven (T8) | pass |
+| S5 | E16 catalog-derived per-player tests cover both slots | `player_slot_lookup_test.rs` catalog-derived tests with `Swimming`/`Immersion` arms | proven (T8) | pass |
+| X1 | fluid faces look and composite right | owner, in-engine | manual | outstanding — owner, in-engine |
+| X2 | tint/muffle on/off, no flicker or pumping | owner, in-engine | manual | outstanding — owner, in-engine |
+| X3 | swim and fluid-jump playtest | owner, in-engine | manual | outstanding — owner, in-engine |
+| X4 | low-gravity room playtest with pool and floating block | owner, in-engine | manual | outstanding — owner, in-engine |
+| X5 | co-op client swims and crosses gravity, no visible corrections | owner, in-engine | manual | outstanding — owner, in-engine |
+| X6 | stress run: bodies < 0.25 ms/tick, particles < 0.5 ms/frame, BVH < 2 ms | owner's Mac, release + dev-tools | manual; particle metric **waits on particle pool** | outstanding — owner run per §Stress procedure; particle metric deferred |
 
 ## Tasks
 
@@ -215,4 +215,19 @@ Panel: movement tracer + collision/app adversarial (opus). Findings narrowed to 
 - For the owner's X3 playtest: a swimmer touching a floor or ceiling reaches ≈ 5.1 m/s horizontal at `swim.speed` 4.5 with the default sink (the contact erases the wish's downward part each tick); planar steering in contact would bring it to 4.5 and changes floor swimming generally — an owner call if it feels wrong.
 
 Loop stopped: round 3 findings were narrow edge cases, now fixed.
+
+## Final gate (2026-10-12, at 6dd31127d)
+- ✓ `cargo fmt --check`
+- ✓ `cargo clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings`
+- ✓ `cargo test --workspace --features postretro/dev-tools`: 10,831 passed, 0 failed, 46 ignored
+- ✓ `cargo check --release --workspace`
+- ✓ `cargo run -p xtask -- crate-graph --check`
+
+## Trial notes
+- mode: resumable
+- sessions used: 1
+- delegated implementation slices: 22 (tasks 1, 2, 3a, 3b, 4 (+drift rework), 5 (+catch-up fix), 6a, 6b, 7, 8, 9, 10, 11a, 11b, 12, 13, 15; review fixes round 1 ×3, round 2 ×2, round 3 ×1)
+- review-panel findings: round 1 ≈ 45 (1 🔴, ≈20 🟡; all acted on or ruled), round 2 ≈ 15 (acted on), round 3 ≈ 8 (acted on); comment drift batched for land-the-plane
+- Decision premises found false: 1 (push rule 3 — the air cap re-clips carried push across ticks; owner ruled the drift layer); owner rulings at review: 4 (Q1–Q4); Acceptance restated: 1 (C3)
+- Path claims corrected: 16 at planning, plus several in-build (section_plan.rs exists, two tuning call sites → three, no per-voice occlusion, sealed audio API, …)
 

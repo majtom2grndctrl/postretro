@@ -281,7 +281,7 @@ fn fluids_swim_twin_with_exit_depth_at_enter_depth_drops_the_swim_block_naming_e
 }
 
 /// Every `"fluid" "<name>"` key a map authors.
-fn fluids_named_by(map: &str) -> std::collections::BTreeSet<String> {
+pub(super) fn fluids_named_by(map: &str) -> std::collections::BTreeSet<String> {
     let source = std::fs::read_to_string(dev_content().join("maps").join(map))
         .unwrap_or_else(|error| panic!("{map} reads: {error}"));
     source

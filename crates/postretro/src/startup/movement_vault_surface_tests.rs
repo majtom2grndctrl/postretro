@@ -15,7 +15,7 @@ use postretro_foundation::{MovementStateKind, PlayerMovementComponent};
 use postretro_physics::collision::CollisionWorld;
 use postretro_physics::movement::{MovementInput, tick};
 
-use super::fluids_swim_surface_tests::{dev_content, dev_manifest, run_manifest};
+use super::fluids_swim_surface_tests::{dev_content, dev_manifest, fluids_named_by, run_manifest};
 
 fn ts_twin() -> String {
     postretro_script_compiler::bundle_entry(&dev_content().join("scripts/movement-vault.ts"))
@@ -131,4 +131,18 @@ fn movement_vault_twins_and_the_dev_player_declare_one_vault_block_that_vaults()
         assert_eq!(movement.vault, Some(expected.clone()), "{label}");
         assert!(vaults_in_a_test_world(&movement), "{label}'s player vaults");
     }
+}
+
+// The vault dev stations' pool loads wet: the host resolves the map's fluid by
+// name against content/dev's manifest, and an undeclared name loads dry, which
+// would leave the pool station nothing to swim in.
+#[test]
+fn vault_test_map_names_only_fluids_the_dev_manifest_declares() {
+    let dev = dev_manifest();
+    let named = fluids_named_by("vault-test.map");
+    assert_eq!(
+        named.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["water"]
+    );
+    assert!(dev.fluids.index_of("water").is_some());
 }

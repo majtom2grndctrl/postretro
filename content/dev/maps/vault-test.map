@@ -1,0 +1,356 @@
+// Game: Postretro
+// Format: Standard
+// Vault dev stations; see vault-test.README.md.
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+{
+( -16 1616 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 3416 -16 0 ) ( 3416 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 3416 1616 -16 ) ( -16 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 1616 0 ) ( 3416 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 3416 1616 -16 ) ( -16 1616 0 ) ( -16 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+( 3416 -16 -16 ) ( 3416 1616 0 ) ( 3416 1616 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+{
+( -16 1616 480 ) ( -16 -16 496 ) ( -16 -16 480 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 480 ) ( 3416 -16 496 ) ( 3416 -16 480 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 480 ) ( 3416 1616 480 ) ( -16 1616 480 ) concrete_stone_033 0 0 0 1 1
+( -16 1616 496 ) ( 3416 -16 496 ) ( -16 -16 496 ) concrete_stone_033 0 0 0 1 1
+( 3416 1616 480 ) ( -16 1616 496 ) ( -16 1616 480 ) concrete_stone_033 0 0 0 1 1
+( 3416 -16 480 ) ( 3416 1616 496 ) ( 3416 1616 480 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( -16 1616 0 ) ( -16 -16 480 ) ( -16 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 480 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 1616 0 ) ( -16 1616 0 ) concrete_stone_033 0 0 0 1 1
+( -16 1616 480 ) ( 0 -16 480 ) ( -16 -16 480 ) concrete_stone_033 0 0 0 1 1
+( 0 1616 0 ) ( -16 1616 480 ) ( -16 1616 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 0 1616 480 ) ( 0 1616 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 3400 1616 0 ) ( 3400 -16 480 ) ( 3400 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 3400 -16 0 ) ( 3416 -16 480 ) ( 3416 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 3400 -16 0 ) ( 3416 1616 0 ) ( 3400 1616 0 ) concrete_stone_033 0 0 0 1 1
+( 3400 1616 480 ) ( 3416 -16 480 ) ( 3400 -16 480 ) concrete_stone_033 0 0 0 1 1
+( 3416 1616 0 ) ( 3400 1616 480 ) ( 3400 1616 0 ) concrete_stone_033 0 0 0 1 1
+( 3416 -16 0 ) ( 3416 1616 480 ) ( 3416 1616 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 0 0 0 ) ( 0 -16 480 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 3400 -16 480 ) ( 3400 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 3400 0 0 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 480 ) ( 3400 -16 480 ) ( 0 -16 480 ) concrete_stone_033 0 0 0 1 1
+( 3400 0 0 ) ( 0 0 480 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 3400 -16 0 ) ( 3400 0 480 ) ( 3400 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 0 1616 0 ) ( 0 1600 480 ) ( 0 1600 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1600 0 ) ( 3400 1600 480 ) ( 3400 1600 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1600 0 ) ( 3400 1616 0 ) ( 0 1616 0 ) concrete_stone_033 0 0 0 1 1
+( 0 1616 480 ) ( 3400 1600 480 ) ( 0 1600 480 ) concrete_stone_033 0 0 0 1 1
+( 3400 1616 0 ) ( 0 1616 480 ) ( 0 1616 0 ) concrete_stone_033 0 0 0 1 1
+( 3400 1600 0 ) ( 3400 1616 480 ) ( 3400 1616 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 600 260 0 ) ( 600 60 16 ) ( 600 60 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 60 0 ) ( 900 60 16 ) ( 900 60 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 60 0 ) ( 900 260 0 ) ( 600 260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 260 16 ) ( 900 60 16 ) ( 600 60 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 260 0 ) ( 600 260 16 ) ( 600 260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 60 0 ) ( 900 260 16 ) ( 900 260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 600 510 0 ) ( 600 310 24 ) ( 600 310 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 310 0 ) ( 900 310 24 ) ( 900 310 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 310 0 ) ( 900 510 0 ) ( 600 510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 510 24 ) ( 900 310 24 ) ( 600 310 24 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 510 0 ) ( 600 510 24 ) ( 600 510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 310 0 ) ( 900 510 24 ) ( 900 510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 600 760 0 ) ( 600 560 39 ) ( 600 560 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 560 0 ) ( 900 560 39 ) ( 900 560 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 560 0 ) ( 900 760 0 ) ( 600 760 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 760 39 ) ( 900 560 39 ) ( 600 560 39 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 760 0 ) ( 600 760 39 ) ( 600 760 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 560 0 ) ( 900 760 39 ) ( 900 760 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 600 1010 0 ) ( 600 810 59 ) ( 600 810 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 810 0 ) ( 900 810 59 ) ( 900 810 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 810 0 ) ( 900 1010 0 ) ( 600 1010 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1010 59 ) ( 900 810 59 ) ( 600 810 59 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 1010 0 ) ( 600 1010 59 ) ( 600 1010 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 810 0 ) ( 900 1010 59 ) ( 900 1010 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 600 1260 0 ) ( 600 1060 87 ) ( 600 1060 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1060 0 ) ( 900 1060 87 ) ( 900 1060 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1060 0 ) ( 900 1260 0 ) ( 600 1260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1260 87 ) ( 900 1060 87 ) ( 600 1060 87 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 1260 0 ) ( 600 1260 87 ) ( 600 1260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 1060 0 ) ( 900 1260 87 ) ( 900 1260 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 600 1510 0 ) ( 600 1310 118 ) ( 600 1310 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1310 0 ) ( 900 1310 118 ) ( 900 1310 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1310 0 ) ( 900 1510 0 ) ( 600 1510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 600 1510 118 ) ( 900 1310 118 ) ( 600 1310 118 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 1510 0 ) ( 600 1510 118 ) ( 600 1510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 900 1310 0 ) ( 900 1510 118 ) ( 900 1510 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 1200 450 0 ) ( 1200 100 39 ) ( 1200 100 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 100 0 ) ( 1500 100 39 ) ( 1500 100 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 100 0 ) ( 1500 450 0 ) ( 1200 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 450 39 ) ( 1500 100 39 ) ( 1200 100 39 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1500 450 0 ) ( 1200 450 39 ) ( 1200 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1500 100 0 ) ( 1500 450 39 ) ( 1500 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 1200 450 110 ) ( 1200 100 126 ) ( 1200 100 110 ) concrete_stone_033 0 0 0 1 1
+( 1200 100 110 ) ( 1500 100 126 ) ( 1500 100 110 ) concrete_stone_033 0 0 0 1 1
+( 1200 100 110 ) ( 1500 450 110 ) ( 1200 450 110 ) concrete_stone_033 0 0 0 1 1
+( 1200 450 126 ) ( 1500 100 126 ) ( 1200 100 126 ) concrete_stone_033 0 0 0 1 1
+( 1500 450 110 ) ( 1200 450 126 ) ( 1200 450 110 ) concrete_stone_033 0 0 0 1 1
+( 1500 100 110 ) ( 1500 450 126 ) ( 1500 450 110 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 1200 950 0 ) ( 1200 600 39 ) ( 1200 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 600 0 ) ( 1500 600 39 ) ( 1500 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 600 0 ) ( 1500 950 0 ) ( 1200 950 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1200 950 39 ) ( 1500 600 39 ) ( 1200 600 39 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1500 950 0 ) ( 1200 950 39 ) ( 1200 950 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1500 600 0 ) ( 1500 950 39 ) ( 1500 950 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 1200 950 126 ) ( 1200 600 142 ) ( 1200 600 126 ) concrete_stone_033 0 0 0 1 1
+( 1200 600 126 ) ( 1500 600 142 ) ( 1500 600 126 ) concrete_stone_033 0 0 0 1 1
+( 1200 600 126 ) ( 1500 950 126 ) ( 1200 950 126 ) concrete_stone_033 0 0 0 1 1
+( 1200 950 142 ) ( 1500 600 142 ) ( 1200 600 142 ) concrete_stone_033 0 0 0 1 1
+( 1500 950 126 ) ( 1200 950 142 ) ( 1200 950 126 ) concrete_stone_033 0 0 0 1 1
+( 1500 600 126 ) ( 1500 950 142 ) ( 1500 950 126 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 2436 1464 0 ) ( 2436 136 79 ) ( 2436 136 0 ) concrete_stone_033 0 0 0 1 1
+( 2436 136 0 ) ( 2500 136 79 ) ( 2500 136 0 ) concrete_stone_033 0 0 0 1 1
+( 2436 136 0 ) ( 2500 1464 0 ) ( 2436 1464 0 ) concrete_stone_033 0 0 0 1 1
+( 2436 1464 79 ) ( 2500 136 79 ) ( 2436 136 79 ) concrete_stone_033 0 0 0 1 1
+( 2500 1464 0 ) ( 2436 1464 79 ) ( 2436 1464 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 136 0 ) ( 2500 1464 79 ) ( 2500 1464 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 2500 200 0 ) ( 2500 136 79 ) ( 2500 136 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 136 0 ) ( 2950 136 79 ) ( 2950 136 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 136 0 ) ( 2950 200 0 ) ( 2500 200 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 200 79 ) ( 2950 136 79 ) ( 2500 136 79 ) concrete_stone_033 0 0 0 1 1
+( 2950 200 0 ) ( 2500 200 79 ) ( 2500 200 0 ) concrete_stone_033 0 0 0 1 1
+( 2950 136 0 ) ( 2950 200 79 ) ( 2950 200 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 2500 1464 0 ) ( 2500 1400 79 ) ( 2500 1400 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 1400 0 ) ( 2950 1400 79 ) ( 2950 1400 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 1400 0 ) ( 2950 1464 0 ) ( 2500 1464 0 ) concrete_stone_033 0 0 0 1 1
+( 2500 1464 79 ) ( 2950 1400 79 ) ( 2500 1400 79 ) concrete_stone_033 0 0 0 1 1
+( 2950 1464 0 ) ( 2500 1464 79 ) ( 2500 1464 0 ) concrete_stone_033 0 0 0 1 1
+( 2950 1400 0 ) ( 2950 1464 79 ) ( 2950 1464 0 ) concrete_stone_033 0 0 0 1 1
+}
+{
+( 2950 600 0 ) ( 2950 200 75 ) ( 2950 200 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 200 0 ) ( 3250 200 75 ) ( 3250 200 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 200 0 ) ( 3250 600 0 ) ( 2950 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 600 75 ) ( 3250 200 75 ) ( 2950 200 75 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 600 0 ) ( 2950 600 75 ) ( 2950 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 200 0 ) ( 3250 600 75 ) ( 3250 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 2950 1000 0 ) ( 2950 600 94 ) ( 2950 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 600 0 ) ( 3250 600 94 ) ( 3250 600 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 600 0 ) ( 3250 1000 0 ) ( 2950 1000 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 1000 94 ) ( 3250 600 94 ) ( 2950 600 94 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 1000 0 ) ( 2950 1000 94 ) ( 2950 1000 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 600 0 ) ( 3250 1000 94 ) ( 3250 1000 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 2950 1400 0 ) ( 2950 1000 110 ) ( 2950 1000 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 1000 0 ) ( 3250 1000 110 ) ( 3250 1000 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 1000 0 ) ( 3250 1400 0 ) ( 2950 1400 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2950 1400 110 ) ( 3250 1000 110 ) ( 2950 1000 110 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 1400 0 ) ( 2950 1400 110 ) ( 2950 1400 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 3250 1000 0 ) ( 3250 1400 110 ) ( 3250 1400 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_mover"
+"name" "vault_still"
+"path" "vault_still_low"
+"speed" "0.5"
+"wait_ms" "500"
+"move_mode" "ping_pong"
+"start_on_spawn" "0"
+"_tags" "dev vault_station"
+{
+( 1900 450 0 ) ( 1900 100 47 ) ( 1900 100 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 100 0 ) ( 2200 100 47 ) ( 2200 100 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 100 0 ) ( 2200 450 0 ) ( 1900 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 450 47 ) ( 2200 100 47 ) ( 1900 100 47 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2200 450 0 ) ( 1900 450 47 ) ( 1900 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2200 100 0 ) ( 2200 450 47 ) ( 2200 450 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_still_low"
+"next" "vault_still_high"
+"origin" "2050 275 23"
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_still_high"
+"origin" "2050 275 62"
+}
+{
+"classname" "kinematic_mover"
+"name" "vault_rising"
+"path" "vault_rising_low"
+"speed" "0.5"
+"wait_ms" "500"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev vault_station"
+{
+( 1900 1050 0 ) ( 1900 700 47 ) ( 1900 700 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 700 0 ) ( 2200 700 47 ) ( 2200 700 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 700 0 ) ( 2200 1050 0 ) ( 1900 1050 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1900 1050 47 ) ( 2200 700 47 ) ( 1900 700 47 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2200 1050 0 ) ( 1900 1050 47 ) ( 1900 1050 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2200 700 0 ) ( 2200 1050 47 ) ( 2200 1050 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_rising_low"
+"next" "vault_rising_high"
+"origin" "2050 875 23"
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_rising_high"
+"origin" "2050 875 62"
+}
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 2500 1400 0 ) ( 2500 200 63 ) ( 2500 200 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2500 200 0 ) ( 2950 200 63 ) ( 2950 200 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2500 200 0 ) ( 2950 1400 0 ) ( 2500 1400 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2500 1400 63 ) ( 2950 200 63 ) ( 2500 200 63 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2950 1400 0 ) ( 2500 1400 63 ) ( 2500 1400 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2950 200 0 ) ( 2950 1400 63 ) ( 2950 1400 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "200 800 48"
+"angles" "0 0 0"
+}
+{
+"classname" "light"
+"origin" "300 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "300 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "900 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "900 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "1500 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "1500 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "2100 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "2100 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "2700 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "2700 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "3300 400 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}
+{
+"classname" "light"
+"origin" "3300 1200 400"
+"_bake_only" "1"
+"light" "300"
+"_falloff_range" "900"
+"_color" "255 236 210"
+}

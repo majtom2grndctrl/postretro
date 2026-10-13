@@ -153,7 +153,12 @@ landed is rerun. (O20)
   stage time. Spawn frames are reported apart. Each run uses one drain per frame for
   retirement, and the pre-change build runs the same synchronous mode. For both builds,
   report non-resident block-frames by cause: left behind by admission, deferred behind a
-  retiring generation, deferred at the device limit. (O17, O18) Repeat on movement-feel,
+  retiring generation, deferred at the device limit. A drawn block still non-resident
+  after the frame's last drain counts as pool-deferred when that drain carried and
+  deferred it; the drain's device-limit flag gives the cause. Any other drawn
+  non-resident block counts as left behind by admission. Each block counts once per
+  frame. The walk measurement models no device layer limit, so that bucket reads zero
+  by construction. (O17, O18) Repeat on movement-feel,
   whose cells span several blocks, and report outside-set blocks per drawn cell outside
   the baked set, for both builds.
 - [ ] SH reach: rerun the SH reach measurement on the hallway and campaign-test with

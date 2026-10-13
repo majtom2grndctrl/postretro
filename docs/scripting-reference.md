@@ -2985,9 +2985,11 @@ How vaulting plays:
 
 Starting and finishing a climb fire the reserved `vault_started` and
 `vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
-either edge. A climb cut short by the player's death or by a descriptor hot
-reload ends without `vault_ended`, so a reaction that pairs the two (a looping
-climb sound, say) should also stop on `playerDied`.
+either edge. A climb cut short by the player's death ends without
+`vault_ended`, so a reaction that pairs the two (a looping climb sound, say)
+should also stop on `playerDied`. A descriptor hot reload does the same but
+fires no `playerDied`; it is a development-time event, so a paired reaction may
+stay started until the next climb after one.
 
 ### The readonly `player.swimming` and `player.immersion` slots
 

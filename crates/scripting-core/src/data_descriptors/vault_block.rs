@@ -42,19 +42,19 @@ fn required_number(field: &'static str, value: RawVaultValue) -> Result<f32, Des
     }
 }
 
-fn trigger(place: &str, value: RawVaultValue) -> Result<Option<VaultTrigger>, DescriptorError> {
+fn trigger(context: &str, value: RawVaultValue) -> Result<Option<VaultTrigger>, DescriptorError> {
     match value {
         RawVaultValue::Absent => Ok(None),
         RawVaultValue::Str(name) if name == "auto" => Ok(Some(VaultTrigger::Auto)),
         RawVaultValue::Str(name) if name == "jump" => Ok(Some(VaultTrigger::Jump)),
         _ => Err(invalid(format!(
-            "`movement.vault.from.{place}` must be \"auto\" or \"jump\""
+            "`movement.vault.from.{context}` must be \"auto\" or \"jump\""
         ))),
     }
 }
 
-/// A present `from` replaces the default whole: a place it leaves out cannot
-/// vault. Only the closed places `air`, `ground` and `swim` exist.
+/// A present `from` replaces the default whole: a context it leaves out cannot
+/// vault. Only the closed contexts `air`, `ground` and `swim` exist.
 fn entry(value: RawVaultValue) -> Result<VaultEntry, DescriptorError> {
     let mut entries = match value {
         RawVaultValue::Absent => return Ok(VaultEntry::default()),
@@ -73,18 +73,18 @@ fn entry(value: RawVaultValue) -> Result<VaultEntry, DescriptorError> {
         ground: None,
         swim: None,
     };
-    for (place, value) in entries {
-        let slot = match place.as_str() {
+    for (context, value) in entries {
+        let slot = match context.as_str() {
             "air" => &mut from.air,
             "ground" => &mut from.ground,
             "swim" => &mut from.swim,
             _ => {
                 return Err(invalid(format!(
-                    "`movement.vault.from.{place}` is not a vault context; expected air, ground or swim"
+                    "`movement.vault.from.{context}` is not a vault context; expected air, ground or swim"
                 )));
             }
         };
-        *slot = trigger(&place, value)?;
+        *slot = trigger(&context, value)?;
     }
     Ok(from)
 }

@@ -933,7 +933,8 @@ mod tests {
         assert!(approx_eq(output.impulse_roll, -1.0));
     }
 
-    // Swim's own side of an edge kicks nothing; the vault end still does.
+    // A vault's entry and exit kick the vault row. Swim's own side of an edge
+    // kicks nothing, while the vault end of that edge still does.
     #[test]
     fn vault_edges_kick_the_vault_row() {
         let params = impulse_params(ImpulseStates {

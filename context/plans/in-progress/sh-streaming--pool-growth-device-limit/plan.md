@@ -87,6 +87,33 @@ RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postre
 
 Run the two walks separately. These commands do not rebuild the PRLs. Build and launch the instrumentation-only baseline from its isolated checkout in the same way, using identical PRL bytes. Keep the logs and measurements until M1 is recorded.
 
+### Prepared before-walk launchers
+
+Pre-change executables are ready in the ignored `target/sh-before-walks/` bundle. Built from `e8f607b94744e338039fcc4389ead98ef91ef6d6` with only `baseline-measurement.patch`, default dev profile and `postretro/dev-tools`. Separate worktree/target; no shared Cargo artifacts. Build passed in 24m 13s. Copied and hash-verified engine, script compiler and tool total 93.4 MiB. The primary feature executable hash did not change during preparation.
+
+Baseline engine SHA-256: `8653e9a0a83ecbe03b1ccca3658a85d2092aa13a01037d73d2f3d3919a7d2d32`. Bundle `build-info.json` records executable hashes and build provenance. Helper CLI, both project-launch routes and shell syntax passed. Temporary target was removed; the clean checkout was archived after verifying its commit is preserved on remote main. About 23 GiB remained free after cleanup.
+
+From the primary workspace root, run these separately. Repeat the new-build routes and settings, then quit each game completely:
+
+```bash
+./target/sh-before-walks/run-before.sh campaign
+./target/sh-before-walks/run-before.sh hallway
+```
+
+The scripts launch the old engine using the primary project's existing assets/settings and save full startup/walk output automatically:
+
+- `campaign-test-before-sh-log.txt`
+- `stress-warren-hallway-inspection-before-sh-log.txt`
+
+If a log already exists, its replacement run gets a timestamp/PID suffix instead of overwriting it. Headers record the baseline commit, engine hash and selected map hash. Scripts refuse changed PRL bytes against `prl-sha256.txt`. Preparation hashes:
+
+| PRL | SHA-256 |
+|---|---|
+| campaign-test | `868cf5db03ec7c9a97f75d54cad1f9d8d9c6c4b7337af6c64c3de22793a70ee2` |
+| stress-warren-hallway-inspection | `9a4a5d089c5cfaf8f068c13c8d39e6b472ecf72d39f8e15eb37c2db91a1eb53a` |
+
+Do not rebake between comparison runs. Preserve the bundle until both baseline walks are recorded and analyzed, then remove it during landing cleanup. M1 is still outstanding; no baseline walk was performed during preparation.
+
 ## Verification log
 
 All build/test commands use `CARGO_INCREMENTAL=0`. Host permissions are needed for normal network access, Metal and macOS test-binary initialization. A sandboxed test process stalled in dyld/AppKit logging initialization before the Rust harness; host retry resolved it without code changes.

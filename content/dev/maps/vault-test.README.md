@@ -17,8 +17,8 @@ The tuning is content/dev's player (`scripts/player.ts`):
 - standing capsule 2.0 m, `stepHeight` 0.5 m, jump peak about 1.16 m;
 - `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 800;
 - `from: { air: "auto", swim: "auto" }` and `allowFire: false`;
-- `viewFeel.vault` holds a -6° look down, easing in over the first 15% of
-  the climb and back over the last 20%.
+- `viewFeel.vault` holds a 38.5° look down and narrows the FOV by 30°, easing
+  in over the first 33% of the climb and back over the last 33%.
 
 The expectations below follow from those numbers. If you retune the player,
 re-derive them.

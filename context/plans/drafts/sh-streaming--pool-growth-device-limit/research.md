@@ -56,9 +56,10 @@ The device limit is reachable, but only at the edge of the content range.
   buffer is over 1 GiB, even when the size actually needed fits. That is already past the VRAM
   target.
 - **Example in the owner's terms.** A pool at 200 layers needing 201 doubles to 400 and fails
-  against 256. Doubling from 1 lands on powers of two, so this exact shape arises only from a
-  non-power-of-two initial layer count (`S` past one layer's 1024 × 1024 tile cap); it remains
-  the cleanest unit test of the clamp.
+  against 256. Today the initial layer count is 1, so doubling lands on powers of two. Under
+  whole-level layer sizing, the initial count is the floor share divided by the whole-level
+  layer size, which can be any number. Doubling from it then overshoots 256 at ordinary sizes.
+  The clamp is required by the geometry change, not only at the content edge.
 - **Measured maps.** campaign-test's whole id-34 payload is about 57 MB
   (`plans/done/lighting-scale--sh-base-atlas-at-rest-slimming`). It fits inside the floor, so it
   never grows past it. Streamed SH payloads (id 50) are 26 MiB on campaign-test and 246 MiB on
@@ -162,10 +163,33 @@ The device limit is reachable, but only at the edge of the content range.
 - **Load-time feasibility instead of runtime deferral.** After whole-level geometry and clamped
   growth, the remaining runtime refusals are fragmentation past the headroom and a sparse family
   past the binding. The second is a property of the compiled level and can be rejected at build,
-  like `LayerOverflow`; that is the brief's blocks-build owner question. Fragmentation is a
+  and is rejected at build per camera cell, like `LayerOverflow`. Fragmentation is a
   runtime state, so it still needs a non-fatal backstop.
 - **Compact dense slots at the limit before refusing**, as the lightmap pool repacks before it
   grows. Costlier for SH: every moved node's probe-indirection words must be rewritten. It only
   helps fragmentation past the headroom, which is speculative.
 - **Drop the refused cluster and re-read it later.** This releases the permit, but it churns I/O
   every frame while the pool stays full. Holding the payload wins.
+
+## Ordering pins
+
+From `/review-brief` (rows lens, round 1).
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Two clusters in one drain: one refused at the limit, one that fits, either order | The refused install rolls back its provisional dense and sparse ranges, address high-water included, before the next ready cluster stages | The fitting cluster installs; the refused one defers device-limited; neither order changes the result |
+| P2 | Drain N refuses C; drain N+1 confirms an eviction whose freed range holds C | Evictions run before installs inside one drain | C installs in drain N+1 from its held payload; no read issued; freed space counts only as a first-fit hole, since the high-water never falls |
+| P3 | One cluster needs dense growth that fits and sparse growth that does not | Dense growth commits during staging; the sparse refusal then rolls back the install, not the growth | Dense growth stays (valid pool, one dense retirement pending); cluster defers device-limited; a later cluster this drain that needs dense growth defers as retirement pressure, not device-limited |
+| P4 | A cluster's needed size exceeds the limit while that family's previous generation still retires | The limit verdict precedes the retirement wait, in dense and sparse alike (today dense checks the limit first, sparse checks retirement first) | Device-limited deferral; a cluster that fits but waits defers as retirement pressure |
+| P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The device-limited mark lands with outcome N, is read before N+1 retargets, and clears on install, drop, target departure or generation change | The miss counts device-limited, and so does a dependent whose owner chain waits on a device-limited owner |
+| P6 | Refusal during Settling; timeout decided on frame N; reveal on N+1 | Settling counts no misses; the reveal frame is the first Running frame and drains again | Settling warns once; reveal proceeds; the reveal frame's refusal is non-fatal and counts one device-limit miss with no second warning |
+| P7 | Refusals across generations within one level, then a level change | Warning latch is level-scoped, not generation- or boot-state-scoped | One warning per level; the next level's first refusal warns again |
+| P8 | A refused cluster held in Ready when its target departs, or when the level unloads | Departure is handled at the next drain's ready cleanup; unload drops the controller | Payload, ready bytes and permit all return; the next level starts with a full permit set and no device-limited marks |
+| P9 | Several sparse families need growth for one cluster; one is refused | Every replacement is built before any copy or swap | No family commits when any is refused (current transaction); the cluster defers device-limited |
+| P10 | Lead L raised mid-session, up to the baked maximum | Runtime L clamps to the baked maximum; the build check runs at that maximum | A level that passed prl-build is never refused for mandatory demand inside its baked set; only fragmentation past the headroom or drawn demand outside the set reaches the deferral backstop |
+
+## Build-check seams
+
+- The device limits are private renderer constants (`REQUIRED_MAX_TEXTURE_ARRAY_LAYERS`, and the storage binding and buffer sizes in `renderer_init_resources.rs`). level-compiler sits in a lower layer and cannot depend on the renderer.
+- Precedent: the lightmap side mirrors its limit as `RUNTIME_LAYER_FLOOR` in the dry run's `layouts.rs`. Either hoist the limits to a shared lower crate or mirror them with an equality test.
+- The baked set is id 51 (`cell_residency_set.rs`) plus id-49 pins plus owner closure. Sparse bytes per cluster follow `grow_sparse` sizing.

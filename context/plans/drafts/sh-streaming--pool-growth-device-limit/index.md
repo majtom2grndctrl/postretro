@@ -61,28 +61,67 @@ below the limits and the load-time install panic are other routes, outside this 
 
 ## Acceptance
 
+Pins P1–P10 are in `research.md` §Ordering pins.
+
 ### Automated
-- [ ] With the floor share forced to zero, a fixture level grows until every cluster is resident
-  at once, with no refusal. Before this change, the same fixture is refused.
-- [ ] Atlas width, height and tiles per layer are identical across every growth in a session.
+- [ ] Through the production load path, with the floor's pool budget forced to zero, a fixture
+  whose whole dense set exceeds the layer limit times its largest writer closure grows until
+  every cluster is resident at once, with no refusal. The test asserts that precondition, so
+  it fails if layer size still follows the initial share.
+- [ ] At load, tiles per layer hold the whole dense set times the headroom within the layer limit.
+  Past one full layer's worth, the layer is full and the cap holds. In both cases, and at zero
+  share, the planner's physical slot count and charged floor bytes equal the GPU atlas's for
+  the same level and limits.
+- [ ] Atlas width, height and tiles per layer are identical across every growth in a session, the
+  clamped growth to the limit included.
 - [ ] A dense pool at 200 layers, limit 256, needing 201 grows to 256 and installs. One needing
   257 is refused without growing. Below the limit, growth is unchanged: 100 layers needing 101
   grow to 200.
 - [ ] A sparse family whose doubled buffer would pass the binding limit, but whose needed size
   fits, grows to the limit and installs. One whose needed size exceeds it is refused.
-- [ ] With the limit forced low, a drain whose demand exceeds it returns no error. The session
-  keeps running in play, and Settling releases at its timeout and reveals.
-- [ ] In the same drain, a cluster that fits installs while another is refused, in either order.
-  A refused cluster installs on a later drain, once room frees, with no new read issued.
-- [ ] No mandatory cluster, or owner of one, is evicted while another is refused.
-- [ ] A refusal counts as a device-limit miss, not as `held_by_drain_budget`, and repeated
-  refusals log one warning per level.
+- [ ] A growth whose needed size exceeds the limit while that family still retires a previous
+  generation is refused as device-limited, in the dense atlas and in a sparse family alike.
+  One that fits but waits on retirement defers as retirement pressure (research P4).
+- [ ] A cluster whose dense growth fits but whose sparse growth is refused keeps the grown atlas,
+  defers device-limited, and leaves the pool sampling correctly. A later cluster in that drain
+  needing dense growth defers as retirement pressure. When one sparse family of several is
+  refused, none of them grows (research P3, P9).
+- [ ] With the limit lowered, a renderer drain whose demand exceeds it returns a device-limited
+  deferral, not an error. A controller fed that outcome on every drain keeps the mandatory set
+  unsettled, and Settling releases at its timeout into Running.
+- [ ] In the same drain, a cluster that fits installs while another is refused, in either order,
+  and the refused cluster leaves no address behind (research P1). When a later drain confirms
+  an eviction whose freed range holds it, the refused cluster installs in that same drain from
+  its held payload, with no new read (research P2).
+- [ ] A refused cluster whose target departs returns its payload, ready bytes and permit on the
+  next drain. Unloading a level with refused clusters held leaves none behind, and the next
+  level starts with every permit free (research P8).
+- [ ] With a pinned cluster, a lead cluster and a visible cluster's owner resident, and a refused
+  visible cluster that would fit if any one of them left, every drain over the refusal keeps
+  all three sampleable and returns no error. If untargeted hysteresis residents release early,
+  only those leave.
+- [ ] Fed a drain outcome that marks one deferral device-limited and one retirement-limited, the
+  controller counts the first visible miss as a device-limit miss and the second as held by
+  the drain budget. A visible dependent waiting on a device-limited owner also counts as a
+  device-limit miss. The mark clears when the cluster installs or leaves its targets (research
+  P5).
+- [ ] A level refused during Settling and again after its timeout reveal logs one device-limit
+  warning. Settling counts no device-limit miss, and the reveal frame counts one. A new
+  generation in the same level does not warn again; the next level's first refusal does
+  (research P6, P7).
 - [ ] Regression guards: a malformed chunk still ends the session with its named error, and a
   retirement-pressure deferral behaves as before.
-
-- [ ] A fixture whose single camera cell's mandatory SH set exceeds a family's limit fails
-  prl-build, and the error names that cell and family. A fixture whose whole level exceeds
-  the limit while every cell's set fits compiles.
+- [ ] A capacity-class error that is a broken contract rather than a device limit, such as an
+  install reaching the pools without device handles, still ends the session with its named
+  error, as does an address overflow.
+- [ ] A scripted churn walk that installs and evicts clusters of mixed sizes, at the zero-share
+  geometry and the chosen headroom, is never refused while its live dense set stays within the
+  whole level.
+- [ ] The per-cell check takes its layer and binding limits as inputs. With limits lowered for the
+  test, a small fixture whose one camera cell's mandatory set (reach at the baked maximum
+  lead, pins, owner closure) exceeds a family's limit fails prl-build naming that cell and
+  family, and a fixture whose whole level exceeds the lowered limit while every cell's set
+  fits compiles. A separate test pins the production limits to the ones the engine requests.
 
 ### Manual
 - [ ] At default limits, campaign-test and the stress-warren hallway log no device-limit warning.

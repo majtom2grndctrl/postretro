@@ -132,33 +132,7 @@ fn resolve_environment_untimed(
     if !probe.position.is_finite() {
         return level_defaults(view.level_gravity);
     }
-    let volumes = view.volumes;
-    let mut gravity_winner: Option<usize> = None;
-    let mut push_winner: Option<usize> = None;
-    volumes.visit_volumes_containing_point(
-        probe.position,
-        ContentsMask::GRAVITY | ContentsMask::PUSH,
-        |index| {
-            let Some(volume) = volumes.volume(index) else {
-                return;
-            };
-            if volume.gravity.is_some() && beats(volumes, index, gravity_winner) {
-                gravity_winner = Some(index);
-            }
-            if volume.push.is_some() && beats(volumes, index, push_winner) {
-                push_winner = Some(index);
-            }
-        },
-    );
-
-    let gravity = gravity_winner
-        .and_then(|index| volumes.volume(index))
-        .and_then(|volume| volume.gravity)
-        .unwrap_or(view.level_gravity);
-    let push = push_winner
-        .and_then(|index| volumes.volume(index))
-        .and_then(|volume| volume.push)
-        .unwrap_or(Vec3::ZERO);
+    let (gravity, push) = resolve_particle_acceleration_untimed(view, probe.position);
     let fluid = resolve_fluid(view, probe);
     let viscosity = fluid
         .fluid
@@ -174,6 +148,44 @@ fn resolve_environment_untimed(
         immersion: fluid.immersion,
         tick_eye_in_fluid: fluid.tick_eye_in_fluid,
     }
+}
+
+/// Point gravity and push under the full resolve's per-field overlap rule.
+/// Anonymous particles read neither fluids nor capsule immersion.
+pub fn resolve_particle_acceleration(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
+    timed(view.timer, QueryFamily::BodyResolve, || {
+        resolve_particle_acceleration_untimed(view, position)
+    })
+}
+
+/// Resolve a batch of independent points, timing the entire query loop once.
+/// `accelerations` must have the same length as `positions`. Empty batches
+/// perform no query and leave the timing family absent.
+pub fn resolve_particle_accelerations(
+    view: EnvironmentView<'_>,
+    positions: &[Vec3],
+    accelerations: &mut [(f32, Vec3)],
+) {
+    assert_eq!(
+        positions.len(),
+        accelerations.len(),
+        "particle acceleration batch lengths"
+    );
+    if positions.is_empty() {
+        return;
+    }
+    timed(view.timer, QueryFamily::BodyResolve, || {
+        for (&position, acceleration) in positions.iter().zip(accelerations) {
+            *acceleration = resolve_particle_acceleration_untimed(view, position);
+        }
+    });
+}
+
+fn resolve_particle_acceleration_untimed(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
+    if !position.is_finite() {
+        return (view.level_gravity, Vec3::ZERO);
+    }
+    view.volumes.acceleration(position, view.level_gravity)
 }
 
 /// Gravity alone at `position`, by the same point rule as `resolve_environment`.
@@ -216,6 +228,7 @@ fn level_defaults(level_gravity: f32) -> ResolvedEnvironment {
     }
 }
 
+#[inline]
 pub(crate) fn beats(
     volumes: &EnvironmentVolumes,
     candidate: usize,

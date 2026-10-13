@@ -85,6 +85,19 @@ impl Renderer {
         if change.scene_changed {
             self.rebuild_scene_targets(scene);
         }
+        self.log_render_extents();
+    }
+
+    pub(super) fn log_render_extents(&self) {
+        let extents = self.render_extents();
+        log::info!(
+            "[Renderer] render extents: surface={}x{} scene={}x{} divisor={}",
+            extents.surface.width,
+            extents.surface.height,
+            extents.scene.width,
+            extents.scene.height,
+            extents.divisor,
+        );
     }
 
     /// Recreate every scene-sized target at `scene`. No scene target reads the

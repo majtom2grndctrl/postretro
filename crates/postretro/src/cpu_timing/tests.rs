@@ -626,10 +626,26 @@ fn particle_stages_sit_under_render_prep_in_the_log_line() {
             ParticleStage::Emit => "particle_emit",
             ParticleStage::Sim => "particle_sim",
             ParticleStage::Collect => "particle_collect",
+            ParticleStage::Environment => "particle_environment",
+            ParticleStage::Live => "particle_live",
         };
         assert_eq!(stage.label(), expected);
-        assert_eq!(stage.parent(), None, "{expected} is a root");
-        assert_eq!(stage.kind(), StageKind::Time);
+        assert_eq!(
+            stage.parent(),
+            if stage == ParticleStage::Environment {
+                Some(ParticleStage::Sim)
+            } else {
+                None
+            }
+        );
+        assert_eq!(
+            stage.kind(),
+            if stage == ParticleStage::Live {
+                StageKind::Count
+            } else {
+                StageKind::Time
+            }
+        );
     }
 
     let capture = LogCapture::start();
@@ -641,6 +657,8 @@ fn particle_stages_sit_under_render_prep_in_the_log_line() {
         let particles = StageFrame::<ParticleStage>::new(timer.gate());
         particles.add_nanos(ParticleStage::Emit, MS);
         particles.add_nanos(ParticleStage::Sim, 2 * MS);
+        particles.add_nanos(ParticleStage::Environment, MS / 2);
+        particles.add_count(ParticleStage::Live, 10_000);
         timer
             .nested_mut()
             .extend_from(&particles, Some(FrameStage::RenderPrep.label()));
@@ -652,4 +670,39 @@ fn particle_stages_sit_under_render_prep_in_the_log_line() {
     }
     capture.assert_logged_once(log::Level::Info, "particle_emit=1.000/1.000ms");
     capture.assert_logged_once(log::Level::Info, "particle_sim=2.000/2.000ms");
+    capture.assert_logged_once(log::Level::Info, "particle_live=10000.0/10000");
+    assert_eq!(
+        window.row("particle_environment").unwrap().parent,
+        Some("particle_sim")
+    );
+    assert_eq!(
+        window.row("particle_live").unwrap().parent,
+        Some("render_prep")
+    );
+}
+
+#[test]
+fn particle_live_count_reports_zero_and_is_absent_when_timing_is_off() {
+    use super::ParticleStage;
+    use postretro_stage_timing::StageFrame;
+    for gate in [TimingGate::ON, TimingGate::OFF] {
+        let mut timer = CpuFrameTimer::new(gate);
+        for _ in 0..WINDOW_FRAMES {
+            let start = Instant::now();
+            timer.begin_frame(start);
+            let particles = StageFrame::<ParticleStage>::new(gate);
+            particles.add_count(ParticleStage::Live, 0);
+            timer
+                .nested_mut()
+                .extend_from(&particles, Some(FrameStage::RenderPrep.label()));
+            timer.commit_frame(start + Duration::from_millis(1));
+        }
+        if gate.is_enabled() {
+            let row = timer.last_window().unwrap().row("particle_live").unwrap();
+            assert_eq!(row.frames, WINDOW_FRAMES);
+            assert!(row.average.abs() < f64::EPSILON);
+        } else {
+            assert!(timer.last_window().is_none());
+        }
+    }
 }

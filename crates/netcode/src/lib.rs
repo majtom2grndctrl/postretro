@@ -671,31 +671,32 @@ impl NetworkIdAllocator {
 /// keep this numerically equal to `ComponentPayload::kind()` in `postretro-net`.
 pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
     match kind {
-        ComponentKind::Transform => 0,
-        ComponentKind::Light => 1,
-        ComponentKind::BillboardEmitter => 2,
-        ComponentKind::ParticleState => 3,
-        ComponentKind::SpriteVisual => 4,
-        ComponentKind::FogVolume => 5,
-        ComponentKind::PlayerMovement => 6,
-        ComponentKind::Weapon => 7,
-        ComponentKind::DescriptorProvenance => 8,
-        ComponentKind::Mesh => 9,
-        ComponentKind::Health => 10,
-        ComponentKind::Agent => 11,
-        ComponentKind::Brain => 12,
-        ComponentKind::KinematicMover => 13,
-        ComponentKind::TriggerVolume => 14,
-        ComponentKind::AmmoReserve => 15,
-        ComponentKind::Spawner => 16,
-        ComponentKind::EntityState => 17,
-        ComponentKind::DeferredEffect => 18,
-        ComponentKind::Inventory => 19,
-        ComponentKind::Touchable => 20,
-        ComponentKind::Projectile => 21,
-        ComponentKind::HitVolume => 22,
-        ComponentKind::MapOrdinal => 23,
-        ComponentKind::Immersion => 24,
+        ComponentKind::Transform => postretro_net::wire::COMPONENT_KIND_TRANSFORM,
+        ComponentKind::Light => postretro_net::wire::COMPONENT_KIND_LIGHT,
+        ComponentKind::BillboardEmitter => postretro_net::wire::COMPONENT_KIND_BILLBOARD_EMITTER,
+        ComponentKind::SpriteVisual => postretro_net::wire::COMPONENT_KIND_SPRITE_VISUAL,
+        ComponentKind::FogVolume => postretro_net::wire::COMPONENT_KIND_FOG_VOLUME,
+        ComponentKind::PlayerMovement => postretro_net::wire::COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+        ComponentKind::Weapon => postretro_net::wire::COMPONENT_KIND_WEAPON,
+        ComponentKind::DescriptorProvenance => {
+            postretro_net::wire::COMPONENT_KIND_DESCRIPTOR_PROVENANCE
+        }
+        ComponentKind::Mesh => postretro_net::wire::COMPONENT_KIND_MESH_ANIMATION_STATE,
+        ComponentKind::Health => postretro_net::wire::COMPONENT_KIND_HEALTH,
+        ComponentKind::Agent => postretro_net::wire::COMPONENT_KIND_AGENT,
+        ComponentKind::Brain => postretro_net::wire::COMPONENT_KIND_BRAIN,
+        ComponentKind::KinematicMover => postretro_net::wire::COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+        ComponentKind::TriggerVolume => postretro_net::wire::COMPONENT_KIND_TRIGGER_VOLUME,
+        ComponentKind::AmmoReserve => postretro_net::wire::COMPONENT_KIND_AMMO_RESERVE,
+        ComponentKind::Spawner => postretro_net::wire::COMPONENT_KIND_SPAWNER,
+        ComponentKind::EntityState => postretro_net::wire::COMPONENT_KIND_ENTITY_STATE,
+        ComponentKind::DeferredEffect => postretro_net::wire::COMPONENT_KIND_DEFERRED_EFFECT,
+        ComponentKind::Inventory => postretro_net::wire::COMPONENT_KIND_INVENTORY,
+        ComponentKind::Touchable => postretro_net::wire::COMPONENT_KIND_TOUCHABLE,
+        ComponentKind::Projectile => postretro_net::wire::COMPONENT_KIND_PROJECTILE,
+        ComponentKind::HitVolume => postretro_net::wire::COMPONENT_KIND_HIT_VOLUME,
+        ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
+        ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
     }
 }
 
@@ -4219,7 +4220,7 @@ mod tests {
 
     /// What one pass of the production host intake produced at one host tick.
     struct HostIntake {
-        /// Impact-burst particles the host's own registry holds afterwards.
+        /// Impact-burst particles the host's local frame pool holds afterwards.
         particles: usize,
         /// Every `impact` emission raised for the host's scripts and sounds;
         /// its emitter is what the observer impact cue freezes.
@@ -4259,10 +4260,12 @@ mod tests {
             |_, point| projectile_contacts.push(point),
             |emission| impacts.push(emission),
         );
-        let particles = fixture
-            .registry
-            .iter_with_kind(ComponentKind::ParticleState)
-            .count();
+        weapon::drain_impact_particle_requests(
+            &mut fixture.registry,
+            &mut fixture.particle_pool,
+            &mut Vec::new(),
+        );
+        let particles = fixture.particle_pool.len();
         HostIntake {
             particles,
             impacts,
@@ -4333,6 +4336,12 @@ mod tests {
 
         assert_eq!(impacts, 1, "one impact per remote shot");
         assert_eq!(particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::NEG_X) > 0.0)
+        );
     }
 
     // A contact the host rejects is not presented: no burst for a wall the
@@ -4368,6 +4377,12 @@ mod tests {
 
         assert!(hitscan.hit_accepted);
         assert_eq!(hitscan.particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::Y) > 0.0)
+        );
         let cue_contacts = observer_cue_contacts(&fixture, &hitscan);
         assert_eq!(cue_contacts.len(), 2, "{cue_contacts:?}");
         assert!(
@@ -4389,6 +4404,12 @@ mod tests {
 
         assert!(direct.hit_accepted);
         assert_eq!(direct.particles, weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::Y) > 0.0)
+        );
         assert_eq!(direct.projectile_contacts, vec![Vec3::new(4.0, 0.5, 0.0)]);
         let cue_contacts = observer_cue_contacts(&fixture, &direct);
         assert_eq!(cue_contacts.len(), 1, "{cue_contacts:?}");
@@ -4682,6 +4703,7 @@ mod tests {
 
     struct HitIngestFixture {
         registry: EntityRegistry,
+        particle_pool: postretro_sim::particle_pool::ParticlePool,
         allocator: NetworkIdAllocator,
         owners: MovementOwners,
         open_shots: OpenAuthorizedShots,
@@ -4745,8 +4767,11 @@ mod tests {
                 7,
             );
 
+            let mut particle_pool = postretro_sim::particle_pool::ParticlePool::new();
+            particle_pool.configure_impact_collection(0);
             Self {
                 registry,
+                particle_pool,
                 allocator,
                 owners,
                 open_shots,
@@ -6388,8 +6413,8 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            30,
-            "the vault movement state requires wire version 30"
+            31,
+            "the vault movement state requires wire version 31"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
@@ -6933,8 +6958,7 @@ mod tests {
             match kind {
                 ComponentKind::Transform => Some(ComponentKind::Light),
                 ComponentKind::Light => Some(ComponentKind::BillboardEmitter),
-                ComponentKind::BillboardEmitter => Some(ComponentKind::ParticleState),
-                ComponentKind::ParticleState => Some(ComponentKind::SpriteVisual),
+                ComponentKind::BillboardEmitter => Some(ComponentKind::SpriteVisual),
                 ComponentKind::SpriteVisual => Some(ComponentKind::FogVolume),
                 ComponentKind::FogVolume => Some(ComponentKind::PlayerMovement),
                 ComponentKind::PlayerMovement => Some(ComponentKind::Weapon),
@@ -6967,6 +6991,10 @@ mod tests {
                 component_kind_discriminant(kind),
                 kind as u16,
                 "discriminant must equal enum layout for {kind:?}"
+            );
+            assert_eq!(
+                kind as usize, visited,
+                "component discriminants must be gapless"
             );
             visited += 1;
             current = next_kind(kind);

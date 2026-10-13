@@ -161,7 +161,6 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Transform => "transform",
         ComponentKind::Light => "light",
         ComponentKind::BillboardEmitter => "billboard_emitter",
-        ComponentKind::ParticleState => "particle_state",
         ComponentKind::SpriteVisual => "sprite_visual",
         ComponentKind::FogVolume => "fog_volume",
         ComponentKind::PlayerMovement => "player_movement",
@@ -191,7 +190,6 @@ fn component_kind_from_name(name: &str) -> Option<ComponentKind> {
         "transform" => Some(ComponentKind::Transform),
         "light" => Some(ComponentKind::Light),
         "billboard_emitter" | "emitter" => Some(ComponentKind::BillboardEmitter),
-        "particle_state" | "particle" => Some(ComponentKind::ParticleState),
         "sprite_visual" => Some(ComponentKind::SpriteVisual),
         "fog_volume" => Some(ComponentKind::FogVolume),
         _ => None,
@@ -242,14 +240,12 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ctx,
                 "LightComponent is read-only via setComponent; use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) to build a setLightAnimation reaction step",
             )),
-            "billboard_emitter" | "particle_state" | "sprite_visual" => {
-                Err(rquickjs::Exception::throw_type(
-                    ctx,
-                    &format!(
-                        "{kind} is bridge-managed; setComponent is not supported (use the dedicated reaction primitives instead)"
-                    ),
-                ))
-            }
+            "billboard_emitter" | "sprite_visual" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                &format!(
+                    "{kind} is bridge-managed; setComponent is not supported (use the dedicated reaction primitives instead)"
+                ),
+            )),
             "weapon" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "weapon is descriptor-owned; setComponent is not supported (update the weapon descriptor instead)",
@@ -325,7 +321,6 @@ impl<'js> IntoJs<'js> for ComponentValue {
             ComponentValue::Light(light) => component_to_js(ctx, ComponentValue::Light(light)),
             ComponentValue::FogVolume(fog) => fog_to_js(ctx, fog),
             other @ (ComponentValue::BillboardEmitter(_)
-            | ComponentValue::ParticleState(_)
             | ComponentValue::SpriteVisual(_)
             | ComponentValue::Weapon(_)) => component_to_js(ctx, other),
             ComponentValue::PlayerMovement(_) => Err(rquickjs::Exception::throw_type(
@@ -453,7 +448,7 @@ impl FromLua for ComponentValue {
             "light" => Err(mlua::Error::RuntimeError(
                 "LightComponent is read-only via setComponent; use a LightEntityHandle capability method (pulse, fade, flicker, colorShift, or sweep) to build a setLightAnimation reaction step".to_string(),
             )),
-            "billboard_emitter" | "particle_state" | "sprite_visual" => Err(
+            "billboard_emitter" | "sprite_visual" => Err(
                 mlua::Error::RuntimeError(format!(
                     "{kind} is bridge-managed; setComponent is not supported (use the dedicated reaction primitives instead)"
                 )),
@@ -519,7 +514,6 @@ impl IntoLua for ComponentValue {
             ComponentValue::Light(light) => component_to_lua(lua, ComponentValue::Light(light)),
             ComponentValue::FogVolume(fog) => fog_to_lua(lua, fog),
             other @ (ComponentValue::BillboardEmitter(_)
-            | ComponentValue::ParticleState(_)
             | ComponentValue::SpriteVisual(_)
             | ComponentValue::Weapon(_)) => component_to_lua(lua, other),
             ComponentValue::PlayerMovement(_) => Err(mlua::Error::RuntimeError(
@@ -819,6 +813,37 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
 mod tests {
     use super::*;
     use rquickjs::CatchResultExt;
+
+    #[test]
+    fn removed_particle_kind_and_alias_are_unknown_in_read_and_set_ffis() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            for kind in ["particle_state", "particle"] {
+                let name = kind.into_js(&ctx).unwrap();
+                let err = ComponentKind::from_js(&ctx, name).catch(&ctx).unwrap_err();
+                assert!(err.to_string().contains("unknown ComponentKind"));
+                let value = Object::new(ctx.clone()).unwrap();
+                value.set("kind", kind).unwrap();
+                let err = ComponentValue::from_js(&ctx, value.into_value())
+                    .catch(&ctx)
+                    .unwrap_err();
+                assert!(err.to_string().contains("unknown ComponentValue kind"));
+                assert!(!err.to_string().contains("bridge-managed"));
+            }
+        });
+        let lua = Lua::new();
+        for kind in ["particle_state", "particle"] {
+            let name = kind.into_lua(&lua).unwrap();
+            let err = ComponentKind::from_lua(name, &lua).unwrap_err();
+            assert!(err.to_string().contains("unknown ComponentKind"));
+            let value = lua.create_table().unwrap();
+            value.set("kind", kind).unwrap();
+            let err = ComponentValue::from_lua(LuaValue::Table(value), &lua).unwrap_err();
+            assert!(err.to_string().contains("unknown ComponentValue kind"));
+            assert!(!err.to_string().contains("bridge-managed"));
+        }
+    }
 
     #[test]
     fn raw_engine_managed_components_are_rejected_by_both_script_ffis() {

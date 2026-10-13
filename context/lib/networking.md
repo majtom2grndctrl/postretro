@@ -965,7 +965,12 @@ and `SNAPSHOT_VERSION` to 19; `Swim` and the swim re-entry latch share that bump
 environment (level gravity and the host fluid table) advances the tuning epoch to 11. The
 application protocol remains PRLB.
 
-`WireMovementState::Vault` advances `WIRE_VERSION` to 30 and `SNAPSHOT_VERSION` to 20.
+Removing the registry particle component renumbers later component kinds and advances
+`WIRE_VERSION` to 30. Peers at 29 are refused at handshake. `SNAPSHOT_VERSION` stays 19,
+the tuning epoch stays 11 and application protocol PRLB is unchanged. Anonymous particles
+and their local impact intake never replicate.
+
+`WireMovementState::Vault` advances `WIRE_VERSION` to 31 and `SNAPSHOT_VERSION` to 20.
 Vault tuning in the movement descriptor advances the tuning epoch to 12. The application
 protocol remains PRLB.
 

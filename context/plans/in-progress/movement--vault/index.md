@@ -22,7 +22,7 @@ Owner-requested capability, Epic 11's missing traversal verb. Step-up climbs onl
   - One predicate refuses starts on host-local, host-remote and client-predicted paths, judged at the start's stamped tick (`networking.md` §Combat authority).
 - **The fluid jump becomes optional.** Omitting `swim.fluidJumpVelocity` leaves jump treading at the surface, which with `from.swim` gives mantle-only pool exits. Existing descriptors still validate.
 - **Descriptor shape.** Flat `movement.vault` in today's shape; the composition draft migrates it. An invalid block drops with a warning naming the field, as swim does.
-- **Wire.** New `WireMovementState::Vault`. `WIRE_VERSION` 29→30, `SNAPSHOT_VERSION` 19→20. Hot reload mid-vault drops to `Normal`.
+- **Wire.** New `WireMovementState::Vault`. `WIRE_VERSION` 30→31 (main's particle-component removal took 30), `SNAPSHOT_VERSION` 19→20. Hot reload mid-vault drops to `Normal`.
 - **Non-goals.**
   - Wall-contact forwarding: `movement--wall-run` owns it (cross-cutting-policies D8); vault reads none.
   - On-screen weapon lowering: the viewmodel shows none today, even for switches. It is its own draft, which vault reuses once it lands.

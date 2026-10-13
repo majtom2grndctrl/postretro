@@ -5,26 +5,35 @@ use bitcode::{Decode, Encode};
 
 use super::ValidationError;
 
-/// `component_kind` discriminant for a `Transform` payload. Numeric-equal to the
-/// engine `ComponentKind::Transform as u16`.
+// Engine-aligned component discriminants. Unreplicated kinds still reserve their
+// engine number here; this inventory is not a replication allow-list.
 pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
-/// Engine `ComponentKind::Light` discriminant.
 pub const COMPONENT_KIND_LIGHT: u16 = 1;
-/// Engine `ComponentKind::BillboardEmitter` discriminant.
 pub const COMPONENT_KIND_BILLBOARD_EMITTER: u16 = 2;
-/// Engine `ComponentKind::FogVolume` discriminant.
-pub const COMPONENT_KIND_FOG_VOLUME: u16 = 5;
+pub const COMPONENT_KIND_SPRITE_VISUAL: u16 = 3;
+pub const COMPONENT_KIND_FOG_VOLUME: u16 = 4;
+pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 5;
+pub const COMPONENT_KIND_WEAPON: u16 = 6;
+pub const COMPONENT_KIND_DESCRIPTOR_PROVENANCE: u16 = 7;
+pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 8;
+pub const COMPONENT_KIND_HEALTH: u16 = 9;
+pub const COMPONENT_KIND_AGENT: u16 = 10;
+pub const COMPONENT_KIND_BRAIN: u16 = 11;
+pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 12;
+pub const COMPONENT_KIND_TRIGGER_VOLUME: u16 = 13;
+pub const COMPONENT_KIND_AMMO_RESERVE: u16 = 14;
+pub const COMPONENT_KIND_SPAWNER: u16 = 15;
+pub const COMPONENT_KIND_ENTITY_STATE: u16 = 16;
+pub const COMPONENT_KIND_DEFERRED_EFFECT: u16 = 17;
+pub const COMPONENT_KIND_INVENTORY: u16 = 18;
+pub const COMPONENT_KIND_TOUCHABLE: u16 = 19;
+pub const COMPONENT_KIND_PROJECTILE: u16 = 20;
+pub const COMPONENT_KIND_HIT_VOLUME: u16 = 21;
+pub const COMPONENT_KIND_MAP_ORDINAL: u16 = 22;
+pub const COMPONENT_KIND_IMMERSION: u16 = 23;
+
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
-/// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
-/// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
-pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
-/// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
-/// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
-pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
-/// `component_kind` discriminant for a kinematic-mover-state payload.
-/// Numeric-equal to the engine `ComponentKind::KinematicMover as u16`.
-pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 13;
 
 /// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
 /// `rotation`, and `scale`.

@@ -809,7 +809,6 @@ mod tests {
 
     use super::*;
     use crate::components::billboard_emitter::SpinAnimation;
-    use crate::components::particle::ParticleState;
     use crate::components::player_movement::MovementState;
     use crate::components::wieldable_state::WieldableState;
     use crate::data_descriptors::{
@@ -1892,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn emitter_refresh_preserves_live_particles() {
+    fn emitter_refresh_replaces_only_the_emitter_configuration() {
         let old = vec![emitter_descriptor("smoke", "smoke", 5.0)];
         let new = vec![emitter_descriptor("smoke", "smoke", 12.0)];
         let mut registry = EntityRegistry::new();
@@ -1906,22 +1905,6 @@ mod tests {
                 provenance("smoke", &[DescriptorComponentKind::Emitter]),
             )
             .unwrap();
-        let particle_id = registry.spawn(Transform::default());
-        let particle = ParticleState {
-            velocity: [0.1, 0.2, 0.3],
-            age: 0.4,
-            lifetime: 2.0,
-            buoyancy: 0.0,
-            drag: 0.1,
-            size_curve: [1.0, 0.5].into(),
-            opacity_curve: [1.0, 0.0].into(),
-            spin_rate: 0.0,
-            emitter: Some(emitter_id),
-        };
-        registry
-            .set_component(particle_id, particle.clone())
-            .unwrap();
-
         let plan = plan_descriptor_refresh(&old, &new, &registry);
         let summary = apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
 
@@ -1933,12 +1916,12 @@ mod tests {
                 .rate,
             12.0,
         );
+        assert_eq!(registry.iter_with_kind(ComponentKind::Transform).count(), 1);
         assert_eq!(
             registry
-                .get_component::<ParticleState>(particle_id)
-                .unwrap(),
-            &particle,
-            "refreshing an emitter component must not remove or rewrite live particle entities",
+                .iter_with_kind(ComponentKind::BillboardEmitter)
+                .count(),
+            1
         );
     }
 

@@ -302,6 +302,7 @@ impl Renderer {
         )?;
         self.full = Some(Box::new(full));
         self.queue.enable();
+        self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");
         Ok(())
     }

@@ -29,8 +29,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Shared enemy overlay rosters and participation-framed Presentation advance it to 28.
 /// The protected push-drift layer in player movement state advances it to 29;
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
-/// `WireMovementState::Vault` advances it to 30.
-pub const WIRE_VERSION: u32 = 30;
+/// Removal of the particle component renumbers later component kinds at 30.
+/// `WireMovementState::Vault` advances it to 31.
+pub const WIRE_VERSION: u32 = 31;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -450,7 +451,7 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 30,
+            WIRE_VERSION, 31,
             "the vault movement state extends the shipped layout"
         );
         let previous = ProtocolVersion {
@@ -610,12 +611,9 @@ mod switch_tick_epoch_tests {
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 28);
     }
 
-    // A pre-vault peer cannot decode `WireMovementState::Vault`, so gate 1
-    // refuses it before any snapshot decode.
     #[test]
-    fn vault_movement_state_refuses_wire_29_peers() {
-        assert_eq!(WIRE_VERSION, 30);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 20);
+    fn particle_component_renumbering_refuses_wire_29_peers() {
+        const { assert!(WIRE_VERSION > 29) };
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 29,
@@ -625,6 +623,23 @@ mod switch_tick_epoch_tests {
             Err(ClosingCause::Protocol { .. })
         ));
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 29);
+    }
+
+    // A pre-vault peer cannot decode `WireMovementState::Vault`, so gate 1
+    // refuses it before any snapshot decode.
+    #[test]
+    fn vault_movement_state_refuses_wire_30_peers() {
+        assert_eq!(WIRE_VERSION, 31);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 20);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 30,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 30);
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.

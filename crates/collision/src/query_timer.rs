@@ -56,7 +56,7 @@ impl EnvironmentQueryTimer {
 
     /// Time in [`resolve_environment`](crate::resolve_environment) and
     /// [`resolve_gravity`](crate::resolve_gravity): per-body environment
-    /// resolution. `None` when no body resolved.
+    /// resolution, including particle point batches. `None` when no query ran.
     pub fn body_resolve_nanos(&self) -> Option<u64> {
         self.body_resolve.nanos()
     }
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::{
         BodyProbe, EnvironmentView, EnvironmentVolumes, resolve_environment, resolve_gravity,
-        visit_fluid_crossings,
+        resolve_particle_accelerations, visit_fluid_crossings,
     };
 
     fn probe() -> BodyProbe {
@@ -145,5 +145,28 @@ mod tests {
         assert_eq!(timer.body_resolve_nanos(), None, "untimed view never adds");
         assert_eq!(from_untimed, resolve_environment(timed, &probe()));
         assert!(timer.body_resolve_nanos().is_some());
+    }
+    #[test]
+    fn particle_batch_timing_is_absent_for_empty_and_off_views() {
+        let volumes = EnvironmentVolumes::empty();
+        let timer = EnvironmentQueryTimer::new();
+        let view = EnvironmentView::new(-3.0, &volumes, &[]);
+        resolve_particle_accelerations(view.timed(&timer), &[], &mut []);
+        assert_eq!(timer.body_resolve_nanos(), None);
+        let positions = [Vec3::ZERO, Vec3::X, Vec3::splat(f32::NAN)];
+        let mut output = [(0.0, Vec3::ONE); 3];
+        resolve_particle_accelerations(view, &positions, &mut output);
+        assert_eq!(timer.body_resolve_nanos(), None);
+        let untimed = output;
+        resolve_particle_accelerations(view.timed(&timer), &positions, &mut output);
+        assert_eq!(output, untimed);
+        assert!(
+            output
+                .iter()
+                .all(|&(gravity, push)| gravity == -3.0 && push == Vec3::ZERO)
+        );
+        assert_eq!(timer.body_resolve.calls.load(Ordering::Relaxed), 1);
+        assert!(timer.body_resolve_nanos().is_some());
+        assert_eq!(timer.fluid_crossing_nanos(), None);
     }
 }

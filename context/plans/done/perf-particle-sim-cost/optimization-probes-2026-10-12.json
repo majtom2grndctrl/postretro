@@ -1,0 +1,156 @@
+{
+  "created_at": "2026-10-12T20:07:48.268374-07:00",
+  "purpose": "Algorithm hypothesis probes; not AC25 acceptance. No engine or Cargo ran during benchmark loops. Synthetic query results do not establish production timing.",
+  "fixture": "content/dev/maps/stress-env-volumes.prl; same rebuilt fixture as parent acceptance manifest",
+  "workload": "10,000 synthetic positions near 40 actual emitter origins: 250 positions per emitter. Grouped order and transposed emitter-interleaved order; independent exact queries in 64-point timed batches. Three repetitions of 100 full 10k-point batches, reported median/p10/p90 and nested mean.",
+  "compile_library": "rustc --edition=2024 --crate-name postretro_collision --crate-type rlib -O -Cembed-bitcode=yes /tmp/postretro-next-query-${variant}/lib.rs --extern glam=target/release/deps/libglam-c5cc207f42cb5f22.rlib -L dependency=target/release/deps -o /tmp/libpostretro_next_${variant}.rlib",
+  "compile_driver": "rustc --edition=2024 -O -Clto=thin /tmp/postretro-next-query-probe.rs --extern postretro_collision=/tmp/libpostretro_next_${variant}.rlib --extern glam=target/release/deps/libglam-c5cc207f42cb5f22.rlib --extern postretro_level_loader=target/release/deps/libpostretro_level_loader-6037f376ad183fc8.rlib -L dependency=target/release/deps -o /tmp/postretro-next-query-${variant}-bin",
+  "driver_sha256": "e0b799297ebe39fb2f25a9265beaa90f2e64b187aedb5739293b32d0d3ec0cb2",
+  "verification_driver_sha256": "ab85a043c40106497e19840249da0fa40c57aace9afa829d12f872792ad2523b",
+  "verification_compile": "same driver command with postretro-next-query-verify.rs and output suffix -verify; variants baseline and grid",
+  "verification": {
+    "baseline": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\nverification_count=96815 exact_result_checksum=21f33feec23ba3cf\n",
+    "grid": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\nverification_count=96815 exact_result_checksum=21f33feec23ba3cf\n"
+  },
+  "verification_inputs": "96,815 inputs: 10k emitter positions, 20k deterministic random positions in [-300,300]^3, all actual brush AABB corners plus each coordinate next_up/next_down, signed zero, subnormal and NaN/infinite probes. Checks exact full-output checksum across baseline/grid and batched/scalar equality within each.",
+  "variants": [
+    {
+      "name": "baseline",
+      "prototype_source_sha256": {},
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.515572 p10=0.510140 p90=0.733651 nested_mean_ms=0.573762\ninterleaved batch median_ms=0.559055 p10=0.541858 p90=0.793590 nested_mean_ms=0.603512\ngrouped batch median_ms=0.511390 p10=0.509211 p90=0.691720 nested_mean_ms=0.544641\ninterleaved batch median_ms=0.593257 p10=0.555623 p90=0.926163 nested_mean_ms=0.658343\ngrouped batch median_ms=0.512758 p10=0.510025 p90=0.714587 nested_mean_ms=0.552599\ninterleaved batch median_ms=0.559570 p10=0.553657 p90=0.795955 nested_mean_ms=0.609523\n",
+      "source_manifest_sha256": "a854a468d6204db253565f12962f0c50904a0b61cd52542b068f2a137ba9e485"
+    },
+    {
+      "name": "flat4",
+      "prototype_source_sha256": {
+        "bvh.rs": "d4410a44b78bae26e7c5197242a82a6ff9ebf53fa86c918b283cf1032e7bb091",
+        "volumes.rs": "fe74033266d330b7e4114ea0b1193624faeb3fe71f99a26d88f2721c3486a3e3"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.541036 p10=0.524623 p90=0.873115 nested_mean_ms=0.612582\ninterleaved batch median_ms=0.589900 p10=0.578520 p90=0.976590 nested_mean_ms=0.667498\ngrouped batch median_ms=0.528510 p10=0.525136 p90=0.755339 nested_mean_ms=0.589975\ninterleaved batch median_ms=0.592268 p10=0.581039 p90=0.927211 nested_mean_ms=0.675078\ngrouped batch median_ms=0.526937 p10=0.523843 p90=0.726568 nested_mean_ms=0.562421\ninterleaved batch median_ms=0.623001 p10=0.579558 p90=0.847216 nested_mean_ms=0.662160\n",
+      "source_manifest_sha256": "1660a3c186bdc046126ed217ff0275f7667f8dc8ff2e3a509852989a92aede89"
+    },
+    {
+      "name": "flat1",
+      "prototype_source_sha256": {
+        "bvh.rs": "6b9ca896e0011c0583eeb0f44f0266af97f58c92f4e12f19c90dd3ba9aada74a",
+        "volumes.rs": "fe74033266d330b7e4114ea0b1193624faeb3fe71f99a26d88f2721c3486a3e3"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.531657 p10=0.529308 p90=0.772801 nested_mean_ms=0.574702\ninterleaved batch median_ms=0.601059 p10=0.593668 p90=0.768419 nested_mean_ms=0.643132\ngrouped batch median_ms=0.531583 p10=0.507007 p90=0.665907 nested_mean_ms=0.554536\ninterleaved batch median_ms=0.573627 p10=0.544312 p90=0.758154 nested_mean_ms=0.598133\ngrouped batch median_ms=0.509572 p10=0.505680 p90=0.675808 nested_mean_ms=0.552571\ninterleaved batch median_ms=0.572944 p10=0.570770 p90=0.792642 nested_mean_ms=0.617240\n",
+      "source_manifest_sha256": "7b98d802838b4d51c96eb90ce3ea595b271c10410c1eea82c4c4eb6a35e3d770"
+    },
+    {
+      "name": "flat1volume",
+      "prototype_source_sha256": {
+        "bvh.rs": "f3dfc3d8c929e45e63d3bc09141eff8ed0d930b29c5650d7415bada84d19ff98",
+        "volumes.rs": "fe74033266d330b7e4114ea0b1193624faeb3fe71f99a26d88f2721c3486a3e3"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.476675 p10=0.472438 p90=0.964592 nested_mean_ms=0.578508\ninterleaved batch median_ms=0.536677 p10=0.505869 p90=0.741280 nested_mean_ms=0.578936\ngrouped batch median_ms=0.473998 p10=0.470108 p90=0.693650 nested_mean_ms=0.513049\ninterleaved batch median_ms=0.541827 p10=0.528278 p90=0.748966 nested_mean_ms=0.591520\ngrouped batch median_ms=0.475200 p10=0.472443 p90=0.715104 nested_mean_ms=0.539521\ninterleaved batch median_ms=0.535648 p10=0.527271 p90=0.730602 nested_mean_ms=0.593612\n",
+      "source_manifest_sha256": "200a374e6c15282c082d3078ea71a073b857f2f1a182ee34d1cf191d752890c9"
+    },
+    {
+      "name": "hot",
+      "prototype_source_sha256": {
+        "resolve.rs": "ce23d39cd8d5d8fdc94200287c48a864778750e9799611490607be60bcebb5be",
+        "volumes.rs": "81c6cfc39286972d418bf693b6c2d96bd7909b3aca6bba5a589389c73a915b3e"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.490392 p10=0.486690 p90=0.633759 nested_mean_ms=0.527613\ninterleaved batch median_ms=0.550894 p10=0.533877 p90=0.819333 nested_mean_ms=0.616485\ngrouped batch median_ms=0.490002 p10=0.487014 p90=0.678317 nested_mean_ms=0.547911\ninterleaved batch median_ms=0.561052 p10=0.544829 p90=0.786104 nested_mean_ms=0.634306\ngrouped batch median_ms=0.489712 p10=0.486881 p90=0.687883 nested_mean_ms=0.533369\ninterleaved batch median_ms=0.549631 p10=0.544462 p90=0.743906 nested_mean_ms=0.589752\n",
+      "source_manifest_sha256": "4f13dc1fc794a871a002fbe16549f2e9b0ae6a275ae1e20b2335955d7d14d660"
+    },
+    {
+      "name": "hotaxis",
+      "prototype_source_sha256": {
+        "resolve.rs": "ce23d39cd8d5d8fdc94200287c48a864778750e9799611490607be60bcebb5be",
+        "volumes.rs": "f3ad6fe91dc42675579d2b5d7bb036151c07c796ec282b8088a0bdcf74065d14"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.412206 p10=0.408993 p90=0.601844 nested_mean_ms=0.442573\ninterleaved batch median_ms=0.410812 p10=0.409152 p90=0.534231 nested_mean_ms=0.431798\ngrouped batch median_ms=0.412496 p10=0.408872 p90=0.658446 nested_mean_ms=0.459231\ninterleaved batch median_ms=0.410698 p10=0.408712 p90=0.532772 nested_mean_ms=0.439075\ngrouped batch median_ms=0.413415 p10=0.408780 p90=0.576787 nested_mean_ms=0.447239\ninterleaved batch median_ms=0.409502 p10=0.407838 p90=0.542584 nested_mean_ms=0.431519\n",
+      "source_manifest_sha256": "96ba967ecd751f2df1a2dfcb9b9351b22d42d9eae432857e6e19237979bf88b2"
+    },
+    {
+      "name": "wide",
+      "prototype_source_sha256": {
+        "bvh.rs": "64c30bb4dd3fee4e38ed7b3f111ce0ee88da8381e4450b951ee23f921a49e75c",
+        "resolve.rs": "ce23d39cd8d5d8fdc94200287c48a864778750e9799611490607be60bcebb5be",
+        "volumes.rs": "604a5e5257d5ee5d633afa30f7af037e7effd14a30e4d36557190279e921ecac"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.526779 p10=0.525834 p90=0.717969 nested_mean_ms=0.566492\ninterleaved batch median_ms=0.544761 p10=0.540548 p90=0.737083 nested_mean_ms=0.588053\ngrouped batch median_ms=0.527592 p10=0.525799 p90=0.740899 nested_mean_ms=0.576879\ninterleaved batch median_ms=0.543160 p10=0.540223 p90=0.719633 nested_mean_ms=0.574775\ngrouped batch median_ms=0.527451 p10=0.525858 p90=0.757648 nested_mean_ms=0.576039\ninterleaved batch median_ms=0.545215 p10=0.541732 p90=0.800308 nested_mean_ms=0.620866\n",
+      "source_manifest_sha256": "4a61715d254f9c5b8e348b91fb3c44c854cb8d6e7bae4fb1f5d0bed4a5e11b27"
+    },
+    {
+      "name": "packet",
+      "prototype_source_sha256": {
+        "bvh.rs": "2a44ff83ed4b32acff2060a2516df854df5beafefa4d4e3cd8a4c8572c2d677a",
+        "resolve.rs": "e1c5efd5b1d2aede2cd4bdbb093f50b26602f7411bd11348280e972c9ecf391d",
+        "volumes.rs": "9d8eaf143e5b845f57293d278b6048282efbf8d99c9ab4c91a7c358596b1030f"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.214992 p10=0.214009 p90=0.344262 nested_mean_ms=0.226951\ninterleaved batch median_ms=0.431868 p10=0.428685 p90=0.630752 nested_mean_ms=0.482725\ngrouped batch median_ms=0.214778 p10=0.213818 p90=0.316753 nested_mean_ms=0.233483\ninterleaved batch median_ms=0.432399 p10=0.429366 p90=0.565481 nested_mean_ms=0.460456\ngrouped batch median_ms=0.216449 p10=0.213983 p90=0.381792 nested_mean_ms=0.249194\ninterleaved batch median_ms=0.435167 p10=0.429487 p90=0.711266 nested_mean_ms=0.507102\n",
+      "source_manifest_sha256": "1f771885e6008a9fde5a06aaf16afe2e3a0ff3d49582f4678df3f4b5c64cd442"
+    },
+    {
+      "name": "tight",
+      "prototype_source_sha256": {
+        "resolve.rs": "ce23d39cd8d5d8fdc94200287c48a864778750e9799611490607be60bcebb5be",
+        "volumes.rs": "fe725500b2a141c99231ffe4051e88076c51097c6a58453bea9e714e01451815"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.387046 p10=0.384020 p90=0.556859 nested_mean_ms=0.423835\ninterleaved batch median_ms=0.388057 p10=0.386753 p90=0.506864 nested_mean_ms=0.408280\ngrouped batch median_ms=0.386241 p10=0.384231 p90=0.536253 nested_mean_ms=0.417433\ninterleaved batch median_ms=0.390627 p10=0.388225 p90=0.579407 nested_mean_ms=0.431347\ngrouped batch median_ms=0.386506 p10=0.384092 p90=0.515590 nested_mean_ms=0.410092\ninterleaved batch median_ms=0.388361 p10=0.385912 p90=0.612357 nested_mean_ms=0.421987\n",
+      "source_manifest_sha256": "dc720a9253fb62c5aca50bb5c740791c9740e08aa809432b3269c23de5ce7fa6"
+    },
+    {
+      "name": "packettight",
+      "prototype_source_sha256": {
+        "bvh.rs": "2a44ff83ed4b32acff2060a2516df854df5beafefa4d4e3cd8a4c8572c2d677a",
+        "resolve.rs": "e1c5efd5b1d2aede2cd4bdbb093f50b26602f7411bd11348280e972c9ecf391d",
+        "volumes.rs": "5611d8917debc0e2ef08e531d3ba6a9f1662cee43a4ec78eef914e370b09d4a5"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.205581 p10=0.205047 p90=0.238350 nested_mean_ms=0.212262\ninterleaved batch median_ms=0.420850 p10=0.419080 p90=0.582238 nested_mean_ms=0.454982\ngrouped batch median_ms=0.205887 p10=0.205195 p90=0.306251 nested_mean_ms=0.222683\ninterleaved batch median_ms=0.419946 p10=0.418772 p90=0.557244 nested_mean_ms=0.448651\ngrouped batch median_ms=0.205353 p10=0.204721 p90=0.270449 nested_mean_ms=0.212065\ninterleaved batch median_ms=0.421002 p10=0.418916 p90=0.602836 nested_mean_ms=0.451527\n",
+      "source_manifest_sha256": "2e55638c7ea76e370221154b1f3b935491fb2955daaf313d1fe666619cb184dd"
+    },
+    {
+      "name": "grid",
+      "prototype_source_sha256": {
+        "bvh.rs": "0ce5b04d396303883e50a6eb93256ea10be0f2aaab6f5882d30c40c05010f02d",
+        "resolve.rs": "ce23d39cd8d5d8fdc94200287c48a864778750e9799611490607be60bcebb5be",
+        "volumes.rs": "b9ca34accc4d40076263e85ec2d005dff84459936df879d104a0dfae8d51b556"
+      },
+      "timing_output": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\ngrouped batch median_ms=0.227540 p10=0.226483 p90=0.301778 nested_mean_ms=0.239530\ninterleaved batch median_ms=0.234810 p10=0.231563 p90=0.358758 nested_mean_ms=0.255082\ngrouped batch median_ms=0.227428 p10=0.225594 p90=0.271962 nested_mean_ms=0.233775\ninterleaved batch median_ms=0.234383 p10=0.233210 p90=0.284563 nested_mean_ms=0.246407\ngrouped batch median_ms=0.227933 p10=0.226324 p90=0.332759 nested_mean_ms=0.244651\ninterleaved batch median_ms=0.234505 p10=0.233458 p90=0.333723 nested_mean_ms=0.249198\n",
+      "source_manifest_sha256": "2069b46ddc6013e391552bc388ead4b343d6617e5831f83b18aa81a6b2313d7e"
+    }
+  ],
+  "recommendation": "Bounded grid + precomputed ranks and validated exact unit-axis entry bounds. Grid interleaved median .2344-.2348ms versus baseline .534-.593ms; grouped .2274-.2279ms. Production integration additionally preserves invalid original padded-bound behavior and uses two-pass CSR construction to bound temporary storage.",
+  "limitations": [
+    "Timing probes do not capture live particle distribution or engine CPU/GPU power coupling.",
+    "No frequency/thermal telemetry recorded during standalone probes.",
+    "Prototype wide tree lacked depth-capped-leaf support and was rejected on performance.",
+    "Prototype exact-axis bounds did not protect malformed original supplied bounds; production implementation does.",
+    "No spatial grid quantization of results: candidate selection only, exact brush predicates and independent field reduction remain."
+  ],
+  "common_source_sha256": {
+    "bvh.rs": "b9cceeedf496aa0c034daf54b88caece149c1f299f8b876add331b9276a94854",
+    "crossings.rs": "2f9eb81358b3ed43b5598f5d2a7dbc694666b54c80bc868657fc446e19b57a04",
+    "crossings_tests.rs": "3d66b56d19521399703dd0e02e8360d5f6814d7011657737426dcab4ae5fdea7",
+    "eye.rs": "71093cb46f5b71c53df1759766f7ae9acd45668fa6f461d745e1883130218f84",
+    "fluid_resolve_tests.rs": "d377c9d685120d813949456f2f01c15be36a6a11c27d23977e24d3c942f60a32",
+    "leaf.rs": "343d7b869f09a023166f9d267225a35777adbd9597f4e5af82884bf93b8291e7",
+    "lib.rs": "e64db58ef4737fdb88ba9bffc7ba2ffce5bf29a9711421f463a907f9bb87a5fc",
+    "line.rs": "80f7842a5dfe953b5801f53e6868fc7b0b207670b23bf9a07f1468abda4f1eb4",
+    "polytope.rs": "46f11402b0cfaaf42fa3a04eb9d809cd00ad4c4c47b3ee9c3595f97486582743",
+    "query_equivalence_tests.rs": "99c098881e9e703c98ac1e002f5741e78259ee7cf654808f91373f496852f21e",
+    "query_timer.rs": "5108de73fdefb63fd28e38fea50c09ba06e2e7604cbaac720b84a406946c8e91",
+    "resolve.rs": "6e76bc8d99df7275870dc46b50b8ffc4dc5e7e5a45c863f7055d169ff25f3483",
+    "test_fixtures.rs": "7c44183552d95a6d40b9a84c14be3751d350b7a80c97c3b9da1e3799a9a338a3",
+    "volumes.rs": "37237154e90ea10068c8d77c5406e4c7edccd50e47446302f3f3cbc9e0d5f814"
+  },
+  "fixture_sha256": "9e07f5b63caa0d1861bf65d081428c961dbb68f08945887ded59281b46a10576",
+  "initial_timer_probes": {
+    "notes": "Diagnostic synthetic emitter-near points; not acceptance proof. Any run during concurrent Cargo compilation excluded from conclusions. Later grid research used emitter-interleaved points and actual release dependencies.",
+    "artifacts": {
+      "postretro-particle-query-current.txt": {
+        "sha256": "7ee71b3e268fbe8453a8ab1213f02087d48134c8947cd33b1ad525a80da700c4",
+        "text": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\nfixture untimed median_ms=0.791271 p10=0.690634 p90=0.951791 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.627183 p10=1.502285 p90=2.170249 nested_mean_ms=1.124927\nfixture batch timing median_ms=0.665708 p10=0.634352 p90=0.938156 nested_mean_ms=0.729293\nempty untimed median_ms=0.126147 p10=0.126117 p90=0.208719 nested_mean_ms=0.000000\nempty per-query timing median_ms=0.877468 p10=0.872640 p90=1.173113 nested_mean_ms=0.407968\nfixture untimed median_ms=0.741327 p10=0.665531 p90=1.033840 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.638058 p10=1.484955 p90=2.151475 nested_mean_ms=1.125328\nfixture batch timing median_ms=0.750350 p10=0.664870 p90=1.052442 nested_mean_ms=0.802389\nempty untimed median_ms=0.132635 p10=0.132135 p90=0.252727 nested_mean_ms=0.000000\nempty per-query timing median_ms=1.064881 p10=0.915316 p90=1.301613 nested_mean_ms=0.451182\nfixture untimed median_ms=0.698151 p10=0.690478 p90=0.962490 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.594460 p10=1.500631 p90=2.058122 nested_mean_ms=1.084754\nfixture batch timing median_ms=0.675492 p10=0.634269 p90=0.977175 nested_mean_ms=0.728447\nempty untimed median_ms=0.126243 p10=0.126133 p90=0.211810 nested_mean_ms=0.000000\nempty per-query timing median_ms=0.960460 p10=0.873905 p90=1.359018 nested_mean_ms=0.446364\n"
+      },
+      "postretro-particle-query-escape.txt": {
+        "sha256": "18cae71c8c61bdae3512a474ec39918a112f058e04607b1c680727ac313eeeb7",
+        "text": "fixture volumes=1000 leaves=1193 emitters=40 points=10000 (synthetic positions near real emitter origins; not AC proof)\nfixture untimed median_ms=0.582215 p10=0.530668 p90=0.698500 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.366410 p10=1.301730 p90=1.813208 nested_mean_ms=0.899467\nfixture batch timing median_ms=0.567489 p10=0.493282 p90=0.845585 nested_mean_ms=0.607063\nempty untimed median_ms=0.126109 p10=0.125930 p90=0.244156 nested_mean_ms=0.000000\nempty per-query timing median_ms=0.876954 p10=0.873243 p90=1.255020 nested_mean_ms=0.416106\nfixture untimed median_ms=0.511437 p10=0.505680 p90=0.710970 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.411744 p10=1.302531 p90=1.997303 nested_mean_ms=0.946279\nfixture batch timing median_ms=0.519587 p10=0.511867 p90=0.718342 nested_mean_ms=0.566457\nempty untimed median_ms=0.125977 p10=0.125930 p90=0.225309 nested_mean_ms=0.000000\nempty per-query timing median_ms=0.917955 p10=0.873647 p90=1.319567 nested_mean_ms=0.429846\nfixture untimed median_ms=0.574261 p10=0.505880 p90=0.820931 nested_mean_ms=0.000000\nfixture per-query timing median_ms=1.312093 p10=1.300691 p90=1.713128 nested_mean_ms=0.868703\nfixture batch timing median_ms=0.547432 p10=0.492547 p90=0.847633 nested_mean_ms=0.604298\nempty untimed median_ms=0.128856 p10=0.125960 p90=0.265114 nested_mean_ms=0.000000\nempty per-query timing median_ms=0.948265 p10=0.874080 p90=1.312654 nested_mean_ms=0.435242\n"
+      }
+    }
+  }
+}

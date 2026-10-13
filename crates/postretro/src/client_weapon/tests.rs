@@ -1413,20 +1413,18 @@ fn client_weapon_invalid_old_charge_correction_retracts_only_that_activation() {
 // the camera's aim, so a one-contact scene yields three predicted contacts.
 mod impact_burst {
     use super::*;
-    use postretro_entities::ComponentKind;
 
     const SHOTS: usize = 3;
 
-    fn particles(app: &crate::App) -> usize {
-        app.session
-            .as_ref()
-            .unwrap()
-            .scripting
-            .script_ctx
-            .registry
-            .borrow()
-            .iter_with_kind(ComponentKind::ParticleState)
-            .count()
+    fn particles(app: &mut crate::App) -> usize {
+        let session = app.session.as_mut().unwrap();
+        let ctx = session.scripting.script_ctx.clone();
+        weapon::drain_impact_particle_requests(
+            &mut ctx.registry.borrow_mut(),
+            &mut session.particle_pool,
+            &mut session.impact_particle_requests,
+        );
+        session.particle_pool.len()
     }
 
     fn wall_ahead(app: &mut crate::App, distance: f32) {
@@ -1482,11 +1480,11 @@ mod impact_burst {
     fn client_own_hitscan_fire_bursts_once_per_world_contact() {
         let mut app = presented_catchup_app(false);
         wall_ahead(&mut app, 8.0);
-        let before = particles(&app);
+        let before = particles(&mut app);
         let emissions = fire_all(&mut app);
         assert_eq!(impacts(&emissions), SHOTS);
         assert_eq!(
-            particles(&app) - before,
+            particles(&mut app) - before,
             SHOTS * weapon::IMPACT_PARTICLE_COUNT,
             "one burst per predicted world contact"
         );
@@ -1496,11 +1494,11 @@ mod impact_burst {
     fn client_own_hitscan_fire_bursts_once_per_entity_contact() {
         let mut app = presented_catchup_app(false);
         target_ahead(&app, 5.0);
-        let before = particles(&app);
+        let before = particles(&mut app);
         let emissions = fire_all(&mut app);
         assert_eq!(impacts(&emissions), SHOTS);
         assert_eq!(
-            particles(&app) - before,
+            particles(&mut app) - before,
             SHOTS * weapon::IMPACT_PARTICLE_COUNT,
             "one burst per predicted entity contact"
         );
@@ -1513,7 +1511,7 @@ mod impact_burst {
         let mut app = presented_catchup_app(false);
         target_ahead(&app, 5.0);
         wall_ahead(&mut app, 8.0);
-        let before = particles(&app);
+        let before = particles(&mut app);
         let emissions = fire_all(&mut app);
         let contacts: usize = emissions
             .iter()
@@ -1525,7 +1523,7 @@ mod impact_burst {
             .sum();
         assert!(contacts >= SHOTS);
         assert_eq!(
-            particles(&app) - before,
+            particles(&mut app) - before,
             contacts * weapon::IMPACT_PARTICLE_COUNT
         );
     }
@@ -1566,16 +1564,19 @@ mod impact_burst {
             .registry
             .clone();
         app.observer_weapon_cues = vec![observed_impact(&[Vec3::ZERO, Vec3::X])];
-        let before = particles(&app);
+        let before = particles(&mut app);
 
         app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
-        assert_eq!(particles(&app) - before, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        assert_eq!(
+            particles(&mut app) - before,
+            2 * weapon::IMPACT_PARTICLE_COUNT
+        );
 
         app.net_poll_and_apply(1.0 / 60.0);
         assert!(app.observer_weapon_cues.is_empty());
         app.spawn_observer_impact_bursts(&mut registry.borrow_mut());
         assert_eq!(
-            particles(&app) - before,
+            particles(&mut app) - before,
             2 * weapon::IMPACT_PARTICLE_COUNT,
             "a cue never bursts again in a later frame"
         );
@@ -1620,10 +1621,14 @@ mod impact_burst {
             for queued in &mut app.client_weapon.due {
                 queued.presentation = presentation;
             }
-            let before = particles(&app);
+            let before = particles(&mut app);
             let emissions = fire_all(&mut app);
             assert_eq!(impacts(&emissions), 0, "{presentation:?} raises no impact");
-            assert_eq!(particles(&app), before, "{presentation:?} spawns no burst");
+            assert_eq!(
+                particles(&mut app),
+                before,
+                "{presentation:?} spawns no burst"
+            );
         }
     }
 }

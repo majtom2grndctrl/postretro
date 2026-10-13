@@ -135,6 +135,7 @@ fn impulse_states_from_lua(table: &Table) -> Result<ImpulseStates, DescriptorErr
         dash: optional_impulse_state_from_lua(table, "dash")?,
         crouch: optional_impulse_state_from_lua(table, "crouch")?,
         slide: optional_impulse_state_from_lua(table, "slide")?,
+        vault: optional_impulse_state_from_lua(table, "vault")?,
     })
 }
 
@@ -150,10 +151,13 @@ fn validate_impulse_state_keys_lua(table: &Table) -> Result<(), DescriptorError>
             });
         };
         let key = key.to_str().map_err(lua_err)?.to_string();
-        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+        if !matches!(
+            key.as_str(),
+            "normal" | "dash" | "crouch" | "slide" | "vault"
+        ) {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, slide, or vault"
                 ),
             });
         }

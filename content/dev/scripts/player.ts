@@ -121,7 +121,21 @@ export const playerEntity = defineEntity({
         sinkSpeed: 0.8, // m/s drift along gravity with no vertical input, at default gravity
         enterDepth: 0.5, // immersion fraction that enters swim
         exitDepth: 0.35, // immersion fraction that leaves swim; < enterDepth
-        fluidJumpVelocity: 9.35, // m/s upward on a jump from the surface
+        fluidJumpVelocity: 9.35, // m/s upward on a jump from the surface; optional
+      },
+      // Mantling onto ledges. Absent = this player never vaults. Ledges up to
+      // the step-up height still step up; taller ones up to maxHeight vault.
+      vault: {
+        maxHeight: 1.6, // m above the feet; above stepHeight
+        swimMaxHeight: 0.9, // m above the fluid surface
+        durationMs: 320, // rise-and-over time
+        from: {
+          // place → "auto" | "jump"; a missing place cannot vault
+          air: "auto",
+          swim: "auto", // omit for Quake-style fluid exits only
+          // ground: "jump", // opt in: jump onto a ledge from standing
+        },
+        allowFire: false, // hands on the ledge
       },
       // Landing and jumping sounds, played at the local pawn (`audio.md` §4).
       sounds: positionalSoundMovementSounds,
@@ -162,6 +176,9 @@ export const playerEntity = defineEntity({
               tension: 9,
               enter: { fov: 0, pitch: -2.5, roll: 1.5 },
               exit: { fov: 0, pitch: 1.5, roll: 0 },
+            },
+            vault: {
+              enter: { fov: 0, pitch: -3, roll: 0 },
             },
           },
         },

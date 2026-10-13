@@ -45,7 +45,7 @@ pub(crate) struct ViewFeelState {
     pub(crate) sway_clock: f32,
     /// One critically-damped transient spring per closed movement-state key.
     /// The state remains app-owned and presentation-only, never replicated.
-    impulse_springs: [impulse::ImpulseSpring; 4],
+    impulse_springs: [impulse::ImpulseSpring; 5],
     /// Sustained slide presentation, independent of transition kicks.
     slide_blend: f32,
 }
@@ -58,7 +58,7 @@ impl Default for ViewFeelState {
             bob_vertical_phase: 0.0,
             bob_lateral_phase: 0.0,
             sway_clock: 0.0,
-            impulse_springs: [impulse::ImpulseSpring::ZERO; 4],
+            impulse_springs: [impulse::ImpulseSpring::ZERO; 5],
             slide_blend: 0.0,
         }
     }
@@ -68,7 +68,7 @@ impl ViewFeelState {
     /// Discard transition kicks and sustained slide presentation for state that no longer
     /// exists while preserving independent bob, tilt, and sway continuity.
     pub(crate) fn clear_state_effects(&mut self) {
-        self.impulse_springs = [impulse::ImpulseSpring::ZERO; 4];
+        self.impulse_springs = [impulse::ImpulseSpring::ZERO; 5];
         self.slide_blend = 0.0;
     }
 }
@@ -197,7 +197,7 @@ pub(crate) fn evaluate_with_edges(
         None => {
             // A descriptor that removes impulse must not leave a prior
             // presentation displacement in flight.
-            state.impulse_springs = [impulse::ImpulseSpring::ZERO; 4];
+            state.impulse_springs = [impulse::ImpulseSpring::ZERO; 5];
             ImpulseChannels {
                 fov: 0.0,
                 pitch: 0.0,
@@ -911,6 +911,7 @@ mod tests {
             dash: None,
             crouch: Some(state(Some(channels(3.0, 2.0, 1.0)), None)),
             slide: Some(state(None, Some(channels(-4.0, 5.0, -2.0)))),
+            vault: None,
         });
         let mut state = ViewFeelState::default();
         let output = evaluate_with_edges(
@@ -932,6 +933,40 @@ mod tests {
         assert!(approx_eq(output.impulse_roll, -1.0));
     }
 
+    // A vault's entry and exit kick its own row; swim at the other end of an
+    // edge still kicks nothing.
+    #[test]
+    fn vault_edges_kick_the_vault_row() {
+        let params = impulse_params(ImpulseStates {
+            normal: None,
+            dash: None,
+            crouch: None,
+            slide: None,
+            vault: Some(state(
+                Some(channels(0.0, -3.0, 0.0)),
+                Some(channels(0.0, 1.5, 0.0)),
+            )),
+        });
+        for (from, to, pitch) in [
+            (MovementStateKind::Normal, MovementStateKind::Vault, -3.0),
+            (MovementStateKind::Swim, MovementStateKind::Vault, -3.0),
+            (MovementStateKind::Vault, MovementStateKind::Normal, 1.5),
+        ] {
+            let mut view = ViewFeelState::default();
+            let output = evaluate_with_edges(
+                &params,
+                0.0,
+                0.0,
+                true,
+                &[timed_edge(from, to, 0.0)],
+                &mut view,
+                0.0,
+                1.0,
+            );
+            assert!(approx_eq(output.impulse_pitch, pitch), "{from:?} -> {to:?}");
+        }
+    }
+
     #[test]
     fn impulse_spring_is_monotonic_and_ages_backlog_edges() {
         let params = impulse_params(ImpulseStates {
@@ -939,6 +974,7 @@ mod tests {
             dash: Some(state(Some(channels(10.0, 0.0, 0.0)), None)),
             crouch: None,
             slide: None,
+            vault: None,
         });
         let edge = timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0);
         let mut fresh = ViewFeelState::default();
@@ -979,6 +1015,7 @@ mod tests {
             dash: Some(state(Some(channels(9.0, 0.0, 0.0)), None)),
             crouch: Some(state(Some(channels(0.0, 7.0, 0.0)), None)),
             slide: Some(state(Some(channels(0.0, 0.0, 5.0)), None)),
+            vault: None,
         });
         let tick_dt = 1.0 / 60.0;
         let transitions = [
@@ -1035,6 +1072,7 @@ mod tests {
             dash: Some(state(Some(channels(20.0, 0.0, 0.0)), None)),
             crouch: Some(state(Some(channels(20.0, 0.0, 0.0)), None)),
             slide: None,
+            vault: None,
         });
         params.impulse.as_mut().unwrap().max.fov = 5.0;
         let edges = [
@@ -1070,6 +1108,7 @@ mod tests {
             }),
             crouch: None,
             slide: None,
+            vault: None,
         });
         let impulse = params.impulse.as_mut().unwrap();
         impulse.tension = ImpulseParams::MIN_TENSION;
@@ -1107,6 +1146,7 @@ mod tests {
             dash: Some(state(Some(channels(0.0, 3.0, -4.0)), None)),
             crouch: None,
             slide: None,
+            vault: None,
         });
         let edge = timed_edge(MovementStateKind::Normal, MovementStateKind::Dash, 0.0);
         let mut state = ViewFeelState::default();
@@ -1141,6 +1181,7 @@ mod tests {
             dash: Some(state(Some(channels(8.0, -2.0, 1.0)), None)),
             crouch: None,
             slide: None,
+            vault: None,
         });
         let mut evaluator_state = ViewFeelState {
             tilt_roll: 3.0,

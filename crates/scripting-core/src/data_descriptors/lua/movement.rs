@@ -202,6 +202,18 @@ pub fn movement_descriptor_from_lua(
         _ => keep_or_drop_swim_block(Err(swim_block_not_an_object())),
     };
 
+    // `vault` is optional: absence means the pawn never vaults. A present block
+    // that fails parsing or validation is dropped with a warning, mirroring the
+    // JS path.
+    let raw: LuaValue = table.get("vault").map_err(lua_err)?;
+    let vault = match raw {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => {
+            keep_or_drop_vault_block(vault_params_from_lua(&t, ground.step_height))
+        }
+        _ => keep_or_drop_vault_block(Err(vault_block_not_an_object())),
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if table.contains_key("viewFeel").map_err(lua_err)? {
@@ -256,7 +268,7 @@ pub fn movement_descriptor_from_lua(
         crouch,
         slide,
         swim,
-        vault: None,
+        vault,
         view_feel,
         sounds,
     })
@@ -447,6 +459,41 @@ pub fn swim_params_from_lua(table: &Table) -> Result<SwimParams, DescriptorError
             LuaValue::Number(f) => Ok(Some(f as f32)),
             _ => Err(swim_field_not_a_number(field)),
         }
+    })
+}
+
+/// Mirror of [`vault_params_from_js`] for Luau tables; errors are worded
+/// identically.
+pub fn vault_params_from_lua(
+    table: &Table,
+    step_height: f32,
+) -> Result<VaultParams, DescriptorError> {
+    vault_params_from_fields(
+        |field| raw_vault_lua(table.get(field).map_err(lua_err)?, true),
+        step_height,
+    )
+}
+
+fn raw_vault_lua(value: LuaValue, nest: bool) -> Result<RawVaultValue, DescriptorError> {
+    Ok(match value {
+        LuaValue::Nil => RawVaultValue::Absent,
+        LuaValue::Integer(i) => RawVaultValue::Number(i as f32),
+        LuaValue::Number(f) => RawVaultValue::Number(f as f32),
+        LuaValue::Boolean(b) => RawVaultValue::Bool(b),
+        LuaValue::String(s) => RawVaultValue::Str(s.to_str().map_err(lua_err)?.to_string()),
+        LuaValue::Table(t) if nest => {
+            let mut entries = Vec::new();
+            for pair in t.pairs::<LuaValue, LuaValue>() {
+                let (key, value) = pair.map_err(lua_err)?;
+                let key = match key {
+                    LuaValue::String(s) => s.to_str().map_err(lua_err)?.to_string(),
+                    other => format!("{other:?}"),
+                };
+                entries.push((key, raw_vault_lua(value, false)?));
+            }
+            RawVaultValue::Object(entries)
+        }
+        _ => RawVaultValue::Other,
     })
 }
 

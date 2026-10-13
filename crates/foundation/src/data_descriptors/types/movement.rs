@@ -590,6 +590,8 @@ pub struct ImpulseStates {
     pub dash: Option<ImpulseStateParams>,
     pub crouch: Option<ImpulseStateParams>,
     pub slide: Option<ImpulseStateParams>,
+    #[serde(default)]
+    pub vault: Option<ImpulseStateParams>,
 }
 
 /// One state may override the character's default settle rate and author entry

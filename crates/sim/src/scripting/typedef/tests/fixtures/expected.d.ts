@@ -838,6 +838,8 @@ declare module "postretro" {
     slide?: SlideParams;
     /** Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map. */
     swim?: SwimParams;
+    /** Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map. */
+    vault?: VaultParams;
     /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated. */
@@ -956,7 +958,7 @@ declare module "postretro" {
     minDurationMs: number;
   };
 
-  /** Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades. */
+  /** Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, every field but `fluidJumpVelocity` is required and all are validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades. */
   export type SwimParams = {
     /** Target swim speed in metres/sec. Must be finite and ≥ 0. */
     speed: number;
@@ -968,9 +970,40 @@ declare module "postretro" {
     enterDepth: number;
     /** Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`. */
     exitDepth: number;
-    /** Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0. */
-    fluidJumpVelocity: number;
+    /** Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Optional: omit it for no fluid jump, so the player leaves water by wading out or, with a `vault` block, by mantling. Must be finite and > 0 when present. */
+    fluidJumpVelocity?: number;
   };
+
+  /** Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed rise-then-forward path and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads. */
+  export type VaultParams = {
+    /** Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and greater than `ground.stepHeight`. */
+    maxHeight: number;
+    /** Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0. */
+    swimMaxHeight: number;
+    /** Time from the start of the vault to standing on the top, in milliseconds. Must be finite and > 0. */
+    durationMs: number;
+    /** Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: "auto", swim: "auto" }`. A present `from` replaces the default whole: a place it leaves out cannot vault. */
+    from?: VaultEntry;
+    /** Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge). A vault always stops a burst already in progress. */
+    allowFire?: boolean;
+  };
+
+  /** The places a vault may start from, each naming its trigger. A place left out cannot vault. */
+  export type VaultEntry = {
+    /** In the air, walking or dashing. */
+    air?: VaultTrigger;
+    /** On the ground, walking or dashing. */
+    ground?: VaultTrigger;
+    /** Swimming, with the eye out of the fluid. */
+    swim?: VaultTrigger;
+  };
+
+  /** Valid values: `auto`, `jump`. */
+  export type VaultTrigger =
+    /** Vault when moving into a ledge within reach. */
+    | "auto"
+    /** Vault when jump is held or buffered at a ledge within reach. */
+    | "jump";
 
   /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion. */
   export type ViewFeelParams = {
@@ -1068,6 +1101,8 @@ declare module "postretro" {
     crouch?: ImpulseStateParams;
     /** Optional slide-state row. */
     slide?: ImpulseStateParams;
+    /** Optional vault-state row. */
+    vault?: ImpulseStateParams;
   };
 
   /** Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum. */

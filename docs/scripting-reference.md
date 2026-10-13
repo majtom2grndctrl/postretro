@@ -655,7 +655,7 @@ movement updates carry the resulting momentum through client reconciliation.
 
 ### Reserved engine-fired reaction addresses
 
-The engine owns the following 24 bare addresses. A mod may register one or more
+The engine owns the following 26 bare addresses. A mod may register one or more
 reactions at any of them, but should not use one as a private address: the
 engine may fire it whenever the listed gameplay event occurs. All other
 mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
@@ -665,7 +665,7 @@ mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
 | Level lifecycle | `levelLoad` |
 | Weapon fire | `activate`, `dry_fire`, `overheat`, `impact`, `spawned` |
 | Weapon reload | `reload_started`, `reload_shell_loaded`, `reload_completed`, `reload_cancelled`, `reload_blocked_full`, `reload_blocked_empty` |
-| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended`, `swim_started`, `swim_ended` |
+| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended`, `swim_started`, `swim_ended`, `vault_started`, `vault_ended` |
 | Enemy AI | `enemyAttack` |
 
 Movement addresses fire only for the local player pawn. A state change emits
@@ -2871,7 +2871,7 @@ Fluid declarations do not affect who can join.
 Add a `swim` block to the player descriptor's `movement` to let the player swim.
 Without one the player cannot swim and walks along the bottom of any fluid,
 which suits a wade-only game; loading a level with fluids for such a player
-logs one warning. All six fields are required:
+logs one warning. Every field but `fluidJumpVelocity` is required:
 
 | Field | Units | Range | What it does |
 |---|---|---|---|
@@ -2880,7 +2880,7 @@ logs one warning. All six fields are required:
 | `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at the default level gravity (−20.32 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
 | `enterDepth` | fraction | above `0`, up to `1` | How much of the body, feet to head, must be in the fluid to start swimming. |
 | `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
-| `fluidJumpVelocity` | m/s | above `0` | Upward speed of a jump out of the fluid. |
+| `fluidJumpVelocity` | m/s | above `0`, optional | Upward speed of a jump out of the fluid. Leave it out for no fluid jump: jump at the surface then only treads, and the player leaves the water by wading out or, with a [`movement.vault`](#movementvault) block, by climbing out. |
 
 A swim block with a missing field, a field that is not a number, a field out of
 range, or `exitDepth` at or above `enterDepth` is dropped with a warning naming
@@ -2910,6 +2910,82 @@ How swimming plays:
 
 Starting and stopping a swim fire the reserved `swim_started` and `swim_ended`
 addresses, and play the fluid's `enterSound` and `exitSound`.
+
+### `movement.vault`
+
+Add a `vault` block to the player descriptor's `movement` to let the player
+climb onto ledges, from the air or out of a fluid. Without one the player
+never vaults.
+
+```typescript
+movement: {
+  // ...capsule, ground, air, fall...
+  vault: {
+    maxHeight: 1.6,
+    swimMaxHeight: 0.9,
+    durationMs: 320,
+    from: { air: "auto", swim: "auto" },
+    allowFire: false,
+  },
+},
+```
+
+```lua
+vault = {
+  maxHeight = 1.6,
+  swimMaxHeight = 0.9,
+  durationMs = 320,
+  from = { air = "auto", swim = "auto" },
+  allowFire = false,
+},
+```
+
+| Field | Units | Range | What it does |
+|---|---|---|---|
+| `maxHeight` | m | above `ground.stepHeight` | Highest ledge top a vault reaches from the ground or the air, measured from the feet. Anything the player can step up stays a step. |
+| `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
+| `durationMs` | ms | above `0` | Time from starting the climb to standing on the top. |
+| `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |
+| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. |
+
+The places in `from` are `air` (in the air, walking or dashing), `ground` (on
+the ground, walking or dashing) and `swim` (swimming with the eye above the
+surface). Each takes `"auto"`, which climbs when the player moves into a ledge
+within reach, or `"jump"`, which climbs when jump is held or was pressed just
+before reaching it. A place left out cannot vault, and a `from` you write
+replaces the default whole: `from: { ground: "jump" }` vaults only with a jump
+from standing. Crouching and sliding never vault.
+
+A vault block with a missing required field, a field of the wrong type, a value
+out of range, a place other than `air`, `ground` or `swim`, or a trigger other
+than `"auto"` or `"jump"` is dropped with a warning naming the field (for
+example `movement.vault.from.air`). The rest of the descriptor and the mod
+still load, and the player cannot vault.
+
+How vaulting plays:
+
+- **Reach.** The ledge's top must be within reach, with room for the standing
+  player on it. Ledges at or below the step-up height are steps, not vaults.
+- **The climb.** The player rises, then moves over the lip, along a path the
+  engine checked is clear, and stands on the top after `durationMs`, keeping
+  the speed they had when the climb started. Dash, jump and crouch do nothing
+  until it ends. A climb that is blocked part way, or whose ledge stops
+  existing, ends at once and the player falls.
+- **Moving ledges.** A ledge on a moving platform is climbed where it is when
+  the climb ends, and the player ends standing on the platform.
+- **Out of the water.** With `swim` in `from`, a swimmer with the eye above the
+  surface climbs out of a pool at an edge within `swimMaxHeight`. At such an
+  edge the climb wins over `fluidJumpVelocity`'s jump; elsewhere jump at the
+  surface behaves as before. Swimming cannot restart until the player is clear
+  of the water.
+- **Firing.** With `allowFire` false, firing cannot start during a climb, and
+  a burst already firing stops when the climb starts. Holding the trigger
+  through the climb fires again once it ends.
+- **Maps cannot change vault tuning.** It belongs to the descriptor.
+
+Starting and finishing a climb fire the reserved `vault_started` and
+`vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
+either edge.
 
 ### The readonly `player.swimming` and `player.immersion` slots
 

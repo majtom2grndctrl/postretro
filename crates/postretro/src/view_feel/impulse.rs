@@ -106,20 +106,22 @@ fn state_params_by_index(
         1 => params.states.dash.as_ref(),
         2 => params.states.crouch.as_ref(),
         3 => params.states.slide.as_ref(),
+        4 => params.states.vault.as_ref(),
         _ => unreachable!("movement state index is closed"),
     }
 }
 
-/// The spring a state key drives. `Swim` and `Vault` have no authored impulse
-/// key yet (`viewFeel.impulse.states` names the four land states), so edges
-/// into and out of them kick nothing; the other end of such an edge still kicks.
+/// The spring a state key drives. `Swim` has no authored impulse key
+/// (`viewFeel.impulse.states` names the land states and `vault`), so edges into
+/// and out of swim kick nothing; the other end of such an edge still kicks.
 fn state_index(state: MovementStateKind) -> Option<usize> {
     match state {
         MovementStateKind::Normal => Some(0),
         MovementStateKind::Dash => Some(1),
         MovementStateKind::Crouch => Some(2),
         MovementStateKind::Slide => Some(3),
-        MovementStateKind::Swim | MovementStateKind::Vault => None,
+        MovementStateKind::Vault => Some(4),
+        MovementStateKind::Swim => None,
     }
 }
 

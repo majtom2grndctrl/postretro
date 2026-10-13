@@ -209,6 +209,23 @@ pub fn movement_descriptor_from_js<'js>(
         None
     };
 
+    // `vault` is optional: absence means the pawn never vaults. A present block
+    // that fails parsing or validation is dropped with a warning, as `swim` is.
+    let vault = if obj.contains_key("vault").map_err(js_err)? {
+        let raw: JsValue = obj.get("vault").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let parsed = match Object::from_value(raw) {
+                Ok(vault_obj) => vault_params_from_js(&vault_obj, ground.step_height),
+                Err(_) => Err(vault_block_not_an_object()),
+            };
+            keep_or_drop_vault_block(parsed)
+        }
+    } else {
+        None
+    };
+
     // Absent viewFeel disables camera effects. Each sub-object is optional;
     // a present block validates its own required tuning fields.
     let view_feel = if obj.contains_key("viewFeel").map_err(js_err)? {
@@ -267,7 +284,7 @@ pub fn movement_descriptor_from_js<'js>(
         crouch,
         slide,
         swim,
-        vault: None,
+        vault,
         view_feel,
         sounds,
     })
@@ -494,6 +511,54 @@ pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, Descrip
             .map(|f| Some(f as f32))
             .ok_or_else(|| swim_field_not_a_number(field))
     })
+}
+
+/// Parse a `vault` sub-object. Every error names its field as
+/// `movement.vault.<field>`, worded exactly as [`vault_params_from_lua`] words
+/// it.
+pub fn vault_params_from_js<'js>(
+    obj: &Object<'js>,
+    step_height: f32,
+) -> Result<VaultParams, DescriptorError> {
+    vault_params_from_fields(
+        |field| {
+            if !obj.contains_key(field).map_err(js_err)? {
+                return Ok(RawVaultValue::Absent);
+            }
+            raw_vault_js(obj.get(field).map_err(js_err)?, true)
+        },
+        step_height,
+    )
+}
+
+fn raw_vault_js(value: JsValue<'_>, nest: bool) -> Result<RawVaultValue, DescriptorError> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(RawVaultValue::Absent);
+    }
+    if let Some(i) = value.as_int() {
+        return Ok(RawVaultValue::Number(i as f32));
+    }
+    if let Some(f) = value.as_float() {
+        return Ok(RawVaultValue::Number(f as f32));
+    }
+    if let Some(b) = value.as_bool() {
+        return Ok(RawVaultValue::Bool(b));
+    }
+    if let Some(s) = value.as_string() {
+        return Ok(RawVaultValue::Str(s.to_string().map_err(js_err)?));
+    }
+    if nest
+        && !value.is_array()
+        && let Some(obj) = value.as_object()
+    {
+        let mut entries = Vec::new();
+        for entry in obj.props::<String, JsValue>() {
+            let (key, value) = entry.map_err(js_err)?;
+            entries.push((key, raw_vault_js(value, false)?));
+        }
+        return Ok(RawVaultValue::Object(entries));
+    }
+    Ok(RawVaultValue::Other)
 }
 
 pub fn get_required_object_js<'js>(

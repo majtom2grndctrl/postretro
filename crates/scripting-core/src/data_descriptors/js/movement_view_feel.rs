@@ -184,6 +184,7 @@ fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, Descr
         dash: optional_impulse_state_from_js(obj, "dash")?,
         crouch: optional_impulse_state_from_js(obj, "crouch")?,
         slide: optional_impulse_state_from_js(obj, "slide")?,
+        vault: optional_impulse_state_from_js(obj, "vault")?,
     })
 }
 
@@ -200,10 +201,13 @@ fn validate_impulse_state_keys_js(obj: &Object<'_>) -> Result<(), DescriptorErro
     }
     for key in obj.own_keys::<String>(Filter::new().string()) {
         let key = key.map_err(js_err)?;
-        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+        if !matches!(
+            key.as_str(),
+            "normal" | "dash" | "crouch" | "slide" | "vault"
+        ) {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, slide, or vault"
                 ),
             });
         }

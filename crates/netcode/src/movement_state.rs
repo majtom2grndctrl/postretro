@@ -122,6 +122,7 @@ pub(crate) fn carry_live_tick_state(
     merge_wire_into_movement_state_checked(rebuilt, &wire, |_| true);
     rebuilt.last_floor_normal = live.last_floor_normal;
     rebuilt.leave_swim_without_swim_block();
+    rebuilt.leave_vault_without_vault_block();
 }
 
 /// Map the engine `MovementState` to its wire mirror. Exhaustive (no `_` arm) so
@@ -549,6 +550,34 @@ mod tests {
     /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim) through the
     /// wire enum. Constructed from the source enum via an exhaustive list so a new
     /// variant must be added here to compile-cover it.
+    // A tuning rebuild that removes the vault block cannot finish a carried
+    // vault; one that keeps it carries the vault on.
+    #[test]
+    fn a_tuning_rebuild_without_a_vault_block_drops_a_carried_vault() {
+        let mut with_vault = rich_descriptor();
+        with_vault.vault = Some(postretro_foundation::VaultParams {
+            max_height: 1.6,
+            swim_max_height: 0.9,
+            duration_ms: 320.0,
+            from: postretro_foundation::VaultEntry::default(),
+            allow_fire: false,
+        });
+        let mut live = PlayerMovementComponent::from_descriptor(&with_vault);
+        live.movement_state = MovementState::Vault {
+            elapsed_ms: 32.0,
+            target: Vec3::new(0.5, 2.0, 0.0),
+            start_offset: Vec3::new(-0.9, -1.4, 0.0),
+            mover: None,
+            entry_speed: 3.0,
+        };
+        let mut kept = PlayerMovementComponent::from_descriptor(&with_vault);
+        carry_live_tick_state(&mut kept, &live);
+        assert_eq!(kept.movement_state, live.movement_state);
+        let mut dropped = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        carry_live_tick_state(&mut dropped, &live);
+        assert_eq!(dropped.movement_state, MovementState::Normal);
+    }
+
     // A vault onto a mover the client never loaded could not resolve its target;
     // the merge refuses it as it refuses an unknown ground mover.
     #[test]

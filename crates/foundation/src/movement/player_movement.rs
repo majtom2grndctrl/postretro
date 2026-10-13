@@ -547,6 +547,16 @@ impl PlayerMovementComponent {
         self.swim_reentry_latched = false;
     }
 
+    /// Settle vault state on a component rebuilt from a descriptor (a client's
+    /// tuning rebuild) after the live tick state was carried onto it. Without a
+    /// `vault` block a carried `Vault` has no duration to finish against, so it
+    /// drops to `Normal` as an abort does, with no state edge.
+    pub fn leave_vault_without_vault_block(&mut self) {
+        if self.vault.is_none() && matches!(self.movement_state, MovementState::Vault { .. }) {
+            self.movement_state = MovementState::Normal;
+        }
+    }
+
     pub fn is_grounded(&self) -> bool {
         self.ground.is_grounded()
     }

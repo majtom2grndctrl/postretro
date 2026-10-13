@@ -21,6 +21,7 @@ mod movement_crouch_forgiveness;
 mod movement_dash;
 mod movement_slide;
 mod movement_swim;
+mod movement_vault;
 mod movement_view_feel;
 mod player_events;
 mod reactions;

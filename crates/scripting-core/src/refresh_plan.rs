@@ -1624,6 +1624,22 @@ mod tests {
     // 3D drift layer and the re-entry latch, so the next movement tick takes no
     // swim edge and re-emits no `swim_started`.
     #[test]
+    fn movement_refresh_drops_a_vault_to_normal() {
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.movement_state = MovementState::Vault {
+            elapsed_ms: 48.0,
+            target: Vec3::new(5.4, 1.2, 0.0),
+            start_offset: Vec3::new(-0.8, -0.7, 0.0),
+            mover: None,
+            entry_speed: 7.0,
+        };
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Normal);
+    }
+
+    #[test]
     fn movement_refresh_keeps_a_swimmer_swimming_with_its_drift_and_latch() {
         let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
         old[0].movement.as_mut().unwrap().swim = Some(swim_params());

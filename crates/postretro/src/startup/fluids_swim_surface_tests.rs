@@ -18,7 +18,7 @@ use postretro_test_log_capture::LogCapture;
 
 use crate::scripting::primitives::register_all;
 
-fn dev_content() -> PathBuf {
+pub(super) fn dev_content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev")
 }
 
@@ -35,7 +35,7 @@ fn luau_twin() -> String {
 
 /// Run `source` as a mod root's start script (`start-script.js` or
 /// `start-script.luau`) through a fresh runtime, as mod init does at boot.
-fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, String> {
+pub(super) fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, String> {
     let ctx = ScriptCtx::new();
     let mut primitives = PrimitiveRegistry::new();
     register_all(&mut primitives, ctx.clone());
@@ -60,7 +60,7 @@ fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, Stri
 }
 
 /// content/dev's own start script, initialized as at boot.
-fn dev_manifest() -> ModManifestResult {
+pub(super) fn dev_manifest() -> ModManifestResult {
     let bundle = postretro_script_compiler::bundle_entry(&dev_content().join("start-script.ts"))
         .expect("content/dev start-script.ts bundles");
     run_manifest("start-script.js", &bundle).expect("content/dev initializes")

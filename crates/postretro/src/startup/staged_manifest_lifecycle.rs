@@ -491,6 +491,7 @@ mod tests {
                     }),
                     crouch: None,
                     slide: None,
+                    vault: None,
                 },
             }),
         }

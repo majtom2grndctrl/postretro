@@ -43,6 +43,11 @@ below the limits and the load-time install panic are other routes, outside this 
 - **Placement: renderer mechanism, app attribution.** The renderer owns limits, geometry, growth
   and refusal (Renderer owns GPU). The drain outcome tells the app which deferrals are
   device-limited, and the app uses that only to attribute misses.
+- **prl-build rejects a camera cell whose baked mandatory SH set cannot fit.** The set is the
+  id-51 cells within the baked maximum L, plus pins and owner closure; it must fit each
+  family's device limit. The error names the cell and the family. Whole-level size never
+  rejects, since `large-map-spatial-residency` bounds map scale by disk and residency budget.
+  Deferral stays the runtime backstop for fragmentation and drawn demand outside the baked set.
 - **This lands before `portal-walk-bounded-regions`**, whose superset visible set adds
   never-refused SH demand.
 - **Non-goals:**
@@ -75,6 +80,10 @@ below the limits and the load-time install panic are other routes, outside this 
 - [ ] Regression guards: a malformed chunk still ends the session with its named error, and a
   retirement-pressure deferral behaves as before.
 
+- [ ] A fixture whose single camera cell's mandatory SH set exceeds a family's limit fails
+  prl-build, and the error names that cell and family. A fixture whose whole level exceeds
+  the limit while every cell's set fits compiles.
+
 ### Manual
 - [ ] At default limits, campaign-test and the stress-warren hallway log no device-limit warning.
   Report their initial dense atlas bytes and pool growth counts against the pre-change build.
@@ -102,14 +111,6 @@ below the limits and the load-time install panic are other routes, outside this 
   depends on this slice.
 
 ## Open questions
-- Should prl-build reject a level that could reach a device limit through baked mandatory demand
-  alone? Recommended: yes. The check is per camera cell: its mandatory SH set (id-51 cells within
-  the baked maximum L, plus pins and owner closure) must fit each family's limit. Whole-level
-  size never rejects, since `large-map-spatial-residency` bounds map scale "by disk and
-  residency budget". The build error names the cell and family. Deferral then stays a backstop
-  for fragmentation and for drawn demand outside the baked set. The alternative is deferral
-  alone. This sets what valid content means for modders — owner: project owner —
-  **blocks build**
 - Fragmentation headroom factor — **delegated**: the smallest factor at which the zero-share
   fixture and a churn walk are never refused.
 - Whether untargeted hysteresis residents release early when a visible cluster is refused —

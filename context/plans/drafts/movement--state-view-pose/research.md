@@ -15,7 +15,7 @@ Read at c06cd6c. Symbols, not lines.
 | The driver carries only `movement_state.kind()`, velocity, grounded and eye clearance. | `frame_eye::ViewFeelDriver`, built in `frame_loop` Eye stage |
 | View feel follows the local pawn only. | `followed_player_pawn` → `EntityRegistry::local_player_movement_pawn` |
 | `view_feel` is excluded from the tuning payload, so it stays local. | `netcode::movement_state::movement_state_to_wire` doc comment |
-| Vault payload: `target` = landing feet, `start_offset` = entry feet − target, both in mover-local space when `mover` is set. Path: rise over the first `RISE_SHARE` (0.6) on a smoothstep, then forward. | `MovementState::Vault`; `physics::movement::vault::{path_feet, VaultFrame, RISE_SHARE}` |
+| Vault payload: `target` = landing feet, `start_offset` = entry feet − target, both in mover-local space when `mover` is set. Path: a smoothstep rise that the forward move overlaps near its end, over whole ticks (`vault_path_ticks`), ending at the entry speed. `elapsed_ms` is whole ticks (`vault_clock`); `vault_path_ms` is the path's own length. | `MovementState::Vault`; `physics::movement::vault_path::VaultPath` (`crates/physics/src/movement/vault_path.rs`); `physics::movement::vault::VaultFrame`; public `physics::movement::{vault_clock, vault_path_ticks, vault_path_ms}` |
 | Vault frames are upright within ~0.8°, so the vertical and horizontal-magnitude parts of frame-local offsets hold in world space. | `UPRIGHT_MIN_UP_Y`, `VaultFrame::is_upright` |
 | Vault rides the wire, so the client predicts it and a remote pawn's state replicates. | `WireMovementState::Vault`, `netcode::movement_state` |
 | Unknown top-level `viewFeel` keys are ignored, not rejected. | `view_feel_params_from_js` / `_lua` probe known keys only |

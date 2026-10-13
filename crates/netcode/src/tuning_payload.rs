@@ -598,10 +598,11 @@ mod tests {
         ));
     }
 
-    // Epoch 12 predates `charge.interruptedBy`. Its payload must report the
-    // stale epoch rather than fail as a shape error on the new field.
+    // Epoch 12 predates `charge.interruptedBy`. A payload stamped 12 must
+    // report the stale epoch, even carrying the new field, rather than fail as
+    // a shape error on it.
     #[test]
-    fn payload_rejects_previous_epoch_without_charge_interrupts() {
+    fn payload_rejects_epoch_12_before_charge_interrupts() {
         let mut json: serde_json::Value =
             serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
         assert_eq!(

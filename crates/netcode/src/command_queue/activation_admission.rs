@@ -172,9 +172,11 @@ impl ClientCommandState {
     }
 
     /// Deliver retained release/cancel edges. A cancel stamped after the live
-    /// execution's clock waits for it. Cadence notes each delivered release,
-    /// including one riding with its own start; a charged execution runs its
-    /// recovery from it.
+    /// execution's clock waits for it. A release of a charge a vault spared
+    /// waits for the resolution of its own client tick, read from the cursor
+    /// this resolution already set; every other release goes at once.
+    /// Cadence notes each delivered release, including one riding with its own
+    /// start; a charged execution runs its recovery from it.
     pub(super) fn deliver_edges(
         &mut self,
         activation: &mut ActivationInput,
@@ -182,8 +184,14 @@ impl ClientCommandState {
     ) {
         let horizon = self.live_horizon(live);
         let spent_release = self.cadence.spent_release();
-        self.activation_edges
-            .deliver(activation, self.host_tick, live, horizon, spent_release);
+        self.activation_edges.deliver(
+            activation,
+            self.host_tick,
+            live,
+            horizon,
+            spent_release,
+            self.resolved_cursor,
+        );
         if let Some(release) = activation.release {
             self.cadence
                 .release(release.token, release.release_tick, self.host_tick);
@@ -268,17 +276,18 @@ impl HostCommandQueues {
 
     /// `client_id`'s pawn starts client tick `tick` with its fire gate closed,
     /// such as a vault with fire blocked. Its client cancelled whatever it was
-    /// executing on that tick, and sends no cancel for it, so every execution
-    /// it began before `tick` stops there as if it had: the live one, a start
-    /// delivered this resolution, and each retained start stamped earlier
-    /// carry a cancel stamped `tick` (`ActivationEdges::cancel_before`). The
-    /// lane delivers each once its execution's clock reaches `tick`, so a late
-    /// execution mints every shot the client fired before the vault and none
-    /// after, wherever the vault stands when it is delivered.
-    ///
-    /// A charge whose action a vault does not interrupt, and that the client
-    /// had not released before `tick`, takes no cancel: its client kept
-    /// charging it through the vault (`ActivationEdges::cancel_before`).
+    /// executing on that tick, except a charge whose action a vault does not
+    /// interrupt and that it had not released before `tick`, which it kept
+    /// charging through the vault and whose release it held past it. It sends
+    /// no cancel for what it stopped, so every other execution it began before
+    /// `tick` stops there as if it had: the live one, a start delivered this
+    /// resolution, and each retained start stamped earlier carry a cancel
+    /// stamped `tick` (`ActivationEdges::cancel_before`). The lane delivers
+    /// each once its execution's clock reaches `tick`, so a late execution
+    /// mints every shot the client fired before the vault and none after,
+    /// wherever the vault stands when it is delivered. The spared charge
+    /// takes no cancel, and its release waits in the lane for its own tick's
+    /// resolution (`ActivationEdges::deliver`).
     ///
     /// Returns whether the live execution's clock has already reached `tick`.
     /// This resolution's edges are already delivered, so the caller cancels
@@ -813,8 +822,9 @@ mod tests {
 
     // A live charge whose action a vault does not interrupt keeps charging
     // through its client's vault: no closed tick cancels it, at once or
-    // later, and its release after the vault reaches the machine. Without the
-    // opt-out the vault cancels it and the release never goes.
+    // later, and its release after the vault reaches the machine on the
+    // resolution of its own tick. Without the opt-out the vault cancels it
+    // and the release never goes.
     #[test]
     fn a_charge_the_vault_spares_reaches_its_release_after_the_vault() {
         let start = token(2);
@@ -851,13 +861,21 @@ mod tests {
                     }
                 },
             );
-            let released = resolved.iter().any(|resolved| {
+            let released_on =
                 resolved
-                    .command
-                    .activation
-                    .release
-                    .is_some_and(|release| release.token == start && release.release_tick == 10)
-            });
+                    .iter()
+                    .find(|resolved| {
+                        resolved.command.activation.release.is_some_and(|release| {
+                            release.token == start && release.release_tick == 10
+                        })
+                    })
+                    .map(|resolved| resolved.client_tick);
+            let released = released_on.is_some();
+            if spared {
+                // Received two ticks ahead of the cursor, it waits for its
+                // own tick, so it fires on the client's tick and aim.
+                assert_eq!(released_on, Some(10), "rides its own tick's resolution");
+            }
             let cancelled = resolved
                 .iter()
                 .any(|resolved| resolved.command.activation.cancel == Some(start));

@@ -962,13 +962,13 @@ declare module "postretro" {
     fluidJumpVelocity?: number;
   };
 
-  /** Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed rise-then-forward path and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads. */
+  /** Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed path, starting over the lip while the rise finishes, and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads. */
   export type VaultParams = {
     /** Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and more than 0.01 m above `ground.stepHeight` (the step-up limit). */
     maxHeight: number;
     /** Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0. */
     swimMaxHeight: number;
-    /** Time from the start of the vault to standing on the top, in milliseconds. Must be finite and > 0. */
+    /** Time from the start of the vault to standing on the top, in milliseconds, rounded up to whole simulation ticks. Must be finite and > 0. */
     durationMs: number;
     /** Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: "auto", swim: "auto" }`. A present `from` replaces the default whole: a place it leaves out cannot vault. */
     from?: VaultEntry;

@@ -8,6 +8,7 @@ use postretro_entities::components::wieldable_state::WieldableState;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::{
     ActivationInput, ActivationLane, ActivationRelease, MovementState, PlayerMovementComponent,
+    VaultParams,
 };
 
 use super::FireButtonState;
@@ -17,7 +18,11 @@ use super::execution::action_descriptor;
 /// vaulting with `allowFire` off and `elapsed_ms < duration_ms`. The gate opens
 /// on the first tick that starts with `elapsed_ms >= duration_ms`, which is the
 /// exit tick or, when the path takes one extra tick to reach its corner, the
-/// tick before it. Read at tick start on every path.
+/// tick before it. `elapsed_ms` is the physics vault clock, whole ticks
+/// (`postretro_physics::movement::vault_clock`), and the path's tick count is
+/// defined by this same comparison (`vault_path_ticks`), so the gate opens on
+/// exactly the tick the path ends at every tick rate. Read at tick start on
+/// every path.
 pub fn vault_blocks_fire(movement: &PlayerMovementComponent) -> bool {
     let MovementState::Vault { elapsed_ms, .. } = movement.movement_state else {
         return false;
@@ -25,7 +30,12 @@ pub fn vault_blocks_fire(movement: &PlayerMovementComponent) -> bool {
     movement
         .vault
         .as_ref()
-        .is_some_and(|vault| !vault.allow_fire && elapsed_ms < vault.duration_ms)
+        .is_some_and(|vault| vault_clock_blocks_fire(vault, elapsed_ms))
+}
+
+/// [`vault_blocks_fire`]'s test on a vault clock reading.
+fn vault_clock_blocks_fire(vault: &VaultParams, elapsed_ms: f32) -> bool {
+    !vault.allow_fire && elapsed_ms < vault.duration_ms
 }
 
 /// [`vault_blocks_fire`] for `pawn`; a pawn without movement never blocks.
@@ -178,9 +188,50 @@ fn hold(held: &mut bool, button: &mut FireButtonState, blocked: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_physics::movement::{vault_clock, vault_path_ticks};
 
     fn button(pressed: bool, active: bool) -> FireButtonState {
         FireButtonState { pressed, active }
+    }
+
+    // Regression: at 400 ms and 60 Hz the gate stayed shut a tick past the path's end.
+    #[test]
+    fn the_vault_gate_opens_on_the_tick_the_path_ends_at_every_tick_rate() {
+        let cases: [(f32, &[f32]); 5] = [
+            (30.0, &[1000.0]),
+            (60.0, &[400.0, 500.0, 320.0, 420.0]),
+            (120.0, &[200.0, 250.0, 1000.0]),
+            (144.0, &[250.0]),
+            (240.0, &[100.0, 400.0, 500.0, 600.0]),
+        ];
+        for (hz, durations) in cases {
+            let step_ms = (1.0 / hz) * 1000.0;
+            for &duration_ms in durations {
+                let vault = VaultParams {
+                    max_height: 1.6,
+                    swim_max_height: 0.9,
+                    duration_ms,
+                    from: postretro_foundation::VaultEntry::default(),
+                    allow_fire: false,
+                };
+                let path_ticks = vault_path_ticks(duration_ms, step_ms);
+                for ticks in 0..path_ticks {
+                    assert!(
+                        vault_clock_blocks_fire(&vault, vault_clock(ticks, step_ms)),
+                        "{duration_ms} ms at {hz} Hz: shut after {ticks} of {path_ticks} path ticks"
+                    );
+                }
+                assert!(
+                    !vault_clock_blocks_fire(&vault, vault_clock(path_ticks, step_ms)),
+                    "{duration_ms} ms at {hz} Hz: open once the {path_ticks} path ticks have run"
+                );
+                let allowed = VaultParams {
+                    allow_fire: true,
+                    ..vault
+                };
+                assert!(!vault_clock_blocks_fire(&allowed, 0.0));
+            }
+        }
     }
 
     // A press during the block replays once the gate opens with the button

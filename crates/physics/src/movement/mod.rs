@@ -17,6 +17,7 @@ mod vault;
 mod vault_path;
 
 pub(crate) use mover_carry::mover_push_is_blocked_by_static;
+pub use vault_path::{vault_clock, vault_path_ms, vault_path_ticks};
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;

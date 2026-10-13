@@ -1083,8 +1083,13 @@ fn js_and_lua_movement_view_feel_vault_reject_bad_fields_with_one_diagnostic() {
             "`movement.viewFeel.vault` must be an object",
         ),
         (
-            "{ vault: [] }",
+            "{ vault: \"pose\" }",
             "{ vault = \"pose\" }",
+            "`movement.viewFeel.vault` must be an object",
+        ),
+        (
+            "{ vault: [1] }",
+            "{ vault = { [1.5] = 2, pitch = -6 } }",
             "`movement.viewFeel.vault` must be an object",
         ),
     ] {
@@ -1096,4 +1101,16 @@ fn js_and_lua_movement_view_feel_vault_reject_bad_fields_with_one_diagnostic() {
     let [js, lua] =
         vault_view_error_pair("{ vault: { pitch: 120 } }", "{ vault = { pitch = 120 } }");
     assert_eq!(js, lua);
+    // Regression: Luau loaded an array as an all-defaults block that JS rejects.
+    for (js_body, lua_body) in [
+        ("{ vault: [] }", "{ vault = { 1 } }"),
+        ("{ vault: [1] }", "{ vault = { -6, 2 } }"),
+    ] {
+        let [js, lua] = vault_view_error_pair(js_body, lua_body);
+        assert!(
+            js.contains("`movement.viewFeel.vault` must be an object"),
+            "JS: {js}"
+        );
+        assert_eq!(js, lua, "{js_body} / {lua_body}");
+    }
 }

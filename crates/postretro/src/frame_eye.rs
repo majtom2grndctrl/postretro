@@ -392,7 +392,7 @@ mod tests {
             driver.movement_state = MovementStateKind::Vault;
             driver.vault = Some(VaultViewInput {
                 progress: 0.5,
-                duration_s: 0.42,
+                path_s: 0.42,
             });
             let mut state = ViewFeelState::default();
             let mut followed = None;

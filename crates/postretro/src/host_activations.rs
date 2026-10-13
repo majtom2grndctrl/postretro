@@ -67,10 +67,13 @@ fn binding_is_live(
 ///
 /// `fire_blocked`: the gate [`stamp_start_fire_gate`] recorded for the
 /// command's tick. A pawn that starts that tick with fire blocked, as a vault
-/// does, stops what its client began before it, as the client stopped it.
-/// Each execution stops where its own clock reaches the tick, not at the
-/// host's delivery of it (`HostCommandQueues::close_start_fire_gate`); one
-/// already there stops now. Death stops the live execution at once.
+/// does, stops what its client began before it, as the client stopped it,
+/// except a charge whose action the vault does not interrupt and that was not
+/// released before the tick: the client kept charging it, so it runs on and
+/// fires at the release the client held past the vault. Each stopped
+/// execution stops where its own clock reaches the tick, not at the host's
+/// delivery of it (`HostCommandQueues::close_start_fire_gate`); one already
+/// there stops now. Death stops the live execution at once, spared or not.
 pub(super) fn observe_lifecycle(
     registry: &mut EntityRegistry,
     allocator: &mut netcode::NetworkIdAllocator,
@@ -271,7 +274,9 @@ pub(super) fn release_departed_weapons(
 
 /// An uncharged start's shot fires along the aim its own command declared, not
 /// the aim of whichever later command delivered it. A charged action fires at
-/// its release, along the delivering command's aim.
+/// its release, along the delivering command's aim. The lane holds a release
+/// the client held over a vault until its own tick resolves, so that command
+/// is the release's own and the aim is the client's.
 fn start_aim(
     registry: &EntityRegistry,
     queues: &netcode::HostCommandQueues,

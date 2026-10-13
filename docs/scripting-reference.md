@@ -292,7 +292,7 @@ An action has `{ trigger, recoveryMs, steps, charge?, sounds?, emits? }`:
 | `trigger` | `"press" \| "hold"` | `press` starts once per fresh press. `hold` repeats after execution and recovery finish while held. A charged action requires `press`. |
 | `recoveryMs` | `number` | Shared start-gate recovery after each accepted shot, in finite milliseconds `[0, 60000]`. Zero is allowed. Remaining recovery survives completion or cancellation. |
 | `steps` | `ActivationStepDescriptor[]` | At most 64 steps and 16 shots. First and last must be shots, with at least one positive wait between shots. |
-| `charge` | `{ minMs, fullMs, interruptedBy? }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. `interruptedBy` is described below. |
+| `charge` | `{ minMs, fullMs, interruptedBy? }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. `interruptedBy` is described below; with `interruptedBy.vault: false`, a release during a climb counts as made when the climb ends, so its charge is measured to that moment and a quick tap mid-climb can pass `minMs`. |
 | `sounds` | `{ fire?, impact? }` (optional) | Each authored field overrides the weapon's sound default for that action. A delayed impact uses its originating action's sound. |
 | `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from `activate` or `impact` respectively. |
 
@@ -390,6 +390,16 @@ normal rules apply again.
 | Key | Default | `false` means |
 |-----|---------|---------------|
 | `vault` | `true` | A climb with `movement.vault.allowFire` off does not cancel the charge. It keeps charging through the climb. Releasing the trigger during the climb fires the charged shot on the first tick after it ends, unless the trigger is pressed again first, in which case it keeps charging until the next release. |
+
+A release held over a climb counts as made on the first tick after the climb,
+not when the trigger came up. Its charge is measured from the press to that
+tick, capped at `fullMs`:
+
+- Every release during the climb gains the rest of the climb as charge.
+- A tap during the climb that would fall short of `minMs` on its own still
+  fires a charged shot once the climb has run long enough to carry the charge
+  past `minMs`. Only a charge that is still under `minMs` when the climb ends
+  cancels.
 
 ```typescript
 secondary: {
@@ -754,7 +764,7 @@ the ledge being climbed. Leave it out for no pose. It needs a
 viewFeel: {
   vault: {
     pitch: -6, fov: 0, roll: 0, // held offsets while vaulting
-    easeIn: 0.15,               // share of durationMs spent easing in (optional)
+    easeIn: 0.15,               // share of the climb spent easing in (optional)
     easeOut: 0.2,               // share spent easing back at the end (optional)
   },
 }
@@ -775,15 +785,26 @@ these ranges reject the descriptor at load time, and the error names the field
 | `pitch` | degrees, positive looks up | finite in [-90, 90]; default 0 |
 | `roll` | degrees | finite in [-90, 90]; default 0 |
 | `fov` | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
-| `easeIn` | share of `durationMs` | finite in [0, 1]; default 0.15 |
-| `easeOut` | share of `durationMs` | finite in [0, 1]; default 0.2 |
+| `easeIn` | share of the climb | finite in [0, 1]; default 0.15 |
+| `easeOut` | share of the climb | finite in [0, 1]; default 0.2 |
 
 `easeIn` plus `easeOut` must be at most 1. The pose follows the climb itself,
-not a timer: it is fully in after the first `easeIn` of the climb and back to
-neutral exactly as the climb ends. A share of 0 skips that ease. A climb that
-ends early, because it was blocked, the player died, or a network correction
-ended it, eases back from wherever the pose was, over `durationMs × easeOut`
-(at least 0.1 s); a new climb started meanwhile picks up from there.
+not a timer. The climb lasts `durationMs` rounded up to whole simulation ticks
+(433 ms for 420 at 60 Hz), and both shares are of that time. The pose is fully
+in after the first `easeIn` of the climb and back to neutral exactly as the
+player reaches the top.
+
+- **`easeIn` 0** starts the pose at full strength.
+- **`easeOut` 0** holds the pose at full strength to the end of the climb, then
+  eases it back over 0.1 s after the player is on the top.
+- **A climb that ends early** eases back from wherever the pose was, over the
+  climb's time × `easeOut` (at least 0.1 s). It ends early when it is blocked,
+  the player dies, or a network correction ends it. A new climb started
+  meanwhile picks up from there.
+- **A climb that appears already under way** eases in from neutral over the
+  climb's time × `easeIn`, then follows the climb. A network correction can
+  start a climb your machine did not predict, and a descriptor reload can
+  reset the pose mid-climb.
 
 The pose moves only the camera: aim, the shot line and collision are unchanged,
 and the first-person weapon stays where it is in view. With `allowFire: true`
@@ -3023,7 +3044,7 @@ vault = {
 |---|---|---|---|
 | `maxHeight` | m | more than 0.01 above `ground.stepHeight` | Highest ledge top a vault reaches from the ground or the air, measured from the feet. Anything the player can step up stays a step. |
 | `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
-| `durationMs` | ms | above `0` | Time from starting the climb to standing on the top. |
+| `durationMs` | ms | above `0` | Time from starting the climb to standing on the top, rounded up to whole simulation ticks. |
 | `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |
 | `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. |
 

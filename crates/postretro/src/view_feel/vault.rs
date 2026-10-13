@@ -2,11 +2,13 @@
 // See: context/lib/movement.md §1
 
 use postretro_foundation::VaultViewParams;
+use postretro_physics::movement::vault_path_ms;
 
 use super::ViewFeelState;
 
-/// Shortest ease back to neutral, seconds, after a vault ends before its
-/// envelope did. A longer one comes from `durationMs × easeOut`.
+/// Shortest ease back to neutral, seconds, after a vault ends with weight
+/// left: an early end, or the end of a vault whose `easeOut` is 0. A longer
+/// one comes from the climb's time × `easeOut`.
 const MIN_RELEASE_S: f32 = 0.1;
 
 /// Progress drop, as a share of the vault, that reads as a new vault rather
@@ -18,24 +20,29 @@ const RESTART_PROGRESS_DROP: f32 = 0.05;
 pub(crate) struct VaultViewInput {
     /// Presented share of the vault, 0..=1.
     pub(crate) progress: f32,
-    /// The vault's `durationMs`, in seconds.
-    pub(crate) duration_s: f32,
+    /// How long the climb runs, seconds: `durationMs` rounded up to whole
+    /// ticks, as the movement path runs it.
+    pub(crate) path_s: f32,
 }
 
 impl VaultViewInput {
-    /// The presented progress of a vault whose latest tick left `elapsed_ms`:
-    /// the camera shows the pose `alpha` of the way from the previous tick to
-    /// that one, so the vault it shows is `(1 − alpha)` of a tick behind it.
+    /// The presented progress of a vault whose latest tick left `elapsed_ms`
+    /// with `durationMs` `duration_ms`: the camera shows the pose `alpha` of
+    /// the way from the previous tick to that one, so the vault it shows is
+    /// `(1 − alpha)` of a tick behind it. Progress is over the path's own
+    /// length (`vault_path_ms`), so it reaches 1 as the pawn reaches the top.
     pub(crate) fn presented(elapsed_ms: f32, duration_ms: f32, tick_s: f32, alpha: f32) -> Self {
-        let presented_ms = elapsed_ms - (1.0 - alpha.clamp(0.0, 1.0)) * tick_s * 1000.0;
-        let progress = if duration_ms > 0.0 {
-            (presented_ms / duration_ms).clamp(0.0, 1.0)
+        let step_ms = tick_s * 1000.0;
+        let path_ms = vault_path_ms(duration_ms, step_ms);
+        let presented_ms = elapsed_ms - (1.0 - alpha.clamp(0.0, 1.0)) * step_ms;
+        let progress = if path_ms > 0.0 {
+            (presented_ms / path_ms).clamp(0.0, 1.0)
         } else {
             1.0
         };
         Self {
             progress,
-            duration_s: duration_ms / 1000.0,
+            path_s: path_ms / 1000.0,
         }
     }
 }
@@ -51,6 +58,9 @@ pub(crate) struct VaultViewState {
     release_from: f32,
     release_elapsed_s: f32,
     release_s: f32,
+    /// Time since the pose started following this vault, seconds: the ease-in
+    /// from neutral a vault that appears already in progress takes.
+    join_elapsed_s: f32,
 }
 
 /// Held offsets this frame, in degrees, scaled.
@@ -64,7 +74,9 @@ pub(crate) struct VaultViewOutput {
 /// Weight of the held pose at `progress`: up over the first `ease_in` share,
 /// held, down over the last `ease_out` share to exactly 0 at the end. Both
 /// ramps are smoothsteps, so the pose starts and settles with no velocity
-/// step. A zero share is a step.
+/// step. A zero `ease_in` starts at full weight; a zero `ease_out` holds full
+/// weight to the end, and the release that follows the vault's end
+/// ([`MIN_RELEASE_S`]) eases it back.
 fn envelope(params: &VaultViewParams, progress: f32) -> f32 {
     let up = if params.ease_in > 0.0 {
         smoothstep(progress / params.ease_in)
@@ -90,12 +102,20 @@ fn smoothstep(t: f32) -> f32 {
 /// progress, so it tracks the climb itself rather than a timer. Every other
 /// way out — the envelope finishing, an abort, death, hot reload, a reconcile
 /// that ends the vault with no edge — starts a release: the weight eases from
-/// where it was to 0 on a smoothstep over `durationMs × easeOut`, at least
-/// [`MIN_RELEASE_S`]. A vault that starts while a release runs, or a
-/// reconcile that rewinds the progress into a new vault, presents the larger
-/// of the release and the new envelope, so the pose continues without a
-/// step. The weight advances under any scale, so restoring the view-feel scale
-/// resumes from the live blend; `frame_dt = 0` holds everything.
+/// where it was to 0 on a smoothstep over the climb's time × `easeOut`, at
+/// least [`MIN_RELEASE_S`]. A vault that ends with weight left (an `easeOut`
+/// of 0) takes the same release.
+///
+/// A vault the pose was not following — one that starts, one a reconcile or
+/// a mid-vault `clear_state_effects` shows already in progress, or a rewind
+/// read as a new vault — eases in from neutral over the ease-in time (the
+/// climb's time × `easeIn`) and is capped by that ramp until it meets the
+/// envelope. The ramp counts this frame, so it never holds back a vault that
+/// started this frame, which has run at most a frame. A release still
+/// running meanwhile presents the larger of the two, so the pose continues
+/// without a step. The weight advances under any scale, so restoring the
+/// view-feel scale resumes from the live blend; `frame_dt = 0` holds
+/// everything.
 pub(crate) fn evaluate(
     params: Option<&VaultViewParams>,
     vaulting: Option<VaultViewInput>,
@@ -108,26 +128,40 @@ pub(crate) fn evaluate(
         return VaultViewOutput::default();
     };
     let view = &mut state.vault_view;
-    let restarted = match (vaulting, view.progress) {
+    let rewound = match (vaulting, view.progress) {
         (Some(input), Some(last)) => input.progress < last - RESTART_PROGRESS_DROP,
-        (None, Some(_)) => true,
         _ => false,
     };
-    if restarted {
+    let joined = rewound || (vaulting.is_some() && view.progress.is_none());
+    let ended = vaulting.is_none() && view.progress.is_some();
+    if rewound || ended {
         view.release_from = view.weight;
         view.release_elapsed_s = 0.0;
     }
-    if let Some(input) = vaulting {
-        view.release_s = (input.duration_s * params.ease_out).max(MIN_RELEASE_S);
+    if joined {
+        view.join_elapsed_s = 0.0;
     }
-    view.release_elapsed_s += frame_dt.max(0.0);
+    if let Some(input) = vaulting {
+        view.release_s = (input.path_s * params.ease_out).max(MIN_RELEASE_S);
+    }
+    let frame_dt = frame_dt.max(0.0);
+    view.release_elapsed_s += frame_dt;
+    view.join_elapsed_s += frame_dt;
     let release = if view.release_s > 0.0 {
         view.release_from * (1.0 - smoothstep(view.release_elapsed_s / view.release_s))
     } else {
         0.0
     };
     view.weight = match vaulting {
-        Some(input) => envelope(params, input.progress).max(release),
+        Some(input) => {
+            let ease_in_s = input.path_s * params.ease_in;
+            let join = if ease_in_s > 0.0 {
+                smoothstep(view.join_elapsed_s / ease_in_s)
+            } else {
+                1.0
+            };
+            envelope(params, input.progress).min(join).max(release)
+        }
         None => release,
     };
     view.progress = vaulting.map(|input| input.progress);
@@ -160,7 +194,7 @@ mod tests {
     fn vaulting(progress: f32) -> Option<VaultViewInput> {
         Some(VaultViewInput {
             progress,
-            duration_s: DURATION_S,
+            path_s: DURATION_S,
         })
     }
 
@@ -187,9 +221,16 @@ mod tests {
         let pitches = present_vault(&mut state, DT, 1.0);
         assert_eq!(pitches[0], 0.0, "neutral as the vault starts");
         assert!(pitches.last().unwrap().abs() < 1.0e-6, "neutral as it ends");
+        // The pose at `progress` of a vault followed from its start.
         let hold = |progress: f32| {
             let mut state = ViewFeelState::default();
-            evaluate(Some(&params()), vaulting(progress), &mut state, DT, 1.0)
+            let frames = (progress * DURATION_S / DT).ceil() as usize;
+            let mut output = VaultViewOutput::default();
+            for frame in 0..=frames {
+                let at = (frame as f32 * DT / DURATION_S).min(progress);
+                output = evaluate(Some(&params()), vaulting(at), &mut state, DT, 1.0);
+            }
+            output
         };
         for progress in [0.15, 0.3, 0.5, 0.8] {
             let held = hold(progress);
@@ -320,12 +361,15 @@ mod tests {
     #[test]
     fn the_view_feel_scale_scales_the_pose_without_freezing_it_and_clearing_resets_it() {
         let mut state = ViewFeelState::default();
-        let reduced = evaluate(Some(&params()), vaulting(0.5), &mut state, DT, 0.0);
-        assert_eq!(
-            reduced,
-            VaultViewOutput::default(),
-            "reduced motion shows no pose"
-        );
+        // Longer than the ease-in, all at zero scale.
+        for _ in 0..10 {
+            let reduced = evaluate(Some(&params()), vaulting(0.5), &mut state, DT, 0.0);
+            assert_eq!(
+                reduced,
+                VaultViewOutput::default(),
+                "reduced motion shows no pose"
+            );
+        }
         let half = evaluate(Some(&params()), vaulting(0.5), &mut state, DT, 0.5);
         assert_eq!(half.pitch, -3.0);
         // The blend kept advancing at zero scale: restoring it resumes live.
@@ -352,6 +396,12 @@ mod tests {
     fn presented_progress_trails_the_latest_tick_by_the_unpresented_share() {
         let tick_s = 1.0 / 60.0;
         let step_ms = tick_s * 1000.0;
+        // 420 ms runs 26 whole ticks at 60 Hz.
+        let path_ms = vault_path_ms(420.0, step_ms);
+        assert_eq!(
+            path_ms,
+            postretro_physics::movement::vault_clock(26, step_ms)
+        );
         // The entry tick leaves one step elapsed; at alpha 0 the camera still
         // shows the pose before it.
         assert_eq!(
@@ -359,14 +409,99 @@ mod tests {
             0.0
         );
         let half = VaultViewInput::presented(step_ms, 420.0, tick_s, 0.5).progress;
-        assert!((half - 0.5 * step_ms / 420.0).abs() < 1.0e-6);
+        assert!((half - 0.5 * step_ms / path_ms).abs() < 1.0e-6);
         assert_eq!(
-            VaultViewInput::presented(430.0, 420.0, tick_s, 1.0).progress,
+            VaultViewInput::presented(path_ms + step_ms, 420.0, tick_s, 1.0).progress,
             1.0
         );
         assert_eq!(
-            VaultViewInput::presented(430.0, 420.0, tick_s, 1.0).duration_s,
-            0.42
+            VaultViewInput::presented(path_ms, 420.0, tick_s, 1.0).path_s,
+            path_ms / 1000.0
         );
+    }
+
+    // Regression: progress divided by `durationMs` while the path ran whole
+    // ticks past it, so the pose reached neutral before the pawn reached the top.
+    #[test]
+    fn the_pose_reaches_neutral_on_the_tick_the_path_reaches_the_top() {
+        use postretro_physics::movement::{vault_clock, vault_path_ticks};
+        for hz in [30.0_f32, 60.0, 144.0, 240.0] {
+            let tick_s = 1.0 / hz;
+            let step_ms = tick_s * 1000.0;
+            let ticks = vault_path_ticks(420.0, step_ms);
+            let at_top = VaultViewInput::presented(vault_clock(ticks, step_ms), 420.0, tick_s, 1.0);
+            assert_eq!(
+                at_top.progress, 1.0,
+                "{hz} Hz: neutral as the top is reached"
+            );
+            assert_eq!(envelope(&params(), at_top.progress), 0.0);
+            let before =
+                VaultViewInput::presented(vault_clock(ticks - 1, step_ms), 420.0, tick_s, 1.0);
+            assert!(
+                envelope(&params(), before.progress) > 0.0,
+                "{hz} Hz: still easing out a tick before the top"
+            );
+        }
+    }
+
+    // Regression: a vault the pose had not followed snapped straight to its
+    // envelope.
+    #[test]
+    fn a_vault_that_appears_mid_climb_eases_in_from_neutral() {
+        // A reconcile starts a vault the client never predicted, half way up;
+        // or a descriptor change clears view-feel state mid-vault.
+        let mut cleared = ViewFeelState::default();
+        present_vault(&mut cleared, DT, 0.5);
+        cleared.clear_state_effects();
+        for mut state in [ViewFeelState::default(), cleared] {
+            let mut previous = 0.0_f32;
+            // Seven frames stay inside the hold, short of the ease-out at 0.8.
+            let pitches: Vec<f32> = (0..7)
+                .map(|frame| {
+                    let progress = 0.5 + frame as f32 * DT / DURATION_S;
+                    evaluate(Some(&params()), vaulting(progress), &mut state, DT, 1.0).pitch
+                })
+                .collect();
+            assert!(pitches[0] > -1.5, "no snap to the held pose: {pitches:?}");
+            for pitch in &pitches {
+                assert!(
+                    *pitch <= previous + 1.0e-6,
+                    "eases in monotonically: {pitches:?}"
+                );
+                assert!((pitch - previous).abs() < 2.5, "no step: {pitches:?}");
+                previous = *pitch;
+            }
+            // In after the ease-in time (0.15 × 0.42 s, four frames), then the
+            // envelope's hold.
+            let ease_in_frames = (params().ease_in * DURATION_S / DT).ceil() as usize;
+            assert_eq!(pitches[ease_in_frames], -6.0, "{pitches:?}");
+            assert!(
+                pitches[ease_in_frames / 2] < -1.0,
+                "an ease, not a hold at neutral"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_ease_out_holds_the_pose_to_the_end_then_releases_it_over_the_minimum_release() {
+        let held_to_end = VaultViewParams {
+            ease_out: 0.0,
+            ..params()
+        };
+        let mut state = ViewFeelState::default();
+        let frames = (DURATION_S / DT).ceil() as usize;
+        let mut last = 0.0;
+        for frame in 0..=frames {
+            let progress = (frame as f32 * DT / DURATION_S).min(1.0);
+            last = evaluate(Some(&held_to_end), vaulting(progress), &mut state, DT, 1.0).pitch;
+        }
+        assert_eq!(last, -6.0, "full weight as the climb ends");
+        let release: Vec<f32> = (0..10)
+            .map(|_| evaluate(Some(&held_to_end), None, &mut state, DT, 1.0).pitch)
+            .collect();
+        assert!(release[0] < -5.0, "no drop at the end: {release:?}");
+        let release_frames = (MIN_RELEASE_S / DT).ceil() as usize;
+        assert!(release[release_frames - 1].abs() < 1.0e-6, "{release:?}");
+        assert!(release[release_frames / 2] < -1.0, "a release, not a snap");
     }
 }

@@ -875,10 +875,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("VaultParams")
-        .doc("Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed rise-then-forward path and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads.")
+        .doc("Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed path, starting over the lip while the rise finishes, and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads.")
         .field("maxHeight", "f32", "Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and more than 0.01 m above `ground.stepHeight` (the step-up limit).")
         .field("swimMaxHeight", "f32", "Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0.")
-        .field("durationMs", "f32", "Time from the start of the vault to standing on the top, in milliseconds. Must be finite and > 0.")
+        .field("durationMs", "f32", "Time from the start of the vault to standing on the top, in milliseconds, rounded up to whole simulation ticks. Must be finite and > 0.")
         .field("from?", "VaultEntry", "Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: \"auto\", swim: \"auto\" }`. A present `from` replaces the default whole: a place it leaves out cannot vault.")
         .field("allowFire?", "bool", "Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge): firing cannot start during the climb, a burst already firing stops when it starts, and a trigger held through it fires once it ends.")
         .finish();

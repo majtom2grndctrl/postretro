@@ -31,20 +31,71 @@ const MAX_END_SLOPE: f32 = 3.0;
 /// metres, for float noise in the substrate's sweep.
 const LIP_MARGIN: f32 = 0.25 * SKIN_DISTANCE;
 
-/// Snap distance, in ms, under which an elapsed time counts as having reached
-/// the path's end; elapsed accumulates by whole steps, so float drift stays far
-/// below half a step.
-fn end_snap(step_ms: f32) -> f32 {
-    0.5 * step_ms
+/// The vault clock after `ticks` whole path ticks, ms: the `elapsed_ms` the
+/// vault intent writes. The clock is always a whole number of steps, written
+/// fresh each tick rather than accumulated, so it never drifts off the tick
+/// grid and every reader of `elapsed_ms` sees the same whole-tick count.
+pub fn vault_clock(ticks: u32, step_ms: f32) -> f32 {
+    ticks as f32 * step_ms
+}
+
+/// Whole path ticks a vault clock reading has run. The clock sits on the tick
+/// grid ([`vault_clock`]), so rounding recovers the count exactly; a reading
+/// from anywhere else lands on its nearest tick.
+pub(super) fn vault_ticks_run(elapsed_ms: f32, step_ms: f32) -> u32 {
+    if step_ms > 0.0 && elapsed_ms > 0.0 {
+        (elapsed_ms / step_ms).round() as u32
+    } else {
+        0
+    }
+}
+
+/// Path ticks a vault of `duration_ms` runs at `step_ms`: the fewest whole
+/// ticks whose clock ([`vault_clock`]) reaches the duration. That is the same
+/// test the exit and the fire gate (`elapsed_ms >= duration_ms`) apply to the
+/// clock, so the path's last tick, the exit and the gate's opening agree on
+/// every tick, at every tick rate. A count from one division against a clock
+/// accumulated step by step would not: at 60 Hz, `ceil(400 / step)` is 24
+/// while 24 accumulated steps read 399.99994 ms, which left a tick parked on
+/// the target before the exit.
+pub fn vault_path_ticks(duration_ms: f32, step_ms: f32) -> u32 {
+    // Written so a NaN step or duration also takes the one-tick path.
+    let measurable = step_ms > 0.0 && duration_ms > 0.0;
+    if !measurable {
+        return 1;
+    }
+    // Start from the division and walk the at most one or two ticks it can be
+    // off by; the clock only grows with the tick count, so this is exact.
+    let mut ticks = ((duration_ms / step_ms).ceil() as u32).max(1);
+    while ticks > 1 && vault_clock(ticks - 1, step_ms) >= duration_ms {
+        ticks -= 1;
+    }
+    while ticks < u32::MAX && vault_clock(ticks, step_ms) < duration_ms {
+        ticks += 1;
+    }
+    ticks
+}
+
+/// How long, ms, a vault of `duration_ms` takes at `step_ms`: its path ticks
+/// on the vault clock. The camera's vault pose divides by this, so it reaches
+/// neutral as the pawn reaches the top.
+pub fn vault_path_ms(duration_ms: f32, step_ms: f32) -> f32 {
+    if step_ms > 0.0 {
+        vault_clock(vault_path_ticks(duration_ms, step_ms), step_ms)
+    } else {
+        duration_ms
+    }
 }
 
 /// One vault's path, rebuilt each tick from its payload and tuning so replay
 /// recomputes it exactly. Positions are feet positions in the vault's frame
 /// (`VaultFrame`): `target` plus a shrinking share of `start_offset`.
 ///
-/// - **Clock.** The path runs over whole ticks: `ceil(duration / step)` path
-///   ticks, the last ending exactly on the target. A duration that is not a
-///   multiple of the step would otherwise leave a short last tick that crawls.
+/// - **Clock.** The path runs over whole ticks, indexed by the tick count the
+///   vault clock reads ([`vault_ticks_run`]): [`vault_path_ticks`] path ticks,
+///   the last ending exactly on the target, the tick the exit and the fire
+///   gate also take as the end. A duration that is not a multiple of the step
+///   would otherwise leave a short last tick that crawls.
 /// - **Rise.** The vertical offset closes on a smoothstep that ends
 ///   `(1 − RISE_OVERLAP) · window` before the path does, at least one path tick
 ///   early, so the eye rises monotonically and stops rising before the move
@@ -75,8 +126,7 @@ pub(super) struct VaultPath {
     /// Height the feet climb to the resting height, metres; zero when the start
     /// is already level with it.
     climb: f32,
-    path_ms: f32,
-    step_ms: f32,
+    path_ticks: u32,
     rise_end: f32,
     forward_start: f32,
     end_slope: f32,
@@ -94,35 +144,24 @@ impl VaultPath {
     ) -> Self {
         let horizontal = Vec3::new(start_offset.x, 0.0, start_offset.z);
         let reach = horizontal.length();
-        // Path ticks are the ticks the exit rule spends before `elapsed`
-        // reaches the duration.
-        let path_ticks = if step_ms > 0.0 {
-            (duration_ms / step_ms).ceil().max(1.0)
-        } else {
-            1.0
-        };
-        let path_ms = if step_ms > 0.0 {
-            path_ticks * step_ms
-        } else {
-            duration_ms
-        };
-        let path_s = path_ms / 1000.0;
+        let path_ticks = vault_path_ticks(duration_ms, step_ms);
+        let ticks = path_ticks as f32;
+        let path_s = vault_path_ms(duration_ms, step_ms) / 1000.0;
         let speed_window = if entry_speed > 0.0 && reach > 0.0 {
             CRUISE_END_SLOPE * reach / (entry_speed * path_s)
         } else {
             f32::INFINITY
         };
-        let min_window = 1.0 / ((1.0 - RISE_OVERLAP) * path_ticks);
+        let min_window = 1.0 / ((1.0 - RISE_OVERLAP) * ticks);
         let window = speed_window.max(min_window).min(FORWARD_SHARE);
-        let end_slope = end_slope(entry_speed, reach, window * path_ticks, step_ms);
+        let end_slope = end_slope(entry_speed, reach, window * ticks, step_ms);
         Self {
             target,
             vertical: Vec3::new(0.0, start_offset.y, 0.0),
             horizontal,
             reach,
             climb: (-start_offset.y).max(0.0),
-            path_ms,
-            step_ms,
+            path_ticks,
             rise_end: 1.0 - (1.0 - RISE_OVERLAP) * window,
             forward_start: 1.0 - window,
             end_slope,
@@ -130,13 +169,20 @@ impl VaultPath {
         }
     }
 
-    /// The feet point the path tick that advanced elapsed to `elapsed_ms` aimed
-    /// at, and whether that point is the target. The vault intent calls this to
-    /// aim, and next tick to judge the pawn against the point it aimed at, so
-    /// the lip cap needs no stored state.
-    pub(super) fn aimed(&self, elapsed_ms: f32) -> (Vec3, bool) {
-        let next = self.progress(elapsed_ms);
-        let previous = self.progress(elapsed_ms - self.step_ms);
+    /// Whether `ticks` path ticks have run the whole path: the exit's clock
+    /// test, which the fire gate's `elapsed_ms >= duration_ms` matches on the
+    /// vault clock.
+    pub(super) fn finished(&self, ticks: u32) -> bool {
+        ticks >= self.path_ticks
+    }
+
+    /// The feet point path tick `ticks` (the one that advanced the clock to
+    /// `ticks` whole ticks) aimed at, and whether that point is the target.
+    /// The vault intent calls this to aim, and next tick to judge the pawn
+    /// against the point it aimed at, so the lip cap needs no stored state.
+    pub(super) fn aimed(&self, ticks: u32) -> (Vec3, bool) {
+        let next = self.progress(ticks);
+        let previous = self.progress(ticks.saturating_sub(1));
         let rise = self.rise(next);
         let below = self.climb * (1.0 - self.rise(previous));
         let wanted = self.forward(next);
@@ -150,12 +196,13 @@ impl VaultPath {
         (feet, next >= 1.0 && forward >= 1.0)
     }
 
-    /// Path progress, 0..=1, at `elapsed_ms`.
-    fn progress(&self, elapsed_ms: f32) -> f32 {
-        if elapsed_ms >= self.path_ms - end_snap(self.step_ms) {
+    /// Path progress, 0..=1, after `ticks` path ticks: exactly 1 from the
+    /// last path tick on, the same tick [`Self::finished`] takes as the end.
+    fn progress(&self, ticks: u32) -> f32 {
+        if self.finished(ticks) {
             1.0
         } else {
-            (elapsed_ms / self.path_ms).clamp(0.0, 1.0)
+            ticks as f32 / self.path_ticks as f32
         }
     }
 
@@ -340,12 +387,10 @@ mod tests {
             for duration_ms in [320.0_f32, 420.0] {
                 let path =
                     VaultPath::new(target, start_offset, entry_speed, duration_ms, step_ms, 0.4);
-                let ticks = (duration_ms / step_ms).ceil() as usize;
-                let points: Vec<Vec3> = (0..=ticks)
-                    .map(|k| path.aimed(k as f32 * step_ms).0)
-                    .collect();
+                let ticks = vault_path_ticks(duration_ms, step_ms) as usize;
+                let points: Vec<Vec3> = (0..=ticks).map(|k| path.aimed(k as u32).0).collect();
                 assert!(
-                    path.aimed(ticks as f32 * step_ms).1,
+                    path.aimed(ticks as u32).1,
                     "{entry_speed} m/s: on the target"
                 );
                 for pair in points.windows(2) {

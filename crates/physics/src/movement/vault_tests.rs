@@ -11,7 +11,7 @@ use postretro_foundation::{
 
 use super::environment_tests::{descriptor, idle_input};
 use super::substrate::step_up_limit;
-use super::vault_path::VaultPath;
+use super::vault_path::{VaultPath, vault_clock, vault_path_ticks};
 use super::{MovementEvents, MovementInput, tick_with_immersion};
 use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 
@@ -283,7 +283,7 @@ fn a_vault_stands_the_pawn_on_the_top_with_its_entry_speed() {
             }
             position = next;
         }
-        let path_ticks = (DURATION_MS / (DT * 1000.0)).ceil() as usize;
+        let path_ticks = vault_path_ticks(DURATION_MS, DT * 1000.0) as usize;
         assert!(
             vault_ticks <= path_ticks + 1,
             "gap {gap}: {vault_ticks} vault ticks against {path_ticks} path ticks plus one"
@@ -357,10 +357,9 @@ fn the_vault_rises_monotonically_without_steps_larger_than_the_path() {
     // The path step: the largest rise between consecutive path ticks of the
     // path the intent steered along.
     let path = path.expect("the pawn vaulted");
-    let step_ms = DT * 1000.0;
-    let ticks = (DURATION_MS / step_ms).ceil() as usize + 1;
+    let ticks = vault_path_ticks(DURATION_MS, DT * 1000.0) + 1;
     let largest_path_step = (1..=ticks)
-        .map(|k| path.aimed(k as f32 * step_ms).0.y - path.aimed((k - 1) as f32 * step_ms).0.y)
+        .map(|k| path.aimed(k).0.y - path.aimed(k - 1).0.y)
         .fold(0.0_f32, f32::max)
         + 1.0e-3;
     for pair in heights.windows(2) {
@@ -1966,5 +1965,110 @@ fn a_jump_pressed_on_the_exit_tick_is_never_buffered() {
         let (next, events) = step(&mut component, &world, &idle_input(), position);
         position = next;
         assert!(!events.jumped, "no jump fires after the vault");
+    }
+}
+
+/// Durations and tick rates where a step count from one division disagreed
+/// with a clock accumulated step by step: the accumulated clock read just
+/// under the duration on the path's last tick.
+const CLOCK_EDGE_CASES: [(f32, &[f32]); 5] = [
+    (30.0, &[1000.0]),
+    (60.0, &[400.0, 500.0, 320.0, 420.0]),
+    (120.0, &[200.0, 250.0, 1000.0]),
+    (144.0, &[250.0]),
+    (240.0, &[100.0, 400.0, 500.0, 600.0]),
+];
+
+#[test]
+fn the_vault_clock_reads_whole_ticks_and_reaches_the_duration_on_the_path_ticks() {
+    for (hz, durations) in CLOCK_EDGE_CASES {
+        let step_ms = (1.0 / hz) * 1000.0;
+        for &duration_ms in durations {
+            let ticks = vault_path_ticks(duration_ms, step_ms);
+            assert!(
+                vault_clock(ticks, step_ms) >= duration_ms
+                    && vault_clock(ticks - 1, step_ms) < duration_ms,
+                "{duration_ms} ms at {hz} Hz: {ticks} path ticks"
+            );
+            assert!(
+                ticks as f32 >= duration_ms / step_ms - 1.0e-3
+                    && (ticks as f32) < duration_ms / step_ms + 1.0,
+                "{duration_ms} ms at {hz} Hz: {ticks} path ticks is the duration rounded up"
+            );
+        }
+    }
+}
+
+// Regression: at 400 ms and 60 Hz the pawn parked a tick on the target, gate shut, before the exit.
+#[test]
+fn the_path_the_exit_and_the_fire_gate_end_on_the_same_tick_at_every_tick_rate() {
+    let world = ledge_world(1.2, None);
+    let speed = 7.0;
+    for (hz, durations) in CLOCK_EDGE_CASES {
+        let dt = 1.0 / hz;
+        let step_ms = dt * 1000.0;
+        for &duration_ms in durations {
+            let label = format!("{duration_ms} ms at {hz} Hz");
+            let mut desc = vault_descriptor(VaultEntry::default());
+            desc.vault.as_mut().unwrap().duration_ms = duration_ms;
+            let path_ticks = vault_path_ticks(duration_ms, step_ms);
+            let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, speed);
+            let mut moves = Vec::new();
+            let mut exit = None;
+            for tick in 1..=path_ticks + 8 {
+                // The fire gate reads the clock as the tick starts.
+                let clock = match component.movement_state {
+                    MovementState::Vault { elapsed_ms, .. } => Some(elapsed_ms),
+                    _ => None,
+                };
+                let (next, _, _) =
+                    tick_with_immersion(&mut component, &forward(), &world, ENV, dt, position);
+                moves.push(next - position);
+                position = next;
+                match clock {
+                    None => {
+                        assert!(
+                            tick == 1 && is_vaulting(&component),
+                            "{label}: the vault starts on the first tick"
+                        );
+                    }
+                    Some(clock) if is_vaulting(&component) => {
+                        assert!(
+                            clock < duration_ms,
+                            "{label}: tick {tick} is still on the path, so the gate stays shut"
+                        );
+                    }
+                    Some(clock) => {
+                        exit = Some((tick, clock));
+                        break;
+                    }
+                }
+            }
+            let (exit_tick, exit_clock) = exit.unwrap_or_else(|| panic!("{label}: the vault ends"));
+            assert_eq!(
+                exit_tick,
+                path_ticks + 1,
+                "{label}: the exit follows the last of {path_ticks} path ticks"
+            );
+            assert_eq!(exit_clock, vault_clock(path_ticks, step_ms), "{label}");
+            assert!(
+                exit_clock >= duration_ms,
+                "{label}: the fire gate opens on the exit tick"
+            );
+            assert_eq!(component.movement_state, MovementState::Normal, "{label}");
+            // No tick parked on the target: the last path tick still moves at
+            // the speed the exit restores.
+            let last_path = moves[moves.len() - 2];
+            let last_speed = Vec2::new(last_path.x, last_path.z).length() / dt;
+            assert!(
+                (last_speed - speed).abs() < 0.05 * speed,
+                "{label}: the last path tick moves {last_speed} m/s, not a stall"
+            );
+            let exit_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
+            assert!(
+                (exit_speed - speed).abs() < 1.0e-3,
+                "{label}: exit speed {exit_speed}"
+            );
+        }
     }
 }

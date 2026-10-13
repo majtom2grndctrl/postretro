@@ -370,6 +370,10 @@ struct Fixture {
     /// blocked, set at each resolution as its movement would have left it.
     /// Tests vault the client's pawn over the same ticks.
     vault_ticks: Option<std::ops::Range<u32>>,
+    /// Where the host's copy of the pawn stands as each resolved client tick
+    /// starts, set at each resolution with its velocity cleared, as its
+    /// movement would have left it.
+    host_pose: Option<fn(u32) -> Vec3>,
 }
 
 impl Fixture {
@@ -466,6 +470,7 @@ impl Fixture {
             descriptors: Vec::new(),
             receive: None,
             vault_ticks: None,
+            host_pose: None,
         };
         for _ in 0..256 {
             fixture.transport();
@@ -943,6 +948,9 @@ impl Fixture {
                     vault.contains(&resolved.client_tick),
                     false,
                 );
+            }
+            if let Some(pose) = self.host_pose {
+                place(&mut registry, resolved.pawn, pose(resolved.client_tick));
             }
             let fire_blocked = stamp_start_fire_gate(&registry, &mut self.queues, &resolved);
             observe_lifecycle(
@@ -3535,6 +3543,19 @@ fn set_vault(registry: &mut EntityRegistry, pawn: EntityId, vaulting: bool, allo
     registry.set_component(pawn, movement).unwrap();
 }
 
+/// Stand `pawn` at `position`, at rest.
+fn place(registry: &mut EntityRegistry, pawn: EntityId, position: Vec3) {
+    let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
+    transform.position = position;
+    registry.set_component(pawn, transform).unwrap();
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.velocity = Vec3::ZERO;
+    registry.set_component(pawn, movement).unwrap();
+}
+
 fn rejected(fixture: &Fixture, activation: ActivationToken) -> bool {
     fixture.outcomes.iter().any(|outcome| {
         matches!(outcome, wire::ActivationOutcome::InitiationRejected { token, .. } if *token == wire_token(activation))
@@ -3737,8 +3758,8 @@ fn a_late_remote_burst_delivered_after_the_vault_stops_where_it_began() {
 
 /// [`descriptor`]'s charged secondary, with `charge.interruptedBy.vault` set,
 /// or left out with `None`.
-fn vault_charged(vault: Option<bool>) -> WeaponDescriptor {
-    let mut descriptor = descriptor(false, true, 1, "press");
+fn vault_charged(projectile: bool, vault: Option<bool>) -> WeaponDescriptor {
+    let mut descriptor = descriptor(projectile, true, 1, "press");
     let charge = descriptor
         .secondary
         .as_mut()
@@ -3758,7 +3779,7 @@ fn a_remote_charge_the_vault_spares_fires_the_release_held_over_the_vault() {
     for link in [LinkConfig::perfect(), mandated_link()] {
         for interrupts in [Some(false), None] {
             let spared = interrupts == Some(false);
-            let mut fixture = Fixture::new(link, vault_charged(interrupts));
+            let mut fixture = Fixture::new(link, vault_charged(false, interrupts));
             let start = token(510, ActivationLane::Secondary);
             let vault = 514..530;
             fixture.vault_ticks = Some(vault.clone());
@@ -3803,5 +3824,130 @@ fn a_remote_charge_the_vault_spares_fires_the_release_held_over_the_vault() {
                 fixture.assert_no_host_shot();
             }
         }
+    }
+}
+
+/// Client ticks the climb in
+/// [`a_remote_spared_charge_fires_its_held_release_from_the_top_along_the_clients_aim`]
+/// spans.
+const CLIMB: std::ops::Range<u32> = 514..530;
+
+/// Where the pawn stands as client tick `tick` starts: a metre below the lip
+/// until the climb ends, then on top, where its eye is the one the fixture's
+/// client prediction fires from.
+fn climbing_pose(tick: u32) -> Vec3 {
+    if tick < CLIMB.end {
+        Vec3::new(0.0, -1.0, 0.0)
+    } else {
+        Vec3::ZERO
+    }
+}
+
+/// `(yaw, pitch)` the client declares on client tick `tick`: off to the side
+/// and down while it climbs, then along the line the fixture's client
+/// prediction fires on, straight at the target.
+fn climbing_aim(tick: u32) -> (f32, f32) {
+    if tick < CLIMB.end {
+        (0.6, -0.4)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+// Regression: the client holds a spared charge's mid-vault release and sends
+// it stamped on the first tick after the vault, but the host delivered it a
+// buffer's depth early, at the first resolution after intake. The host fired
+// the charged shot mid-climb, from below the lip and along an earlier
+// command's aim, while the client fired from the top. The release now waits
+// in the lane for its own tick, so the host fires on that tick's resolution,
+// from the client's eye and along the client's aim.
+#[test]
+fn a_remote_spared_charge_fires_its_held_release_from_the_top_along_the_clients_aim() {
+    for link in [LinkConfig::perfect(), mandated_link()] {
+        let label = format!("{link:?}");
+        let mut fixture = Fixture::new(link, vault_charged(true, Some(false)));
+        let start = token(510, ActivationLane::Secondary);
+        fixture.vault_ticks = Some(CLIMB);
+        fixture.host_pose = Some(climbing_pose);
+        fixture.idle(500, 10);
+        for tick in 510..600 {
+            set_vault(
+                &mut fixture.local.borrow_mut(),
+                fixture.local_actors.pawn,
+                CLIMB.contains(&tick),
+                false,
+            );
+            let mut command = match tick {
+                510 => held(start.lane, true),
+                511..520 => held(start.lane, false),
+                520 => {
+                    let mut release = neutral();
+                    release.activation.release = Some(ActivationRelease {
+                        token: start,
+                        release_tick: 520,
+                    });
+                    release
+                }
+                _ => neutral(),
+            };
+            let (yaw, pitch) = climbing_aim(tick);
+            command.movement.facing_yaw = yaw;
+            fixture.aim_pitch = pitch;
+            fixture.step(tick, command);
+        }
+        fixture.idle(600, 120);
+        assert_eq!(fixture.accepted(start), 1, "{label}");
+        assert_eq!(
+            fixture.snapshot_ticks,
+            vec![CLIMB.end],
+            "{label}: the client fires on the first tick after its climb"
+        );
+        assert_host_fires_what_the_client_fired(&fixture);
+        assert!(!fixture.cancelled(start), "{label}: never cancelled");
+
+        let (release_host_tick, released_on) = fixture
+            .resolved_commands
+            .iter()
+            .find(|(_, resolved)| {
+                resolved
+                    .command
+                    .activation
+                    .release
+                    .is_some_and(|release| release.token == start)
+            })
+            .map(|(host_tick, resolved)| (*host_tick, resolved.client_tick))
+            .expect("the host delivers the release");
+        assert!(
+            released_on >= CLIMB.end,
+            "{label}: delivered on client tick {released_on}, mid-climb"
+        );
+        // A release whose own command was lost past the hold grace rides a
+        // later one; otherwise it rides its own.
+        if fixture.playout.iter().any(|&(_, tick, source)| {
+            tick == CLIMB.end && source == netcode::ResolutionSource::Real
+        }) {
+            assert_eq!(released_on, CLIMB.end, "{label}: rides its own command");
+        }
+        let shot = fixture
+            .authorized
+            .iter()
+            .find(|shot| shot.shot_id == fixture.shot_id(start, 0))
+            .expect("the charged shot is authorized");
+        assert_eq!(
+            shot.fire_tick, release_host_tick,
+            "{label}: fires on the release's resolution"
+        );
+        // The eye and aim the fixture's client prediction fires from.
+        let client_eye = Vec3::new(0.0, 0.5, 0.0);
+        assert!(
+            (shot.fire_origin - client_eye).length() < 1.0e-3,
+            "{label}: fires from the top, {:?}",
+            shot.fire_origin
+        );
+        let direction = shot.projectile_direction.expect("projectile launch fact");
+        assert!(
+            direction.dot(Vec3::NEG_Z) > 0.999,
+            "{label}: fires along the client's aim, {direction:?}"
+        );
     }
 }

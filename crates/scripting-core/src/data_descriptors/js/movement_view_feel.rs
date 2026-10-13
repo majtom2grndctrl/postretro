@@ -76,8 +76,9 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
         if raw.is_null() || raw.is_undefined() {
             None
         } else {
-            // Arrays and functions carry the object tag in QuickJS; Luau reads
-            // neither as a table of fields, so neither is a block here.
+            // Arrays and functions carry the object tag in QuickJS but are not
+            // a block of fields. Luau refuses the same shapes: a table with
+            // array entries or a non-string key, and any non-table.
             let not_a_block = raw.is_array() || raw.is_function();
             let vault_obj = match Object::from_value(raw) {
                 Ok(vault_obj) if !not_a_block => vault_obj,

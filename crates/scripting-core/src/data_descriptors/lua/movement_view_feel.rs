@@ -28,7 +28,12 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
     // wording differs from the JS path: both runtimes say "an object".
     let vault = match table.get::<LuaValue>("vault").map_err(lua_err)? {
         LuaValue::Nil => None,
-        LuaValue::Table(t) => Some(vault_view_params_from_lua(&t)?),
+        LuaValue::Table(t) => {
+            if !holds_only_named_fields(&t)? {
+                return Err(vault_view_not_an_object());
+            }
+            Some(vault_view_params_from_lua(&t)?)
+        }
         _ => return Err(vault_view_not_an_object()),
     };
     Ok(ViewFeelParams {
@@ -39,6 +44,22 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         slide,
         vault,
     })
+}
+
+/// Whether `table` is a block of named fields: no array entries and no key
+/// but a string. JS rejects an array as the block, so a Luau table with array
+/// entries (`{ -6, 2 }`) is no block either, rather than all defaults.
+fn holds_only_named_fields(table: &Table) -> Result<bool, DescriptorError> {
+    if table.raw_len() > 0 {
+        return Ok(false);
+    }
+    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        if !matches!(key, LuaValue::String(_)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Mirror of the JS `vault_view_params_from_js` for Luau tables; errors are

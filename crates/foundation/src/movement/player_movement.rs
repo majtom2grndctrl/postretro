@@ -196,14 +196,16 @@ pub enum MovementState {
     /// capsule is always standing size, and the re-entry latch outlives the
     /// state, so it lives on the component.
     Swim { fluid: u16 },
-    /// Mantling onto a ledge along a timed rise-then-forward path. Entered at
+    /// Mantling onto a ledge along a timed path whose move over the top
+    /// overlaps the end of the rise (physics `VaultPath`). Entered at
     /// the pre-intent stage when the ledge probe finds a reachable top.
     /// `target` is the landing feet position and `start_offset` the entry feet
     /// position minus `target`, both mover-local when `mover` is set and world
     /// otherwise, so a ledge on a moving mover is landed on where it now is.
     /// `entry_speed` is the horizontal speed at entry, restored along the exit
-    /// direction (`-start_offset` horizontal). `elapsed_ms` counts toward the
-    /// descriptor's `vault.duration_ms`.
+    /// direction (`-start_offset` horizontal). `elapsed_ms` is the vault
+    /// clock, whole ticks of `dt * 1000` written fresh each tick (physics
+    /// `vault_clock`), counting toward the descriptor's `vault.duration_ms`.
     Vault {
         elapsed_ms: f32,
         target: Vec3,

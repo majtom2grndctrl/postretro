@@ -3,11 +3,13 @@
 
 #![deny(unsafe_code)]
 
+mod acceleration;
 mod bvh;
 mod crossings;
 mod eye;
 mod leaf;
 mod line;
+mod point_grid;
 mod polytope;
 mod query_timer;
 mod resolve;
@@ -32,6 +34,6 @@ pub use leaf::{ContentsMask, ConvexLeaf, LeafPlane};
 pub use query_timer::EnvironmentQueryTimer;
 pub use resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
-    resolve_particle_acceleration,
+    resolve_particle_acceleration, resolve_particle_accelerations,
 };
 pub use volumes::{EnvironmentVolume, EnvironmentVolumes};

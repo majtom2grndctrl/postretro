@@ -1817,12 +1817,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             if app.cpu_timer.gate().is_enabled() {
                 environment = environment.timed(&environment_timer);
             }
-            scripting_systems::particle_sim::tick(
+            scripting_systems::particle_sim::tick_batched(
                 &mut session.particle_pool,
                 &registry,
                 frame_dt,
-                |position| {
-                    postretro_collision::resolve_particle_acceleration(environment, position)
+                |positions, accelerations| {
+                    postretro_collision::resolve_particle_accelerations(
+                        environment,
+                        positions,
+                        accelerations,
+                    )
                 },
             );
             if let Some(nanos) = environment_timer.body_resolve_nanos() {

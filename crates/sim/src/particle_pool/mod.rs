@@ -10,6 +10,8 @@ use postretro_entities::{EntityId, EntityRegistry};
 
 use crate::scripting_systems::eval_curve;
 
+mod step;
+
 pub const MAX_LIVE_PARTICLES: usize = 65_536;
 pub const IMPACT_PARTICLE_COUNT: usize = 9;
 const OVERFLOW_WARNING_INTERVAL: f64 = 1.0;
@@ -319,50 +321,6 @@ impl ParticlePool {
             .push(eval_curve(&block_data.parameters.opacity_curve, 0.0));
         self.rotations.push(rotation);
         self.block_indices.push(block as u32);
-    }
-
-    /// Integrate once on frame time. Environment resolution samples the advanced
-    /// position, gravity is buoyancy-scaled, and push is independent of buoyancy.
-    pub fn step(
-        &mut self,
-        registry: &EntityRegistry,
-        delta: f32,
-        mut resolve_acceleration: impl FnMut(Vec3) -> (f32, Vec3),
-    ) {
-        // One generational lookup per emitter, never per particle. Missing
-        // emitters leave the sampled rate intact until their last orphan dies.
-        for &index in &self.active_spins {
-            let slot = self.spins[index].as_mut().expect("active spin slot");
-            if let Ok(emitter) = registry.get_component::<BillboardEmitterComponent>(slot.emitter) {
-                slot.rate = emitter.spin_rate;
-            }
-        }
-        let mut index = 0;
-        while index < self.len() {
-            self.ages[index] += delta;
-            self.positions[index] += self.velocities[index] * delta;
-            let (gravity, push) = resolve_acceleration(self.positions[index]);
-            let block_index = self.block_indices[index] as usize;
-            let block = self.blocks[block_index].as_ref().expect("live block");
-            let parameters = &block.parameters;
-            let velocity = &mut self.velocities[index];
-            velocity.y += gravity * -parameters.buoyancy * delta;
-            *velocity += push * delta;
-            *velocity *= (1.0 - parameters.drag * delta).max(0.0);
-            let normalized_age =
-                (self.ages[index] / parameters.lifetime.max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
-            self.sizes[index] = eval_curve(&parameters.size_curve, normalized_age);
-            self.opacities[index] = eval_curve(&parameters.opacity_curve, normalized_age);
-            if let Some(slot) = block.spin_slot {
-                self.rotations[index] +=
-                    self.spins[slot].as_ref().expect("live spin slot").rate * delta;
-            }
-            if self.ages[index] >= parameters.lifetime {
-                self.remove(index);
-            } else {
-                index += 1;
-            }
-        }
     }
 
     fn remove(&mut self, index: usize) {

@@ -15,7 +15,7 @@ use crate::leaf::{ContentsMask, ConvexLeaf, LeafPlane};
 use crate::line::{LineInterval, clip_line};
 use crate::resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
-    resolve_particle_acceleration,
+    resolve_particle_acceleration, resolve_particle_accelerations,
 };
 use crate::test_fixtures::axis_box;
 use crate::volumes::{EnvironmentVolume, EnvironmentVolumes};
@@ -468,12 +468,19 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
             let volumes = EnvironmentVolumes::build(volume_list);
             let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
             let all = ContentsMask::FLUID | ContentsMask::GRAVITY | ContentsMask::PUSH;
+            let mut accelerations = vec![(0.0, Vec3::ZERO); points.len()];
+            resolve_particle_accelerations(view, &points, &mut accelerations);
+            for (&point, &acceleration) in points.iter().zip(&accelerations) {
+                let scalar = resolve_particle_acceleration(view, point);
+                prop_assert_eq!(acceleration, scalar, "batch point {:?}", point);
+            }
             for point in points {
                 for mask in [
                     all,
                     ContentsMask::FLUID,
                     ContentsMask::GRAVITY,
                     ContentsMask::PUSH,
+                    ContentsMask::GRAVITY | ContentsMask::PUSH,
                 ] {
                     prop_assert_eq!(
                         tree_containing(&volumes, point, mask),

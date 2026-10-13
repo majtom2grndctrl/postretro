@@ -16,3 +16,13 @@ pub fn tick(
 ) {
     pool.step(registry, delta, resolve_acceleration);
 }
+
+/// Step with a batch resolver so environment timing pays once per chunk.
+pub fn tick_batched(
+    pool: &mut ParticlePool,
+    registry: &EntityRegistry,
+    delta: f32,
+    resolve_accelerations: impl FnMut(&[Vec3], &mut [(f32, Vec3)]),
+) {
+    pool.step_batched(registry, delta, resolve_accelerations);
+}

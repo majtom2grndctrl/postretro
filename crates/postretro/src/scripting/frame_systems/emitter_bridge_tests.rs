@@ -65,11 +65,25 @@ impl FrameHarness {
     }
 
     fn step_and_collect(&mut self, delta: f32) {
-        postretro_sim::scripting_systems::particle_sim::tick(
+        self.step_and_collect_in(delta, postretro_collision::EnvironmentView::level_only(0.0));
+    }
+
+    fn step_and_collect_in(
+        &mut self,
+        delta: f32,
+        environment: postretro_collision::EnvironmentView<'_>,
+    ) {
+        postretro_sim::scripting_systems::particle_sim::tick_batched(
             &mut self.pool,
             &self.registry,
             delta,
-            |_| (0.0, Vec3::ZERO),
+            |positions, accelerations| {
+                postretro_collision::resolve_particle_accelerations(
+                    environment,
+                    positions,
+                    accelerations,
+                )
+            },
         );
         self.collector.collect_at_tick(
             &self.registry,
@@ -392,6 +406,7 @@ fn allocation_cycle(
     ids: &[EntityId; 3],
     live: usize,
     rewrite_each_frame: bool,
+    environment: postretro_collision::EnvironmentView<'_>,
 ) -> usize {
     let probe = AllocSnapshot::arm();
     for frame in 0..2 {
@@ -411,7 +426,7 @@ fn allocation_cycle(
         }
         harness.drain();
         harness.update(0.01, frame as f32 * 0.01);
-        harness.step_and_collect(0.01);
+        harness.step_and_collect_in(0.01, environment);
         std::hint::black_box(harness.bytes_len());
         if frame == 0 {
             assert_eq!(harness.pool.len(), live);
@@ -433,19 +448,73 @@ fn full_particle_frame_allocations_are_independent_of_live_count_with_rewrites()
         "the binary allocation probe must be active"
     );
     let mut harness = FrameHarness::new(0.02);
+    let volumes = postretro_collision::EnvironmentVolumes::build(vec![
+        allocation_test_volume(
+            postretro_collision::ContentsMask::GRAVITY | postretro_collision::ContentsMask::PUSH,
+            None,
+        ),
+        allocation_test_volume(postretro_collision::ContentsMask::FLUID, Some(1)),
+        allocation_test_volume(
+            postretro_collision::ContentsMask::GRAVITY
+                | postretro_collision::ContentsMask::PUSH
+                | postretro_collision::ContentsMask::FLUID,
+            Some(1),
+        ),
+    ]);
+    let timer = postretro_collision::EnvironmentQueryTimer::new();
+    let untimed_environment = postretro_collision::EnvironmentView::new(0.0, &volumes, &[]);
+    let timed_environment = untimed_environment.timed(&timer);
     let ids = [
         harness.spawn(component(0.02)),
         harness.spawn(component(0.02)),
         harness.spawn(component(0.02)),
     ];
-    for rewriting in [false, true] {
-        allocation_cycle(&mut harness, &ids, 10_000, rewriting);
-        allocation_cycle(&mut harness, &ids, 10_000, rewriting);
-        let small = allocation_cycle(&mut harness, &ids, 100, rewriting);
-        let large = allocation_cycle(&mut harness, &ids, 10_000, rewriting);
-        assert_eq!(
-            small, large,
-            "full frame allocations must depend on emitter count, not particles; rewriting={rewriting}"
-        );
+    for environment in [untimed_environment, timed_environment] {
+        for rewriting in [false, true] {
+            allocation_cycle(&mut harness, &ids, 10_000, rewriting, environment);
+            allocation_cycle(&mut harness, &ids, 10_000, rewriting, environment);
+            let small = allocation_cycle(&mut harness, &ids, 100, rewriting, environment);
+            let large = allocation_cycle(&mut harness, &ids, 10_000, rewriting, environment);
+            assert_eq!(
+                small,
+                large,
+                "full frame allocations must depend on emitter count, not particles; timed={} rewriting={rewriting}",
+                environment.timer.is_some(),
+            );
+        }
+    }
+}
+
+fn allocation_test_volume(
+    contents: postretro_collision::ContentsMask,
+    fluid: Option<u16>,
+) -> postretro_collision::EnvironmentVolume {
+    use glam::Vec3;
+    use postretro_collision::{ConvexLeaf, LeafPlane};
+
+    let min = Vec3::splat(-100.0);
+    let max = Vec3::splat(100.0);
+    let plane = |normal: Vec3, distance: f32| LeafPlane { normal, distance };
+    let leaf = ConvexLeaf {
+        planes: vec![
+            plane(Vec3::X, max.x),
+            plane(Vec3::NEG_X, -min.x),
+            plane(Vec3::Y, max.y),
+            plane(Vec3::NEG_Y, -min.y),
+            plane(Vec3::Z, max.z),
+            plane(Vec3::NEG_Z, -min.z),
+        ],
+        aabb_min: min,
+        aabb_max: max,
+    };
+    let has_gravity = contents.contains(postretro_collision::ContentsMask::GRAVITY);
+    let has_push = contents.contains(postretro_collision::ContentsMask::PUSH);
+    postretro_collision::EnvironmentVolume {
+        source_entity: 0,
+        priority: 0,
+        gravity: has_gravity.then_some(0.0),
+        push: has_push.then_some(Vec3::ZERO),
+        fluid,
+        brushes: vec![leaf],
     }
 }

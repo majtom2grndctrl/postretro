@@ -40,8 +40,8 @@ read at: db24d5b65
 | 22 | Pool/collision push test independent of buoyancy | achievable as stated | pass |
 | 23 | Pool/collision low-gravity, exit and zero-buoyancy tests | achievable as stated | pass |
 | 24 | Post-position boundary gravity test | achievable as stated | pass |
-| 25 | Executor-run release stress measurement with owner maintaining frontmost/unlocked Mac; 20 post-warmup windows | measured, blocking | fail: exclusive sim and environment exceed budgets; emit/collect pass |
-| 26 | Executor-run 0/~10k/~20k emitter sweep; 21/20/20 post-warmup windows | measured | pass: 3.42% spread in per-tick cost |
+| 25 | Optimized release stress run; owner frontmost/unlocked Mac; 11 complete post-warmup windows | measured | pass: all four particle budgets in every retained window |
+| 26 | Optimized 0/~10k/~20k emitter sweep; 11/11/11 complete post-warmup windows | measured | pass: 5.09% spread in per-tick cost |
 | 27 | Owner: particle zone and weapon room visual checks | manual, blocking | outstanding manual proof |
 
 ## Tasks
@@ -52,6 +52,7 @@ read at: db24d5b65
 | 2 | Bounded impact intake; remove particle component and reconcile discriminants, wire, FFI and SDK | boundary worker; integrating executor owns seams | 1 API | implemented; boundary and real TS/Luau proof passed |
 | 3 | Emitter/frame/session integration, impact materialization, E24 point resolve, timing count and lifecycle/ordering/allocation proofs | integrating executor | 1, 2 | implemented; frame/lifecycle/network/allocation proof passed |
 | 4 | Focused readiness, review-panel/fix loop, final preflight; record all results and external runbook | integrating executor | 3 | complete; review/fixes and final feature-complete preflight passed |
+| 5 | Quantify query-timer overhead, batch exact acceleration queries and timing, optimize traversal if needed; focused correctness/allocation proof, review/preflight and repeat AC25/AC26 | integrating executor | 4 | complete; focused checks, fresh reviews, full preflight and AC25/AC26 pass |
 
 ## Hot-path constraints
 - No registry particle slots, per-particle strings, component rewrites, refcount churn or allocations.
@@ -61,8 +62,8 @@ read at: db24d5b65
 - Impact requests drain in raise order before emitters, and never enter transport.
 
 ## External runbook
-- Recompile committed `stress-env-volumes.map`; release + dev-tools; `caffeinate`; frontmost, unlocked Intel Mac; pose `114.60,2.44,-138.99,45,0`; record load average and at least five 120-frame windows after warmup.
-- At ~10k: particle_sim exclusive ≤0.6 ms, particle_collect ≤1.0 ms, particle_emit ≤0.3 ms; nested environment ≤0.5 ms. Compare sim_tick/ticks at zero/~10k/~20k (≤10%). Delete temporary sweep maps/PRLs.
+- Recompile committed `stress-env-volumes.map`; release + dev-tools; `caffeinate`; frontmost, unlocked Intel Mac; pose `114.60,2.44,-138.99,45,0`; record load average, effective window mode, actual logged surface/scene dimensions and render divisor, and at least five 120-frame windows after warmup.
+- At ~10k: particle_sim exclusive ≤0.6 ms, particle_collect ≤1.0 ms, particle_emit ≤0.3 ms; nested environment <0.5 ms. Compare sim_tick/ticks at zero/~10k/~20k (≤10%). Delete temporary sweep maps/PRLs.
 - Smoke/sparks/impacts visually unchanged in particle zone (d) and weapon room, including spin, doorway drift, portal edges and screen edges.
 - No landing until AC25 meets its budgets and AC27's blocking visual result arrives; then wait for owner “land the plane”.
 
@@ -97,14 +98,14 @@ For the tick sweep, make task-owned map copies beside the fixture, changing only
 
 - Additional focused gates: network impact 4, host-ingest 5, remote-splash 2, discriminants 3, binary client impact 6, presentation capture 11, sprite registration 8, conditioned host activation 55, actual level reload 1, typedef 43, removed-kind world-query 1, fixed-tick splash seam 1, collision randomized overlap/property proof 1 — all passed. Host-ingest initially hit sandbox localhost-bind refusal; the same five tests passed with socket access. A mistaken `host_local_splash` filter matched zero and is not counted; corrected full test name matched one and passed.
 
-## Final automated gate
+## Implementation automated gate (before optimization)
 - `cargo fmt --check`: pass.
 - `cargo clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings`: pass.
 - `cargo test --workspace --features postretro/dev-tools,postretro/capture`: pass; 10,930 passed, zero failed, 57 ignored across 68 test/doc-test target summaries. The ignored tests retain their existing on-demand status; manual ACs are not inferred from them.
 - Final logs: `/tmp/postretro-particle-preflight-fmt-final.log`, `/tmp/postretro-particle-preflight-clippy-final.log`, `/tmp/postretro-particle-preflight-focused-final.log`, `/tmp/postretro-particle-preflight-test-final.log`.
 - Review/fix loop resolved three panel findings and the full-gate stale assertion; no unresolved code findings or Decision/Acceptance changes. Durable context reconciliation remains reserved for the authorized landing step.
 - Final disk check: 21 GiB available; no cache cleanup needed.
-- Branch: `perf-particle-sim-cost`. ACs 1–24 pass. Subsequent AC25/AC26 results are recorded below; AC27 remains outstanding. Remain in `in-progress/` at `test-ready` while the performance failure and visual gate block landing.
+- Branch: `perf-particle-sim-cost`. ACs 1–24 pass. Subsequent AC25/AC26 results are recorded below; AC27 remains outstanding. At that checkpoint, the performance failure and visual gate blocked landing. The optimized results below supersede AC25/AC26.
 
 ## AC25 / AC26 execution — 2026-10-12
 
@@ -144,3 +145,92 @@ Maximum/minimum per-tick cost differs by **3.42%**, below the 10% limit. Runs oc
 - Engine test processes stopped after sampling. Temporary rate-0/rate-100 maps and PRLs deleted; committed-map rebake retained as a normal ignored build product. Scratch measurement logs and runner scripts removed after preserving durable evidence.
 - Only the acceptance record and this plan changed after implementation; no source behavior changed in this measurement session.
 - AC25 fails, AC26 passes, AC27 remains outstanding. Status stays `test-ready`; the brief is not ready to land.
+
+## Optimization follow-up — 2026-10-12
+
+Owner authorized implementation, repeat AC25/AC26 and caffeinate; subsequently requested explicit evaluation of display resolution and render scale.
+
+- Diagnostic over the actual 1,000-volume set and 10,000 synthetic points near its 40 emitter origins confirmed significant per-query timer overhead. These probes are hypothesis tests, not acceptance proof. The later probe run during Cargo compilation was confounded and is excluded from conclusions.
+- Resolve in 64-particle chunks: each chunk advances positions before exact independent gravity/push queries; one timer span includes the whole query loop. Compact expired particles backwards only after all chunks have stepped. No estimated timing subtraction or particle-dependent scratch allocation.
+- The first iteration built a separate gravity/push tree at level install, retaining original map volume/brush indices. The final version uses the bounded acceleration grid and tree fallback described below; generic fluid/mixed queries retain the complete tree.
+- Replace generic BVH query stacks with load-time escape links, and inline the field-rank helpers. A sequential probe without concurrent Cargo showed about 20–30% lower batch query cost than the stack variant. A larger SIMD-bound variant did not establish enough benefit to justify inclusion.
+- Focused collision tests: 62 pass, including randomized brute-force equivalence extended to gravity|push and the batch API. Initial pool tests: 16 pass, including a 131-particle cross-chunk boundary/expiry case. Engine check with dev-tools passes; current emitter integration run: 31 pass. Final focused retests after the review fix pass: 62 collision, 16 pool and 31 emitter integration tests; dev-tools engine check and formatting pass.
+- Review panel: correctness tracer and hygiene reviewer found no defects. Adversarial reviewer identified missing real batch queries in the allocation proof. Fixed with real prebuilt mixed volumes, timer off/on and parameter rewrites off/on at 100/10,000 particles; follow-up review confirms resolution. No remaining review findings.
+- Added renderer initialization and committed resize logs of surface/scene extents and divisor for runtime verification. Saved settings select exclusive 3584×2240 and one-third scale. Runtime logging subsequently disproved the scene dimensions inferred from those saved settings; the actual dimensions and quarter-scale comparison are recorded below.
+- The ignored stress PRL initially differed from the earlier pinned bake. Rebuilt all three fixtures with the original bake flags; the 91,746,140-byte base PRL is byte-identical to the earlier acceptance fixture. Source and variant hashes match; bake preparation finished before release compilation.
+- Release preparation used four Cargo jobs. Compilation/bake thermal speed limits were reduced; measurements waited until `CPU_Speed_Limit=100`. Optimized acceptance, resolution comparison and final preflight are complete. AC27 remains owner visual proof; no landing authorization.
+
+
+### First optimization trial and resolution comparison
+
+- Durable trial evidence: [`acceptance-2026-10-12-optimization-trial1.json`](acceptance-2026-10-12-optimization-trial1.json) and [`acceptance-2026-10-12-quarter-trial1.json`](acceptance-2026-10-12-quarter-trial1.json). Both are valid isolated runs with AC power and CPU speed limit 100 before/after. Source hashes identify this iteration. Release build passed in 11m 27s.
+- At one-third scale: 11 retained windows, 9,920 mean live particles, exclusive particle simulation 0.296 ms (0.293–0.299), environment 0.787 ms (0.779–0.795), collect 0.470 ms, emit 0.072 ms. AC25 still fails the environment limit; AC26 was not run for this iteration.
+- Runtime logging disproved the dimensions inferred from saved settings: actual surface was 5120×2880, scene 1707×960 at one-third. In the quarter comparison the engine reported the saved exclusive mode unavailable and selected borderless; actual scene was 1280×720. These extents remained constant throughout each selected run. Saved exclusive dimensions alone are not proof of runtime resolution.
+- Quarter comparison: 17 retained windows, 9,941 mean live; environment 0.835 ms (0.785–0.858), exclusive simulation 0.298 ms. Mean total frame time improved from 77.084 ms (~12.97 FPS) to 49.976 ms (~20.01 FPS). This confirms a useful resolution reduction for this GPU, while the environment stage still needs optimization. Original third-scale setting restored.
+- Second Astra research pass evaluated compact contiguous point-query traversal against emitter-interleaved points; results follow below. No acceptance budget or semantics changed.
+
+
+### Second optimization research
+
+- Retested synthetic points in emitter-interleaved order. Compact binary layouts, wider child bounds and four-point traversal packets did not establish a sufficient gain and are excluded.
+- Validating exact signed-unit-axis planes allows deriving a brush box from its planes, preserving arbitrary-convex fallback. Tightening only the acceleration entry bounds to their exact intersection removes duplicate containment work; synthetic interleaved cost fell from about 0.56 ms to 0.39 ms, still marginal for the real engine.
+- A bounded CSR grid for acceleration-point candidates reached about 0.235 ms per 10,000 interleaved queries (~58% below the tree probe). It limits grid dimensions and references, sends large/overflow brushes to the tree, and preserves exact per-point field selection; grid membership never supplies an approximate acceleration.
+- Differential prototype compared 96,815 identical inputs with the current resolver and matched checksum `21f33feec23ba3cf`, including random points, actual brush corners ±ULP, subnormals and non-finite inputs. This was research proof; production focused checks and real acceptance measurements subsequently passed below.
+- Path correction: add a bounded acceleration-only candidate grid alongside the generic environment AABB tree, with a tree fallback. No Decision or Acceptance row changes; particle queries remain exact and independent.
+
+- Production grid integration focused gate passed: formatting, dev-tools engine check, 68 collision tests, 16 pool tests and 31 emitter integration tests. Three fresh reviewers (correctness tracer, adversarial tester, hygiene/drift) found no actionable defects. Release rebuild passed in 3m 14s; actual acceptance results follow.
+- Research evidence and rejected candidate distributions are preserved in [`optimization-probes-2026-10-12.json`](optimization-probes-2026-10-12.json); owned research scratch files were removed after copying it.
+
+
+## Optimized AC25 / AC26 — 2026-10-12
+
+Evidence: [`acceptance-2026-10-12-optimized.json`](acceptance-2026-10-12-optimized.json), with all raw CPU windows, source/binary/fixture hashes, commands, build/bake metadata, load/power/thermal snapshots and actual extents. All three cases use the same release binary, fixture geometry and pinned pose. No builds, bakes or probes ran concurrently. AC power, CPU speed limit 100 and absent screen saver were verified before/after every run and screen saver at every timing window. Selection matches the earlier run: discard first two windows and windows starting before 30s; retain every complete window ending by 140s.
+
+### AC25 — pass
+
+11 retained windows, mean 9,925 live particles. Every retained window average meets the budget; values are milliseconds per frame.
+
+| Stage | Mean | Window-average range | Budget | Result |
+|---|---|---|---|---|
+| particle_sim, exclusive | 0.281 | 0.242–0.289 | ≤0.600 | pass |
+| particle_environment | 0.396 | 0.342–0.410 | <0.500 | pass |
+| particle_collect | 0.461 | 0.401–0.474 | ≤1.000 | pass |
+| particle_emit | 0.070 | 0.061–0.072 | ≤0.300 | pass |
+
+Inclusive simulation mean: 0.677 ms. The earlier performance failure is resolved; first-iteration failures remain in their dated evidence records.
+
+### AC26 — pass
+
+| Emitter rate | Mean live particles | Retained windows | sim_tick per tick (ms) |
+|---|---|---|---|
+| 0 | 0 | 11 | 3.412 |
+| 50 | 9,925 | 11 | 3.247 |
+| 100 | 19,889 | 11 | 3.311 |
+
+Maximum/minimum per-tick cost differs by **5.09%**, below 10%. Particle frame-stage costs grow roughly linearly from 10k to 20k; gameplay tick cost remains independent of the particle pool.
+
+### Runtime resolution evaluation
+
+Saved exclusive 3584×2240 mode was unavailable on the current monitor; engine logged borderless fallback. All primary runs actually used a **5120×2880 surface, 1707×960 scene, divisor 3**, with vsync. No extent changed in any retained window.
+
+A separate same-binary 10k comparison, [`acceptance-2026-10-12-quarter.json`](acceptance-2026-10-12-quarter.json), used **5120×2880 surface, 1280×720 scene, divisor 4**. Its 17 retained windows also meet all particle budgets: environment 0.431–0.444 ms, exclusive simulation 0.288–0.298 ms, collection ≤0.496 ms, emission ≤0.069 ms.
+
+| Render scale | Scene dimensions | Mean total / work / wait (ms) | Effective FPS |
+|---|---|---|---|
+| third | 1707×960 | 77.419 / 26.772 / 50.647 | 12.92 |
+| quarter | 1280×720 | 49.854 / 21.364 / 28.490 | 20.06 |
+
+Quarter scale improved this scene's frame rate by about 55%. Lower resolution is useful on this GPU, while the CPU acceptance budgets pass independently at both scales. This does not diagnose an individual GPU pass. Original third-scale preference was restored; no permanent display preference change was made.
+
+### Final state
+
+- All test engine processes stopped; exact rate-only variants verified by inverse replacement and deleted with their PRLs. Base pinned rebake retained as a normal ignored build product.
+- Final workspace preflight: formatting, feature-complete all-targets Clippy and full workspace tests pass: 10,938 passed, 0 failed, 57 ignored across 68 test/doc-test target summaries. No unresolved review findings or Decision/Acceptance changes.
+- ACs 1–26 pass; AC27 still requires owner visual proof. No landing authorization; brief remains in `in-progress/`.
+
+### Optimization final gate and cleanup
+
+- Final commands: `cargo fmt --check`; `cargo clippy -j 4 --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings`; `cargo test -j 4 --workspace --features postretro/dev-tools,postretro/capture`. All exited 0. All 18 Rust source hashes still match the measured release preparation manifest.
+- Final gate commands, test tallies and log hashes are recorded in both final acceptance JSONs. Owned runner, preparation and log files were removed from `/tmp/postretro-particle-opt-*` after preserving results and file hashes; earlier implementation proof logs remain. Task-owned caffeinate was stopped and its session exited; no test engine remains.
+- After the full gate, free space was 13 GiB. Removed only `target/debug/incremental` (5.4 GiB) and `target/preflight-clippy/debug/incremental` (1.1 GiB), restoring 18 GiB free. Source checkouts and normal build products retained.
+- Status is `test-ready`: AC27 visual confirmation of smoke/sparks/impacts, spin and doorway/portal/screen-edge behavior in the particle zone and weapon room remains blocking. Wait for owner proof and then explicit landing authorization.

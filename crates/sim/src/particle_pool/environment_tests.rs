@@ -5,7 +5,7 @@ use super::tests::{close, close_vec, parameters};
 use super::*;
 use postretro_collision::{
     ConvexLeaf, EnvironmentView, EnvironmentVolume, EnvironmentVolumes, LeafPlane,
-    resolve_particle_acceleration,
+    resolve_particle_acceleration, resolve_particle_accelerations,
 };
 
 fn volume(gravity: Option<f32>, push: Option<Vec3>, priority: i32) -> EnvironmentVolume {
@@ -147,4 +147,52 @@ fn overlapping_gravity_and_push_choose_their_own_priority_winners() {
         pool.iter().next().unwrap().velocity,
         Vec3::new(0.0, -2.0, 3.0),
     );
+}
+
+#[test]
+fn batches_sample_advanced_positions_once_before_cross_chunk_expiry() {
+    let volumes = EnvironmentVolumes::build(vec![volume(Some(-2.0), Some(Vec3::Z), 0)]);
+    let view = EnvironmentView::new(-10.0, &volumes, &[]);
+    let registry = EntityRegistry::new();
+    let id = EntityId::from_raw(0);
+    let mut pool = ParticlePool::new();
+    for index in 0..131 {
+        let mut params = parameters();
+        params.drag = 0.0;
+        params.lifetime = if index % 3 == 0 { 0.5 } else { 2.0 };
+        // All start inside; alternate crossing out on this step.
+        let velocity = if index % 2 == 0 {
+            Vec3::X * 4.0
+        } else {
+            Vec3::ZERO
+        };
+        assert!(pool.spawn_emitter(id, &params, Vec3::ZERO, velocity, 0.0));
+    }
+    let mut sampled = 0;
+    let mut batches = 0;
+    pool.step_batched(&registry, 0.5, |positions, accelerations| {
+        sampled += positions.len();
+        batches += 1;
+        assert_eq!(positions.len(), accelerations.len());
+        resolve_particle_accelerations(view, positions, accelerations);
+    });
+    assert_eq!(sampled, 131);
+    assert_eq!(batches, 3);
+    assert_eq!(pool.len(), 87);
+    assert_eq!(pool.live_count(id), 87);
+    for particle in pool.iter() {
+        close(particle.age, 0.5);
+        if particle.position.x > 1.0 {
+            close_vec(particle.velocity, Vec3::new(4.0, -5.0, 0.0));
+        } else {
+            close_vec(particle.velocity, Vec3::new(0.0, -1.0, 0.5));
+        }
+    }
+    pool.step_batched(&registry, 2.0, |positions, accelerations| {
+        resolve_particle_accelerations(view, positions, accelerations);
+    });
+    assert!(pool.is_empty());
+    assert_eq!(pool.live_count(id), 0);
+    assert_eq!(pool.parameter_block_count(), IMPACT_PARTICLE_COUNT);
+    pool.step_batched(&registry, 0.5, |_, _| panic!("empty pool queried"));
 }

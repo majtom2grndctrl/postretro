@@ -21,6 +21,23 @@ const LIP_INSET: f32 = 0.02;
 /// the ceiling is still hit rather than started on.
 const RAY_START_MARGIN: f32 = 0.05;
 
+#[cfg(test)]
+thread_local! {
+    static PROBE_CASTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Casts the probe made on this thread since the last call, for the probe-cost
+/// rows. Production builds carry no counter.
+#[cfg(test)]
+pub(super) fn take_probe_casts() -> u32 {
+    PROBE_CASTS.with(|casts| casts.replace(0))
+}
+
+fn count_cast() {
+    #[cfg(test)]
+    PROBE_CASTS.with(|casts| casts.set(casts.get() + 1));
+}
+
 /// The ledge the probe found: where the pawn's feet rest on its top, and the
 /// mover carrying it, if any.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,6 +85,7 @@ pub(super) fn probe_ledge(
     let radius = component.capsule.radius;
     let capsule = Capsule::new_y(half_height, radius);
 
+    count_cast();
     let wall = cast_capsule_query(
         collision,
         position,
@@ -86,6 +104,7 @@ pub(super) fn probe_ledge(
     if ray_length <= 0.0 {
         return None;
     }
+    count_cast();
     let top = cast_ray_query(
         collision,
         Vec3::new(landing.x, ray_top, landing.z),
@@ -107,10 +126,12 @@ pub(super) fn probe_ledge(
     if rise <= 0.0 {
         return None;
     }
+    count_cast();
     if !clearance_probe(component, collision, position, half_height, Vec3::Y, rise) {
         return None;
     }
     let raised = Vec3::new(position.x, probe_center_y, position.z);
+    count_cast();
     if !clearance_probe(component, collision, raised, half_height, wish, forward) {
         return None;
     }

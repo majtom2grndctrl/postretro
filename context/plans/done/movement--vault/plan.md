@@ -1,7 +1,7 @@
 # movement--vault — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 27ca6a60
 branch: claude/sweet-cerf-m0t396
 
@@ -193,7 +193,7 @@ Physics rows run through `tick_with_immersion` on purpose-built triangle worlds 
 | D4 | `Vault` round-trips the wire mirror; a non-finite or out-of-contract payload is rejected. | Round-trip array, finiteness drift guard, contract rejections, unknown mover id at merge | achievable as stated | pass |
 | D5 | Predict/reconcile: a static-ledge vault with the ack on the entry tick corrects by zero. A moving-mover vault stays within the vault tolerance. | `predict_reconcile_harness_vault.rs`: static window selected at the entry tick, `assert_no_correction`; rising-platform fixture, worst ≤ `DASH_CORRECTION_MAX_M` | achievable as stated | pass (static: zero correction; moving mover within the vault tolerance) |
 | D6 | Existing movement, swim and netcode suites pass unchanged. | Full `postretro-physics`, `postretro-netcode`, `postretro-net`, `postretro-sim` suites. Version-pinning asserts (handshake :452/:599, wire :3584) move to 30/20 as the Decision requires; the 11 `fluid_jump_velocity` literals become `Some(..)` with no behavior change | achievable as stated | pass: full workspace 10,836 tests, 0 failed; clippy, release check and crate graph clean (after the main merge: 10,869 passed, 0 failed) |
-| N1 | A dev station (graded ledges, a low-ceiling top, static and rising mover ledges, a pool with graded edges) plays with no camera pop. Slide→jump→vault, dash→vault and pool exits feel right. | Owner, in-engine, on a new `content/dev/maps/vault-test.map` | manual | outstanding: owner, in-engine on `content/dev/maps/vault-test.map` (steps in `vault-test.README.md`) |
+| N1 | A dev station (graded ledges, a low-ceiling top, static and rising mover ledges, a pool with graded edges) plays with no camera pop. Slide→jump→vault, dash→vault and pool exits feel right. | Owner, in-engine, on a new `content/dev/maps/vault-test.map` | manual | owner play-tested on `vault-test.map`: works, and the owner likes the feel after the feel pass; dev tuning set by the owner (800 ms, held pose pitch −38.5°, FOV −30°, eases 0.33/0.33) |
 | N2 | A co-op client at about 100 ms latency vaults a static ledge with no visible correction. | Owner, dev latency harness (`networking.md` §Testing the conditioned link) | manual | outstanding: owner, conditioned loopback (steps in `vault-test.README.md`) |
 
 ## Tasks

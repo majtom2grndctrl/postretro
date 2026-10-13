@@ -424,8 +424,7 @@ pub const STEP_UP_LIMIT_MARGIN: f32 = 0.01;
 /// Vault (mantle) tuning. Optional on [`PlayerMovementDescriptor`] (absent: the
 /// pawn never vaults). `max_height`, `swim_max_height` and `duration_ms` are
 /// required in a present block; `from` and `allow_fire` default. Never
-/// map-overridable. See `context/plans/in-progress/movement--vault` until the
-/// contract lands in `movement.md`.
+/// map-overridable. See `context/lib/movement.md` §4 (Vault).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VaultParams {
     /// Highest ledge top a land vault reaches, metres above the feet. Finite and

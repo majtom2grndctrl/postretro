@@ -150,6 +150,9 @@ Bounded cost:
 - [ ] For the same camera, the cap-trip fallback's fog reach contains everything the
   uncapped walk reaches. This includes a camera beside a portal, looking away from it.
   (O6)
+- [ ] No comment or report text calls the bake's sampled set a lower bound on visibility
+  or says it holds for any FOV. The dry run's report states the projections the bake
+  actually samples. This is a grep gate.
 - [ ] The portal-walk epoch differs from its value before this change. If the bake
   widens, the cell-residency stage version differs too.
 
@@ -185,8 +188,18 @@ Bounded cost:
   the hallway.
 - [ ] Repeat the lightmap-cost row on movement-feel, whose cells span several blocks, and
   report blocks per over-included cell.
+- [ ] At every entry pose and projection the Settle row measures, the settle frames take
+  the walk path, never the step-limit fallback. (O13)
 - [ ] Settle: entering the hallway, and teleporting to the shaft and arena poses, report
   for each walk the settle set (lightmap blocks and SH targets) and the time to reveal.
+- [ ] Along the churn route, report lightmap bytes read and physical reads for each
+  walk. (O15)
+- [ ] At 130° with 16:9 and 21:9 aspect, the rect walk's measurement runs report zero
+  step-limit frames.
+- [ ] SH reach: rerun the SH reach measurement on the hallway and campaign-test with the
+  rect bake, and with the widened bake if the bake widens. Report worst and p95 SH
+  mandatory bytes per camera cell against the exact bake. The worst cell stays under
+  the SH floor.
 - [ ] Churn: along a walking route through the shafts and the arena, recorded in
   `research.md` and replayed for each walk,
   report per-frame cells entering and leaving the visible set (p50, p95, max). Snapped

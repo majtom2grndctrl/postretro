@@ -175,8 +175,7 @@ projections and widens the bake's projections itself if the gap is material.
   and the id-51 bake would sample a walk whose meaning changes per pose.
 - `done/sh-streaming--reveal-gate-and-warm-horizon` settles on every Visible target, so
   a superset enlarges its settle set.
-- At promotion, `rendering_pipeline.md` §2's algorithm description ("the id Tech 4
-  approach", "narrows the frustum", "exact portal set") needs a rewrite, not a word swap.
+- `rendering_pipeline.md` §2 already carries the bounded-region walk (marked decided, not yet built) and the superset contract, since a424aaf. At landing, §2 drops the "decided, not yet built" marker and its description of today's chain walk.
 - The "no PVS bake" decision is what makes "the id-51 bake samples the new walk" load
   bearing: a geometric bake would remove the projection gap.
 
@@ -198,6 +197,9 @@ From `/review-brief` (rows lens, 2026-09-29). Acceptance rows cite these ids.
 | O10 | Bypass boundary | Camera on a portal plane just outside the polygon, inside then beyond the bypass distance; separately, on a plane shared by several coplanar slab portals. | Inside: full screen both directions. Beyond: clipped normally. Shared slab plane: cells above, below and their lateral neighbours visible. |
 | O11 | Portal-test counting | Each outbound portal counts once per cell expansion, before any blocked, solid, facing or clip rejection. | Counts match the prototype's "step" and the CPU log's portal-test count; the cap means what it meant during measurement. |
 | O12 | Draw and fog from one walk | Both sets come from the walk's final state, after the worklist drains. | The draw set is exactly the drawable part of fog reach. |
+| O13 | Cap trip on a Settling frame | The presented pose's walk trips the cap. Settling demand marks every drawn block and cluster Visible on any path, and the settle check reads that demand in the same frame. The pose is fixed, so every Settling frame trips again. In Running, the same trip holds lightmap blocks without reading them, while SH still demands every drawn cluster. | The settle set becomes the fallback's frustum draw set for both resources and never shrinks. Reveal waits on it until settled or timed out. A lowered cap trips sooner on content the sweep never measured. |
+| O15 | Over-included cell flickers | A cell enters the rect set on frame N, leaves on N+1, and returns on N+2. Lightmap demand drops it on N+1, and that frame's drain frees its blocks. SH keeps its clusters through hysteresis. | Lightmap re-reads the blocks on N+2. A re-read whose pair needs growth while a generation retires is deferred and counts a miss. The cost is reported, not bounded. |
+| O16 | Reveal frame vs last Settling frame | The last Settling frame settles the held view. The reveal frame projects at the same extents but ticks once, so the pose can move, and the snapped rect set can change with it. | Blocks the reveal frame draws outside the settle set are misses counted on that frame. For a cell the exact walk reaches at the settled pose, the count is zero. Over-included blocks may miss without a visible pop. |
 
 Premise pins (premise lens):
 

@@ -74,7 +74,12 @@ fn lua_vault(js_body: &str) -> String {
 }
 
 fn parse_both(js_body: &str) -> [(Option<VaultParams>, Vec<String>); 2] {
-    let lua_body = lua_vault(js_body);
+    parse_pair(js_body, &lua_vault(js_body))
+}
+
+/// Parse a JS body and its hand-written Luau counterpart, for values whose
+/// syntax `lua_vault` cannot translate.
+fn parse_pair(js_body: &str, lua_body: &str) -> [(Option<VaultParams>, Vec<String>); 2] {
     let js = {
         let capture = LogCapture::start();
         let descriptor = eval_js(&js_movement_with_vault(js_body), |ctx, v| {
@@ -87,7 +92,7 @@ fn parse_both(js_body: &str) -> [(Option<VaultParams>, Vec<String>); 2] {
     };
     let lua = {
         let capture = LogCapture::start();
-        let descriptor = eval_lua(&lua_movement_with_vault(&lua_body), |v| {
+        let descriptor = eval_lua(&lua_movement_with_vault(lua_body), |v| {
             entity_descriptor_from_lua(v).expect("the descriptor loads")
         });
         (
@@ -112,7 +117,12 @@ fn vault_warnings(capture: &LogCapture) -> Vec<String> {
 /// Assert both runtimes dropped the block with one identical warning naming
 /// `needle`, while the rest of the descriptor loaded.
 fn assert_dropped_naming(js_body: &str, needle: &str) {
-    let [(js, js_warnings), (lua, lua_warnings)] = parse_both(js_body);
+    assert_pair_dropped_naming(js_body, &lua_vault(js_body), needle);
+}
+
+/// [`assert_dropped_naming`] for a JS body and a hand-written Luau body.
+fn assert_pair_dropped_naming(js_body: &str, lua_body: &str, needle: &str) {
+    let [(js, js_warnings), (lua, lua_warnings)] = parse_pair(js_body, lua_body);
     assert_eq!(js, None, "QuickJS drops the block ({needle})");
     assert_eq!(lua, None, "Luau drops the block ({needle})");
     assert_eq!(js_warnings.len(), 1, "one QuickJS warning: {js_warnings:?}");
@@ -217,5 +227,39 @@ fn each_invalid_vault_field_drops_the_block_naming_it() {
         ("4".to_string(), "`movement.vault` must be an object"),
     ] {
         assert_dropped_naming(&body, needle);
+    }
+}
+
+#[test]
+fn a_malformed_from_or_vault_value_drops_identically_in_both_runtimes() {
+    // Arrays and functions are not objects in either runtime, and neither
+    // runtime prints a Rust Debug form for a key.
+    let from_array = (
+        js_vault(&[], r#"from: ["auto"]"#),
+        lua_vault(&js_vault(&[], r#"from: { "auto" }"#)),
+    );
+    let from_function = (
+        js_vault(&[], "from: () => {}"),
+        lua_vault(&js_vault(&[], "from: function() end")),
+    );
+    let vault_function = ("() => {}".to_string(), "function() end".to_string());
+    for (js_body, lua_body, needle) in [
+        (
+            from_array.0,
+            from_array.1,
+            "`movement.vault.from` must be an object",
+        ),
+        (
+            from_function.0,
+            from_function.1,
+            "`movement.vault.from` must be an object",
+        ),
+        (
+            vault_function.0,
+            vault_function.1,
+            "`movement.vault` must be an object",
+        ),
+    ] {
+        assert_pair_dropped_naming(&js_body, &lua_body, needle);
     }
 }

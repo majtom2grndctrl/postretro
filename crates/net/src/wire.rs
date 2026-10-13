@@ -599,7 +599,9 @@ pub enum ValidationError {
     NonFiniteMovementState,
     /// A movement-state variant carried finite values that violate its state
     /// contract. Sliding boost must be horizontal, and its optional floor normal
-    /// must be safely bounded and near-unit.
+    /// must be safely bounded and near-unit. A Vault payload must have a
+    /// non-negative timer and entry speed, a bounded target and start offset,
+    /// and a start offset with a horizontal component.
     InvalidMovementState,
     /// A `Transform` payload carried a non-finite float (NaN/inf) in its position,
     /// rotation, or scale. Rejected before typed apply so no non-finite pose reaches
@@ -694,7 +696,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::InvalidMovementState => {
                 write!(
                     f,
-                    "invalid PlayerMovementState contract: Sliding boost must be horizontal and floor normal must be absent or a bounded near-unit vector"
+                    "invalid PlayerMovementState contract: a Sliding boost or floor normal, or a Vault payload, is out of contract"
                 )
             }
             ValidationError::NonFiniteTransform => {
@@ -3142,6 +3144,10 @@ mod tests {
             vault_state(-1.0, target, offset, 7.0),
             vault_state(16.0, target, offset, -0.5),
             vault_state(16.0, target, [0.0005, -0.7, 0.0], 7.0),
+            // Finite but huge: would overflow replay's path arithmetic.
+            vault_state(16.0, [2.0e38, 1.2, 0.0], offset, 7.0),
+            vault_state(16.0, target, [2.0e38, -0.7, 0.0], 7.0),
+            vault_state(16.0, target, [60.0, 60.0, 60.0], 7.0),
         ] {
             assert_eq!(
                 vault_payload(state).validate(),

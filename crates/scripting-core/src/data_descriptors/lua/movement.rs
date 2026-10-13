@@ -485,10 +485,12 @@ fn raw_vault_lua(value: LuaValue, nest: bool) -> Result<RawVaultValue, Descripto
             let mut entries = Vec::new();
             for pair in t.pairs::<LuaValue, LuaValue>() {
                 let (key, value) = pair.map_err(lua_err)?;
-                let key = match key {
-                    LuaValue::String(s) => s.to_str().map_err(lua_err)?.to_string(),
-                    other => format!("{other:?}"),
+                // A non-string key makes an array-like table, which QuickJS
+                // reads as an array and so as no object; match it.
+                let LuaValue::String(key) = key else {
+                    return Ok(RawVaultValue::Other);
                 };
+                let key = key.to_str().map_err(lua_err)?.to_string();
                 entries.push((key, raw_vault_lua(value, false)?));
             }
             RawVaultValue::Object(entries)

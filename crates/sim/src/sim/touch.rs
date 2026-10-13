@@ -339,6 +339,8 @@ impl TouchSystem {
                 weapon.shoot_press_consumed = false;
                 weapon.secondary_press_consumed = false;
                 weapon.reload_press_consumed = false;
+                weapon.primary_press_held_over_gate = false;
+                weapon.secondary_press_held_over_gate = false;
                 weapon.reload_feedback = Default::default();
                 let _ = registry.set_component(item, weapon);
             }
@@ -1683,6 +1685,8 @@ mod tests {
         weapon.cooldown_remaining_ms = 90.0;
         weapon.shoot_press_consumed = true;
         weapon.reload_press_consumed = true;
+        weapon.primary_press_held_over_gate = true;
+        weapon.secondary_press_held_over_gate = true;
         let feedback_tick = weapon.begin_reload_feedback_tick();
         weapon.publish_reload_feedback(ReloadFeedback::Started, feedback_tick);
         registry.set_component(item, weapon).unwrap();
@@ -1762,6 +1766,8 @@ mod tests {
         );
         assert!(!weapon.shoot_press_consumed);
         assert!(!weapon.reload_press_consumed);
+        assert!(!weapon.primary_press_held_over_gate);
+        assert!(!weapon.secondary_press_held_over_gate);
         assert_eq!(weapon.reload_feedback, Default::default());
         assert_eq!(
             registry

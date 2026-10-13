@@ -131,10 +131,10 @@ fn run_local_weapon_command_inner(
     anim_time: f64,
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
-    activation: Option<weapon::execution::ActivationCommand>,
+    mut activation: Option<weapon::execution::ActivationCommand>,
     equip_only: bool,
     // The shooter's pawn-state fire gate, captured at tick start, before this
-    // tick's movement ran (`pawn_gate::vault_blocks_fire`).
+    // tick's movement ran (`pawn_gate::pawn_fire_blocked`).
     fire_blocked: bool,
 ) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
@@ -165,7 +165,6 @@ fn run_local_weapon_command_inner(
     if !pawn_alive || fire_blocked {
         weapon_component.cancel_activation();
     }
-    let mut activation = activation;
     if let Some(activation) = activation.as_mut() {
         weapon::pawn_gate::hold_presses_over_gate(
             &mut weapon_component,

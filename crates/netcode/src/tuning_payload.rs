@@ -565,6 +565,25 @@ mod tests {
         ));
     }
 
+    // Epoch 11 predates descriptor `vault` tuning and the nullable
+    // `swim.fluid_jump_velocity`. Its payload must report the stale epoch rather
+    // than fail as a shape error on either field.
+    #[test]
+    fn payload_rejects_previous_epoch_without_vault_tuning() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        json["epoch"] = serde_json::json!(11);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 11,
+            })
+        ));
+    }
+
     #[test]
     fn payload_json_matches_committed_fixture() {
         let actual = String::from_utf8(encode_tuning_payload(&full_payload())).unwrap();

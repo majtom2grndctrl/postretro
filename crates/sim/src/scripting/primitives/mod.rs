@@ -767,7 +767,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "swim?",
             "SwimParams",
-            "Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.",
+            "Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, every field but `fluidJumpVelocity` is required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.",
         )
         .field(
             "vault?",

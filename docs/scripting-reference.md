@@ -2882,7 +2882,7 @@ logs one warning. Every field but `fluidJumpVelocity` is required:
 | `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
 | `fluidJumpVelocity` | m/s | above `0`, optional | Upward speed of a jump out of the fluid. Leave it out for no fluid jump: jump at the surface then only treads, and the player leaves the water by wading out or, with a [`movement.vault`](#movementvault) block, by climbing out. |
 
-A swim block with a missing field, a field that is not a number, a field out of
+A swim block with a missing required field, a field that is not a number, a field out of
 range, or `exitDepth` at or above `enterDepth` is dropped with a warning naming
 the field (for example `movement.swim.exitDepth`). The rest of the descriptor
 and the mod still load, and the player wades, as if the descriptor had no
@@ -2985,7 +2985,9 @@ How vaulting plays:
 
 Starting and finishing a climb fire the reserved `vault_started` and
 `vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
-either edge.
+either edge. A climb cut short by the player's death or by a descriptor hot
+reload ends without `vault_ended`, so a reaction that pairs the two (a looping
+climb sound, say) should also stop on `playerDied`.
 
 ### The readonly `player.swimming` and `player.immersion` slots
 

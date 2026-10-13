@@ -110,6 +110,16 @@ const SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE: f32 = 1.0e-3;
 /// its target, so anything under a millimetre is malformed.
 const VAULT_MIN_EXIT_OFFSET_M: f32 = 1.0e-3;
 
+/// Longest start offset a vault payload may carry, metres. Far above any
+/// authored ledge height plus probe reach, and small enough that replay's path
+/// arithmetic cannot overflow.
+const VAULT_MAX_START_OFFSET_M: f32 = 64.0;
+
+/// Largest per-axis magnitude a vault `target` may carry, metres. No net-crate
+/// world-coordinate bound exists, so this is a generous bound well past any
+/// level extent that still keeps replay's path and frame rotation finite.
+const VAULT_MAX_TARGET_COORD_M: f32 = 1.0e6;
+
 fn sliding_floor_normal_is_valid(normal: &[f32; 3]) -> bool {
     // Bound components before squaring so even finite hostile values cannot
     // overflow the magnitude calculation used by this validation gate.
@@ -211,8 +221,9 @@ impl WireMovementState {
     /// Whether variant-specific movement invariants hold after decoding. Dash may
     /// preserve vertical boost. Slide boost is horizontal, and its optional floor
     /// normal must be safely bounded and near-unit before replay projects gravity
-    /// against it. A vault's timer and speed are non-negative, and its start
-    /// offset leaves a horizontal exit direction.
+    /// against it. A vault's timer and speed are non-negative, its target and
+    /// start offset are bounded so replay arithmetic stays finite, and its start
+    /// offset has a horizontal component to derive the exit direction from.
     #[must_use]
     fn has_valid_state_contract(&self) -> bool {
         match self {
@@ -232,13 +243,24 @@ impl WireMovementState {
             }
             WireMovementState::Vault {
                 elapsed_ms,
+                target,
                 start_offset,
                 entry_speed,
                 ..
             } => {
+                // Components are finite here (`all_finite` runs first), so the
+                // per-axis bound runs before any squaring in the length.
                 *elapsed_ms >= 0.0
                     && *entry_speed >= 0.0
+                    && target.iter().all(|c| c.abs() <= VAULT_MAX_TARGET_COORD_M)
+                    && start_offset
+                        .iter()
+                        .all(|c| c.abs() <= VAULT_MAX_START_OFFSET_M)
                     && start_offset[0].hypot(start_offset[2]) >= VAULT_MIN_EXIT_OFFSET_M
+                    && (start_offset[0] * start_offset[0]
+                        + start_offset[1] * start_offset[1]
+                        + start_offset[2] * start_offset[2])
+                        <= VAULT_MAX_START_OFFSET_M * VAULT_MAX_START_OFFSET_M
             }
         }
     }

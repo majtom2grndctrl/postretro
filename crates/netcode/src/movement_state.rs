@@ -56,8 +56,8 @@ pub(crate) fn movement_state_to_wire(
 /// descriptor-derived `PlayerMovementComponent`. This is the inverse of
 /// [`movement_state_to_wire`], but it is a *merge*, not a constructor: it writes
 /// only the mutable tick fields and the live capsule dimensions onto `component`,
-/// leaving everything the descriptor owns untouched — tuning (`ground`/`air`/
-/// `fall`/`dash`/`crouch`), `view_feel`, `standing_*`, `stuck_stop_*`,
+/// leaving everything the descriptor owns untouched — every descriptor tuning
+/// block, `view_feel`, `standing_*`, `stuck_stop_*`,
 /// `cos_walkable`, the forgiveness *windows* (`coyote_ms`/`jump_buffer_ms`), and
 /// the derived `dash_programs`. A reconcile/apply path materializes the component
 /// from the local descriptor first, then merges authoritative tick state in here.
@@ -547,9 +547,6 @@ mod tests {
         assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
-    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim) through the
-    /// wire enum. Constructed from the source enum via an exhaustive list so a new
-    /// variant must be added here to compile-cover it.
     // A tuning rebuild that removes the vault block cannot finish a carried
     // vault; one that keeps it carries the vault on.
     #[test]
@@ -606,6 +603,9 @@ mod tests {
         assert_eq!(component.movement_state, vaulting.movement_state);
     }
 
+    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim/Vault)
+    /// through the wire enum. Constructed from the source enum via an exhaustive list so
+    /// a new variant must be added here to compile-cover it.
     #[test]
     fn movement_state_variants_round_trip_through_wire() {
         let variants = [

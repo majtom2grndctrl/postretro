@@ -9,7 +9,8 @@ use super::DescriptorError;
 
 /// One value of a `movement.vault` field as a VM read it, reduced to the
 /// shapes the block distinguishes. An object holds one level of entries; a
-/// nested object reads as [`RawVaultValue::Other`].
+/// nested object, an array, a function and a Luau table with any non-string
+/// key all read as [`RawVaultValue::Other`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RawVaultValue {
     /// Absent, `null`/`undefined` or `nil`.
@@ -41,19 +42,19 @@ fn required_number(field: &'static str, value: RawVaultValue) -> Result<f32, Des
     }
 }
 
-fn trigger(context: &str, value: RawVaultValue) -> Result<Option<VaultTrigger>, DescriptorError> {
+fn trigger(place: &str, value: RawVaultValue) -> Result<Option<VaultTrigger>, DescriptorError> {
     match value {
         RawVaultValue::Absent => Ok(None),
         RawVaultValue::Str(name) if name == "auto" => Ok(Some(VaultTrigger::Auto)),
         RawVaultValue::Str(name) if name == "jump" => Ok(Some(VaultTrigger::Jump)),
         _ => Err(invalid(format!(
-            "`movement.vault.from.{context}` must be \"auto\" or \"jump\""
+            "`movement.vault.from.{place}` must be \"auto\" or \"jump\""
         ))),
     }
 }
 
-/// A present `from` replaces the default whole: a context it leaves out cannot
-/// vault. Only the closed contexts `air`, `ground` and `swim` exist.
+/// A present `from` replaces the default whole: a place it leaves out cannot
+/// vault. Only the closed places `air`, `ground` and `swim` exist.
 fn entry(value: RawVaultValue) -> Result<VaultEntry, DescriptorError> {
     let mut entries = match value {
         RawVaultValue::Absent => return Ok(VaultEntry::default()),
@@ -72,18 +73,18 @@ fn entry(value: RawVaultValue) -> Result<VaultEntry, DescriptorError> {
         ground: None,
         swim: None,
     };
-    for (context, value) in entries {
-        let slot = match context.as_str() {
+    for (place, value) in entries {
+        let slot = match place.as_str() {
             "air" => &mut from.air,
             "ground" => &mut from.ground,
             "swim" => &mut from.swim,
             _ => {
                 return Err(invalid(format!(
-                    "`movement.vault.from.{context}` is not a vault context; expected air, ground or swim"
+                    "`movement.vault.from.{place}` is not a vault context; expected air, ground or swim"
                 )));
             }
         };
-        *slot = trigger(&context, value)?;
+        *slot = trigger(&place, value)?;
     }
     Ok(from)
 }

@@ -111,6 +111,9 @@ fn state_params_by_index(
     }
 }
 
+/// Number of impulse springs: one per index `state_index` returns (`0..=4`).
+pub(crate) const IMPULSE_STATE_COUNT: usize = 5;
+
 /// The spring a state key drives. `Swim` has no authored impulse key
 /// (`viewFeel.impulse.states` names the land states and `vault`), so edges into
 /// and out of swim kick nothing; the other end of such an edge still kicks.

@@ -216,9 +216,14 @@ pub fn movement_descriptor_from_js<'js>(
         if raw.is_null() || raw.is_undefined() {
             None
         } else {
+            // A function carries the object tag in QuickJS; Luau reads it as a
+            // non-table, so it is not a block here either.
+            let callable = raw.is_function();
             let parsed = match Object::from_value(raw) {
-                Ok(vault_obj) => vault_params_from_js(&vault_obj, ground.step_height),
-                Err(_) => Err(vault_block_not_an_object()),
+                Ok(vault_obj) if !callable => {
+                    vault_params_from_js(&vault_obj, ground.step_height)
+                }
+                _ => Err(vault_block_not_an_object()),
             };
             keep_or_drop_vault_block(parsed)
         }
@@ -491,8 +496,9 @@ pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, Descr
     })
 }
 
-/// Parse a `swim` sub-object. All six fields are required; ranges and the
-/// `exitDepth < enterDepth` order are checked by [`SwimParams::validated`].
+/// Parse a `swim` sub-object. Every field but `fluidJumpVelocity` is required;
+/// ranges and the `exitDepth < enterDepth` order are checked by
+/// [`SwimParams::validated`].
 /// Every error names its field as `movement.swim.<field>`, worded exactly as
 /// [`swim_params_from_lua`] words it.
 pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, DescriptorError> {
@@ -547,8 +553,11 @@ fn raw_vault_js(value: JsValue<'_>, nest: bool) -> Result<RawVaultValue, Descrip
     if let Some(s) = value.as_string() {
         return Ok(RawVaultValue::Str(s.to_string().map_err(js_err)?));
     }
+    // QuickJS tags functions as objects and arrays are objects too; Luau reads
+    // neither as a table of entries, so neither is an object here.
     if nest
         && !value.is_array()
+        && !value.is_function()
         && let Some(obj) = value.as_object()
     {
         let mut entries = Vec::new();

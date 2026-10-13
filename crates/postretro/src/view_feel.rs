@@ -45,7 +45,7 @@ pub(crate) struct ViewFeelState {
     pub(crate) sway_clock: f32,
     /// One critically-damped transient spring per closed movement-state key.
     /// The state remains app-owned and presentation-only, never replicated.
-    impulse_springs: [impulse::ImpulseSpring; 5],
+    impulse_springs: [impulse::ImpulseSpring; impulse::IMPULSE_STATE_COUNT],
     /// Sustained slide presentation, independent of transition kicks.
     slide_blend: f32,
 }
@@ -58,7 +58,7 @@ impl Default for ViewFeelState {
             bob_vertical_phase: 0.0,
             bob_lateral_phase: 0.0,
             sway_clock: 0.0,
-            impulse_springs: [impulse::ImpulseSpring::ZERO; 5],
+            impulse_springs: [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT],
             slide_blend: 0.0,
         }
     }
@@ -68,7 +68,7 @@ impl ViewFeelState {
     /// Discard transition kicks and sustained slide presentation for state that no longer
     /// exists while preserving independent bob, tilt, and sway continuity.
     pub(crate) fn clear_state_effects(&mut self) {
-        self.impulse_springs = [impulse::ImpulseSpring::ZERO; 5];
+        self.impulse_springs = [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT];
         self.slide_blend = 0.0;
     }
 }
@@ -197,7 +197,7 @@ pub(crate) fn evaluate_with_edges(
         None => {
             // A descriptor that removes impulse must not leave a prior
             // presentation displacement in flight.
-            state.impulse_springs = [impulse::ImpulseSpring::ZERO; 5];
+            state.impulse_springs = [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT];
             ImpulseChannels {
                 fov: 0.0,
                 pitch: 0.0,
@@ -933,8 +933,7 @@ mod tests {
         assert!(approx_eq(output.impulse_roll, -1.0));
     }
 
-    // A vault's entry and exit kick its own row; swim at the other end of an
-    // edge still kicks nothing.
+    // Swim's own side of an edge kicks nothing; the vault end still does.
     #[test]
     fn vault_edges_kick_the_vault_row() {
         let params = impulse_params(ImpulseStates {

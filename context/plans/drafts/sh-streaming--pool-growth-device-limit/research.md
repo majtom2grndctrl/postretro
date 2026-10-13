@@ -124,9 +124,7 @@ The device limit is reachable, but only at the edge of the content range.
   or failure, and every exit releases it. A device-limited cluster therefore leaves through the
   departure path at refusal, releasing payload and permit once; it holds nothing while it waits.
   Hysteresis residents release first when a mandatory cluster is refused (owner ruling, round 2).
-- Retry cost: each drain re-stages a device-limited cluster and rolls it back. The lightmap pool
-  bounds the equivalent walk with a per-drain "no smaller extent can fit" skip. Without a bound,
-  an SH level past the limit pays one failed allocation per deferred cluster per drain.
+- Retry cost: a device-limited cluster is staged again only after a wake, so each wake costs one read and at most one failed staging per cluster.
 - Priority at the limit: with mandatory never evicted and hysteresis residents holding room
   until their window passes, a refused Visible cluster can sit on the ambient floor while
   off-screen Lead or hysteresis clusters stay resident, inverting §4's Visible-first order.
@@ -177,20 +175,26 @@ From `/review-brief` (rows lens, round 1).
 
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Two clusters in one drain: one refused at the limit, one that fits, either order | The refused install rolls back its provisional dense and sparse ranges, address high-water included, before the next ready cluster stages | The fitting cluster installs; the refused one defers device-limited; neither order changes the result |
+| P1 | Two clusters in one drain: one refused at the limit, one that fits, either order | The refused install rolls back its provisional dense and sparse ranges, address high-water included, before the next ready cluster stages | The fitting cluster installs; the refused one is refused and dropped as device-limited; neither order changes the result |
 | P2 | Drain N refuses C; drain N+1 confirms an eviction whose freed range holds C | The app learns of a confirmed eviction only from drain N+1's outcome, after that drain offered its ready set | C is requested again after drain N+1, reads again, and installs on a later drain; no install happens in the confirming drain |
-| P3 | One cluster needs dense growth that fits and sparse growth that does not | Dense growth commits during staging; the sparse refusal then rolls back the install, not the growth | Dense growth stays (valid pool, one dense retirement pending); cluster defers device-limited; a later cluster this drain that needs dense growth defers as retirement pressure, not device-limited |
-| P4 | A cluster's needed size exceeds the limit while that family's previous generation still retires | The limit verdict precedes the retirement wait, in dense and sparse alike (today dense checks the limit first, sparse checks retirement first) | Device-limited deferral; a cluster that fits but waits defers as retirement pressure |
-| P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The device-limited mark lands with outcome N, is read before N+1 retargets, and clears on install, drop, target departure or generation change | The miss counts device-limited, and so does a dependent whose owner chain waits on a device-limited owner |
+| P3 | One cluster needs dense growth that fits and sparse growth that does not | Dense growth commits during staging; the sparse refusal then rolls back the install, not the growth | Dense growth stays (valid pool, one dense retirement pending); cluster is refused and dropped as device-limited; a later cluster this drain that needs dense growth defers as retirement pressure, not device-limited |
+| P4 | A cluster's needed size exceeds the limit while that family's previous generation still retires | The limit verdict precedes the retirement wait, in dense and sparse alike (today dense checks the limit first, sparse checks retirement first) | Device-limited refusal and drop; a cluster that fits but waits defers as retirement pressure |
+| P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The device-limited mark lands with outcome N and is read before N+1 retargets; the refusal's own drop sets it and never clears it | The miss counts device-limited, and so does a dependent whose owner chain waits on a device-limited owner; the mark clears on install, on leaving the target set (not on dropping to hysteresis), or on generation change |
 | P6 | Refusal during Settling; timeout decided on frame N; reveal on N+1 | Settling counts no misses; the reveal frame is the first Running frame | Settling warns once; reveal proceeds; the reveal frame counts one device-limit miss per device-limited visible cluster and no second warning |
 | P7 | Refusals across generations within one level, then a level change | Warning latch is level-scoped, not generation- or boot-state-scoped | One warning per level; the next level's first refusal warns again |
 | P8 | A device-limited cluster when its target departs, or when the level unloads | The cluster already left through the departure path at refusal and holds no payload or permit | Departure only clears its mark; unload drops the controller with every mark; the next level starts with a full permit set |
-| P9 | Several sparse families need growth for one cluster; one is refused | Every replacement is built before any copy or swap | No family commits when any is refused (current transaction); the cluster defers device-limited |
+| P9 | Several sparse families need growth for one cluster; one is refused | Every replacement is built before any copy or swap | No family commits when any is refused (current transaction); the cluster is refused and dropped as device-limited |
 | P10 | Camera cell change, or lead L raised up to the baked maximum | Runtime L clamps to the baked maximum; untargeted hysteresis residents release before a mandatory cluster waits on the device limit | A level that passed prl-build is never refused for mandatory demand inside its baked set; only fragmentation past the headroom or drawn demand outside the set reaches the refusal backstop |
 | P11 | C is refused in drain N, then its target departs, the level unloads, or it is re-requested | Refusal releases payload and permit once through the departure path | No later exit releases a second permit; the permit count equals reads in flight plus ready clusters |
 | P12 | Drain N confirms an eviction and refuses C | Drain N's evictions run before its installs, so C already saw that space | C is not requested again on the strength of drain N's eviction; only a later confirmation or a class rise wakes it |
 | P18 | A level with SH but no usable id 51 | The check runs before Packing and keys "streamed" off the same inputs that make Packing emit id 50 | One warning per build, warm cache included; no per-cell error; the level compiles |
 | P19 | A map fails the per-cell check | The check runs after ClusterDirectory and before Packing, outside any cached stage | No .prl is written by that build; the stage cache does not record success; a warm-cache rebuild fails the same way |
+| P20 | Owner O refused device-limited; a targeted dependent D is Absent | Request selection walks D's owner chain after the drain outcome marks O | No request names O or D until O wakes; D counts as a device-limit miss; after O's wake, O is requested before D |
+| P21 | C rises into the mandatory tier at frame N's target update and is refused in drain N; or C is re-requested, evictions confirm while its read is in flight, and the read lands and is refused again in drain M | The wake state resets at each refusal and compares against the class C held when refused | Neither case wakes C; only an eviction in C's own family confirmed by a drain after the latest refusal, or entry into the mandatory tier after it, wakes C; two wakes in one frame request C once |
+| P22 | A device-limited Visible cluster leaves the horizon and becomes a hysteresis target | Hysteresis keeps it in the target set for its window | It keeps its mark and is not requested during the window; the mark clears when it leaves the targets |
+| P23 | A mandatory cluster is refused in drain N while hysteresis and seam-warm residents hold room | Those residents become pressure-eligible before drain N+1's budget policy runs; their evictions are requested in N+1 and confirmed in its outcome, which wakes the refused cluster in its family | No mandatory resident leaves; residents released are not read again unless they re-enter the horizon; a refused optional cluster makes nothing eligible; eligibility ends when the refused cluster installs or leaves the mandatory tier |
+| P25 | Level unloads while a woken device-limited cluster's read is in flight | The completion arrives after the next level's controller exists | It is dropped as stale; the next level's permits and marks are untouched |
+| P26 | C's target departs in the frame whose drain would refuse it | The departure drops C before the offer, and the renderer's target check precedes install | C is dropped as departed, never refused; it carries no mark and logs no warning |
 
 ## Build-check seams
 
@@ -220,3 +224,12 @@ From `/review-brief` (rows lens, round 1).
   level-compiler already depends on level-loader.
 - The lightmap's fatal class is batch identity and generation only; its capacity and upload
   errors roll back and retry, and a payload that does not fill its block counts as a failed read.
+
+## Review notes (round 3)
+
+- A chunk corrupted on disk already fails only its own cluster: the loader's hash check fails the read through `admit_failed_request` / `mark_failed`, with one warning, and the session continues. The renderer's `MalformedChunk` fires only for hash-valid chunks that disagree with metadata, and shares its variant with contract breaks (some reporting cluster 0, some after the commit point). It stays fatal.
+- Hysteresis residents are targets by construction (`TargetClass::Hysteresis`, protected, not pressure-eligible). The yield rule therefore works through pressure eligibility, not by untargeting them.
+- The renderer never derives a mandatory set; it derives the owner graph (`derive_owner_dependencies` in `setup.rs`). The app's owner derivation skips validity-0 probes and counts halo owners only from id-50 sparse sources, while the renderer's covers every probe and all three delta sections. The shared derivation picks one relation; prl-build has no stream manifest before Packing, so it takes sections.
+- The 27-bit slot address bound is a fixed constant (`PROBE_INDIRECTION_SLOT_SHIFT`), defined in the level format and again locally in the renderer's ownership code; test limits cannot lower it.
+- Existing per-cluster latches to reuse for the device-limited mark: the `suppressed` flag with its pressure clear, and `FailureState`'s retry on leave and re-enter.
+- Cross-crate rows are proven by splitting at the drain outcome; GPU tests exist only in the renderer crate.

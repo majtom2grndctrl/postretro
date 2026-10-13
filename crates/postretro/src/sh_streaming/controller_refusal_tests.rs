@@ -85,6 +85,13 @@ fn assert_ledger(controller: &ShResidencyController) {
         })
         .count();
     assert_eq!(controller.permits_in_use(), held);
+    assert_eq!(controller.request_owners.len(), held);
+    for &cluster_id in controller.request_owners.keys() {
+        assert!(matches!(
+            controller.states[cluster_id as usize].state,
+            ClusterResidencyState::Queued | ClusterResidencyState::Ready
+        ));
+    }
     let bytes: u64 = controller
         .ready
         .values()
@@ -400,6 +407,493 @@ fn refused_owner_blocks_all_dependent_reads_bytes_and_permits_until_retry_is_sam
     c.promote_composed_clusters();
     assert_eq!(c.take_requests().unwrap().len(), 2);
     assert_ledger(&c);
+}
+
+fn install_ready(controller: &mut ShResidencyController, expected: &[u32]) {
+    let batch = controller.take_async_drain_batch().unwrap();
+    let accepted: Vec<_> = batch.ready.iter().map(|p| p.chunk.cluster_id).collect();
+    assert_eq!(accepted, expected);
+    assert!(batch.evictions.is_empty());
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            accepted,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+}
+
+/// Reads 3 through the diamond 3 → {1, 2} → 0 and 4 directly through 0.
+/// Both reads outlive departure and confirmed eviction of all three owners.
+fn queued_behind_evicted_diamond() -> (ShResidencyController, ShClusterRequest, ShClusterRequest) {
+    let mut c = controller(topology(
+        (0..6).collect(),
+        vec![vec![]; 6],
+        vec![vec![], vec![0], vec![0], vec![1, 2], vec![0], vec![]],
+        vec![1; 6],
+    ));
+    view(&mut c, &[3, 4], 0.0);
+    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+    ready_requested(&mut c, 0);
+    install_ready(&mut c, &[0]);
+    c.promote_composed_clusters();
+    for id in [1, 2] {
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+        ready_requested(&mut c, id);
+    }
+    let direct = c.take_next_request().unwrap().unwrap();
+    assert_eq!(direct.cluster_id, 4);
+    install_ready(&mut c, &[1, 2]);
+    c.promote_composed_clusters();
+    let transitive = c.take_next_request().unwrap().unwrap();
+    assert_eq!(transitive.cluster_id, 3);
+    assert_ledger(&c);
+
+    view(&mut c, &[], 0.1);
+    view(&mut c, &[], 2.2);
+    let batch = c.take_async_drain_batch().unwrap();
+    assert!(batch.ready.is_empty());
+    assert_eq!(
+        batch.evictions.iter().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([0, 1, 2])
+    );
+    c.apply_drain_outcome(ShDrainOutcome {
+        evicted: vec![0, 1, 2],
+        ..ShDrainOutcome::default()
+    })
+    .unwrap();
+    view(&mut c, &[3, 4], 2.3);
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Absent));
+    assert!(c.states[0].failure.is_none());
+    assert!(c.take_requests().unwrap().is_empty());
+    assert_eq!(c.permits_in_use(), 2);
+    (c, transitive, direct)
+}
+
+// Regression: a dependent's old read retained its permit and payload indefinitely
+// after its evicted owner was reread and refused at a device limit.
+#[test]
+fn evicted_owner_waits_for_old_reads_then_refusal_releases_transitive_ready_work() {
+    for completion in ["prepared", "failed", "cancelled"] {
+        let (mut c, transitive, direct) = queued_behind_evicted_diamond();
+        ready_requested(&mut c, direct.cluster_id);
+        assert!(
+            c.take_requests().unwrap().is_empty(),
+            "transitive read still holds its owner"
+        );
+        let mut stale = transitive;
+        stale.generation += 1;
+        c.admit_cancelled_request(stale).unwrap();
+        assert!(!c.admit_failed_request(stale).unwrap());
+        let mut stale_payload = prepared(&c, transitive.cluster_id);
+        stale_payload.generation = stale.generation;
+        assert_eq!(
+            c.admit_prepared(stale_payload).unwrap(),
+            ShDrainAdmission::DroppedStale
+        );
+        assert!(c.take_requests().unwrap().is_empty());
+        assert_eq!(c.permits_in_use(), 2);
+        assert_ledger(&c);
+
+        match completion {
+            "prepared" => ready_requested(&mut c, transitive.cluster_id),
+            "failed" => assert!(c.admit_failed_request(transitive).unwrap()),
+            "cancelled" => c.admit_cancelled_request(transitive).unwrap(),
+            _ => unreachable!(),
+        }
+        assert_ledger(&c);
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+        ready_requested(&mut c, 0);
+        refuse_batch(&mut c, &[0]);
+        assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
+        assert_eq!(c.state(4), Some(ClusterResidencyState::Absent));
+        assert!(c.states[4].failure.is_none());
+        if completion == "failed" {
+            assert_eq!(c.state(3), Some(ClusterResidencyState::Failed));
+            let failure = c.states[3].failure.unwrap();
+            assert_eq!(failure.cause, FailureCause::Read);
+            assert!(!failure.retry_spent);
+        } else {
+            assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
+            assert!(c.states[3].failure.is_none());
+        }
+        assert_eq!(c.permits_in_use(), 0);
+        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+        assert!(c.take_requests().unwrap().is_empty());
+        assert_ledger(&c);
+        let after_refusal = c.report_snapshot();
+        c.admit_cancelled_request(transitive).unwrap();
+        assert!(!c.admit_failed_request(transitive).unwrap());
+        assert_eq!(c.report_snapshot(), after_refusal);
+
+        leave_and_return(&mut c, 3, 3.0);
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+        ready_requested(&mut c, 0);
+        install_ready(&mut c, &[0]);
+        assert!(c.take_requests().unwrap().is_empty());
+        c.promote_composed_clusters();
+        assert_eq!(
+            c.take_requests()
+                .unwrap()
+                .iter()
+                .map(|r| r.cluster_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        for id in [1, 2] {
+            ready_requested(&mut c, id);
+        }
+        install_ready(&mut c, &[1, 2]);
+        assert!(c.take_requests().unwrap().is_empty());
+        c.promote_composed_clusters();
+        let fresh = c.take_next_request().unwrap().unwrap();
+        assert_eq!(fresh.cluster_id, 3);
+        ready_requested(&mut c, 3);
+        install_ready(&mut c, &[3]);
+        c.promote_composed_clusters();
+        assert!(c.all_targets_sampleable());
+        assert_eq!(c.permits_in_use(), 0);
+        assert_ledger(&c);
+    }
+}
+
+#[test]
+fn refusal_preflights_dependent_cleanup_before_evictions_and_other_outcome_changes() {
+    for corrupt_permits in [false, true] {
+        let (mut c, _, _) = queued_behind_evicted_diamond();
+        for id in [3, 4] {
+            ready_requested(&mut c, id);
+        }
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+        ready_requested(&mut c, 0);
+        mark_sampleable(&mut c, 5);
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(batch.evictions, vec![5]);
+        assert_eq!(batch.ready.len(), 1);
+        if corrupt_permits {
+            c.permits_in_use = 1;
+        } else {
+            c.accounting.cpu.ready.current_bytes = 4;
+        }
+        let before = c.report_snapshot();
+        let owners = c.request_owners.clone();
+        let in_drain = c.in_drain.clone();
+        let outcome = || ShDrainOutcome {
+            refused: vec![0],
+            evicted: vec![5],
+            ..ShDrainOutcome::default()
+        };
+        assert!(matches!(
+            c.apply_drain_outcome(outcome()),
+            Err(ShResidencyControllerError::AccountingUnderflow(_))
+        ));
+        assert_eq!(c.report_snapshot(), before);
+        assert_eq!(c.request_owners, owners);
+        assert_eq!(c.in_drain, in_drain);
+        assert_eq!(c.ready.keys().copied().collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(c.in_drain_evictions, BTreeSet::from([5]));
+        assert!(c.states[0].failure.is_none());
+
+        c.permits_in_use = 3;
+        c.accounting.cpu.ready.current_bytes = 12;
+        c.apply_drain_outcome(outcome()).unwrap();
+        assert_eq!(c.state(5), Some(ClusterResidencyState::Absent));
+        assert_eq!(c.permits_in_use(), 0);
+        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+        assert_ledger(&c);
+    }
+}
+
+#[test]
+fn overlapping_refused_owners_release_their_shared_ready_dependent_once() {
+    let (mut c, _, _) = queued_behind_evicted_diamond();
+    for id in [3, 4] {
+        ready_requested(&mut c, id);
+    }
+    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+    ready_requested(&mut c, 0);
+    install_ready(&mut c, &[0]);
+    c.promote_composed_clusters();
+    for id in [1, 2] {
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+        ready_requested(&mut c, id);
+    }
+    let batch = c.take_async_drain_batch().unwrap();
+    assert_eq!(
+        batch
+            .ready
+            .iter()
+            .map(|p| p.chunk.cluster_id)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    assert!(batch.evictions.is_empty());
+    c.apply_drain_outcome(ShDrainOutcome {
+        refused: vec![1, 2],
+        accepted: vec![4],
+        ..ShDrainOutcome::default()
+    })
+    .unwrap();
+    for id in [1, 2] {
+        assert_eq!(c.state(id), Some(ClusterResidencyState::Failed));
+    }
+    assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
+    assert!(c.states[3].failure.is_none());
+    assert_eq!(c.state(0), Some(ClusterResidencyState::Sampleable));
+    assert_eq!(c.state(4), Some(ClusterResidencyState::InstalledUncomposed));
+    assert_eq!(c.permits_in_use(), 0);
+    assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+    assert_ledger(&c);
+}
+
+// Regression: all permits could remain Ready behind an evicted owner, leaving
+// no permit for the reread that would make any of those payloads installable.
+#[test]
+fn full_ready_permits_reclaim_only_dependents_for_mandatory_and_optional_owner_reads() {
+    for optional in [false, true] {
+        let mut owners = vec![vec![], vec![0], vec![0]];
+        owners.extend(vec![vec![1, 2]; 7]);
+        owners.push(vec![]);
+        let mut c = controller(topology(
+            (0..11).collect(),
+            vec![vec![]; 11],
+            owners,
+            vec![1; 11],
+        ));
+        let visible: Vec<_> = (3..11).collect();
+        view(&mut c, &visible, 0.0);
+        assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 0);
+        ready_requested(&mut c, 0);
+        install_ready(&mut c, &[0]);
+        c.promote_composed_clusters();
+        for id in [1, 2] {
+            assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, id);
+            ready_requested(&mut c, id);
+        }
+        install_ready(&mut c, &[1, 2]);
+        c.promote_composed_clusters();
+        assert_eq!(c.take_requests().unwrap().len(), MAX_STREAM_PERMITS);
+        view(&mut c, &[10], 0.1);
+        view(&mut c, &[10], 2.2);
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(
+            batch.evictions.iter().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([0, 1, 2])
+        );
+        c.apply_drain_outcome(ShDrainOutcome {
+            evicted: vec![0, 1, 2],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+        if optional {
+            let rows: Vec<_> = visible.iter().map(|&id| (0, id, 24)).collect();
+            let set = residency_set(11, &rows, 32);
+            let stage = CellDemand::new(set.max_lead);
+            let none_visible = VisibleCells::Culled(vec![]);
+            c.update_targets(
+                &none_visible,
+                Some(stage.frame(&set, 0, PORTAL, &none_visible)),
+                2.3,
+            )
+            .unwrap();
+        } else {
+            view(&mut c, &visible, 2.3);
+        }
+        assert!(c.take_requests().unwrap().is_empty());
+        for id in &visible {
+            ready_requested(&mut c, *id);
+        }
+        assert_eq!(c.permits_in_use(), MAX_STREAM_PERMITS);
+        assert_ledger(&c);
+
+        c.counters.rereads = u64::MAX;
+        let before = c.report_snapshot();
+        let held_owners = c.request_owners.clone();
+        assert!(matches!(
+            c.take_next_request(),
+            Err(ShResidencyControllerError::AccountingOverflow(
+                "stream re-reads"
+            ))
+        ));
+        assert_eq!(c.report_snapshot(), before);
+        assert_eq!(c.request_owners, held_owners);
+        assert_eq!(c.ready.len(), MAX_STREAM_PERMITS);
+        c.counters.rereads = 0;
+
+        let owner = c.take_next_request().unwrap().unwrap();
+        assert_eq!(owner.cluster_id, 0);
+        assert_eq!(owner.mandatory, !optional);
+        assert_eq!(
+            c.permits_in_use(),
+            if optional {
+                MAX_OPTIONAL_STREAM_PERMITS
+            } else {
+                MAX_STREAM_PERMITS
+            }
+        );
+        assert_eq!(c.state(10), Some(ClusterResidencyState::Ready));
+        assert_eq!(c.state(3), Some(ClusterResidencyState::Absent));
+        assert!(c.states[3].failure.is_none());
+        assert_ledger(&c);
+        ready_requested(&mut c, 0);
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(
+            batch
+                .ready
+                .iter()
+                .map(|p| p.chunk.cluster_id)
+                .collect::<Vec<_>>(),
+            vec![0, 10]
+        );
+        let unrelated = batch
+            .ready
+            .into_iter()
+            .find(|p| p.chunk.cluster_id == 10)
+            .unwrap();
+        c.apply_drain_outcome(ShDrainOutcome {
+            refused: vec![0],
+            deferred: vec![unrelated],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+        assert_eq!(c.permits_in_use(), 1);
+        assert_eq!(c.accounting().cpu.ready.current_bytes, 4);
+        assert_eq!(c.state(10), Some(ClusterResidencyState::Ready));
+        for id in 3..10 {
+            assert_eq!(c.state(id), Some(ClusterResidencyState::Absent));
+            assert!(c.states[id as usize].failure.is_none());
+        }
+        assert_ledger(&c);
+        assert!(c.take_requests().unwrap().is_empty());
+        install_ready(&mut c, &[10]);
+        assert_eq!(c.permits_in_use(), 0);
+        assert_ledger(&c);
+    }
+}
+
+// Regression: after mandatory reads became optional, neither of two owner
+// cohorts could alone free the five permits needed to restore the reservation.
+#[test]
+fn optional_owner_recovery_reclaims_across_stalled_cohorts_and_preserves_other_work() {
+    for unrelated in [false, true] {
+        let cohort_size = if unrelated { 3 } else { 4 };
+        let mut owners = vec![vec![], vec![]];
+        for owner in [0, 1] {
+            owners.extend(vec![vec![owner]; cohort_size]);
+        }
+        if unrelated {
+            owners.extend(vec![vec![], vec![]]);
+        }
+        let mut c = controller(topology(
+            (0..10).collect(),
+            vec![vec![]; 10],
+            owners,
+            vec![1; 10],
+        ));
+        let leaves: Vec<_> = (2..10).collect();
+        view(&mut c, &leaves, 0.0);
+        for owner in [0, 1] {
+            assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, owner);
+            ready_requested(&mut c, owner);
+        }
+        install_ready(&mut c, &[0, 1]);
+        c.promote_composed_clusters();
+        let old_requests = c.take_requests().unwrap();
+        assert_eq!(old_requests.len(), MAX_STREAM_PERMITS);
+        assert!(old_requests.iter().all(|r| r.mandatory));
+        let remaining_view: &[u32] = if unrelated { &[8, 9] } else { &[] };
+        view(&mut c, remaining_view, 0.1);
+        view(&mut c, remaining_view, 2.2);
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(batch.evictions, vec![0, 1]);
+        c.apply_drain_outcome(ShDrainOutcome {
+            evicted: batch.evictions,
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+        let rows: Vec<_> = leaves.iter().map(|&id| (0, id, 24)).collect();
+        let set = residency_set(10, &rows, 32);
+        let stage = CellDemand::new(set.max_lead);
+        let none_visible = VisibleCells::Culled(vec![]);
+        c.update_targets(
+            &none_visible,
+            Some(stage.frame(&set, 0, PORTAL, &none_visible)),
+            2.3,
+        )
+        .unwrap();
+        for owner in [0, 1] {
+            assert_eq!(c.states[owner].class, Some(TargetClass::Band));
+        }
+        for &id in &leaves {
+            if !unrelated || id != 9 {
+                ready_requested(&mut c, id);
+            }
+        }
+        assert_eq!(c.permits_in_use(), MAX_STREAM_PERMITS);
+        assert_ledger(&c);
+
+        for owner in [0, 1] {
+            let request = c
+                .take_next_request()
+                .unwrap()
+                .expect("blocked cohorts must free an owner read");
+            assert_eq!(request.cluster_id, owner);
+            assert!(!request.mandatory);
+            assert_eq!(c.permits_in_use(), MAX_OPTIONAL_STREAM_PERMITS);
+            if unrelated {
+                assert_eq!(c.state(8), Some(ClusterResidencyState::Ready));
+                let old = *old_requests.iter().find(|r| r.cluster_id == 9).unwrap();
+                assert!(c.matches_queued_request(old));
+            }
+            assert_ledger(&c);
+        }
+        for owner in [0, 1] {
+            ready_requested(&mut c, owner);
+        }
+        let batch = c.take_async_drain_batch().unwrap();
+        assert_eq!(
+            batch
+                .ready
+                .iter()
+                .map(|p| p.chunk.cluster_id)
+                .collect::<Vec<_>>(),
+            if unrelated { vec![0, 1, 8] } else { vec![0, 1] }
+        );
+        c.apply_drain_outcome(ShDrainOutcome {
+            accepted: vec![0, 1],
+            deferred: batch
+                .ready
+                .into_iter()
+                .filter(|p| p.chunk.cluster_id == 8)
+                .collect(),
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
+        c.promote_composed_clusters();
+        if unrelated {
+            ready_requested(&mut c, 9);
+        }
+        install_ready(&mut c, &[8, 9]);
+        c.promote_composed_clusters();
+        assert_eq!(c.permits_in_use(), 0);
+        assert_ledger(&c);
+
+        // Every reclaimed payload can be read afresh once its owner is sampleable.
+        for _ in 0..2 {
+            let requests = c.take_requests().unwrap();
+            assert!(!requests.is_empty());
+            assert!(requests.len() <= MAX_OPTIONAL_STREAM_PERMITS);
+            let ids: Vec<_> = requests.iter().map(|r| r.cluster_id).collect();
+            for &id in &ids {
+                assert!(c.states[id as usize].failure.is_none());
+                ready_requested(&mut c, id);
+            }
+            install_ready(&mut c, &ids);
+            c.promote_composed_clusters();
+            assert_ledger(&c);
+        }
+        assert!(c.all_targets_sampleable());
+        assert_eq!(c.permits_in_use(), 0);
+    }
 }
 
 #[test]

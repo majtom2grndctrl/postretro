@@ -246,8 +246,9 @@ impl StreamingPromotionPass {
     pub(super) fn validate_sparse_rows(
         &self,
         rows: &[DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.validate_rows(rows)
+        self.sparse.validate_rows(rows, capacity)
     }
 
     pub(super) fn clear_row_pair(

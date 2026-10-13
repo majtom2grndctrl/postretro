@@ -1,7 +1,7 @@
 # sh-streaming--pool-growth-device-limit — plan of record
 
 mode: compact
-status: active
+status: test-ready
 read at: e8f607b94
 
 ## Corrections
@@ -15,35 +15,35 @@ read at: e8f607b94
 
 Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 | GPU: zero-share production-load fixture exceeds old geometry capacity and installs every cluster | achievable as stated; pending |
-| A2 | CPU/GPU: shared geometry cases (floor-share, whole minimum, tiny, full layer, zero share) and exact floor accounting | achievable as stated; pending |
-| A3 | GPU: dense growth preserves width, height and tiles per layer | achievable as stated; pending |
-| A4 | GPU: 200→256 / 257 refusal / 100→200 dense clamp cases | achievable as stated; pending |
-| A5 | GPU: all sparse families clamp to tightest buffer and refuse only excess need | achievable as stated; pending |
-| A6 | GPU: device-limit verdict precedes retirement in dense and every sparse family | achievable as stated; pending |
-| A7 | GPU: dense growth survives sparse refusal; later retirement/limit outcomes; sparse replacement atomicity | achievable as stated; pending |
-| A8 | GPU: fitting/refused clusters in both drain orders; rollback restores address high-water | achievable as stated; pending |
-| A9 | GPU outcome plus controller test: refusal releases ready bytes/payload/permit exactly once | achievable as stated; pending |
-| A10 | Controller: visible episodes, owner closure, device-limit priority and bucket conservation | achievable as stated; pending |
-| A11 | Controller/session: reveal-frame existing miss remains unchanged and warning once | achievable as stated; pending |
-| A12 | Controller: repeated leave/re-enter refusal retries and hysteresis timing | achievable as stated; pending |
-| A13 | Controller: mixed read/refusal causes retain one read-failure retry budget | achievable as stated; pending |
-| A14 | Controller: rapid horizon/seam/owner churn under pressure; no refused trim/overshoot | achievable as stated; pending |
-| A15 | Controller: evictions alone never wake a targeted refused cluster | achievable as stated; pending |
-| A16 | Controller: failed owners block all dependent work; mixed owner causes prioritize device-limit | achievable as stated; pending |
-| A17 | Log capture: first cluster named once per level; later read failure still warns once | achievable as stated; pending |
-| A18 | Settling/session tests: mandatory timeout, optional no hold, warning persists across session replacement and resets by level | achievable as stated; pending |
-| A19 | Controller/GPU: refusal adds no evictions; pinned/lead/owner/optional residents stay sampleable | achievable as stated; pending |
-| A20 | GPU/controller regression: metadata disagreement fatal; retirement deferred | achievable as stated; pending |
-| A21 | GPU regression: contract GpuCapacity, identity/generation/slot overflow remain errors | achievable as stated; pending |
-| A22 | Controller invalid outcome matrix rejects duplicate/overlap/foreign/missing IDs before mutation | achievable as stated; pending |
-| A23 | Source inspection: floor planner delegates all atlas geometry to shared rule | achievable as stated; pending |
-| A24 | Seeded CPU churn: named fixture sizes, fixed seeds/steps, full demand per seed; measure headroom and ≥1.5× margin | achievable as stated; pending |
-| A25 | Source inspection/GPU: limits captured once at load and override governs every sizing/validation path | achievable as stated; pending |
-| A26 | Final required-GPU focused run: POSTRETRO_REQUIRE_GPU=1; overrides ≤ device grants | achievable as stated; pending |
-| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 | `sh_growth_production_zero_share_load_holds_every_cluster` | achievable as stated | pass: focused proof and source/contract review |
+| A2 | `whole_level_geometry_preserves_floor_share_and_covers_tiny_zero_and_full_layers`; `sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape` | achievable as stated | pass: focused proof and source/contract review |
+| A3 | `sh_growth_dense_clamps_and_limit_precedes_retirement` | achievable as stated | pass: focused proof and source/contract review |
+| A4 | `sh_growth_dense_clamps_and_limit_precedes_retirement` | achievable as stated | pass: focused proof and source/contract review |
+| A5 | `sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction` | achievable as stated | pass: focused proof and source/contract review |
+| A6 | `sh_growth_dense_clamps_and_limit_precedes_retirement`; `sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction` | achievable as stated | pass: focused proof and source/contract review |
+| A7 | `sh_growth_keeps_dense_commit_when_sparse_refuses_and_classifies_later_clusters` | achievable as stated | pass: focused proof and source/contract review |
+| A8 | `sh_growth_refusal_rolls_back_addresses_in_both_drain_orders` | achievable as stated | pass: focused proof and source/contract review |
+| A9 | `refusal_releases_ready_charge_and_permit_once_without_changing_other_work`; GPU rollback proof | achievable as stated | pass: focused proof and source/contract review |
+| A10 | `refusal_counts_only_new_visible_episodes_without_rebucketing`; `device_limit_owner_dominates_read_failure_anywhere_in_closure_in_either_order` | achievable as stated | pass: focused proof and source/contract review |
+| A11 | `refusal_in_reveal_drain_preserves_the_reveal_frames_existing_miss` | achievable as stated | pass: focused proof and source/contract review |
+| A12 | `refusal_retries_on_repeated_expired_leave_and_reentry_without_spending_read_retry`; `early_seam_reentry_never_wakes_on_time_alone_and_later_reentry_does` | achievable as stated | pass: focused proof and source/contract review |
+| A13 | `refusal_read_retry_sequences_preserve_the_lifetime_read_budget_and_warning` | achievable as stated | pass: focused proof and source/contract review |
+| A14 | `rapid_horizon_churn_under_pressure_keeps_targeted_refusal_failed`; `optional_refusal_is_skipped_only_by_trim_and_does_not_inflate_protected_overshoot` | achievable as stated | pass: focused proof and source/contract review |
+| A15 | `later_eviction_does_not_wake_targeted_refusal_and_refusal_does_not_request_evictions` | achievable as stated | pass: focused proof and source/contract review |
+| A16 | `refused_owner_blocks_all_dependent_reads_bytes_and_permits_until_retry_is_sampleable`; `evicted_owner_waits_for_old_reads_then_refusal_releases_transitive_ready_work`; `full_ready_permits_reclaim_only_dependents_for_mandatory_and_optional_owner_reads`; `optional_owner_recovery_reclaims_across_stalled_cohorts_and_preserves_other_work`; `overlapping_refused_owners_release_their_shared_ready_dependent_once` | achievable as stated | pass: focused proof and source/contract review |
+| A17 | `device_limit_warning_names_only_first_cluster_per_level`; `device_limit_refusal_then_corrupt_reread_warns_for_both_causes_once` | achievable as stated | pass: focused proof and source/contract review |
+| A18 | `device_limited_mandatory_sh_reveals_into_running_only_at_timeout`; `sh_device_limit_refusal_holds_until_timeout_and_warns_once_across_mode_replacements`; `refused_optional_seam_target_does_not_hold_settling` | achievable as stated | pass: focused proof and source/contract review |
+| A19 | `refusal_does_not_evict_pin_lead_owner_or_optional_residents_when_floor_covers_targets`; `ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction` | achievable as stated | pass: focused proof and source/contract review |
+| A20 | `sh_growth_contract_and_metadata_errors_remain_fatal`; `sh_growth_retained_metadata_error_precedes_dense_device_limit` | achievable as stated | pass: focused proof and source/contract review |
+| A21 | `sh_growth_contract_and_metadata_errors_remain_fatal`; classifier-path GpuCapacity assertions and `sh_growth_slot_address_overflow_escapes_drain_refusal_classifier` | achievable as stated | pass: focused proof and source/contract review |
+| A22 | `refusal_outcome_validation_rejects_all_invalid_partitions_before_mutation`; `refusal_accounting_underflow_rejects_the_whole_outcome_before_eviction` | achievable as stated | pass: focused proof and source/contract review |
+| A23 | Shared `AtlasShape` geometry source inspection and floor GPU proof | achievable as stated | pass: focused proof and source/contract review |
+| A24 | `fixture_churn_fits_fragmentation_headroom` with named frozen arrays and eight deterministic seeds | achievable as stated | pass: focused proof and source/contract review |
+| A25 | Captured-limit propagation source inspection and all GPU growth/geometry tests | achievable as stated | pass: focused proof and source/contract review |
+| A26 | Final `POSTRETRO_REQUIRE_GPU=1` growth suite after preflight; no skips, overrides ≤ device grants | achievable as stated | pass: final 10 required-GPU growth tests, zero ignored/skipped |
+| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | outstanding manual proof |
 
 ## Tasks
 
@@ -51,9 +51,9 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 |---|---|---|---|---|
 | 1 | Shared geometry, captured limits, churn headroom and zero-share production-load proof (highest-risk premise) | integrating executor / renderer worker | — | complete: actual PRL zero-share load, geometry cases and seeded churn pass |
 | 2 | Clamp dense and all sparse growth, distinguish refusal from contract errors, GPU ordering/rollback proof | renderer worker | 1 | complete: real GPU clamp/refusal/rollback/readback proofs pass |
-| 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | complete: 21 refusal tests passed in 219-test focused app run |
+| 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | complete: 26 refusal tests passed in 224-test focused app run, including late-read and split-cohort recovery |
 | 4 | Level-scoped warnings, diagnostic consumers, Settling/capture integration and proof | integrating executor | 2, 3 | complete: session/Settling/log proofs, capture serialization (1), Streaming tab (5) pass |
-| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated review-panel next |
+| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated complete: review fixes approved; fmt/Clippy/full serial workspace suite and final 10 required-GPU tests pass; M1 blocks landing |
 
 ## Shared contracts and performance
 - `ShDrainOutcome.refused: Vec<u32>` accounts for device-limit failures exclusively and is disjoint from accepted/dropped/deferred. Renderer drops refused payloads; app releases their in-drain ready charge and permit and records the latest failure cause.
@@ -64,17 +64,70 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 - Frame work remains target/change driven; no waits on growth; refusal drops payload rather than parking it. Warning latch belongs to the loaded level, across SH controller replacements. Existing counters provide install/growth CPU measurements.
 
 ## External runbook
-- After automated gates, run the pre-change and feature builds on campaign-test and the stress-warren hallway with identical default limits, path, GPU, feature set and diagnostics. Record initial dense atlas bytes, tiles/layer, growth counts, upload copy regions/install and install CPU; verify no device-limit warning. Preserve machine and walk details with results.
-- Manual proof is not yet supplied; leave brief in-progress with test-ready status until it is.
+
+M1 blocks landing. Automated results cannot substitute for these walks.
+
+1. Baseline: `e8f607b94` (claim-only commit, before implementation). Feature: this branch after final checks. Use the same compiled `campaign-test` and `stress-warren-hallway-inspection` PRLs for both; do not rebake between runs. Keep their content hashes with the measurements.
+2. Pin machine/GPU/backend, window resolution, lighting options and the route through each map. Record the route/poses and run duration. Use the same feature set (`dev-tools`) and default device limits/streaming settings; no test-limit overrides. Record other GPU workloads so contention is visible.
+3. Build the authoring engine and helpers before launching through `postretro-tool run --install-root .`. Existing compiled PRLs live under `content/dev/maps/`. Check disk budget before any comparison checkout/build; never share target dirs across checkouts. Copy comparison binaries out and remove their temporary target after building.
+4. Enable `RUST_LOG=info,postretro_renderer::render::sh_streaming=trace`. The global `info` filter is required to retain the app's device-limit warnings and periodic counters. The feature's load log reports `[Renderer] streamed SH initial dense pool: bytes=… tiles_per_layer=… layers=… slots=…`. Each successful nonempty install trace reports cluster ID, `upload_copy_regions` and `install_cpu_micros`; periodic logs report pool growth and steady/growth install cost.
+5. The baseline predates the measurement logs. From its isolated checkout at `e8f607b94`, apply `git apply /Users/dhiester/Projects/Personal/postretro/context/plans/in-progress/sh-streaming--pool-growth-device-limit/baseline-measurement.patch`. This supplied patch adds only initial dense-pool logging and the same conditional install timing/copy counts; it preserves baseline geometry and policy. The patch was checked against the exact baseline files. Discard its temporary instrumentation after the comparison.
+6. For each map/build, walk the pinned route from a fresh level entry. Report device-limit warning count (must be zero), initial dense atlas bytes and tiles/layer, pool growth count, copy regions per install, and install CPU (total, per-install distribution and slowest steady drain). Keep settling and running costs distinct and report sample counts.
+7. Record pass/fail and actual measurements in M1. Clean comparison binaries, logs and temporary instrumentation/checkouts after recording the result. A failure remains a blocking result to investigate; no inferred pass.
+
+### Feature launch commands
+
+From the workspace root, with the two existing compiled PRLs retained:
+
+```bash
+CARGO_INCREMENTAL=0 cargo build -p postretro -p postretro-script-compiler -p postretro-tool --features postretro/dev-tools
+RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . content/dev/maps/campaign-test.prl
+RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . content/dev/maps/stress-warren-hallway-inspection.prl
+```
+
+Run the two walks separately. These commands do not rebuild the PRLs. Build and launch the instrumentation-only baseline from its isolated checkout in the same way, using identical PRL bytes. Keep the logs and measurements until M1 is recorded.
 
 ## Verification log
-- `cargo check -p postretro-renderer --tests --features dev-tools`: pass.
-- `cargo check -p postretro --tests --features dev-tools,capture`: pass.
-- Required-GPU growth gate: 8 passed, none skipped, AMD Radeon Pro 5300M / Metal. A subsequent full SH-focused run passed 171/172; the newly strengthened actual-PRL fixture needed canonical stencil/node closure counts. Corrected fixture; rerun pending.
-- `CARGO_INCREMENTAL=0 cargo test -p postretro --bin postretro --features dev-tools,capture sh_`: 219 passed, 2 existing heavy tests ignored, 0 failed. Includes all 21 new controller refusal tests and real hash-error, level warning replacement and actual Settling→Running proofs.
-- Initial focused failures were corrected fixture assumptions (sparse stride, canonical body/index counts, untargeted background residents) and the named hash error’s case. No production behavior was weakened.
-- Cold rebuilds use `CARGO_INCREMENTAL=0` to contain disk use. Cargo archive restoration required normal host network access; required GPU runs use host Metal access.
 
-- Latest focused renderer gate: `POSTRETRO_REQUIRE_GPU=1 CARGO_INCREMENTAL=0 cargo test -p postretro-renderer --lib --features dev-tools render::sh_streaming -- --nocapture`: **172 passed**, zero ignored/skipped, AMD Radeon Pro 5300M / Metal. Actual PRL→loader→manifest→zero-share initialization installs all 9 clusters together.
-- Capture device-limit serialization: **1 passed**. Streaming-tab consumer: **5 passed**.
-- Review-readiness gate passed: format, touched-crate checks including tests with dev-tools/capture, and the focused test counts above.
+All build/test commands use `CARGO_INCREMENTAL=0`. Host permissions are needed for normal network access, Metal and macOS test-binary initialization. A sandboxed test process stalled in dyld/AppKit logging initialization before the Rust harness; host retry resolved it without code changes.
+
+| Gate | Result |
+|---|---|
+| Formatting | pass |
+| Touched-crate checks, test targets, dev-tools/capture | pass |
+| Focused app streaming tests | 224 passed, 0 failed, 2 existing heavy tests ignored; all 26 refusal tests included |
+| Focused renderer SH tests, required GPU | 174 passed, 0 failed, 0 ignored/skipped, AMD Radeon Pro 5300M / Metal |
+| Capture serialization / Streaming tab focused consumers | 1 / 5 passed |
+| Workspace Clippy, all targets, dev-tools/capture, warnings denied, dedicated target | pass |
+| Full workspace tests, dev-tools/capture, serial test threads | pass: 10,980 passed (10,978 unit/integration + 2 doc), 0 failed, 57 existing ignored |
+| Final required-GPU growth suite after preflight (A26) | pass: 10 matched/passed, zero failed/ignored/skipped, AMD Radeon Pro 5300M / Metal |
+
+Final commands:
+
+```bash
+CARGO_INCREMENTAL=0 cargo fmt --check
+CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings
+CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo test --workspace --features postretro/dev-tools,postretro/capture -- --test-threads=1
+POSTRETRO_REQUIRE_GPU=1 CARGO_INCREMENTAL=0 cargo test -p postretro-renderer --lib --features dev-tools sh_growth_ -- --nocapture
+```
+
+The full workspace suite starts only after the independent review/fix/focused-retest loop. Two mechanical Clippy suggestions in tests were fixed and lint was rerun successfully before the workspace test run. No full workspace suite ran earlier.
+
+## Review loop
+
+The isolated panel reviewed `59b9da7ba..4b0d7fc8c`: 12 read-only passes across all 40 changed files and the cross-subsystem seam. Four findings were acted on:
+
+1. Late dependent reads/payloads could remain behind a refused reread owner (A16/P13). Cache transitive owner closure per active permit (at most eight), wait for physical Queued completions before any owner reread, and preflight/drop retained or deferred Ready dependents on refusal. Preserve independent failure history. No physical read permit is released early.
+2. Dense growth refusal could mask retained-metadata disagreement (A20). Reserve and validate CPU metadata/address/row/compose contracts before recoverable growth. Shared GPU validators accept explicit planned capacities before growth and verify actual backing afterward. Successful dense growth remains committed before a later sparse refusal.
+3. Fatal-contract proofs bypassed the new refusal classifier (A21). Missing handles, broken post-growth backing and canonical slot overflow now traverse `install_ready` or drain and assert exact escaping errors.
+4. Sparse proofs lowered only the storage-binding bound (A5/A6). The matrix now independently tightens each device bound across all three sparse families and sibling atomicity. The total-buffer case uses 65,536 bytes to accommodate the existing fixed compose record; sparse demands and exact clamps scale to that bound. The other device bound remains at its grant.
+
+Targeted lifecycle repair review found one additional liveness edge: eight Ready reads split across two now-optional owner groups could not individually reclaim enough permits. Recovery now takes its own blocked cohort first, then other Ready work blocked by Absent owners, while preserving installable, in-flight and compose-waiting work. Five realistic new lifecycle tests cover success/failure/cancellation, retry, stale completion, diamond deduplication, arithmetic atomicity, full mandatory/optional slots, split groups and unrelated work.
+
+Targeted renderer repair review and lifecycle re-review both approve, with no actionable regressions. Cross-family retirement ordering preserves P3's documented dense-commit behavior; no Decision or Acceptance change was needed. No unsafe code was introduced.
+
+The first full parallel run reported 8,035 passed, 1 failed, 56 ignored before reaching doc-tests. The unchanged `two_frames_in_flight_reach_a_bounded_staging_steady_state` expected the warmup allocation count to remain 2 but observed 3 (within its separate live-buffer bound of 4). Source is unchanged from the baseline. No test or production code was altered for this failure. Its isolated required-GPU rerun passed on the same AMD/Metal adapter with three created/live buffers. The full serial workspace rerun passed, including the renderer target (950 passed, 8 ignored). This existing test is sensitive to concurrent driver timing; the final gate records serial test execution explicitly.
+
+## Handoff
+
+Automated A1–A26 pass. M1 remains outstanding and blocks landing; status is `test-ready`. The feature branch is `codex/sh-streaming-pool-growth-device-limit`. The supplied `baseline-measurement.patch` applies cleanly to the exact claim-only baseline. Use the External runbook for the two pinned A/B walks, record actual results here, then wait for the owner to say “land the plane.” Do not move the brief to done or push the feature before the blocking result arrives.

@@ -578,7 +578,7 @@ impl ShResidencyController {
                 .remove(&cluster_id)
                 .expect("id came from ready map");
             self.release_ready_charge(ready.byte_charge)?;
-            self.release_permit()?;
+            self.release_permit(cluster_id)?;
             self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
         }
         Ok(())
@@ -590,10 +590,7 @@ impl ShResidencyController {
             .iter()
             .copied()
             .filter(|&cluster_id| {
-                let state = &self.states[cluster_id as usize];
-                state.state == ClusterResidencyState::Absent
-                    && (self.permits_in_use < MAX_OPTIONAL_STREAM_PERMITS
-                        || state.class.is_some_and(TargetClass::is_mandatory))
+                self.states[cluster_id as usize].state == ClusterResidencyState::Absent
             })
             .collect();
         // Authored priority outranks reach lead.
@@ -609,7 +606,15 @@ impl ShResidencyController {
         });
         for cluster_id in candidates {
             if let Some(next) = self.first_missing_owner(cluster_id, &mut BTreeSet::new())? {
-                return Ok(Some(next));
+                let needed = self
+                    .permits_in_use
+                    .saturating_sub(self.request_permit_limit(next) - 1);
+                if needed == 0
+                    || (self.ready_dependents(next).next().is_some()
+                        && self.ready_reclaim_candidates(next).take(needed).count() == needed)
+                {
+                    return Ok(Some(next));
+                }
             }
         }
         Ok(None)
@@ -650,8 +655,15 @@ impl ShResidencyController {
             }
         }
         Ok(
-            (self.states[cluster_id as usize].state == ClusterResidencyState::Absent)
-                .then_some(cluster_id),
+            (self.states[cluster_id as usize].state == ClusterResidencyState::Absent
+                // An old dependent read can outlive this owner's eviction.
+                // Keep its permit until completion: identities have no request
+                // nonce, so releasing it early could let it consume a fresh read.
+                && !self.request_owners.iter().any(|(&dependent, owners)| {
+                    self.states[dependent as usize].state == ClusterResidencyState::Queued
+                        && owners.contains(&cluster_id)
+                }))
+            .then_some(cluster_id),
         )
     }
 }

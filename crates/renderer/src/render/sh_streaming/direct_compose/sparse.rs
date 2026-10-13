@@ -87,7 +87,7 @@ impl StreamingSparseBuffers {
         uploads: &mut StagedUploads,
         rows: &[DirectSparseRowUpload<'_>],
     ) -> Result<(), ShResidencyDrainError> {
-        self.validate_rows(rows)?;
+        self.validate_rows(rows, (self.entry_capacity, self.tile_f16_capacity))?;
         let mut lights = Vec::new();
         let mut offsets = Vec::new();
         let mut pairs = Vec::new();
@@ -132,9 +132,23 @@ impl StreamingSparseBuffers {
     pub(super) fn validate_rows(
         &self,
         rows: &[DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
+        let compaction_words = self
+            .compaction_entry_offset_words
+            .checked_add(self.entry_capacity)
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if u64::from(self.entry_capacity) * 4 > self.lights.size()
+            || u64::from(self.tile_f16_capacity.div_ceil(2)) * 4 > self.tile_words.size()
+            || u64::from(compaction_words) * 4 > self.compaction_metadata.size()
+            || u64::from(self.row_count) * 8 > self.row_pairs.size()
+        {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed direct sparse row exceeds its GPU pool capacity",
+            });
+        }
         for row in rows {
-            self.validate_row(row)?;
+            self.validate_row(row, capacity)?;
         }
         Ok(())
     }
@@ -218,7 +232,11 @@ impl StreamingSparseBuffers {
         );
     }
 
-    fn validate_row(&self, row: &DirectSparseRowUpload<'_>) -> Result<(), ShResidencyDrainError> {
+    fn validate_row(
+        &self,
+        row: &DirectSparseRowUpload<'_>,
+        capacity: (u32, u32),
+    ) -> Result<(), ShResidencyDrainError> {
         match row.role {
             2 => return Ok(()),
             1 => {}
@@ -273,7 +291,7 @@ impl StreamingSparseBuffers {
                     .map_err(|_| ShResidencyDrainError::SlotOverflow)?,
             )
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        if row.entry_end > self.entry_capacity || tile_end > self.tile_f16_capacity {
+        if row.entry_end > capacity.0 || tile_end > capacity.1 {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed direct sparse row exceeds its GPU pool capacity",
             });

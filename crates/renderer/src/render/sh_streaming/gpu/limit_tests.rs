@@ -343,10 +343,132 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
         return;
     };
     let queue = UploadQueue::new(&device, raw.clone(), true);
-    for section in [27, 41, 45] {
+    // Each device bound must be decisive on its own. The other keeps the
+    // actual grant throughout both the family matrix and sibling transaction.
+    for buffer_limit_is_tighter in [false, true] {
+        // GPU initialization always creates this fixed compose record, even
+        // when the sparse storage-binding limit is the tighter bound.
+        let tightest_buffer_limit: u64 = if buffer_limit_is_tighter { 65_536 } else { 512 };
+        let entry_limit = u32::try_from(tightest_buffer_limit / 4 - 3 * 2).unwrap();
+        let tile_limit = u32::try_from(tightest_buffer_limit / 2).unwrap();
+        let entry_seed = entry_limit * 3 / 4;
+        let tile_seed = tile_limit * 3 / 4;
+        assert!(entry_seed < entry_limit);
+        assert!(tile_seed + 48 <= tile_limit);
+        assert!(entry_seed * 2 > entry_limit);
+        assert!(tile_seed * 2 > tile_limit);
+        for section in [27, 41, 45] {
+            let mut f = UploadOrderSh::with_direct_compose(&device, &raw);
+            let mut limits = device.limits();
+            if buffer_limit_is_tighter {
+                limits.max_buffer_size = tightest_buffer_limit;
+            } else {
+                limits.max_storage_buffer_binding_size = tightest_buffer_limit;
+            }
+            replace_shape(
+                &mut f,
+                &device,
+                &raw,
+                &limits,
+                AtlasShape::for_slots(128, 128, &limits).unwrap(),
+            );
+            grow_sparse(
+                &mut f,
+                &device,
+                &queue,
+                &BTreeMap::from([(section, (entry_seed, tile_seed))]),
+            )
+            .unwrap();
+            // The entry limit subtracts (3 × 2 affinity rows) words from its
+            // buffer bound; packed tiles use two bytes per f16 element.
+            let pools = f.state.gpu.as_ref().unwrap();
+            assert_eq!(pools.sparse_entry_capacity(section), entry_seed);
+            assert_eq!(pools.sparse_tile_f16_capacity(section), tile_seed);
+            assert!(matches!(
+                grow_sparse(
+                    &mut f,
+                    &device,
+                    &queue,
+                    &BTreeMap::from([(section, (entry_seed + 1, tile_seed + 48))])
+                ),
+                Err(ShResidencyDrainError::GpuRetirementPressure { .. })
+            ));
+            for required in [(entry_limit + 1, tile_seed), (entry_seed, tile_limit + 1)] {
+                assert!(matches!(
+                    grow_sparse(
+                        &mut f,
+                        &device,
+                        &queue,
+                        &BTreeMap::from([(section, required)])
+                    ),
+                    Err(ShResidencyDrainError::GpuDeviceLimit { .. })
+                ));
+            }
+            finish_retirement(&mut f, &device);
+            // One real row fits each bound, while doubling either seed passes
+            // its bound; both families must install after clamping.
+            let pool = f.state.sparse_pools.get_mut(&section).unwrap();
+            pool.entries.capacity = entry_seed;
+            pool.tiles.capacity = tile_seed;
+            let outcome = f.drain_many(&device, &queue, &[0]).unwrap();
+            assert_eq!(outcome.accepted, [0]);
+            assert!(outcome.refused.is_empty());
+            assert_eq!(
+                f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section),
+                entry_limit
+            );
+            assert_eq!(
+                f.state
+                    .gpu
+                    .as_ref()
+                    .unwrap()
+                    .sparse_tile_f16_capacity(section),
+                tile_limit
+            );
+            // A later row exceeds each clamped high-water by one entry or 48
+            // f16 values while the clamped generation still retires.
+            let before = f.state.sparse_pools[&section].clone();
+            f.state
+                .sparse_pools
+                .get_mut(&section)
+                .unwrap()
+                .entries
+                .capacity = entry_limit;
+            let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
+            assert_eq!(outcome.refused, [1]);
+            assert!(outcome.deferred.is_empty() && outcome.evicted.is_empty());
+            *f.state.sparse_pools.get_mut(&section).unwrap() = before;
+            f.state
+                .sparse_pools
+                .get_mut(&section)
+                .unwrap()
+                .tiles
+                .capacity = tile_limit;
+            let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
+            assert_eq!(outcome.refused, [1]);
+            assert!(outcome.deferred.is_empty() && outcome.evicted.is_empty());
+            f.compose(&device, &queue);
+            f.drain_many(&device, &queue, &[]).unwrap();
+            assert!(f.state.sampleable.contains(&0));
+            assert_ne!(
+                first_buffer_word(
+                    &device,
+                    &queue,
+                    &f.state.gpu.as_ref().unwrap().sampled_indirection
+                ),
+                0
+            );
+            finish_retirement(&mut f, &device);
+        }
+        // id-27 waits on retirement; id-45 exceeds its compaction limit. The
+        // latter wins before any wait or replacement in any sibling family.
         let mut f = UploadOrderSh::with_direct_compose(&device, &raw);
         let mut limits = device.limits();
-        limits.max_storage_buffer_binding_size = 512;
+        if buffer_limit_is_tighter {
+            limits.max_buffer_size = tightest_buffer_limit;
+        } else {
+            limits.max_storage_buffer_binding_size = tightest_buffer_limit;
+        }
         replace_shape(
             &mut f,
             &device,
@@ -358,138 +480,54 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
             &mut f,
             &device,
             &queue,
-            &BTreeMap::from([(section, (100, 150))]),
+            &BTreeMap::from([(27, (entry_seed, tile_seed))]),
         )
         .unwrap();
-        // The tightest entry buffer is (3 × 2 affinity rows + entries) words.
-        let pools = f.state.gpu.as_ref().unwrap();
-        assert_eq!(pools.sparse_entry_capacity(section), 100);
-        assert_eq!(pools.sparse_tile_f16_capacity(section), 150);
+        let before = [27, 41, 45].map(|id| {
+            (
+                f.state.gpu.as_ref().unwrap().sparse_entry_capacity(id),
+                f.state.gpu.as_ref().unwrap().sparse_tile_f16_capacity(id),
+            )
+        });
+        let growth = f.growth_events();
         assert!(matches!(
             grow_sparse(
                 &mut f,
                 &device,
                 &queue,
-                &BTreeMap::from([(section, (101, 197))])
+                &BTreeMap::from([
+                    (27, (entry_seed + 1, tile_seed + 48)),
+                    (41, (entry_seed, tile_seed)),
+                    (45, (entry_limit + 1, tile_seed)),
+                ])
             ),
-            Err(ShResidencyDrainError::GpuRetirementPressure { .. })
+            Err(ShResidencyDrainError::GpuDeviceLimit { .. })
         ));
-        for required in [(123, 197), (101, 257)] {
-            assert!(matches!(
-                grow_sparse(
-                    &mut f,
-                    &device,
-                    &queue,
-                    &BTreeMap::from([(section, required)])
-                ),
-                Err(ShResidencyDrainError::GpuDeviceLimit { .. })
-            ));
-        }
+        assert_eq!(
+            before,
+            [27, 41, 45].map(|id| (
+                f.state.gpu.as_ref().unwrap().sparse_entry_capacity(id),
+                f.state.gpu.as_ref().unwrap().sparse_tile_f16_capacity(id)
+            ))
+        );
+        assert_eq!(growth, f.growth_events());
         finish_retirement(&mut f, &device);
-        // A real row now needs entry 101 and tile half 198. Both fit the
-        // limits while doubling passes them, and must install after clamping.
-        let pool = f.state.sparse_pools.get_mut(&section).unwrap();
-        pool.entries.capacity = 100;
-        pool.tiles.capacity = 150;
-        let outcome = f.drain_many(&device, &queue, &[0]).unwrap();
-        assert_eq!(outcome.accepted, [0]);
-        assert!(outcome.refused.is_empty());
-        assert_eq!(
-            f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section),
-            122
-        );
-        assert_eq!(
-            f.state
-                .gpu
-                .as_ref()
-                .unwrap()
-                .sparse_tile_f16_capacity(section),
-            256
-        );
-        // A later real row exceeds first the compaction entry limit, then
-        // the packed tile limit, while the clamped generation still retires.
-        let before = f.state.sparse_pools[&section].clone();
-        f.state
-            .sparse_pools
-            .get_mut(&section)
-            .unwrap()
-            .entries
-            .capacity = 122;
-        let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
-        assert_eq!(outcome.refused, [1]);
-        assert!(outcome.deferred.is_empty() && outcome.evicted.is_empty());
-        *f.state.sparse_pools.get_mut(&section).unwrap() = before;
-        f.state
-            .sparse_pools
-            .get_mut(&section)
-            .unwrap()
-            .tiles
-            .capacity = 256;
-        let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
-        assert_eq!(outcome.refused, [1]);
-        assert!(outcome.deferred.is_empty() && outcome.evicted.is_empty());
-        f.compose(&device, &queue);
-        f.drain_many(&device, &queue, &[]).unwrap();
-        assert!(f.state.sampleable.contains(&0));
-        assert_ne!(
-            first_buffer_word(
+        // No retirement this time: the same refusal still commits no siblings.
+        assert!(matches!(
+            grow_sparse(
+                &mut f,
                 &device,
                 &queue,
-                &f.state.gpu.as_ref().unwrap().sampled_indirection
+                &BTreeMap::from([
+                    (27, (entry_seed + 1, tile_seed + 48)),
+                    (41, (entry_seed, tile_seed)),
+                    (45, (entry_limit + 1, tile_seed)),
+                ])
             ),
-            0
-        );
-        finish_retirement(&mut f, &device);
+            Err(ShResidencyDrainError::GpuDeviceLimit { .. })
+        ));
+        assert_eq!(growth, f.growth_events());
     }
-    // id-27 waits on retirement; id-45 exceeds its compaction limit. The
-    // latter wins before any wait or replacement in any sibling family.
-    let mut f = UploadOrderSh::with_direct_compose(&device, &raw);
-    let mut limits = device.limits();
-    limits.max_storage_buffer_binding_size = 512;
-    replace_shape(
-        &mut f,
-        &device,
-        &raw,
-        &limits,
-        AtlasShape::for_slots(128, 128, &limits).unwrap(),
-    );
-    grow_sparse(&mut f, &device, &queue, &BTreeMap::from([(27, (10, 150))])).unwrap();
-    let before = [27, 41, 45].map(|id| {
-        (
-            f.state.gpu.as_ref().unwrap().sparse_entry_capacity(id),
-            f.state.gpu.as_ref().unwrap().sparse_tile_f16_capacity(id),
-        )
-    });
-    let growth = f.growth_events();
-    assert!(matches!(
-        grow_sparse(
-            &mut f,
-            &device,
-            &queue,
-            &BTreeMap::from([(27, (11, 197)), (41, (10, 150)), (45, (123, 150))])
-        ),
-        Err(ShResidencyDrainError::GpuDeviceLimit { .. })
-    ));
-    assert_eq!(
-        before,
-        [27, 41, 45].map(|id| (
-            f.state.gpu.as_ref().unwrap().sparse_entry_capacity(id),
-            f.state.gpu.as_ref().unwrap().sparse_tile_f16_capacity(id)
-        ))
-    );
-    assert_eq!(growth, f.growth_events());
-    finish_retirement(&mut f, &device);
-    // No retirement this time: the same refusal still commits no siblings.
-    assert!(matches!(
-        grow_sparse(
-            &mut f,
-            &device,
-            &queue,
-            &BTreeMap::from([(27, (11, 197)), (41, (10, 150)), (45, (123, 150))])
-        ),
-        Err(ShResidencyDrainError::GpuDeviceLimit { .. })
-    ));
-    assert_eq!(growth, f.growth_events());
     eprintln!(
         "[ShGrowthProof] all 3 sparse families: tightest buffer clamp, refusal priority and atomic siblings ran on GPU"
     );
@@ -697,29 +735,72 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
     assert_eq!(f.state.targets, targets);
     assert!(f.state.installed.is_empty());
     let prepared = f.prepared(0);
+    let mut outcome = postretro_level_loader::ShDrainOutcome::default();
     assert!(matches!(
-        f.state.install(None, &prepared),
-        Err(ShResidencyDrainError::GpuCapacity { .. })
+        f.state.install_ready(None, vec![prepared], &mut outcome),
+        Err(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed install requires device handles while GPU pools exist",
+        })
     ));
-    let row = f
-        .state
-        .collect_sparse_rows(0, &prepared.chunk)
+    assert!(outcome.refused.is_empty() && outcome.accepted.is_empty());
+
+    // Regression: a broken replacement's backing must escape the refusal
+    // classifier. Grow real buffers first, then undersize the installed
+    // compaction carrier without altering its declared capacity or limits.
+    let mut f = UploadOrderSh::new(&device, &raw, 128);
+    grow_sparse(&mut f, &device, &queue, &BTreeMap::from([(27, (100, 150))])).unwrap();
+    finish_retirement(&mut f, &device);
+    f.state
+        .gpu
+        .as_mut()
         .unwrap()
-        .remove(0)
-        .1;
-    let pools = f.state.gpu.as_ref().unwrap();
+        .indirect_compose
+        .undersize_compaction_for_test(&device);
+    let before_dense = f.state.dense_slots.clone();
+    let before_sparse = f.state.sparse_pools[&27].clone();
     assert!(matches!(
-        pools.validate_indirect_sparse_row(pools.sparse_entry_capacity(27), 2, &row),
-        Err(ShResidencyDrainError::GpuCapacity { .. })
+        f.drain_many(&device, &queue, &[0]),
+        Err(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed indirect compaction metadata needs growth",
+        })
     ));
+    assert_eq!(f.state.dense_slots, before_dense);
+    assert_eq!(f.state.sparse_pools[&27], before_sparse);
+    assert!(f.state.installed.is_empty());
+    eprintln!(
+        "[ShGrowthProof] identity, generation, missing handles and broken post-growth backing escape drain classifier; ran on GPU"
+    );
+}
+
+#[test]
+fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH metadata at dense limit") else {
+        return;
+    };
     let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
         .direct_base_only()
         .with_empty_rows(27, &[0]);
     let mut f = UploadOrderSh::with_map(&device, &raw, 64, map);
-    let bad = loader_validated_chunk(&f);
-    // Corrupt only the renderer's retained metadata after loader validation.
-    // The payload has passed the exact loader hash and semantic body decoder.
+    let ready = loader_validated_chunk(&f);
+    let mut limits = device.limits();
+    limits.max_texture_array_layers = 1;
+    let shape = AtlasShape {
+        tiles_per_row: 1,
+        tiles_per_layer: 1,
+        layers: 1,
+        slots: 1,
+    };
+    replace_shape(&mut f, &device, &raw, &limits, shape);
+    // The loader-valid body needs 64 slots; the same install would refuse
+    // growth, but its corrupted retained metadata must remain fatal.
+    assert!(matches!(
+        shape.grown_for_slots(64, &limits),
+        Err(ShResidencyDrainError::GpuDeviceLimit { .. })
+    ));
     f.state.dense_node[0].as_mut().unwrap().level ^= 1;
+    let before_dense = f.state.dense_slots.clone();
+    let before_sparse = f.state.sparse_pools[&27].clone();
+    let before_words = f.state.compose_words.clone();
     let queue = UploadQueue::new(&device, raw, true);
     let error = f
         .state
@@ -732,23 +813,74 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
             ShDrainBatch {
                 generation: f.state.generation,
                 content_tag: f.state.content_tag,
-                ready: vec![bad],
+                ready: vec![ready],
                 ..Default::default()
             },
         )
         .unwrap_err();
     assert!(matches!(
         error,
-        ShResidencyDrainError::MalformedChunk { .. }
+        ShResidencyDrainError::MalformedChunk {
+            cluster_id: 0,
+            reason: "canonical node lacks id-34 prefix metadata",
+        }
     ));
-    assert!(f.state.installed.is_empty());
-    assert_eq!(f.state.dense_slots.capacity, 0);
+    assert_eq!(f.state.dense_slots, before_dense);
+    assert_eq!(f.state.sparse_pools[&27], before_sparse);
+    assert_eq!(f.state.compose_words, before_words);
+    assert!(f.state.node_slots.is_empty() && f.state.installed.is_empty());
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape, shape);
+    assert_eq!(f.growth_events(), 0);
+    eprintln!(
+        "[ShGrowthProof] loader-valid retained metadata corruption at dense limit remains named fatal error; ran on GPU"
+    );
+}
+
+#[test]
+fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
+    let Some(GpuCtx { device, queue: raw }) = bc_gpu_or_skip("SH fatal slot address overflow")
+    else {
+        return;
+    };
+    let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
+        .direct_base_only()
+        .with_empty_rows(27, &[0]);
+    let mut f = UploadOrderSh::with_map(&device, &raw, 64, map);
+    let ready = loader_validated_chunk(&f);
+    let node = f.state.nodes_by_owner[&0][0];
+    // An existing canonical CPU range outside the 27-bit wire address space
+    // reaches the real patch rewrite, without allocating a huge GPU atlas.
+    let range = crate::render::sh_streaming::PoolRange {
+        start: 1 << 27,
+        len: 64,
+    };
+    f.state.node_slots.insert(node, range);
+    let before_dense = f.state.dense_slots.clone();
+    let before_words = f.state.compose_words.clone();
+    let queue = UploadQueue::new(&device, raw, true);
     assert!(matches!(
-        crate::render::sh_streaming::rewrite_slot(4, 1 << 27),
+        f.state.drain(
+            &device,
+            &queue,
+            &mut f.sh,
+            &f.uniforms,
+            &f.weights,
+            ShDrainBatch {
+                generation: f.state.generation,
+                content_tag: f.state.content_tag,
+                ready: vec![ready],
+                ..Default::default()
+            },
+        ),
         Err(ShResidencyDrainError::SlotOverflow)
     ));
+    assert_eq!(f.state.node_slots[&node], range);
+    assert_eq!(f.state.dense_slots, before_dense);
+    assert_eq!(f.state.compose_words, before_words);
+    assert!(f.state.installed.is_empty());
+    assert_eq!(f.growth_events(), 0);
     eprintln!(
-        "[ShGrowthProof] missing handles, post-growth undersizing, metadata disagreement, address overflow remain fatal; ran on GPU"
+        "[ShGrowthProof] loader-valid canonical cluster slot overflow escapes drain classifier; ran on GPU"
     );
 }
 
@@ -772,7 +904,7 @@ fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::Prepared
     for block in &blocks {
         let mut body = prepared.chunk.block_bytes(block).to_vec();
         if block.kind == 0 {
-            for patch in body.chunks_exact_mut(16) {
+            for patch in body.as_chunks_mut::<16>().0 {
                 patch[8..12].fill(0);
             }
         }

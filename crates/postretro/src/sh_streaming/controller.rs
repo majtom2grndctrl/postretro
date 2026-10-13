@@ -301,6 +301,9 @@ pub(crate) struct ShResidencyController {
     in_drain: BTreeMap<u32, u64>,
     in_drain_evictions: BTreeSet<u32>,
     permits_in_use: usize,
+    /// One transitive closure per held permit, at most MAX_STREAM_PERMITS.
+    /// Cached at request time so waiting on an old read never rewalks topology.
+    request_owners: BTreeMap<u32, BTreeSet<u32>>,
     accounting: ShResidencyAccounting,
     non_evictable_overshoot_bytes: u64,
     overshoot_reported: bool,
@@ -375,6 +378,7 @@ impl ShResidencyController {
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
             permits_in_use: 0,
+            request_owners: BTreeMap::new(),
             accounting: ShResidencyAccounting::new(gpu_budget)?,
             non_evictable_overshoot_bytes: 0,
             overshoot_reported: false,
@@ -534,6 +538,40 @@ impl ShResidencyController {
                 })
     }
 
+    fn request_permit_limit(&self, cluster_id: u32) -> usize {
+        if self.states[cluster_id as usize]
+            .class
+            .is_some_and(TargetClass::is_mandatory)
+        {
+            MAX_STREAM_PERMITS
+        } else {
+            MAX_OPTIONAL_STREAM_PERMITS
+        }
+    }
+
+    fn ready_dependents(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
+        self.ready.keys().copied().filter(move |cluster_id| {
+            self.request_owners
+                .get(cluster_id)
+                .is_some_and(|owners| owners.contains(&owner))
+        })
+    }
+
+    fn ready_reclaim_candidates(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
+        // Several stalled cohorts may jointly exceed the optional reservation.
+        // Reclaim this owner's dependents first, then other payloads which need
+        // an absent owner. Installable work and pending reads stay intact.
+        self.ready_dependents(owner)
+            .chain(self.ready.keys().copied().filter(move |cluster_id| {
+                self.request_owners.get(cluster_id).is_some_and(|owners| {
+                    !owners.contains(&owner)
+                        && owners.iter().any(|&missing| {
+                            self.states[missing as usize].state == ClusterResidencyState::Absent
+                        })
+                })
+            }))
+    }
+
     fn mark_failed(&mut self, cluster_id: u32) -> Result<bool, ShResidencyControllerError> {
         self.mark_failure(cluster_id, FailureCause::Read)
     }
@@ -549,7 +587,7 @@ impl ShResidencyController {
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
         };
-        self.release_permit()?;
+        self.release_permit(cluster_id)?;
         let state = &mut self.states[cluster_id as usize];
         let same_identity = state
             .failure
@@ -575,10 +613,11 @@ impl ShResidencyController {
         self.accounting.cpu.ready.remove(bytes, "ready bytes")
     }
 
-    fn release_permit(&mut self) -> Result<(), ShResidencyControllerError> {
+    fn release_permit(&mut self, cluster_id: u32) -> Result<(), ShResidencyControllerError> {
         self.permits_in_use = self.permits_in_use.checked_sub(1).ok_or(
             ShResidencyControllerError::AccountingUnderflow("stream permits"),
         )?;
+        self.request_owners.remove(&cluster_id);
         Ok(())
     }
 

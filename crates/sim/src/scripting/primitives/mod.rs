@@ -899,12 +899,22 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("ViewFeelParams")
-        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion.")
+        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide and vault poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide`/`vault` is independently optional; an absent sub-object disables that motion.")
         .field("bob?", "BobParams", "Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("tilt?", "TiltParams", "Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("sway?", "SwayParams", "Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("impulse?", "ImpulseParams", "Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse.")
         .field("slide?", "SlideViewParams", "Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect.")
+        .field("vault?", "VaultViewParams", "Optional camera pose held while vaulting. Every field is optional. Omission disables this effect.")
+        .finish();
+    registry
+        .register_type("VaultViewParams")
+        .doc("Camera pose held while vaulting. Its weight follows the vault's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the vault ends. A vault that ends early (an abort, death, a correction) eases back from wherever the pose was. This affects presentation only: aim, the shot line and the weapon model are unchanged. It composes with bob, tilt, sway and impulses and is scaled by view-feel accessibility settings; reduced motion removes it.")
+        .field("pitch?", "f32", "Held pitch offset in degrees; positive looks up, so a negative value looks down toward the ledge. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.")
+        .field("roll?", "f32", "Held roll offset in degrees. Must be finite in [-90, 90]; default 0.")
+        .field("fov?", "f32", "Held horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV.")
+        .field("easeIn?", "f32", "Share of `durationMs` spent easing in. Must be finite in [0, 1]; default 0.15. 0 holds the pose from the first frame.")
+        .field("easeOut?", "f32", "Share of `durationMs` spent easing back at the end. Must be finite in [0, 1]; default 0.2. `easeIn + easeOut` must be at most 1.")
         .finish();
     registry
         .register_type("SlideViewParams")

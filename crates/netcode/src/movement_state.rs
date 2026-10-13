@@ -310,6 +310,7 @@ mod tests {
                 sway: None,
                 impulse: None,
                 slide: None,
+                vault: None,
             }),
         }
     }

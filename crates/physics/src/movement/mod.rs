@@ -14,6 +14,7 @@ mod push;
 mod substrate;
 mod swim_transition;
 mod vault;
+mod vault_path;
 
 pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 
@@ -552,6 +553,7 @@ mod tests {
             }),
             impulse: None,
             slide: None,
+            vault: None,
         };
         desc.view_feel = Some(view_feel.clone());
         let comp = PlayerMovementComponent::from_descriptor(&desc);

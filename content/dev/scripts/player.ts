@@ -177,13 +177,17 @@ export const playerEntity = defineEntity({
               enter: { fov: 0, pitch: -2.5, roll: 1.5 },
               exit: { fov: 0, pitch: 1.5, roll: 0 },
             },
-            // A slow return holds the downward look on the ledge through
-            // most of the climb.
-            vault: {
-              tension: 6,
-              enter: { fov: 0, pitch: -4, roll: 0 },
-            },
           },
+        },
+        // Held while vaulting: a downward look at the ledge that eases in over
+        // the first 15% of durationMs, rests through the climb, and levels
+        // out over the last 20% as the pawn moves onto the top.
+        vault: {
+          pitch: -6, // degrees; + looks up
+          roll: 0,
+          fov: 0, // horizontal degrees added to the base FOV
+          easeIn: 0.15, // share of durationMs spent easing in
+          easeOut: 0.2, // share spent easing back at the end
         },
       },
     },

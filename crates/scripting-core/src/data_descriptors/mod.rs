@@ -69,6 +69,7 @@ mod swim_block;
 mod trigger_events;
 mod validate;
 mod vault_block;
+mod vault_view_block;
 mod vm_adapters;
 
 mod js {
@@ -114,6 +115,7 @@ pub use runtime_manifest::*;
 pub(crate) use swim_block::*;
 pub use validate::*;
 pub(crate) use vault_block::*;
+pub(crate) use vault_view_block::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{

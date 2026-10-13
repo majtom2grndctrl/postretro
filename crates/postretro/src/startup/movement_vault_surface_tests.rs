@@ -146,3 +146,31 @@ fn vault_test_map_names_only_fluids_the_dev_manifest_declares() {
     );
     assert!(dev.fluids.index_of("water").is_some());
 }
+
+// content/dev's player holds a camera pose through the climb instead of the
+// slow vault impulse kick it used before `viewFeel.vault` existed.
+#[test]
+fn the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick() {
+    let view_feel = player_movement(&dev_manifest())
+        .view_feel
+        .expect("the dev player has view feel");
+    assert_eq!(
+        view_feel.vault,
+        Some(postretro_foundation::VaultViewParams {
+            pitch: -6.0,
+            roll: 0.0,
+            fov: 0.0,
+            ease_in: 0.15,
+            ease_out: 0.2,
+        })
+    );
+    assert!(
+        view_feel
+            .impulse
+            .expect("the dev player has impulses")
+            .states
+            .vault
+            .is_none(),
+        "no vault impulse row"
+    );
+}

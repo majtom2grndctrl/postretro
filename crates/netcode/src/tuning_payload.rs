@@ -180,6 +180,7 @@ mod tests {
                     enter_rate: 18.0,
                     exit_rate: 12.0,
                 }),
+                vault: None,
             }),
         }
     }

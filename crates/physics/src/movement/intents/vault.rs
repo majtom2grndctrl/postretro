@@ -8,7 +8,8 @@ use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::Transition;
 use crate::movement::carry::CarryRule;
 use crate::movement::mover_carry::apply_mover_carry;
-use crate::movement::vault::{VaultFrame, aimed_progress, path_feet};
+use crate::movement::vault::VaultFrame;
+use crate::movement::vault_path::VaultPath;
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// How far, metres, the pawn may sit from the path point it was steered to
@@ -45,9 +46,10 @@ const EXIT_SETTLE_SPEED: f32 = 1.0;
 /// - **Exit.** Once `elapsed_ms` reaches the duration with the pawn steered to
 ///   the target, the exit tick restores the entry horizontal speed along the
 ///   exit direction, closes any vertical gap to the target, and settles down
-///   onto the top as it returns to `Normal`. A step that ended at the
-///   corner ([`aimed_progress`]) with the duration spent still owes the move
-///   onto the top, so that one tick runs it before the exit.
+///   onto the top as it returns to `Normal`. The path ends moving at that speed
+///   ([`VaultPath`]), so the exit adds no jump. A path tick whose forward the
+///   lip held back ([`VaultPath::aimed`]) with the duration spent still owes
+///   the move onto the top, so that one tick runs it before the exit.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn vault_intent(
     component: &mut PlayerMovementComponent,
@@ -70,8 +72,16 @@ pub(crate) fn vault_intent(
     let step_ms = dt * 1000.0;
     let center_offset = Vec3::Y * (component.capsule.half_height + component.capsule.radius);
     let carried = apply_mover_carry(position, carry_ground, collision);
-    let aimed = aimed_progress(*elapsed_ms, step_ms, duration_ms);
-    let expected = frame.to_world(path_feet(target, start_offset, aimed)) + center_offset;
+    let path = VaultPath::new(
+        target,
+        start_offset,
+        entry_speed,
+        duration_ms,
+        step_ms,
+        component.capsule.radius,
+    );
+    let (aimed, at_target) = path.aimed(*elapsed_ms);
+    let expected = frame.to_world(aimed) + center_offset;
     let off_path = carried.distance(expected);
     // Fail closed: a NaN distance compares false against the tolerance, so
     // abort explicitly rather than steer from a non-finite pose. This guards the
@@ -81,7 +91,7 @@ pub(crate) fn vault_intent(
         return Some(abort(component));
     }
 
-    if *elapsed_ms >= duration_ms && aimed >= 1.0 {
+    if *elapsed_ms >= duration_ms && at_target {
         let exit_dir = frame
             .rotate(Vec3::new(-start_offset.x, 0.0, -start_offset.z))
             .normalize_or_zero();
@@ -93,10 +103,9 @@ pub(crate) fn vault_intent(
     }
 
     // Elapsed is never clamped to the duration, so the next tick can recover
-    // this step's start (`aimed_progress`).
+    // this step's start (`VaultPath::aimed`).
     *elapsed_ms += step_ms;
-    let next_progress = aimed_progress(*elapsed_ms, step_ms, duration_ms);
-    let next = frame.to_world(path_feet(target, start_offset, next_progress)) + center_offset;
+    let next = frame.to_world(path.aimed(*elapsed_ms).0) + center_offset;
     component.velocity = (next - carried) / dt;
     // Rising off a floor is a launch, as a jump is: the substrate must not clamp
     // the rise or stick the pawn back down.

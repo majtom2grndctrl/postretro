@@ -24,12 +24,33 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         Some(t) => Some(slide_view_params_from_lua(&t)?),
         None => None,
     };
+    // Read directly rather than through `read_optional_subtable_lua`, whose
+    // wording differs from the JS path: both runtimes say "an object".
+    let vault = match table.get::<LuaValue>("vault").map_err(lua_err)? {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => Some(vault_view_params_from_lua(&t)?),
+        _ => return Err(vault_view_not_an_object()),
+    };
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
         slide,
+        vault,
+    })
+}
+
+/// Mirror of the JS `vault_view_params_from_js` for Luau tables; errors are
+/// worded identically.
+pub fn vault_view_params_from_lua(table: &Table) -> Result<VaultViewParams, DescriptorError> {
+    vault_view_params_from_fields(|field| {
+        Ok(match table.get::<LuaValue>(field).map_err(lua_err)? {
+            LuaValue::Nil => RawViewNumber::Absent,
+            LuaValue::Integer(value) => RawViewNumber::Number(value as f64),
+            LuaValue::Number(value) => RawViewNumber::Number(value),
+            _ => RawViewNumber::Other,
+        })
     })
 }
 

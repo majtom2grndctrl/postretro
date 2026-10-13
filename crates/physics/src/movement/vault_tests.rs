@@ -11,6 +11,7 @@ use postretro_foundation::{
 
 use super::environment_tests::{descriptor, idle_input};
 use super::substrate::step_up_limit;
+use super::vault_path::VaultPath;
 use super::{MovementEvents, MovementInput, tick_with_immersion};
 use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 
@@ -325,22 +326,43 @@ fn the_vault_rises_monotonically_without_steps_larger_than_the_path() {
     let desc = vault_descriptor(VaultEntry::default());
     let world = ledge_world(1.2, None);
     let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
-    let start_feet = feet(position);
     let mut heights = vec![position.y];
+    let mut path = None;
     for _ in 0..60 {
         let was_vaulting = is_vaulting(&component);
         position = step(&mut component, &world, &forward(), position).0;
         if !was_vaulting && !is_vaulting(&component) && heights.len() > 1 {
             break;
         }
+        if let MovementState::Vault {
+            target,
+            start_offset,
+            entry_speed,
+            ..
+        } = component.movement_state
+        {
+            path.get_or_insert(VaultPath::new(
+                target,
+                start_offset,
+                entry_speed,
+                DURATION_MS,
+                DT * 1000.0,
+                RADIUS,
+            ));
+        }
         if is_vaulting(&component) || was_vaulting {
             heights.push(position.y);
         }
     }
-    let rise = 1.2 + SKIN_DISTANCE - start_feet;
-    let ticks = DURATION_MS / (DT * 1000.0);
-    // Smoothstep over the rise share peaks at 1.5x its mean slope.
-    let largest_path_step = 1.5 * rise / (0.6 * ticks) + 1.0e-3;
+    // The path step: the largest rise between consecutive path ticks of the
+    // path the intent steered along.
+    let path = path.expect("the pawn vaulted");
+    let step_ms = DT * 1000.0;
+    let ticks = (DURATION_MS / step_ms).ceil() as usize + 1;
+    let largest_path_step = (1..=ticks)
+        .map(|k| path.aimed(k as f32 * step_ms).0.y - path.aimed((k - 1) as f32 * step_ms).0.y)
+        .fold(0.0_f32, f32::max)
+        + 1.0e-3;
     for pair in heights.windows(2) {
         let step = pair[1] - pair[0];
         assert!(
@@ -351,6 +373,146 @@ fn the_vault_rises_monotonically_without_steps_larger_than_the_path() {
             step <= largest_path_step,
             "eye rose {step} m in one tick, path step is {largest_path_step}"
         );
+    }
+}
+
+/// Every tick's centre from `start` until the vault exits: the entry tick's
+/// end first, the exit tick's end last.
+fn vault_track(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    start: Vec3,
+) -> Vec<Vec3> {
+    let mut track = vec![start];
+    let (_, addresses, positions) = run_vault(component, world, &forward(), start);
+    assert!(addresses.contains(&"vault_ended"), "the vault ends");
+    track.extend(positions);
+    track
+}
+
+#[test]
+fn the_move_over_the_top_overlaps_the_rise_and_ends_at_the_exit_speed() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    for speed in [0.0, 3.0, 7.0, 11.0] {
+        for gap in [SKIN_DISTANCE, 0.05] {
+            let (mut component, start) = airborne_at_riser(&desc, 0.5, gap, speed);
+            let track = vault_track(&mut component, &world, start);
+            // Path ticks end at `track[1..exit]`; the last entry is the exit tick.
+            let exit = track.len() - 1;
+            let steps: Vec<Vec3> = track[..exit].windows(2).map(|w| w[1] - w[0]).collect();
+            assert!(
+                steps.iter().any(|step| step.x > 1.0e-3 && step.y > 1.0e-3),
+                "{speed} m/s, gap {gap}: the forward move starts while the pawn still rises"
+            );
+            for step in &steps {
+                assert!(
+                    step.x >= -1.0e-4,
+                    "{speed} m/s, gap {gap}: forward never reverses"
+                );
+            }
+            let landing_x = track[exit - 1].x;
+            assert!(
+                track[..exit].iter().all(|p| p.x <= landing_x + 1.0e-4),
+                "{speed} m/s, gap {gap}: never past the landing"
+            );
+            let last = steps.last().unwrap().x / DT;
+            if speed >= 3.0 {
+                // No crawl then jump: the last path tick already moves at the
+                // speed the exit tick restores.
+                assert!(
+                    (last - speed).abs() < 0.02 * speed,
+                    "{speed} m/s, gap {gap}: last path tick moves {last} m/s"
+                );
+            } else {
+                assert!(
+                    last < steps[steps.len() - 2].x / DT,
+                    "{speed} m/s, gap {gap}: a still entry eases out onto the top"
+                );
+            }
+        }
+    }
+}
+
+/// Distance in the x–y plane from `point` to the solid `x ≥ RISER_X`,
+/// `y ≤ top_y` (the ledge) or, with `above`, `y ≥ top_y` (a ceiling over the
+/// top). Negative inside.
+fn distance_to_block(point: Vec3, top_y: f32, above: bool) -> f32 {
+    let ahead = RISER_X - point.x;
+    let off = if above {
+        top_y - point.y
+    } else {
+        point.y - top_y
+    };
+    match (ahead > 0.0, off > 0.0) {
+        (true, true) => Vec2::new(ahead, off).length(),
+        (true, false) => ahead,
+        (false, true) => off,
+        (false, false) => -ahead.abs().min(off.abs()),
+    }
+}
+
+/// Least distance from the centre segment of a capsule centred at `centre` to
+/// the block. The segment is vertical, so its nearest point is its end nearer
+/// the block's face, or the face height when the segment spans it.
+fn segment_to_block(centre: Vec3, half_height: f32, top_y: f32, above: bool) -> f32 {
+    let (low, high) = (centre.y - half_height, centre.y + half_height);
+    let y = top_y.clamp(low, high);
+    distance_to_block(Vec3::new(centre.x, y, centre.z), top_y, above)
+}
+
+#[test]
+fn the_eye_and_capsule_stay_clear_of_the_lip_and_the_headroom_along_the_path() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let component = PlayerMovementComponent::from_descriptor(&desc);
+    let half_height = component.capsule.half_height;
+    let eye_height = component.capsule.eye_height;
+    // Tops from a little over the step-up limit to near `maxHeight` over feet
+    // at 0.5 m, and the exactly-fitting ceiling the headroom row vaults under.
+    let fits = |top_y: f32| top_y + 2.0 * REACH + 3.0 * SKIN_DISTANCE + 0.005;
+    for (top_y, ceiling) in [
+        (0.9, None),
+        (1.2, None),
+        (2.05, None),
+        (1.2, Some(fits(1.2))),
+        (2.05, Some(fits(2.05))),
+    ] {
+        let world = ledge_world(top_y, ceiling);
+        for speed in [0.0, 3.0, 7.0, 11.0] {
+            for gap in [SKIN_DISTANCE, 0.05] {
+                let label = format!("top {top_y}, ceiling {ceiling:?}, {speed} m/s, gap {gap}");
+                let (mut component, start) = airborne_at_riser(&desc, 0.5, gap, speed);
+                let track = vault_track(&mut component, &world, start);
+                assert!(component.is_grounded(), "{label}: vaulted onto the top");
+                // The camera presents the pose interpolated between ticks.
+                for pair in track.windows(2) {
+                    for alpha in [0.0, 0.25, 0.5, 0.75] {
+                        let centre = pair[0].lerp(pair[1], alpha);
+                        let eye = centre + Vec3::Y * eye_height;
+                        let capsule = segment_to_block(centre, half_height, top_y, false);
+                        assert!(
+                            capsule >= RADIUS + 0.25 * SKIN_DISTANCE,
+                            "{label}: capsule {capsule} m from the ledge at {centre}"
+                        );
+                        assert!(
+                            distance_to_block(eye, top_y, false) >= RADIUS,
+                            "{label}: eye at {eye} reaches into the ledge"
+                        );
+                        if let Some(ceiling_y) = ceiling {
+                            let headroom = segment_to_block(centre, half_height, ceiling_y, true);
+                            assert!(
+                                headroom >= RADIUS + 0.25 * SKIN_DISTANCE,
+                                "{label}: capsule {headroom} m from the ceiling at {centre}"
+                            );
+                            assert!(
+                                distance_to_block(eye, ceiling_y, true) >= RADIUS,
+                                "{label}: eye at {eye} reaches into the ceiling"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1067,13 +1229,22 @@ fn a_swimmer_mantles_out_and_swim_never_recaptures_the_rise() {
     let (mut component, mut position) = swimmer_at_wall(&desc, 0.05);
     let mut edges = Vec::new();
     let mut entered = false;
+    // The latch holds until a tick starts with the capsule risen out of the
+    // swim band (immersion under `exitDepth`), the rule that clears it.
+    let exit_depth = desc.swim.as_ref().unwrap().exit_depth;
+    let out_of_band_feet = SURFACE_Y - exit_depth * 2.0 * REACH;
     for _ in 0..60 {
+        let start = position;
         let (next, events) = step_in(&mut component, &world, &water, &forward(), position);
         edges.extend(events.state_edges.iter().map(|edge| (edge.from, edge.to)));
         position = next;
         if is_vaulting(&component) {
             entered = true;
-            assert!(component.swim_reentry_latched || feet(position) > SURFACE_Y);
+            assert!(
+                component.swim_reentry_latched || feet(start) > out_of_band_feet,
+                "the latch cleared with the feet {} still in the swim band",
+                feet(start)
+            );
         }
         if entered && !is_vaulting(&component) {
             break;

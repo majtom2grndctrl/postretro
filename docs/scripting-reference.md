@@ -742,6 +742,59 @@ keep its FOV channel small or zero when authoring a sustained FOV increase.
 
 ---
 
+## Vault camera pose
+
+`components.movement.viewFeel.vault` holds a camera pose while the player
+vaults: the view eases into it as the climb starts, rests there for most of the
+climb, and eases back as the player steps onto the top. Use it to look down at
+the ledge being climbed. Leave it out for no pose. It needs a
+[`movement.vault`](#movementvault) block to have anything to follow.
+
+```typescript
+viewFeel: {
+  vault: {
+    pitch: -6, fov: 0, roll: 0, // held offsets while vaulting
+    easeIn: 0.15,               // share of durationMs spent easing in (optional)
+    easeOut: 0.2,               // share spent easing back at the end (optional)
+  },
+}
+```
+
+```lua
+viewFeel = {
+  vault = { pitch = -6, fov = 0, roll = 0, easeIn = 0.15, easeOut = 0.2 },
+}
+```
+
+Every field is optional. Wrong types, non-finite numbers, and values outside
+these ranges reject the descriptor at load time, and the error names the field
+(for example `movement.viewFeel.vault.pitch`).
+
+| Field | Units | Accepted values |
+|---|---|---|
+| `pitch` | degrees, positive looks up | finite in [-90, 90]; default 0 |
+| `roll` | degrees | finite in [-90, 90]; default 0 |
+| `fov` | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
+| `easeIn` | share of `durationMs` | finite in [0, 1]; default 0.15 |
+| `easeOut` | share of `durationMs` | finite in [0, 1]; default 0.2 |
+
+`easeIn` plus `easeOut` must be at most 1. The pose follows the climb itself,
+not a timer: it is fully in after the first `easeIn` of the climb and back to
+neutral exactly as the climb ends. A share of 0 skips that ease. A climb that
+ends early, because it was blocked, the player died, or a network correction
+ended it, eases back from wherever the pose was, over `durationMs × easeOut`
+(at least 0.1 s); a new climb started meanwhile picks up from there.
+
+The pose moves only the camera: aim, the shot line and collision are unchanged,
+and the first-person weapon stays where it is in view. With `allowFire: true`
+the crosshair sits off the shot line by the held pose during the climb, so keep
+the pose small if you allow fire. The view never tips past straight up or
+down. The pose composes with bob, tilt, sway and transition impulses and
+follows the player's resolved view-feel scale; reduced motion removes it.
+`viewFeel.impulse.states.vault` remains a separate kick on the climb's edges.
+
+---
+
 ## Runtime values
 
 Most descriptor fields are plain literals — you write a number, the engine reads
@@ -2992,10 +3045,11 @@ How vaulting plays:
 
 - **Reach.** The ledge's top must be within reach, with room for the standing
   player on it. Ledges at or below the step-up height are steps, not vaults.
-- **The climb.** The player rises, then moves over the lip, along a path the
-  engine checked is clear, and stands on the top after `durationMs`, keeping
-  the speed they had when the climb started. Dash, jump and crouch do nothing
-  until it ends. A climb that is blocked part way, or whose ledge stops
+- **The climb.** The player rises, and starts moving over the lip while the
+  rise is finishing, as soon as the body clears it, along a path the engine
+  checked is clear. The move onto the top speeds up to the speed the player had
+  when the climb started and stands them on the top after `durationMs`, still
+  moving at that speed. Dash, jump and crouch do nothing until it ends. A climb that is blocked part way, or whose ledge stops
   existing, ends at once and the player falls.
 - **Moving ledges.** A ledge on a moving platform is climbed where it is when
   the climb ends, and the player ends standing on the platform.
@@ -3014,7 +3068,8 @@ How vaulting plays:
 
 Starting and finishing a climb fire the reserved `vault_started` and
 `vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
-either edge. A climb cut short by the player's death ends without
+either edge, and [`viewFeel.vault`](#vault-camera-pose) holds a camera pose
+through the climb. A climb cut short by the player's death ends without
 `vault_ended`, so a reaction that pairs the two (a looping climb sound, say)
 should also stop on `playerDied`. A descriptor hot reload does the same but
 fires no `playerDied`; it is a development-time event, so a paired reaction may
@@ -3627,7 +3682,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
-| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide) scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide, vault pose) scale. |
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |

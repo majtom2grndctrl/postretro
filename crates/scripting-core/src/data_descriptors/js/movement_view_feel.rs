@@ -71,12 +71,52 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
     } else {
         None
     };
+    let vault = if obj.contains_key("vault").map_err(js_err)? {
+        let raw: JsValue = obj.get("vault").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            // Arrays and functions carry the object tag in QuickJS; Luau reads
+            // neither as a table of fields, so neither is a block here.
+            let not_a_block = raw.is_array() || raw.is_function();
+            let vault_obj = match Object::from_value(raw) {
+                Ok(vault_obj) if !not_a_block => vault_obj,
+                _ => return Err(vault_view_not_an_object()),
+            };
+            Some(vault_view_params_from_js(&vault_obj)?)
+        }
+    } else {
+        None
+    };
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
         slide,
+        vault,
+    })
+}
+
+/// Parse a `viewFeel.vault` sub-object. Every error names its field as
+/// `movement.viewFeel.vault.<field>`, worded exactly as the Luau
+/// `vault_view_params_from_lua` words it.
+pub fn vault_view_params_from_js<'js>(
+    obj: &Object<'js>,
+) -> Result<VaultViewParams, DescriptorError> {
+    vault_view_params_from_fields(|field| {
+        if !obj.contains_key(field).map_err(js_err)? {
+            return Ok(RawViewNumber::Absent);
+        }
+        let raw: JsValue = obj.get(field).map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            return Ok(RawViewNumber::Absent);
+        }
+        Ok(raw
+            .as_int()
+            .map(f64::from)
+            .or_else(|| raw.as_float())
+            .map_or(RawViewNumber::Other, RawViewNumber::Number))
     })
 }
 

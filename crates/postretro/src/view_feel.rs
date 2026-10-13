@@ -19,6 +19,7 @@ mod impulse;
 pub(crate) mod slide;
 mod sway;
 mod tilt;
+pub(crate) mod vault;
 
 #[cfg(test)]
 pub(crate) use bob::BOB_EASE_IN_BAND;
@@ -48,6 +49,8 @@ pub(crate) struct ViewFeelState {
     impulse_springs: [impulse::ImpulseSpring; impulse::IMPULSE_STATE_COUNT],
     /// Sustained slide presentation, independent of transition kicks.
     slide_blend: f32,
+    /// Sustained vault pose, independent of transition kicks.
+    vault_view: vault::VaultViewState,
 }
 
 impl Default for ViewFeelState {
@@ -60,16 +63,18 @@ impl Default for ViewFeelState {
             sway_clock: 0.0,
             impulse_springs: [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT],
             slide_blend: 0.0,
+            vault_view: vault::VaultViewState::default(),
         }
     }
 }
 
 impl ViewFeelState {
-    /// Discard transition kicks and sustained slide presentation for state that no longer
-    /// exists while preserving independent bob, tilt, and sway continuity.
+    /// Discard transition kicks and sustained slide and vault presentation for state that
+    /// no longer exists while preserving independent bob, tilt, and sway continuity.
     pub(crate) fn clear_state_effects(&mut self) {
         self.impulse_springs = [impulse::ImpulseSpring::ZERO; impulse::IMPULSE_STATE_COUNT];
         self.slide_blend = 0.0;
+        self.vault_view = vault::VaultViewState::default();
     }
 }
 
@@ -324,6 +329,7 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
+            vault: None,
         }
     }
 
@@ -334,6 +340,7 @@ mod tests {
             tilt: Some(t),
             sway: None,
             impulse: None,
+            vault: None,
         }
     }
 
@@ -344,6 +351,7 @@ mod tests {
             tilt: None,
             sway: Some(s),
             impulse: None,
+            vault: None,
         }
     }
 
@@ -362,6 +370,7 @@ mod tests {
                 },
                 states,
             }),
+            vault: None,
         }
     }
 
@@ -764,6 +773,7 @@ mod tests {
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
+            vault: None,
         };
         let mut state = ViewFeelState::default();
         // Even with strong velocity, scale = 0 zeroes everything.
@@ -786,6 +796,7 @@ mod tests {
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
+            vault: None,
         };
 
         let sample = |scale: f32| -> ViewFeelOutput {
@@ -813,6 +824,7 @@ mod tests {
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
+            vault: None,
         };
         // Advance to a non-trivial state first.
         let mut state = ViewFeelState::default();
@@ -844,6 +856,7 @@ mod tests {
             tilt: Some(tilt(15.0, false)),
             sway: Some(sway(0.5, false)),
             impulse: None,
+            vault: None,
         };
         let mut state = ViewFeelState::default();
         let out = run_frames(&params, 5.0, 4.0, true, &mut state, 1.0 / 120.0, 1.0, 300);
@@ -862,6 +875,7 @@ mod tests {
             tilt: None,
             sway: Some(sway(0.5, false)),
             impulse: None,
+            vault: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -886,6 +900,7 @@ mod tests {
             tilt: Some(tilt(15.0, false)),
             sway: None,
             impulse: None,
+            vault: None,
         };
         let mut state = ViewFeelState::default();
         let mut bob_peak = 0.0_f32;
@@ -1162,6 +1177,7 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
+            vault: None,
         };
         let cleared = evaluate_with_edges(&no_impulse, 0.0, 0.0, true, &[], &mut state, 0.0, 1.0);
         assert!(approx_eq(cleared.impulse_fov, 0.0));

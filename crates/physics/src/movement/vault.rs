@@ -13,11 +13,6 @@ use postretro_foundation::{
     GroundRef, MovementState, PlayerMovementComponent, VaultParams, VaultTrigger,
 };
 
-/// Share of the vault spent rising, a feel constant: the rise takes the first
-/// 60% so the pawn clears the lip before it moves over it, along the path the
-/// probe cleared. The rest moves forward.
-const RISE_SHARE: f32 = 0.6;
-
 /// Least `y` of a ledge mover's up axis, in world space, at which a vault onto
 /// it is allowed: about 0.8° of tilt. The path splits rise from forward along
 /// the mover's own axes, but the probe cleared a world-vertical rise and a
@@ -176,37 +171,4 @@ impl VaultFrame {
     pub(super) fn rotate(self, local: Vec3) -> Vec3 {
         self.rotation * local
     }
-}
-
-/// The path progress a path tick steered to, given `elapsed_ms` after that
-/// tick advanced it by `step_ms`. A step that crosses [`RISE_SHARE`] from below
-/// aims at the corner instead, full rise and no forward: a straight move from
-/// below the lip to past it would cut the corner into the riser, which a short
-/// `durationMs` makes likely and one at or under a tick makes certain. The
-/// vault intent calls this both to aim and, next tick, to judge the pawn
-/// against the point it actually aimed at, so the corner needs no stored state.
-pub(super) fn aimed_progress(elapsed_ms: f32, step_ms: f32, duration_ms: f32) -> f32 {
-    let before = (elapsed_ms - step_ms) / duration_ms;
-    let after = elapsed_ms / duration_ms;
-    if before < RISE_SHARE && after > RISE_SHARE {
-        RISE_SHARE
-    } else {
-        after.min(1.0)
-    }
-}
-
-/// Feet position, in the vault's frame, at progress `s` (0..=1): the vertical
-/// offset closes over the rise share, then the horizontal offset over the rest,
-/// each on a smoothstep.
-pub(super) fn path_feet(target: Vec3, start_offset: Vec3, s: f32) -> Vec3 {
-    let rise = smoothstep(0.0, RISE_SHARE, s);
-    let forward = smoothstep(RISE_SHARE, 1.0, s);
-    let vertical = Vec3::new(0.0, start_offset.y, 0.0);
-    let horizontal = Vec3::new(start_offset.x, 0.0, start_offset.z);
-    target + vertical * (1.0 - rise) + horizontal * (1.0 - forward)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }

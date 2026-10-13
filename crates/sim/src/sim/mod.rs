@@ -1633,7 +1633,7 @@ pub use reload::{
 pub use weapon_stage::apply_authorized_weapon_impact_damage;
 
 #[cfg(any(test, feature = "test-support"))]
-pub use host_movement::run_host_movement_tick;
+pub use host_movement::{drop_vault_if_dead, run_host_movement_tick};
 
 // `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can
 // reach `SimHarness` and its `frame`/`new`/`tick`/`record` methods.

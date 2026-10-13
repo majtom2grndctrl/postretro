@@ -22,7 +22,7 @@ use crate::movement::{
 };
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ImmersionComponent, PlayerMovementComponent};
+use postretro_foundation::{ImmersionComponent, MovementState, PlayerMovementComponent};
 
 /// Advance the named movement pawns one fixed tick. Snapshots each pawn's component
 /// and position ONCE at the start of the tick, runs `movement::tick` for each, writes
@@ -64,7 +64,9 @@ pub fn run_host_movement_tick(
             registry.get_component::<PlayerMovementComponent>(*id),
             registry.get_component::<Transform>(*id),
         ) {
-            snapshots.push((*id, component.clone(), transform.position, input.clone()));
+            let mut component = component.clone();
+            drop_vault_if_dead(registry, *id, &mut component);
+            snapshots.push((*id, component, transform.position, input.clone()));
         }
     }
 
@@ -98,6 +100,23 @@ pub fn run_host_movement_tick(
     }
 
     events_out
+}
+
+/// Leave `Vault` for `Normal` when `pawn` is dead or committed to removal, so a
+/// pawn that dies mid-vault drops off the ledge path under gravity instead of
+/// finishing the climb. Movement itself never reads health; host movement and
+/// client prediction call this before the pawn's tick. No state edge is
+/// emitted: death owns the moment, not `vault_ended`.
+pub fn drop_vault_if_dead(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    movement: &mut PlayerMovementComponent,
+) {
+    if matches!(movement.movement_state, MovementState::Vault { .. })
+        && crate::scripting_systems::health::is_quiescent(registry, pawn)
+    {
+        movement.movement_state = MovementState::Normal;
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +225,75 @@ mod tests {
             use_pressed: false,
             drop_pressed: false,
         }
+    }
+
+    fn vaulting(pawn: EntityId, registry: &mut EntityRegistry) {
+        let mut component = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        component.movement_state = MovementState::Vault {
+            elapsed_ms: 32.0,
+            target: Vec3::new(1.0, 2.0, 0.0),
+            start_offset: Vec3::new(-0.8, -0.7, 0.0),
+            mover: None,
+            entry_speed: 4.0,
+        };
+        registry.set_component(pawn, component).unwrap();
+    }
+
+    fn set_health(registry: &mut EntityRegistry, pawn: EntityId, current: f32) {
+        registry
+            .set_component(
+                pawn,
+                postretro_entities::components::health::HealthComponent {
+                    max: 100.0,
+                    current,
+                    hitbox: None,
+                    death_handled: false,
+                    pending_kill_credit: None,
+                    zone_multipliers: std::collections::HashMap::new(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+    }
+
+    // A pawn that dies mid-vault drops off the ledge path; a live one keeps
+    // climbing. Movement never reads health, so the host tick checks first.
+    #[test]
+    fn a_dead_pawn_leaves_its_vault_before_its_movement_tick() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_pawn(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        vaulting(pawn, &mut registry);
+        set_health(&mut registry, pawn, 50.0);
+        let mut live = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        drop_vault_if_dead(&registry, pawn, &mut live);
+        assert!(
+            matches!(live.movement_state, MovementState::Vault { .. }),
+            "a live pawn keeps vaulting"
+        );
+
+        set_health(&mut registry, pawn, 0.0);
+        run_host_movement_tick(
+            &mut registry,
+            &world,
+            EnvironmentView::level_only(GRAVITY),
+            &[(pawn, idle_input())],
+            DT,
+        );
+        let dead = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap();
+        assert_eq!(
+            dead.movement_state,
+            MovementState::Normal,
+            "a dead pawn leaves the vault"
+        );
     }
 
     // The seam advances ONLY the explicit pawns and writes both Transform and

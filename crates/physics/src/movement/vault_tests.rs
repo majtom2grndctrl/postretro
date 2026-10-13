@@ -650,3 +650,298 @@ fn a_ground_only_from_forbids_air_entry() {
         assert_eq!(casts, 0);
     }
 }
+
+// --- Committed motion, exit, blocked path and movers ------------------------
+
+use crate::collision::moving::{CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource};
+use glam::Quat;
+use postretro_entities::Transform;
+use postretro_foundation::GroundRef;
+
+#[derive(Default)]
+struct Poses(std::collections::HashMap<u32, MoverPose>);
+
+impl Poses {
+    fn place(&mut self, id: u32, position: Vec3, velocity: Vec3) {
+        self.0.insert(
+            id,
+            MoverPose {
+                transform: Transform {
+                    position,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                linear_velocity: velocity,
+                tick_delta: velocity * DT,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: DT,
+            },
+        );
+    }
+}
+
+impl MoverPoseSource for Poses {
+    fn pose(&self, id: u32) -> Option<MoverPose> {
+        self.0.get(&id).copied()
+    }
+}
+
+const MOVER: u32 = 9;
+
+/// A mover-local block: a riser facing -X at local x = 0 from local y = 0 to
+/// `height`, and its top, `depth` deep.
+fn mover_block(height: f32, depth: f32) -> MoverCollider {
+    let (z0, z1) = (-5.0, 5.0);
+    MoverCollider::from_local_triangles(
+        MOVER,
+        &[
+            Vec3::new(0.0, 0.0, z0),
+            Vec3::new(0.0, height, z0),
+            Vec3::new(0.0, height, z1),
+            Vec3::new(0.0, 0.0, z1),
+            Vec3::new(0.0, height, z0),
+            Vec3::new(depth, height, z0),
+            Vec3::new(depth, height, z1),
+            Vec3::new(0.0, height, z1),
+        ],
+        &[[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]],
+    )
+    .unwrap()
+}
+
+/// A ceiling slab: mover-local quad at local y = 0 facing down, spanning `x`.
+fn mover_slab(id: u32, x: (f32, f32)) -> MoverCollider {
+    let (z0, z1) = (-5.0, 5.0);
+    MoverCollider::from_local_triangles(
+        id,
+        &[
+            Vec3::new(x.0, 0.0, z0),
+            Vec3::new(x.1, 0.0, z0),
+            Vec3::new(x.1, 0.0, z1),
+            Vec3::new(x.0, 0.0, z1),
+        ],
+        &[[0, 1, 2], [0, 2, 3]],
+    )
+    .unwrap()
+}
+
+fn floor_only() -> CollisionWorld {
+    ledge_world(0.0, None)
+}
+
+fn step_combined(
+    component: &mut PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    input: &MovementInput,
+    position: Vec3,
+) -> (Vec3, MovementEvents) {
+    let (position, events, _) = tick_with_immersion(component, input, collision, ENV, DT, position);
+    (position, events)
+}
+
+/// Run a vault from an airborne approach until it exits, returning the named
+/// addresses and positions it produced.
+fn run_vault(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    input: &MovementInput,
+    mut position: Vec3,
+) -> (Vec3, Vec<&'static str>, Vec<Vec3>) {
+    let mut addresses = Vec::new();
+    let mut path = Vec::new();
+    for _ in 0..60 {
+        let (next, events) = step(component, world, input, position);
+        events.append_named_events(&mut addresses);
+        position = next;
+        path.push(position);
+        if addresses.contains(&"vault_ended") {
+            break;
+        }
+    }
+    (position, addresses, path)
+}
+
+#[test]
+fn exit_refreshes_ability_budgets_and_fires_one_start_and_one_end() {
+    let mut desc = vault_descriptor(VaultEntry::default());
+    desc.air.jumps = 1;
+    let world = ledge_world(1.2, None);
+    let (mut component, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    component.air_jumps_remaining = 0;
+    let (_, addresses, _) = run_vault(&mut component, &world, &forward(), position);
+    let vault_addresses: Vec<_> = addresses
+        .iter()
+        .filter(|address| address.starts_with("vault_"))
+        .collect();
+    assert_eq!(vault_addresses, [&"vault_started", &"vault_ended"]);
+    assert_eq!(
+        component.air_jumps_remaining, 1,
+        "landing on the top refreshes air jumps"
+    );
+}
+
+#[test]
+fn dash_jump_and_crouch_mid_vault_are_ignored() {
+    let mut desc = with_crouch_slide_dash(vault_descriptor(VaultEntry::default()));
+    desc.forgiveness = Some(ForgivenessParams {
+        coyote_ms: 0.0,
+        jump_buffer_ms: 150.0,
+    });
+    let world = ledge_world(1.2, None);
+    let (mut quiet, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    let (_, _, quiet_path) = run_vault(&mut quiet, &world, &forward(), position);
+
+    let busy_input = MovementInput {
+        dash_pressed: true,
+        jump_pressed: true,
+        crouch_intent: true,
+        ..forward()
+    };
+    let (mut busy, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    let mut busy_path = Vec::new();
+    let mut position = step(&mut busy, &world, &forward(), position).0;
+    busy_path.push(position);
+    while is_vaulting(&busy) {
+        position = step(&mut busy, &world, &busy_input, position).0;
+        busy_path.push(position);
+        if is_vaulting(&busy) {
+            assert_eq!(
+                busy.jump_buffer_timer_ms, 0.0,
+                "a held jump never buffers mid-vault"
+            );
+            assert_eq!(
+                busy.capsule.half_height, 0.8,
+                "crouch never shrinks the capsule"
+            );
+        }
+    }
+    assert_eq!(
+        busy_path, quiet_path,
+        "held input leaves the vault path unchanged"
+    );
+}
+
+#[test]
+fn a_blocked_path_aborts_to_airborne_normal() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = floor_only();
+    let block = mover_block(1.2, 6.0);
+    let slab = mover_slab(MOVER + 1, (-2.0, 0.0));
+    let movers = [block, slab];
+    let mut poses = Poses::default();
+    poses.place(MOVER, Vec3::new(RISER_X, 0.0, 0.0), Vec3::ZERO);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    position = step_combined(
+        &mut component,
+        &CombinedCollisionWorld::new(&world, &movers, &poses),
+        &forward(),
+        position,
+    )
+    .0;
+    assert!(is_vaulting(&component));
+
+    // A slab drops in just over the head: the rise stalls against it.
+    let head = position.y + REACH;
+    poses.place(MOVER + 1, Vec3::new(RISER_X, head + 0.05, 0.0), Vec3::ZERO);
+    let mut aborted = false;
+    for _ in 0..10 {
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+        position = step_combined(&mut component, &collision, &forward(), position).0;
+        if !is_vaulting(&component) {
+            aborted = true;
+            break;
+        }
+    }
+    assert!(aborted, "a stalled rise aborts");
+    assert_eq!(component.movement_state, MovementState::Normal);
+    assert!(
+        !component.is_grounded(),
+        "the abort leaves the pawn airborne"
+    );
+    let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+    let next = step_combined(&mut component, &collision, &away(), position).0;
+    assert!(next.x < position.x, "the pawn moves freely the next tick");
+}
+
+#[test]
+fn a_vault_onto_a_mover_lands_on_it_still_or_rising_and_aborts_if_it_despawns() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = floor_only();
+    let movers = [mover_block(1.2, 6.0)];
+    for rise_speed in [0.0, 1.0] {
+        let mut poses = Poses::default();
+        let mut mover_y = 0.0;
+        poses.place(
+            MOVER,
+            Vec3::new(RISER_X, mover_y, 0.0),
+            Vec3::Y * rise_speed,
+        );
+        let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        let mut edges = Vec::new();
+        for _ in 0..40 {
+            mover_y += rise_speed * DT;
+            poses.place(
+                MOVER,
+                Vec3::new(RISER_X, mover_y, 0.0),
+                Vec3::Y * rise_speed,
+            );
+            let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+            let (next, events) = step_combined(&mut component, &collision, &forward(), position);
+            edges.extend(events.state_edges);
+            position = next;
+            if edges
+                .iter()
+                .any(|edge| edge.from == MovementStateKind::Vault)
+            {
+                break;
+            }
+        }
+        assert!(
+            edges
+                .first()
+                .is_some_and(|edge| edge.to == MovementStateKind::Vault),
+            "rise {rise_speed}: the pawn vaulted onto the mover"
+        );
+        assert_eq!(
+            component.ground,
+            GroundRef::Mover(MOVER),
+            "rise {rise_speed}: the vault ends grounded on the mover"
+        );
+        assert!(
+            (feet(position) - (mover_y + 1.2)).abs() < 2.0 * SKIN_DISTANCE,
+            "rise {rise_speed}: feet {} on the mover top {}",
+            feet(position),
+            mover_y + 1.2
+        );
+    }
+
+    let mut poses = Poses::default();
+    poses.place(MOVER, Vec3::new(RISER_X, 0.0, 0.0), Vec3::ZERO);
+    let (mut component, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    let position = step_combined(
+        &mut component,
+        &CombinedCollisionWorld::new(&world, &movers, &poses),
+        &forward(),
+        position,
+    )
+    .0;
+    assert!(is_vaulting(&component));
+    let MovementState::Vault { mover, .. } = component.movement_state else {
+        unreachable!()
+    };
+    assert_eq!(mover, Some(MOVER), "the target rides the mover");
+    let gone = Poses::default();
+    step_combined(
+        &mut component,
+        &CombinedCollisionWorld::new(&world, &[], &gone),
+        &forward(),
+        position,
+    );
+    assert_eq!(
+        component.movement_state,
+        MovementState::Normal,
+        "a despawned mover aborts"
+    );
+}

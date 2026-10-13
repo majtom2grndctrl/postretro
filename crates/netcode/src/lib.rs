@@ -1157,7 +1157,13 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
         registry.get_component::<Transform>(armed.entity_id),
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
-        (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
+        (Ok(transform), Ok(movement)) => {
+            // Death is host-authoritative; a client that predicts past its own
+            // death takes one correction, inside the vault tolerance.
+            let mut movement = movement.clone();
+            crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
+            (*transform, movement)
+        }
         _ => {
             return ClientPredictionTickResult {
                 client_tick,

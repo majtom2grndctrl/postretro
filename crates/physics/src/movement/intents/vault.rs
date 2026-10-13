@@ -32,7 +32,8 @@ const EXIT_SETTLE_SPEED: f32 = 1.0;
 ///   way.
 /// - **Exit.** Once `elapsed_ms` reaches the duration the pawn stands on the
 ///   target; the exit tick restores the entry horizontal speed along the exit
-///   direction with a small downward settle and returns to `Normal`.
+///   direction, follows the target's vertical motion since, and settles down
+///   onto the top as it returns to `Normal`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn vault_intent(
     component: &mut PlayerMovementComponent,
@@ -62,7 +63,11 @@ pub(crate) fn vault_intent(
         let exit_dir = frame
             .rotate(Vec3::new(-start_offset.x, 0.0, -start_offset.z))
             .normalize_or_zero();
-        component.velocity = exit_dir * entry_speed + Vec3::NEG_Y * EXIT_SETTLE_SPEED;
+        // The pawn reached the target last tick; a mover has carried the target
+        // on since. Catch up vertically so the settle meets the top rather than
+        // starting inside a rising one.
+        let catch_up = (frame.to_world(target).y + center_offset.y - position.y) / dt;
+        component.velocity = exit_dir * entry_speed + Vec3::Y * (catch_up - EXIT_SETTLE_SPEED);
         return Some(exit());
     }
 

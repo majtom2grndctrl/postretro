@@ -337,10 +337,14 @@ impl ClientPrediction {
             dt,
         );
 
+        // A vault's path follows movers and death, so it shares dash's wider
+        // tolerance for a replay that lands it somewhere a little different.
         let included_dash = dash_requested
             || matches!(
                 movement.movement_state,
-                MovementState::Dash { .. } | MovementState::Sliding { .. }
+                MovementState::Dash { .. }
+                    | MovementState::Sliding { .. }
+                    | MovementState::Vault { .. }
             );
 
         if self.history.len() == MAX_HISTORY {

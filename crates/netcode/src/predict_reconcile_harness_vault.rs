@@ -9,10 +9,12 @@ use postretro_foundation::{
 };
 
 use super::predict_reconcile_harness_test_fixtures::{
-    LoopbackHarness, NO_CORRECTION_M, forward_command, idle_command, light_link,
+    LoopbackHarness, MOVING_PLATFORM_ID, NO_CORRECTION_M, forward_command, idle_command, light_link,
 };
 use crate::collision::CollisionWorld;
+use crate::prediction::DASH_CORRECTION_MAX_M;
 use crate::sim::SimCommand;
+use postretro_foundation::GroundRef;
 
 /// The riser faces +Z at this z; `forward_command` runs the pawn along -Z.
 const RISER_Z: f32 = -6.0;
@@ -67,11 +69,16 @@ struct VaultRun {
     states: Vec<(u32, MovementStateKind)>,
     host_vaulted: bool,
     final_position: Vec3,
+    final_ground: GroundRef,
 }
 
 fn run(from: VaultEntry, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) -> VaultRun {
     let mut h = LoopbackHarness::new(light_link()).with_player_vault(vault(from));
     h.world = ledge_world();
+    run_on(h, steps, command_at)
+}
+
+fn run_on(mut h: LoopbackHarness, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) -> VaultRun {
     h.step_until_armed(&idle_command());
     let mut run = VaultRun {
         corrections: Vec::new(),
@@ -79,6 +86,7 @@ fn run(from: VaultEntry, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) ->
         states: Vec::new(),
         host_vaulted: false,
         final_position: Vec3::ZERO,
+        final_ground: GroundRef::Airborne,
     };
     for _ in 0..steps {
         let position = h.client_position().expect("the client is armed");
@@ -102,6 +110,7 @@ fn run(from: VaultEntry, steps: u32, command_at: impl Fn(Vec3) -> SimCommand) ->
             .push((h.last_sent_client_tick.expect("sent this step"), state));
     }
     run.final_position = h.client_position().expect("armed");
+    run.final_ground = h.client_ground();
     run
 }
 
@@ -186,4 +195,38 @@ fn a_jumping_vault_onto_a_static_ledge_predicts_with_no_correction() {
         command
     });
     assert_vaulted_without_correction(&run);
+}
+
+// The mover moves on both peers by replicated phase; a client's mover pose may
+// lead or lag the host's, so the vault onto it is held to the vault tolerance
+// rather than to zero.
+#[test]
+fn a_vault_onto_a_moving_mover_stays_within_the_vault_tolerance() {
+    let from = VaultEntry {
+        ground: Some(VaultTrigger::Auto),
+        ..VaultEntry::default()
+    };
+    let h = LoopbackHarness::with_moving_ledge(light_link(), RISER_Z, TOP_Y)
+        .with_player_vault(vault(from));
+    // Stop once over the top so the pawn stays on the mover's 6 m deck.
+    let run = run_on(h, 90, |position| {
+        if position.z < RISER_Z - 1.0 {
+            idle_command()
+        } else {
+            forward_command(false)
+        }
+    });
+    assert!(run.host_vaulted, "the host pawn vaulted onto the mover");
+    assert!(
+        run.states
+            .iter()
+            .any(|(_, state)| *state == MovementStateKind::Vault),
+        "the client vaulted onto the mover"
+    );
+    assert_eq!(run.final_ground, GroundRef::Mover(MOVING_PLATFORM_ID));
+    let worst = run.corrections.iter().copied().fold(0.0_f32, f32::max);
+    assert!(
+        worst <= DASH_CORRECTION_MAX_M,
+        "every correction must be within the vault tolerance {DASH_CORRECTION_MAX_M} m; worst {worst}"
+    );
 }

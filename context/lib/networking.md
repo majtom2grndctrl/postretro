@@ -965,6 +965,11 @@ and `SNAPSHOT_VERSION` to 19; `Swim` and the swim re-entry latch share that bump
 environment (level gravity and the host fluid table) advances the tuning epoch to 11. The
 application protocol remains PRLB.
 
+Removing the registry particle component renumbers later component kinds and advances
+`WIRE_VERSION` to 30. Peers at 29 are refused at handshake. `SNAPSHOT_VERSION` stays 19,
+the tuning epoch stays 11 and application protocol PRLB is unchanged. Anonymous particles
+and their local impact intake never replicate.
+
 ## Current contract
 
 Authoritative client-server co-op provides entity baseline, delta, and despawn replication; state-slot replication; snapshot interpolation; client input streaming; prediction; and reconciliation.

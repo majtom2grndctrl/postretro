@@ -800,19 +800,18 @@ fn actual_cpu_install_starts_level_load_and_already_met_progress_at_zero_clock()
     // Regression: first observation treated an install-time tween as a running-frame
     // write and skipped this delta, although its immutable start was already zero.
     assert_eq!(
-        ctx.registry
-            .borrow()
-            .iter_with_kind(ComponentKind::ParticleState)
-            .count(),
+        app.session.as_ref().unwrap().particle_pool.len(),
         0,
         "install primes clocks without emitting particles",
     );
-    app.session.as_mut().unwrap().emitter_bridge.update(
+    let session = app.session.as_mut().unwrap();
+    session.emitter_bridge.update(
         &mut ctx.registry.borrow_mut(),
         0.5,
         0.5,
         0.5,
-        &Default::default(),
+        &mut session.particle_pool,
+        &mut session.particle_render,
     );
     for id in ids {
         assert!(
@@ -854,13 +853,16 @@ fn emitter_rate_and_identical_tween_keep_start_and_bridge_samples_do_not_mutate_
     let immutable = fixture.record(id, ComponentKind::BillboardEmitter);
     assert_eq!(immutable.anim_start, Some(1.0));
     let mut bridge = super::emitter_bridge::EmitterBridge::new();
+    let mut particle_pool = postretro_sim::particle_pool::ParticlePool::new();
+    let mut particle_render = super::particle_render::ParticleRenderCollector::new();
     assert!(bridge.seed_replicated_state(&fixture.ctx.registry.borrow(), id, Some(2.0)));
     bridge.update(
         &mut fixture.ctx.registry.borrow_mut(),
         0.1,
         0.1,
         3.0,
-        &Default::default(),
+        &mut particle_pool,
+        &mut particle_render,
     );
     assert_eq!(
         fixture.record(id, ComponentKind::BillboardEmitter),

@@ -1022,3 +1022,22 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         "`ActionVerb::all()` must retain its representative named payload"
     );
 }
+
+#[test]
+fn anonymous_particle_state_is_absent_from_both_sdk_type_surfaces() {
+    let mut registry = PrimitiveRegistry::new();
+    crate::scripting::typedef::register_all(
+        &mut registry,
+        postretro_entities::ctx::ScriptCtx::new(),
+    );
+    for output in [generate_typescript(&registry), generate_luau(&registry)] {
+        for forbidden in ["ParticleState", "\"particle_state\"", "\"particle\""] {
+            assert!(
+                !output.contains(forbidden),
+                "removed particle type leaked: {forbidden}"
+            );
+        }
+        assert!(output.contains("\"billboard_emitter\""));
+        assert!(output.contains("\"sprite_visual\""));
+    }
+}

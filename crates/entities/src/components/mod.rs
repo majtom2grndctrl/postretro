@@ -17,7 +17,6 @@ pub mod inventory;
 pub mod kinematic_mover;
 pub mod light;
 pub mod mesh;
-pub mod particle;
 pub mod player_movement;
 pub mod projectile;
 pub mod spawner;

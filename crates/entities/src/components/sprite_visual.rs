@@ -1,11 +1,11 @@
-// Per-particle visual descriptor. Distinct from `ParticleState` so future
-// non-particle sprite entities can reuse it.
-// See: context/lib/scripting.md §11 (Emitter and Particles)
+// Visual descriptor for individually addressed sprite entities, such as projectiles.
+// Anonymous particles live in the presentation pool instead.
+// See: context/lib/entity_model.md §8
 
 use serde::{Deserialize, Serialize};
 
-/// Per-frame visual state of a sprite. Authored by the particle simulation
-/// each tick and consumed by the billboard render integration. `tint` is
+/// Per-frame visual state of a sprite entity, authored by projectile presentation
+/// and consumed by the billboard render integration. `tint` is
 /// CPU-side only at this stage — the GPU `SpriteInstance` layout has no color
 /// channel yet (documented as a non-goal in the plan).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

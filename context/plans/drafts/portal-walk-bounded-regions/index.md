@@ -1,6 +1,6 @@
 # portal-walk-bounded-regions
 
-Brief · compact · reads: `context/lib/rendering_pipeline.md` §2, `context/lib/build_pipeline.md` §Runtime visibility, `context/lib/testing_guide.md` · read at 0fac87bd3 · evidence: `research.md`, `prototype/`
+Brief · compact · reads: `context/lib/rendering_pipeline.md` §2, `context/lib/build_pipeline.md` §Runtime visibility, `context/lib/testing_guide.md` · read at 27ca6a6 · evidence: `research.md`, `prototype/`
 
 ## Problem
 
@@ -30,9 +30,10 @@ step-cap fallback.
 - **The visible set becomes a conservative superset of the exact portal set.** No
   consumer reads a visible cell as line of sight (consumer table in `research.md`).
   Fixed-capacity consumers (shadow slot ranking, the mesh instance cap) and
-  non-evictable SH and lightmap demand pay in quality and cost, and are measured. The
-  set keeps today's shape: valid cell ids, a drawable draw set, non-solid fog reach
-  that is never empty on walk paths, and blocked portals block. This diverges from
+  non-evictable SH and lightmap demand, which also enlarges the settle set, pay in
+  quality and cost, and are measured. The set keeps today's shape: valid cell ids, a
+  drawable draw set, non-solid fog reach that is never empty on walk paths, and blocked
+  portals block. This diverges from
   `plans/done/perf-visible-cell-candidate-cull` and `perf-dynamic-light-pvs-cull`,
   which describe the output as "exact"; output identity rests on spans matching
   visible cells, which a superset keeps, and `cell-visibility-relation`'s
@@ -47,14 +48,18 @@ step-cap fallback.
 - **Rect, not octagon or hybrid.** The octagon saved a fraction of a cell per frame for
   more steps and CPU. Hybrids were tighter but costlier, and the keep-going hybrid's
   output depends on portal order. Measurements are in `research.md`.
-- **This brief lands after `spatial-residency--lightmap-cell-blocks`, and the id-51
-  bake samples the new walk.** The change bumps `PORTAL_WALK_EPOCH`, which the id-51
-  cache key hashes, so one walk keeps one meaning. Rect over-inclusion depends on the
-  projection, so runtime can draw cells outside a camera cell's baked set. Those cells
-  are occluded, but their never-refused demand can grow the lightmap pool, and a truly
-  visible block that waits on a retiring pool generation is a visible transient miss.
-  This brief measures the gap and its pool cost; if the gap is material, the lightmap
-  plan widens its bake projections.
+- **The id-51 bake samples the new walk.** The change bumps `PORTAL_WALK_EPOCH`, which
+  the id-51 cache key hashes, so one walk keeps one meaning. Rect over-inclusion depends
+  on the projection, so runtime can draw cells outside a camera cell's baked set. Those
+  cells are occluded, but their never-refused lightmap and SH demand can grow both
+  pools, and a truly visible block that waits on a retiring pool generation misses
+  visibly.
+- **This brief owns the bake gap.** The gap is material when, at any of 100° 16:9,
+  130° 16:9 or 130° 21:9, the rect walk exceeds the exact walk on pool growths, peak
+  pool layers, or visible misses on the hallway walks at default levers. A material
+  gap widens the bake's sampling projections in this change, until the rect walk is
+  back within that line. Widening stays conditional because it enlarges every map's
+  mandatory set, preload and settle set.
 - **Placement:** runtime traversal in the visibility crate. Consumers and their inputs
   keep their shape; only the set's contract loosens.
 - **Non-goals:**
@@ -145,7 +150,8 @@ Bounded cost:
 - [ ] For the same camera, the cap-trip fallback's fog reach contains everything the
   uncapped walk reaches. This includes a camera beside a portal, looking away from it.
   (O6)
-- [ ] The portal-walk epoch differs from its value before this change.
+- [ ] The portal-walk epoch differs from its value before this change. If the bake
+  widens, the cell-residency stage version differs too.
 
 ### Manual
 
@@ -160,6 +166,13 @@ Bounded cost:
 - [ ] Pitch coverage: at the shaft poses, looking straight up and straight down, the new
   walk never trips the cap. The id-51 bake with the new walk reports no step-limit
   walks on the hallway.
+- [ ] Materiality: run the lightmap walk measurement for each walk on the hallway
+  random and tour walks at default levers, at 100° 16:9, 130° 16:9 and 130° 21:9.
+  Report outside-set block-frames, pool growths, peak layers, and visible misses:
+  blocks of cells the exact walk reaches, drawn while not resident. State the verdict.
+  If material, rerun the table with the widened bake: the rect walk is within the
+  line. Report the widened mandatory set per camera cell (p50, p95, max blocks) and
+  the id-51 stage time.
 - [ ] Bake gap: bake id-51 with each walk (exact, then rect). Over the sweep poses at the
   default FOV and at 130° with 16:9 and 21:9 aspect, report runtime-visible cells
   outside the camera cell's baked set (p50, p95, max) for each walk. Also report the
@@ -170,7 +183,10 @@ Bounded cost:
   blocks and bytes, pool growth events, peak pool layers, and misses from blocks
   waiting on a retiring generation. Report the id-51 stage time before and after on
   the hallway.
-- [ ] If multi-block cells (`lightmap-oversize-cells-and-faces`) have landed, repeat the lightmap-cost row on movement-feel and report blocks per over-included cell.
+- [ ] Repeat the lightmap-cost row on movement-feel, whose cells span several blocks, and
+  report blocks per over-included cell.
+- [ ] Settle: entering the hallway, and teleporting to the shaft and arena poses, report
+  for each walk the settle set (lightmap blocks and SH targets) and the time to reveal.
 - [ ] Churn: along a walking route through the shafts and the arena, recorded in
   `research.md` and replayed for each walk,
   report per-frame cells entering and leaving the visible set (p50, p95, max). Snapped
@@ -210,12 +226,17 @@ Bounded cost:
 - After the epoch bump, rebake the measured maps.
 - Tests that assert exact sets stay as regression guards: the closet-reveal door tests
   in the engine and compiler, and the SH controller doorway test.
-- The test-only `lightmap_residency_dry_run::pvs_sampling` in the level compiler
-  documents its sampled set as a lower bound on true visibility. The rect walk falsifies
-  that; restate it.
+- `cell_residency_bake::pvs_sampling` and the dry run's `visible_set` and report text
+  call the sampled set a lower bound on visibility that holds for any FOV; a dry-run
+  test pins the report string. The rect walk falsifies both claims; restate them.
 - The id-51 bake's step-limit branch (`walk_cube_faces`) re-runs the walk for a
-  truncated lower bound. With the bound it should not fire; leave it. The bake's
-  lower-bound and any-FOV doc claims need restating.
+  truncated result. With the bound it should not fire; leave it.
+- `walk_cube_faces` builds one constant square projection over `CUBE_FACES`. Widening
+  turns it into a list, bumps `CELL_RESIDENCY_SET_STAGE_VERSION`, and updates the dry
+  run's "6 cube faces" text.
+- `walk_measurement` fixes FOV and aspect as constants and measures lightmaps only; its
+  note that SH does not stream is stale. Thread FOV and aspect through its configs.
+  SH settle cost is measured in-engine.
 - The swept map's `.prl` is gitignored, so the map sweep stays a measurement, not CI.
   The fixtures carry the automated proof.
 - First slice: the rect walk behind the existing entry point, plus the superset oracle
@@ -223,8 +244,6 @@ Bounded cost:
   the near plane and under floating-point slop.
 
 ## Open questions
-- Bake-gap ownership. The bake samples the walk and dilates one hop, but the cell-blocks plan the contingency named is done, and `lightmap-oversize-cells-and-faces` does not widen the bake. The owner re-measures the bake gap before the next review of this brief, after oversize's per-block walk measurement merges, then rules on who widens the bake if the gap is material — owner — **blocks build**
-
 - Snap grid resolution and the lowered cap value — **delegated** (measured: a grid of
   256 cells per NDC unit; a 5,000-step cap never trips on the swept map).
 - "Near the polygon" distance for the plane-bypass tightening — **delegated**.
@@ -233,3 +252,5 @@ Bounded cost:
   prototype's oracle keeps the old bypass and depends on Windows paths.
 - The portal-test constant k — **delegated**: the prototype's worst case with at most
   2× headroom.
+- Which projections and view directions the widened bake adds, if the gap is material
+  — **delegated**.

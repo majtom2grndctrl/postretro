@@ -138,15 +138,17 @@ Source recheck before review; the Problem's mechanism and seams held.
 | Fog reach | `compute_fog_cell_mask` | More volumes marched; empty = draw-all |
 | Shadow eligibility | `light_reaches_visible_cell` | More eligible lights |
 | Shadow slot ranking | `assign_shadow_pool_slots_with_promoted_baked`, `candidate_slot_score` | Score ignores visibility: an extra light can take a slot from an in-view one |
-| SH targets | `ShResidencyController::update_targets` / `visible_clusters` | More non-evictable Visible clusters; unknown cell id is a hard `InvalidTopology` error |
+| SH targets | `ShResidencyController::update_targets` / `visible_clusters` | More non-evictable Visible clusters, each a settle target (`is_settle_target`); unknown cell id is a hard `InvalidTopology` error |
 | SH sampled rows | `SampleRegionIndex::resolve` | More rows composed |
 | Particles | `ParticleRenderCollector::collect_sprite` | More sprites |
 | Meshes | `mesh_visible_in_cell`; cap in `mesh_instances.rs` | Linear `contains` scan; drops at the instance cap are order-dependent |
 | Movers | `mover_visible_against_cell_bounds` | More AABB tests and draws |
+| Fluid surfaces | `FluidSurfaceRenderCollector::collect` | More translucent surfaces drawn and sorted |
 | Capture | `collect_capture_receiver_draws` | Report residency numbers shift |
 | Diagnostics | `VisibilityStats::walk_reach`, overlays | Counts inflate |
 | Offline dry run (test-only) | `lightmap_residency_dry_run::pvs_sampling` | Its "lower bound" claim becomes false |
 | Lightmap demand | `BlockDemand::mark_drawn` | Walk-frame drawn cells become never-refused Visible blocks; over-inclusion grows the pool and inflates `drawn_outside_baked_set` |
+| Settle set | `update_capture_view`, `unsettled_blocks`, `Session::settle_report` | Settling demands every drawn block as Visible; a superset enlarges what reveal waits on, bounded by the Settling timeout |
 | id-51 bake | `cell_residency_bake::pvs_sampling::walk_cube_faces` | Over-inclusion enters the baked mandatory set |
 | Capture preload | `capture/lightmap.rs` preload | More blocks preloaded for capture |
 | Walk measurement | `walk_measurement` controller, `drawn_outside_baked_set` | Counts blocks drawn outside the baked set; the bake-gap instrument |
@@ -162,8 +164,8 @@ the player's FOV (≤130°) and window aspect. The exact walk's result is geomet
 the cube faces cover any runtime frustum. The rect's over-inclusion depends on the
 projection: the bounding rect of several openings, and the snap cell's world size,
 change with FOV, aspect and view direction. The one-hop dilation hides some of the
-difference and guarantees none of it. Owner decision (2026-09-29): measure the gap here;
-the lightmap plan widens its bake projections if the gap is material.
+difference and guarantees none of it. This brief owns the gap: it measures it at runtime
+projections and widens the bake's projections itself if the gap is material.
 
 ## Direction review notes (validate-plan, 2026-09-29)
 
@@ -232,3 +234,15 @@ Premise pins (premise lens):
 - The consumers new since 0fac87bd3 (lightmap demand, the id-51 bake, capture preload, walk measurement) are now in the consumer table. None of them treats a visible cell as line of sight.
 - The bake-gap instrument is `walk_measurement` with `drawn_outside_baked_set`. It counts blocks, not cells. The exact-walk baseline is in `done/spatial-residency--lightmap-cell-blocks/findings.md`: 415 block-frames over 236 frames on a random walk, and 1,056 over 621 frames on a tour.
 - `lightmap-oversize-cells-and-faces` is order-independent of this brief. The two share no code seam, and its cache-key pin keeps id 51 valid. Pre- and post-change builds share one main commit, so the lightmap layout matches.
+
+## Re-grounding at 27ca6a6
+
+- Walk premises unchanged: the only `crates/visibility` change since 5d197a5e9 moved tests to `glam::camera` constructors.
+- New consumer: E24's fluid surface cull (`FluidSurfaceRenderCollector::collect`, via `collect_fluid_surface_draws`) draws a volume whose AABB meets any visible cell. Safe for a superset.
+- The SH reveal gate landed (`done/sh-streaming--reveal-gate-and-warm-horizon`). `streaming::cell_demand` (`DemandFrame`, `PathDemand`) now feeds both resources. Outside the camera cell's id-51 set:
+  - Lightmap: `BlockDemand::target` returns `BlockTarget::VISIBLE` for any non-Mandatory drawn block; only Band blocks are refused or evicted.
+  - SH: drawn clusters get `TargetClass::Visible`, which pressure never trims; overflow shows as `non_evictable_overshoot_bytes`. SH reach (`sh_streaming::reach`) reads only the id-51 camera set, so over-included clusters count once per episode in `ShMissBuckets::outside_reach`.
+  - Both feed the settle set. Nothing treats an outside cell as an error.
+- Bake cost: the Cell Residency Set stage took 6.63 s on the hallway and 0.26 s on campaign-test (`done/spatial-residency--lightmap-cell-blocks/plan.md`, rebake of 2026-09-29). Extra projections scale it linearly.
+- Exact-walk baseline at 100° 16:9, L 16 m, cap 15 (`done/spatial-residency--lightmap-cell-blocks/findings.md`): hallway random 0 growths, peak 15 layers; tour 1 growth, peak 16; 0 drawn-missing on both. The materiality runs re-measure the exact walk at each projection, not just reuse these.
+- `lightmap-oversize-cells-and-faces` landed; movement-feel's multi-block walk: 73 blocks, peak 6 layers, 0 misses.

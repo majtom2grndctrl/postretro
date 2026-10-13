@@ -16,11 +16,9 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
 
 ## Decisions
 
-- **Build §2's bounded-region walk.** One grow-only screen-space rect per cell,
-  snapped outward to a fixed grid, replaces chain enumeration. This is how Descent,
-  Source and Thief bound portal cost; the id Tech 4 walk relies on hand-placed portals,
-  which compiler cells lack. Snapping also makes the set independent of portal order
-  and keeps edge-on slivers conservative.
+- **Build §2's bounded-region walk, with a rect as the region.** Descent and Source
+  bound portal cost the same way; the id Tech 4 walk relies on hand-placed portals,
+  which compiler cells lack. Snapping also keeps edge-on slivers conservative.
 - **The visible set follows §2's superset contract.** It diverges from
   `plans/done/perf-visible-cell-candidate-cull` and `perf-dynamic-light-pvs-cull`,
   which call the output exact; their output identity rests on spans matching visible
@@ -28,18 +26,13 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
 - **The camera-on-portal-plane bypass applies only near the polygon.** Today it tests
   the infinite plane, so a distant coplanar portal skips clipping: the largest source
   of over-inclusion.
-- **The step cap stays as a lowered backstop.** With the bound it guards only
-  pathological content.
 - **The id-51 bake samples the new walk.** The change bumps `PORTAL_WALK_EPOCH`, which
   the id-51 cache key hashes, so one walk keeps one meaning.
-- **The bake gap is gated, not widened.** Rect over-inclusion depends on projection, so
-  runtime draws cells outside the camera cell's baked set, and their lightmap and SH
-  demand is never refused. Widening the bake would enlarge the never-refused mandatory
-  set, which raises pool growth more than drawn-only demand does (`research.md`
-  §Bake-gap ruling). The gate: with reads completed before the frame draws, the rect
-  walk draws no non-resident lightmap block on the hallway walks at every measured
-  projection. Pool growth, peak occupied layers and outside-set counts are reported
-  against the pre-change build. A failed gate stops the build for an owner decision.
+- **The bake gap is gated, not widened.** Runtime draws over-included cells outside
+  the baked set, and their demand is never refused; widening the bake would enlarge the
+  never-refused mandatory set instead (`research.md` §Bake-gap ruling). The gate counts
+  lightmap blocks the pool deferred, never more than the pre-change build defers. A
+  failed gate stops the build for an owner decision.
 - **This brief lands after `sh-streaming--pool-growth-device-limit`.** Today SH pool
   growth past the device's array-layer limit ends the session, and superset demand
   moves maps toward that limit.
@@ -55,8 +48,9 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
   - Parallelizing the walk: this brief removes its cost premise.
   - Refusable outside-set demand: it would also refuse the bake's genuine sampling
     misses, the error never-refuse exists to prevent.
-  - Visibility-aware shadow slot ranking: ranking ignores visibility today, so an extra
-    eligible light can take a slot. Drops are reported, not fixed here.
+  - Visibility-aware shadow slot ranking and mesh instance cap: both ignore visibility
+    today, so an extra light or mesh can take a slot. Drops are reported, not fixed
+    here.
 
 ## Acceptance
 
@@ -140,17 +134,20 @@ Bounded cost:
 
 Name the machine. "Pre-change" is the last commit before the walk change, carrying this
 brief's measurement modes but the old walk and epoch, on the base commit's bake. (O14, O19)
+Both builds share a base containing the SH pool device-limit fix; a row run before it
+landed is rerun. (O20)
 - [ ] Sweep: run the real traversal over the hallway poses and headings in
   `research.md`, single-threaded release, plus straight up and down at the shaft poses.
   Zero cap trips and zero unclassified misses. Report portal-test counts, CPU µs (p50,
   p99, p99.9, max), and extra cells vs exact (p50, p95, max) overall, for the shafts
   and for the arena, against the prototype numbers. At the shaft and arena poses,
-  report the change in visible SH clusters, shadow-eligible lights and mesh instances.
+  report the change in visible SH clusters and shadow-eligible lights.
   The id-51 bake reports no step-limit walks on the hallway.
 - [ ] Residency gate: run the lightmap walk measurement on the hallway random and tour
-  walks at default levers, at 100° 16:9, 130° 16:9 and 130° 21:9, at pitch 0 and ±45°,
-  with reads completed before each frame draws. The rect walk draws no non-resident
-  block and reports zero step-limit frames. For both builds, report outside-set
+  walks at default levers, at 100° 16:9, 130° 16:9 and 130° 4:3, at pitch 0 and ±45°,
+  with reads completed before each frame draws. At every projection and pitch, the rect
+  walk's pool-deferred block-frames (behind a retiring generation or at the device
+  limit) do not exceed the pre-change build's, and it reports zero step-limit frames. For both builds, report outside-set
   block-frames, pool growths, peak occupied layers, bytes read and physical reads
   (O15), the baked mandatory set per camera cell (p50, p95, max blocks), and the id-51
   stage time. Spawn frames are reported apart. Each run uses one drain per frame for
@@ -170,12 +167,9 @@ brief's measurement modes but the old walk and epoch, on the base commit's bake.
   settle timeout or logs its warning. For each
   build, report the settle set (lightmap blocks and SH targets), the settle hold time,
   and misses counted on the reveal frame. (O13, O16, O19, O21)
-- [ ] Churn: along a walking route through the shafts and the arena, recorded in
-  `research.md` and replayed for each build, report per-frame cells entering and
-  leaving the visible set (p50, p95, max).
 - [ ] Live: at the shaft A stair room and in the arena, with CPU timing on, the log shows
-  no step-limit marker. Report frame time against the pre-change build at the same
-  poses.
+  no step-limit marker. Report frame time and collected mesh instances against the
+  pre-change build at the same poses.
 - [ ] Visual: walk the shaft spirals, turn at portal boundaries, and stand in doorways
   and on portal planes. No geometry pops out or goes missing. Report any in-view
   dynamic shadow that drops compared with the pre-change build.

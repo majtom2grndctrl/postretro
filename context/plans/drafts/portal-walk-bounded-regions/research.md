@@ -205,6 +205,7 @@ From `/review-brief` (rows lens, 2026-09-29). Acceptance rows cite these ids.
 | O18 | Growth retiring under the next frame's demand | Frame N installs its whole view and grows the pool; the old generation retires. Frame N+1 turns and its reads complete at once, needing room. | Those pairs defer behind the retiring generation and draw non-resident on N+1. Read latency usually hides this in play, so the mode overstates it. Deferrals are reported per build, split into those behind a retiring generation and those at the device limit. |
 | O19 | Measurement commits vs walk change | The harness's projection, pitch and synchronous-read modes, and any Settling instrument, land before the rect walk and the epoch bump. The portal_vis split lands first and changes no behavior. | The pre-change build is the last commit before the walk change, with every instrument and the old walk and epoch, read on the base commit's bake. The epoch bump lands with the walk change, so no instrument commit invalidates the pre-change bake. |
 | O21 | Start pose vs Settling | The start-pose override moves the pawn and camera after the map spawn and before the presented pose is fixed, on the first gameplay install only. Settling then projects the held view from that pose. | The settle set is the start pose's. A second level load in the same session enters at the map spawn, so each Settle entry is a fresh launch. |
+| O20 | SH fix lands mid-build | The device-limit fix reaches main after the pre-change build was made or some manual rows ran. | Both builds of every comparison share a base containing the fix. Rows run on an older base are rerun on the new one, and the lightmap layout still matches between builds. |
 
 Premise pins (premise lens):
 
@@ -257,7 +258,7 @@ Premise pins (premise lens):
 ## Bake-gap ruling (2026-10-13, review-brief round 2)
 
 - Widening the bake's projections was withdrawn. It enlarges the never-refused mandatory set M(c, L). At cap 15, the lead sweep in `done/spatial-residency--lightmap-cell-blocks/findings.md` shows a larger mandatory set raising growths (random 0→1, tour 1→5) and peak layers (16→20). Drawn-only demand barely moves growth: at L = 0 the tour drew thousands of outside-set block-frames with 0 growths. "Widen until within the line" could not converge.
-- The walk measurement's misses race wall-clock disk reads (`walk_measurement` frames sleep to a deadline), and its drawn-not-resident count includes occluded, over-included blocks. With reads completed before the frame draws, any remaining non-resident draw is a pool deferral: the cost the gate exists to catch.
+- The walk measurement's misses race wall-clock disk reads (`walk_measurement` frames sleep to a deadline), and its drawn-not-resident count includes occluded, over-included blocks. Completing reads before the frame draws makes the run deterministic; the gate then counts pool deferrals by cause (see gate semantics below).
 - The lead sweep varies L, not the bake's projections, so it is an analogy for widening, not a measurement of it. Its L = 0 tour also drew 5 non-resident and 9 not-resident block-frames in 5 frames.
 - The harness looks only at pitch 0; the shafts' vertical over-inclusion needs ±45°.
 - The exact walk becomes a test-only oracle the engine harness cannot call, so the comparison build is the base commit on its own bake. It keeps the old infinite-plane bypass, so its numbers are looser than the tightened oracle's.
@@ -269,3 +270,5 @@ Premise pins (premise lens):
 - `rendering_pipeline.md` §Device limits reads as if SH degrades cleanly at the limit; that guard covers volume setup only.
 - The lightmap pool defers at its device limit instead (`placement.rs`, `device_limited`).
 - Superset demand moves maps toward the SH limit, so `sh-streaming--pool-growth-device-limit` lands first.
+- Gate semantics (owner, round 3): completing reads still leaves non-resident draws from the per-drain install budget, first-draw latency and refused band blocks. Only pool deferrals measure over-inclusion's cost, and the gate is relative because the pre-change build was never measured at 130° or ±45°.
+- Projections: horizontal FOV is fixed and vertical follows aspect, so 130° 4:3, not 21:9, is the widest frustum.

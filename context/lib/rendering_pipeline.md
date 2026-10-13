@@ -256,9 +256,12 @@ residency.
 `POSTRETRO_LIGHTMAP_STREAMING=all-resident|stream` selects the mode. Unset or `stream`
 streams a level with blocks, a usable id 51 and usable portals. A level with blocks that
 lacks either, or runs `all-resident`, places every block at install: the parity baseline
-that mirrors SH's `off`. A streaming load keeps only the id-22/42 indexes and a retained file handle, never
-either whole payload. The id-22 header `mode` is recorded, but the renderer does not honour
-it; `Unshadowed` logs a load warning. Lightmap streaming reports through a throttled
+that mirrors SH's `off`. The compiler refuses a level that cannot stream whose
+all-resident pool exceeds the device array-layer floor, and warns for one that can; it
+counts pool layers with the renderer's own placement (not built yet). A streaming load
+keeps only the id-22/42 indexes and a retained file handle, never either whole payload.
+The id-22 header `mode` is recorded, but the renderer does not honour it; `Unshadowed`
+logs a load warning. Lightmap streaming reports through a throttled
 `[Lightmap streaming]` log line, the dev-tools Streaming tab, the capture report's
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
 stages (§12).

@@ -15,7 +15,7 @@ Do not commit generated `.prl` files.
 The tuning is content/dev's player (`scripts/player.ts`):
 
 - standing capsule 2.0 m, `stepHeight` 0.5 m, jump peak about 1.16 m;
-- `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 420;
+- `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 800;
 - `from: { air: "auto", swim: "auto" }` and `allowFire: false`;
 - `viewFeel.vault` holds a -6° look down, easing in over the first 15% of
   the climb and back over the last 20%.
@@ -99,7 +99,7 @@ conditioned link" and its manual loopback recipe in
    snap on landing.
 2. On `vault_rising`, a small correction at exit is acceptable: the automated
    harness bounds it at about 0.07 m for a 320 ms vault (the dev player's
-   420 ms vault has not been measured). A visible teleport is not.
+   800 ms vault has not been measured). A visible teleport is not.
 3. Hold fire through a client-side vault on a static ledge. The client must
    not show a shot, muzzle flash or ammo tick that the host then takes back.
 

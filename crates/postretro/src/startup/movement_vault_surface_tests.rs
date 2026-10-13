@@ -114,7 +114,7 @@ fn movement_vault_twins_and_the_dev_player_declare_one_vault_block_that_vaults()
     let expected = VaultParams {
         max_height: 1.6,
         swim_max_height: 0.9,
-        duration_ms: 420.0,
+        duration_ms: 800.0,
         from: VaultEntry {
             air: Some(VaultTrigger::Auto),
             ground: None,
@@ -157,11 +157,11 @@ fn the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick() {
     assert_eq!(
         view_feel.vault,
         Some(postretro_foundation::VaultViewParams {
-            pitch: -6.0,
+            pitch: -38.5,
             roll: 0.0,
-            fov: 0.0,
-            ease_in: 0.15,
-            ease_out: 0.2,
+            fov: -30.0,
+            ease_in: 0.33,
+            ease_out: 0.33,
         })
     );
     assert!(

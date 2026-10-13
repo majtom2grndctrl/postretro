@@ -107,13 +107,14 @@ The device limit is reachable, but only at the edge of the content range.
   sentence's SH counterpart.
 - `plans/large-map-spatial-residency.md` outcome: "Map scale is bounded by disk and residency
   budget rather than a whole-level GPU upload." A build check on whole-level SH size would
-  contradict it; a check per camera cell's mandatory set does not.
+  contradict it. This brief adds no build check (§Reshape).
 - `plans/large-map-spatial-residency.md` §Residency budget tiers, owner decisions 2026-09-28:
   "No pop-in on interior maps, including large arenas. A tier is valid for a map only when every
   camera cell's mandatory set fits it, so a miss fallback cannot stand in for residency." Still
   open for the owner there: "Whether a tier below mandatory warns, clamps, or stays silent."
-  Deferral as the answer for a map that fits the device would contradict the first; deferral past
-  a true device limit is the second question.
+  Refusal as the answer for a map that fits the device would contradict the first, which
+  whole-level geometry prevents; refusal past a true device limit answers the second for this
+  brief: warn once and fail the cluster, never the session.
 - Lightmap parity is partial. Lightmap layers are a fixed 2048², so 256 layers are a real
   capacity. SH dense layer size follows the engine's load-time choice.
 - `boot_sequence.md` §1 Settling: 10 s timeout, one warning naming unsettled counts, reveal
@@ -203,7 +204,6 @@ Rounds 2–4 below argued designs the reshape cut (parking, per-family wake, yie
 
 - A sparse family's device limit is its tightest buffer, not the entry or tile pool alone. Each replacement validates the tile pool (tiles ÷ 2 words), the entry pool (entries words) and the compaction table (3 × affinity rows + entries words) against the 2 GiB − 8 binding; the compaction table binds first on entries. A clamp or build check that caps entries at binding ÷ 4 still fails (`StreamingIndirectCompose::new`, direct sparse replacement, `validate_storage_buffer_size`).
 - `GpuCapacity` from install splits cleanly at two growth seams. Device-limit: `grown_for_slots` (layers) and `validate_storage_buffer_size` inside a sparse replacement. Contract, still fatal: missing device handles, lost id-35 or compose views during growth, no id-35 base, unsupported format, upload misalignment after commit, and the post-growth checks "streamed indirect sparse pool needs growth", "streamed indirect compaction metadata needs growth" and "streamed direct sparse row exceeds its GPU pool capacity". Those last three fire only when growth undersized a pool; classing them as device-limit would turn a growth bug into silent deferral.
-- The per-cell build check can run only after the ClusterDirectory stage: id 51 is baked after the SH bake, and the cell→cluster map, pins and directory exist from ClusterDirectory on.
 
 ## Premise review notes (round 2)
 

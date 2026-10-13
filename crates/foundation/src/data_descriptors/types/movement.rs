@@ -367,8 +367,11 @@ pub struct SwimParams {
     /// clear.
     pub exit_depth: f32,
     /// Upward velocity a jump from the surface sets, metres/sec. Finite and
-    /// > 0: a zero jump could never clear `exit_depth`.
-    pub fluid_jump_velocity: f32,
+    /// > 0 when present: a zero jump could never clear `exit_depth`. Absent ⇒
+    /// no fluid jump: jump at the surface only treads, so a pawn leaves water
+    /// by wading out or, with a vault block, by mantling.
+    #[serde(default)]
+    pub fluid_jump_velocity: Option<f32>,
 }
 
 impl SwimParams {
@@ -402,7 +405,9 @@ impl SwimParams {
                 ),
             });
         }
-        validate_positive_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
+        if let Some(velocity) = self.fluid_jump_velocity {
+            validate_positive_finite(velocity, "movement.swim.fluidJumpVelocity")?;
+        }
         Ok(self)
     }
 }
@@ -679,7 +684,7 @@ mod tests {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: Some(6.5),
         }
     }
 
@@ -710,7 +715,7 @@ mod tests {
     #[test]
     fn swim_validation_rejects_zero_fluid_jump_velocity_naming_the_field() {
         let reason = rejection_reason(SwimParams {
-            fluid_jump_velocity: 0.0,
+            fluid_jump_velocity: Some(0.0),
             ..swim()
         });
         assert!(

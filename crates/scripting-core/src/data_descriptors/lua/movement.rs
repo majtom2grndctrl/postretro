@@ -435,15 +435,16 @@ pub fn slide_params_from_lua(table: &Table) -> Result<SlideParams, DescriptorErr
     })
 }
 
-/// Mirror of [`swim_params_from_js`] for Luau tables. All six fields are
-/// required when `movement.swim` is present; errors are worded identically.
+/// Mirror of [`swim_params_from_js`] for Luau tables. Every field but
+/// `fluidJumpVelocity` is required when `movement.swim` is present; errors are
+/// worded identically.
 pub fn swim_params_from_lua(table: &Table) -> Result<SwimParams, DescriptorError> {
     swim_params_from_fields(|field| {
         let raw: LuaValue = table.get(field).map_err(lua_err)?;
         match raw {
-            LuaValue::Nil => Err(swim_field_missing(field)),
-            LuaValue::Integer(i) => Ok(i as f32),
-            LuaValue::Number(f) => Ok(f as f32),
+            LuaValue::Nil => Ok(None),
+            LuaValue::Integer(i) => Ok(Some(i as f32)),
+            LuaValue::Number(f) => Ok(Some(f as f32)),
             _ => Err(swim_field_not_a_number(field)),
         }
     })

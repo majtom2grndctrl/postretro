@@ -945,3 +945,332 @@ fn a_vault_onto_a_mover_lands_on_it_still_or_rising_and_aborts_if_it_despawns() 
         "a despawned mover aborts"
     );
 }
+
+// --- Mantling out of fluid ---------------------------------------------------
+
+use super::environment_tests::box_leaf;
+use postretro_collision::{EnvironmentVolume, EnvironmentVolumes};
+use postretro_foundation::SwimParams;
+
+/// The pool's surface; its wall faces -X at `RISER_X` and rises to a deck.
+const SURFACE_Y: f32 = 0.0;
+const POOL_FLOOR_Y: f32 = -4.0;
+const EYE: f32 = 0.5;
+
+fn swim_params(fluid_jump_velocity: Option<f32>) -> SwimParams {
+    SwimParams {
+        speed: 4.5,
+        accel: 6.0,
+        sink_speed: 0.0,
+        enter_depth: 0.5,
+        // Low, so a swimmer treading with its eye out stays in swim.
+        exit_depth: 0.2,
+        fluid_jump_velocity,
+    }
+}
+
+fn swim_vault_descriptor(from: VaultEntry, fluid_jump: Option<f32>) -> PlayerMovementDescriptor {
+    let mut desc = vault_descriptor(from);
+    desc.swim = Some(swim_params(fluid_jump));
+    desc
+}
+
+/// The pool floor, its wall rising to a deck at `deck_y`, and the deck.
+fn pool_world(deck_y: f32) -> CollisionWorld {
+    let mut points = Vec::new();
+    let mut tris = Vec::new();
+    let (z0, z1) = (-50.0, 50.0);
+    quad(
+        &mut points,
+        &mut tris,
+        [
+            Vec3::new(-50.0, POOL_FLOOR_Y, z0),
+            Vec3::new(RISER_X, POOL_FLOOR_Y, z0),
+            Vec3::new(RISER_X, POOL_FLOOR_Y, z1),
+            Vec3::new(-50.0, POOL_FLOOR_Y, z1),
+        ],
+        Vec3::Y,
+    );
+    quad(
+        &mut points,
+        &mut tris,
+        [
+            Vec3::new(RISER_X, POOL_FLOOR_Y, z0),
+            Vec3::new(RISER_X, deck_y, z0),
+            Vec3::new(RISER_X, deck_y, z1),
+            Vec3::new(RISER_X, POOL_FLOOR_Y, z1),
+        ],
+        Vec3::NEG_X,
+    );
+    quad(
+        &mut points,
+        &mut tris,
+        [
+            Vec3::new(RISER_X, deck_y, z0),
+            Vec3::new(60.0, deck_y, z0),
+            Vec3::new(60.0, deck_y, z1),
+            Vec3::new(RISER_X, deck_y, z1),
+        ],
+        Vec3::Y,
+    );
+    CollisionWorld::from_triangles_for_test(points, tris)
+}
+
+fn pool_water() -> EnvironmentVolumes {
+    EnvironmentVolumes::build(vec![EnvironmentVolume {
+        source_entity: 1,
+        priority: 0,
+        gravity: None,
+        push: None,
+        fluid: Some(0),
+        brushes: vec![box_leaf(
+            Vec3::new(-50.0, POOL_FLOOR_Y, -50.0),
+            Vec3::new(RISER_X, SURFACE_Y, 50.0),
+        )],
+    }])
+}
+
+fn step_in(
+    component: &mut PlayerMovementComponent,
+    world: &CollisionWorld,
+    volumes: &EnvironmentVolumes,
+    input: &MovementInput,
+    position: Vec3,
+) -> (Vec3, MovementEvents) {
+    let view = EnvironmentView::new(-20.0, volumes, &[2.0]);
+    let (position, events, _) = tick_with_immersion(component, input, world, view, DT, position);
+    (position, events)
+}
+
+/// A swimmer at the wall with its eye `eye_out` above the surface (negative:
+/// under it), capsule surface `gap` short of the wall.
+fn swimmer_at_wall(
+    desc: &PlayerMovementDescriptor,
+    eye_out: f32,
+) -> (PlayerMovementComponent, Vec3) {
+    let mut component = PlayerMovementComponent::from_descriptor(desc);
+    component.movement_state = MovementState::Swim { fluid: 0 };
+    component.coyote_timer_ms = 1000.0;
+    let center_y = SURFACE_Y + eye_out - EYE;
+    (component, Vec3::new(RISER_X - RADIUS - 0.05, center_y, 0.0))
+}
+
+#[test]
+fn a_swimmer_mantles_out_and_swim_never_recaptures_the_rise() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let world = pool_world(SURFACE_Y + 0.5);
+    let water = pool_water();
+    let (mut component, mut position) = swimmer_at_wall(&desc, 0.05);
+    let mut edges = Vec::new();
+    let mut entered = false;
+    for _ in 0..60 {
+        let (next, events) = step_in(&mut component, &world, &water, &forward(), position);
+        edges.extend(events.state_edges.iter().map(|edge| (edge.from, edge.to)));
+        position = next;
+        if is_vaulting(&component) {
+            entered = true;
+            assert!(component.swim_reentry_latched || feet(position) > SURFACE_Y);
+        }
+        if entered && !is_vaulting(&component) {
+            break;
+        }
+    }
+    assert_eq!(
+        edges,
+        [
+            (MovementStateKind::Swim, MovementStateKind::Vault),
+            (MovementStateKind::Vault, MovementStateKind::Normal),
+        ],
+        "one mantle out, no swim edge during the rise"
+    );
+    assert!(component.is_grounded(), "the pawn stands on the deck");
+    assert!(position.x > RISER_X);
+    assert!(
+        !component.swim_reentry_latched,
+        "the latch clears once the pawn is dry"
+    );
+}
+
+#[test]
+fn fluid_reach_is_measured_from_the_surface_not_the_feet() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let water = pool_water();
+    // Shallow and deep: the feet sit 0.65 m and 1.65 m below the surface.
+    for eye_out in [0.05, 0.05 + 1.0] {
+        let shallow = eye_out < 0.5;
+        let feet_depth = if shallow { 0.65 } else { 1.65 };
+        let (_, start) = swimmer_at_wall(&desc, 0.05);
+        let center = Vec3::new(start.x, SURFACE_Y - feet_depth + REACH, 0.0);
+        for (edge_above_surface, vaults) in [(0.85, true), (0.95, false)] {
+            let world = pool_world(SURFACE_Y + edge_above_surface);
+            let (mut component, _) = swimmer_at_wall(&desc, 0.05);
+            step_in(&mut component, &world, &water, &forward(), center);
+            assert_eq!(
+                is_vaulting(&component),
+                vaults,
+                "feet {feet_depth} m under, edge {edge_above_surface} m over the surface"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_edge_out_of_land_reach_is_in_fluid_reach_from_deep_feet() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let water = pool_water();
+    // Feet 1.65 m under the surface: an edge 1.8 m over the feet is 0.15 m over
+    // the surface, within swimMaxHeight 0.9.
+    let feet_y = SURFACE_Y - 1.65;
+    let world = pool_world(feet_y + 1.8);
+    let (mut component, start) = swimmer_at_wall(&desc, 0.05);
+    let center = Vec3::new(start.x, feet_y + REACH, 0.0);
+    step_in(&mut component, &world, &water, &forward(), center);
+    assert!(
+        is_vaulting(&component),
+        "the mantle reaches it from the water"
+    );
+
+    // The same 1.8 m over the feet on land is past maxHeight 1.6.
+    let land = ledge_world(1.8, None);
+    let (mut component, position) = airborne_at_riser(&desc, 0.0, 0.05, 0.0);
+    step(&mut component, &land, &forward(), position);
+    assert!(
+        !is_vaulting(&component),
+        "a land ledge 1.8 m over the feet refuses"
+    );
+}
+
+#[test]
+fn out_of_reach_or_without_swim_entry_jump_is_the_fluid_jump() {
+    // The dev fluid jump: strong enough to clear the water from a treading
+    // depth, so the seam lets it fire.
+    const FLUID_JUMP: f32 = 9.35;
+    let water = pool_water();
+    let jump = jump_forward();
+    for (label, desc, deck) in [
+        (
+            "edge past swimMaxHeight",
+            swim_vault_descriptor(VaultEntry::default(), Some(FLUID_JUMP)),
+            SURFACE_Y + 1.0,
+        ),
+        (
+            "no swim context",
+            swim_vault_descriptor(
+                VaultEntry {
+                    swim: None,
+                    ..VaultEntry::default()
+                },
+                Some(FLUID_JUMP),
+            ),
+            SURFACE_Y + 0.5,
+        ),
+    ] {
+        let world = pool_world(deck);
+        let (mut component, position) = swimmer_at_wall(&desc, 0.05);
+        let (_, events) = step_in(&mut component, &world, &water, &jump, position);
+        assert!(!is_vaulting(&component), "{label}: no mantle");
+        assert!(events.jumped, "{label}: the fluid jump fires");
+        assert_eq!(component.velocity.y, FLUID_JUMP, "{label}");
+    }
+
+    // Eye under the surface: no mantle at a reachable edge.
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let world = pool_world(SURFACE_Y + 0.5);
+    let (mut component, position) = swimmer_at_wall(&desc, -0.05);
+    step_in(&mut component, &world, &water, &forward(), position);
+    assert!(
+        !is_vaulting(&component),
+        "an eye under the fluid never mantles"
+    );
+}
+
+#[test]
+fn swim_jump_treads_on_a_push_and_mantles_on_a_jump() {
+    let desc = swim_vault_descriptor(
+        VaultEntry {
+            swim: Some(VaultTrigger::Jump),
+            ..VaultEntry::default()
+        },
+        Some(6.5),
+    );
+    let world = pool_world(SURFACE_Y + 0.5);
+    let water = pool_water();
+    let (mut component, position) = swimmer_at_wall(&desc, 0.05);
+    step_in(&mut component, &world, &water, &forward(), position);
+    assert_eq!(
+        component.movement_state.kind(),
+        MovementStateKind::Swim,
+        "a push treads"
+    );
+    let (mut component, position) = swimmer_at_wall(&desc, 0.05);
+    let (_, events) = step_in(&mut component, &world, &water, &jump_forward(), position);
+    assert!(
+        is_vaulting(&component),
+        "a jump at a reachable edge mantles"
+    );
+    assert!(!events.jumped, "the mantle wins over the fluid jump");
+}
+
+#[test]
+fn without_a_fluid_jump_jump_treads_and_never_leaves_the_water() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), None);
+    let world = pool_world(SURFACE_Y + 0.5);
+    let water = pool_water();
+    // Open water, far from the wall.
+    let (mut component, mut position) = swimmer_at_wall(&desc, 0.05);
+    position.x = -20.0;
+    let jump = MovementInput {
+        jump_pressed: true,
+        ..idle_input()
+    };
+    for _ in 0..120 {
+        let (next, events) = step_in(&mut component, &world, &water, &jump, position);
+        position = next;
+        assert!(!events.jumped, "no fluid jump fires");
+        assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+    }
+    assert!(feet(position) < SURFACE_Y, "the pawn is still in the water");
+}
+
+#[test]
+fn swim_entry_wins_over_a_land_vault_on_the_same_tick() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let water = pool_water();
+    // Airborne in `Normal`, already deep enough to swim, at a wall whose top is
+    // within land reach.
+    let feet_y = SURFACE_Y - 1.4;
+    let world = pool_world(feet_y + 1.2);
+    let (mut component, position) = airborne_at_riser(&desc, feet_y, 0.05, 0.0);
+    let (_, events) = step_in(&mut component, &world, &water, &forward(), position);
+    assert_eq!(
+        events.state_edges.first().map(|edge| (edge.from, edge.to)),
+        Some((MovementStateKind::Normal, MovementStateKind::Swim)),
+        "the swim entry takes the tick"
+    );
+    assert!(!is_vaulting(&component));
+}
+
+#[test]
+fn a_ground_only_from_forbids_swim_entry() {
+    let desc = swim_vault_descriptor(
+        VaultEntry {
+            air: None,
+            ground: Some(VaultTrigger::Jump),
+            swim: None,
+        },
+        None,
+    );
+    let world = pool_world(SURFACE_Y + 0.5);
+    let water = pool_water();
+    for input in [forward(), jump_forward()] {
+        let (mut component, position) = swimmer_at_wall(&desc, 0.05);
+        take_probe_casts();
+        step_in(&mut component, &world, &water, &input, position);
+        assert!(
+            !is_vaulting(&component),
+            "swim entry is forbidden (jump {})",
+            input.jump_pressed
+        );
+        assert_eq!(take_probe_casts(), 0);
+    }
+}

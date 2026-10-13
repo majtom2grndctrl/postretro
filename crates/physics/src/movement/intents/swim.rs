@@ -83,9 +83,7 @@ pub(crate) fn swim_intent(
     let speed = swim.speed;
     let accel = swim.accel;
     let sink_speed = swim.sink_speed;
-    let fluid_jump_velocity = swim.fluid_jump_velocity;
-
-    if fluid_jump {
+    if let Some(fluid_jump_velocity) = swim.fluid_jump_velocity.filter(|_| fluid_jump) {
         component.velocity.y = fluid_jump_velocity;
         component.push_velocity.y = 0.0;
         component.knockback_velocity.y = 0.0;

@@ -481,17 +481,17 @@ pub fn slide_params_from_js<'js>(obj: &Object<'js>) -> Result<SlideParams, Descr
 pub fn swim_params_from_js<'js>(obj: &Object<'js>) -> Result<SwimParams, DescriptorError> {
     swim_params_from_fields(|field| {
         if !obj.contains_key(field).map_err(js_err)? {
-            return Err(swim_field_missing(field));
+            return Ok(None);
         }
         let raw: JsValue = obj.get(field).map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
-            return Err(swim_field_missing(field));
+            return Ok(None);
         }
         if let Some(i) = raw.as_int() {
-            return Ok(i as f32);
+            return Ok(Some(i as f32));
         }
         raw.as_float()
-            .map(|f| f as f32)
+            .map(|f| Some(f as f32))
             .ok_or_else(|| swim_field_not_a_number(field))
     })
 }

@@ -68,6 +68,11 @@ pub(super) fn vault_entry(
         component.jump_buffer_timer_ms = 0.0;
         component.jump_spent = true;
     }
+    // Leaving water by a mantle latches swim off, as a fluid jump does, so swim
+    // cannot re-capture the rise before the pawn is clear of the water.
+    if swimming {
+        component.swim_reentry_latched = true;
+    }
     Some(MovementState::Vault {
         elapsed_ms: 0.0,
         target,

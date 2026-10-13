@@ -30,7 +30,7 @@ Today both render identically. When this is done, fluid motion moves in whole-te
   - Particles are unhashed presentation (`entity_model.md` §8), so they follow the visible current, the authored `push`. A force-0 river still carries foam and smoke.
   - It is a modifier on the push field, resolved with it and never on its own. It still amends two contracts at promotion: the "further regional field" rule in `build_pipeline.md` §Custom FGD and `entity_model.md` §7, and push's meaning in `movement.md` §6.
   - It changes gameplay, so it enters the level content digest with `push` (`networking.md` §Current contract). No cosmetic value enters the digest.
-  - It ships in the environment-volumes section, so the section version bumps. Pre-stable maps recompile.
+  - It ships in a new optional section beside environment volumes, written only when some push volume authors a force other than 1. This follows the `LightTags` sibling-section precedent. The environment-volumes section and its version are unchanged, so every existing map loads as it is, and no map needs a rebuild until it authors `force`.
 - **Non-goal: reduce motion does not still the water.** Reduce motion governs view feel, shake and UI tweens (`player_options.md` §5), not world animation. Animated lights do not follow it either.
 - **Reflections are a separate brief.** `fluid-ssr-reflections` builds on the cell grid this brief introduces.
 
@@ -63,7 +63,13 @@ Today both render identically. When this is done, fluid motion moves in whole-te
   - host movement, client prediction and reconcile replay agree under force 0.5;
   - a negative, non-numeric or non-finite value fails the build with a message naming the entity.
 - [ ] Two copies of a map that differ only in `force` produce different content digests.
-- [ ] Environment-volumes section: push records with and without an authored force round-trip; a negative or non-finite force is rejected; the previous section version is rejected by name.
+- [ ] Push-force section:
+  - a map that authors no `force` emits no force section and loads with every force at 1;
+  - a map built before this change loads unchanged;
+  - a map with one authored force round-trips, and its other records read 1;
+  - an entry count that differs from the environment-volume record count fails load;
+  - a negative or non-finite force fails load;
+  - the environment-volumes section's bytes are identical with and without the change for a map that authors no force.
 - [ ] A per-frame opacity change leaves the installed drift intact.
 - [ ] The fluid/mover Post Retro parity test passes with its comparison unchanged.
 - [ ] Pipeline budget tests pass; the change adds no binding.
@@ -86,11 +92,11 @@ Today both render identically. When this is done, fluid motion moves in whole-te
   - Optional refinement: split fluid surface faces along push-brush edges at compile time, so mappers need not align fluid brushes with push brushes. Not required for acceptance.
 - **Force key.**
   - Compiler: `resolve_environment_volume` and `parse_push` (level-compiler parse/environment_volumes.rs).
-  - Format: `EnvironmentVolumeRecord` and `ENVIRONMENT_VOLUMES_VERSION` (level-format environment_volumes.rs).
+  - Format: a new `SectionId` after `EnvironmentVolumes`, shaped like `LightTags` (`light_tags::LightTagsSection`, level-format section_registry.rs). The loader pairs it with the environment-volumes records the way `LightTags` pairs with AlphaLights.
   - Runtime: storing the effective push in `collision::EnvironmentVolume` lets every body consumer (physics movement, the weapon impact stage) read it unchanged. The renderer and particles read the authored push; check the particle path's current push source.
   - Digest: `runtime_movers.rs` hashes environment fields one by one, so add `force` beside `push`.
   - FGD: the `push_volume` class in `sdk/TrenchBroom/postretro.fgd`, plus the `docs/level_design.md` key table.
-  - Check whether the build cache needs a stage epoch bump for the section change.
+  - Check whether the build cache keys a stage on compiler code. If it does, keep the change from invalidating cached lighting for maps that author no force.
 - **Classic rival, rejected:** hand-drawn animation frames plus a scroll, as Doom and Quake animate liquids. The engine has no texture-animation system, every game would hand-draw frames, and ripples would repeat per tile.
 - **Strongest rival:** animate in texture space. A small pass writes each stepped frame at the texture's own resolution, and the scene samples it unchanged. Seam anti-aliasing and mips are then exact by construction. It loses because ripple rings would repeat on every texture tile.
 - **Fallback:** if the first slice shows cell borders smearing (the AA band blends with the source texel, not the neighbouring cell's), move shimmer and rings to texture space. Drift is already a whole-face scroll with no cell borders, so it stays as built.
@@ -98,13 +104,19 @@ Today both render identically. When this is done, fluid motion moves in whole-te
 - **Fixtures.** `maps/e24-environment-test.map` needs a still pool, a current pool, a two-brush pool with a partial push, a force-0 bending river, and water at scale 1 and 0.25 beside walls at matching scales. Add them if missing.
 
 ## Wire format
-Environment-volumes section, version 2. Each volume record gains `force` immediately after the push vector: one little-endian `f32`. It is written as 1.0 when the record has no push, and it must be finite and ≥ 0. Every other field and its order is unchanged from version 1. A version-1 section is rejected as unsupported.
+New optional push-force section, mirroring `LightTags`:
+- **Layout.** A `u16` LE version (1), then a `u32` LE entry count, then one `f32` LE per environment-volume record, in record order.
+- **Count.** The entry count must equal the environment-volume record count, or load fails.
+- **Values.** Records without a push carry 1.0. Every value must be finite and ≥ 0.
+- **Absence.** The section is omitted when every force is 1, and an absent section means every force is 1.
+
+The environment-volumes section is unchanged.
 
 ## Boundary inventory
 
 | Name | Rust | PRL | FGD KVP |
 |---|---|---|---|
-| Current force | `EnvironmentVolumeRecord::force: f32` | environment-volumes v2, after the push vector | `push_volume` key `force`, float ≥ 0, default 1 |
+| Current force | one `f32` per environment-volume record | new optional section after `EnvironmentVolumes`; absent means all 1 | `push_volume` key `force`, float ≥ 0, default 1 |
 
 ## Open questions
 - Shimmer step rate within the 3 Hz ceiling, ring density and lifetime, and shimmer amplitude and fade distance — **delegated**: tune by eye at the first manual capture, and record the values in the plan of record.

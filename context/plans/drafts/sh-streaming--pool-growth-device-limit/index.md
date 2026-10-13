@@ -37,7 +37,9 @@ below the limits and the load-time install panic are other routes, outside this 
 - **Mandatory demand is never evicted to make room.** This keeps §4's tier contract and the pin
   guarantee in `plans/done/sh-probe-streaming--authored-hints`.
 - **Other drain errors stay fatal.** Malformed chunks, generation and identity violations, and
-  arithmetic overflow are broken contracts, not content scale.
+  arithmetic overflow are broken contracts, not content scale; the lightmap pool also treats its
+  contract class as fatal. Its decline after repeated rolled-back drains has no SH counterpart,
+  because a streamed SH level omits the whole-load bodies a decline would fall back to.
 - **Placement: renderer mechanism, app attribution.** The renderer owns limits, geometry, growth
   and refusal (Renderer owns GPU). The drain outcome tells the app which deferrals are
   device-limited, and the app uses that only to attribute misses.
@@ -100,12 +102,13 @@ below the limits and the load-time install panic are other routes, outside this 
   depends on this slice.
 
 ## Open questions
-- Some levels compile and load today but could reach a limit through mandatory demand alone:
-  a whole sparse family (ids 27/41/45) past the storage-binding limit, or a whole dense set
-  past 256 runtime layers. Should prl-build reject them with a named error, as it rejects SH
-  layer overflow? Recommended: yes, a build error naming the family and suggesting a coarser
-  probe spacing or a split map; deferral then stays a fragmentation backstop. The alternative
-  is deferral alone. This sets what valid content means for modders — owner: project owner —
+- Should prl-build reject a level that could reach a device limit through baked mandatory demand
+  alone? Recommended: yes. The check is per camera cell: its mandatory SH set (id-51 cells within
+  the baked maximum L, plus pins and owner closure) must fit each family's limit. Whole-level
+  size never rejects, since `large-map-spatial-residency` bounds map scale "by disk and
+  residency budget". The build error names the cell and family. Deferral then stays a backstop
+  for fragmentation and for drawn demand outside the baked set. The alternative is deferral
+  alone. This sets what valid content means for modders — owner: project owner —
   **blocks build**
 - Fragmentation headroom factor — **delegated**: the smallest factor at which the zero-share
   fixture and a churn walk are never refused.

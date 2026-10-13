@@ -97,6 +97,9 @@ The device limit is reachable, but only at the edge of the content range.
 - `rendering_pipeline.md` §4, lightmap: "A pair that needs growth while a generation retires,
   or past the device's array-layer limit, is deferred and counts as a miss." This brief is that
   sentence's SH counterpart.
+- `plans/large-map-spatial-residency.md` outcome: "Map scale is bounded by disk and residency
+  budget rather than a whole-level GPU upload." A build check on whole-level SH size would
+  contradict it; a check per camera cell's mandatory set does not.
 - `plans/large-map-spatial-residency.md` §Residency budget tiers, owner decisions 2026-09-28:
   "No pop-in on interior maps, including large arenas. A tier is valid for a map only when every
   camera cell's mandatory set fits it, so a miss fallback cannot stand in for residency." Still
@@ -161,5 +164,8 @@ The device limit is reachable, but only at the edge of the content range.
   past the binding. The second is a property of the compiled level and can be rejected at build,
   like `LayerOverflow`; that is the brief's blocks-build owner question. Fragmentation is a
   runtime state, so it still needs a non-fatal backstop.
+- **Compact dense slots at the limit before refusing**, as the lightmap pool repacks before it
+  grows. Costlier for SH: every moved node's probe-indirection words must be rewritten. It only
+  helps fragmentation past the headroom, which is speculative.
 - **Drop the refused cluster and re-read it later.** This releases the permit, but it churns I/O
   every frame while the pool stays full. Holding the payload wins.

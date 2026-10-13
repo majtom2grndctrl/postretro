@@ -366,8 +366,8 @@ pub struct SwimParams {
     /// immersion and leave the fluid-jump re-entry latch one that can never
     /// clear.
     pub exit_depth: f32,
-    /// Upward velocity a jump from the surface sets, metres/sec. Finite and
-    /// > 0 when present: a zero jump could never clear `exit_depth`. Absent ⇒
+    /// Upward velocity a jump from the surface sets, metres/sec. When present,
+    /// finite and `> 0`: a zero jump could never clear `exit_depth`. Absent ⇒
     /// no fluid jump: jump at the surface only treads, so a pawn leaves water
     /// by wading out or, with a vault block, by mantling.
     #[serde(default)]

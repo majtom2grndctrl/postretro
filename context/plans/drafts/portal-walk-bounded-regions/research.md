@@ -59,6 +59,7 @@ of the real traversal plus alternatives), run on stress-warren-hallway-inspectio
   It changed 927 poses (hybrid at 2k) and 1,341 (hybrid at 500), because where the
   budget cuts off depends on order.
 - Q=64 was looser than Q=256 and saved no steps.
+- Lowered cap: the rect walk's worst sweep pose took 1,922 steps, so a 5,000-step cap leaves about 2.6× headroom.
 - The parent-region eye rule fired on 80% of poses, because large floor portals cross
   the camera plane; hence the octagon's 27× worst case. Clip-then-project avoids it.
 - Full per-region tables: `prototype/results/alt_summary.txt`.
@@ -164,8 +165,7 @@ the player's FOV (≤130°) and window aspect. The exact walk's result is geomet
 the cube faces cover any runtime frustum. The rect's over-inclusion depends on the
 projection: the bounding rect of several openings, and the snap cell's world size,
 change with FOV, aspect and view direction. The one-hop dilation hides some of the
-difference and guarantees none of it. This brief owns the gap: it measures it at runtime
-projections and widens the bake's projections itself if the gap is material.
+difference and guarantees none of it. The brief gates the gap rather than widening the bake; see §Bake-gap ruling.
 
 ## Direction review notes (validate-plan, 2026-09-29)
 
@@ -199,6 +199,7 @@ From `/review-brief` (rows lens, 2026-09-29). Acceptance rows cite these ids.
 | O12 | Draw and fog from one walk | Both sets come from the walk's final state, after the worklist drains. | The draw set is exactly the drawable part of fog reach. |
 | O13 | Cap trip on a Settling frame | The presented pose's walk trips the cap. Settling demand marks every drawn block and cluster Visible on any path, and the settle check reads that demand in the same frame. The pose is fixed, so every Settling frame trips again. In Running, the same trip holds lightmap blocks without reading them, while SH still demands every drawn cluster. | The settle set becomes the fallback's frustum draw set for both resources and never shrinks. Reveal waits on it until settled or timed out. A lowered cap trips sooner on content the sweep never measured. |
 | O15 | Over-included cell flickers | A cell enters the rect set on frame N, leaves on N+1, and returns on N+2. Lightmap demand drops it on N+1, and that frame's drain frees its blocks. SH keeps its clusters through hysteresis. | Lightmap re-reads the blocks on N+2. A re-read whose pair needs growth while a generation retires is deferred and counts a miss. The cost is reported, not bounded. |
+| O14 | Pre-change vs rect residency runs | The pre-change build reads the base commit's bake. The rect build reads a bake made after the epoch bump; the epoch is hashed only into the id-51 cache key, and the runtime never checks a .prl's walk epoch. The harness preloads the spawn with no drawn blocks, unlike Settling. | Each run names the bake it read; a rect run on a pre-bump bake is invalid. Spawn frames are reported apart from the gate. |
 | O16 | Reveal frame vs last Settling frame | The last Settling frame settles the held view. The reveal frame projects at the same extents but ticks once, so the pose can move, and the snapped rect set can change with it. | Blocks the reveal frame draws outside the settle set are misses counted on that frame. For a cell the exact walk reaches at the settled pose, the count is zero. Over-included blocks may miss without a visible pop. |
 
 Premise pins (premise lens):
@@ -246,5 +247,19 @@ Premise pins (premise lens):
   - SH: drawn clusters get `TargetClass::Visible`, which pressure never trims; overflow shows as `non_evictable_overshoot_bytes`. SH reach (`sh_streaming::reach`) reads only the id-51 camera set, so over-included clusters count once per episode in `ShMissBuckets::outside_reach`.
   - Both feed the settle set. Nothing treats an outside cell as an error.
 - Bake cost: the Cell Residency Set stage took 6.63 s on the hallway and 0.26 s on campaign-test (`done/spatial-residency--lightmap-cell-blocks/plan.md`, rebake of 2026-09-29). Extra projections scale it linearly.
-- Exact-walk baseline at 100° 16:9, L 16 m, cap 15 (`done/spatial-residency--lightmap-cell-blocks/findings.md`): hallway random 0 growths, peak 15 layers; tour 1 growth, peak 16; 0 drawn-missing on both. The materiality runs re-measure the exact walk at each projection, not just reuse these.
+- Exact-walk baseline at 100° 16:9, L 16 m, cap 15 (`done/spatial-residency--lightmap-cell-blocks/findings.md`): hallway random 0 growths, peak 15 layers; tour 1 growth, peak 16; 0 drawn-missing on both. The residency-gate runs re-measure the pre-change build at each projection and pitch, not just reuse these.
 - `lightmap-oversize-cells-and-faces` landed; movement-feel's multi-block walk: 73 blocks, peak 6 layers, 0 misses.
+
+## Bake-gap ruling (2026-10-13, review-brief round 2)
+
+- Widening the bake's projections was withdrawn. It enlarges the never-refused mandatory set M(c, L). At cap 15, the lead sweep in `done/spatial-residency--lightmap-cell-blocks/findings.md` shows a larger mandatory set raising growths (random 0→1, tour 1→5) and peak layers (16→20). Drawn-only demand barely moves growth: at L = 0 the tour drew thousands of outside-set block-frames with 0 growths. "Widen until within the line" could not converge.
+- The walk measurement's misses race wall-clock disk reads (`walk_measurement` frames sleep to a deadline), and its drawn-not-resident count includes occluded, over-included blocks. With reads completed before the frame draws, any remaining non-resident draw is a pool deferral: the cost the gate exists to catch.
+- The harness looks only at pitch 0; the shafts' vertical over-inclusion needs ±45°.
+- The exact walk becomes a test-only oracle the engine harness cannot call, so the comparison build is the base commit on its own bake. It keeps the old infinite-plane bypass, so its numbers are looser than the tightened oracle's.
+
+## SH pool device limit (traced 2026-10-13)
+
+- `AtlasShape::grown_for_slots` doubles layers and returns `GpuCapacity` when the doubled count exceeds `max_texture_array_layers`, even when the minimum needed fits. `grow_sparse` doubles the same way, and `validate_storage_buffer_size` errors rather than clamps.
+- Only `GpuRetirementPressure` is retried. Any other drain error reaches the frame loop, which sets `exit_result` and exits, in Settling and Running alike.
+- The lightmap pool defers at its device limit instead (`placement.rs`, `device_limited`).
+- Superset demand moves maps toward the SH limit, so `sh-streaming--pool-growth-device-limit` lands first.

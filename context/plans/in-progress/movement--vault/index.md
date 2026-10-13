@@ -50,7 +50,7 @@ movement: {
 }
 // Reactions: "vault_started", "vault_ended"
 ```
-`maxHeight`, `swimMaxHeight` and `durationMs` are required in a present block. A present `from` replaces the default whole. The Luau mirror ships with every field.
+`maxHeight`, `swimMaxHeight` and `durationMs` are required in a present block. A present `from` replaces the default whole. The Luau descriptor surface mirrors every field, proven by a TS/Luau fixture pair.
 
 ## Acceptance
 ### Automated
@@ -92,7 +92,7 @@ movement: {
 
 **Descriptor, lifecycle and netcode**
 - [ ] An invalid `vault` field drops the block with a warning naming it; the rest loads.
-- [ ] The Scripting surface example loads from `content/dev/scripts/player.ts` and its Luau twin and vaults in a test world.
+- [ ] The Scripting surface example loads from `content/dev/scripts/player.ts`, and a TS/Luau twin fixture pair `content/dev/scripts/movement-vault.{ts,luau}` declares the same `vault` block in both runtimes. All three load and vault in a test world.
 - [ ] Hot reload mid-vault leaves the pawn in `Normal`.
 - [ ] `Vault` round-trips the wire mirror; a non-finite or out-of-contract payload is rejected.
 - [ ] Predict/reconcile: a static-ledge vault with the ack on the entry tick corrects by zero. A moving-mover vault stays within the vault tolerance.

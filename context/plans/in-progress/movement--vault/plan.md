@@ -9,7 +9,7 @@ The claim was pushed to `main` as `27ca6a60`. Every source symbol cited by Decis
 
 ## Blocked on the owner
 
-Two items stop the plan before the owner's skim. Once both are resolved, status becomes `proposed` and the skim proceeds as normal for a resumable plan.
+Two items stopped the plan before the owner's skim; B2 is resolved. Once B1 is resolved, status becomes `proposed` and the skim proceeds as normal for a resumable plan.
 
 ### B1. False Decision premise: the `from` mapping onto the composition draft
 
@@ -24,15 +24,9 @@ The flat `movement.vault.from` this brief builds does not depend on the sentence
 1. **Drop the mapping sentence (recommended).** `from` stands as specified. The composition draft decides the migrated shape when it absorbs vault and swim; one plausible shape is `states.vault.from`.
 2. **Amend the draft now.** Add `states.swim` and per-state `vault` entry children to the composition draft, and record why vault entry is a per-state child while vault itself is a state.
 
-### B2. Acceptance row needs restatement: "its Luau twin"
+### B2. Resolved: the "Luau twin" acceptance row is restated
 
-The row reads: "The Scripting surface example loads from `content/dev/scripts/player.ts` and its Luau twin and vaults in a test world." `player.ts` has no Luau twin. `content/dev`'s manifest is TS-only. The only movement TS/Luau twin is the standalone fixture pair `content/dev/scripts/fluids-swim.{ts,luau}`, which no mod or map loads. Its agreement test is `fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface` (`crates/postretro/src/startup/fluids_swim_surface_tests.rs:103`).
-
-Proposed wording:
-
-> The Scripting surface example loads from `content/dev/scripts/player.ts`, and a TS/Luau twin fixture pair `content/dev/scripts/movement-vault.{ts,luau}` declares the same `vault` block in both runtimes. All three load and vault in a test world.
-
-The fixture pair follows the `fluids-swim` precedent, including the test that pins the dev `player.ts` block equal to the twin's (`:176`). The alternative, a full `player.luau` mirror of `player.ts`, duplicates about 170 lines of unrelated tuning that nothing loads.
+`player.ts` has no Luau twin. The owner took the fixture-pair wording, which follows the `fluids-swim` precedent (`fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface`, plus the test pinning the dev `player.ts` block equal to the twin's). The brief's row D2 now reads it.
 
 ## Corrections
 
@@ -145,7 +139,7 @@ Physics rows run through `tick_with_immersion` on purpose-built triangle worlds 
 | W2 | A burst in progress at entry fires no further shot. A trigger held through the vault fires after exit without a re-press. | Burst weapon across entry on all three paths; Hold and Press triggers held through exit | achievable as stated |
 | W3 | A host-remote start stamped one tick before entry and delivered after it fires, matching the client's predicted shot. | Retain a start at E−1, hold delivery (live execution) past E, assert minted and matches client prediction | achievable as stated |
 | D1 | An invalid `vault` field drops the block with a warning naming it; the rest loads. | JS and Luau parser tests, one per field, with `test-log-capture` asserting the warning names the field | achievable as stated |
-| D2 | The Scripting surface example loads from `content/dev/scripts/player.ts` and its Luau twin and vaults in a test world. | — | **needs restatement** (B2) |
+| D2 | The Scripting surface example loads from `content/dev/scripts/player.ts`, and a TS/Luau twin fixture pair `content/dev/scripts/movement-vault.{ts,luau}` declares the same `vault` block in both runtimes. All three load and vault in a test world. | Fixture pair plus a surface-agreement test on the `fluids-swim` model; dev `player.ts` block pinned equal to the twin's; a test world vaults under each | achievable as stated |
 | D3 | Hot reload mid-vault leaves the pawn in `Normal`. | `refresh_plan` test with live `Vault` | achievable as stated |
 | D4 | `Vault` round-trips the wire mirror; a non-finite or out-of-contract payload is rejected. | Round-trip array, finiteness drift guard, contract rejections, unknown mover id at merge | achievable as stated |
 | D5 | Predict/reconcile: a static-ledge vault with the ack on the entry tick corrects by zero. A moving-mover vault stays within the vault tolerance. | `predict_reconcile_harness_vault.rs`: static window selected at the entry tick, `assert_no_correction`; rising-platform fixture, worst ≤ `DASH_CORRECTION_MAX_M` | achievable as stated |

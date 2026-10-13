@@ -88,7 +88,8 @@ conditioned link" and its manual loopback recipe in
    There should be no visible correction: no rubber-band at the lip and no
    snap on landing.
 2. On `vault_rising`, a small correction at exit is acceptable: the automated
-   harness bounds it at about 0.07 m. A visible teleport is not.
+   harness bounds it at about 0.07 m for a 320 ms vault (the dev player's
+   420 ms vault has not been measured). A visible teleport is not.
 3. Hold fire through a client-side vault on a static ledge. The client must
    not show a shot, muzzle flash or ammo tick that the host then takes back.
 

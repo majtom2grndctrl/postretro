@@ -22,7 +22,7 @@ The skinned-mesh render path, combat loop, navigation, statechart behavior, line
 
 The movement state machine, cross-cutting policies (momentum, input forgiveness), crouch, view feel, and slide have shipped. Design intent lives in `context/lib/movement.md`.
 
-- [ ] **movement--wall-run** — environment-probe state; consumes the momentum policy. Detail-on-open. Vault shipped the probe pattern first; generalize its vault-only seams here rather than copying them: riding the contact's mover (`carry_ground`, `VaultFrame`), early-end settle (`settle_broken_vault`), the dead-pawn bar (`vault_barred`) and entry layer folding. Wall-run also needs a per-tick wall-contact fact before the intent.
+- [ ] **movement--wall-run** — environment-probe state; consumes the momentum policy. Detail-on-open. Vault (in progress) sets the probe pattern first; generalize its vault-only seams here rather than copying them: riding the contact's mover (`carry_ground`, `VaultFrame`), early-end settle (`settle_broken_vault`), the dead-pawn bar (`vault_barred`) and entry layer folding. Wall-run also needs a per-tick wall-contact fact before the intent.
 - [ ] **movement--vault** — environment-probe state; parallelizable with wall-run once the momentum policy is fixed. Detail-on-open.
 - Grapple is explicitly deferred — constraint physics, renderer rope, and aiming make it its own future draft (the one place a scoped Rapier solver may earn a place; see `movement.md` §1).
 

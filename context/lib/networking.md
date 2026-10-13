@@ -971,8 +971,8 @@ the tuning epoch stays 11 and application protocol PRLB is unchanged. Anonymous 
 and their local impact intake never replicate.
 
 `WireMovementState::Vault` advances `WIRE_VERSION` to 31 and `SNAPSHOT_VERSION` to 20.
-Vault tuning in the movement descriptor advances the tuning epoch to 12. The application
-protocol remains PRLB.
+Vault tuning in the movement descriptor advances the tuning epoch to 12. Peers at 30 are refused at
+handshake. The application protocol remains PRLB.
 
 ## Current contract
 

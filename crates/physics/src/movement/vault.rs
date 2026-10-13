@@ -6,30 +6,56 @@ use glam::{Quat, Vec3};
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::MovementInput;
 use crate::movement::ledge_probe::{ReachBand, probe_ledge};
+use crate::movement::mover_carry::apply_mover_carry;
 use crate::movement::substrate::{step_up_limit, wish_dir_from_input};
 use postretro_collision::ResolvedEnvironment;
-use postretro_foundation::{MovementState, PlayerMovementComponent, VaultParams, VaultTrigger};
+use postretro_foundation::{
+    GroundRef, MovementState, PlayerMovementComponent, VaultParams, VaultTrigger,
+};
 
-/// Share of the vault spent rising; the rest moves forward over the lip. The
-/// pawn rises fully before it moves forward, along the path the probe cleared.
+/// Share of the vault spent rising, a feel constant: the rise takes the first
+/// 60% so the pawn clears the lip before it moves over it, along the path the
+/// probe cleared. The rest moves forward.
 const RISE_SHARE: f32 = 0.6;
+
+/// Least `y` of a ledge mover's up axis, in world space, at which a vault onto
+/// it is allowed: about 0.8° of tilt. The path splits rise from forward along
+/// the mover's own axes, but the probe cleared a world-vertical rise and a
+/// world-horizontal move, so on a tilted mover the path would leave the cleared
+/// corridor (a 10° roll passes it about 4 cm under the lip), and its local
+/// horizontal offset would no longer be the world one the wire contract checks.
+/// Yaw-only movers keep their up axis vertical and vault as static ledges do.
+const UPRIGHT_MIN_UP_Y: f32 = 0.9999;
 
 /// The vault state this tick's pre-intent stage enters, if any: an enabled
 /// context, a trigger that fires, horizontal wish, and a ledge the probe finds.
-/// A jump trigger consumes the jump buffer and spends the jump, as a jump would.
+/// Any entry clears the jump buffer, so a jump pressed before the vault never
+/// fires on its exit landing; a jump trigger also spends the jump, as a jump
+/// would. A pawn the caller barred (`vault_barred`: dead) never enters.
 ///
 /// Contexts: airborne or grounded `Normal` and `Dash` read `from.air` or
 /// `from.ground`; `Swim` reads `from.swim` once the tick eye is out of the
 /// fluid. Crouch and slide never vault. Land reach is measured above the feet,
-/// past the step-up limit; fluid reach above the fluid surface.
+/// past the step-up limit; fluid reach above the fluid surface. A ledge on a
+/// tilted mover is refused ([`UPRIGHT_MIN_UP_Y`]).
+///
+/// Called while `velocity` holds the base alone, the protected layers peeled.
+/// `entry_speed` measures what the pawn was really moving at: the horizontal
+/// speed of base plus knockback plus drift. Dispatch then empties those layers.
+/// The start offset is taken where mover carry (`carry_ground`) puts the pawn
+/// this tick, so the path starts where the pawn really is in the target's frame.
 pub(super) fn vault_entry(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     resolved: &ResolvedEnvironment,
     collision: &CombinedCollisionWorld<'_>,
     position: Vec3,
+    carry_ground: GroundRef,
     dt: f32,
 ) -> Option<MovementState> {
+    if component.vault_barred {
+        return None;
+    }
     let vault = component.vault.as_ref()?;
     let swimming = matches!(component.movement_state, MovementState::Swim { .. });
     let trigger = match component.movement_state {
@@ -55,17 +81,21 @@ pub(super) fn vault_entry(
     let feet_offset = component.capsule.half_height + component.capsule.radius;
     let feet_y = position.y - feet_offset;
     let band = reach_band(component, vault, swimming, resolved, feet_y);
-    let travel = component.velocity.dot(wish) * dt;
+    let moving = component.velocity + component.knockback_velocity + component.push_velocity;
+    let travel = moving.dot(wish) * dt;
     let ledge = probe_ledge(component, collision, position, wish, travel, band)?;
 
-    let entry_feet = position - Vec3::Y * feet_offset;
-    let entry_speed = Vec3::new(component.velocity.x, 0.0, component.velocity.z).length();
+    let entry_feet = apply_mover_carry(position, carry_ground, collision) - Vec3::Y * feet_offset;
+    let entry_speed = Vec3::new(moving.x, 0.0, moving.z).length();
     let frame = VaultFrame::resolve(ledge.mover, collision)?;
+    if !frame.is_upright() {
+        return None;
+    }
     let target = frame.to_local(ledge.target_feet);
     let start_offset = frame.to_local(entry_feet) - target;
 
+    component.jump_buffer_timer_ms = 0.0;
     if trigger == VaultTrigger::Jump {
-        component.jump_buffer_timer_ms = 0.0;
         component.jump_spent = true;
     }
     // Leaving water by a mantle latches swim off, as a fluid jump does, so swim
@@ -130,6 +160,11 @@ impl VaultFrame {
         }
     }
 
+    /// Whether the frame's up axis is vertical within [`UPRIGHT_MIN_UP_Y`].
+    fn is_upright(self) -> bool {
+        (self.rotation * Vec3::Y).y >= UPRIGHT_MIN_UP_Y
+    }
+
     fn to_local(self, world: Vec3) -> Vec3 {
         self.rotation.inverse() * (world - self.origin)
     }
@@ -140,6 +175,23 @@ impl VaultFrame {
 
     pub(super) fn rotate(self, local: Vec3) -> Vec3 {
         self.rotation * local
+    }
+}
+
+/// The path progress a path tick steered to, given `elapsed_ms` after that
+/// tick advanced it by `step_ms`. A step that crosses [`RISE_SHARE`] from below
+/// aims at the corner instead, full rise and no forward: a straight move from
+/// below the lip to past it would cut the corner into the riser, which a short
+/// `durationMs` makes likely and one at or under a tick makes certain. The
+/// vault intent calls this both to aim and, next tick, to judge the pawn
+/// against the point it actually aimed at, so the corner needs no stored state.
+pub(super) fn aimed_progress(elapsed_ms: f32, step_ms: f32, duration_ms: f32) -> f32 {
+    let before = (elapsed_ms - step_ms) / duration_ms;
+    let after = elapsed_ms / duration_ms;
+    if before < RISE_SHARE && after > RISE_SHARE {
+        RISE_SHARE
+    } else {
+        after.min(1.0)
     }
 }
 

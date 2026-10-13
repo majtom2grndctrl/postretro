@@ -663,12 +663,16 @@ struct Poses(std::collections::HashMap<u32, MoverPose>);
 
 impl Poses {
     fn place(&mut self, id: u32, position: Vec3, velocity: Vec3) {
+        self.place_turned(id, position, Quat::IDENTITY, velocity);
+    }
+
+    fn place_turned(&mut self, id: u32, position: Vec3, rotation: Quat, velocity: Vec3) {
         self.0.insert(
             id,
             MoverPose {
                 transform: Transform {
                     position,
-                    rotation: Quat::IDENTITY,
+                    rotation,
                     scale: Vec3::ONE,
                 },
                 linear_velocity: velocity,
@@ -1273,4 +1277,430 @@ fn a_ground_only_from_forbids_swim_entry() {
         );
         assert_eq!(take_probe_casts(), 0);
     }
+}
+
+// --- Early ends, protected layers, movers and short paths -------------------
+
+/// The pool floor alone; a mover supplies the wall and the deck.
+fn pool_floor() -> CollisionWorld {
+    let mut points = Vec::new();
+    let mut tris = Vec::new();
+    quad(
+        &mut points,
+        &mut tris,
+        [
+            Vec3::new(-50.0, POOL_FLOOR_Y, -50.0),
+            Vec3::new(60.0, POOL_FLOOR_Y, -50.0),
+            Vec3::new(60.0, POOL_FLOOR_Y, 50.0),
+            Vec3::new(-50.0, POOL_FLOOR_Y, 50.0),
+        ],
+        Vec3::Y,
+    );
+    CollisionWorld::from_triangles_for_test(points, tris)
+}
+
+// Regression: a swim-entered vault that ended early kept the re-entry latch,
+// so a pawn still in deep water could never swim again and sank.
+#[test]
+fn an_early_end_to_a_swim_mantle_lets_the_pawn_swim_again() {
+    let desc = swim_vault_descriptor(VaultEntry::default(), Some(6.5));
+    let floor = pool_floor();
+    let water = pool_water();
+    let view = EnvironmentView::new(-20.0, &water, &[2.0]);
+    let deck = [mover_block(SURFACE_Y + 0.5 - POOL_FLOOR_Y, 6.0)];
+    let mut poses = Poses::default();
+    poses.place(MOVER, Vec3::new(RISER_X, POOL_FLOOR_Y, 0.0), Vec3::ZERO);
+    let gone = Poses::default();
+    let present = CombinedCollisionWorld::new(&floor, &deck, &poses);
+    let despawned = CombinedCollisionWorld::new(&floor, &[], &gone);
+
+    for case in ["knockback", "mover despawn", "death", "tuning drop"] {
+        let (mut component, position) = swimmer_at_wall(&desc, 0.05);
+        let (mut position, _, _) =
+            tick_with_immersion(&mut component, &forward(), &present, view, DT, position);
+        assert!(is_vaulting(&component), "{case}: the mantle starts");
+        assert!(component.swim_reentry_latched, "{case}: the mantle latches");
+
+        let mut collision = present;
+        match case {
+            "knockback" => assert!(component.add_knockback(Vec3::new(-30.0, 0.0, 0.0))),
+            "mover despawn" => collision = despawned,
+            // What the sim's death drop calls.
+            "death" => component.break_off_vault(),
+            _ => {
+                component.vault = None;
+                component.leave_vault_without_vault_block();
+            }
+        }
+        let mut swims = false;
+        for _ in 0..4 {
+            position = tick_with_immersion(
+                &mut component,
+                &idle_input(),
+                &collision,
+                view,
+                DT,
+                position,
+            )
+            .0;
+            if component.movement_state.kind() == MovementStateKind::Swim {
+                swims = true;
+                break;
+            }
+        }
+        assert!(
+            swims,
+            "{case}: the pawn, still deep, swims again; got {:?}, latched {}",
+            component.movement_state, component.swim_reentry_latched
+        );
+    }
+}
+
+// Regression: leaving a vault by death or a tuning drop kept the path velocity,
+// throwing the pawn on along the rise.
+#[test]
+fn breaking_off_a_vault_drops_its_rise_velocity_and_keeps_knockback() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    for case in ["death", "tuning drop"] {
+        let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        for _ in 0..5 {
+            position = step(&mut component, &world, &forward(), position).0;
+        }
+        assert!(is_vaulting(&component), "{case}");
+        assert!(component.velocity.y > 1.0, "{case}: the pawn is mid-rise");
+        let knockback = Vec3::new(-2.0, 0.0, 0.0);
+        component.knockback_velocity = knockback;
+        component.velocity += knockback;
+
+        match case {
+            "death" => component.break_off_vault(),
+            _ => {
+                component.vault = None;
+                component.leave_vault_without_vault_block();
+            }
+        }
+        assert_eq!(component.movement_state, MovementState::Normal, "{case}");
+        assert_eq!(
+            component.velocity, knockback,
+            "{case}: only the knockback stays"
+        );
+        let next = step(&mut component, &world, &idle_input(), position).0;
+        assert!(
+            next.y < position.y,
+            "{case}: the pawn falls instead of rising on"
+        );
+    }
+}
+
+#[test]
+fn a_barred_pawn_pressing_into_a_ledge_never_vaults_or_probes() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    component.vault_barred = true;
+    for _ in 0..10 {
+        take_probe_casts();
+        position = step(&mut component, &world, &forward(), position).0;
+        assert!(
+            !is_vaulting(&component),
+            "a barred (dead) pawn never vaults"
+        );
+        assert_eq!(take_probe_casts(), 0);
+    }
+}
+
+// Regression: knockback carried into a vault rode on top of the path, aborted it
+// on its second tick and then launched the pawn.
+#[test]
+fn carried_in_knockback_folds_into_the_vault_and_the_climb_completes() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    let (mut component, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    let knockback = Vec3::new(12.0, 3.0, 0.0);
+    component.knockback_velocity = knockback;
+    component.velocity += knockback;
+
+    let (position, addresses, _) = run_vault(&mut component, &world, &forward(), position);
+    assert!(addresses.contains(&"vault_ended"));
+    assert_eq!(component.knockback_velocity, Vec3::ZERO, "entry folded it");
+    assert!(component.is_grounded(), "the climb ends grounded");
+    assert!(position.x > RISER_X + RADIUS, "over the top");
+    assert!(
+        (feet(position) - 1.2).abs() < 2.0 * SKIN_DISTANCE,
+        "feet {} rest on the top",
+        feet(position)
+    );
+    let horizontal = Vec2::new(component.velocity.x, component.velocity.z).length();
+    assert!(
+        (horizontal - 19.0).abs() < 1.0e-3,
+        "exit restores the speed the pawn really moved at, got {horizontal}"
+    );
+}
+
+#[test]
+fn knockback_landing_mid_vault_aborts_and_the_pawn_keeps_it() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    for _ in 0..3 {
+        position = step(&mut component, &world, &forward(), position).0;
+    }
+    assert!(is_vaulting(&component));
+    let shove = Vec3::new(-20.0, 0.0, 0.0);
+    assert!(component.add_knockback(shove));
+
+    let mut ended = false;
+    for _ in 0..3 {
+        let (next, events) = step(&mut component, &world, &forward(), position);
+        position = next;
+        if events
+            .state_edges
+            .iter()
+            .any(|edge| edge.from == MovementStateKind::Vault)
+        {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "the shove moves the pawn off the path and aborts");
+    assert_eq!(component.movement_state, MovementState::Normal);
+    assert!(!component.is_grounded());
+    // Air drag is zero by default, so the whole shove survives.
+    assert!((component.knockback_velocity - shove).length() < 1.0e-4);
+    assert!(
+        (component.velocity - shove).length() < 1.0e-4,
+        "the abort drops the path velocity and keeps the shove, got {}",
+        component.velocity
+    );
+}
+
+// Regression: push drift accrued on top of the vault path every tick and
+// aborted it.
+#[test]
+fn a_vault_inside_a_push_volume_completes() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = ledge_world(1.2, None);
+    let wind = EnvironmentVolumes::build(vec![EnvironmentVolume {
+        source_entity: 1,
+        priority: 0,
+        gravity: None,
+        push: Some(Vec3::new(0.0, 0.0, 30.0)),
+        fluid: None,
+        brushes: vec![box_leaf(
+            Vec3::new(-50.0, -10.0, -50.0),
+            Vec3::new(60.0, 20.0, 50.0),
+        )],
+    }]);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    let mut edges = Vec::new();
+    for _ in 0..40 {
+        let (next, events) = step_in(&mut component, &world, &wind, &forward(), position);
+        edges.extend(events.state_edges.iter().map(|edge| (edge.from, edge.to)));
+        position = next;
+        if edges
+            .iter()
+            .any(|(from, _)| *from == MovementStateKind::Vault)
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        edges,
+        [
+            (MovementStateKind::Normal, MovementStateKind::Vault),
+            (MovementStateKind::Vault, MovementStateKind::Normal),
+        ]
+    );
+    assert!(component.is_grounded(), "the vault ends grounded");
+    assert!(position.x > RISER_X + RADIUS, "over the top");
+    assert!(
+        (feet(position) - 1.2).abs() < 2.0 * SKIN_DISTANCE,
+        "feet {} rest on the top",
+        feet(position)
+    );
+}
+
+// Regression: an airborne vaulter trailed a mover's target by one tick of its
+// motion, so above 6 m/s every vault onto the mover aborted on its second tick.
+#[test]
+fn a_vault_onto_a_fast_mover_lands_on_it() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = floor_only();
+    let movers = [mover_block(1.2, 6.0)];
+    // Rising, sliding sideways, and moving away from the vaulter.
+    for velocity in [Vec3::Y * 8.0, Vec3::Z * 8.0, Vec3::X * 8.0] {
+        let mut origin = Vec3::new(RISER_X, 0.0, 0.0) - velocity * DT;
+        let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        let mut edges = Vec::new();
+        for _ in 0..40 {
+            origin += velocity * DT;
+            let mut poses = Poses::default();
+            poses.place(MOVER, origin, velocity);
+            let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+            let (next, events) = step_combined(&mut component, &collision, &forward(), position);
+            edges.extend(events.state_edges.iter().map(|edge| (edge.from, edge.to)));
+            position = next;
+            if edges
+                .iter()
+                .any(|(from, _)| *from == MovementStateKind::Vault)
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            edges,
+            [
+                (MovementStateKind::Normal, MovementStateKind::Vault),
+                (MovementStateKind::Vault, MovementStateKind::Normal),
+            ],
+            "mover at {velocity}"
+        );
+        assert_eq!(
+            component.ground,
+            GroundRef::Mover(MOVER),
+            "mover at {velocity}: the vault ends grounded on it"
+        );
+        assert!(
+            position.x - origin.x > RADIUS,
+            "mover at {velocity}: the pawn is over its top"
+        );
+        assert!(
+            (feet(position) - (origin.y + 1.2)).abs() < 2.0 * SKIN_DISTANCE,
+            "mover at {velocity}: feet {} on its top {}",
+            feet(position),
+            origin.y + 1.2
+        );
+    }
+}
+
+#[test]
+fn a_ledge_on_a_tilted_mover_is_refused_and_a_yawed_one_vaults() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = floor_only();
+    let movers = [mover_block(1.2, 6.0)];
+    for (label, rotation, vaults) in [
+        (
+            "rolled 10°",
+            Quat::from_rotation_x(10.0_f32.to_radians()),
+            false,
+        ),
+        (
+            "yawed 10°",
+            Quat::from_rotation_y(10.0_f32.to_radians()),
+            true,
+        ),
+    ] {
+        let mut poses = Poses::default();
+        poses.place_turned(MOVER, Vec3::new(RISER_X, 0.0, 0.0), rotation, Vec3::ZERO);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+        let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        position = step_combined(&mut component, &collision, &forward(), position).0;
+        assert_eq!(is_vaulting(&component), vaults, "{label}");
+        if !vaults {
+            continue;
+        }
+        let mut ended = false;
+        for _ in 0..40 {
+            let (next, events) = step_combined(&mut component, &collision, &forward(), position);
+            position = next;
+            if !events.state_edges.is_empty() {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "{label}: the vault ends");
+        assert_eq!(
+            component.ground,
+            GroundRef::Mover(MOVER),
+            "{label}: the vault ends grounded on the mover"
+        );
+    }
+}
+
+// Regression: a progress step crossing the rise share with rise left aimed past
+// the lip, cut the corner into the riser and aborted.
+#[test]
+fn a_short_duration_vault_still_ends_on_the_top() {
+    let world = ledge_world(1.2, None);
+    for duration_ms in [10.0, 50.0] {
+        let mut desc = vault_descriptor(VaultEntry::default());
+        desc.vault.as_mut().unwrap().duration_ms = duration_ms;
+        let (mut component, position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        let (position, addresses, _) = run_vault(&mut component, &world, &forward(), position);
+        assert!(addresses.contains(&"vault_ended"), "{duration_ms} ms");
+        assert!(component.is_grounded(), "{duration_ms} ms: grounded");
+        assert!(
+            position.x > RISER_X + RADIUS,
+            "{duration_ms} ms: over the top"
+        );
+        assert!(
+            (feet(position) - 1.2).abs() < 2.0 * SKIN_DISTANCE,
+            "{duration_ms} ms: feet {} rest on the top",
+            feet(position)
+        );
+    }
+}
+
+// Regression: an auto vault left a jump buffered before it armed, so the jump
+// fired on the exit landing.
+#[test]
+fn an_auto_vault_clears_a_buffered_jump() {
+    let mut desc = vault_descriptor(VaultEntry::default());
+    desc.forgiveness = Some(ForgivenessParams {
+        coyote_ms: 0.0,
+        jump_buffer_ms: 1000.0,
+    });
+    let world = ledge_world(1.2, None);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 1.0, 0.0);
+    position = step(
+        &mut component,
+        &world,
+        &MovementInput {
+            jump_pressed: true,
+            ..idle_input()
+        },
+        position,
+    )
+    .0;
+    assert!(
+        component.jump_buffer_timer_ms > 0.0,
+        "the press armed the buffer"
+    );
+
+    position.x = RISER_X - RADIUS - 0.05;
+    position = step(&mut component, &world, &forward(), position).0;
+    assert!(is_vaulting(&component), "the auto vault fires");
+    assert_eq!(
+        component.jump_buffer_timer_ms, 0.0,
+        "entry clears the buffer"
+    );
+
+    let (mut position, addresses, _) = run_vault(&mut component, &world, &idle_input(), position);
+    assert!(addresses.contains(&"vault_ended"));
+    assert!(!addresses.contains(&"jumped"));
+    for _ in 0..5 {
+        let (next, events) = step(&mut component, &world, &idle_input(), position);
+        position = next;
+        assert!(!events.jumped, "no buffered jump fires after the vault");
+    }
+    assert!(component.is_grounded(), "the pawn stays on the top");
+}
+
+#[test]
+fn max_height_validation_refuses_tops_the_step_up_limit_already_covers() {
+    let limit = step_up_limit(STEP_HEIGHT);
+    let at_limit = VaultParams {
+        max_height: limit,
+        ..vault_params(VaultEntry::default())
+    };
+    assert!(
+        at_limit.validated(STEP_HEIGHT).is_err(),
+        "a maxHeight at the step-up limit reaches no ledge"
+    );
+    let past_limit = VaultParams {
+        max_height: limit + 0.001,
+        ..vault_params(VaultEntry::default())
+    };
+    assert!(past_limit.validated(STEP_HEIGHT).is_ok());
 }

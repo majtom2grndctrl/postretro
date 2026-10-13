@@ -7,13 +7,18 @@ use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::Transition;
 use crate::movement::carry::CarryRule;
-use crate::movement::vault::{VaultFrame, path_feet};
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use crate::movement::mover_carry::apply_mover_carry;
+use crate::movement::vault::{VaultFrame, aimed_progress, path_feet};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// How far, metres, the pawn may sit from the path point it was steered to
 /// before the vault counts as blocked and aborts. A pawn on the path misses it
 /// only by collision skin and float noise; knockback or a wall that stops the
-/// rise moves it further in one tick.
+/// rise moves it further in one tick. Mover speed does not count against it:
+/// a pawn vaulting onto a mover rides that mover's carry, so however fast the
+/// target moves, steady or not, the pawn moves with it. Without the ride an
+/// airborne pawn would trail the target by one tick of mover motion, and any
+/// mover above this per tick (6 m/s at 60 Hz) would abort every vault onto it.
 const BLOCKED_TOLERANCE: f32 = 0.1;
 
 /// Downward speed on the exit tick, metres/sec, so the substrate's sweep finds
@@ -25,21 +30,29 @@ const EXIT_SETTLE_SPEED: f32 = 1.0;
 /// no input, and the substrate still resolves collision. Dash, jump and crouch
 /// input are ignored for the whole vault.
 ///
-/// - **Blocked.** A pawn further than [`BLOCKED_TOLERANCE`] from where the path
-///   put it (knockback, a wall that moved in, a mover that dropped the lip)
-///   aborts to `Normal`, airborne unless the substrate grounds it.
+/// - **Ride.** The step starts where mover carry (`carry_ground`) leaves the
+///   pawn, since the substrate applies that carry before it moves the body.
+///   While vaulting the carry is the target's own mover, so the pawn moves with
+///   the target as a grounded rider does, and each tick's path point, resolved
+///   through this tick's pose, stays where the next tick looks for it.
+/// - **Blocked.** A pawn further than [`BLOCKED_TOLERANCE`] from the point it
+///   was steered to (knockback, a wall that moved in, a mover that dropped the
+///   lip) aborts to `Normal`, airborne unless the substrate grounds it.
 /// - **Mover gone.** A target on a mover with no pose this tick aborts the same
 ///   way.
-/// - **Exit.** Once `elapsed_ms` reaches the duration the pawn stands on the
-///   target; the exit tick restores the entry horizontal speed along the exit
-///   direction, follows the target's vertical motion since, and settles down
-///   onto the top as it returns to `Normal`.
+/// - **Exit.** Once `elapsed_ms` reaches the duration with the pawn steered to
+///   the target, the exit tick restores the entry horizontal speed along the
+///   exit direction, closes any vertical gap to the target, and settles down
+///   onto the top as it returns to `Normal`. A step that ended at the
+///   corner ([`aimed_progress`]) with the duration spent still owes the move
+///   onto the top, so that one tick runs it before the exit.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn vault_intent(
     component: &mut PlayerMovementComponent,
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: Vec3,
+    carry_ground: GroundRef,
     elapsed_ms: &mut f32,
     target: Vec3,
     start_offset: Vec3,
@@ -52,29 +65,35 @@ pub(crate) fn vault_intent(
     let Some(frame) = VaultFrame::resolve(mover, collision) else {
         return Some(abort(component));
     };
+    let step_ms = dt * 1000.0;
     let center_offset = Vec3::Y * (component.capsule.half_height + component.capsule.radius);
-    let progress = (*elapsed_ms / duration_ms).min(1.0);
-    let expected = frame.to_world(path_feet(target, start_offset, progress)) + center_offset;
-    if position.distance(expected) > BLOCKED_TOLERANCE {
+    let carried = apply_mover_carry(position, carry_ground, collision);
+    let aimed = aimed_progress(*elapsed_ms, step_ms, duration_ms);
+    let expected = frame.to_world(path_feet(target, start_offset, aimed)) + center_offset;
+    let off_path = carried.distance(expected);
+    // Fail closed: a NaN distance (a non-finite pose) compares false against
+    // the tolerance, so it must abort explicitly rather than pass.
+    if off_path.is_nan() || off_path > BLOCKED_TOLERANCE {
         return Some(abort(component));
     }
 
-    if *elapsed_ms >= duration_ms {
+    if *elapsed_ms >= duration_ms && aimed >= 1.0 {
         let exit_dir = frame
             .rotate(Vec3::new(-start_offset.x, 0.0, -start_offset.z))
             .normalize_or_zero();
-        // The pawn reached the target last tick; a mover has carried the target
-        // on since. Catch up vertically so the settle meets the top rather than
-        // starting inside a rising one.
-        let catch_up = (frame.to_world(target).y + center_offset.y - position.y) / dt;
+        // The settle must meet the top where it is this tick: catch up to any
+        // vertical gap the ride left between the pawn and the target.
+        let catch_up = (frame.to_world(target).y + center_offset.y - carried.y) / dt;
         component.velocity = exit_dir * entry_speed + Vec3::Y * (catch_up - EXIT_SETTLE_SPEED);
         return Some(exit());
     }
 
-    *elapsed_ms = (*elapsed_ms + dt * 1000.0).min(duration_ms);
-    let next_progress = *elapsed_ms / duration_ms;
+    // Elapsed is never clamped to the duration, so the next tick can recover
+    // this step's start (`aimed_progress`).
+    *elapsed_ms += step_ms;
+    let next_progress = aimed_progress(*elapsed_ms, step_ms, duration_ms);
     let next = frame.to_world(path_feet(target, start_offset, next_progress)) + center_offset;
-    component.velocity = (next - position) / dt;
+    component.velocity = (next - carried) / dt;
     // Rising off a floor is a launch, as a jump is: the substrate must not clamp
     // the rise or stick the pawn back down.
     if component.velocity.y > SKIN_DISTANCE && component.is_grounded() {
@@ -90,7 +109,12 @@ fn exit() -> Transition {
     }
 }
 
+/// Leave for `Normal` through the component's shared early-end settle, so an
+/// abort leaves what death, a tuning drop and hot reload leave.
 fn abort(component: &mut PlayerMovementComponent) -> Transition {
-    component.velocity = Vec3::ZERO;
+    component.settle_broken_vault();
+    // The settle leaves total velocity; inside the tick `velocity` holds the
+    // base alone, so peel the protected layers off again.
+    component.velocity -= component.knockback_velocity + component.push_velocity;
     exit()
 }

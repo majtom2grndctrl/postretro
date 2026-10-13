@@ -50,7 +50,8 @@ pub struct PlayerMovementDescriptor {
     /// the present-then-all-required discipline of `dash`/`crouch`.
     pub slide: Option<SlideParams>,
     /// Optional swim tuning. Absent ⇒ the pawn cannot swim and walks fluid
-    /// floors. When present, all of its fields are required and validated.
+    /// floors. When present, every field but `fluid_jump_velocity` is required,
+    /// and all are validated.
     pub swim: Option<SwimParams>,
     /// Optional vault (mantle) tuning. Absent ⇒ the pawn never vaults. Skipped
     /// when absent, so a descriptor without it encodes as it did before vault.
@@ -346,9 +347,10 @@ pub struct SlideParams {
 }
 
 /// Swim tuning. Optional on [`PlayerMovementDescriptor`] (absent: the pawn
-/// cannot swim); when present, all fields are required and validated. Field
-/// names are camelCase on the wire (`sinkSpeed`, `enterDepth`, …) and
-/// snake_case in Rust. Never map-overridable.
+/// cannot swim); when present, every field but `fluid_jump_velocity` is
+/// required, and all are validated. Field names are camelCase on the wire
+/// (`sinkSpeed`, `enterDepth`, …) and snake_case in Rust. Never
+/// map-overridable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SwimParams {
     /// Target swim speed, metres/sec. Finite and ≥ 0.
@@ -412,6 +414,12 @@ impl SwimParams {
     }
 }
 
+/// How far above `ground.step_height`, metres, step-up's reach ends and the
+/// vault's land reach begins. Movement's step-up limit is `step_height` plus
+/// this; a `vault.max_height` at or below that sum could reach no ledge, so
+/// validation refuses it.
+pub const STEP_UP_LIMIT_MARGIN: f32 = 0.01;
+
 /// Vault (mantle) tuning. Optional on [`PlayerMovementDescriptor`] (absent: the
 /// pawn never vaults). `max_height`, `swim_max_height` and `duration_ms` are
 /// required in a present block; `from` and `allow_fire` default. Never
@@ -420,7 +428,8 @@ impl SwimParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VaultParams {
     /// Highest ledge top a land vault reaches, metres above the feet. Finite and
-    /// above `ground.step_height`; ledges at or below the step-up limit step up.
+    /// above the step-up limit (`ground.step_height` plus
+    /// [`STEP_UP_LIMIT_MARGIN`]); ledges at or below that limit step up.
     pub max_height: f32,
     /// Highest ledge top a vault out of fluid reaches, metres above the fluid
     /// surface. Finite and > 0.
@@ -440,15 +449,17 @@ pub struct VaultParams {
 impl VaultParams {
     /// Range-check every field, naming the first bad one as
     /// `movement.vault.<field>`. `step_height` is the descriptor's
-    /// `ground.step_height`, which `max_height` must exceed. Shared by the
-    /// QuickJS and Luau parsers.
+    /// `ground.step_height`; `max_height` must exceed the step-up limit above
+    /// it, or no ledge is reachable. Shared by the QuickJS and Luau parsers.
     pub fn validated(self, step_height: f32) -> Result<Self, DescriptorError> {
         use crate::data_descriptors::validate_positive_finite;
         validate_positive_finite(self.max_height, "movement.vault.maxHeight")?;
-        if self.max_height <= step_height {
+        // The same sum movement's step-up limit computes, so the two agree to
+        // the bit.
+        if self.max_height <= step_height + STEP_UP_LIMIT_MARGIN {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`movement.vault.maxHeight` must exceed `movement.ground.stepHeight`, got maxHeight {} with stepHeight {}",
+                    "`movement.vault.maxHeight` must exceed `movement.ground.stepHeight` plus {STEP_UP_LIMIT_MARGIN} m (the step-up limit), got maxHeight {} with stepHeight {}",
                     self.max_height, step_height,
                 ),
             });

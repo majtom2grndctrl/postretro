@@ -835,7 +835,7 @@ export type PlayerMovementDescriptor = {
   crouch: CrouchParams?,
   --- Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required.
   slide: SlideParams?,
-  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.
+  --- Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, every field but `fluidJumpVelocity` is required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.
   swim: SwimParams?,
   --- Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map.
   vault: VaultParams?,
@@ -975,7 +975,7 @@ export type SwimParams = {
 
 --- Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed rise-then-forward path and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads.
 export type VaultParams = {
-  --- Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and greater than `ground.stepHeight`.
+  --- Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and more than 0.01 m above `ground.stepHeight` (the step-up limit).
   maxHeight: number,
   --- Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0.
   swimMaxHeight: number,

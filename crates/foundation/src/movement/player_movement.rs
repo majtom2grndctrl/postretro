@@ -122,17 +122,6 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
     bind(&baked, &MovementScope::for_validation())
 }
 
-/// The player's active movement state. Mutually-exclusive: exactly one state
-/// owns the per-tick velocity intent at a time. `tick` dispatches to the
-/// active state's intent step, runs the shared collision substrate, then
-/// applies any transition the intent returns. Five states exist today:
-/// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
-/// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
-/// shrunk collision capsule), `Sliding` (speed-preserving crouched motion) and
-/// `Swim` (3D fluid locomotion, entered by immersion rather than input) and
-/// `Vault` (a timed mantle onto a ledge). Wall-run plugs in behind the same seam.
-///
-/// See: context/lib/movement.md §4 (state-machine seam).
 /// Payload-free identifier for the closed movement-state vocabulary. Render-rate
 /// presentation and reaction dispatch use this instead of carrying a state's
 /// timers, boost, or eye interpolation payload.
@@ -146,6 +135,17 @@ pub enum MovementStateKind {
     Vault,
 }
 
+/// The player's active movement state. Mutually-exclusive: exactly one state
+/// owns the per-tick velocity intent at a time. `tick` dispatches to the
+/// active state's intent step, runs the shared collision substrate, then
+/// applies any transition the intent returns. Six states exist today:
+/// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
+/// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
+/// shrunk collision capsule), `Sliding` (speed-preserving crouched motion),
+/// `Swim` (3D fluid locomotion, entered by immersion rather than input) and
+/// `Vault` (a timed mantle onto a ledge). Wall-run plugs in behind the same seam.
+///
+/// See: context/lib/movement.md §4 (state-machine seam).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum MovementState {
     /// Baseline locomotion: gravity, jump/air-jump, ground acceleration,
@@ -376,6 +376,13 @@ pub struct PlayerMovementComponent {
     /// replicated and restored by the reconcile merge like `jump_spent`.
     #[serde(default)]
     pub swim_reentry_latched: bool,
+    /// While set, no vault starts. Caller input, not tick state: set before
+    /// each tick from game state movement never reads (today, that the pawn is
+    /// dead) by the sim's `drop_vault_if_dead`, on host movement and client
+    /// prediction alike. Reconcile replay has no registry, so it keeps the
+    /// value the latest prediction left. Neither replicated nor serialized.
+    #[serde(skip)]
+    pub vault_barred: bool,
 }
 
 impl PlayerMovementComponent {
@@ -465,6 +472,7 @@ impl PlayerMovementComponent {
             jump_buffer_timer_ms: 0.0,
             jump_spent: false,
             swim_reentry_latched: false,
+            vault_barred: false,
         }
     }
 
@@ -550,11 +558,37 @@ impl PlayerMovementComponent {
     /// Settle vault state on a component rebuilt from a descriptor (a client's
     /// tuning rebuild) after the live tick state was carried onto it. Without a
     /// `vault` block a carried `Vault` has no duration to finish against, so it
-    /// drops to `Normal` as an abort does, with no state edge.
+    /// ends through [`Self::break_off_vault`], as an abort does, but with no
+    /// state edge: an abort emits `vault_ended`, this does not.
     pub fn leave_vault_without_vault_block(&mut self) {
-        if self.vault.is_none() && matches!(self.movement_state, MovementState::Vault { .. }) {
-            self.movement_state = MovementState::Normal;
+        if self.vault.is_none() {
+            self.break_off_vault();
         }
+    }
+
+    /// Leave `Vault` anywhere but at its exit, from outside a movement tick:
+    /// death, or a tuning rebuild or hot reload that drops it. A no-op unless
+    /// vaulting. Emits no state edge.
+    pub fn break_off_vault(&mut self) {
+        if matches!(self.movement_state, MovementState::Vault { .. }) {
+            self.settle_broken_vault();
+        }
+    }
+
+    /// What every early end of a vault leaves behind, in one place so the
+    /// movement abort and [`Self::break_off_vault`]'s callers cannot drift:
+    /// - `Normal`.
+    /// - Base velocity zeroed: kept, the path velocity (the rise can peak
+    ///   near 9 m/s) would throw the pawn on. Knockback and drift stay.
+    /// - The swim re-entry latch cleared. A swim-entered vault sets it only so
+    ///   swim cannot recapture the rise; left set in deep water, it would never
+    ///   clear and the pawn could not swim again.
+    ///
+    /// `velocity` is total here (protected layers included), as between ticks.
+    pub fn settle_broken_vault(&mut self) {
+        self.movement_state = MovementState::Normal;
+        self.velocity = self.knockback_velocity + self.push_velocity;
+        self.swim_reentry_latched = false;
     }
 
     pub fn is_grounded(&self) -> bool {

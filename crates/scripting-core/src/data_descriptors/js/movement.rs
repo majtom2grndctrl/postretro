@@ -220,9 +220,7 @@ pub fn movement_descriptor_from_js<'js>(
             // non-table, so it is not a block here either.
             let callable = raw.is_function();
             let parsed = match Object::from_value(raw) {
-                Ok(vault_obj) if !callable => {
-                    vault_params_from_js(&vault_obj, ground.step_height)
-                }
+                Ok(vault_obj) if !callable => vault_params_from_js(&vault_obj, ground.step_height),
                 _ => Err(vault_block_not_an_object()),
             };
             keep_or_drop_vault_block(parsed)

@@ -2942,7 +2942,7 @@ vault = {
 
 | Field | Units | Range | What it does |
 |---|---|---|---|
-| `maxHeight` | m | above `ground.stepHeight` | Highest ledge top a vault reaches from the ground or the air, measured from the feet. Anything the player can step up stays a step. |
+| `maxHeight` | m | more than 0.01 above `ground.stepHeight` | Highest ledge top a vault reaches from the ground or the air, measured from the feet. Anything the player can step up stays a step. |
 | `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
 | `durationMs` | ms | above `0` | Time from starting the climb to standing on the top. |
 | `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |

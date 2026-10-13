@@ -12,7 +12,9 @@ use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
 };
-use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
+use postretro_foundation::{
+    GroundRef, MovementState, PlayerMovementComponent, STEP_UP_LIMIT_MARGIN,
+};
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
@@ -28,16 +30,19 @@ const NORMAL_NUDGE: f32 = 1.0e-4;
 /// Vertical lift margin added on top of `step_height` when the step-up probe
 /// commits to a lifted position. Must exceed `SKIN_DISTANCE` so the lifted
 /// hemisphere clears the step's top edge without parry reporting an
-/// immediate skin-contact hit.
-const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+/// immediate skin-contact hit. It is the step-up limit's margin plus two skin
+/// widths (see [`step_up_limit`]).
+const STEP_UP_LIFT_MARGIN: f32 = STEP_UP_LIMIT_MARGIN + 2.0 * SKIN_DISTANCE;
 const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 
 /// Tallest ledge, metres above the feet, that step-up climbs with room to
 /// spare: the lift, `step_height + STEP_UP_LIFT_MARGIN`, leaves at least one
 /// skin width over such a top beyond the skin the feet already rest at. The
 /// vault probe refuses tops at or below it, so no height falls between the two.
+/// The margin is foundation's, so descriptor validation refuses a
+/// `vault.max_height` that cannot clear this limit by the same sum.
 pub(super) fn step_up_limit(step_height: f32) -> f32 {
-    step_height + STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE
+    step_height + STEP_UP_LIMIT_MARGIN
 }
 
 /// Cosine threshold (≈ 60°) for detecting that a second wall contact within
@@ -162,13 +167,18 @@ pub(super) fn step_up_lift(
 /// in `tick` (the landing-refresh point), driven by `SubstrateResult::hit_floor`.
 ///
 /// `was_grounded` is the pre-intent grounded flag carried from the start of the
-/// tick; `jumped` is whether step 2/3 launched a jump this tick.
+/// tick; `jumped` is whether step 2/3 launched a jump this tick. `carry_ground`
+/// is the ground mover carry and overlap recovery treat the body as riding:
+/// `previous_ground`, except while vaulting, when it is the vault target's
+/// mover (none for a static ledge), so the vaulting body rides it as a grounded
+/// rider does.
 pub(super) fn integrate_collision(
     component: &mut PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
     dt: f32,
     position: Vec3,
     previous_ground: GroundRef,
+    carry_ground: GroundRef,
     jumped: bool,
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
@@ -178,9 +188,8 @@ pub(super) fn integrate_collision(
     // does not change inside the substrate.
     let drift_is_3d = matches!(component.movement_state, MovementState::Swim { .. });
 
-    let mut current_pos = apply_mover_carry(position, previous_ground, collision);
-    current_pos =
-        displace_from_movers(component, previous_ground, collision, &capsule, current_pos);
+    let mut current_pos = apply_mover_carry(position, carry_ground, collision);
+    current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
     // Each of the substrate's walkable-contact paths overwrites this with its

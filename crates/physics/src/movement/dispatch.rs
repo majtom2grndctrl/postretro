@@ -14,7 +14,7 @@ use crate::movement::swim_transition::{SwimSeam, environment_transition};
 use crate::movement::vault::vault_entry;
 use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Resize the live capsule from the crouched size back to the configured
 /// STANDING reference (`standing_half_height` / `standing_eye_height`), keeping
@@ -150,32 +150,44 @@ pub(super) fn apply_environment_transition(
 }
 
 /// Enter `Vault` at the pre-intent stage when [`vault_entry`] finds a ledge, so
-/// the vault owns this tick. Mirrors [`apply_environment_transition`]: the
-/// `KEEP_ALL` carry runs against the outgoing state (a no-op; the vault intent
-/// authors the velocity), an edge out of `Swim` folds the drift layer's
-/// vertical part and names the fluid left, and the edge is recorded.
+/// the vault owns this tick. Mirrors [`apply_environment_transition`] with no
+/// carry: the vault intent authors the whole velocity, and the exit restores
+/// the entry speed itself. An edge out of `Swim` names the fluid left, and the
+/// edge is recorded.
+///
+/// Entry empties the protected knockback and drift layers, already counted in
+/// the entry speed. Left in place they would ride on top of the path every
+/// tick: carried-in knockback (a rocket jump into a ledge) would abort the
+/// vault on its second tick and then launch the pawn. Knockback that lands
+/// mid-vault still rejoins as always and aborts it.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_vault_entry(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
     resolved: &ResolvedEnvironment,
     collision: &CombinedCollisionWorld<'_>,
     position: Vec3,
+    carry_ground: GroundRef,
     dt: f32,
     events: &mut MovementEvents,
 ) {
-    let Some(next) = vault_entry(component, input, resolved, collision, position, dt) else {
+    let Some(next) = vault_entry(
+        component,
+        input,
+        resolved,
+        collision,
+        position,
+        carry_ground,
+        dt,
+    ) else {
         return;
     };
     let from = component.movement_state.kind();
-    apply_carry(
-        CarryRule::KEEP_ALL,
-        &mut component.velocity,
-        outgoing_boost(&component.movement_state),
-    );
     if let Some(fluid) = swim_fluid(&component.movement_state) {
         events.swim_fluid = Some(fluid);
-        fold_vertical_drift(component);
     }
+    component.knockback_velocity = Vec3::ZERO;
+    component.push_velocity = Vec3::ZERO;
     component.movement_state = next;
     events.state_edges.push(MovementStateEdge {
         from,
@@ -219,8 +231,9 @@ pub(super) fn apply_vault_entry(
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
 // Threads the substrate handles (`collision_world`, the mutable `position`) the
-// `Crouching` intent needs for its stand-up probe and resize; grouping them into
-// a struct would add an abstraction with one caller and no reuse.
+// `Crouching` intent needs for its stand-up probe and resize, and the mover
+// carry ground (`carry_ground`) the `Vault` intent steers from; grouping them
+// into a struct would add an abstraction with one caller and no reuse.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_state_intent(
     component: &mut PlayerMovementComponent,
@@ -231,6 +244,7 @@ pub(super) fn dispatch_state_intent(
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
+    carry_ground: GroundRef,
     events: &mut MovementEvents,
 ) -> Option<MovementState> {
     // Resolve the borrow once: move the live state into a local so its data can
@@ -284,6 +298,7 @@ pub(super) fn dispatch_state_intent(
             dt,
             collision,
             *position,
+            carry_ground,
             elapsed_ms,
             *target,
             *start_offset,

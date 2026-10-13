@@ -1159,7 +1159,9 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     ) {
         (Ok(transform), Ok(movement)) => {
             // Death is host-authoritative; a client that predicts past its own
-            // death takes one correction, inside the vault tolerance.
+            // death takes one correction, inside the vault tolerance. The same
+            // verdict bars vault entry this tick, as on the host; reconcile
+            // replay has no registry and keeps the verdict this call leaves.
             let mut movement = movement.clone();
             crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
             (*transform, movement)

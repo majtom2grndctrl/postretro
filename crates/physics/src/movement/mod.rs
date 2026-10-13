@@ -25,7 +25,7 @@ use crate::movement::dispatch::{
 use crate::movement::environment::resolve_at_tick_start;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
 use postretro_collision::EnvironmentView;
-use postretro_foundation::{MovementState, MovementStateKind, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, MovementStateKind, PlayerMovementComponent};
 
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, SLIDE_MAX_MS, dash_intent};
@@ -277,6 +277,15 @@ pub fn tick_with_immersion(
         &mut position,
         &mut events,
     );
+    // A pawn that starts the tick vaulting rides its target's frame: mover
+    // carry moves it with the target's mover, as it moves a grounded rider, and
+    // never with any other (a static ledge carries nothing). Its path then
+    // holds against a mover of any speed, steady or not. Any other pawn, and
+    // the tick a vault starts, rides the ground it stood on.
+    let carry_ground = match component.movement_state {
+        MovementState::Vault { mover, .. } => mover.map_or(GroundRef::Airborne, GroundRef::Mover),
+        _ => previous_ground,
+    };
     // Vault entry runs next, from the same tick-start pose, unless the swim
     // seam already took an edge: a swim entry on the tick a land vault would
     // start wins. The entered vault owns this tick.
@@ -287,6 +296,7 @@ pub fn tick_with_immersion(
             &resolved_environment,
             &collision,
             position,
+            carry_ground,
             dt,
             &mut events,
         );
@@ -301,6 +311,7 @@ pub fn tick_with_immersion(
         dt,
         &collision,
         &mut position,
+        carry_ground,
         &mut events,
     );
 
@@ -308,10 +319,18 @@ pub fn tick_with_immersion(
     // the protected drift layer, vertical push otherwise in locomotion. Terminal
     // speed along the push is held beside the fall clamp. The swim drift cap
     // asks for ceiling contact at the post-intent position.
+    //
+    // A continuing vault authors its whole motion along the path, so push
+    // neither drifts nor caps it: the drift layer emptied at entry and accrues
+    // again from the tick the vault ends. Knockback still rejoins below, so a
+    // hit mid-vault moves the pawn off the path and aborts it.
+    let vaulting = component.movement_state.kind() == MovementStateKind::Vault;
     let cap_position = position;
-    push::apply(component, &resolved_environment, dt, |component| {
-        substrate::touches_ceiling(component, &collision, cap_position)
-    });
+    if !vaulting {
+        push::apply(component, &resolved_environment, dt, |component| {
+            substrate::touches_ceiling(component, &collision, cap_position)
+        });
+    }
     // An intent or push that cleared grounded launched the body: a jump, or a
     // swimmer rising off the pool floor. The substrate must not clamp the rise.
     let left_ground = previous_ground.is_grounded() && !component.is_grounded();
@@ -322,7 +341,9 @@ pub fn tick_with_immersion(
         dt,
     );
     knockback::clamp_fall_speed(component);
-    push::clamp_speed_along_push(component, resolved_environment.push);
+    if !vaulting {
+        push::clamp_speed_along_push(component, resolved_environment.push);
+    }
     component.velocity += component.knockback_velocity + component.push_velocity;
 
     // The grounded edge consumed a pending buffer this tick — clear it so the
@@ -361,6 +382,7 @@ pub fn tick_with_immersion(
         dt,
         position,
         previous_ground,
+        carry_ground,
         events.jumped || launched || left_ground,
     );
 

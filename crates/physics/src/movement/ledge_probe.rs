@@ -1,4 +1,4 @@
-// Substrate-owned ledge probe for vault entry, cast from the tick-start pose.
+// Ledge probe for vault entry, built on substrate cast helpers; runs from the tick-start pose.
 // See: context/lib/movement.md §4
 
 use glam::Vec3;

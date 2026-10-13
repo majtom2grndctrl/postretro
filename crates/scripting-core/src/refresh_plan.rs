@@ -564,11 +564,17 @@ fn plan_movement_replace(
     // position history, not a budget: it carries too, so a reload mid-leap cannot
     // drop the pawn straight back into swim. A new descriptor without a `swim`
     // block leaves swim as an exit does (`leave_swim_without_swim_block`).
+    //
+    // A reload mid-vault drops it to `Normal` through the component's shared
+    // early end (`break_off_vault`), as death and an abort do: the path
+    // velocity goes, and so does a swim-entered vault's latch, or a pawn still
+    // in deep water could never swim again.
     refreshed.movement_state = match live.movement_state {
-        MovementState::Swim { fluid } => MovementState::Swim { fluid },
+        state @ (MovementState::Swim { .. } | MovementState::Vault { .. }) => state,
         _ => MovementState::Normal,
     };
     refreshed.swim_reentry_latched = live.swim_reentry_latched;
+    refreshed.break_off_vault();
     refreshed.leave_swim_without_swim_block();
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
 }
@@ -1624,22 +1630,6 @@ mod tests {
     // 3D drift layer and the re-entry latch, so the next movement tick takes no
     // swim edge and re-emits no `swim_started`.
     #[test]
-    fn movement_refresh_drops_a_vault_to_normal() {
-        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
-        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
-        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
-        live.movement_state = MovementState::Vault {
-            elapsed_ms: 48.0,
-            target: Vec3::new(5.4, 1.2, 0.0),
-            start_offset: Vec3::new(-0.8, -0.7, 0.0),
-            mover: None,
-            entry_speed: 7.0,
-        };
-        let component = refreshed_movement(&old, &new, live);
-        assert_eq!(component.movement_state, MovementState::Normal);
-    }
-
-    #[test]
     fn movement_refresh_keeps_a_swimmer_swimming_with_its_drift_and_latch() {
         let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
         old[0].movement.as_mut().unwrap().swim = Some(swim_params());
@@ -1658,6 +1648,31 @@ mod tests {
         assert!(component.swim_reentry_latched);
         assert_eq!(component.dash.as_ref().unwrap().air_dashes, 2);
         assert_eq!(component.air.jumps, 3, "tuning still reseeds");
+    }
+
+    // A reload mid-vault ends it early, as death does: `Normal`, the path
+    // velocity dropped with knockback kept, and a swim-entered vault's latch
+    // cleared so a pawn still in deep water can swim again.
+    #[test]
+    fn movement_refresh_drops_a_vault_to_normal() {
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.movement_state = MovementState::Vault {
+            elapsed_ms: 48.0,
+            target: Vec3::new(5.4, 1.2, 0.0),
+            start_offset: Vec3::new(-0.8, -0.7, 0.0),
+            mover: None,
+            entry_speed: 7.0,
+        };
+        let knockback = Vec3::new(0.0, 0.0, 3.0);
+        live.knockback_velocity = knockback;
+        live.velocity = Vec3::new(1.5, 9.0, 0.0) + knockback;
+        live.swim_reentry_latched = true;
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert_eq!(component.velocity, knockback, "only the knockback stays");
+        assert!(!component.swim_reentry_latched);
     }
 
     // A reload that removes the swim block leaves swim as an exit does: `Normal`,

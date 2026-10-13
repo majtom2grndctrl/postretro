@@ -309,7 +309,8 @@ impl ActivationCadence {
     /// the execution ends after its last authored step, so an input waits at
     /// most until the clock reaches its tick or the execution's remaining steps
     /// run out. A charge's shots begin at its release: until one fires it holds
-    /// nothing, except inputs stamped after a release delivered this same tick.
+    /// nothing, except that a release received, or delivered this same tick,
+    /// holds inputs stamped after it until the charged shot fires.
     pub fn order_horizon(
         &self,
         live: Option<ActivationToken>,
@@ -320,7 +321,12 @@ impl ActivationCadence {
             live == Some(execution.token) || execution.delivered_tick == host_tick
         })?;
         if execution.charges == Some(true) && !execution.fired {
-            return pending_release(execution.token);
+            // A release delivered this host tick fires in this tick's
+            // simulation; until then the clock sits at its release tick.
+            return execution
+                .release
+                .map(|(release_tick, _)| release_tick)
+                .or_else(|| pending_release(execution.token));
         }
         Some(execution.clock(host_tick))
     }

@@ -944,15 +944,16 @@ impl Fixture {
                     false,
                 );
             }
+            let fire_blocked = stamp_start_fire_gate(&registry, &mut self.queues, &resolved);
             observe_lifecycle(
                 &mut registry,
                 &mut self.allocator,
                 &mut self.queues,
                 &mut self.server,
                 &resolved,
+                fire_blocked,
                 self.tick,
             );
-            stamp_start_fire_gate(&registry, &mut self.queues, &resolved);
             let mut command = App::prepare_remote_pawn_command(
                 &self.allocator,
                 &registry,

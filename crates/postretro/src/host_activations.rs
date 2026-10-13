@@ -65,8 +65,9 @@ fn binding_is_live(
 /// Run before the next command, so a replaced/dropped/dead execution cannot
 /// prevent a later initiation or retain unissued authorized ordinals.
 ///
-/// A pawn that starts the command's tick with fire blocked, as a vault does,
-/// stops what its client began before that tick, as the client stopped it.
+/// `fire_blocked`: the gate [`stamp_start_fire_gate`] recorded for the
+/// command's tick. A pawn that starts that tick with fire blocked, as a vault
+/// does, stops what its client began before it, as the client stopped it.
 /// Each execution stops where its own clock reaches the tick, not at the
 /// host's delivery of it (`HostCommandQueues::close_start_fire_gate`); one
 /// already there stops now. Death stops the live execution at once.
@@ -76,11 +77,11 @@ pub(super) fn observe_lifecycle(
     queues: &mut netcode::HostCommandQueues,
     server: &mut NetServer,
     resolved: &netcode::ResolvedPawnCommand,
+    fire_blocked: bool,
     tick: u32,
 ) {
     let (client, pawn) = (resolved.client_id, resolved.pawn);
-    let gate_reached = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn)
-        && queues.close_start_fire_gate(client, resolved.client_tick);
+    let gate_reached = fire_blocked && queues.close_start_fire_gate(client, resolved.client_tick);
     let Some((id, weapon)) = queues.activations.live_binding(client) else {
         return;
     };
@@ -114,17 +115,20 @@ pub(super) fn observe_lifecycle(
 /// before its movement runs, and stamp the client's starts due by that tick
 /// with the gate of each one's own tick. A start delivered later is judged by
 /// its stamp, not by its pawn at delivery; one that arrives after its tick
-/// resolved reads the gate recorded then.
+/// resolved reads the gate recorded then. Returns the gate recorded for the
+/// command's tick, for [`observe_lifecycle`]: the first resolution's, when a
+/// frontier hold resolves the tick again after a host-only movement step.
+/// Run first for each resolved command.
 pub(super) fn stamp_start_fire_gate(
     registry: &EntityRegistry,
     queues: &mut netcode::HostCommandQueues,
     resolved: &netcode::ResolvedPawnCommand,
-) {
+) -> bool {
     queues.stamp_start_fire_gate(
         resolved.client_id,
         resolved.client_tick,
         postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, resolved.pawn),
-    );
+    )
 }
 
 /// Replay, concurrency, and cadence admission precede the authoritative resource

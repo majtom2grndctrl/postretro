@@ -25,6 +25,20 @@ struct RetainedEdge {
     delivered: bool,
     cancel_delivered: bool,
 }
+impl RetainedEdge {
+    /// A release still to deliver. A cancel stamped at or before the release
+    /// tick wins over it, as within one command. A later cancel, such as a
+    /// vault entry after the client fired its charge, waits behind it, so the
+    /// charged shot is minted first.
+    fn release_pending(&self) -> bool {
+        let suppressed = self.cancel
+            && self
+                .cancel_client_tick
+                .zip(self.release_tick)
+                .is_none_or(|(cancel, release)| client_tick_le(cancel, release));
+        !self.delivered && self.release_tick.is_some() && !suppressed
+    }
+}
 /// A client-named start retained beside movement playout, so a catch-up trim or
 /// stale-drop of its carrying command cannot erase it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,11 +179,12 @@ impl ActivationEdges {
         self.starts.front().map(|start| start.token.start_tick)
     }
     /// Client release tick of `token`'s release, received but not yet
-    /// delivered. A cancel received with it suppresses it, so none is reported.
+    /// delivered. A cancel stamped at or before it suppresses it, so none is
+    /// reported.
     pub fn undelivered_release(&self, token: ActivationToken) -> Option<u32> {
         self.edges
             .iter()
-            .find(|edge| edge.token == token && !edge.delivered && !edge.cancel)
+            .find(|edge| edge.token == token && edge.release_pending())
             .and_then(|edge| edge.release_tick)
     }
     /// Firing slot `token`'s start named, once the lane has refused it.
@@ -187,38 +202,63 @@ impl ActivationEdges {
     /// Record `blocked`, the shooter's fire gate at the start of client tick
     /// `resolved_tick`, and stamp every retained or just-delivered start
     /// stamped at or before it that has no verdict yet. Called once per
-    /// resolved command, before that command's movement runs.
+    /// resolution, before its movement runs, with `tick` the host tick.
+    /// Returns the gate recorded for `resolved_tick`, which the caller judges
+    /// that tick by.
     ///
     /// A start takes the gate recorded for its own tick. One that reached the
     /// lane after its tick resolved, such as a later copy of a command the
-    /// playout yielded past, finds it here. A start whose tick never resolved,
-    /// because a catch-up trim reseated the cursor past it, or resolved before
-    /// the history's reach, takes the gate of the resolution that stamps it.
-    pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool) {
+    /// playout yielded past, finds it here, and also carries a cancel at the
+    /// first closed tick recorded after its own, which it missed while
+    /// absent (`cancel_before`). A start whose tick never resolved, because a
+    /// catch-up trim reseated the cursor past it, or resolved before the
+    /// history's reach, takes the gate of the resolution that stamps it.
+    pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool, tick: u32) -> bool {
         // The cursor never moves back, so a repeat is the same tick resolving
-        // again after a frontier hold; its latest state is the one the host
-        // ran that tick's command from.
-        match self.fire_gates.back_mut() {
-            Some((tick, gate)) if *tick == resolved_tick => *gate = blocked,
+        // again after a frontier hold. The first resolution ran from the pawn
+        // as the client's own commands left it; each hold since ran one more
+        // host-only step repeating the previous command, which can enter or
+        // leave a vault the client never did. Keep the first.
+        let recorded = match self.fire_gates.back() {
+            Some(&(last, gate)) if last == resolved_tick => gate,
             _ => {
                 if self.fire_gates.len() == FIRE_GATE_HISTORY {
                     self.fire_gates.pop_front();
                 }
                 self.fire_gates.push_back((resolved_tick, blocked));
+                blocked
             }
-        }
-        let gates = &self.fire_gates;
-        for start in self.starts.iter_mut().chain(self.delivered.iter_mut()) {
-            if start.fire_blocked.is_none() && client_tick_le(start.token.start_tick, resolved_tick)
+        };
+        // `retain` never reads the starts, so they leave the struct meanwhile.
+        let mut starts = std::mem::take(&mut self.starts);
+        let mut delivered = self.delivered.take();
+        for start in starts.iter_mut().chain(delivered.iter_mut()) {
+            let own_tick = start.token.start_tick;
+            if start.fire_blocked.is_some() || !client_tick_le(own_tick, resolved_tick) {
+                continue;
+            }
+            let own = self
+                .fire_gates
+                .iter()
+                .rev()
+                .find(|&&(gate_tick, _)| gate_tick == own_tick)
+                .map_or(recorded, |&(_, gate)| gate);
+            start.fire_blocked = Some(own);
+            let closed = self
+                .fire_gates
+                .iter()
+                .find(|&&(gate_tick, gate)| gate && !client_tick_le(gate_tick, own_tick))
+                .map(|&(gate_tick, _)| gate_tick);
+            if !own
+                && let Some(closed) = closed
+                && !self.retain(start.token, None, Some(closed), tick)
             {
-                let own = gates
-                    .iter()
-                    .rev()
-                    .find(|(tick, _)| *tick == start.token.start_tick)
-                    .map(|&(_, gate)| gate);
-                start.fire_blocked = Some(own.unwrap_or(blocked));
+                start.fire_blocked = Some(true);
             }
         }
+        self.starts = starts;
+        self.delivered = delivered;
+        recorded
     }
     /// Retain a cancel stamped `client_tick`, received on host tick `tick`, for
     /// every execution the client began before that tick: `live`, the start
@@ -226,6 +266,11 @@ impl ActivationEdges {
     /// the client sent, each waits until its execution's clock reaches
     /// `client_tick`, so the shots the client fired before it are minted
     /// first, and is inert for an execution that ends sooner.
+    ///
+    /// Bound: with `MAX_RETAINED_ACTIVATION_EDGES` edges held, which only a
+    /// flooding client reaches, an admitted execution takes the overflow
+    /// cancel at once and a retained start is refused at delivery. Either
+    /// loses shots fired before `client_tick`; neither fires through the vault.
     pub fn cancel_before(&mut self, client_tick: u32, live: Option<ActivationToken>, tick: u32) {
         let before = |token: ActivationToken| !client_tick_le(client_tick, token.start_tick);
         let delivered = self
@@ -236,9 +281,11 @@ impl ActivationEdges {
             self.retain(token, None, Some(client_tick), tick);
         }
         // `retain` never reads the retained starts.
-        let starts = std::mem::take(&mut self.starts);
-        for start in starts.iter().filter(|start| before(start.token)) {
-            self.retain(start.token, None, Some(client_tick), tick);
+        let mut starts = std::mem::take(&mut self.starts);
+        for start in starts.iter_mut().filter(|start| before(start.token)) {
+            if !self.retain(start.token, None, Some(client_tick), tick) {
+                start.fire_blocked = Some(true);
+            }
         }
         self.starts = starts;
     }
@@ -266,16 +313,19 @@ impl ActivationEdges {
         }
     }
     /// `cancel`: the client tick of the command carrying a cancel edge.
+    /// False when the edge was dropped: its token is settled, or the table is
+    /// full and the token not admitted. An admitted token over the bound takes
+    /// the overflow cancel instead.
     fn retain(
         &mut self,
         token: ActivationToken,
         release_tick: Option<u32>,
         cancel_client_tick: Option<u32>,
         tick: u32,
-    ) {
+    ) -> bool {
         let cancel = cancel_client_tick.is_some();
         if self.is_settled(token) && !self.admitted.contains(&token) {
-            return;
+            return false;
         }
         if let Some(edge) = self.edges.iter_mut().find(|e| e.token == token) {
             // Cancellation may strengthen an undelivered release; duplicates never
@@ -298,13 +348,14 @@ impl ActivationEdges {
             if !edge.delivered && edge.release_tick.is_none() {
                 edge.release_tick = release_tick;
             }
-            return;
+            return true;
         }
         if self.edges.len() >= MAX_RETAINED_ACTIVATION_EDGES {
             if self.admitted.contains(&token) {
                 self.overflow_cancel = Some(token);
+                return true;
             }
-            return;
+            return false;
         }
         self.edges.push_back(RetainedEdge {
             token,
@@ -316,6 +367,7 @@ impl ActivationEdges {
             delivered: false,
             cancel_delivered: false,
         });
+        true
     }
     pub fn admit(&mut self, token: ActivationToken) -> bool {
         if self.admitted.contains(&token) {
@@ -332,7 +384,8 @@ impl ActivationEdges {
     }
     /// Deliver at most one cancel and one release. `horizon`: client tick the
     /// live execution's clock has reached; a cancel stamped after it waits, so
-    /// every shot the client fired before cancelling is minted first.
+    /// every shot the client fired before cancelling is minted first. A cancel
+    /// never overtakes a release of its own execution stamped before it.
     pub fn deliver(
         &mut self,
         command: &mut ActivationInput,
@@ -356,6 +409,7 @@ impl ActivationEdges {
             .filter(|edge| {
                 edge.cancel
                     && !edge.cancel_delivered
+                    && !edge.release_pending()
                     && reached(edge)
                     && self.admitted.contains(&edge.token)
             })
@@ -375,10 +429,8 @@ impl ActivationEdges {
             .edges
             .iter_mut()
             .filter(|edge| {
-                !edge.delivered
-                    && !edge.cancel
+                edge.release_pending()
                     && command.cancel != Some(edge.token)
-                    && edge.release_tick.is_some()
                     && self.admitted.contains(&edge.token)
             })
             .min_by_key(|edge| live != Some(edge.token))
@@ -480,7 +532,7 @@ mod tests {
         let mut edges = ActivationEdges::default();
         edges.observe_start(token(10), 0, aim(0.0));
         edges.observe_start(token(12), 0, aim(0.0));
-        edges.stamp_fire_gate(9, true);
+        edges.stamp_fire_gate(9, true, 0);
         assert!(
             edges
                 .starts
@@ -488,9 +540,9 @@ mod tests {
                 .all(|start| start.fire_blocked.is_none()),
             "a start is stamped only once its own tick resolves"
         );
-        edges.stamp_fire_gate(10, false);
-        edges.stamp_fire_gate(11, true);
-        edges.stamp_fire_gate(12, true);
+        edges.stamp_fire_gate(10, false, 0);
+        edges.stamp_fire_gate(11, true, 0);
+        edges.stamp_fire_gate(12, true, 0);
         assert!(edges.take_start(token(10)));
         assert_eq!(edges.delivered_fire_blocked(token(10)), Some(false));
         assert!(edges.take_start(token(12)));
@@ -502,36 +554,114 @@ mod tests {
         edges.observe_start(token(20), 0, aim(0.0));
         assert!(edges.take_start(token(20)));
         assert_eq!(edges.delivered_fire_blocked(token(20)), None);
-        edges.stamp_fire_gate(20, true);
+        edges.stamp_fire_gate(20, true, 0);
         assert_eq!(edges.delivered_fire_blocked(token(20)), Some(true));
     }
     // Regression: a start that reached the lane after its own tick resolved was
     // stamped with the gate of the next resolution, so a vault that began in
-    // between refused a shot the client had fired before it.
+    // between refused a shot the client had fired before it; and it carried no
+    // cancel for that vault, so it fired through it.
     #[test]
     fn a_start_arriving_after_its_tick_resolved_takes_that_ticks_fire_gate() {
         let mut edges = ActivationEdges::default();
-        edges.stamp_fire_gate(10, true);
-        edges.stamp_fire_gate(10, false);
-        edges.stamp_fire_gate(11, true);
+        assert!(!edges.stamp_fire_gate(10, false, 0));
+        // A frontier hold resolves tick 10 again after a host-only movement
+        // step that entered a vault; the first resolution stands.
+        assert!(
+            !edges.stamp_fire_gate(10, true, 1),
+            "the first resolution of a tick is the faithful one"
+        );
+        edges.stamp_fire_gate(11, true, 2);
         edges.observe_start(token(10), 0, aim(0.0));
-        edges.stamp_fire_gate(12, true);
+        edges.stamp_fire_gate(12, true, 3);
         assert!(edges.take_start(token(10)));
         assert_eq!(
             edges.delivered_fire_blocked(token(10)),
             Some(false),
-            "the latest resolution of its own tick, not the stamping one"
+            "its own tick's gate, not the stamping resolution's"
+        );
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 4, Some(token(10)), Some(10));
+        assert_eq!(delivered.cancel, None);
+        edges.deliver(&mut delivered, 5, Some(token(10)), Some(11));
+        assert_eq!(
+            delivered.cancel,
+            Some(token(10)),
+            "cancelled where the vault it missed began"
         );
 
         // A tick older than the history falls back to the stamping resolution.
         let mut edges = ActivationEdges::default();
         for tick in 0..=FIRE_GATE_HISTORY as u32 {
-            edges.stamp_fire_gate(tick, false);
+            edges.stamp_fire_gate(tick, false, 0);
         }
         edges.observe_start(token(0), 0, aim(0.0));
-        edges.stamp_fire_gate(FIRE_GATE_HISTORY as u32 + 1, true);
+        edges.stamp_fire_gate(FIRE_GATE_HISTORY as u32 + 1, true, 0);
         assert!(edges.take_start(token(0)));
         assert_eq!(edges.delivered_fire_blocked(token(0)), Some(true));
+    }
+    // Regression: a vault entry after a charged release marked the release's
+    // edge cancelled, so the release never went out and the charged shot the
+    // client fired before the vault was never minted.
+    #[test]
+    fn a_vault_cancel_waits_behind_a_charge_released_before_it() {
+        let release = ActivationInput {
+            release: Some(ActivationRelease {
+                token: token(6),
+                release_tick: 8,
+            }),
+            ..ActivationInput::default()
+        };
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(6), 0, aim(0.0));
+        edges.observe(release, 8, 0);
+        edges.cancel_before(10, None, 1);
+        assert_eq!(
+            edges.undelivered_release(token(6)),
+            Some(8),
+            "the release still holds the charge's clock"
+        );
+        assert!(edges.take_start(token(6)));
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 2, None, Some(8));
+        assert_eq!(delivered.release, release.release);
+        assert_eq!(delivered.cancel, None);
+        edges.deliver(&mut delivered, 3, Some(token(6)), Some(9));
+        assert_eq!(delivered, ActivationInput::default());
+        edges.deliver(&mut delivered, 4, Some(token(6)), Some(10));
+        assert_eq!(delivered.cancel, Some(token(6)));
+
+        // Nothing holding the cancel still never lets it overtake the release.
+        let mut edges = ActivationEdges::default();
+        edges.admit(token(6));
+        edges.observe(release, 8, 0);
+        edges.cancel_before(10, Some(token(6)), 1);
+        edges.deliver(&mut delivered, 2, Some(token(6)), None);
+        assert_eq!(delivered.release, release.release);
+        assert_eq!(delivered.cancel, None);
+        edges.deliver(&mut delivered, 3, Some(token(6)), None);
+        assert_eq!(delivered.cancel, Some(token(6)));
+    }
+    // With the edge table full, a retained start that cannot carry its vault
+    // cancel is refused at delivery rather than fired through the vault.
+    #[test]
+    fn a_retained_start_whose_vault_cancel_cannot_be_held_is_refused() {
+        let mut edges = ActivationEdges::default();
+        for start in 100..100 + MAX_RETAINED_ACTIVATION_EDGES as u32 {
+            edges.observe(
+                ActivationInput {
+                    cancel: Some(token(start)),
+                    ..ActivationInput::default()
+                },
+                0,
+                0,
+            );
+        }
+        edges.observe_start(token(6), 0, aim(0.0));
+        edges.stamp_fire_gate(6, false, 0);
+        edges.cancel_before(10, None, 0);
+        assert!(edges.take_start(token(6)));
+        assert_eq!(edges.delivered_fire_blocked(token(6)), Some(true));
     }
     // A vault entry at client tick 10 stops every execution begun before it
     // where its clock reaches 10, as the client's own cancel would: a retained

@@ -5109,15 +5109,17 @@ impl App {
         resolved
             .iter()
             .map(|resolved| {
+                let fire_blocked =
+                    host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);
                 host_activations::observe_lifecycle(
                     &mut registry,
                     allocator,
                     command_queues,
                     server,
                     resolved,
+                    fire_blocked,
                     *tick,
                 );
-                host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);
                 let mut command = Self::prepare_remote_pawn_command(
                     allocator,
                     &registry,

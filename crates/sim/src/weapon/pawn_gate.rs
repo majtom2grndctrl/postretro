@@ -9,8 +9,10 @@ use postretro_foundation::{MovementState, PlayerMovementComponent};
 use super::FireButtonState;
 
 /// Whether `movement` refuses activation starts this tick: it starts the tick
-/// vaulting with `allowFire` off and before the vault's last tick, so a start on
-/// the tick the vault ends is accepted. Read at tick start on every path.
+/// vaulting with `allowFire` off and `elapsed_ms < duration_ms`. The gate opens
+/// on the first tick that starts with `elapsed_ms >= duration_ms`, which is the
+/// exit tick or, when the path takes one extra tick to reach its corner, the
+/// tick before it. Read at tick start on every path.
 pub fn vault_blocks_fire(movement: &PlayerMovementComponent) -> bool {
     let MovementState::Vault { elapsed_ms, .. } = movement.movement_state else {
         return false;

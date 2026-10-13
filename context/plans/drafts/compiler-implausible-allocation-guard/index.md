@@ -74,9 +74,9 @@ on the failing config.
   refused. Both sides asserted on literals.
 - [ ] Factors whose product exceeds a machine word are refused as a bound violation, with the
   computed length reported. That case aborts today with no size in the message.
-- [ ] The largest length derivable at the maximum atlas dimension, the maximum layer count,
-  and the selected-light count is admitted — a request no machine can satisfy, and still
-  legitimate. Asserted on literals.
+- [ ] The largest length derivable at the maximum atlas dimension, a given packed layer
+  count, and the selected-light count is admitted, however large — it is still legitimate.
+  Asserted on literals.
 - [ ] The bound is unchanged across cache state, worker count, verbosity, and every
   byte-budget flag the compiler accepts.
 - [ ] The refusal is reached before the allocation it guards, on every path that reaches that
@@ -110,9 +110,10 @@ Regression guards — these pass today:
   `data_len` in both the fill and the empty-section constructor), `delta_sections.rs`,
   `sh_runtime_envelope.rs`, `sh_runtime_envelope_scoring.rs`, `chunk_light_list_bake.rs`,
   `cell_visibility_bake.rs`, `pack.rs`, `lightmap_layer.rs`. Several allocate nothing.
-- The bound's inputs already exist as constants: `MAX_ATLAS_DIMENSION`, `MAX_ATLAS_LAYERS`,
-  `MIN_ATLAS_DIMENSION`, `round_atlas_dim`'s power-of-two contract in `lightmap_bake.rs`, and
-  the `size_of` const assert pinning `LayerTexel`.
+- The bound's inputs: the packed bake-layer count (`PreparedAtlas::layer_count`), never
+  `MAX_ATLAS_LAYERS`, which `lighting-scale--lightmap-layer-budget-gate` removes; and the
+  constants `MAX_ATLAS_DIMENSION`, `MIN_ATLAS_DIMENSION`, `round_atlas_dim`'s power-of-two
+  contract in `lightmap_bake.rs`, and the `size_of` const assert pinning `LayerTexel`.
 - `LightmapLayer::from_bytes` is a found defect, not a candidate site — its allocation is
   bounded by the payload in hand, and its overflow guard cannot fire on a 64-bit target, so
   `from_bytes_rejects_overflowing_texel_count` passes through the length check instead. Fix it

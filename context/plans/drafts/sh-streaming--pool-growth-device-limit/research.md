@@ -1,6 +1,6 @@
 # sh-streaming--pool-growth-device-limit — research
 
-Read at a83e186. No SH streaming, controller or frame-loop source changed since 27ca6a6, where the
+Read at a83e186; source unchanged through 6391db9. No SH streaming, controller or frame-loop source changed since 27ca6a6, where the
 premises were first traced (`portal-walk-bounded-regions/research.md` §SH pool device limit).
 
 ## Premise check
@@ -132,8 +132,8 @@ The device limit is reachable, but only at the edge of the content range.
 - Retry: the existing `FailureState` allows one retry per identity (`retry_spent`) and warns per
   chunk identity. A device-limit failure leaves the retry unspent and warns through a level-scoped
   latch instead, so it is retried on every leave and re-entry of its targets. A retry requires the
-  cluster to leave the target set (after hysteresis expires or under pressure) and re-enter on a
-  later horizon change.
+  cluster to leave the target set and re-enter on a later horizon change, and a refusal-caused
+  failure retries at most once per hysteresis window (round 6 ruling).
 - No wake and no yield: nothing evicts to make room for a refused cluster.
 - Partial growth: a cluster that needs dense growth (fits) and sparse growth (does not) keeps
   the dense growth. The install's own comment accepts this: "a larger pool with the same live
@@ -193,7 +193,7 @@ From `/review-brief` (rows lens, round 1).
 | P16 | Eviction and refusal in one drain; eviction in a later drain | The renderer evicts before it stages installs | A cluster refused in drain N already saw that drain's freed room; an eviction in N+k does not change its failed state |
 | P17 | Refused; retried; the re-read fails the loader's hash check; later retried and refused again | The latest failure's cause decides the retry. `retry_spent` is the cluster's read-failure budget for the controller's life: only a read-failure retry sets it, and nothing clears it | The read failure after a refusal still gets its one retry and logs its one read-failure warning. Once that retry is spent, a later refusal still retries on every leave and re-entry, and a later read failure is not retried |
 | P18 | Pressure trim and refusal in one drain; a later retry under pressure | Pressure runs at drain start against the floor budget and counts the Ready cluster; its evictions apply before staging; the refusal is learned only from the outcome | The trim is ordinary floor-budget pressure, not a refusal yield: if it frees room the cluster installs, otherwise it is refused and the trimmed residents stay evicted. A failed cluster adds nothing to projected demand, so no later batch trims on its account until it is read again |
-| P19 | Optional cluster refused; floor-budget pressure active; the camera turns, changing the horizon every frame | The pressure trim skips clusters failed by a refusal (they release nothing), so `left_target` on a refused cluster comes only from leaving the target set after hysteresis | The cluster is read again at most once per departure from the horizon that outlasts the 2 s window, never once per horizon change |
+| P19 | A refused cluster while the camera turns, changing the horizon every frame: inside the horizon, targeted only as a seam-warm neighbour, or an owner targeted only through a dependent that pressure suppresses | A refusal-caused failure is retried at most once per hysteresis window, whatever path takes it out of and back into its targets; the trim's candidate filter skips it | Each is read again at most once per 2 s, never once per horizon change; refused clusters add nothing to the overshoot gauge |
 
 ## Review history
 

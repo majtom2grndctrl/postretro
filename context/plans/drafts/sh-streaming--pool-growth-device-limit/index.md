@@ -16,10 +16,11 @@ headroom.
 
 ## Decisions
 
-- **Dense layer size covers the whole level.** At load, tiles per layer are the whole dense set
-  times a fragmentation headroom, divided by the layer limit, capped at one full layer, so the
-  layer limit's worth of layers holds the whole level. The initial atlas stays sized to the floor
-  share; only the layer's size changes. Geometry stays fixed for the session (`plans/done/sh-probe-streaming--cluster-residency`). The planner's copy of the
+- **Dense layer size covers the whole level.** At load, tiles per layer are at least the whole
+  dense set times a fragmentation headroom, divided by the layer limit and rounded up, capped at
+  one full layer, so the layer limit's worth of layers holds the whole level. The initial atlas
+  keeps the planner's initial dense slot count, rounded up to whole layers; only the layer's size
+  changes. Geometry stays fixed for the session (`plans/done/sh-probe-streaming--cluster-residency`). The planner's copy of the
   geometry rule is deleted, so one rule sizes both. Reason: the 2026-09-28 rule in
   `large-map-spatial-residency.md`, "a miss fallback cannot stand in for residency".
 - **Growth clamps to the device.** The dense limit is the array-layer limit; each sparse family's
@@ -35,12 +36,13 @@ headroom.
   records its cause, so the latest failure decides the retry. One device-limit warning per level
   names the first refused cluster; a refusal logs no per-cluster read-failure warning.
 - **Refusal handling adds no churn on camera turns.** PostRetro games turn fast, so nothing
-  evicted for a refusal should need re-reading within a turn. The pressure trim never selects a
-  cluster failed by a refusal, since it holds no room; a refused cluster's departure from its
-  targets comes only from hysteresis expiring, so it is read again at most once per 2 s window,
-  never once per horizon change.
+  evicted for a refusal should need re-reading within a turn. A cluster whose latest failure is a
+  refusal is retried at most once per hysteresis window (2 s), however it leaves and re-enters
+  its targets: through hysteresis, a seam-warm neighbour, an owner's dependent, or pressure. The
+  pressure trim's candidate filter also skips it, since it holds no room.
 - **A refusal evicts nothing.** The refused cluster waits for its retry; no resident, mandatory or
-  optional, leaves to make room for it. Ordinary floor-budget pressure is unchanged. This keeps the pin guarantee in
+  optional, leaves to make room for it. Ordinary floor-budget pressure is unchanged, except that
+  its trim skips refused clusters. This keeps the pin guarantee in
   `plans/done/sh-probe-streaming--authored-hints` and amends only §4's "never refused" clause for
   the mandatory tier.
 - **Other drain errors stay fatal.** A chunk corrupted on disk already fails only its own
@@ -83,13 +85,16 @@ Pins are in `research.md` §Ordering pins.
   whose whole dense set exceeds the layer limit times its largest writer closure grows until
   every cluster is resident at once, with no refusal. The test asserts that precondition, so it
   fails if layer size still follows the initial share.
-- [ ] At load, one layer holds at most the whole dense set times the headroom divided by the layer
-  limit, and the initial atlas is no larger than the dense floor share plus one layer. Past one
+- [ ] At load, one layer holds at least the whole dense set times the headroom divided by the layer
+  limit, rounded up, so the layer limit's worth of layers holds the whole level times the
+  headroom; on a small fixture a layer holds at least one tile. The initial atlas is the
+  planner's initial dense slot count rounded up to whole layers, never more layers than the
+  limit. Past one
   full layer's worth, the layer is full and the cap holds. In both cases, and at zero
   share, the planner's slot count, charged floor bytes and largest-closure dense minimum equal
   the GPU atlas's for the same level and limits, from the one geometry rule.
 - [ ] Atlas width, height and tiles per layer are identical across every growth in a session, the
-  clamped growth to the limit included, as long as the previous buffer is retiring or retired.
+  clamped growth to the limit included.
 - [ ] A dense pool at 200 layers, limit 256, needing 201 grows to 256 and installs. One needing
   257 is refused without growing. Below the limit, growth is unchanged: 100 layers needing 101
   grow to 200.
@@ -126,9 +131,11 @@ Pins are in `research.md` §Ordering pins.
   read failed, was retried and was then refused, retried and failed its read again is not read
   again. In both sequences, every refusal along the way is retried on leave and re-entry (P14,
   P17).
-- [ ] Under floor-budget pressure, with the camera changing the horizon every frame for several
-  seconds, a refused optional cluster that stays inside the horizon is never trimmed and is not
-  read again; the retry counter does not rise (P19).
+- [ ] With the camera changing the horizon every frame for several seconds, under floor-budget
+  pressure, each of these refused clusters is read again at most once per 2 s: one inside the
+  horizon, one targeted only as a seam-warm neighbour whose near side flickers in and out of view,
+  and an owner targeted only through a dependent that pressure suppresses. A refused cluster is
+  never a trim candidate, and refused clusters do not raise the overshoot gauge (P19).
 - [ ] A refused cluster that stays targeted is not read again when a later drain evicts other
   clusters and frees room; only leaving and re-entering its targets reads it again (P16).
 - [ ] While an owner is failed by a refusal, none of its dependents is requested, holds a permit or
@@ -186,10 +193,16 @@ Pins are in `research.md` §Ordering pins.
   for the same identity, and warns per chunk identity; `transition_failed_retries` spends the
   retry. The refusal path releases both, records the failure's cause so the transition spends
   nothing on a device-limit retry, and uses the level-scoped device-limit latch instead.
-- The pressure trim (`pressure.rs`) must skip clusters failed by a refusal, so it never stamps
-  them as having left their targets.
-- New miss bucket consumers: `debug_ui/streaming_tab.rs` and `capture/report.rs` read the buckets
-  field by field; add the device-limit bucket to both.
+- Retry rate limit: key it on the failure record whose latest cause is a refusal (the record
+  survives the retry, so a retried cluster that now holds room is not affected). The trim skip
+  belongs in the trim's candidate filter only, not in `pressure_evictable_optional`, which would
+  count refused clusters as protected demand and inflate the overshoot gauge.
+- Warnings: `mark_failed` warns only when no earlier failure of the same identity exists, so a
+  recorded refusal would silence a later read-failure warning. Key that warning on an earlier
+  read failure, not on any failure.
+- New miss bucket consumers read the buckets field by field: the renderer's
+  `debug_ui/streaming_tab.rs`, `capture/report.rs`, and the periodic log in
+  `session/sh_streaming_diagnostics.rs`. Add the device-limit bucket to all three.
 - `grow_sparse` stops at the first family waiting on retirement before later families' limits
   are checked; take every family's limit verdict first.
 - Refuse before growing whatever cannot fit. A dense growth kept while the sparse half is refused

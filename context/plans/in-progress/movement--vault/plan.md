@@ -1,32 +1,16 @@
 # movement--vault — plan of record
 
 mode: resumable
-status: blocked
+status: proposed
 read at: 27ca6a60
 branch: claude/sweet-cerf-m0t396
 
 The claim was pushed to `main` as `27ca6a60`. Every source symbol cited by Decisions, Path and `research.md` was re-read at that commit. The only changes since `a307e3f1` under physics, foundation, net and netcode are the Quake jump and gravity defaults (`21bce72f`, `728ec83e`). Decisions and Acceptance remain the brief's contract. The `A`/`R`/`T` labels below are planning handles, not reworded acceptance.
 
-## Blocked on the owner
+## Resolved owner items
 
-Two items stopped the plan before the owner's skim; B2 is resolved. Once B1 is resolved, status becomes `proposed` and the skim proceeds as normal for a resumable plan.
-
-### B1. False Decision premise: the `from` mapping onto the composition draft
-
-The Decision *Trigger per entry context* says that `from` "maps one-to-one onto the composition draft's `states.<s>.vault`." Here is what `context/plans/drafts/player-descriptor-composition/index.md` actually says:
-
-- **`vault` is a state.** Its own key is `states.vault`, beside `ground`, `air` and `crouch` (§1, line 22: "`slide`, `wallRun`, `vault` as they land"). It is never a per-state child.
-- **Per-state children are modifiers only.** The `states.<s>.X` child pattern belongs to modifiers (dash, §2). The draft's own working rule says "a state owns the tick's velocity intent; a modifier is a time-bounded overlay" (Open questions). Under that rule, a vault child block under each state would be a modifier, contrary to this brief's "native `Vault` state".
-- **No `swim` state.** The draft's state vocabulary has no `swim`, so `from.swim` has nothing to map onto.
-
-The flat `movement.vault.from` this brief builds does not depend on the sentence. Only the future migration does. Options:
-
-1. **Drop the mapping sentence (recommended).** `from` stands as specified. The composition draft decides the migrated shape when it absorbs vault and swim; one plausible shape is `states.vault.from`.
-2. **Amend the draft now.** Add `states.swim` and per-state `vault` entry children to the composition draft, and record why vault entry is a per-state child while vault itself is a state.
-
-### B2. Resolved: the "Luau twin" acceptance row is restated
-
-`player.ts` has no Luau twin. The owner took the fixture-pair wording, which follows the `fluids-swim` precedent (`fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface`, plus the test pinning the dev `player.ts` block equal to the twin's). The brief's row D2 now reads it.
+- **B1:** `from`'s mapping claim was false. The owner kept `from` as specified. The draft keys states `ground` / `air` (§1), and dash is a modifier "entered *from* a state" (§2). The Decision now says the keys follow the draft's state names plus the shipped `swim`, and that `from` promises no migrated shape. Re-checked against `player-descriptor-composition/index.md` §1–§2.
+- **B2:** the "Luau twin" row is restated to the `movement-vault.{ts,luau}` fixture pair on the `fluids-swim` precedent. See D2 below.
 
 ## Corrections
 

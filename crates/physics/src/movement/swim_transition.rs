@@ -96,15 +96,13 @@ pub(super) fn environment_transition(
     }
 
     if swimming {
-        let fluid_jump = fluid_jump_input(input, resolved)
-            && fluid_jump_clears(
-                component,
-                exit_depth,
-                fluid_jump_velocity,
-                resolved,
-                collision,
-                *position,
-            );
+        // Without a fluid jump, jump at the surface only treads.
+        let fluid_jump = fluid_jump_velocity.is_some_and(|velocity| {
+            fluid_jump_input(input, resolved)
+                && fluid_jump_clears(
+                    component, exit_depth, velocity, resolved, collision, *position,
+                )
+        });
         let stays = resolved.immersion >= exit_depth || fluid_jump;
         return SwimSeam {
             transition: (!stays).then(leave_swim),

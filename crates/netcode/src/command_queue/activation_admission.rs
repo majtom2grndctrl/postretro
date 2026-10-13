@@ -11,6 +11,7 @@ use postretro_entities::components::inventory::Inventory;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::{ActivationInput, ActivationToken};
 use postretro_net::wire::InputCommand;
+use postretro_sim::weapon::pawn_gate::VaultSparedCharges;
 
 impl ClientCommandState {
     /// Intake retains edges and starts before stale-drop or catch-up trim. A
@@ -27,6 +28,7 @@ impl ClientCommandState {
                     pitch: command.movement.aim_pitch,
                     yaw: command.movement.facing_yaw,
                 },
+                self.host_tick,
             );
         }
     }
@@ -170,17 +172,26 @@ impl ClientCommandState {
     }
 
     /// Deliver retained release/cancel edges. A cancel stamped after the live
-    /// execution's clock waits for it. Cadence notes each delivered release,
-    /// including one riding with its own start; a charged execution runs its
-    /// recovery from it.
+    /// execution's clock waits for it. A release of a charge a vault spared
+    /// waits for the resolution of its own client tick, read from the cursor
+    /// this resolution already set; every other release goes at once.
+    /// Cadence notes each delivered release, including one riding with its own
+    /// start; a charged execution runs its recovery from it.
     pub(super) fn deliver_edges(
         &mut self,
         activation: &mut ActivationInput,
         live: Option<ActivationToken>,
     ) {
         let horizon = self.live_horizon(live);
-        self.activation_edges
-            .deliver(activation, self.host_tick, live, horizon);
+        let spent_release = self.cadence.spent_release();
+        self.activation_edges.deliver(
+            activation,
+            self.host_tick,
+            live,
+            horizon,
+            spent_release,
+            self.resolved_cursor,
+        );
         if let Some(release) = activation.release {
             self.cadence
                 .release(release.token, release.release_tick, self.host_tick);
@@ -234,6 +245,82 @@ impl HostCommandQueues {
         self.clients
             .get(&client_id)
             .and_then(|state| state.activation_edges.refusal(token))
+    }
+
+    /// Record the shooter's fire gate at the start of `resolved_tick`, and stamp
+    /// `client_id`'s starts due by it with the gate of each one's own tick
+    /// (`ActivationEdges::stamp_fire_gate`). Returns the gate recorded for
+    /// `resolved_tick`: the first resolution's, when a frontier hold resolves
+    /// it again. The caller judges the tick by it.
+    ///
+    /// `spared`: the shooter's firing-slot actions whose charge a vault does
+    /// not interrupt, read from its inventory now. A closed gate passes over a
+    /// start or execution of one of them still charging, as the client's did.
+    pub fn stamp_start_fire_gate(
+        &mut self,
+        client_id: u64,
+        resolved_tick: u32,
+        blocked: bool,
+        spared: VaultSparedCharges,
+    ) -> bool {
+        match self.clients.get_mut(&client_id) {
+            Some(state) => {
+                state.activation_edges.set_vault_spared_charges(spared);
+                state
+                    .activation_edges
+                    .stamp_fire_gate(resolved_tick, blocked)
+            }
+            None => blocked,
+        }
+    }
+
+    /// `client_id`'s pawn starts client tick `tick` with its fire gate closed,
+    /// such as a vault with fire blocked. Its client cancelled whatever it was
+    /// executing on that tick, except a charge whose action a vault does not
+    /// interrupt and that it had not released before `tick`, which it kept
+    /// charging through the vault and whose release it held past it. It sends
+    /// no cancel for what it stopped, so every other execution it began before
+    /// `tick` stops there as if it had: the live one, a start delivered this
+    /// resolution, and each retained start stamped earlier carry a cancel
+    /// stamped `tick` (`ActivationEdges::cancel_before`). The lane delivers
+    /// each once its execution's clock reaches `tick`, so a late execution
+    /// mints every shot the client fired before the vault and none after,
+    /// wherever the vault stands when it is delivered. The spared charge
+    /// takes no cancel, and its release waits in the lane for its own tick's
+    /// resolution (`ActivationEdges::deliver`).
+    ///
+    /// Returns whether the live execution's clock has already reached `tick`.
+    /// This resolution's edges are already delivered, so the caller cancels
+    /// that execution itself, before this tick's simulation. False for a
+    /// spared live charge.
+    pub fn close_start_fire_gate(&mut self, client_id: u64, tick: u32) -> bool {
+        let live = self
+            .activations
+            .live_binding(client_id)
+            .map(|(id, _)| id.token);
+        let Some(state) = self.clients.get_mut(&client_id) else {
+            return false;
+        };
+        state
+            .activation_edges
+            .cancel_before(tick, live, state.host_tick);
+        if live.is_some_and(|live| state.activation_edges.vault_spares_live(live, tick)) {
+            return false;
+        }
+        // No horizon: nothing holds a cancel, as an unreleased charge holds
+        // none. A charge released before `tick` holds it at its release tick,
+        // so its shot fires before the cancel lands.
+        live.is_some()
+            && state
+                .live_horizon(live)
+                .is_none_or(|horizon| client_tick_le(tick, horizon))
+    }
+
+    /// The fire gate stamped on `token`'s delivered start, if it was stamped.
+    pub fn start_fire_blocked(&self, client_id: u64, token: ActivationToken) -> Option<bool> {
+        self.clients
+            .get(&client_id)
+            .and_then(|state| state.activation_edges.delivered_fire_blocked(token))
     }
 
     /// Aim of the command that carried `token`'s start, once playout delivered
@@ -318,7 +405,8 @@ mod tests {
     use postretro_foundation::{
         ActivationId, ActivationLane, ActivationProgram, ActivationStep, ActivationToken,
     };
-    use postretro_net::wire::{InputCommand, WireActivationToken};
+    use postretro_net::wire::{InputCommand, WireActivationRelease, WireActivationToken};
+    use postretro_sim::weapon::pawn_gate::VaultSparedCharges;
 
     const CLIENT: u64 = 7;
     /// 600 ms: a slow press weapon's recovery.
@@ -486,5 +574,318 @@ mod tests {
             0,
             "its chain still owes"
         );
+    }
+
+    /// The host machine admitted `start`: it binds the ledger and is live.
+    fn accept_live(queues: &mut HostCommandQueues, start: ActivationToken, charged: bool) {
+        let program = ActivationProgram::new(vec![ActivationStep::Shot], None, SLOW).unwrap();
+        let id = ActivationId {
+            pawn: 1,
+            token: start,
+        };
+        assert!(
+            queues
+                .activations
+                .accept(CLIENT, id, EntityId::from_raw(9), &program, 0)
+        );
+        queues.activation_admitted(CLIENT, start, charged);
+    }
+
+    // Regression: a release delivered on the resolution whose tick first
+    // started vaulting left the unfired charge with no horizon, so the host
+    // cancelled it before this tick's simulation fired the charged shot the
+    // client fired before its vault.
+    #[test]
+    fn a_vault_after_a_charges_release_lets_the_charged_shot_fire_first() {
+        let start = token(2);
+        let vault = 7;
+        let mut closed_at_once = None;
+        let resolved = lockstep(
+            &mut HostCommandQueues::new(),
+            2..12,
+            |tick| {
+                let mut command = command(tick, 0, tick == start.start_tick);
+                if tick == 5 {
+                    command.activation.release = Some(WireActivationRelease {
+                        token: wire_token(start),
+                        release_tick: 5,
+                    });
+                }
+                command
+            },
+            |queues, resolved| {
+                if resolved.command.activation.initiation == Some(start) {
+                    accept_live(queues, start, true);
+                }
+                if resolved.command.activation.release.is_some() {
+                    closed_at_once = Some(queues.close_start_fire_gate(CLIENT, vault));
+                    // The machine fires the charge at its release this tick.
+                    queues.activation_recovery_began(
+                        CLIENT,
+                        start,
+                        EntityId::from_raw(9),
+                        SLOW,
+                        true,
+                    );
+                }
+            },
+        );
+        assert_eq!(
+            closed_at_once,
+            Some(false),
+            "the charge's clock sits at its release, before the vault"
+        );
+        let released = resolved
+            .iter()
+            .position(|resolved| resolved.command.activation.release.is_some())
+            .expect("the release is delivered");
+        let cancelled = resolved
+            .iter()
+            .position(|resolved| resolved.command.activation.cancel == Some(start))
+            .expect("the vault cancels the charge's execution");
+        assert_eq!(
+            cancelled - released,
+            2,
+            "cancelled once the clock runs from the release (5) to the vault (7)"
+        );
+    }
+
+    // Regression: a start whose command playout yielded past reached the lane
+    // after a vault began, and carried no cancel for it until the next closed
+    // resolution, so the host minted rounds the client never fired.
+    #[test]
+    fn a_start_arriving_after_a_vault_began_is_cancelled_where_it_began() {
+        let start = token(2);
+        let mut queues = HostCommandQueues::new();
+        let resolve = |queues: &mut HostCommandQueues, blocked: bool| {
+            let resolved = queues.resolve_tick(CLIENT).unwrap();
+            if queues.stamp_start_fire_gate(
+                CLIENT,
+                resolved.client_tick,
+                blocked,
+                VaultSparedCharges::default(),
+            ) {
+                queues.close_start_fire_gate(CLIENT, resolved.client_tick);
+            }
+            if resolved.command.activation.initiation == Some(start) {
+                accept_live(queues, start, false);
+            }
+            resolved
+        };
+        for tick in 0..2 {
+            assert!(queues.ingest(CLIENT, &command(tick, 0, false)));
+        }
+        resolve(&mut queues, false);
+        resolve(&mut queues, false);
+        // Tick 2 is lost; tick 3's arrival makes playout yield past it.
+        assert!(queues.ingest(CLIENT, &command(3, 0, false)));
+        assert_eq!(resolve(&mut queues, false).client_tick, 2);
+        assert!(queues.ingest(CLIENT, &command(4, 0, false)));
+        assert_eq!(
+            resolve(&mut queues, true).client_tick,
+            3,
+            "the pawn starts tick 3 vaulting"
+        );
+        // A later copy of tick 2 is stale, but its start is retained.
+        assert!(!queues.ingest(CLIENT, &command(2, 0, true)));
+        assert!(queues.ingest(CLIENT, &command(5, 0, false)));
+        let delivered = resolve(&mut queues, true);
+        assert_eq!(delivered.command.activation.initiation, Some(start));
+        assert_eq!(queues.start_fire_blocked(CLIENT, start), Some(false));
+        assert!(queues.ingest(CLIENT, &command(6, 0, false)));
+        assert_eq!(
+            resolve(&mut queues, true).command.activation.cancel,
+            Some(start),
+            "cancelled as its clock reaches 3, where the vault began"
+        );
+    }
+
+    fn wire_token(start: ActivationToken) -> WireActivationToken {
+        WireActivationToken {
+            start_tick: start.start_tick,
+            lane: 0,
+        }
+    }
+
+    // Regression: a charged start reaching the lane after its tick resolved
+    // took its missed vault cancel only when stamped, after the resolution
+    // that admitted it had already sent a release the client stamped on the
+    // vault's first tick. The client's gate cancelled the charge before that
+    // release, so the host fired a charged shot the client never fired.
+    #[test]
+    fn a_late_charged_start_never_fires_a_release_its_clients_vault_cancelled() {
+        let start = token(2);
+        let mut queues = HostCommandQueues::new();
+        let resolve = |queues: &mut HostCommandQueues, blocked: bool| {
+            let resolved = queues.resolve_tick(CLIENT).unwrap();
+            if queues.stamp_start_fire_gate(
+                CLIENT,
+                resolved.client_tick,
+                blocked,
+                VaultSparedCharges::default(),
+            ) {
+                queues.close_start_fire_gate(CLIENT, resolved.client_tick);
+            }
+            if resolved.command.activation.initiation == Some(start) {
+                accept_live(queues, start, true);
+            }
+            resolved
+        };
+        let mut resolutions = Vec::new();
+        for tick in 0..2 {
+            assert!(queues.ingest(CLIENT, &command(tick, 0, false)));
+        }
+        resolutions.push(resolve(&mut queues, false));
+        resolutions.push(resolve(&mut queues, false));
+        // Tick 2 is lost; tick 3's arrival makes playout yield past it.
+        assert!(queues.ingest(CLIENT, &command(3, 0, false)));
+        resolutions.push(resolve(&mut queues, false));
+        // The client releases on tick 4, the vault's first tick; its gate
+        // cancels the charge before the release.
+        let mut released = command(4, 0, false);
+        released.activation.release = Some(WireActivationRelease {
+            token: wire_token(start),
+            release_tick: 4,
+        });
+        assert!(queues.ingest(CLIENT, &released));
+        resolutions.push(resolve(&mut queues, false));
+        assert!(queues.ingest(CLIENT, &command(5, 0, false)));
+        let closed = resolve(&mut queues, true);
+        assert_eq!(closed.client_tick, 4, "the pawn starts tick 4 vaulting");
+        resolutions.push(closed);
+        // A later copy of tick 2 is stale, but its start is retained.
+        assert!(!queues.ingest(CLIENT, &command(2, 0, true)));
+        for tick in 6..12 {
+            assert!(queues.ingest(CLIENT, &command(tick, 0, false)));
+            resolutions.push(resolve(&mut queues, true));
+        }
+        assert!(
+            resolutions
+                .iter()
+                .any(|resolved| resolved.command.activation.initiation == Some(start)),
+            "the late start is delivered"
+        );
+        assert!(
+            resolutions
+                .iter()
+                .all(|resolved| resolved.command.activation.release.is_none()),
+            "the release the vault cancelled never reaches the machine"
+        );
+        assert!(
+            resolutions
+                .iter()
+                .any(|resolved| resolved.command.activation.cancel == Some(start)),
+            "the charge is cancelled"
+        );
+    }
+
+    // Regression: a cancel for an execution that does not charge waited behind
+    // a release the client sent before it, which the machine ignores, so the
+    // burst minted a shot after the client's cancel.
+    #[test]
+    fn a_cancel_never_waits_behind_a_release_an_uncharged_execution_ignores() {
+        let start = token(2);
+        let mut queues = HostCommandQueues::new();
+        for tick in 0..3 {
+            assert!(queues.ingest(CLIENT, &command(tick, 0, tick == start.start_tick)));
+        }
+        queues.resolve_tick(CLIENT).unwrap();
+        queues.resolve_tick(CLIENT).unwrap();
+        let delivered = queues.resolve_tick(CLIENT).unwrap();
+        assert_eq!(delivered.command.activation.initiation, Some(start));
+        accept_live(&mut queues, start, false);
+        // Input stalls at the frontier while the burst's clock runs on to 5.
+        for _ in 0..2 {
+            let frozen = queues.resolve_tick(CLIENT).unwrap();
+            assert_eq!(frozen.source, super::super::ResolutionSource::Held);
+        }
+        let mut released = command(3, 0, false);
+        released.activation.release = Some(WireActivationRelease {
+            token: wire_token(start),
+            release_tick: 3,
+        });
+        let mut cancelled = command(4, 0, false);
+        cancelled.activation.cancel = Some(wire_token(start));
+        assert!(queues.ingest(CLIENT, &released));
+        assert!(queues.ingest(CLIENT, &cancelled));
+        assert_eq!(
+            queues
+                .resolve_tick(CLIENT)
+                .unwrap()
+                .command
+                .activation
+                .cancel,
+            Some(start),
+            "the cancel stamped 4 goes as soon as the clock passes it"
+        );
+    }
+
+    // A live charge whose action a vault does not interrupt keeps charging
+    // through its client's vault: no closed tick cancels it, at once or
+    // later, and its release after the vault reaches the machine on the
+    // resolution of its own tick. Without the opt-out the vault cancels it
+    // and the release never goes.
+    #[test]
+    fn a_charge_the_vault_spares_reaches_its_release_after_the_vault() {
+        let start = token(2);
+        let vault = 5..9;
+        for spared in [true, false] {
+            let charges = if spared {
+                VaultSparedCharges::default().with(0, ActivationLane::Primary)
+            } else {
+                VaultSparedCharges::default()
+            };
+            let mut closed_at_once = Vec::new();
+            let resolved = lockstep(
+                &mut HostCommandQueues::new(),
+                2..16,
+                |tick| {
+                    let mut command = command(tick, 0, tick == start.start_tick);
+                    if tick == 10 {
+                        command.activation.release = Some(WireActivationRelease {
+                            token: wire_token(start),
+                            release_tick: 10,
+                        });
+                    }
+                    command
+                },
+                |queues, resolved| {
+                    let blocked = vault.contains(&resolved.client_tick);
+                    if queues.stamp_start_fire_gate(CLIENT, resolved.client_tick, blocked, charges)
+                    {
+                        closed_at_once
+                            .push(queues.close_start_fire_gate(CLIENT, resolved.client_tick));
+                    }
+                    if resolved.command.activation.initiation == Some(start) {
+                        accept_live(queues, start, true);
+                    }
+                },
+            );
+            let released_on =
+                resolved
+                    .iter()
+                    .find(|resolved| {
+                        resolved.command.activation.release.is_some_and(|release| {
+                            release.token == start && release.release_tick == 10
+                        })
+                    })
+                    .map(|resolved| resolved.client_tick);
+            let released = released_on.is_some();
+            if spared {
+                // Received two ticks ahead of the cursor, it waits for its
+                // own tick, so it fires on the client's tick and aim.
+                assert_eq!(released_on, Some(10), "rides its own tick's resolution");
+            }
+            let cancelled = resolved
+                .iter()
+                .any(|resolved| resolved.command.activation.cancel == Some(start));
+            assert_eq!(released, spared, "spared: {spared}");
+            assert_eq!(cancelled, !spared, "spared: {spared}");
+            assert_eq!(
+                closed_at_once.iter().any(|&at_once| at_once),
+                !spared,
+                "spared: {spared}"
+            );
+        }
     }
 }

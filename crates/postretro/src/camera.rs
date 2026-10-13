@@ -52,6 +52,10 @@ impl RenderCamera {
         fov_offset_degrees: f32,
     ) -> Self {
         let eye_position = effective_eye_position(position, eye_offset);
+        // Aim is clamped already; view-feel pitch on top of it (impulses, a
+        // held vault pose) must not carry the view past vertical, where the
+        // look-at basis flips. An in-range pitch passes unchanged.
+        let pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
         let forward = look_direction(yaw, pitch);
         let view = render_view_matrix(position, forward, roll, eye_offset);
 

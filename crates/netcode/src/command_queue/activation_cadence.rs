@@ -309,7 +309,8 @@ impl ActivationCadence {
     /// the execution ends after its last authored step, so an input waits at
     /// most until the clock reaches its tick or the execution's remaining steps
     /// run out. A charge's shots begin at its release: until one fires it holds
-    /// nothing, except inputs stamped after a release delivered this same tick.
+    /// nothing, except that a release received, or delivered this same tick,
+    /// holds inputs stamped after it until the charged shot fires.
     pub fn order_horizon(
         &self,
         live: Option<ActivationToken>,
@@ -320,9 +321,30 @@ impl ActivationCadence {
             live == Some(execution.token) || execution.delivered_tick == host_tick
         })?;
         if execution.charges == Some(true) && !execution.fired {
-            return pending_release(execution.token);
+            // A release delivered this host tick fires in this tick's
+            // simulation; until then the clock sits at its release tick.
+            return execution
+                .release
+                .map(|(release_tick, _)| release_tick)
+                .or_else(|| pending_release(execution.token));
         }
         Some(execution.clock(host_tick))
+    }
+
+    /// The execution whose release can no longer fire a shot: it does not
+    /// charge or, defensively, its charge already fired (a charged execution
+    /// fires only after its release is delivered, which already ends the
+    /// release's wait). The machine reads a release only while charging, so a
+    /// cancel for it never waits behind its release. `None` while the machine
+    /// has not yet admitted the execution.
+    pub fn spent_release(&self) -> Option<ActivationToken> {
+        self.execution
+            .filter(|execution| {
+                execution
+                    .charges
+                    .is_some_and(|charges| !charges || execution.fired)
+            })
+            .map(|execution| execution.token)
     }
 
     /// A release was delivered to `token`'s execution on `host_tick`. It moves
@@ -559,6 +581,36 @@ mod tests {
             cadence.client_spacing(weapon(), 1, 108),
             CadenceVerdict::Unrecorded,
             "the weapon in another slot escapes the slot-keyed host half, so it keeps its host cooldown"
+        );
+    }
+
+    #[test]
+    fn cadence_spent_release_names_only_an_admitted_execution_that_cannot_charge() {
+        let mut cadence = ActivationCadence::default();
+        assert_eq!(cadence.spent_release(), None, "no execution");
+        cadence.begin(token(5), 0, 0, 5);
+        assert_eq!(
+            cadence.spent_release(),
+            None,
+            "the machine has not admitted it yet"
+        );
+        cadence.admitted(token(5), true);
+        assert_eq!(
+            cadence.spent_release(),
+            None,
+            "a charge that has not fired still reads its release"
+        );
+        // Defensive arm: a charge that fired has no release left to wait for.
+        cadence.recovery_began(token(5), weapon(), R, true, 1, CATCH_UP_ALLOWANCE_TICKS);
+        assert_eq!(cadence.spent_release(), Some(token(5)));
+
+        let mut cadence = ActivationCadence::default();
+        cadence.begin(token(7), 0, 0, 7);
+        cadence.admitted(token(7), false);
+        assert_eq!(
+            cadence.spent_release(),
+            Some(token(7)),
+            "an uncharged execution ignores a release"
         );
     }
 

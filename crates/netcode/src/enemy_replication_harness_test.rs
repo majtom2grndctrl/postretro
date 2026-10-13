@@ -1200,6 +1200,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 crouch: None,
                 slide: None,
                 swim: None,
+                vault: None,
                 view_feel: None,
             }),
         )

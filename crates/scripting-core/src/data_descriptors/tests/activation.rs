@@ -244,3 +244,111 @@ fn activation_cue_name_byte_bounds_match_both_vm_authoring_boundaries() {
         }
     }
 }
+
+fn charge_pair(
+    js_interrupts: &str,
+    lua_interrupts: &str,
+) -> [Result<EntityTypeDescriptor, DescriptorError>; 2] {
+    pair(
+        &format!(
+            "{{trigger:'press',recoveryMs:0,charge:{{minMs:0,fullMs:100{js_interrupts}}},steps:[{{kind:'shot'}}]}}"
+        ),
+        &format!(
+            "{{trigger='press',recoveryMs=0,charge={{minMs=0,fullMs=100{lua_interrupts}}},steps={{{{kind='shot'}}}}}}"
+        ),
+    )
+}
+
+// `charge.interruptedBy` is an optional closed map whose keys default to
+// interrupting; both runtimes build the same descriptor from it.
+#[test]
+fn charge_interrupts_parse_alike_in_both_runtimes_and_default_to_interrupting() {
+    for (js, lua, interrupted_by, survives) in [
+        ("", "", None, false),
+        (",interruptedBy:{}", ",interruptedBy={}", Some(true), false),
+        (
+            ",interruptedBy:{vault:true}",
+            ",interruptedBy={vault=true}",
+            Some(true),
+            false,
+        ),
+        (
+            ",interruptedBy:{vault:false}",
+            ",interruptedBy={vault=false}",
+            Some(false),
+            true,
+        ),
+    ] {
+        let [js, lua] = charge_pair(js, lua).map(Result::unwrap);
+        assert_eq!(js.weapon, lua.weapon, "{interrupted_by:?}");
+        let action = js.weapon.unwrap().primary;
+        let charge = action.charge.as_ref().unwrap();
+        assert_eq!(
+            charge.interrupted_by.map(|interrupts| interrupts.vault),
+            interrupted_by
+        );
+        assert_eq!(charge.interrupted_by_vault(), !survives);
+        assert_eq!(action.charge_survives_vault(), survives);
+    }
+}
+
+// The interrupt vocabulary is closed: an unknown source, a non-boolean and a
+// non-object reject content with one diagnostic, the same in both runtimes,
+// naming the authored path.
+#[test]
+fn charge_interrupts_reject_unknown_sources_and_wrong_types_with_one_diagnostic() {
+    let path = "components.weapon.primary.charge.interruptedBy";
+    for (js, lua, expected) in [
+        (
+            ",interruptedBy:{damage:false}",
+            ",interruptedBy={damage=false}",
+            format!("`{path}.damage` is not a charge interrupt source; expected `vault`"),
+        ),
+        (
+            ",interruptedBy:{vault:false,zz:true}",
+            ",interruptedBy={vault=false,zz=true}",
+            format!("`{path}.zz` is not a charge interrupt source; expected `vault`"),
+        ),
+        (
+            ",interruptedBy:{vault:1}",
+            ",interruptedBy={vault=1}",
+            format!("`{path}.vault` must be a boolean"),
+        ),
+        (
+            ",interruptedBy:{vault:'no'}",
+            ",interruptedBy={vault='no'}",
+            format!("`{path}.vault` must be a boolean"),
+        ),
+        (
+            ",interruptedBy:true",
+            ",interruptedBy=true",
+            format!("`{path}` must be an object when supplied"),
+        ),
+        (
+            ",interruptedBy:()=>({})",
+            ",interruptedBy=function() return {} end",
+            format!("`{path}` must be an object when supplied"),
+        ),
+    ] {
+        let [js, lua] = charge_pair(js, lua).map(|result| result.unwrap_err().to_string());
+        assert!(js.contains(&expected), "JS: {js}");
+        assert_eq!(js, lua, "both runtimes report one diagnostic");
+    }
+    // Shapes only one runtime can spell.
+    let [js, _] = charge_pair(",interruptedBy:{vault:null}", "");
+    assert!(
+        js.unwrap_err()
+            .to_string()
+            .contains(&format!("`{path}.vault` must be a boolean"))
+    );
+    let [js, _] = charge_pair(",interruptedBy:[false]", "");
+    assert!(
+        js.unwrap_err()
+            .to_string()
+            .contains(&format!("`{path}` must be an object when supplied"))
+    );
+    let [_, lua] = charge_pair("", ",interruptedBy={false}");
+    assert!(lua.unwrap_err().to_string().contains(&format!(
+        "`{path}` keys must be interrupt source names; expected `vault`"
+    )));
+}

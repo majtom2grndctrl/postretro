@@ -57,6 +57,7 @@ pub use super::components::mesh::DEFAULT_CROSSFADE_MS;
 pub use super::conv;
 
 mod audio_profile;
+mod charge_interrupts;
 mod error;
 mod fluids;
 mod input_block;
@@ -67,6 +68,8 @@ mod runtime_manifest;
 mod swim_block;
 mod trigger_events;
 mod validate;
+mod vault_block;
+mod vault_view_block;
 mod vm_adapters;
 
 mod js {
@@ -103,6 +106,7 @@ mod lua {
 // `data_descriptors::Item` keep resolving and submodules can reach each other
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
+pub(crate) use charge_interrupts::*;
 pub use error::*;
 pub use fluids::{drain_fluids_js, drain_fluids_lua};
 pub(crate) use movement_sounds::*;
@@ -110,6 +114,8 @@ pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_ev
 pub use runtime_manifest::*;
 pub(crate) use swim_block::*;
 pub use validate::*;
+pub(crate) use vault_block::*;
+pub(crate) use vault_view_block::*;
 pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{

@@ -15,7 +15,46 @@ pub enum ActivationTrigger {
 pub struct ActivationCharge {
     pub min_ms: f32,
     pub full_ms: f32,
+    /// Which sources may cut the charge short before its shot fires. Omitted:
+    /// every source does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_by: Option<ChargeInterrupts>,
 }
+
+impl ActivationCharge {
+    /// Whether a vault that blocks fire cancels this charge. Defaults to true.
+    pub fn interrupted_by_vault(&self) -> bool {
+        self.interrupted_by
+            .as_ref()
+            .is_none_or(|interrupts| interrupts.vault)
+    }
+}
+
+/// Closed map from an interrupt source to whether it cancels a charge still
+/// charging. Every key is optional and defaults to `true`. Only `vault` exists
+/// today; further sources (taking damage, NPC interactions) join this map, so
+/// an unknown key rejects rather than being read as a source it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChargeInterrupts {
+    /// A vault with `allowFire` off. `false` keeps the charge charging through
+    /// the climb; its release fires once the climb ends.
+    #[serde(default = "interrupts_by_default")]
+    pub vault: bool,
+}
+
+impl Default for ChargeInterrupts {
+    fn default() -> Self {
+        Self { vault: true }
+    }
+}
+
+fn interrupts_by_default() -> bool {
+    true
+}
+
+/// Interrupt sources `ChargeInterrupts` accepts, in authored spelling.
+pub const CHARGE_INTERRUPT_SOURCES: [&str; 1] = ["vault"];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,6 +143,14 @@ impl WeaponActivationDescriptor {
             sounds: None,
             emits: None,
         }
+    }
+
+    /// Whether this action's charge keeps charging through a vault that blocks
+    /// fire (`charge.interruptedBy.vault: false`). False for an uncharged action.
+    pub fn charge_survives_vault(&self) -> bool {
+        self.charge
+            .as_ref()
+            .is_some_and(|charge| !charge.interrupted_by_vault())
     }
 
     pub fn validate(&self, path: &str) -> Result<(), DescriptorError> {

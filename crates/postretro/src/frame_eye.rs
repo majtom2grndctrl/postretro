@@ -7,6 +7,7 @@ use postretro_entities::EntityId;
 use postretro_foundation::{MovementStateKind, ViewFeelParams};
 
 use crate::camera::RenderCamera;
+use crate::view_feel::vault::VaultViewInput;
 use crate::view_feel::{self, TimedMovementEdge, ViewFeelState};
 
 /// The pawn driving view feel this frame, with the movement facts the
@@ -17,6 +18,8 @@ pub(crate) struct ViewFeelDriver {
     pub(crate) velocity: Vec3,
     pub(crate) is_grounded: bool,
     pub(crate) movement_state: MovementStateKind,
+    /// The presented vault, while the pawn vaults.
+    pub(crate) vault: Option<VaultViewInput>,
     /// Baseline eye clearance from the pawn's feet, before render offsets.
     pub(crate) eye_height_above_feet: f32,
 }
@@ -44,7 +47,8 @@ pub(crate) struct ViewFeelTracking<'a> {
 }
 
 /// One frame's evaluated eye, plus the view-feel offsets the first-person
-/// viewmodel re-applies in camera space.
+/// viewmodel re-applies in camera space. The vault pose is in `camera` but not
+/// in these offsets (see [`assemble_frame_eye`]).
 pub(crate) struct FrameEye {
     pub(crate) camera: RenderCamera,
     /// Yaw-derived, Y-free unit right vector the offsets were mapped onto.
@@ -82,7 +86,7 @@ pub(crate) fn assemble_frame_eye(
     tracking: ViewFeelTracking<'_>,
 ) -> FrameEye {
     let camera_right = crate::camera_right_for_yaw(inputs.render_yaw);
-    let (fov_offset, roll, yaw_offset, pitch_offset, eye_offset) = match inputs.driver {
+    let (fov_offset, roll, yaw_offset, pitch_offset, eye_offset, held) = match inputs.driver {
         Some(driver) => {
             crate::sync_view_feel_driver(
                 tracking.state,
@@ -118,12 +122,20 @@ pub(crate) fn assemble_frame_eye(
                 - view_feel::slide::MIN_EYE_CLEARANCE)
                 .max(0.0);
             eye.y -= slide.eye_drop.min(available_drop);
+            let vault = view_feel::vault::evaluate(
+                driver.params.vault.as_ref(),
+                driver.vault,
+                tracking.state,
+                inputs.frame_dt,
+                inputs.view_feel_scale,
+            );
             (
-                output.impulse_fov + slide.fov_increase,
+                output.impulse_fov + slide.fov_increase + vault.fov,
                 roll,
                 yaw,
                 pitch,
                 eye,
+                vault,
             )
         }
         None => {
@@ -133,17 +145,29 @@ pub(crate) fn assemble_frame_eye(
                 tracking.descriptor,
                 None,
             );
-            (0.0, 0.0, 0.0, 0.0, Vec3::ZERO)
+            (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                Vec3::ZERO,
+                view_feel::vault::VaultViewOutput::default(),
+            )
         }
     };
 
+    // The held vault pose turns the camera only. The viewmodel re-applies
+    // `pitch_offset` and `roll` in camera space on top of the camera's own
+    // rotation, which it already follows; adding a held -6..-10° pose there
+    // would swing the weapon down out of its placement for the whole climb.
+    // Sway and impulses stay in both, as before.
     FrameEye {
         camera: RenderCamera::new(
             inputs.presented_eye,
             inputs.aspect,
             inputs.render_yaw + yaw_offset,
-            inputs.pitch + pitch_offset,
-            roll,
+            inputs.pitch + pitch_offset + held.pitch.to_radians(),
+            roll + held.roll.to_radians(),
             eye_offset,
             fov_offset,
         ),
@@ -194,6 +218,7 @@ mod tests {
             tilt: None,
             sway: None,
             impulse: None,
+            vault: None,
         }
     }
 
@@ -213,6 +238,7 @@ mod tests {
                 velocity: VELOCITY,
                 is_grounded: true,
                 movement_state: MovementStateKind::Normal,
+                vault: None,
                 eye_height_above_feet: 1.0,
             }),
             movement_edges: &[],
@@ -347,6 +373,78 @@ mod tests {
         assert!(recovering.eye_offset.y > sliding.eye_offset.y && recovering.eye_offset.y < 0.0);
         let recovered = frame(MovementStateKind::Crouch, 1.0, 2.0);
         assert!(recovered.eye_offset.y.abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_held_vault_pose_turns_the_camera_not_the_viewmodel_and_stays_inside_the_pitch_limit() {
+        let vaulting = |pitch: f32| {
+            let mut input = inputs();
+            input.pitch = pitch;
+            let driver = input.driver.as_mut().unwrap();
+            driver.params.bob = None;
+            driver.params.vault = Some(postretro_foundation::VaultViewParams {
+                pitch: -10.0,
+                roll: 3.0,
+                fov: -4.0,
+                ease_in: 0.15,
+                ease_out: 0.2,
+            });
+            driver.movement_state = MovementStateKind::Vault;
+            driver.vault = Some(VaultViewInput {
+                progress: 0.5,
+                path_s: 0.42,
+            });
+            let mut state = ViewFeelState::default();
+            let mut followed = None;
+            let mut descriptor = None;
+            assemble_frame_eye(
+                input,
+                ViewFeelTracking {
+                    state: &mut state,
+                    followed_pawn: &mut followed,
+                    descriptor: &mut descriptor,
+                },
+            )
+        };
+        let held = vaulting(PITCH);
+        assert_eq!(
+            (held.pitch_offset, held.roll, held.yaw_offset),
+            (0.0, 0.0, 0.0),
+            "the viewmodel re-applies no held pose"
+        );
+        let expected = RenderCamera::new(
+            Vec3::new(1.0, 2.0, 3.0),
+            16.0 / 9.0,
+            YAW,
+            PITCH + (-10.0_f32).to_radians(),
+            3.0_f32.to_radians(),
+            Vec3::ZERO,
+            -4.0,
+        );
+        for (a, b) in held
+            .camera
+            .view_projection
+            .to_cols_array()
+            .iter()
+            .zip(expected.view_projection.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-5);
+        }
+
+        // Aim at the downward limit plus the held pose: the view stops at the
+        // limit instead of flipping past vertical.
+        let limit = 89.0_f32.to_radians();
+        let at_limit = vaulting(-limit);
+        let limit_forward = Vec3::new(
+            -YAW.sin() * limit.cos(),
+            -limit.sin(),
+            -YAW.cos() * limit.cos(),
+        );
+        assert!(
+            (at_limit.camera.forward - limit_forward).length() < 1e-5,
+            "{} against {limit_forward}",
+            at_limit.camera.forward
+        );
     }
 
     #[test]

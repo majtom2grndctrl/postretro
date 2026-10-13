@@ -133,10 +133,14 @@ fn validate_activation_shapes(weapon: &Table) -> Result<(), DescriptorError> {
         let Some(action) = optional_table_field_lua(weapon, lane, &path, true)? else {
             continue;
         };
-        for child in ["charge", "sounds", "emits"] {
+        if let Some(charge) =
+            optional_table_field_lua(&action, "charge", &format!("{path}.charge"), true)?
+        {
+            validate_charge_interrupts_lua(&charge, &path)?;
+        }
+        for child in ["sounds", "emits"] {
             if let Some(object) =
                 optional_table_field_lua(&action, child, &format!("{path}.{child}"), true)?
-                && child != "charge"
             {
                 for field in if child == "sounds" {
                     ["fire", "impact"]
@@ -190,4 +194,36 @@ fn validate_activation_shapes(weapon: &Table) -> Result<(), DescriptorError> {
         }
     }
     Ok(())
+}
+
+/// `charge.interruptedBy` reaches the JSON bridge only as a closed map of
+/// booleans; the shared check gives both runtimes one diagnostic.
+fn validate_charge_interrupts_lua(
+    charge: &Table,
+    action_path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(interrupts) = optional_table_field_lua(
+        charge,
+        "interruptedBy",
+        &format!("{action_path}.charge.interruptedBy"),
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    let mut entries = Vec::new();
+    for entry in interrupts.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = entry.map_err(lua_err)?;
+        let key = match key {
+            LuaValue::String(key) => Some(key.to_str().map_err(lua_err)?.to_string()),
+            _ => None,
+        };
+        let value = match value {
+            LuaValue::Nil => RawInterruptValue::Absent,
+            LuaValue::Boolean(_) => RawInterruptValue::Bool,
+            _ => RawInterruptValue::Other,
+        };
+        entries.push(RawChargeInterrupt { key, value });
+    }
+    validate_charge_interrupts(action_path, entries)
 }

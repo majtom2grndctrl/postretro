@@ -1,4 +1,4 @@
-// Tests: view-feel bob, tilt, sway, and transition-impulse, and slide parsing/validation.
+// Tests: view-feel bob, tilt, sway, transition-impulse, slide and vault parsing/validation.
 
 use super::super::*;
 use super::common::*;
@@ -912,4 +912,205 @@ fn movement_view_feel_slide_serde_omission_preserves_existing_serialized_shapes(
     let slide = decoded.slide.unwrap();
     assert!((slide.eye_drop - 0.15).abs() < 1e-6);
     assert!((slide.fov_increase - 5.0).abs() < 1e-6);
+}
+
+// Sustained vault pose: every field optional, the shares defaulted.
+
+fn vault_view_body(fields: &[(&str, &str)], lua: bool) -> String {
+    let separator = if lua { " = " } else { ": " };
+    let fields = fields
+        .iter()
+        .map(|(key, value)| format!("{key}{separator}{value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{ vault{separator}{{ {fields} }} }}")
+}
+
+fn parse_vault_view_pair(fields: &[(&str, &str)]) -> [VaultViewParams; 2] {
+    let js = eval_js(
+        &js_movement_with_view_feel(&vault_view_body(fields, false)),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_movement_with_view_feel(&vault_view_body(fields, true)),
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    [js, lua].map(|descriptor| {
+        descriptor
+            .movement
+            .unwrap()
+            .view_feel
+            .unwrap()
+            .vault
+            .unwrap()
+    })
+}
+
+fn vault_view_error_pair(js_body: &str, lua_body: &str) -> [String; 2] {
+    [
+        eval_js(&js_movement_with_view_feel(js_body), |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        })
+        .to_string(),
+        eval_lua(&lua_movement_with_view_feel(lua_body), |v| {
+            entity_descriptor_from_lua(v).unwrap_err()
+        })
+        .to_string(),
+    ]
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_vault_parses_the_authored_pose_and_defaults_the_shares() {
+    let full = parse_vault_view_pair(&[
+        ("pitch", "-6"),
+        ("fov", "-2.5"),
+        ("roll", "1.5"),
+        ("easeIn", "0.1"),
+        ("easeOut", "0.3"),
+    ]);
+    for vault in full {
+        assert_eq!(
+            vault,
+            VaultViewParams {
+                pitch: -6.0,
+                roll: 1.5,
+                fov: -2.5,
+                ease_in: 0.1,
+                ease_out: 0.3,
+            }
+        );
+    }
+    for vault in parse_vault_view_pair(&[("pitch", "-6")]) {
+        assert_eq!(
+            vault,
+            VaultViewParams {
+                pitch: -6.0,
+                roll: 0.0,
+                fov: 0.0,
+                ease_in: VaultViewParams::DEFAULT_EASE_IN,
+                ease_out: VaultViewParams::DEFAULT_EASE_OUT,
+            }
+        );
+    }
+    // The bounds themselves, and shares that fill the whole vault.
+    for vault in parse_vault_view_pair(&[
+        ("pitch", "-90"),
+        ("roll", "90"),
+        ("fov", "90"),
+        ("easeIn", "0.8"),
+    ]) {
+        assert_eq!((vault.pitch, vault.roll, vault.fov), (-90.0, 90.0, 90.0));
+        assert_eq!((vault.ease_in, vault.ease_out), (0.8, 0.2));
+    }
+    for vault in parse_vault_view_pair(&[("easeIn", "0"), ("easeOut", "1")]) {
+        assert_eq!((vault.ease_in, vault.ease_out), (0.0, 1.0));
+    }
+    // Omitted or null: no vault pose, other motions unaffected.
+    for body in ["{ vault: null }", "{}"] {
+        let descriptor = eval_js(&js_movement_with_view_feel(body), |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap()
+        });
+        assert!(
+            descriptor
+                .movement
+                .unwrap()
+                .view_feel
+                .unwrap()
+                .vault
+                .is_none()
+        );
+    }
+    let descriptor = eval_lua(&lua_movement_with_view_feel("{ vault = nil }"), |v| {
+        entity_descriptor_from_lua(v).unwrap()
+    });
+    assert!(
+        descriptor
+            .movement
+            .unwrap()
+            .view_feel
+            .unwrap()
+            .vault
+            .is_none()
+    );
+}
+
+#[test]
+fn js_and_lua_movement_view_feel_vault_reject_bad_fields_with_one_diagnostic() {
+    for (js_body, lua_body, expected) in [
+        (
+            "{ vault: { pitch: -90.5 } }",
+            "{ vault = { pitch = -90.5 } }",
+            "`movement.viewFeel.vault.pitch` must be finite in [-90, 90], got -90.5",
+        ),
+        (
+            "{ vault: { roll: Infinity } }",
+            "{ vault = { roll = math.huge } }",
+            "`movement.viewFeel.vault.roll` must be finite in [-90, 90], got inf",
+        ),
+        (
+            "{ vault: { fov: NaN } }",
+            "{ vault = { fov = 0/0 } }",
+            "`movement.viewFeel.vault.fov` must be finite in [-90, 90]",
+        ),
+        (
+            "{ vault: { pitch: \"down\" } }",
+            "{ vault = { pitch = \"down\" } }",
+            "`movement.viewFeel.vault.pitch` must be a number",
+        ),
+        (
+            "{ vault: { easeIn: -0.01 } }",
+            "{ vault = { easeIn = -0.01 } }",
+            "`movement.viewFeel.vault.easeIn` must be finite in [0, 1], got -0.01",
+        ),
+        (
+            "{ vault: { easeOut: 1.5 } }",
+            "{ vault = { easeOut = 1.5 } }",
+            "`movement.viewFeel.vault.easeOut` must be finite in [0, 1], got 1.5",
+        ),
+        (
+            "{ vault: { easeIn: 0.6, easeOut: 0.5 } }",
+            "{ vault = { easeIn = 0.6, easeOut = 0.5 } }",
+            "`movement.viewFeel.vault.easeIn` plus `movement.viewFeel.vault.easeOut` must be at most 1, got 1.1",
+        ),
+        (
+            "{ vault: { easeIn: 0.9 } }",
+            "{ vault = { easeIn = 0.9 } }",
+            "`movement.viewFeel.vault.easeIn` plus `movement.viewFeel.vault.easeOut` must be at most 1",
+        ),
+        (
+            "{ vault: 3 }",
+            "{ vault = 3 }",
+            "`movement.viewFeel.vault` must be an object",
+        ),
+        (
+            "{ vault: \"pose\" }",
+            "{ vault = \"pose\" }",
+            "`movement.viewFeel.vault` must be an object",
+        ),
+        (
+            "{ vault: [1] }",
+            "{ vault = { [1.5] = 2, pitch = -6 } }",
+            "`movement.viewFeel.vault` must be an object",
+        ),
+    ] {
+        let [js, lua] = vault_view_error_pair(js_body, lua_body);
+        assert!(js.contains(expected), "JS: {js}");
+        assert!(lua.contains(expected), "Luau: {lua}");
+    }
+    // Both runtimes word a rejected value identically.
+    let [js, lua] =
+        vault_view_error_pair("{ vault: { pitch: 120 } }", "{ vault = { pitch = 120 } }");
+    assert_eq!(js, lua);
+    // Regression: Luau loaded an array as an all-defaults block that JS rejects.
+    for (js_body, lua_body) in [
+        ("{ vault: [] }", "{ vault = { 1 } }"),
+        ("{ vault: [1] }", "{ vault = { -6, 2 } }"),
+    ] {
+        let [js, lua] = vault_view_error_pair(js_body, lua_body);
+        assert!(
+            js.contains("`movement.viewFeel.vault` must be an object"),
+            "JS: {js}"
+        );
+        assert_eq!(js, lua, "{js_body} / {lua_body}");
+    }
 }

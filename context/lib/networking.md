@@ -266,7 +266,9 @@ Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimatio
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates enum shape, finite numeric fields, and movement-state-local numeric invariants before typed apply. A sliding floor normal must be absent or bounded and unit-length within a small squared-length tolerance. Resolving a mover id to a loaded local mover is engine-owned client apply.
 
-Knockback is host-authoritative combat state. Snapshots carry total player velocity and its protected knockback and push-drift portions (`movement.md` §6); reconciliation restores all three before replay, without reapplying the hit. The movement state includes `Swim` with its fluid index, and the swim re-entry latch rides beside it. The output-only immersion component never rides the wire; `player.immersion` reaches its owner as an owner-private slot. A fluid-table change remaps a swimming pawn's fluid index by name. The host freezes direct-hit tuning at fire time and derives impulse from accepted hit geometry or projectile travel direction. Clients never submit impulse magnitude. Predicted projectiles remain presentation-only until authoritative movement arrives. Response tuning travels with the host movement descriptor. The wire and tuning payload versions reject older peers that cannot represent these fields.
+Knockback is host-authoritative combat state. Snapshots carry total player velocity and its protected knockback and push-drift portions (`movement.md` §6); reconciliation restores all three before replay, without reapplying the hit. The movement state includes `Swim` with its fluid index, and the swim re-entry latch rides beside it. It includes `Vault` with its path payload (clock, target and start offset in the target's frame, mover id, entry speed); the net crate rejects a non-finite or out-of-contract payload, and merge rejects a vault onto an unknown mover as it does an unknown ground mover. The vault's tuning stays local, and the ledge probe that enters it is recomputed by replay, so entry adds no wire field. The output-only immersion component never rides the wire; `player.immersion` reaches its owner as an owner-private slot. A fluid-table change remaps a swimming pawn's fluid index by name. The host freezes direct-hit tuning at fire time and derives impulse from accepted hit geometry or projectile travel direction. Clients never submit impulse magnitude. Predicted projectiles remain presentation-only until authoritative movement arrives. Response tuning travels with the host movement descriptor. The wire and tuning payload versions reject older peers that cannot represent these fields.
+
+Reconcile classifies each correction by size. A small one is smoothed as a decaying presentation offset; one at or past the teleport floor snaps. A correction whose history window crossed `Dash`, `Sliding` or `Vault` takes a wider smoothed band, since those states legitimately produce larger deltas. A vault's exit tick starts in `Vault` and ends in `Normal`, and counts as a vault tick, so the landing never falls back to the ordinary band.
 
 Three distinct metadata validity gates apply:
 
@@ -565,7 +567,7 @@ start, mints nothing and is not reported; the client's predicted shot stands unt
 HIT is denied. Reaching 64 takes seconds of total stall, so the gap is accepted rather
 than given its own refusal slot.
 
-**Pawn-state gates judge the stamped tick.** A gate that refuses a start because of the shooter's own state, such as a movement state that blocks fire, reads that state at the start's client tick, never at the tick the host delivers it. A retained start can be delivered after the state changed, and judging it late would refuse a shot the client already predicted.
+**Pawn-state gates judge the stamped tick.** A gate that refuses a start because of the shooter's own state, such as a movement state that blocks fire, reads that state at the start's client tick, never at the tick the host delivers it. A retained start can be delivered after the state changed, and judging it late would refuse a shot the client already predicted. Each resolution records the shooter's gate as its client tick starts, before that command's movement, and stamps every due start at or before that tick that has no verdict yet with the gate recorded for the start's own tick. The first resolution of a tick sets its gate: a re-resolution after a frontier hold ran an extra host-only movement step, which can enter or leave a vault the client never did, so it keeps the first record. The lane remembers the last 120 resolved ticks' gates, so a start that arrives after its own tick resolved, through a deep-buffer yield or a stale redundant copy, still takes its own tick's gate. A blocked start is refused as an initiation rejection. The vault is the one such gate today (`movement.md` §4, Vault); its cancel rules follow *Vault entry cancels* below.
 
 **Cadence is judged in client ticks, capped by host time.** Two halves gate a start.
 The client half: its client tick must be at least the weapon's recovery,
@@ -681,10 +683,76 @@ Explicit release/cancel names the initiating activation. Intake retains edges be
 stale-drop or backlog trimming, deduplicates them, and delivers them once after that
 start is admitted. Early edges wait for admission; terminal edges are inert. Synthetic
 held/neutral commands contain no edges and cannot release charge. Cancellation wins
-over release in the same command. Focus/menu suspension sends reliable cancellation
-even on a render-only frame; intent does not advance execution, and the host applies
+over release in the same command: a cancel stamped at or before the release's tick
+suppresses it. A cancel stamped after its execution's release waits behind that
+release while the release can still fire a charge (a charged execution that has not
+fired), whoever stamped the cancel, so a charge released before a cancel mints its
+shot; for any other execution the release is inert and the cancel goes at once.
+Focus/menu suspension sends reliable cancellation even on a render-only frame; intent does not advance execution, and the host applies
 it on its next tick. Switch, drop, death, disconnect, level change, and descriptor
-replacement also cancel future work without refunding authorized shots.
+replacement also cancel future work without refunding authorized shots, and so does
+vault entry with fire blocked, below.
+
+**Vault entry cancels.** A tick that starts in a fire-blocking vault cancels the
+shooter's in-progress activation on the client and host-local paths, as death does.
+The client sends no cancel for it, so the host-remote lane derives one, ordered by
+client tick. When resolved client tick E first records a closed gate, the live
+execution, the start just delivered, and every retained start stamped before E each
+take a cancel stamped E. Each is delivered when that execution's own clock reaches E,
+as a client cancel is, so a late burst mints every shot the client fired before the
+vault and none after, wherever the vault stands when the burst is delivered. When the
+live clock has already reached E, the host cancels it at once, before E's simulation,
+as at death. A start that arrives after a closed gate was already recorded past its
+own tick takes the cancel at that gate at intake, before any resolution can admit it
+or send its edges. When the edge table is full, which only a flooding client reaches,
+an admitted execution takes the overflow cancel at once and a retained start whose
+cancel cannot be held is refused: shots before the vault may be lost, none fire
+through it. Death still cancels the live execution at once.
+
+**Charges a vault spares.** A charge whose action opts out
+(`charge.interruptedBy.vault: false`, `entity_model.md` §Components, Weapon
+vocabulary) survives a closed gate while still charging; its client holds a release
+made mid-vault and stamps it on the first open tick after the vault. The lane reads
+the opt-out from the shooter's inventory at each resolution, one bit per firing slot
+and lane (`VaultSparedCharges`). A gate closed at client tick C spares execution T
+when T's slot and lane are spared and no release of T stamped before C is known: the
+client was still charging T as C began. A spared execution takes no derived cancel,
+immediate or ordered. Its release is held in the lane until its own tick resolves and
+goes on that resolution, so the charged shot fires on the client's tick, from the top
+of the climb, along that tick's aim; delivered at intake, a buffer depth early, it
+would fire mid-climb from below the lip along an earlier command's aim. A spared
+charge whose release was stamped before C fired before the vault and takes C's cancel
+like any other, at intake when that release arrives after C was recorded. A start
+delivered on the resolution it falls due, before the weapon machine admits it, is
+judged by the weapon in its firing slot; a slot the lane cannot name spares nothing.
+
+Known vault edges:
+
+- **Releases ahead of their tick's gate** (owner decision pending). The lane delivers
+  every retained release but a spared charge's at the first resolution after its execution is
+  admitted, even before the release's own client tick resolves. A charged weapon
+  released on the tick a vault begins, or within the buffer depth after it, is
+  cancelled on the client by its gate, but the host can fire that charged shot before
+  the vault's closed gate is recorded. The same holds for a late start that arrives
+  before the vault's entry tick resolves, when that command carries the release.
+  Closing it means holding each release until strictly after its own tick resolves
+  and is stamped, which changes release timing for every charged weapon. Spared
+  charges are narrowed out of it, except a release that reaches intake before the
+  vault's first closed tick resolves, which needs a vault shorter than the playout
+  lead.
+- **Trim-skipped entry.** A vault whose entry ticks the catch-up trim skipped is seen
+  at the first resolved tick still vaulting, and a host that never ran the vaulting
+  commands never cancels. A start whose own tick never resolved takes the gate of the
+  resolution that stamps it.
+- **Starts older than the gate history.** A start arriving more than 120 resolved
+  ticks late can lose its missed vault cancel as well as its own gate, so its burst
+  can fire through a vault the client cancelled. Only a start with no cadence record
+  reaches this; the lag allowance refuses the rest.
+- **Spared set by current inventory.** A pickup or drop that changes a slot's weapon
+  between a start's tick and the closed tick judges the slot's current weapon.
+- **Hot reload.** Host hot reload breaks a vault unconditionally, while the client's
+  tuning rebuild keeps it when the new tuning still has a vault block, so a mid-vault
+  `allowFire` change by hot reload can diverge until reconcile.
 
 Charge uses wrap-safe release tick minus start tick, capped by host elapsed time since
 admission plus 150 ms and then by authored full duration. Out-of-lifetime spans reject.
@@ -969,6 +1037,13 @@ Removing the registry particle component renumbers later component kinds and adv
 `WIRE_VERSION` to 30. Peers at 29 are refused at handshake. `SNAPSHOT_VERSION` stays 19,
 the tuning epoch stays 11 and application protocol PRLB is unchanged. Anonymous particles
 and their local impact intake never replicate.
+
+`WireMovementState::Vault` advances `WIRE_VERSION` to 31 and `SNAPSHOT_VERSION` to 20.
+Peers at 30 are refused at handshake. Vault tuning in the movement descriptor, with
+`swim.fluidJumpVelocity` becoming nullable, advances the tuning epoch to 12; a weapon
+charge's `interruptedBy`, which the client's vault fire gate reads, advances it to 13.
+The held vault camera pose changes neither: the tuning payload carries no view feel.
+The application protocol remains PRLB.
 
 ## Current contract
 

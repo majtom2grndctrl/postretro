@@ -88,6 +88,9 @@ mod predict_reconcile_harness_fluid_tables;
 // E24 co-op swim parity: swim entry, exit, fluid jump and its latch through reconcile.
 #[cfg(test)]
 mod predict_reconcile_harness_swim;
+// Co-op vault parity: a predicted mantle replayed from acked baselines.
+#[cfg(test)]
+mod predict_reconcile_harness_vault;
 // E24 swim slots: the output-only immersion component is never read by prediction,
 // replay or the wire merge.
 #[cfg(test)]
@@ -789,6 +792,18 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
                     .as_ref()
                     .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
         }
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover: _,
+            entry_speed,
+        } => {
+            elapsed_ms.is_finite()
+                && target.iter().all(|c| c.is_finite())
+                && start_offset.iter().all(|c| c.is_finite())
+                && entry_speed.is_finite()
+        }
     };
     m.velocity.iter().all(|c| c.is_finite())
         && m.knockback_velocity.iter().all(|c| c.is_finite())
@@ -1143,7 +1158,15 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
         registry.get_component::<Transform>(armed.entity_id),
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
-        (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
+        (Ok(transform), Ok(movement)) => {
+            // Death is host-authoritative; a client that predicts past its own
+            // death takes one correction, inside the vault tolerance. The same
+            // verdict bars vault entry this tick, as on the host; reconcile
+            // replay has no registry and keeps the verdict this call leaves.
+            let mut movement = movement.clone();
+            crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
+            (*transform, movement)
+        }
         _ => {
             return ClientPredictionTickResult {
                 client_tick,
@@ -3463,6 +3486,7 @@ mod tests {
             sway: None,
             impulse: None,
             slide: None,
+            vault: None,
         });
         let descriptors = [local_descriptor.clone()];
         let mut registry = EntityRegistry::new();
@@ -6390,13 +6414,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            30,
-            "removing ParticleState renumbers surviving component discriminants"
+            31,
+            "the vault movement state requires wire version 31"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            19,
-            "the push-drift layer in player movement requires snapshot version 19"
+            20,
+            "the vault movement state requires snapshot version 20"
         );
     }
 
@@ -7310,6 +7334,7 @@ mod tests {
                 crouch: None,
                 slide: None,
                 swim: None,
+                vault: None,
                 view_feel: None,
             }),
             weapon: None,

@@ -6,14 +6,15 @@ use glam::Vec3;
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{
-    crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent,
+    crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent, vault_intent,
 };
 use crate::movement::push::{fold_vertical_drift, held_by_contact};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule, touches_ceiling};
 use crate::movement::swim_transition::{SwimSeam, environment_transition};
+use crate::movement::vault::vault_entry;
 use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Resize the live capsule from the crouched size back to the configured
 /// STANDING reference (`standing_half_height` / `standing_eye_height`), keeping
@@ -72,6 +73,9 @@ fn outgoing_boost(state: &MovementState) -> Vec3 {
         MovementState::Crouching { .. } => Vec3::ZERO,
         // `Swim` has no boost layer: drag acts on all of its locomotion.
         MovementState::Swim { .. } => Vec3::ZERO,
+        // `Vault` authors its whole velocity along the path; its exit restores
+        // the entry speed directly, so nothing rides a boost layer.
+        MovementState::Vault { .. } => Vec3::ZERO,
     }
 }
 
@@ -145,6 +149,54 @@ pub(super) fn apply_environment_transition(
     fluid_jump
 }
 
+/// Enter `Vault` at the pre-intent stage when [`vault_entry`] finds a ledge, so
+/// the vault owns this tick. Mirrors [`apply_environment_transition`] with no
+/// carry: the vault intent authors the whole velocity, and the exit restores
+/// the entry speed itself. An edge out of `Swim` names the fluid left, and the
+/// edge is recorded.
+///
+/// Entry empties the protected knockback and drift layers, already counted in
+/// the entry speed. Left in place they would ride on top of the path every
+/// tick: carried-in knockback (a rocket jump into a ledge) would abort the
+/// vault on its second tick and then launch the pawn. Knockback that lands
+/// mid-vault still rejoins as always and aborts it.
+// Threads the tick's pre-intent inputs straight to `vault_entry` (pose, carry
+// ground, `dt`) plus the event sink; a struct would have this one caller.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_vault_entry(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    resolved: &ResolvedEnvironment,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    carry_ground: GroundRef,
+    dt: f32,
+    events: &mut MovementEvents,
+) {
+    let Some(next) = vault_entry(
+        component,
+        input,
+        resolved,
+        collision,
+        position,
+        carry_ground,
+        dt,
+    ) else {
+        return;
+    };
+    let from = component.movement_state.kind();
+    if let Some(fluid) = swim_fluid(&component.movement_state) {
+        events.swim_fluid = Some(fluid);
+    }
+    component.knockback_velocity = Vec3::ZERO;
+    component.push_velocity = Vec3::ZERO;
+    component.movement_state = next;
+    events.state_edges.push(MovementStateEdge {
+        from,
+        to: next.kind(),
+    });
+}
+
 /// Run the active state's velocity intent, resolving the
 /// component-vs-active-state borrow ONCE so each state owns its live data in
 /// place behind one uniform convention.
@@ -181,8 +233,9 @@ pub(super) fn apply_environment_transition(
 /// Adding a new state means adding one arm here with its own `&mut` live data;
 /// `tick`'s structure and existing intent signatures are untouched.
 // Threads the substrate handles (`collision_world`, the mutable `position`) the
-// `Crouching` intent needs for its stand-up probe and resize; grouping them into
-// a struct would add an abstraction with one caller and no reuse.
+// `Crouching` intent needs for its stand-up probe and resize, and the mover
+// carry ground (`carry_ground`) the `Vault` intent steers from; grouping them
+// into a struct would add an abstraction with one caller and no reuse.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_state_intent(
     component: &mut PlayerMovementComponent,
@@ -193,6 +246,7 @@ pub(super) fn dispatch_state_intent(
     dt: f32,
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
+    carry_ground: GroundRef,
     events: &mut MovementEvents,
 ) -> Option<MovementState> {
     // Resolve the borrow once: move the live state into a local so its data can
@@ -234,6 +288,24 @@ pub(super) fn dispatch_state_intent(
             elapsed_ms,
             boost,
             eye_current,
+        ),
+        MovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover,
+            entry_speed,
+        } => vault_intent(
+            component,
+            dt,
+            collision,
+            *position,
+            carry_ground,
+            elapsed_ms,
+            *target,
+            *start_offset,
+            *mover,
+            *entry_speed,
         ),
         MovementState::Swim { fluid } => {
             let held = held_by_contact(component, |component| {

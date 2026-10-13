@@ -19,9 +19,10 @@ use glam::Vec3;
 /// `KEEP_ALL` no-op (`KeepHorizontal` + `KeepBoost`). `Sliding` is the first
 /// gameplay-meaningful `KEEP_ALL` consumer: its slide-jump and slide-cancel
 /// handoffs retain real banked speed. `Zero`/`Scale` remain forward-looking
-/// environment-probe vocabulary for wall-run or a vault. The transforms are
+/// vocabulary for wall-run; vault authors its own exit velocity and transitions
+/// with `KEEP_ALL`. The transforms are
 /// unit-tested now so the seam, policy, and library land together.
-#[allow(dead_code)] // `Zero`/`Scale`: forward-looking environment-probe vocabulary.
+#[allow(dead_code)] // `Zero`/`Scale`: forward-looking vocabulary for wall-run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum HorizontalCarry {
     /// Preserve the outgoing horizontal velocity unchanged.

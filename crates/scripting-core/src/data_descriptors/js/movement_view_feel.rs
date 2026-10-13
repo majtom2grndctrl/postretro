@@ -71,12 +71,53 @@ pub fn view_feel_params_from_js<'js>(obj: &Object<'js>) -> Result<ViewFeelParams
     } else {
         None
     };
+    let vault = if obj.contains_key("vault").map_err(js_err)? {
+        let raw: JsValue = obj.get("vault").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            // Arrays and functions carry the object tag in QuickJS but are not
+            // a block of fields. Luau refuses the same shapes: a table with
+            // array entries or a non-string key, and any non-table.
+            let not_a_block = raw.is_array() || raw.is_function();
+            let vault_obj = match Object::from_value(raw) {
+                Ok(vault_obj) if !not_a_block => vault_obj,
+                _ => return Err(vault_view_not_an_object()),
+            };
+            Some(vault_view_params_from_js(&vault_obj)?)
+        }
+    } else {
+        None
+    };
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
         slide,
+        vault,
+    })
+}
+
+/// Parse a `viewFeel.vault` sub-object. Every error names its field as
+/// `movement.viewFeel.vault.<field>`, worded exactly as the Luau
+/// `vault_view_params_from_lua` words it.
+pub fn vault_view_params_from_js<'js>(
+    obj: &Object<'js>,
+) -> Result<VaultViewParams, DescriptorError> {
+    vault_view_params_from_fields(|field| {
+        if !obj.contains_key(field).map_err(js_err)? {
+            return Ok(RawViewNumber::Absent);
+        }
+        let raw: JsValue = obj.get(field).map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            return Ok(RawViewNumber::Absent);
+        }
+        Ok(raw
+            .as_int()
+            .map(f64::from)
+            .or_else(|| raw.as_float())
+            .map_or(RawViewNumber::Other, RawViewNumber::Number))
     })
 }
 
@@ -184,6 +225,7 @@ fn impulse_states_from_js<'js>(obj: &Object<'js>) -> Result<ImpulseStates, Descr
         dash: optional_impulse_state_from_js(obj, "dash")?,
         crouch: optional_impulse_state_from_js(obj, "crouch")?,
         slide: optional_impulse_state_from_js(obj, "slide")?,
+        vault: optional_impulse_state_from_js(obj, "vault")?,
     })
 }
 
@@ -200,10 +242,13 @@ fn validate_impulse_state_keys_js(obj: &Object<'_>) -> Result<(), DescriptorErro
     }
     for key in obj.own_keys::<String>(Filter::new().string()) {
         let key = key.map_err(js_err)?;
-        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+        if !matches!(
+            key.as_str(),
+            "normal" | "dash" | "crouch" | "slide" | "vault"
+        ) {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, slide, or vault"
                 ),
             });
         }

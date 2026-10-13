@@ -15,7 +15,7 @@ Do not commit generated `.prl` files.
 The tuning is content/dev's player (`scripts/player.ts`):
 
 - standing capsule 2.0 m, `stepHeight` 0.5 m, jump peak about 1.16 m;
-- `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 320;
+- `vault.maxHeight` 1.6 m, `vault.swimMaxHeight` 0.9 m, `durationMs` 420;
 - `from: { air: "auto", swim: "auto" }` and `allowFire: false`.
 
 The expectations below follow from those numbers. If you retune the player,

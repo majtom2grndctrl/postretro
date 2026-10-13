@@ -114,7 +114,7 @@ fn movement_vault_twins_and_the_dev_player_declare_one_vault_block_that_vaults()
     let expected = VaultParams {
         max_height: 1.6,
         swim_max_height: 0.9,
-        duration_ms: 320.0,
+        duration_ms: 420.0,
         from: VaultEntry {
             air: Some(VaultTrigger::Auto),
             ground: None,

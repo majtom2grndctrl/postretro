@@ -28,7 +28,7 @@ export default defineMod({
           vault: {
             maxHeight: 1.6, // m above the feet; above stepHeight
             swimMaxHeight: 0.9, // m above the fluid surface
-            durationMs: 320, // rise-and-over time
+            durationMs: 420, // rise-and-over time
             from: {
               // place → "auto" | "jump"; a missing place cannot vault
               air: "auto",

@@ -42,7 +42,7 @@ read at: db24d5b65
 | 24 | Post-position boundary gravity test | achievable as stated | pass |
 | 25 | Optimized release stress run; owner frontmost/unlocked Mac; 11 complete post-warmup windows | measured | pass: all four particle budgets in every retained window |
 | 26 | Optimized 0/~10k/~20k emitter sweep; 11/11/11 complete post-warmup windows | measured | pass: 5.09% spread in per-tick cost |
-| 27 | Owner: particle zone and weapon room visual checks | manual, blocking | outstanding manual proof |
+| 27 | Owner visual confirmation, 2026-10-12 | manual | pass: particles on inspected maps looked as remembered; campaign-test smoke-room performance improved |
 
 ## Tasks
 
@@ -226,11 +226,16 @@ Quarter scale improved this scene's frame rate by about 55%. Lower resolution is
 
 - All test engine processes stopped; exact rate-only variants verified by inverse replacement and deleted with their PRLs. Base pinned rebake retained as a normal ignored build product.
 - Final workspace preflight: formatting, feature-complete all-targets Clippy and full workspace tests pass: 10,938 passed, 0 failed, 57 ignored across 68 test/doc-test target summaries. No unresolved review findings or Decision/Acceptance changes.
-- ACs 1–26 pass; AC27 still requires owner visual proof. No landing authorization; brief remains in `in-progress/`.
+- ACs 1–27 pass after the owner visual confirmation recorded below. Awaiting explicit landing authorization; brief remains in `in-progress/`.
 
 ### Optimization final gate and cleanup
 
 - Final commands: `cargo fmt --check`; `cargo clippy -j 4 --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings`; `cargo test -j 4 --workspace --features postretro/dev-tools,postretro/capture`. All exited 0. All 18 Rust source hashes still match the measured release preparation manifest.
 - Final gate commands, test tallies and log hashes are recorded in both final acceptance JSONs. Owned runner, preparation and log files were removed from `/tmp/postretro-particle-opt-*` after preserving results and file hashes; earlier implementation proof logs remain. Task-owned caffeinate was stopped and its session exited; no test engine remains.
 - After the full gate, free space was 13 GiB. Removed only `target/debug/incremental` (5.4 GiB) and `target/preflight-clippy/debug/incremental` (1.1 GiB), restoring 18 GiB free. Source checkouts and normal build products retained.
-- Status is `test-ready`: AC27 visual confirmation of smoke/sparks/impacts, spin and doorway/portal/screen-edge behavior in the particle zone and weapon room remains blocking. Wait for owner proof and then explicit landing authorization.
+- Status is `test-ready`: owner visual confirmation has arrived; all acceptance rows pass. Await explicit landing authorization.
+
+## Owner visual confirmation — 2026-10-12
+
+- Owner reported: “The particles on the maps I saw looked the way I remembered,” and that performance in campaign-test's smoke room was the highest seen on this MacBook since smoke sprites were introduced. Record AC27 as passed on this owner confirmation. This is owner-reported visual/performance feedback, not an additional instrumented campaign-test measurement; no separate observation of each runbook subcheck is claimed.
+- All acceptance rows now pass. No landing instruction has been given; retain the brief in `in-progress/` and wait for “land the plane.”

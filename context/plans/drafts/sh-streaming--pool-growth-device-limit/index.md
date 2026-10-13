@@ -5,58 +5,52 @@ Brief · compact · reads: `context/lib/rendering_pipeline.md` §4 (Cluster SH r
 ## Problem
 
 The owner asked whether a map that is valid in TrenchBroom can fail to run. Through streamed SH
-pool growth, it can. This is an anticipated defect, confirmed in source; no shipped map has hit
-it. When a growth would pass a device limit, the renderer returns a drain error. The frame loop
-treats any drain error as fatal and ends the session, in Settling and in play.
-
-The engine's limits are fixed constants (256 array layers, 2 GiB − 8 per storage binding). Two
-runtime choices make them reachable on a level whose SH fits them:
-- The dense atlas's layer size comes from the initial floor share, not the level. When that
-  share is small, 256 layers hold little (`research.md` §Reachability).
-- Growth doubles before it checks the limit, so it fails even when the size actually needed
-  fits.
-
-When this is done, no level that compiles ends a session through SH pool growth. Out-of-memory
-below the limits and the load-time install panic are other routes, outside this brief.
+pool growth, it can: an anticipated defect, confirmed in source, that no shipped map has hit yet.
+A growth that would pass a device limit returns a drain error, and the frame loop treats any
+drain error as fatal, in Settling and in play. The limits are reachable on a level whose SH fits
+them, because the dense atlas's layer size follows the initial floor share rather than the level,
+and growth doubles before it checks the limit (`research.md` §Reachability). When this is done,
+no level that compiles ends a session through SH pool growth.
 
 ## Decisions
 
-- **Dense layer size covers the whole level.** At load, tiles per layer are set so the whole
-  dense set, times a fragmentation headroom, fits the layer limit, capped at one full layer.
-  Geometry stays fixed for the session (`plans/done/sh-probe-streaming--cluster-residency`).
-  Reason: the owner's 2026-09-28 rule in `large-map-spatial-residency.md`, "a miss fallback
-  cannot stand in for residency". Cost: a first layer of whole ÷ layer limit × headroom.
-- **Growth clamps to the device.** Each family grows by its usual step, capped at the device
-  limit and never below what the install needs. Growth is refused only when the needed size
-  alone exceeds the limit.
+- **Dense layer size covers the whole level.** At load, tiles per layer hold the whole dense set
+  times a fragmentation headroom within the layer limit, capped at one full layer, and stay fixed
+  for the session (`plans/done/sh-probe-streaming--cluster-residency`). Reason: the 2026-09-28
+  rule in `large-map-spatial-residency.md`, "a miss fallback cannot stand in for residency".
+- **Growth clamps to the device.** Growth is capped at the device limit and refused only when
+  the needed size alone exceeds it.
 - **A refused growth defers; it never ends the session.** A device-limit refusal is its own
-  outcome, distinct from contract errors. The cluster rolls back, keeps its payload and permit,
-  installs once room frees, counts as an attributed miss and warns once per level. Settling
-  releases at its timeout. This diverges from the cluster-residency plan's "named capacity
-  error", which never chose to end the session (`research.md` §Commitments touched).
+  outcome, distinct from contract errors. The cluster rolls back and parks, keeping its payload
+  but releasing its read permit. It is not re-offered until an eviction confirms, its target
+  changes or the generation changes. It counts as an attributed miss and warns once per level.
+  This diverges from the cluster-residency plan's "named capacity error", which never chose to
+  end the session (`research.md` §Commitments touched).
 - **Mandatory demand is never evicted to make room.** This keeps §4's tier contract and the pin
   guarantee in `plans/done/sh-probe-streaming--authored-hints`.
-- **Other drain errors stay fatal.** Malformed chunks, generation and identity violations, and
-  arithmetic overflow are broken contracts, not content scale; the lightmap pool also treats its
-  contract class as fatal. Its decline after repeated rolled-back drains has no SH counterpart,
-  because a streamed SH level omits the whole-load bodies a decline would fall back to.
-- **Placement: renderer mechanism, app attribution.** The renderer owns limits, geometry, growth
-  and refusal (Renderer owns GPU). The drain outcome tells the app which deferrals are
-  device-limited, and the app uses that only to attribute misses.
-- **prl-build rejects a camera cell whose baked mandatory SH set cannot fit.** The set is the
-  id-51 cells within the baked maximum L, plus pins and owner closure; it must fit each
-  family's device limit. The error names the cell and the family. Whole-level size never
-  rejects, since `large-map-spatial-residency` bounds map scale by disk and residency budget.
-  Deferral stays the runtime backstop for fragmentation and drawn demand outside the baked set.
+- **Other drain errors stay fatal.** Malformed chunks, generation and identity violations,
+  arithmetic overflow and post-growth undersizing are broken contracts, not content scale; the
+  lightmap pool also treats its contract class as fatal. Unlike the lightmap, SH has no decline:
+  a broken SH contract is a bug to surface, not a scale to absorb.
+- **Placement: renderer mechanism, app attribution.** The renderer owns geometry, growth and
+  refusal (Renderer owns GPU); the app uses the drain outcome only to attribute misses.
+- **Limits and sizing rules live once, in `level-format`.** The device limits SH requests, and
+  each family's per-cluster sizing, become shared definitions next to `MAX_SH_ATLAS_LAYERS`.
+  The renderer and prl-build call the same code, so the build check cannot drift from runtime.
+- **prl-build rejects a camera cell whose baked mandatory sparse set cannot fit.** The set is
+  the id-51 cells within the baked maximum L, plus pins and owner closure; each sparse family
+  must fit its tightest buffer. The error names the cell and the family. Dense is not checked:
+  whole-level layer sizing already holds any level below one full layer. Whole-level size never
+  rejects, since `large-map-spatial-residency` bounds map scale by disk and residency budget. A
+  streamed level without a usable id 51 warns and relies on runtime deferral.
 - **This lands before `portal-walk-bounded-regions`**, whose superset visible set adds
   never-refused SH demand.
 - **Non-goals:**
-  - OOM below the limits. It is a wgpu uncaptured error shared by every renderer allocation, so
-    it needs a renderer-wide error-scope policy (`research.md` §Out of scope).
+  - Out-of-memory below the limits. It is a wgpu uncaptured error shared by every renderer
+    allocation, so it needs a renderer-wide error-scope policy (`research.md` §Out of scope).
   - The load-time install panic. It is a deliberate fail-fast before play.
   - An engine VRAM ceiling or player tier: `large-map-spatial-residency` stage 5 owns it.
-  - Capping sparse growth at whole-level need. That is VRAM efficiency; for dense, the geometry
-    already makes the device cap the whole-level cap.
+  - Capping sparse growth at whole-level need. That is VRAM efficiency.
   - The lightmap pool: its layers are a fixed 2048², and it already defers.
 
 ## Acceptance
@@ -109,6 +103,9 @@ Pins P1–P10 are in `research.md` §Ordering pins.
   warning. Settling counts no device-limit miss, and the reveal frame counts one. A new
   generation in the same level does not warn again; the next level's first refusal does
   (research P6, P7).
+- [ ] While a refused cluster stays parked, it is not offered to the drain, holds no read permit,
+  and fitting SH clusters and lightmap blocks install at their usual rate. An eviction, a target
+  change or a generation change re-offers it.
 - [ ] Regression guards: a malformed chunk still ends the session with its named error, and a
   retirement-pressure deferral behaves as before.
 - [ ] A capacity-class error that is a broken contract rather than a device limit, such as an
@@ -121,7 +118,10 @@ Pins P1–P10 are in `research.md` §Ordering pins.
   test, a small fixture whose one camera cell's mandatory set (reach at the baked maximum
   lead, pins, owner closure) exceeds a family's limit fails prl-build naming that cell and
   family, and a fixture whose whole level exceeds the lowered limit while every cell's set
-  fits compiles. A separate test pins the production limits to the ones the engine requests.
+  fits compiles. The renderer requests exactly the shared limits the check uses.
+
+- [ ] The SDK's level-design compile-errors table lists the new error with its cause and fix,
+  and notes that pinned volumes count in every camera cell's set.
 
 ### Manual
 - [ ] At default limits, campaign-test and the stress-warren hallway log no device-limit warning.
@@ -129,25 +129,27 @@ Pins P1–P10 are in `research.md` §Ordering pins.
 
 ## Path
 
-- Seams: `AtlasShape::for_slots` / `grown_for_slots`, and `atlas_capacity_slots` in `floor.rs`,
-  which duplicates the geometry rule and must agree with it. Also `plan_initial_pool_floor`,
-  `whole_dense_slots` (`setup.rs`), `grow_dense` / `grow_sparse`,
-  `validate_storage_buffer_size`, `install_ready` and `ShDrainOutcome`.
-- The bake's `LayerOverflow` cap counts 6-texel tiles, so it is looser than 256 runtime layers
-  (`research.md` §Bake-time caps). A level past the runtime cap keeps full layers and falls to
-  the deferral backstop.
-- Classify every `GpuCapacity` site reachable from install. Only device-limit refusals defer.
+- Seams: `AtlasShape::for_slots` / `grown_for_slots`, `atlas_capacity_slots` (`floor.rs`, a
+  second copy of the geometry rule), `plan_initial_pool_floor`, `whole_dense_slots`,
+  `grow_dense` / `grow_sparse`, `validate_storage_buffer_size`, `install_ready`,
+  `ShDrainOutcome`. The device-limit and contract split of `GpuCapacity` is in `research.md`
+  §Premise review notes.
+- The limits are private renderer constants today (`renderer_init_resources.rs`); hoisting them
+  to `level-format` is the shared seam (`research.md` §Build-check seams). The check runs after
+  the ClusterDirectory stage.
 - Refuse before growing whatever cannot fit. A dense growth kept while the sparse half is refused
   is valid, per the install's own comment.
-- Deferral precedent: lightmap `place_with_growth` / `device_limited` and
-  `warn_device_limit_once`, including its per-drain skip that bounds re-staging cost.
-- Tests force limits by passing `wgpu::Limits`, as the floor tests do. `gpu_test_harness` covers
-  the GPU half.
+- Deferral precedent: lightmap `place_with_growth` / `device_limited`, `warn_device_limit_once`,
+  and its per-drain skip of extents known not to fit.
+- Tests: SH state captures its limits once at load, and tests override them, as the lightmap
+  plan does. The verification gate requires a GPU for the refusal rows, so a skip fails.
+- The bake's `LayerOverflow` cap counts 6-texel tiles, so it is looser than 256 runtime layers
+  (`research.md` §Bake-time caps).
 - Rivals, including deferral alone: `research.md` §Rivals.
-- Durable capture at promotion: §4's mandatory row gains the device-limit backstop, and §10's
-  runtime-guard sentence covers streamed SH.
-- First slice: the geometry rule plus the zero-share fixture. `portal-walk-bounded-regions`
-  depends on this slice.
+- Durable capture at promotion: §4's mandatory row gains the device-limit backstop; §10's
+  runtime-guard sentence covers streamed SH; `build_pipeline.md` records the per-cell check and
+  its shared limits. `docs/level_design.md` gains the error row.
+- First slice: the geometry rule plus the zero-share fixture.
 
 ## Open questions
 - Fragmentation headroom factor — **delegated**: the smallest factor at which the zero-share

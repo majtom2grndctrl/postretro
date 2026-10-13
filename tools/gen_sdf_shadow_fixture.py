@@ -153,7 +153,6 @@ def write_map(path):
     lines.append("// entity 0")
     lines.append("{")
     lines.append('"classname" "worldspawn"')
-    lines.append('"initialGravity" "-9.81"')
     lines.append('"ambient_color" "32 32 40"')
     lines.append('"wad" ""')
     lines.append('"_tb_mod" "dev"')

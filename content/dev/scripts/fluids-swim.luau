@@ -51,16 +51,16 @@ return Postretro.defineMod({
         movement = {
           capsule = { radius = 0.2, halfHeight = 0.8, eyeHeight = 0.5 },
           ground = { speed = { walk = 7.0, run = 11.0, crouch = 3.0 }, accel = 15.0, stepHeight = 0.5, maxSlope = 45.0 },
-          air = { forwardSteer = 0.5, accel = 10, maxControlSpeed = 2, bunnyHop = true, jumps = 0, jumpVelocity = 9, jumpCeiling = 0.0 },
+          air = { forwardSteer = 0.5, accel = 10, maxControlSpeed = 2, bunnyHop = true, jumps = 0, jumpVelocity = 6.86, jumpCeiling = 0.0 },
           fall = { terminalVelocity = 40.0 },
           -- Absent = cannot swim.
           swim = {
             speed = 4.5, -- m/s target swim speed
             accel = 6.0, -- m/s² toward wish velocity
-            sinkSpeed = 0.8, -- m/s drift along gravity with no vertical input, at 9.81 m/s²
+            sinkSpeed = 0.8, -- m/s drift along gravity with no vertical input, at default gravity
             enterDepth = 0.5, -- immersion fraction that enters swim
             exitDepth = 0.35, -- immersion fraction that leaves swim; < enterDepth
-            fluidJumpVelocity = 6.5, -- m/s upward on a jump from the surface
+            fluidJumpVelocity = 9.35, -- m/s upward on a jump from the surface
           },
         },
       },

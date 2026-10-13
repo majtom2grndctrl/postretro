@@ -45,7 +45,7 @@ pub struct ScriptCtx {
     /// phase. No current consumers — reserved for future primitives that need
     /// a per-frame ordering stamp.
     pub frame: Rc<Cell<u64>>,
-    /// Runtime world gravity in m/s² (negative = downward; Earth = -9.81).
+    /// Runtime world gravity in m/s² (negative = downward; default -20.32).
     /// Sole owner — `App` does not hold a parallel handle. Seeded from the
     /// level default gravity (worldspawn `initialGravity`, carried in the
     /// EnvironmentVolumes PRL header) on every level load via

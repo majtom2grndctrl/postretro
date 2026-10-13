@@ -23,7 +23,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/switch-demo.ts"
 "_tb_mod" "dev"

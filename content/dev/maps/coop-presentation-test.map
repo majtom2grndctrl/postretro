@@ -4,7 +4,6 @@
 // Map coordinates are editor units; gameplay descriptor dimensions are metres.
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "data_script" "../scripts/coop-presentation-test.ts"
 "wad" ""
 "_tb_mod" "dev"

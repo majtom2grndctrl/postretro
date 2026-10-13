@@ -332,7 +332,8 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
         .get_component::<PlayerMovementComponent>(pawn)
         .unwrap()
         .clone();
-    assert!(MAP.contains("\"initialGravity\" \"-9.81\""));
+    // The map leaves gravity to the compiler default.
+    assert!(!MAP.contains("\"initialGravity\""));
     assert!(MAP.contains("( 0 512 0 ) ( 640 0 0 ) ( 0 0 0 )"));
     let floor = CollisionWorld::from_triangles_for_test(
         vec![
@@ -359,7 +360,9 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
             &mut component,
             &input,
             &floor,
-            postretro_collision::EnvironmentView::level_only(-9.81),
+            postretro_collision::EnvironmentView::level_only(
+                postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2,
+            ),
             1.0 / 60.0,
             transform.position,
         )

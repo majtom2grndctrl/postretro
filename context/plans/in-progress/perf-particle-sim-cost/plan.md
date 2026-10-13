@@ -239,3 +239,11 @@ Quarter scale improved this scene's frame rate by about 55%. Lower resolution is
 
 - Owner reported: “The particles on the maps I saw looked the way I remembered,” and that performance in campaign-test's smoke room was the highest seen on this MacBook since smoke sprites were introduced. Record AC27 as passed on this owner confirmation. This is owner-reported visual/performance feedback, not an additional instrumented campaign-test measurement; no separate observation of each runbook subcheck is claimed.
 - All acceptance rows now pass. No landing instruction has been given; retain the brief in `in-progress/` and wait for “land the plane.”
+
+## Main integration — 2026-10-12
+
+- Owner requested committing/pushing the current work and merging the latest main into this feature branch. Pushed `dce545aee` to `origin/perf-particle-sim-cost`, then integrated fetched `origin/main` at `27ca6a609` with a merge commit. The merge was clean; no manual conflict resolution or source fix was needed. SDK TypeScript/Luau files match their expected fixtures and retain the particle-component removal.
+- Post-merge gate: `cargo fmt --check`; `cargo clippy -j 4 --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings`; `cargo test -j 4 --workspace --features postretro/dev-tools,postretro/capture`. All exited 0; 10,938 tests passed, 0 failed, 57 ignored across 68 test/doc-test target summaries.
+- Gate log SHA-256: Clippy `6b5a6ed1925342220719c4536fa557632000b8faedec43c451933bf4f3c0d6bb`; tests `661f618e40909b8e8060136be5450552253552b51b2a2ef9079adee5b28c695c`. Logs removed after recording their results and hashes. Completed Clippy and test incremental caches cleared; 16.6 GiB free after cleanup.
+- Main brings Quake gravity/jump defaults. Existing PRLs still contain their baked gravity; rebake to apply the new defaults. Previous acceptance measurements and owner visual confirmation remain explicitly tied to the pre-merge implementation/fixtures; this merge gate adds automated integration proof and does not claim a new performance or visual run. No PRL/wire-format change is introduced by main.
+- The branch remains in `in-progress/`; this request pushes the feature branch and does not merge it into main or perform the brief's landing workflow.

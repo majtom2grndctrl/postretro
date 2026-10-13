@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "ambient_color" "64 64 72"
 "nav_cell_size" "1.0"
 "wad" ""

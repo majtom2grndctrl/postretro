@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 // floor
 {

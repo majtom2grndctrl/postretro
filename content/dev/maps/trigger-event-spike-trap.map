@@ -5,7 +5,6 @@
 // Run: cargo run -p xtask -- run content/dev/maps/trigger-event-spike-trap.prl
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "data_script" "../scripts/trigger-event-presser-fixture.ts"
 "_tb_mod" "dev"

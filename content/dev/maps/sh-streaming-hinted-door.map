@@ -5,7 +5,6 @@
 // side carries priority 3.
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 {
 ( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) debug_floor_grey 0 0 0 1 1

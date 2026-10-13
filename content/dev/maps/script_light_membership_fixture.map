@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "data_script" "../scripts/script-light-membership-fixture.ts"
 "wad" ""
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"

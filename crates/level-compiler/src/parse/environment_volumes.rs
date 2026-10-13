@@ -23,7 +23,7 @@ const PUSH_VOLUME: &str = "push_volume";
 const GRAVITY_SHAPE: &str = "`gravity` is one signed vertical number in m/s², like worldspawn \
                              `initialGravity` (\"-3\" is low gravity, \"0\" is weightless)";
 const PUSH_SHAPE: &str = "`push` is three numbers, an acceleration in map axes in m/s² \
-                          (\"0 0 15\" is an updraft, \"8 0 0\" a wind)";
+                          (\"0 0 25\" is an updraft, \"8 0 0\" a wind)";
 
 pub(super) fn is_environment_volume_classname(classname: &str) -> bool {
     matches!(classname, FLUID_VOLUME | GRAVITY_VOLUME | PUSH_VOLUME)

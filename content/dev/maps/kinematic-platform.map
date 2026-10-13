@@ -3,7 +3,6 @@
 // entity 0
 {
 "classname" "worldspawn"
-"initialGravity" "-9.81"
 "wad" ""
 "_tb_mod" "dev"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"

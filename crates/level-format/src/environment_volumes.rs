@@ -7,8 +7,10 @@ use crate::FormatError;
 pub const ENVIRONMENT_VOLUMES_VERSION: u16 = 1;
 
 /// Level default gravity when worldspawn `initialGravity` is absent, m/s².
-/// Negative values accelerate downward in engine space.
-pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -9.81_f32;
+/// Negative values accelerate downward in engine space. Quake's 800 u/s² at
+/// the map scale of 0.0254 m per unit — about twice Earth's, so jumps land in
+/// the genre's ~0.7 s instead of hanging.
+pub const DEFAULT_WORLD_GRAVITY_MPS2: f32 = -20.32_f32;
 
 /// Fixed bytes of one volume record with zero brushes, zero faces and an empty
 /// fluid name: entity, priority, gravity flag + value, push flag + vector,

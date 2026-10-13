@@ -43,7 +43,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 | A24 | `fixture_churn_fits_fragmentation_headroom` with named frozen arrays and eight deterministic seeds | achievable as stated | pass: focused proof and source/contract review |
 | A25 | Captured-limit propagation source inspection and all GPU growth/geometry tests | achievable as stated | pass: focused proof and source/contract review |
 | A26 | Final `POSTRETRO_REQUIRE_GPU=1` growth suite after preflight; no skips, overrides ≤ device grants | achievable as stated | pass: final 10 required-GPU growth tests, zero ignored/skipped |
-| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | partial: campaign feature log recorded below; baseline/hallway comparison outstanding |
+| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | partial: both feature logs recorded below; pre-change comparison outstanding |
 
 ## Tasks
 
@@ -158,7 +158,37 @@ One lightmap refusal and one repack appear in its separate diagnostics, with zer
 
 The owner supplied the missing startup measurement separately in chat: `[Renderer] streamed SH initial dense pool: bytes=62949120 tiles_per_layer=37830 layers=1 slots=37830` at 21:19:19 UTC. The original temporary log and its recorded hash remain unchanged. The 8 B monolithic base-atlas placeholder in the adjacent line is separate from this streamed dense pool.
 
-The captured SH warning check passes for this excerpt. M1 remains outstanding: matching pre-change campaign measurements, both hallway measurements and run conditions. Visual smoothness/lighting cannot be inferred from logs. Keep the original temporary log untracked and unchanged.
+The captured SH warning check passes for this excerpt. M1 remains outstanding: pre-change measurements for both maps and matched run conditions. Visual smoothness/lighting cannot be inferred from logs. Keep the original temporary log untracked and unchanged.
+
+## Manual evidence — stress hallway feature walk
+
+Owner supplied `sh-test-hallway-stress-log.txt` on 2026-10-13 (429 lines), SHA-256 `783815e8375c78271fd679130b4c199268831835f0c1cba1c82337ca0af19f49`. Full launch/exit timestamps: 21:30:47–21:32:09 UTC (82 s); level startup report at 21:30:53 UTC. Log confirms `content/dev/maps/stress-warren-hallway-inspection.prl`, AMD Radeon Pro 5300M / Metal, and the feature branch. Exact executable revision, map hash, route and resolution/options are not recorded.
+
+| Captured measurement | Result |
+|---|---|
+| SH device-limit warnings / visible SH misses | 0 / 0 across all 15 reporting windows |
+| Initial dense atlas allocation | 169,861,120 B (161.992 MiB) |
+| Initial tiles per layer / layers / slots | 102,080 / 1 / 102,080 |
+| Pool growth events / added capacity | 12 / 1,260.0 MiB, all in the first reporting window; none later |
+| Active SH pool capacity after growth | 1,440.0 MiB; not the initial dense-only allocation |
+| Growth CPU | 70.89 ms, all in the first reporting window |
+| Re-reads / evictions / retries / budget-limited drains | 13 / 94 / 0 / 2 across reporting windows |
+| Work pending at report times | one report: 112 targets, 108 sampleable, 1 Queued/held permit; next report 108/108 sampleable and 0 held permits; all other reports fully sampleable |
+| Error / panic records | 0 / 0 |
+
+Per-install trace measurements split at the level `[Startup]` report. CPU p95 uses nearest rank; copy means include zero-copy installs.
+
+| Phase | Installs | Copy regions total / mean / range | Install CPU total / mean / median / p95 / max |
+|---|---:|---|---|
+| Before startup report | 77 | 8,985 / 116.69 / 0–313 | 390.845 / 5.076 / 3.740 / 20.047 / 28.601 ms |
+| After startup report | 59 | 5,095 / 86.36 / 0–210 | 201.194 / 3.410 / 2.604 / 14.676 / 20.584 ms |
+| Whole capture | 136 | 14,080 / 103.53 / 0–313 | 592.039 / 4.353 / 3.262 / 16.945 / 28.601 ms |
+
+Periodic drain CPU totals 633.42 ms: 506.70 ms in the first startup-containing window, 126.72 ms in later windows. That first window includes eight installs after the startup report, so its twelve growths cannot all be assigned to Settling. The cumulative largest drain is 36.14 ms; the largest no-growth drain is 34.15 ms. Both are already present in the first report and remain unchanged. Drain timing includes overhead outside individual install traces.
+
+The full log also contains 135 non-SH warning records: 100 typedef-generation warnings and 35 behavior/content/UI/AI warnings. No SH device-limit warning appears. Their pre-change status is unknown until comparison; they are not grounds to mark the whole log warning-free.
+
+Both feature-map logs satisfy the captured zero-SH-device-warning check. The hallway's early capacity growth and install costs require the pre-change comparison; no performance pass or regression is inferred. M1 remains outstanding for the two baseline walks and matched run conditions. Preserve both original temporary logs untracked and unchanged.
 
 ## Handoff
 

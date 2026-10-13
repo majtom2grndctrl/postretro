@@ -272,3 +272,10 @@ Premise pins (premise lens):
 - Superset demand moves maps toward the SH limit, so `sh-streaming--pool-growth-device-limit` lands first.
 - Gate semantics (owner, round 3): completing reads still leaves non-resident draws from the per-drain install budget, first-draw latency and refused band blocks. Only pool deferrals measure over-inclusion's cost, and the gate is relative because the pre-change build was never measured at 130° or ±45°.
 - Projections: horizontal FOV is fixed and vertical follows aspect, so 130° 4:3, not 21:9, is the widest frustum.
+
+## Owner rulings (2026-10-13, after the round-3 premise follow-up)
+
+- Cost-bound citation: Descent alone re-queues on growth (§Algorithm survey); Source's `R_FlowThroughArea` unions a per-area rect without a stated bound, and is cited only for the union.
+- The sliver rationale for snapping was dropped: an outward snap of a bound on a grid line is still zero width; the tangent-portal Acceptance row pins the behaviour instead.
+- The residency gate charges the whole change, bake and runtime together, because both builds read their own bake and the rect-sampled mandatory set is part of this change's cost. A zero baseline requires zero. Both builds run the same synchronous mode, so O18's overstatement applies to both.
+- The mesh instance cap orders by visibility tier (forward-visible, shadow-only, promoted-static), then first seen; neither it nor `candidate_slot_score` has a line-of-sight term.

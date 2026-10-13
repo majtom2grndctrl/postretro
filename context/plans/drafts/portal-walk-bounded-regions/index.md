@@ -16,9 +16,10 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
 
 ## Decisions
 
-- **Build §2's bounded-region walk, with a rect as the region.** Descent and Source
-  bound portal cost the same way; the id Tech 4 walk relies on hand-placed portals,
-  which compiler cells lack. Snapping also keeps edge-on slivers conservative.
+- **Build §2's bounded-region walk, with a rect as the region.** Descent bounds portal
+  cost the same way, re-queuing a segment only when its region grows; Source unions a
+  per-area rect. The id Tech 4 walk relies on hand-placed portals, which compiler cells
+  lack.
 - **The visible set follows §2's superset contract.** It diverges from
   `plans/done/perf-visible-cell-candidate-cull` and `perf-dynamic-light-pvs-cull`,
   which call the output exact; their output identity rests on spans matching visible
@@ -31,11 +32,14 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
 - **The bake gap is gated, not widened.** Runtime draws over-included cells outside
   the baked set, and their demand is never refused; widening the bake would enlarge the
   never-refused mandatory set instead (`research.md` §Bake-gap ruling). The gate counts
-  lightmap blocks the pool deferred, never more than the pre-change build defers. A
-  failed gate stops the build for an owner decision.
-- **This brief lands after `sh-streaming--pool-growth-device-limit`.** Today SH pool
-  growth past the device's array-layer limit ends the session, and superset demand
-  moves maps toward that limit.
+  lightmap blocks the pool deferred, never more than the pre-change build defers. It
+  charges the whole change: deferrals from the rect-sampled bake's larger mandatory set
+  count alongside runtime over-inclusion. Where the pre-change build defers none, the
+  rect walk must defer none. A failed gate stops the build for an owner decision.
+- **This brief lands after `sh-streaming--pool-growth-device-limit`** (in `ready/`).
+  Today SH pool growth past a device limit ends the session; that brief makes it refuse
+  a cluster instead, and sizes dense layers from the whole level, which bounds the
+  superset's added demand.
 - **Placement:** runtime traversal in the visibility crate. Consumers and their inputs
   keep their shape.
 - **Non-goals:**
@@ -48,9 +52,10 @@ over-inclusion, and no ordinary pose reaches the step-cap fallback.
   - Parallelizing the walk: this brief removes its cost premise.
   - Refusable outside-set demand: it would also refuse the bake's genuine sampling
     misses, the error never-refuse exists to prevent.
-  - Visibility-aware shadow slot ranking and mesh instance cap: both ignore visibility
-    today, so an extra light or mesh can take a slot. Drops are reported, not fixed
-    here.
+  - Line-of-sight-aware shadow slot ranking and mesh instance cap: both rank inside the
+    visible set with no line-of-sight term (the mesh cap orders by visibility tier, then
+    first seen), so an over-included light or mesh can take a slot. Drops are reported,
+    not fixed here.
 
 ## Acceptance
 

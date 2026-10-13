@@ -1,120 +1,131 @@
 # fluid-surface-motion
 
-Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.3, §7.3a, §8 · `build_pipeline.md` §Custom FGD, §PRL section IDs · `entity_model.md` §7 · `movement.md` §6 · `networking.md` §Current contract · read at e8f607b94
+Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.3, §7.3a, §8 · `build_pipeline.md` §Custom FGD, §PRL section IDs · `entity_model.md` §7 · `movement.md` §6 · `networking.md` §What gates, and what replicates instead · read at e8f607b94
 
 ## Problem
-The owner reports that water surfaces look off-brand. The fluid pass already samples albedo through Post Retro sampling, but its Quake-style warp computes a continuous offset per screen pixel, so texel edges bend into smooth curves, the opposite of the blocky world textures. The owner also asked for two capabilities:
-- Still water should read as still but alive, with air moving over it and drips falling into it.
-- Water with a current should be visibly different, showing the direction it pushes the player.
-
-Today both render identically. When this is done, fluid motion moves in whole-texel steps on the water texture's own texel grid. Still water shows a quiet pixel shimmer and ambient ripple rings. A current visibly drifts the way it pushes, at the speed it carries a swimmer. A mapper can also turn a current's force down, even to zero, without changing its look, for a gentle stream or a purely decorative river.
+The owner reports that water looks off-brand. Fluid albedo already goes through Post Retro sampling, but the Quake-style warp shifts the sample point by a continuous offset per screen pixel, so texel edges bend into smooth curves. The owner also asked to tell still water from a current. Still water should look alive, with air moving over it and drips falling in. A current should show which way it pushes, and its push should be adjustable down to purely decorative. Today every pool looks the same. When this is done, water moves in whole-texel steps on its texture's own grid: still water shimmers and rings, and a current drifts the way, and at the speed, it carries a swimmer.
 
 ## Decisions
-- **Color stays the face texture, and the grid is its own texel lattice.** No resolution parameter is added. Face UVs are in texels and `sample_post_retro` snaps to that lattice, so the water's grain is set where every world face's grain is set: by the face's texture scale. Image resolution only sets the tiling period. A game that authors higher-density textures at a smaller scale gets finer water on the same terms as its walls, and the two cannot drift apart. This is the Surface Depth texel-mode precedent (`rendering_pipeline.md` §7.3). Distinct animated looks per fluid type are a later direction.
-- **Pixel motion is engine-owned, not an author style.** Motion is texture sampling, and Post Retro is the sole texture path since `plans/done/retire-true-retro`. Bloom and reflection style are author-owned because they are post effects over the image, not the texture lookup itself. A game with smooth reflections still has pixel-stepped water.
-- **Motion is evaluated per texel cell.** Shimmer and ring offsets are computed from the cell a fragment's UV falls in, rounded to whole texels, and animated on a time base stepped at a fixed engine rate of at most 3 Hz. Each cell's step carries its own phase offset, a hash of the cell, so a pool never changes everywhere on one frame. Drift is a separate whole-texel scroll of the face at its true speed (below). The `sample_post_retro` body does not change, and the fluid/mover parity test stays the guard (§7.3a). Shimmer amplitude fades to flat with distance, measured in texels per pixel as Surface Depth's fade is, so far water does not turn to sub-pixel noise.
-- **Still water: shimmer plus ambient ripple rings, all in the shader.** Ring placement is a pure function of cell and stepped time. No entity, no CPU work, no per-frame upload. Gameplay-driven ripples (player, projectile, splash) are a non-goal: they need an event-fed buffer, and splash visuals are already an E24 follow-up (`plans/done/E24--water-and-environment-volumes`).
-- **Photosensitivity.** A view-filling stepped shimmer could act like a flipbook. So each cell steps at no more than 3 Hz, the general flash threshold, and the per-cell phase keeps the whole view from changing on one frame. Rings share that clock. Drift is a uniform scroll: it moves texels without changing the surface's average brightness, so it is motion, not flash, and scrolls at its true speed.
-- **Drift is resolved per surface face at install, on the CPU.** Each face resolves the push at its centroid, using the winner order of `resolve_environment`: priority, then the smaller volume, then map order.
-  - Drift velocity is the authored push ÷ the fluid's viscosity. That is the speed a swimmer settles at (`movement.md` §6), so the surface moves at the speed it carries you. It is capped only at the drift layer's terminal velocity, which also covers zero viscosity.
-  - Viscosity is the value prediction uses. A connected client predicts only from the host's fluid table (`networking.md` §Current contract), so drift on a client reads that table too and re-resolves when it changes. The reason is that the look must match the felt current, not anti-cheat.
-  - Each face's world-to-UV map is affine and known at install. The drift is projected into UV space once and stored as a per-vertex drift, constant across the face. The scroll offset is rounded to whole texels, so the face moves as one block and no cell tears.
-  - The group-4 slot's reserved components stay free for `fluid-ssr-reflections`.
-  - Push volumes are static baked data: no per-frame cost, no replication (`entity_model.md` §7).
-  - A vertical push (`movement.md` §6 designs updrafts and down-currents) projects to nothing on a level surface, so such a current looks still from above. This limit is accepted.
-  - The compiler splits fluid surface faces along the edges of the push brushes over them, so the current shows exactly where the push is, however the mapper drew the fluid brushes. A face part under no push stays still.
-  - A pool whose current varies, or a river that bends, is one `fluid_volume` under several push brushes. Two fluid entities would draw a surface between them, as the FGD already warns.
-  - E24's deferred runtime-mutable volumes would need a re-resolve hook here; accepted.
-- **A current's force is its own dial: an optional `force` key on `push_volume`, default 1.** It follows the existing multiplier convention of `light_range` and `_lightmap_scale`: 1 is unchanged, and any finite value ≥ 0 is accepted, with no upper cap.
-  - `push` becomes the current's nominal acceleration: it sets direction and strength, and the look derives from it.
-  - The player feels `push × force` in host movement, prediction and replay; projectiles resolve nothing from environment volumes (`entity_model.md` §7).
-  - Force 0 is a decorative current: it drifts visibly and pushes no one. Below 1 is a gentle shove under a strong-looking current. Above 1 is a calm-looking surface hiding a strong current. That is a deliberate trap the author can choose, in the Quake tradition.
-  - A visual-only `flow` key on `fluid_volume` was the rejected shape. It let the look and the felt current point different ways, whereas with `force` the surface always moves in the direction you are pushed.
-  - Particles are unhashed presentation (`entity_model.md` §8), so they follow the visible current, the authored `push`. A force-0 river still carries foam and smoke.
-  - It is a modifier on the push field, resolved with it and never on its own. It still amends two contracts at promotion: the "further regional field" rule in `build_pipeline.md` §Custom FGD and `entity_model.md` §7, and push's meaning in `movement.md` §6.
-  - It changes gameplay, so it enters the level content digest with `push` (`networking.md` §Current contract). No cosmetic value enters the digest.
-  - It ships in a new optional section beside environment volumes, written only when some push volume authors a force other than 1. This follows the `LightTags` sibling-section precedent. The environment-volumes section and its version are unchanged, so every existing map loads as it is, and no map needs a rebuild until it authors `force`.
-- **Non-goal: reduce motion does not still the water.** Reduce motion governs view feel, shake and UI tweens (`player_options.md` §5), not world animation. Animated lights do not follow it either.
-- **Reflections are a separate brief.** `fluid-ssr-reflections` builds on the cell grid this brief introduces.
+- **Water uses its face texture and that texture's texel grid.** Face UVs are in texels, so the face's texture scale sets the grain, exactly as for walls. A game that wants finer water authors finer textures; no resolution parameter is added. This mirrors Surface Depth's texel mode (`rendering_pipeline.md` §7.3).
+- **Pixel motion is engine-owned.** Motion is texture sampling, and Post Retro has been the only sampling path since `plans/done/retire-true-retro`. Bloom and reflection style are author-owned because they are post effects.
+- **Shimmer and ripple rings are per texel cell, in the shader.** Each cell of the face's fixed grid gets a whole-texel offset. The offset steps at no more than 3 Hz, the general flash threshold, and each cell carries its own phase, so a view-filling pool never changes on one frame. Rings are a pure function of cell and step, so there is no entity, CPU work or upload. The offset fades to flat once texels shrink below a pixel, as Surface Depth's march does. `sample_post_retro` is unchanged.
+- **Drift is a whole-texel scroll at the speed the current carries a swimmer.**
+  - Speed is the drift layer's steady state in that fluid, from a function movement also uses, so look and feel agree at any viscosity (`movement.md` §6). Zero viscosity is capped at the player descriptor's terminal velocity.
+  - A uniform scroll keeps the surface's mean brightness, so it is motion, not flash, and needs no step cap.
+  - Shimmer and rings stay on the fixed grid while the texture scrolls beneath them.
+- **Drift is resolved per face at install.** Each face takes the push winning `resolve_environment` at a point just inside the fluid, so a wind skimming the waterline does not move the water. It is projected into UV once.
+  - Viscosity is the value prediction uses: the host's fluid table on a client (`networking.md` §What gates, and what replicates instead).
+  - Drift re-resolves on every fluid-table change, viscosity-only changes included.
+  - Frame capture loads no fluid table, so it draws no drift.
+- **The compiler splits fluid faces along every push brush over them.** A current then shows exactly where its push is, however the fluid brushes were drawn. A bending river is one `fluid_volume` under several push brushes; two fluid entities would draw a surface between them, as the FGD warns. A map compiled before this change loads, and its unsplit faces drift whole until rebuilt.
+- **A vertical push looks still from above.** An updraft or down-current (`movement.md` §6) has no in-plane component on a level face. This limit is accepted.
+- **`force` on `push_volume` scales how hard a current shoves.**
+  - It defaults to 1, takes any finite value ≥ 0, and has no upper cap, like `light_range`. Unlike `light_range`, 0 is valid.
+  - `push` becomes the nominal current: it sets the direction and the look. The player feels `push × force` at every movement read of push.
+  - Particles are presentation (`entity_model.md` §8), so they follow the nominal push, and a force-0 river still carries foam.
+  - Force 0 is decorative. Force above 1 is a calm-looking surface hiding a strong current, a trap the author may choose.
+  - A visual-only `flow` key was rejected because it let look and feel point different ways.
+- **`force` amends two contracts at promotion, and stays out of every existing map.**
+  - Amended: the "further regional field needs its own amendment" rule (`entity_model.md`, Load-time gameplay declarations), and the meaning of push in `movement.md` §6.
+  - It enters the level content digest beside push (`networking.md` §Level identity and level content digest).
+  - It ships in an optional section shaped like `LightTags`, written only when some push volume authors a force other than 1. The environment-volumes section and its version are unchanged, so existing maps load as they are.
+- **Non-goals.**
+  - Gameplay-driven ripples need an event-fed buffer; splash visuals are already an E24 follow-up (`plans/done/E24--water-and-environment-volumes`).
+  - Per-fluid-type looks (sludge without rings, say) need new descriptor fields; every fluid shares one motion here.
+  - Reduce motion governs view feel, shake and UI tweens (`player_options.md` §5), not world animation, so it does not still water.
 
 ## Acceptance
+Rows cite the orderings pinned in `research.md` (R1–R15).
+
 ### Automated
-- [ ] Cell warp reference, GPU-free:
-  - every shimmer, ring and drift offset is a whole number of texels;
-  - all UVs in one cell get one offset;
-  - shimmer and rings change only at each cell's own time-step boundaries, and no cell steps faster than 3 Hz;
-  - across a view-filling grid of cells, no single frame changes more than a small fraction of them;
-  - zero drift gives no net motion over a full cycle;
-  - a nonzero drift scrolls along its direction at its true speed, and reversing it reverses the scroll;
-  - shimmer amplitude reaches zero beyond the fade distance.
-- [ ] Ripple placement is deterministic: the same cell and stepped time give the same ring state, and adjacent steps differ.
+- [ ] The fluid shader mirrors the CPU reference: step rate, amplitude, fade and hash constants match it; `fs_main` samples albedo and emissive at the warped UV; the continuous per-pixel sine warp is gone (grep gate).
+- [ ] Shimmer and rings, against the GPU-free reference:
+  - every offset is a whole number of texels, constant within a cell;
+  - a cell's displayed offset, shimmer plus every ring reaching it, changes only at that cell's own step boundaries and never faster than 3 Hz (R7);
+  - across a 64×64 grid at 60 fps for 10 s, no frame changes more than 10% of cells, including a grid spanning negative texel coordinates, where cells −1 and 0 hash to different phases (R8);
+  - with zero drift, each cell's offset averages zero over one shimmer period and never exceeds the amplitude;
+  - the offset reaches zero past the texels-per-pixel fade threshold;
+  - the same cell and step give the same ring state, steps n and n + 1 differ in at least one cell of a 64×64 grid, and ring state differs somewhere between a cell and the same cell one texture period over.
+- [ ] Drift scroll:
+  - texture features move toward the push in world space, at its true speed, for faces at scale 1, at 0.25 and under a 45°-rotated projection; reversing the push reverses the scroll;
+  - after 24 h of script time in the uniform's f32, the scroll stays whole-texel within one texel per second of true speed, and the warped UV stays within one texture period (R9);
+  - wrapping the scroll changes no cell's shimmer or ring state (R10).
 - [ ] Install drift resolve, per face:
-  - a face over a coincident push gets that push's projected drift;
-  - a face with no push gets zero;
-  - a push beside but not over a face is ignored;
-  - two pushes over one face yield the winner `resolve_environment` picks at its centroid;
-  - in a two-brush pool with a push over only one brush, only that brush's faces drift;
-  - a push brush covering half of a single fluid face splits it, and only the covered part drifts;
-  - a push brush covering a whole face leaves it unsplit;
-  - a vertical face drifts along the push's in-plane component only;
-  - a purely vertical push gives a level face zero drift.
+  - a face over a push gets that push's projected drift, and a face with none gets zero;
+  - a push brush only touching a fluid face from outside, such as a wind whose bottom sits on the waterline, gives no drift (R3);
+  - two pushes over one face yield the winner `resolve_environment` picks;
+  - a vertical face drifts with the in-plane component only, and a purely vertical push gives a level face zero drift;
+  - the `e24-environment-test` current channel gets 3 m/s toward map +Y on its top face (push 6 ÷ water viscosity 2), with no face of it left still.
+- [ ] Face splitting:
+  - a push covering half of one fluid face splits it, and only the covered part drifts;
+  - a push covering a whole face leaves it unsplit;
+  - two overlapping pushes over parts of one face split it into parts that each drift with their winner (R4);
+  - an edge or corner touch leaves the face whole and still, no part under 1 mm² is kept, and parts sum to the face's area (R5);
+  - every part of one face under one push drifts identically, however thin (R6).
 - [ ] Drift speed:
-  - it equals push ÷ viscosity below terminal velocity, and two currents of different strength drift at different speeds;
-  - zero viscosity gives the terminal-velocity cap, not a division fault;
-  - on a client, drift uses the host's viscosity, and a change to the host's fluid table re-resolves it.
+  - for `water` and `sludge`, a swimmer released without input in a force-1 current settles, within 2%, at the world speed the surface drifts (R13);
+  - two currents of different strength drift at different speeds;
+  - zero viscosity gives the terminal-velocity cap, not a division fault.
+- [ ] Re-resolve:
+  - a fluid-table change that alters only one viscosity re-resolves drift on host and client (R1);
+  - a client that installs the level before the host's tuning draws no fluid surface until it arrives, then the same drift as a client tuned first; after a demotion and a new tuning it draws the new table's drift (R2);
+  - a mid-level re-resolve still draws every pool at its opacity on the next frame, and a frame with unchanged opacities uploads no parameter rows (R14).
 - [ ] `force`:
-  - omitted resolves to 1, and movement is unchanged from today;
-  - force 0 gives the authored drift on the surface, while a swimmer in it feels zero push and a particle still follows the authored push;
-  - force 0.5 halves the felt push and leaves the drift unchanged;
-  - force 3 triples the felt push and leaves the drift unchanged;
+  - omitted or blank resolves to 1, and movement is unchanged from today;
+  - force 0 leaves the surface drift as authored while a swimmer feels zero push and a particle follows the nominal push;
+  - force 0.5 and force 3 scale the felt push and leave the drift unchanged;
+  - a force-0 updraft never lifts a grounded player, and a fluid jump under a force-0 current decides as in still water (R11);
   - host movement, client prediction and reconcile replay agree under force 0.5;
-  - a negative, non-numeric or non-finite value fails the build with a message naming the entity.
-- [ ] Two copies of a map that differ only in `force` produce different content digests.
-- [ ] Push-force section:
-  - a map that authors no `force` emits no force section and loads with every force at 1;
-  - a map built before this change loads unchanged;
+  - a negative, non-numeric or non-finite value fails the build, naming the entity.
+- [ ] Digest: two maps differing only in `force` hash differently. A map whose every force is 1 hashes the same with or without a force section.
+- [ ] Force section:
+  - a map authoring no `force`, including a push-only map, emits none and loads with every force at 1 (R15);
+  - a pre-change map loads, and an unsplit face under part of a push drifts whole by its sample point (R12);
   - a map with one authored force round-trips, and its other records read 1;
-  - an entry count that differs from the environment-volume record count fails load;
-  - a negative or non-finite force fails load;
-  - the environment-volumes section's bytes are identical with and without the change for a map that authors no force.
-- [ ] A per-frame opacity change leaves the installed drift intact.
-- [ ] The fluid/mover Post Retro parity test passes with its comparison unchanged.
-- [ ] Pipeline budget tests pass; the change adds no binding.
-- [ ] The DX12 FXC shader test compiles the fluid shader (Windows, ignored-gated run).
+  - a count unequal to the environment-volume record count, a version other than 1, a payload not 6 + 4 × count bytes, a negative or non-finite force, or a force other than 1 on a record without push each fail load;
+  - the environment-volumes bytes are identical with and without the change for a map with no force and no push over part of a fluid face.
+- [ ] The fluid warp reads no reduce-motion, accessibility or author render-profile input (grep gate).
+- [ ] The fluid/mover Post Retro parity test passes unchanged (regression guard).
+- [ ] Pipeline budget tests pass; no binding is added.
+- [ ] The DX12 FXC shader test compiles the fluid shader on the 1660 Super, without printing the no-adapter skip line.
 
 ### Manual
-- [ ] A still pool beside a current pool: the still pool shimmers and rings in place, and the current visibly drifts. Standing in the current carries the player the way, and at about the speed, the surface drifts.
-- [ ] A force-0 river drifts visibly and pushes nothing. A bending river built from several push brushes over one fluid entity drifts along each bend, with no surface drawn mid-river.
-- [ ] Motion reads as whole-texel steps. A water face at scale 1 and one at scale 0.25 each step on the same grain as a neighbouring wall at the same scale, and the scale-1 pool is visibly chunkier. Cell borders show no smear or shimmer band. Distant water is calm, not noisy.
-- [ ] A view-filling still pool's shimmer reads as gentle motion, not flicker, with the flash limiter both off and on.
-- [ ] A pool's side face seen through glass shows the warp and drift without tearing at the top edge.
-- [ ] GPU timing (`POSTRETRO_GPU_TIMING=1`, 1660 Super): measure the fluid pass looking down at a pool that fills the view, before and after. Report in the plan of record.
+- [ ] A still pool beside a current pool: the still pool shimmers and rings in place, and the current drifts. Standing in it carries the player the way, and at about the speed, the surface moves.
+- [ ] A force-0 river drifts and pushes nothing. A force-3 pool pushes harder than it looks. A bending river under several push brushes over one fluid entity drifts along each bend, with no surface mid-river.
+- [ ] Water at scale 1 and at 0.25 each steps on the same grain as a neighbouring wall at the same scale. Cell borders show no smear. Distant water is calm, not noisy.
+- [ ] A view-filling still pool reads as gentle motion, not flicker.
+- [ ] A pool's side face through glass drifts without tearing at the top edge.
+- [ ] GPU timing (`POSTRETRO_GPU_TIMING=1`, 1660 Super) for the fluid pass, looking down at a view-filling pool, before and after; report in the plan of record.
 
 ## Path
-- **Warp.** It lives in `fluid_warp_uv` (fluid_surface.wgsl). Derivatives stay hoisted from the unwarped UV. A CPU mirror in `postretro-render-cpu` lets the reference test pin it, the same shape as `surface_depth`.
+- **Warp.** It lives in `fluid_warp_uv` (fluid_surface.wgsl); derivatives stay hoisted from the unwarped UV. The CPU mirror and the shader-constant test follow `surface_depth` (`surface_depth_tests.rs`, `shader_constants_match_the_cpu_reference`).
 - **Drift.**
-  - Seams: `pack_fluid_surfaces`, `FluidSurfaceVertex` (which already carries a per-face normal), and `Renderer::install_fluid_surfaces`, which receives every environment record.
-  - `collision::resolve` owns the winner order. Call or lift its comparator rather than restating it.
-  - Prediction's viscosity source is the host fluid table, not `local_fluid_presentation`. Find where a client installs the tuning payload's level environment, and hook the drift re-resolve there. On the host, the existing fluid-table reload re-resolves the level's volumes (`scripting.md` §2).
-  - Face splitting belongs with surface-face extraction in level-compiler `environment_volumes.rs`. Clip each fluid face polygon by the push brushes' planes.
-- **Force key.**
-  - Compiler: `resolve_environment_volume` and `parse_push` (level-compiler parse/environment_volumes.rs).
-  - Format: a new `SectionId` after `EnvironmentVolumes`, shaped like `LightTags` (`light_tags::LightTagsSection`, level-format section_registry.rs). The loader pairs it with the environment-volumes records the way `LightTags` pairs with AlphaLights.
-  - Runtime: `collision::EnvironmentVolume` feeds both player movement and the particle pool (`particle_pool` environment). It must carry the nominal push and `force` separately. Movement applies the product; particles and the renderer read the nominal push.
-  - Digest: `runtime_movers.rs` hashes environment fields one by one, so add `force` beside `push`.
-  - FGD: the `push_volume` class in `sdk/TrenchBroom/postretro.fgd`, plus the `docs/level_design.md` key table.
-  - Check whether the build cache keys a stage on compiler code. If it does, keep the change from invalidating cached lighting for maps that author no force.
-- **Classic rival, rejected:** hand-drawn animation frames plus a scroll, as Doom and Quake animate liquids. The engine has no texture-animation system, every game would hand-draw frames, and ripples would repeat per tile.
-- **Strongest rival:** animate in texture space. A small pass writes each stepped frame at the texture's own resolution, and the scene samples it unchanged. Seam anti-aliasing and mips are then exact by construction. It loses because ripple rings would repeat on every texture tile.
-- **Fallback:** if the first slice shows cell borders smearing (the AA band blends with the source texel, not the neighbouring cell's), move shimmer and rings to texture space. Drift is already a whole-face scroll with no cell borders, so it stays as built. The fallback gives up non-repeating rings: in texture space they repeat on every tile, the cost that rejected the strongest rival. Choosing it is an owner call, reported in the plan of record.
-- **First slice.** The cell shimmer on pools at scale 1 and 0.25, checking cell borders closely.
-- **Fixtures.** `maps/e24-environment-test.map` needs a still pool, a current pool, a two-brush pool with a partial push, a push brush laid across half of one fluid face, a force-0 bending river, a force-3 trap pool, and water at scale 1 and 0.25 beside walls at matching scales. Add them if missing.
+  - Seams: `pack_fluid_surfaces`, `FluidSurfaceVertex` (which already carries a per-face normal), and `Renderer::install_fluid_surfaces`.
+  - A per-vertex drift keeps the group-4 slot's free components for `fluid-ssr-reflections`.
+  - `collision::resolve` owns the winner order; call or lift its comparator rather than restating it.
+  - The steady-state function belongs beside the drift layer in `physics::movement::push`.
+- **Re-resolve.** Every table change passes `refresh_environment_fluids` (startup/environment_install.rs): host reload, client tuning install and demotion. Hook drift there, before its early return for unchanged names.
+- **Face split.** It belongs in surface-face extraction (level-compiler `environment_volumes/surface.rs`); `outside_parts` already computes the inside part before discarding it. Fluid vertices carry no lightmap UV, so a split is cheap.
+- **Force.**
+  - Compiler: `resolve_environment_volume`, `parse_push`. Format: a new `SectionId` beside `EnvironmentVolumes`, paired to its records as `LightTags` pairs with AlphaLights.
+  - Runtime: `collision::EnvironmentVolume` feeds both movement and the particle pool, so it carries nominal push and force apart. Movement's push reads include lift-off, the terminal clamp and the fluid-jump check.
+  - Digest: `runtime_movers.rs` hashes record fields one by one, and its exhaustive destructure will not see a sibling section, so add force explicitly.
+  - FGD: `push_volume` in `sdk/TrenchBroom/postretro.fgd`, plus the `docs/level_design.md` key table.
+  - Keep cached lighting valid for maps that author no force.
+- **Rivals.**
+  - Hand-drawn animation frames plus a scroll, as Doom and Quake animate liquids: the engine has no texture-animation system, and every game would hand-draw frames.
+  - Animating in texture space gives exact seam anti-aliasing, but rings repeat on every tile. It is the fallback if cell borders smear, and choosing it is an owner call.
+- **First slice.** Shimmer on pools at scale 1 and 0.25, checking cell borders closely.
+- **Fixtures.** `maps/e24-environment-test.map` needs:
+  - a still pool and a current pool;
+  - a two-brush pool with a partial push, and a push across half of one face;
+  - a force-0 bending river and a force-3 trap pool;
+  - water at scale 1 and 0.25 beside walls at matching scales.
 
 ## Wire format
 New optional push-force section, mirroring `LightTags`:
 - **Layout.** A `u16` LE version (1), then a `u32` LE entry count, then one `f32` LE per environment-volume record, in record order.
-- **Count.** The entry count must equal the environment-volume record count, or load fails.
-- **Values.** Records without a push carry 1.0. Every value must be finite and ≥ 0.
+- **Validation.** The entry count must equal the environment-volume record count. A record without push carries 1.0. Every value is finite and ≥ 0.
 - **Absence.** The section is omitted when every force is 1, and an absent section means every force is 1.
 
 The environment-volumes section is unchanged.
@@ -126,4 +137,4 @@ The environment-volumes section is unchanged.
 | Current force | one `f32` per environment-volume record | new optional section after `EnvironmentVolumes`; absent means all 1 | `push_volume` key `force`, float ≥ 0, default 1 |
 
 ## Open questions
-- Shimmer step rate within the 3 Hz ceiling, ring density and lifetime, and shimmer amplitude and fade distance — **delegated**: tune by eye at the first manual capture, and record the values in the plan of record.
+- Shimmer step rate under 3 Hz, ring density and lifetime, shimmer amplitude, and the fade threshold — **delegated**: tune by eye at the first capture, and record the values in the plan of record.

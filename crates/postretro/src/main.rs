@@ -5114,8 +5114,7 @@ impl App {
                     allocator,
                     command_queues,
                     server,
-                    resolved.client_id,
-                    resolved.pawn,
+                    resolved,
                     *tick,
                 );
                 host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);

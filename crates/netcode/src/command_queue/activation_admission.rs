@@ -236,8 +236,8 @@ impl HostCommandQueues {
             .and_then(|state| state.activation_edges.refusal(token))
     }
 
-    /// Stamp `client_id`'s retained starts due by `resolved_tick` with the
-    /// shooter's fire gate at that tick's start
+    /// Record the shooter's fire gate at the start of `resolved_tick`, and stamp
+    /// `client_id`'s starts due by it with the gate of each one's own tick
     /// (`ActivationEdges::stamp_fire_gate`).
     pub fn stamp_start_fire_gate(&mut self, client_id: u64, resolved_tick: u32, blocked: bool) {
         if let Some(state) = self.clients.get_mut(&client_id) {
@@ -245,6 +245,37 @@ impl HostCommandQueues {
                 .activation_edges
                 .stamp_fire_gate(resolved_tick, blocked);
         }
+    }
+
+    /// `client_id`'s pawn starts client tick `tick` with its fire gate closed,
+    /// such as a vault with fire blocked. Its client cancelled whatever it was
+    /// executing on that tick, and sends no cancel for it, so every execution
+    /// it began before `tick` stops there as if it had: the live one, a start
+    /// delivered this resolution, and each retained start stamped earlier
+    /// carry a cancel stamped `tick` (`ActivationEdges::cancel_before`). The
+    /// lane delivers each once its execution's clock reaches `tick`, so a late
+    /// execution mints every shot the client fired before the vault and none
+    /// after, wherever the vault stands when it is delivered.
+    ///
+    /// Returns whether the live execution's clock has already reached `tick`.
+    /// This resolution's edges are already delivered, so the caller cancels
+    /// that execution itself, before this tick's simulation.
+    pub fn close_start_fire_gate(&mut self, client_id: u64, tick: u32) -> bool {
+        let live = self
+            .activations
+            .live_binding(client_id)
+            .map(|(id, _)| id.token);
+        let Some(state) = self.clients.get_mut(&client_id) else {
+            return false;
+        };
+        state
+            .activation_edges
+            .cancel_before(tick, live, state.host_tick);
+        // No horizon: nothing holds a cancel, as an unreleased charge holds none.
+        live.is_some()
+            && state
+                .live_horizon(live)
+                .is_none_or(|horizon| client_tick_le(tick, horizon))
     }
 
     /// The fire gate stamped on `token`'s delivered start, if it was stamped.

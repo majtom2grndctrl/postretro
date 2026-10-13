@@ -33,9 +33,9 @@ fn recovery_ticks(registry: &EntityRegistry, weapon: EntityId) -> u32 {
 }
 
 /// Whether the execution `id` binds may continue: its pawn lives, still holds
-/// the weapon, is not vaulting with fire blocked, and the weapon still runs it.
-/// A dead or vaulting pawn's execution is cancelled before its next command,
-/// as the client cancels its own prediction.
+/// the weapon, and the weapon still runs it. A dead pawn's execution is
+/// cancelled before its next command, as the client cancels its own
+/// prediction.
 fn binding_is_live(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -43,7 +43,6 @@ fn binding_is_live(
     weapon: EntityId,
 ) -> bool {
     registry.exists(pawn)
-        && !postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn)
         && !registry
             .get_component::<HealthComponent>(pawn)
             .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
@@ -65,19 +64,27 @@ fn binding_is_live(
 
 /// Run before the next command, so a replaced/dropped/dead execution cannot
 /// prevent a later initiation or retain unissued authorized ordinals.
+///
+/// A pawn that starts the command's tick with fire blocked, as a vault does,
+/// stops what its client began before that tick, as the client stopped it.
+/// Each execution stops where its own clock reaches the tick, not at the
+/// host's delivery of it (`HostCommandQueues::close_start_fire_gate`); one
+/// already there stops now. Death stops the live execution at once.
 pub(super) fn observe_lifecycle(
     registry: &mut EntityRegistry,
     allocator: &mut netcode::NetworkIdAllocator,
     queues: &mut netcode::HostCommandQueues,
     server: &mut NetServer,
-    client: u64,
-    pawn: EntityId,
+    resolved: &netcode::ResolvedPawnCommand,
     tick: u32,
 ) {
+    let (client, pawn) = (resolved.client_id, resolved.pawn);
+    let gate_reached = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn)
+        && queues.close_start_fire_gate(client, resolved.client_tick);
     let Some((id, weapon)) = queues.activations.live_binding(client) else {
         return;
     };
-    if binding_is_live(registry, pawn, id, weapon) {
+    if !gate_reached && binding_is_live(registry, pawn, id, weapon) {
         return;
     }
     let recovery_ticks = recovery_ticks(registry, weapon);
@@ -103,9 +110,11 @@ pub(super) fn observe_lifecycle(
     );
 }
 
-/// Stamp the client's retained starts due by this resolved command's tick with
-/// the shooter's fire gate as that tick starts, before its movement runs. A
-/// start delivered later is judged by this stamp, not by its pawn at delivery.
+/// Record the shooter's fire gate as this resolved command's tick starts,
+/// before its movement runs, and stamp the client's starts due by that tick
+/// with the gate of each one's own tick. A start delivered later is judged by
+/// its stamp, not by its pawn at delivery; one that arrives after its tick
+/// resolved reads the gate recorded then.
 pub(super) fn stamp_start_fire_gate(
     registry: &EntityRegistry,
     queues: &mut netcode::HostCommandQueues,
@@ -179,14 +188,18 @@ pub(super) fn guard_initiation(
         ),
         None => netcode::CadenceVerdict::Unrecorded,
     };
-    // A start is judged by the shooter's fire gate at its own tick, stamped
-    // when that tick resolved; one delivered on its own resolution reads the
-    // live, pre-movement pawn.
-    let fire_blocked = queues
-        .start_fire_blocked(command.owner_client_id, token)
-        .unwrap_or_else(|| {
-            postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, command.pawn)
-        });
+    // A start is judged by the shooter's fire gate at its own tick. Every
+    // delivered start is stamped by `stamp_start_fire_gate`, which callers run
+    // after resolving and before this guard; the live, pre-movement pawn is
+    // only a release-build fallback should that order break.
+    let stamped = queues.start_fire_blocked(command.owner_client_id, token);
+    debug_assert!(
+        stamped.is_some(),
+        "stamp_start_fire_gate must stamp a delivered start before guard_initiation judges it"
+    );
+    let fire_blocked = stamped.unwrap_or_else(|| {
+        postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, command.pawn)
+    });
     if !command.real_command
         || !weapon_available
         || !ledger_allows
@@ -1130,6 +1143,53 @@ mod tests {
         assert_eq!(
             refused_start_recovery_ticks(&registry, &queues, 7, pawn, start),
             own
+        );
+    }
+
+    // Regression: a start whose command playout yielded past, delivered by a
+    // later copy of that command, was judged by the fire gate of the resolution
+    // that delivered it, so a vault begun in between refused it.
+    #[test]
+    fn a_start_arriving_after_playout_yielded_past_its_tick_keeps_that_ticks_fire_gate() {
+        let (_, pawn, ..) = fixture();
+        let mut owners = netcode::MovementOwners::default();
+        owners.set_for_test(pawn, 7);
+        // Resolve once, stamping as the host does with the pawn's fire gate.
+        let resolve = |queues: &mut netcode::HostCommandQueues, blocked: bool| {
+            let resolved = netcode::host_resolve_remote_commands(&owners, queues)
+                .pop()
+                .expect("the client resolves");
+            queues.stamp_start_fire_gate(7, resolved.client_tick, blocked);
+            resolved
+        };
+        let start = ActivationToken {
+            start_tick: 3,
+            lane: ActivationLane::Primary,
+        };
+        let mut queues = netcode::HostCommandQueues::default();
+        for tick in [1, 2] {
+            assert!(queues.ingest_for_test(7, &wire_command(tick, 0, None)));
+        }
+        resolve(&mut queues, false);
+        resolve(&mut queues, false);
+        // Tick 3 is lost; tick 4's arrival makes playout yield past it.
+        assert!(queues.ingest_for_test(7, &wire_command(4, 0, None)));
+        assert_eq!(resolve(&mut queues, false).client_tick, 3);
+        assert!(queues.ingest_for_test(7, &wire_command(5, 0, None)));
+        assert_eq!(
+            resolve(&mut queues, true).client_tick,
+            4,
+            "the pawn starts tick 4 vaulting"
+        );
+        // A later copy of tick 3 is stale, but its start is retained.
+        assert!(!queues.ingest_for_test(7, &wire_command(3, 0, Some(start))));
+        assert!(queues.ingest_for_test(7, &wire_command(6, 0, None)));
+        let delivered = resolve(&mut queues, true);
+        assert_eq!(delivered.command.activation.initiation, Some(start));
+        assert_eq!(
+            queues.start_fire_blocked(7, start),
+            Some(false),
+            "judged by its own tick, which started before the vault"
         );
     }
 

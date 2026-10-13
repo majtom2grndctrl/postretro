@@ -9,6 +9,9 @@ pub const MAX_RETAINED_ACTIVATION_EDGES: usize = 64;
 /// Two seconds at 60 Hz: how long an unknown edge, or a due start the lane
 /// cannot admit, is retained.
 pub(crate) const RETENTION_TICKS: u32 = 120;
+/// Resolved client ticks whose fire gate the lane remembers, for a start that
+/// reaches it after its own tick resolved: as long as a due start is retained.
+const FIRE_GATE_HISTORY: usize = RETENTION_TICKS as usize;
 #[derive(Debug, Clone, Copy)]
 struct RetainedEdge {
     token: ActivationToken,
@@ -39,8 +42,9 @@ pub(crate) struct RetainedStart {
     /// a start playout has not reached yet is never refused for waiting.
     due_since: Option<u32>,
     /// The shooter's pawn-state fire gate at the start of the start's own
-    /// client tick, stamped when that tick resolves. A start delivered later is
-    /// judged by it, not by the pawn's state at delivery.
+    /// client tick, stamped by the first resolution that finds it due
+    /// (`stamp_fire_gate`). A start delivered later is judged by it, not by the
+    /// pawn's state at delivery.
     fire_blocked: Option<bool>,
 }
 /// Why the lane refused a retained start.
@@ -74,6 +78,9 @@ pub(crate) struct ActivationEdges {
     admitted: VecDeque<ActivationToken>,
     overflow_cancel: Option<ActivationToken>,
     settled_start: [Option<u32>; 2],
+    /// `(client tick, fire gate)` as each recently resolved tick started,
+    /// oldest first, at most `FIRE_GATE_HISTORY` ticks.
+    fire_gates: VecDeque<(u32, bool)>,
 }
 impl ActivationEdges {
     /// Retain a start in intake order. Duplicates, settled starts, and starts past
@@ -178,17 +185,62 @@ impl ActivationEdges {
             .map(|(_, reason)| reason)
     }
     /// Record `blocked`, the shooter's fire gate at the start of client tick
-    /// `resolved_tick`, on every retained or just-delivered start stamped at or
-    /// before it that has no verdict yet. Called once per resolved command,
-    /// before that command's movement runs, so each start keeps the gate of the
-    /// first resolution at or after its own tick.
+    /// `resolved_tick`, and stamp every retained or just-delivered start
+    /// stamped at or before it that has no verdict yet. Called once per
+    /// resolved command, before that command's movement runs.
+    ///
+    /// A start takes the gate recorded for its own tick. One that reached the
+    /// lane after its tick resolved, such as a later copy of a command the
+    /// playout yielded past, finds it here. A start whose tick never resolved,
+    /// because a catch-up trim reseated the cursor past it, or resolved before
+    /// the history's reach, takes the gate of the resolution that stamps it.
     pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool) {
-        let due = |start: &RetainedStart| client_tick_le(start.token.start_tick, resolved_tick);
-        for start in self.starts.iter_mut().chain(self.delivered.iter_mut()) {
-            if start.fire_blocked.is_none() && due(start) {
-                start.fire_blocked = Some(blocked);
+        // The cursor never moves back, so a repeat is the same tick resolving
+        // again after a frontier hold; its latest state is the one the host
+        // ran that tick's command from.
+        match self.fire_gates.back_mut() {
+            Some((tick, gate)) if *tick == resolved_tick => *gate = blocked,
+            _ => {
+                if self.fire_gates.len() == FIRE_GATE_HISTORY {
+                    self.fire_gates.pop_front();
+                }
+                self.fire_gates.push_back((resolved_tick, blocked));
             }
         }
+        let gates = &self.fire_gates;
+        for start in self.starts.iter_mut().chain(self.delivered.iter_mut()) {
+            if start.fire_blocked.is_none() && client_tick_le(start.token.start_tick, resolved_tick)
+            {
+                let own = gates
+                    .iter()
+                    .rev()
+                    .find(|(tick, _)| *tick == start.token.start_tick)
+                    .map(|&(_, gate)| gate);
+                start.fire_blocked = Some(own.unwrap_or(blocked));
+            }
+        }
+    }
+    /// Retain a cancel stamped `client_tick`, received on host tick `tick`, for
+    /// every execution the client began before that tick: `live`, the start
+    /// just delivered, and each retained start stamped earlier. Like a cancel
+    /// the client sent, each waits until its execution's clock reaches
+    /// `client_tick`, so the shots the client fired before it are minted
+    /// first, and is inert for an execution that ends sooner.
+    pub fn cancel_before(&mut self, client_tick: u32, live: Option<ActivationToken>, tick: u32) {
+        let before = |token: ActivationToken| !client_tick_le(client_tick, token.start_tick);
+        let delivered = self
+            .delivered
+            .map(|start| start.token)
+            .filter(|&token| before(token));
+        for token in live.into_iter().chain(delivered) {
+            self.retain(token, None, Some(client_tick), tick);
+        }
+        // `retain` never reads the retained starts.
+        let starts = std::mem::take(&mut self.starts);
+        for start in starts.iter().filter(|start| before(start.token)) {
+            self.retain(start.token, None, Some(client_tick), tick);
+        }
+        self.starts = starts;
     }
     /// The fire gate stamped on `token`'s start, once the lane delivered it.
     pub fn delivered_fire_blocked(&self, token: ActivationToken) -> Option<bool> {
@@ -228,9 +280,19 @@ impl ActivationEdges {
         if let Some(edge) = self.edges.iter_mut().find(|e| e.token == token) {
             // Cancellation may strengthen an undelivered release; duplicates never
             // refresh age or redeliver a terminal edge.
-            if cancel && edge.cancel_first_tick.is_none() && !edge.cancel_delivered {
-                edge.cancel_first_tick = Some(tick);
-                edge.cancel_client_tick = cancel_client_tick;
+            if cancel && !edge.cancel_delivered {
+                if edge.cancel_first_tick.is_none() {
+                    edge.cancel_first_tick = Some(tick);
+                    edge.cancel_client_tick = cancel_client_tick;
+                } else if let (Some(held), Some(stamped)) =
+                    (edge.cancel_client_tick, cancel_client_tick)
+                    && !client_tick_le(held, stamped)
+                {
+                    // The client's own cancel and a vault entry can both name
+                    // an execution, in either arrival order. The earlier stamp
+                    // stops it, so no shot after either is minted.
+                    edge.cancel_client_tick = Some(stamped);
+                }
             }
             edge.cancel |= cancel;
             if !edge.delivered && edge.release_tick.is_none() {
@@ -442,6 +504,72 @@ mod tests {
         assert_eq!(edges.delivered_fire_blocked(token(20)), None);
         edges.stamp_fire_gate(20, true);
         assert_eq!(edges.delivered_fire_blocked(token(20)), Some(true));
+    }
+    // Regression: a start that reached the lane after its own tick resolved was
+    // stamped with the gate of the next resolution, so a vault that began in
+    // between refused a shot the client had fired before it.
+    #[test]
+    fn a_start_arriving_after_its_tick_resolved_takes_that_ticks_fire_gate() {
+        let mut edges = ActivationEdges::default();
+        edges.stamp_fire_gate(10, true);
+        edges.stamp_fire_gate(10, false);
+        edges.stamp_fire_gate(11, true);
+        edges.observe_start(token(10), 0, aim(0.0));
+        edges.stamp_fire_gate(12, true);
+        assert!(edges.take_start(token(10)));
+        assert_eq!(
+            edges.delivered_fire_blocked(token(10)),
+            Some(false),
+            "the latest resolution of its own tick, not the stamping one"
+        );
+
+        // A tick older than the history falls back to the stamping resolution.
+        let mut edges = ActivationEdges::default();
+        for tick in 0..=FIRE_GATE_HISTORY as u32 {
+            edges.stamp_fire_gate(tick, false);
+        }
+        edges.observe_start(token(0), 0, aim(0.0));
+        edges.stamp_fire_gate(FIRE_GATE_HISTORY as u32 + 1, true);
+        assert!(edges.take_start(token(0)));
+        assert_eq!(edges.delivered_fire_blocked(token(0)), Some(true));
+    }
+    // A vault entry at client tick 10 stops every execution begun before it
+    // where its clock reaches 10, as the client's own cancel would: a retained
+    // start carries the cancel through delivery; a start stamped at 10 carries
+    // none. An earlier client cancel arriving later still stops it sooner.
+    #[test]
+    fn a_cancel_before_a_tick_waits_for_each_executions_clock() {
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(6), 0, aim(0.0));
+        edges.observe_start(token(10), 0, aim(0.0));
+        edges.cancel_before(10, None, 0);
+        assert!(edges.take_start(token(6)));
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 1, Some(token(6)), Some(9));
+        assert_eq!(delivered.cancel, None, "held until the clock reaches 10");
+        edges.deliver(&mut delivered, 2, Some(token(6)), Some(10));
+        assert_eq!(delivered.cancel, Some(token(6)));
+        edges.terminal(token(6));
+        assert!(edges.take_start(token(10)));
+        edges.deliver(&mut delivered, 3, Some(token(10)), Some(30));
+        assert_eq!(
+            delivered.cancel, None,
+            "a start on the closed tick is not cancelled"
+        );
+
+        let mut edges = ActivationEdges::default();
+        edges.admit(token(4));
+        edges.cancel_before(10, Some(token(4)), 0);
+        edges.observe(
+            ActivationInput {
+                cancel: Some(token(4)),
+                ..ActivationInput::default()
+            },
+            8,
+            1,
+        );
+        edges.deliver(&mut delivered, 2, Some(token(4)), Some(8));
+        assert_eq!(delivered.cancel, Some(token(4)), "the earlier stamp wins");
     }
     #[test]
     fn activation_start_lane_retains_a_duplicate_once_with_its_first_carrying_aim() {

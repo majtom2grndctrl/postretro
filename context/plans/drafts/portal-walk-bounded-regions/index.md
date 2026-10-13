@@ -121,7 +121,7 @@ Bounded cost:
   fixed stack.
 - [ ] Every outbound portal the walk looks at counts once toward the cap and the
   portal-test count, including facing-rejected, blocked and solid-leading ones. (O11)
-- [ ] The step cap is below its old value of 20,000.
+- [ ] The step cap is below its value before this change.
 - [ ] Shuffling each cell's portal list yields an identical visible set.
 - [ ] A forced cap trip takes the bounded frustum-set fallback, never the draw-all set.
 - [ ] A walk the cap stops returns only cells the uncapped walk reaches, and always the
@@ -129,12 +129,17 @@ Bounded cost:
 - [ ] The cap-trip fallback's fog reach contains everything the uncapped walk reaches
   from the same camera, including a camera beside a portal looking away from it. (O6)
 - [ ] The portal-walk epoch differs from its value before this change.
-- [ ] No comment or report text calls the bake's sampled set a lower bound on visibility
-  or says it holds for any FOV. This is a grep gate.
+- [ ] Under the level compiler's cell-residency bake and lightmap residency dry run, no
+  comment, report string or test assertion matches "lower bound" or "any (runtime )?FOV".
+  This is a grep gate over those two module trees.
+- [ ] The tests that make a drawn cell outside the baked set never-refused visible demand
+  pass unchanged. The bake's sampling projections and the cell-residency stage version
+  match their values before this change; only the walk epoch moves its cache key.
 
 ### Manual
 
-Name the machine. "Pre-change" is a build of the base commit on its own bake. (O14)
+Name the machine. "Pre-change" is the last commit before the walk change, carrying this
+brief's measurement modes but the old walk and epoch, on the base commit's bake. (O14, O19)
 - [ ] Sweep: run the real traversal over the hallway poses and headings in
   `research.md`, single-threaded release, plus straight up and down at the shaft poses.
   Zero cap trips and zero unclassified misses. Report portal-test counts, CPU µs (p50,
@@ -148,16 +153,23 @@ Name the machine. "Pre-change" is a build of the base commit on its own bake. (O
   block and reports zero step-limit frames. For both builds, report outside-set
   block-frames, pool growths, peak occupied layers, bytes read and physical reads
   (O15), the baked mandatory set per camera cell (p50, p95, max blocks), and the id-51
-  stage time. Spawn frames are reported apart. Repeat on movement-feel, whose cells
-  span several blocks, and report blocks per over-included cell.
+  stage time. Spawn frames are reported apart. Each run uses one drain per frame for
+  retirement, and the pre-change build runs the same synchronous mode. For both builds,
+  report non-resident block-frames by cause: left behind by admission, deferred behind a
+  retiring generation, deferred at the device limit. (O17, O18) Repeat on movement-feel,
+  whose cells span several blocks, and report outside-set blocks per drawn cell outside
+  the baked set, for both builds.
 - [ ] SH reach: rerun the SH reach measurement on the hallway and campaign-test with
   each build's bake. Report worst and p95 SH mandatory bytes per camera cell. The worst
   cell stays under the SH floor.
-- [ ] Settle: enter the hallway at its spawn, and at the shaft and arena poses through a
-  copy of the map with the spawn moved. Settle frames take the walk path, never the
-  step-limit fallback; no entry hits the settle timeout or logs its warning. For each
+- [ ] Settle: enter the hallway at its spawn, and at the shaft and arena poses through the
+  start-pose override, at pitch 0 and ±45° at the shaft poses, each a fresh launch.
+  Settling logs, per entry, any frame whose walk took the step-limit fallback and the
+  settle set's peak size in lightmap blocks and SH targets; this row reads that log.
+  Settle frames take the walk path, never the step-limit fallback, and no entry hits the
+  settle timeout or logs its warning. For each
   build, report the settle set (lightmap blocks and SH targets), the settle hold time,
-  and misses counted on the reveal frame. (O13, O16)
+  and misses counted on the reveal frame. (O13, O16, O19, O21)
 - [ ] Churn: along a walking route through the shafts and the arena, recorded in
   `research.md` and replayed for each build, report per-frame cells entering and
   leaving the visible set (p50, p95, max).

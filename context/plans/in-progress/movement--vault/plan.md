@@ -1,7 +1,7 @@
 # movement--vault — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 27ca6a60
 branch: claude/sweet-cerf-m0t396
 

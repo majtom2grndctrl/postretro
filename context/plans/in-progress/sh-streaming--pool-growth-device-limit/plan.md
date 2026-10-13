@@ -43,7 +43,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 | A24 | `fixture_churn_fits_fragmentation_headroom` with named frozen arrays and eight deterministic seeds | achievable as stated | pass: focused proof and source/contract review |
 | A25 | Captured-limit propagation source inspection and all GPU growth/geometry tests | achievable as stated | pass: focused proof and source/contract review |
 | A26 | Final `POSTRETRO_REQUIRE_GPU=1` growth suite after preflight; no skips, overrides ≤ device grants | achievable as stated | pass: final 10 required-GPU growth tests, zero ignored/skipped |
-| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | outstanding manual proof |
+| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | partial: campaign feature log recorded below; baseline/hallway comparison outstanding |
 
 ## Tasks
 
@@ -127,6 +127,35 @@ Targeted lifecycle repair review found one additional liveness edge: eight Ready
 Targeted renderer repair review and lifecycle re-review both approve, with no actionable regressions. Cross-family retirement ordering preserves P3's documented dense-commit behavior; no Decision or Acceptance change was needed. No unsafe code was introduced.
 
 The first full parallel run reported 8,035 passed, 1 failed, 56 ignored before reaching doc-tests. The unchanged `two_frames_in_flight_reach_a_bounded_staging_steady_state` expected the warmup allocation count to remain 2 but observed 3 (within its separate live-buffer bound of 4). Source is unchanged from the baseline. No test or production code was altered for this failure. Its isolated required-GPU rerun passed on the same AMD/Metal adapter with three created/live buffers. The full serial workspace rerun passed, including the renderer target (950 passed, 8 ignored). This existing test is sensitive to concurrent driver timing; the final gate records serial test execution explicitly.
+
+## Manual evidence — campaign-test feature walk
+
+Partial M1 evidence supplied by the owner on 2026-10-13. Source: temporary workspace-root `campaign-test-sh-log.txt` (60 lines), SHA-256 `bebfa87654d5d332da6d644d3ca217679133dcf56d088217ee5a9a35eacf511c`. Captured timestamps: 21:19:20–21:20:18 UTC (58 s). New feature-format logs; executable revision, map hash, route, resolution/options and device-limit overrides are not recorded in this excerpt. User identifies the map as campaign-test.
+
+| Captured measurement | Result |
+|---|---|
+| SH device-limit warnings / WARN / ERROR records | 0 / 0 / 0 |
+| Visible SH misses, including device-limit bucket | 0 across all 11 periodic windows |
+| SH pool growth events / growth CPU | 0 / 0.00 ms |
+| Target/sampleable consistency | all targets sampleable at each report; 9–17 targets |
+| Queued / Ready / held permits at report times | 0 / 0 / 0 in every report |
+| Re-reads / evictions / retries | 11 / 19 / 0 across reported windows |
+| Initial dense atlas bytes / tiles per layer | missing from excerpt; owner will paste earlier startup line |
+| Reported active SH pool capacity | 71.0 MiB; includes other SH allocations, so cannot substitute for initial dense atlas bytes |
+
+Per-install trace measurements split at the `[Startup]` report. CPU percentiles use nearest rank; copy means include zero-copy installs.
+
+| Phase | Installs | Copy regions total / mean / range | Install CPU total / mean / median / p95 / max |
+|---|---:|---|---|
+| Before startup report | 13 | 938 / 72.15 / 0–347 | 39.825 / 3.063 / 0.567 / 24.238 / 24.238 ms |
+| After startup report | 19 | 890 / 46.84 / 0–140 | 25.732 / 1.354 / 0.369 / 5.877 / 5.877 ms |
+| Whole capture | 32 | 1,828 / 57.13 / 0–347 | 65.557 / 2.049 / 0.468 / 5.877 / 24.238 ms |
+
+Periodic drain CPU sums to 72.71 ms: 42.03 ms in the first startup-containing window and 30.68 ms in later windows. This includes drain overhead and differs from the per-cluster trace sum. The cumulative no-growth drain maximum is 25.13 ms, already present at the first report; it is not evidence of a new 25 ms walking hitch. “Steady” in that counter means no pool growth, not post-settling.
+
+One lightmap refusal and one repack appear in its separate diagnostics, with zero reported lightmap visible misses or failed installs/reads. These do not count as SH device-limit warnings.
+
+The captured SH warning check passes for this excerpt. M1 remains outstanding: add the initial dense-pool line, matching pre-change campaign measurements, both hallway measurements and run conditions. Visual smoothness/lighting cannot be inferred from logs. Keep the original temporary log untracked and unchanged.
 
 ## Handoff
 

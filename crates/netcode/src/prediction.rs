@@ -329,6 +329,7 @@ impl ClientPrediction {
         // burst. Task 5 reads this to special-case the larger visible correction a
         // dash produces during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
+        let started_in_vault = matches!(start_movement.movement_state, MovementState::Vault { .. });
         let (transform, movement, events) = replay(
             start_transform,
             start_movement,
@@ -343,7 +344,7 @@ impl ClientPrediction {
         // exit tick starts in `Vault` and ends in `Normal`, so the start state counts
         // too; otherwise the tick that lands the vault would miss the widened band.
         let included_dash = dash_requested
-            || matches!(start_movement.movement_state, MovementState::Vault { .. })
+            || started_in_vault
             || matches!(
                 movement.movement_state,
                 MovementState::Dash { .. }

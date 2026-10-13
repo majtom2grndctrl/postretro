@@ -23,16 +23,17 @@ no level that compiles ends a session through SH pool growth past a device limit
   the limit and refused only when the needed size alone exceeds it.
 - **A refused cluster drops and is requested again on a wake.** A device-limit refusal is its own
   outcome, distinct from contract errors. The cluster leaves through the same path as a target
-  departure, releasing its payload and permit once, and is marked device-limited. It wakes only
-  on an eviction confirmed in its own pool family after the refusal, or on entering the
-  mandatory tier. It counts as an attributed miss and warns once per level. This diverges from the
+  departure, releasing its payload and permit once, and is marked device-limited. The renderer
+  reports which families refused it (dense checked before sparse; a new refusal replaces the
+  record) and, for each confirmed eviction, the families in which it freed ranges. The cluster
+  wakes only on an eviction after the refusal that freed one of its refused families, or on
+  entering the mandatory tier. It counts as an attributed miss and warns once per level. This diverges from the
   cluster-residency plan's "named capacity error", which never chose to end the session
   (`research.md` §Commitments touched).
-- **A mandatory refusal makes non-mandatory residents yield.** While a mandatory cluster is
-  refused at the device limit, every non-mandatory resident, hysteresis and seam-warm included,
-  is eligible for the existing pressure trim. One rule on the existing trim decides what gives
-  way. A level that passes the build check is then refused for mandatory demand inside its
-  baked set only through fragmentation past the headroom.
+- **No new yield rule.** Pressure trim stays as it is. A refused mandatory cluster waits for
+  room the normal way: hysteresis expires within its window, departures evict, and the eviction
+  in its family wakes it. A level that passes the build check is refused for mandatory demand
+  inside its baked set only transiently, through hysteresis, or through fragmentation.
 - **Mandatory demand is never evicted to make room.** This keeps §4's tier contract and the pin
   guarantee in `plans/done/sh-probe-streaming--authored-hints`.
 - **Other drain errors stay fatal.** A chunk corrupted on disk already fails only its own
@@ -45,17 +46,19 @@ no level that compiles ends a session through SH pool growth past a device limit
   drain outcome.
 - **Limits and sizing rules live once.** The device limits the renderer requests, and each
   sparse family's per-cluster sizing, are shared definitions in `level-format`, named as device
-  requests rather than SH limits. The mandatory-set derivation (id-51 reach, pin expansion,
-  owner closure) lives in `level-loader`, which both prl-build and the runtime already use. The
-  renderer, the app and prl-build call the same code, so the build check cannot drift.
+  requests rather than SH limits. The app's mandatory-set derivation (id-51 reach, pin
+  expansion, owner closure) moves to `level-loader`, which both prl-build and the app already
+  use, so the build check charges exactly what runtime demands. The renderer keeps its own
+  owner graph, which guards install order, a different question; the app's closure must always
+  satisfy it.
 - **prl-build rejects a camera cell whose baked mandatory sparse set cannot fit.** Each sparse
   family must fit its tightest buffer. The error names the cell and the family. Dense is not
   checked: whole-level layer sizing already holds any level whose dense set times the headroom
   fits the dense limit. Whole-level
   size never rejects, since `large-map-spatial-residency` bounds map scale by disk and residency
-  budget. A streamed level without a usable id 51 warns and relies on runtime deferral.
-- **This lands before `portal-walk-bounded-regions`**, whose superset visible set adds
-  never-refused SH demand.
+  budget. A streamed level without a usable id 51 warns and relies on runtime refusal.
+- **This lands before `portal-walk-bounded-regions`**, whose superset visible set adds mandatory
+  SH demand.
 - **Non-goals:**
   - Out-of-memory below the limits. It is a wgpu uncaptured error shared by every renderer
     allocation, so it needs a renderer-wide error-scope policy (`research.md` §Out of scope).
@@ -106,8 +109,10 @@ Pins are in `research.md` §Ordering pins.
 - [ ] A refused cluster releases its payload and permit exactly once, through the departure path;
   the permit count afterwards equals reads in flight plus ready clusters. It is not requested
   again in the drain that refused it, even if that drain also confirmed an eviction. After a
-  later drain confirms an eviction in its own pool family, it is requested again, reads again and
-  installs once room holds it; an eviction in another family does not wake it. Separately, with
+  later drain confirms an eviction that freed ranges in a family that refused it, it is requested
+  again, reads again and installs once room holds it. An eviction that freed only other
+  families, or only halo references, does not wake it. A cluster refused in two families wakes
+  on an eviction in either. Separately, with
   no eviction, entering the mandatory tier requests it again. Through refusal and re-request, the
   ready-byte ledger equals the ready clusters' charges (P2, P11, P12). The proof is split at the drain outcome: a GPU renderer test records the real outcomes of the refusing and confirming drains, and a controller test is fed exactly those outcomes.
 - [ ] A cluster refused at the class it gained in the same frame is not requested again until a
@@ -117,7 +122,8 @@ Pins are in `research.md` §Ordering pins.
 - [ ] With a device-limited owner and a targeted dependent of it, no request names either cluster
   until the owner wakes. The owner is then requested first (P20).
 - [ ] A device-limited cluster that falls back to hysteresis keeps its mark and is not read again
-  during its hysteresis window. Its mark clears once it leaves the target set (P22).
+  during its hysteresis window. Its mark clears once it leaves the target set or the generation
+  changes (P5, P22).
 - [ ] With more device-limited mandatory clusters than read permits, and an eviction confirmed in
   another family on every drain, reads for clusters that fit keep issuing every frame, and
   fitting SH clusters and lightmap blocks keep installing.
@@ -134,12 +140,9 @@ Pins are in `research.md` §Ordering pins.
 - [ ] With a pinned cluster, a lead cluster and a visible cluster's owner resident, and a refused
   visible cluster that would fit if any one of them left, every drain over the refusal keeps all
   three sampleable and returns no error.
-- [ ] After a camera cell change, with the previous cell's set in hysteresis and seam-warm residents
-  holding room, a refused mandatory cluster makes them eligible for the pressure trim: the next
-  drain evicts them, the confirmed evictions wake the refused cluster, and it installs. No
-  mandatory resident leaves, and a refused optional cluster makes nothing eligible. A level that
-  passed the per-cell check is refused for mandatory demand inside its baked set only through
-  fragmentation past the headroom (P10, P23). The proof is split at the drain outcome: a GPU renderer test records the real outcomes of the refusing and confirming drains, and a controller test is fed exactly those outcomes.
+- [ ] After a camera cell change, a mandatory cluster refused while the previous cell's set holds
+  room in its family installs after that set's hysteresis expires and its departure evictions
+  confirm, with no mandatory resident evicted and no pressure-trim change (P10).
 - [ ] Fed a drain outcome that marks one refusal device-limited and one deferral
   retirement-limited, the controller counts the first visible miss as a device-limit miss and
   the second as held by the drain budget. A visible dependent waiting on a device-limited owner
@@ -149,28 +152,31 @@ Pins are in `research.md` §Ordering pins.
 - [ ] A level refused during Settling and again after its timeout reveal logs one device-limit
   warning. Settling counts no device-limit miss, and the reveal frame counts one per
   device-limited visible cluster. The next level's first refusal warns again (P6, P7).
-- [ ] Regression guards: a malformed chunk that passed the loader's hash still ends the session with
-  its named error, and a retirement-pressure deferral behaves as before.
+- [ ] Regression guards: a chunk that passes the loader's hash and body validation but disagrees
+  with renderer metadata still ends the session with its named error, and a retirement-pressure deferral behaves as before.
 - [ ] A capacity-class error that is a broken contract rather than a device limit, such as an
   install reaching the pools without device handles or a post-growth undersized pool, still ends
   the session with its named error, as do identity and generation violations. A cluster that
   needs slots past the address bound is refused before it allocates and never reaches the
   address-overflow error. An address overflow raised anyway still ends the session.
-- [ ] A scripted churn walk that installs and evicts clusters of mixed sizes, at the zero-share
-  geometry and the chosen headroom, is never refused while its live dense set stays within the
-  whole level.
+- [ ] A seeded churn walk with a fixed seed set, cluster sizes spanning the level's range and random
+  eviction order, at the zero-share geometry, is never refused at the chosen headroom; one step
+  smaller is refused on at least one seed.
 - [ ] SH state reads the device's limits once, at load. After that, every dense and sparse growth
   check and every sparse replacement's validation uses the captured limits, so a test override
   below the device's grant governs all of them. A search of the SH streaming code finds no other
   read of the device's limits.
 - [ ] The device limits and each sparse family's per-cluster sizing are defined once, in
-  `level-format`, and the mandatory-set derivation once, in `level-loader`. A search of the
-  renderer, the app and the level compiler finds no second definition. The renderer's device
+  `level-format`, and the mandatory-set derivation once, in `level-loader`. A search of the app
+  and the level compiler finds no second mandatory-set derivation, and of the renderer and
+  compiler no second limit or sizing definition. The renderer's device
   request and prl-build's per-cell check read them from there. SH growth checks read the
   device's grant, captured at load, which equals that request outside tests.
 - [ ] The shared limits are named for the renderer's device request, not for SH. The renderer's
   device request, the lightmap pool's layer checks and the lightmap dry run's runtime layer floor
   read the same definitions.
+- [ ] On every fixture, the app's owner closure satisfies the renderer's install order: no
+  mandatory set the app demands needs an owner the renderer's graph would install later.
 - [ ] For every camera cell of a fixture with pins and owner chains, the runtime's targets with lead
   at the baked maximum, nothing visible and no hysteresis equal the set prl-build's per-cell
   check charges for that cell.

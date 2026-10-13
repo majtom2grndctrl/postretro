@@ -188,7 +188,7 @@ Pins are in `research.md` §Ordering pins.
   alone is large compiles, and its error output names no dense family. A rejected map writes no
   output, and a rebuild with a warm cache fails the same way (P19).
 - [ ] A streamed fixture that bakes no usable id-51 set compiles. The build logs one warning that
-  its camera cells go unchecked and that runtime deferral backs it. A fixture with a usable set,
+  its camera cells go unchecked and that runtime refusal backs it. A fixture with a usable set,
   or one that streams no SH, logs no such warning (P18).
 - [ ] The final gate runs the refusal and growth tests with a GPU required, and they report as
   run, not skipped. Their lowered limits sit at or below the test device's own grants.

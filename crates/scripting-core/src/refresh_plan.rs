@@ -548,6 +548,9 @@ fn plan_movement_replace(
     refreshed.push_velocity = live.push_velocity;
     refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
+    // The vault bar is the caller's liveness verdict, not tuning; a reload while
+    // dead must not let the pawn vault before the next verdict.
+    refreshed.vault_barred = live.vault_barred;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
     // budget reseeds from the new descriptor rather than carrying the live (now
     // stale-against-the-new-max) count across. `air_jumps_remaining` and
@@ -1669,10 +1672,15 @@ mod tests {
         live.knockback_velocity = knockback;
         live.velocity = Vec3::new(1.5, 9.0, 0.0) + knockback;
         live.swim_reentry_latched = true;
+        live.vault_barred = true;
         let component = refreshed_movement(&old, &new, live);
         assert_eq!(component.movement_state, MovementState::Normal);
         assert_eq!(component.velocity, knockback, "only the knockback stays");
         assert!(!component.swim_reentry_latched);
+        assert!(
+            component.vault_barred,
+            "the liveness bar survives the reload"
+        );
     }
 
     // A reload that removes the swim block leaves swim as an exit does: `Normal`,

@@ -415,9 +415,10 @@ impl SwimParams {
 }
 
 /// How far above `ground.step_height`, metres, step-up's reach ends and the
-/// vault's land reach begins. Movement's step-up limit is `step_height` plus
-/// this; a `vault.max_height` at or below that sum could reach no ledge, so
-/// validation refuses it.
+/// vault's land reach begins; a `vault.max_height` at or below that sum could
+/// reach no ledge, so validation refuses it. Movement computes the same limit
+/// from its step-up lift less two skin widths; foundation cannot depend on
+/// physics, so this restates it, and a physics test pins the two within 1e-6.
 pub const STEP_UP_LIMIT_MARGIN: f32 = 0.01;
 
 /// Vault (mantle) tuning. Optional on [`PlayerMovementDescriptor`] (absent: the
@@ -454,8 +455,6 @@ impl VaultParams {
     pub fn validated(self, step_height: f32) -> Result<Self, DescriptorError> {
         use crate::data_descriptors::validate_positive_finite;
         validate_positive_finite(self.max_height, "movement.vault.maxHeight")?;
-        // The same sum movement's step-up limit computes, so the two agree to
-        // the bit.
         if self.max_height <= step_height + STEP_UP_LIMIT_MARGIN {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(

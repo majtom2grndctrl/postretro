@@ -4,17 +4,15 @@
 use glam::{Vec2, Vec3};
 use parry3d::shape::Capsule;
 
-use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::{
     CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined_parry, cast_ray_combined_parry,
 };
+use crate::collision::{SKIN_DISTANCE, STEP_UP_LIFT_MARGIN};
 use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
 };
-use postretro_foundation::{
-    GroundRef, MovementState, PlayerMovementComponent, STEP_UP_LIMIT_MARGIN,
-};
+use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
 /// TOI=0 hit during the slide loop. `SKIN_DISTANCE` (the sweep's
@@ -27,22 +25,20 @@ use postretro_foundation::{
 /// iterations.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
-/// Vertical lift margin added on top of `step_height` when the step-up probe
-/// commits to a lifted position. Must exceed `SKIN_DISTANCE` so the lifted
-/// hemisphere clears the step's top edge without parry reporting an
-/// immediate skin-contact hit. It is the step-up limit's margin plus two skin
-/// widths (see [`step_up_limit`]).
-const STEP_UP_LIFT_MARGIN: f32 = STEP_UP_LIMIT_MARGIN + 2.0 * SKIN_DISTANCE;
+// The step-up lift (`step_height + STEP_UP_LIFT_MARGIN`) must exceed
+// `SKIN_DISTANCE` over the step so the lifted hemisphere clears the step's top
+// edge without parry reporting an immediate skin-contact hit.
 const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 
 /// Tallest ledge, metres above the feet, that step-up climbs with room to
 /// spare: the lift, `step_height + STEP_UP_LIFT_MARGIN`, leaves at least one
 /// skin width over such a top beyond the skin the feet already rest at. The
 /// vault probe refuses tops at or below it, so no height falls between the two.
-/// The margin is foundation's, so descriptor validation refuses a
-/// `vault.max_height` that cannot clear this limit by the same sum.
+/// Foundation's `STEP_UP_LIMIT_MARGIN` restates `STEP_UP_LIFT_MARGIN - 2 ·
+/// SKIN_DISTANCE` for descriptor validation, which cannot depend on physics; a
+/// vault test pins the two together.
 pub(super) fn step_up_limit(step_height: f32) -> f32 {
-    step_height + STEP_UP_LIMIT_MARGIN
+    step_height + STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE
 }
 
 /// Cosine threshold (≈ 60°) for detecting that a second wall contact within
@@ -118,8 +114,7 @@ pub(super) fn step_up_lift(
     if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < cos_walkable) {
         return None;
     }
-    let lifted =
-        current_pos + Vec3::new(0.0, step_up_limit(step_height) + 2.0 * SKIN_DISTANCE, 0.0);
+    let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
     let lifted_probe = cast_capsule_query(collision, lifted, capsule, dir, probe_dist);
     let lifted_clear = match lifted_probe {
         None => true,
@@ -168,10 +163,10 @@ pub(super) fn step_up_lift(
 ///
 /// `was_grounded` is the pre-intent grounded flag carried from the start of the
 /// tick; `jumped` is whether step 2/3 launched a jump this tick. `carry_ground`
-/// is the ground mover carry and overlap recovery treat the body as riding:
-/// `previous_ground`, except while vaulting, when it is the vault target's
-/// mover (none for a static ledge), so the vaulting body rides it as a grounded
-/// rider does.
+/// is the ground mover carry, overlap recovery and release velocity treat the
+/// body as riding: `previous_ground`, except while vaulting, when it is the
+/// vault target's mover (none for a static ledge), so the vaulting body rides it
+/// as a grounded rider does.
 pub(super) fn integrate_collision(
     component: &mut PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
@@ -484,7 +479,11 @@ pub(super) fn integrate_collision(
         // no floor contact this tick. The jump branch already cleared it.
         component.ground = GroundRef::Airborne;
     }
-    apply_mover_release_velocity(component, previous_ground, collision, current_pos);
+    // Release keys off the mover the body rode this tick, so a vault aborted (or
+    // an exit that misses the top) while riding its target's mover keeps that
+    // mover's velocity instead of stopping dead. On a continuing vault tick the
+    // next path velocity overwrites it.
+    apply_mover_release_velocity(component, carry_ground, collision, current_pos);
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the

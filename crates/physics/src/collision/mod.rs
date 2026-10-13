@@ -227,9 +227,10 @@ pub struct CastHit {
     pub normal: Vec3,
 }
 
-/// Small lift margin used by placement ground probes. Matches the agent harness
-/// so "within the step envelope" means the same thing for selection and motion.
-const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+/// Lift margin added on top of `step_height` by player step-up and by placement
+/// ground probes, so "within the step envelope" means the same thing for
+/// selection and motion.
+pub(crate) const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 
 /// Capsule geometry for static placement checks. The capsule axis is world +Y,
 /// matching [`cast_capsule`].

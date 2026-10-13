@@ -380,7 +380,8 @@ pub struct PlayerMovementComponent {
     /// each tick from game state movement never reads (today, that the pawn is
     /// dead) by the sim's `drop_vault_if_dead`, on host movement and client
     /// prediction alike. Reconcile replay has no registry, so it keeps the
-    /// value the latest prediction left. Neither replicated nor serialized.
+    /// value the latest prediction left, and component rebuilds (tuning, hot
+    /// reload) carry it. Neither replicated nor serialized.
     #[serde(skip)]
     pub vault_barred: bool,
 }

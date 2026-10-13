@@ -323,11 +323,12 @@ impl ClientPrediction {
         let (start_transform, start_movement) = prev;
 
         let sim = input_command_to_sim(&command);
-        // The command's dash request and the resulting movement state together cover
-        // the whole dash window: the request bit catches the entry tick (before the
-        // state has transitioned) and the resulting `Dash` state catches the ongoing
-        // burst. Task 5 reads this to special-case the larger visible correction a
-        // dash produces during a rewound replay.
+        // The command's dash request and the movement states around this tick
+        // together cover every wider-tolerance window: the request bit catches a
+        // dash's entry tick (before the state has transitioned), the resulting
+        // state catches an ongoing dash, slide or vault, and the start state
+        // catches a vault's exit tick (see below). Reconcile reads the flag to
+        // allow these states' larger visible correction during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
         let started_in_vault = matches!(start_movement.movement_state, MovementState::Vault { .. });
         let (transform, movement, events) = replay(

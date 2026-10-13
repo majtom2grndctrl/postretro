@@ -160,6 +160,8 @@ pub(super) fn apply_environment_transition(
 /// tick: carried-in knockback (a rocket jump into a ledge) would abort the
 /// vault on its second tick and then launch the pawn. Knockback that lands
 /// mid-vault still rejoins as always and aborts it.
+// Threads the tick's pre-intent inputs straight to `vault_entry` (pose, carry
+// ground, `dt`) plus the event sink; a struct would have this one caller.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_vault_entry(
     component: &mut PlayerMovementComponent,

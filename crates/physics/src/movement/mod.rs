@@ -320,11 +320,14 @@ pub fn tick_with_immersion(
     // speed along the push is held beside the fall clamp. The swim drift cap
     // asks for ceiling contact at the post-intent position.
     //
-    // A continuing vault authors its whole motion along the path, so push
-    // neither drifts nor caps it: the drift layer emptied at entry and accrues
-    // again from the tick the vault ends. Knockback still rejoins below, so a
-    // hit mid-vault moves the pawn off the path and aborts it.
-    let vaulting = component.movement_state.kind() == MovementStateKind::Vault;
+    // A tick whose intent ran as `Vault` (its entry, path, exit and abort
+    // ticks) authored its whole motion, so push neither drifts nor caps it:
+    // the drift layer emptied at entry and accrues again from the first tick
+    // after the vault ends. Read the state before dispatch: on an exit or
+    // abort tick the component holds dispatch's `Normal` placeholder until the
+    // substrate has run. Knockback still rejoins below, so a hit mid-vault
+    // moves the pawn off the path and aborts it.
+    let vaulting = state_before_dispatch == MovementStateKind::Vault;
     let cap_position = position;
     if !vaulting {
         push::apply(component, &resolved_environment, dt, |component| {
@@ -358,13 +361,15 @@ pub fn tick_with_immersion(
     // live buffer on a held button would reset its countdown each tick,
     // extending the window indefinitely. The guard ensures the window counts
     // from the first press and re-arms only after full expiry or consumption.
-    // A swimmer's jump swims up or leaps out, and a vault ignores jump: neither
-    // is ever buffered, or a jump held through a vault would fire on its exit.
+    // A swimmer's jump swims up or leaps out, and a vault ignores jump: no tick
+    // whose intent ran as `Swim` or `Vault` (a vault's exit and abort ticks
+    // included) ever buffers, or a jump held through a vault would fire on the
+    // landing after it.
     if input.jump_pressed
         && !previous_ground.is_grounded()
         && !events.jumped
         && !matches!(
-            component.movement_state.kind(),
+            state_before_dispatch,
             MovementStateKind::Swim | MovementStateKind::Vault
         )
         && component.jump_buffer_ms > 0.0

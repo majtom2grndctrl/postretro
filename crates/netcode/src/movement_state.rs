@@ -112,7 +112,9 @@ pub(crate) fn merge_wire_into_movement_state_checked(
 /// the host's pawn still holds: swim state, the re-entry latch and the 3D drift
 /// layer included. A swimmer whose new tuning has no `swim` block then leaves
 /// swim as an exit does
-/// (`PlayerMovementComponent::leave_swim_without_swim_block`).
+/// (`PlayerMovementComponent::leave_swim_without_swim_block`). The local vault
+/// bar carries too: it is not on the wire, and a rebuild while dead would
+/// otherwise let the next reconcile replay re-enter a vault.
 pub(crate) fn carry_live_tick_state(
     rebuilt: &mut PlayerMovementComponent,
     live: &PlayerMovementComponent,
@@ -121,6 +123,7 @@ pub(crate) fn carry_live_tick_state(
     // The live ground reference names a mover this client already resolved.
     merge_wire_into_movement_state_checked(rebuilt, &wire, |_| true);
     rebuilt.last_floor_normal = live.last_floor_normal;
+    rebuilt.vault_barred = live.vault_barred;
     rebuilt.leave_swim_without_swim_block();
     rebuilt.leave_vault_without_vault_block();
 }
@@ -573,6 +576,17 @@ mod tests {
         let mut dropped = PlayerMovementComponent::from_descriptor(&rich_descriptor());
         carry_live_tick_state(&mut dropped, &live);
         assert_eq!(dropped.movement_state, MovementState::Normal);
+    }
+
+    // Regression: a tuning rebuild reset the local vault bar, so a dead pawn's
+    // next reconcile replay could re-enter a vault.
+    #[test]
+    fn a_tuning_rebuild_keeps_the_vault_bar() {
+        let mut live = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        live.vault_barred = true;
+        let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        carry_live_tick_state(&mut rebuilt, &live);
+        assert!(rebuilt.vault_barred);
     }
 
     // A vault onto a mover the client never loaded could not resolve its target;

@@ -32,9 +32,11 @@ const EXIT_SETTLE_SPEED: f32 = 1.0;
 ///
 /// - **Ride.** The step starts where mover carry (`carry_ground`) leaves the
 ///   pawn, since the substrate applies that carry before it moves the body.
-///   While vaulting the carry is the target's own mover, so the pawn moves with
-///   the target as a grounded rider does, and each tick's path point, resolved
-///   through this tick's pose, stays where the next tick looks for it.
+///   After the entry tick, which carries by the ground the pawn stood on, the
+///   carry is the target's own mover, so the pawn moves with the target as a
+///   grounded rider does, and each tick's path point, resolved through this
+///   tick's pose, stays where the next tick looks for it. Release velocity
+///   follows the same ride, so an abort keeps the mover's velocity.
 /// - **Blocked.** A pawn further than [`BLOCKED_TOLERANCE`] from the point it
 ///   was steered to (knockback, a wall that moved in, a mover that dropped the
 ///   lip) aborts to `Normal`, airborne unless the substrate grounds it.
@@ -71,8 +73,10 @@ pub(crate) fn vault_intent(
     let aimed = aimed_progress(*elapsed_ms, step_ms, duration_ms);
     let expected = frame.to_world(path_feet(target, start_offset, aimed)) + center_offset;
     let off_path = carried.distance(expected);
-    // Fail closed: a NaN distance (a non-finite pose) compares false against
-    // the tolerance, so it must abort explicitly rather than pass.
+    // Fail closed: a NaN distance compares false against the tolerance, so
+    // abort explicitly rather than steer from a non-finite pose. This guards the
+    // vault's own path and state only; the substrate still applies this tick's
+    // mover carry.
     if off_path.is_nan() || off_path > BLOCKED_TOLERANCE {
         return Some(abort(component));
     }

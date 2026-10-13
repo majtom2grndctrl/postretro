@@ -1687,11 +1687,19 @@ fn an_auto_vault_clears_a_buffered_jump() {
     assert!(component.is_grounded(), "the pawn stays on the top");
 }
 
+// Descriptor validation restates the step-up limit's margin, since foundation
+// cannot depend on physics; the two must not drift apart.
+#[test]
+fn validation_restates_the_step_up_limit_margin() {
+    use crate::collision::STEP_UP_LIFT_MARGIN;
+    use postretro_foundation::STEP_UP_LIMIT_MARGIN;
+    assert!((STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE - STEP_UP_LIMIT_MARGIN).abs() < 1.0e-6);
+}
+
 #[test]
 fn max_height_validation_refuses_tops_the_step_up_limit_already_covers() {
-    let limit = step_up_limit(STEP_HEIGHT);
     let at_limit = VaultParams {
-        max_height: limit,
+        max_height: STEP_HEIGHT + postretro_foundation::STEP_UP_LIMIT_MARGIN,
         ..vault_params(VaultEntry::default())
     };
     assert!(
@@ -1699,8 +1707,91 @@ fn max_height_validation_refuses_tops_the_step_up_limit_already_covers() {
         "a maxHeight at the step-up limit reaches no ledge"
     );
     let past_limit = VaultParams {
-        max_height: limit + 0.001,
+        max_height: step_up_limit(STEP_HEIGHT) + 0.001,
         ..vault_params(VaultEntry::default())
     };
     assert!(past_limit.validated(STEP_HEIGHT).is_ok());
+}
+
+// Regression: a vault aborted while riding its target's mover lost the mover's
+// velocity, because release keyed off the airborne tick-start ground.
+#[test]
+fn a_vault_aborted_on_a_moving_mover_keeps_the_mover_velocity() {
+    let desc = vault_descriptor(VaultEntry::default());
+    let world = floor_only();
+    let movers = [mover_block(1.2, 6.0)];
+    let shove = Vec3::new(-20.0, 0.0, 0.0);
+    // Rising and sliding sideways.
+    for velocity in [Vec3::Y * 8.0, Vec3::Z * 8.0] {
+        let mut origin = Vec3::new(RISER_X, 0.0, 0.0) - velocity * DT;
+        let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+        let mut aborted = false;
+        for tick in 0..10 {
+            origin += velocity * DT;
+            let mut poses = Poses::default();
+            poses.place(MOVER, origin, velocity);
+            let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+            if tick == 3 {
+                assert!(is_vaulting(&component), "mover at {velocity}");
+                assert!(component.add_knockback(shove));
+            }
+            let (next, events) = step_combined(&mut component, &collision, &forward(), position);
+            position = next;
+            if events
+                .state_edges
+                .iter()
+                .any(|edge| edge.from == MovementStateKind::Vault)
+            {
+                aborted = true;
+                break;
+            }
+        }
+        assert!(aborted, "mover at {velocity}: the shove aborts the vault");
+        assert!(!component.is_grounded(), "mover at {velocity}");
+        assert!(
+            (component.velocity - (shove + velocity)).length() < 1.0e-3,
+            "mover at {velocity}: the pawn leaves with the shove and the mover's velocity, got {}",
+            component.velocity
+        );
+    }
+}
+
+// Regression: the exit tick read dispatch's `Normal` placeholder, so a jump
+// pressed on it armed the buffer and fired after the vault.
+#[test]
+fn a_jump_pressed_on_the_exit_tick_is_never_buffered() {
+    let mut desc = vault_descriptor(VaultEntry::default());
+    desc.forgiveness = Some(ForgivenessParams {
+        coyote_ms: 0.0,
+        jump_buffer_ms: 150.0,
+    });
+    let world = ledge_world(1.2, None);
+    let (mut component, mut position) = airborne_at_riser(&desc, 0.5, 0.05, 7.0);
+    position = step(&mut component, &world, &forward(), position).0;
+    let mut exited = false;
+    for _ in 0..40 {
+        let MovementState::Vault { elapsed_ms, .. } = component.movement_state else {
+            break;
+        };
+        let exit_tick = elapsed_ms >= DURATION_MS;
+        let input = MovementInput {
+            jump_pressed: exit_tick,
+            ..idle_input()
+        };
+        position = step(&mut component, &world, &input, position).0;
+        if exit_tick {
+            exited = !is_vaulting(&component);
+            break;
+        }
+    }
+    assert!(exited, "the jump went in on the exit tick");
+    assert_eq!(
+        component.jump_buffer_timer_ms, 0.0,
+        "the exit tick never buffers"
+    );
+    for _ in 0..5 {
+        let (next, events) = step(&mut component, &world, &idle_input(), position);
+        position = next;
+        assert!(!events.jumped, "no jump fires after the vault");
+    }
 }

@@ -332,9 +332,11 @@ impl ActivationCadence {
     }
 
     /// The execution whose release can no longer fire a shot: it does not
-    /// charge, or its charge already fired. The machine reads a release only
-    /// while charging, so a cancel for it never waits behind its release.
-    /// `None` while the machine has not yet admitted the execution.
+    /// charge or, defensively, its charge already fired (a charged execution
+    /// fires only after its release is delivered, which already ends the
+    /// release's wait). The machine reads a release only while charging, so a
+    /// cancel for it never waits behind its release. `None` while the machine
+    /// has not yet admitted the execution.
     pub fn spent_release(&self) -> Option<ActivationToken> {
         self.execution
             .filter(|execution| {
@@ -579,6 +581,36 @@ mod tests {
             cadence.client_spacing(weapon(), 1, 108),
             CadenceVerdict::Unrecorded,
             "the weapon in another slot escapes the slot-keyed host half, so it keeps its host cooldown"
+        );
+    }
+
+    #[test]
+    fn cadence_spent_release_names_only_an_admitted_execution_that_cannot_charge() {
+        let mut cadence = ActivationCadence::default();
+        assert_eq!(cadence.spent_release(), None, "no execution");
+        cadence.begin(token(5), 0, 0, 5);
+        assert_eq!(
+            cadence.spent_release(),
+            None,
+            "the machine has not admitted it yet"
+        );
+        cadence.admitted(token(5), true);
+        assert_eq!(
+            cadence.spent_release(),
+            None,
+            "a charge that has not fired still reads its release"
+        );
+        // Defensive arm: a charge that fired has no release left to wait for.
+        cadence.recovery_began(token(5), weapon(), R, true, 1, CATCH_UP_ALLOWANCE_TICKS);
+        assert_eq!(cadence.spent_release(), Some(token(5)));
+
+        let mut cadence = ActivationCadence::default();
+        cadence.begin(token(7), 0, 0, 7);
+        cadence.admitted(token(7), false);
+        assert_eq!(
+            cadence.spent_release(),
+            Some(token(7)),
+            "an uncharged execution ignores a release"
         );
     }
 

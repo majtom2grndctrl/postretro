@@ -580,10 +580,7 @@ mod tests {
                 let mut command = command(tick, 0, tick == start.start_tick);
                 if tick == 5 {
                     command.activation.release = Some(WireActivationRelease {
-                        token: WireActivationToken {
-                            start_tick: start.start_tick,
-                            lane: 0,
-                        },
+                        token: wire_token(start),
                         release_tick: 5,
                     });
                 }

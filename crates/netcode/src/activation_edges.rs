@@ -58,7 +58,9 @@ pub(crate) struct RetainedStart {
     /// The shooter's pawn-state fire gate at the start of the start's own
     /// client tick, stamped by the first resolution that finds it due
     /// (`stamp_fire_gate`). A start delivered later is judged by it, not by the
-    /// pawn's state at delivery.
+    /// pawn's state at delivery. Set to `Some(true)` ahead of that when a vault
+    /// cancel the start missed cannot be held (`observe_start`,
+    /// `cancel_before`): the start is refused instead of firing through it.
     fire_blocked: Option<bool>,
 }
 /// Why the lane refused a retained start.
@@ -393,8 +395,10 @@ impl ActivationEdges {
     /// every shot the client fired before cancelling is minted first. A cancel
     /// never overtakes a release of its own execution stamped before it, since
     /// that release may fire a charge; `spent_release` names the execution
-    /// whose release can no longer fire anything (it does not charge, or its
-    /// charge already fired), whose cancel goes regardless.
+    /// whose release can no longer fire anything (it does not charge or,
+    /// defensively, its charge already fired), whose cancel goes regardless of
+    /// a pending release. That cancel is still gated by `horizon` (`reached`)
+    /// and by admission.
     pub fn deliver(
         &mut self,
         command: &mut ActivationInput,
@@ -672,6 +676,77 @@ mod tests {
         edges.cancel_before(10, None, 0);
         assert!(edges.take_start(token(6)));
         assert_eq!(edges.delivered_fire_blocked(token(6)), Some(true));
+    }
+    // Intake counterpart of the test above: a start that arrives after a closed
+    // tick recorded since its own, with the edge table full, cannot hold the
+    // cancel it missed, so it is retained already refused.
+    #[test]
+    fn a_late_start_whose_vault_cancel_cannot_be_held_at_intake_is_refused() {
+        let mut edges = ActivationEdges::default();
+        for start in 100..100 + MAX_RETAINED_ACTIVATION_EDGES as u32 {
+            edges.observe(
+                ActivationInput {
+                    cancel: Some(token(start)),
+                    ..ActivationInput::default()
+                },
+                0,
+                0,
+            );
+        }
+        edges.stamp_fire_gate(10, true);
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        assert_eq!(
+            edges.starts.front().map(|start| start.fire_blocked),
+            Some(Some(true)),
+            "retained, but refused at intake"
+        );
+        assert!(edges.take_start(token(6)));
+        assert_eq!(edges.delivered_fire_blocked(token(6)), Some(true));
+
+        // With room for the edge, the same late start holds its cancel instead.
+        let mut edges = ActivationEdges::default();
+        edges.stamp_fire_gate(10, true);
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        assert_eq!(
+            edges.starts.front().map(|start| start.fire_blocked),
+            Some(None),
+            "not refused: the cancel is held"
+        );
+    }
+    // A late start is observed first, taking its cancel at the closed tick;
+    // a release stamped at or after that tick then arrives. The release is
+    // suppressed as the client's gate cancelled the charge before it, whichever
+    // order the two reach the lane in.
+    #[test]
+    fn a_release_arriving_after_a_late_starts_intake_cancel_is_suppressed() {
+        for release_tick in [10, 12] {
+            let mut edges = ActivationEdges::default();
+            edges.stamp_fire_gate(10, true);
+            edges.observe_start(token(6), 0, aim(0.0), 0);
+            edges.observe(
+                ActivationInput {
+                    release: Some(ActivationRelease {
+                        token: token(6),
+                        release_tick,
+                    }),
+                    ..ActivationInput::default()
+                },
+                release_tick,
+                1,
+            );
+            assert_eq!(
+                edges.undelivered_release(token(6)),
+                None,
+                "the release at {release_tick} is suppressed on arrival"
+            );
+            assert!(edges.take_start(token(6)));
+            let mut delivered = ActivationInput::default();
+            edges.deliver(&mut delivered, 2, Some(token(6)), Some(10), None);
+            assert_eq!(delivered.cancel, Some(token(6)));
+            assert_eq!(delivered.release, None, "never delivered");
+            edges.deliver(&mut delivered, 3, Some(token(6)), Some(20), None);
+            assert_eq!(delivered, ActivationInput::default());
+        }
     }
     // A vault entry at client tick 10 stops every execution begun before it
     // where its clock reaches 10, as the client's own cancel would: a retained

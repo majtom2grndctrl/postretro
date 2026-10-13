@@ -3,39 +3,44 @@
 Brief · compact · reads: `context/lib/rendering_pipeline.md` §7.3, §7.3a, §8 · `build_pipeline.md` §Custom FGD, §PRL section IDs · `entity_model.md` §7 · `movement.md` §6 · `networking.md` §What gates, and what replicates instead · read at e8f607b94
 
 ## Problem
-The owner reports that water looks off-brand. Fluid albedo already goes through Post Retro sampling, but the Quake-style warp shifts the sample point by a continuous offset per screen pixel, so texel edges bend into smooth curves. The owner also asked to tell still water from a current. Still water should look alive, with air moving over it and drips falling in. A current should show which way it pushes, and its push should be adjustable down to purely decorative. Today every pool looks the same. When this is done, water moves in whole-texel steps on its texture's own grid: still water shimmers and rings, and a current drifts the way, and at the speed, it carries a swimmer.
+The owner reports that water looks off-brand. Fluid albedo already uses Post Retro sampling, but the Quake-style warp shifts the sample point by a continuous offset per screen pixel, so texel edges bend into smooth curves. The owner also asked to tell still water from a current: still water should look alive, with air moving over it and drips falling in; a current should show which way it pushes, and its push should turn down to purely decorative. Today every pool looks the same. When this is done, water moves in whole-texel steps on its texture's own grid. Still water shimmers and rings. A current drifts the way, and at the speed, it carries a swimmer.
 
 ## Decisions
-- **Water uses its face texture and that texture's texel grid.** Face UVs are in texels, so the face's texture scale sets the grain, exactly as for walls. A game that wants finer water authors finer textures; no resolution parameter is added. This mirrors Surface Depth's texel mode (`rendering_pipeline.md` §7.3).
-- **Pixel motion is engine-owned.** Motion is texture sampling, and Post Retro has been the only sampling path since `plans/done/retire-true-retro`. Bloom and reflection style are author-owned because they are post effects.
-- **Shimmer and ripple rings are per texel cell, in the shader.** Each cell of the face's fixed grid gets a whole-texel offset. The offset steps at no more than 3 Hz, the general flash threshold, and each cell carries its own phase, so a view-filling pool never changes on one frame. Rings are a pure function of cell and step, so there is no entity, CPU work or upload. The offset fades to flat once texels shrink below a pixel, as Surface Depth's march does. `sample_post_retro` is unchanged.
-- **Drift is a whole-texel scroll at the speed the current carries a swimmer.**
-  - Speed is the drift layer's steady state in that fluid, from a function movement also uses, terminal-velocity cap included, so look and feel agree at any viscosity (`movement.md` §6).
-  - Viscosity and terminal velocity are the values prediction uses: on a client, the host's fluid table and player tuning, which arrive together (`networking.md` §What gates, and what replicates instead).
-  - A scroll moves light through a region rather than adding it, which is motion, not flash. That distinction withdrew the frame limiter (`rendering_pipeline.md` §7.8). So drift needs no step cap.
-  - Shimmer and rings stay on the fixed grid while the texture scrolls beneath them.
-- **Drift is resolved per face at install.** Each face takes the nominal push winning `resolve_environment` at a point just inside the fluid, so a wind skimming the waterline does not move the water. It is projected into UV once. A push confined to a thin band under the waterline still drifts the surface; this is accepted.
-  - Drift re-resolves on every fluid-table or tuning change, viscosity-only changes included.
+- **Grain comes from the face texture.** Face UVs are in texels, so texture scale sets the water's grain, as it does a wall's. Finer water means finer textures; no resolution parameter. Mirrors Surface Depth's texel mode (`rendering_pipeline.md` §7.3).
+- **Pixel motion is engine-owned.** Motion is texture sampling, and Post Retro is the only sampling path (`plans/done/retire-true-retro`). Bloom and reflection style are author-owned because they are post effects.
+- **Shimmer and ripple rings: per texel cell, in the shader.**
+  - Each cell of the face's fixed grid gets a whole-texel offset. `sample_post_retro` is unchanged.
+  - The offset steps at most 3 Hz, the general flash threshold. Each cell has its own phase, so a view-filling pool never changes on one frame.
+  - Rings are a pure function of cell and step: no entity, CPU work or upload.
+  - The offset fades to flat once texels shrink below a pixel, as Surface Depth's march does.
+- **Drift: a whole-texel scroll at the speed the current carries a swimmer.**
+  - Speed is the drift layer's steady state in that fluid, terminal-velocity cap included, from a function movement shares. Look and feel agree at any viscosity (`movement.md` §6).
+  - Viscosity and terminal velocity are the values prediction uses. On a client: the host's fluid table and player tuning, which arrive together (`networking.md` §What gates, and what replicates instead).
+  - A scroll moves light through a region rather than adding it: motion, not flash. The withdrawn frame limiter failed on exactly this distinction (`rendering_pipeline.md` §7.8). Drift needs no step cap.
+  - Shimmer and rings stay on the fixed grid while the texture scrolls beneath.
   - Frame capture loads no fluid table, so it draws no drift.
-- **The compiler splits fluid faces along every push brush over them.** A current then shows exactly where its push is, however the fluid brushes were drawn. A bending river is one `fluid_volume` under several push brushes; two fluid entities would draw a surface between them, as the FGD warns. A map compiled before this change loads, and its unsplit faces drift whole until rebuilt.
-- **A vertical push looks still from above.** An updraft or down-current (`movement.md` §6) has no in-plane component on a level face. This limit is accepted.
+- **Drift resolves per face, at install and on every fluid-table or tuning change** (viscosity-only included).
+  - Each face takes the nominal push winning `resolve_environment` at a point just inside the fluid. A wind skimming the waterline moves no water. A push confined to a thin band under the waterline still drifts the surface: accepted.
+  - The compiler splits fluid faces along every push brush over them, so a current shows exactly where its push is. A bending river is one `fluid_volume` under several push brushes; two fluid entities draw a surface between them, as the FGD warns.
+  - A pre-change map loads; its unsplit faces drift whole until rebuilt.
+  - A vertical push has no in-plane component on a level face, so an updraft or down-current looks still from above: accepted.
 - **`force` on `push_volume` scales how hard a current shoves.**
-  - It defaults to 1, takes any finite value ≥ 0, and has no upper cap, like `light_range`. Unlike `light_range`, 0 is valid.
-  - `push` becomes the nominal current: it sets the direction and the look. The player feels `push × force` at every movement read of push. Environment resolution therefore yields nominal and felt push as two outputs.
-  - Particles are presentation (`entity_model.md` §8), so they follow the nominal push, and a force-0 river still carries foam.
-  - Force 0 is decorative. Force above 1 is a calm-looking surface hiding a strong current, a trap the author may choose.
-  - A visual-only `flow` key was rejected because it let look and feel point different ways.
-- **`force` amends two contracts at promotion, and stays out of every existing map.**
-  - Amended: the "further regional field needs its own amendment" rule, stated in both `build_pipeline.md` (Load-time gameplay declarations) and `entity_model.md` (Key-Value Parsing), and the meaning of push in `movement.md` §6.
-  - It enters the level content digest beside push (`networking.md` §Level identity and level content digest).
-  - It ships in an optional section shaped like `LightTags`, written only when some push volume authors a force other than 1. The environment-volumes section and its version are unchanged, so existing maps load as they are.
+  - Default 1, any finite value ≥ 0, no upper cap, like `light_range`. Unlike `light_range`, 0 is valid.
+  - `push` becomes the nominal current: direction and look. The player feels `push × force` at every movement read of push, so environment resolution yields nominal and felt push as two outputs.
+  - Particles are presentation (`entity_model.md` §8): they follow the nominal push. A force-0 river still carries foam.
+  - Force 0 is decorative. Force above 1 hides a strong current under a calm surface: a trap the author may choose.
+  - Rejected: a visual-only `flow` key. It let look and feel point different ways.
+- **`force` amends existing contracts at promotion and leaves existing maps untouched.**
+  - Amends the "further regional field needs its own amendment" rule, stated in `build_pipeline.md` (Load-time gameplay declarations) and `entity_model.md` (Key-Value Parsing), and push's meaning in `movement.md` §6.
+  - Enters the level content digest beside push (`networking.md` §Level identity and level content digest).
+  - Ships in an optional section shaped like `LightTags`, written only when some push volume authors a force other than 1. The environment-volumes section and its version are unchanged.
 - **Non-goals.**
-  - Gameplay-driven ripples need an event-fed buffer; splash visuals are already an E24 follow-up (`plans/done/E24--water-and-environment-volumes`).
-  - Per-fluid-type looks (sludge without rings, say) need new descriptor fields; every fluid shares one motion here.
-  - Reduce motion governs view feel, shake and UI tweens (`player_options.md` §5), not world animation, so it does not still water.
+  - Gameplay-driven ripples: they need an event-fed buffer, and splash visuals are an E24 follow-up (`plans/done/E24--water-and-environment-volumes`).
+  - Per-fluid-type looks, such as sludge without rings: they need new descriptor fields. Every fluid shares one motion.
+  - Reduce motion: it governs view feel, shake and UI tweens (`player_options.md` §5), not world animation, so water keeps moving.
 
 ## Acceptance
-Rows cite the orderings pinned in `research.md` (R1–R15).
+Rows cite orderings pinned in `research.md`.
 
 ### Automated
 - [ ] The fluid shader mirrors the CPU reference: step rate, amplitude, fade and hash constants match it, and `fs_main` samples albedo and emissive at the warped UV.

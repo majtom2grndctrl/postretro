@@ -127,7 +127,7 @@ Character descriptors author response scale, ground/air drag, and locomotion con
 
 Gravity is one signed vertical scalar per body per tick: a gravity volume's value inside it, the level gravity outside. It keeps its meaning in every state, and upward level gravity with no push still never lifts a grounded body.
 
-A push volume adds an acceleration in any direction. It is static map data, never a script primitive that forces a body, so it stays clear of the §3 guardrail. Push lands after the state intent, in a second protected layer beside knockback — the **drift layer**:
+A push volume adds an acceleration in any direction. *Decided, not yet built (`fluid-surface-motion`):* its optional `force` (default 1, any finite value ≥ 0) scales what bodies feel. `push` is then the nominal current that fluid surfaces and particles show, and every movement read takes `push × force`. It is static map data, never a script primitive that forces a body, so it stays clear of the §3 guardrail. Push lands after the state intent, in a second protected layer beside knockback — the **drift layer**:
 
 - **Horizontal on land.** Outside water, horizontal push accrues in the drift layer. Intent speed caps and steering act on locomotion only, so an air cap never re-clips a wind. Vertical push joins locomotion directly; no intent caps vertical speed, and while grounded the floor bears it.
 - **3D while swimming.** In `Swim` the whole push accrues in the layer, so a current settles at push / viscosity in every direction and swim steering never fights it. The layer's speed is capped at terminal velocity by magnitude. On every edge out of `Swim` its vertical part folds into vertical velocity, and the layer is horizontal again.

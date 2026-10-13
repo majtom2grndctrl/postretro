@@ -2328,6 +2328,8 @@ mod tests {
                     cooldown_remaining_ms,
                     shoot_press_consumed: false,
                     reload_press_consumed: false,
+                    primary_press_held_over_gate: false,
+                    secondary_press_held_over_gate: false,
                     credit_source: "weapon.test".to_string(),
                     ammo: None,
                     magazine: 0,
@@ -2409,6 +2411,8 @@ mod tests {
                     cooldown_remaining_ms: 0.0,
                     shoot_press_consumed: false,
                     reload_press_consumed: false,
+                    primary_press_held_over_gate: false,
+                    secondary_press_held_over_gate: false,
                     credit_source: "weapon.test.ammo".to_string(),
                     ammo: Some(WeaponAmmoTuning {
                         ammo_type: spec.ammo_type.to_string(),

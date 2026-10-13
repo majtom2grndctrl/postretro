@@ -983,7 +983,7 @@ export type VaultParams = {
   durationMs: number,
   --- Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: "auto", swim: "auto" }`. A present `from` replaces the default whole: a place it leaves out cannot vault.
   from: VaultEntry?,
-  --- Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge). A vault always stops a burst already in progress.
+  --- Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge): firing cannot start during the climb, a burst already firing stops when it starts, and a trigger held through it fires once it ends.
   allowFire: boolean?,
 }
 

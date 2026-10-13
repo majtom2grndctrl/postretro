@@ -32,6 +32,10 @@ fn recovery_ticks(registry: &EntityRegistry, weapon: EntityId) -> u32 {
         })
 }
 
+/// Whether the execution `id` binds may continue: its pawn lives, still holds
+/// the weapon, is not vaulting with fire blocked, and the weapon still runs it.
+/// A dead or vaulting pawn's execution is cancelled before its next command,
+/// as the client cancels its own prediction.
 fn binding_is_live(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -39,6 +43,7 @@ fn binding_is_live(
     weapon: EntityId,
 ) -> bool {
     registry.exists(pawn)
+        && !postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn)
         && !registry
             .get_component::<HealthComponent>(pawn)
             .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
@@ -95,6 +100,21 @@ pub(super) fn observe_lifecycle(
             weapon: allocator.stamp(weapon),
             recovery_ticks,
         },
+    );
+}
+
+/// Stamp the client's retained starts due by this resolved command's tick with
+/// the shooter's fire gate as that tick starts, before its movement runs. A
+/// start delivered later is judged by this stamp, not by its pawn at delivery.
+pub(super) fn stamp_start_fire_gate(
+    registry: &EntityRegistry,
+    queues: &mut netcode::HostCommandQueues,
+    resolved: &netcode::ResolvedPawnCommand,
+) {
+    queues.stamp_start_fire_gate(
+        resolved.client_id,
+        resolved.client_tick,
+        postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, resolved.pawn),
     );
 }
 
@@ -159,10 +179,19 @@ pub(super) fn guard_initiation(
         ),
         None => netcode::CadenceVerdict::Unrecorded,
     };
+    // A start is judged by the shooter's fire gate at its own tick, stamped
+    // when that tick resolved; one delivered on its own resolution reads the
+    // live, pre-movement pawn.
+    let fire_blocked = queues
+        .start_fire_blocked(command.owner_client_id, token)
+        .unwrap_or_else(|| {
+            postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, command.pawn)
+        });
     if !command.real_command
         || !weapon_available
         || !ledger_allows
         || cadence == netcode::CadenceVerdict::Refused
+        || fire_blocked
     {
         command.command.activation.initiation = None;
         command.rejected_activation = Some(token);

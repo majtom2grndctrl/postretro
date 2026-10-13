@@ -236,6 +236,24 @@ impl HostCommandQueues {
             .and_then(|state| state.activation_edges.refusal(token))
     }
 
+    /// Stamp `client_id`'s retained starts due by `resolved_tick` with the
+    /// shooter's fire gate at that tick's start
+    /// (`ActivationEdges::stamp_fire_gate`).
+    pub fn stamp_start_fire_gate(&mut self, client_id: u64, resolved_tick: u32, blocked: bool) {
+        if let Some(state) = self.clients.get_mut(&client_id) {
+            state
+                .activation_edges
+                .stamp_fire_gate(resolved_tick, blocked);
+        }
+    }
+
+    /// The fire gate stamped on `token`'s delivered start, if it was stamped.
+    pub fn start_fire_blocked(&self, client_id: u64, token: ActivationToken) -> Option<bool> {
+        self.clients
+            .get(&client_id)
+            .and_then(|state| state.activation_edges.delivered_fire_blocked(token))
+    }
+
     /// Aim of the command that carried `token`'s start, once playout delivered
     /// it. Host FIRE reconstructs that start's shot along it.
     pub fn start_aim(&self, client_id: u64, token: ActivationToken) -> Option<RemoteStartAim> {

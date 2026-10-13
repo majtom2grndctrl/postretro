@@ -888,7 +888,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("swimMaxHeight", "f32", "Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0.")
         .field("durationMs", "f32", "Time from the start of the vault to standing on the top, in milliseconds. Must be finite and > 0.")
         .field("from?", "VaultEntry", "Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: \"auto\", swim: \"auto\" }`. A present `from` replaces the default whole: a place it leaves out cannot vault.")
-        .field("allowFire?", "bool", "Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge). A vault always stops a burst already in progress.")
+        .field("allowFire?", "bool", "Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge): firing cannot start during the climb, a burst already firing stops when it starts, and a trigger held through it fires once it ends.")
         .finish();
     registry
         .register_type("VaultEntry")

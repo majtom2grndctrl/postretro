@@ -322,6 +322,14 @@ pub struct WeaponComponent {
     pub shoot_press_consumed: bool,
     #[serde(default)]
     pub reload_press_consumed: bool,
+    /// A primary or secondary press made while a pawn-state gate (a vault)
+    /// refused starts, with the button still held: replayed as a press on the
+    /// first tick the gate opens, so a held press trigger fires without a
+    /// re-press.
+    #[serde(default)]
+    pub primary_press_held_over_gate: bool,
+    #[serde(default)]
+    pub secondary_press_held_over_gate: bool,
     #[serde(default = "default_credit_source")]
     pub credit_source: String,
     #[serde(default)]
@@ -425,6 +433,8 @@ impl WeaponComponent {
             cooldown_remaining_ms: 0.0,
             shoot_press_consumed: false,
             reload_press_consumed: false,
+            primary_press_held_over_gate: false,
+            secondary_press_held_over_gate: false,
             credit_source: resolve_credit_source(desc, canonical_name),
             ammo,
             magazine,

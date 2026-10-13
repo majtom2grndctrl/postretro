@@ -33,6 +33,7 @@ pub(in crate::sim) fn run_local_weapon_command(
         tick_dt,
         on_impact,
         None,
+        false,
     )
 }
 
@@ -57,6 +58,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
     tick_dt: f32,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
     activation: Option<weapon::execution::ActivationCommand>,
+    fire_blocked: bool,
 ) -> LocalWeaponCommandResult {
     run_local_weapon_command_inner(
         registry,
@@ -75,6 +77,7 @@ pub(in crate::sim) fn run_local_weapon_command_with_content(
         on_impact,
         activation,
         false,
+        fire_blocked,
     )
 }
 
@@ -108,6 +111,7 @@ pub(in crate::sim) fn run_client_weapon_equip(
         &mut |_| {},
         None,
         true,
+        false,
     )
 }
 
@@ -129,6 +133,9 @@ fn run_local_weapon_command_inner(
     on_impact: &mut impl FnMut(&mut EntityRegistry),
     activation: Option<weapon::execution::ActivationCommand>,
     equip_only: bool,
+    // The shooter's pawn-state fire gate, captured at tick start, before this
+    // tick's movement ran (`pawn_gate::vault_blocks_fire`).
+    fire_blocked: bool,
 ) -> LocalWeaponCommandResult {
     let mut registry = registry.borrow_mut();
     let mut inventory = pawn.and_then(|pawn| {
@@ -153,11 +160,22 @@ fn run_local_weapon_command_inner(
                 .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
                 .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
     });
-    if !pawn_alive {
+    // Death and a fire-blocking vault both stop an execution in progress and
+    // refuse new starts; a vault holds a fresh press for its exit.
+    if !pawn_alive || fire_blocked {
         weapon_component.cancel_activation();
     }
+    let mut activation = activation;
+    if let Some(activation) = activation.as_mut() {
+        weapon::pawn_gate::hold_presses_over_gate(
+            &mut weapon_component,
+            &mut activation.primary,
+            &mut activation.secondary,
+            fire_blocked,
+        );
+    }
     let mut checked_command = *command;
-    checked_command.can_fire &= pawn_alive;
+    checked_command.can_fire &= pawn_alive && !fire_blocked;
     let command = &checked_command;
     let active_slot = inventory
         .as_ref()

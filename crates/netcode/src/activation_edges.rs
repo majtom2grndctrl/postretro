@@ -38,6 +38,10 @@ pub(crate) struct RetainedStart {
     /// Host tick at which playout first found it due. Expiry runs from here, so
     /// a start playout has not reached yet is never refused for waiting.
     due_since: Option<u32>,
+    /// The shooter's pawn-state fire gate at the start of the start's own
+    /// client tick, stamped when that tick resolves. A start delivered later is
+    /// judged by it, not by the pawn's state at delivery.
+    fire_blocked: Option<bool>,
 }
 /// Why the lane refused a retained start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,7 @@ impl ActivationEdges {
             firing_slot,
             aim,
             due_since: None,
+            fire_blocked: None,
         });
     }
     /// The oldest retained start once its command tick is resolved; the caller
@@ -171,6 +176,25 @@ impl ActivationEdges {
         self.refused
             .filter(|(start, _)| start.token == token)
             .map(|(_, reason)| reason)
+    }
+    /// Record `blocked`, the shooter's fire gate at the start of client tick
+    /// `resolved_tick`, on every retained or just-delivered start stamped at or
+    /// before it that has no verdict yet. Called once per resolved command,
+    /// before that command's movement runs, so each start keeps the gate of the
+    /// first resolution at or after its own tick.
+    pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool) {
+        let due = |start: &RetainedStart| client_tick_le(start.token.start_tick, resolved_tick);
+        for start in self.starts.iter_mut().chain(self.delivered.iter_mut()) {
+            if start.fire_blocked.is_none() && due(start) {
+                start.fire_blocked = Some(blocked);
+            }
+        }
+    }
+    /// The fire gate stamped on `token`'s start, once the lane delivered it.
+    pub fn delivered_fire_blocked(&self, token: ActivationToken) -> Option<bool> {
+        self.delivered
+            .filter(|start| start.token == token)
+            .and_then(|start| start.fire_blocked)
     }
     /// Aim captured with `token`'s start, once the lane has delivered it.
     pub fn delivered_aim(&self, token: ActivationToken) -> Option<RemoteStartAim> {
@@ -384,6 +408,40 @@ mod tests {
     }
     fn aim(yaw: f32) -> RemoteStartAim {
         RemoteStartAim { pitch: 0.1, yaw }
+    }
+
+    // A start keeps the fire gate of its own tick: a vault that begins after
+    // the tick resolved, while the start waits retained, never refuses it, and
+    // a start stamped mid-vault stays refused whenever it is delivered.
+    #[test]
+    fn a_retained_start_keeps_the_fire_gate_stamped_when_its_tick_resolved() {
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(10), 0, aim(0.0));
+        edges.observe_start(token(12), 0, aim(0.0));
+        edges.stamp_fire_gate(9, true);
+        assert!(
+            edges
+                .starts
+                .iter()
+                .all(|start| start.fire_blocked.is_none()),
+            "a start is stamped only once its own tick resolves"
+        );
+        edges.stamp_fire_gate(10, false);
+        edges.stamp_fire_gate(11, true);
+        edges.stamp_fire_gate(12, true);
+        assert!(edges.take_start(token(10)));
+        assert_eq!(edges.delivered_fire_blocked(token(10)), Some(false));
+        assert!(edges.take_start(token(12)));
+        assert_eq!(edges.delivered_fire_blocked(token(12)), Some(true));
+
+        // Delivered on its own resolution, before the stamp: the stamp still
+        // reaches it.
+        let mut edges = ActivationEdges::default();
+        edges.observe_start(token(20), 0, aim(0.0));
+        assert!(edges.take_start(token(20)));
+        assert_eq!(edges.delivered_fire_blocked(token(20)), None);
+        edges.stamp_fire_gate(20, true);
+        assert_eq!(edges.delivered_fire_blocked(token(20)), Some(true));
     }
     #[test]
     fn activation_start_lane_retains_a_duplicate_once_with_its_first_carrying_aim() {

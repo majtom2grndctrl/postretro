@@ -940,6 +940,7 @@ impl Fixture {
                 resolved.pawn,
                 self.tick,
             );
+            stamp_start_fire_gate(&registry, &mut self.queues, &resolved);
             let mut command = App::prepare_remote_pawn_command(
                 &self.allocator,
                 &registry,
@@ -3479,3 +3480,93 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod receive_alternate;
 mod switch_order;
+
+// --- Vault fire gate on the host's remote path ---------------------------------
+
+/// Hold the host's copy of the remote pawn mid-vault for the rest of the test:
+/// a path whose start is where the pawn stands and whose duration never runs
+/// out, so the host's own movement keeps it vaulting.
+fn hold_host_vault(fixture: &Fixture, allow_fire: bool) {
+    let mut registry = fixture.host.borrow_mut();
+    let pawn = fixture.host_actors.pawn;
+    let center = registry.get_component::<Transform>(pawn).unwrap().position;
+    let feet = center - Vec3::Y * 1.2;
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.vault = Some(postretro_foundation::VaultParams {
+        max_height: 1.6,
+        swim_max_height: 0.9,
+        duration_ms: 1.0e9,
+        from: postretro_foundation::VaultEntry::default(),
+        allow_fire,
+    });
+    movement.movement_state = postretro_foundation::MovementState::Vault {
+        elapsed_ms: 0.0,
+        target: feet + Vec3::new(1.0, 1.0, 0.0),
+        start_offset: Vec3::new(-1.0, -1.0, 0.0),
+        mover: None,
+        entry_speed: 0.0,
+    };
+    registry.set_component(pawn, movement).unwrap();
+}
+
+fn rejected(fixture: &Fixture, activation: ActivationToken) -> bool {
+    fixture.outcomes.iter().any(|outcome| {
+        matches!(outcome, wire::ActivationOutcome::InitiationRejected { token, .. } if *token == wire_token(activation))
+    })
+}
+
+// A start stamped while the host's pawn vaults with fire blocked is refused by
+// the host, whatever the client predicted; with fire allowed it is accepted.
+#[test]
+fn a_remote_start_stamped_mid_vault_is_refused_unless_fire_is_allowed() {
+    for allow_fire in [false, true] {
+        let mut fixture = Fixture::new(mandated_link(), descriptor(false, false, 1, "press"));
+        fixture.idle(500, 10);
+        hold_host_vault(&fixture, allow_fire);
+        let start = token(510, ActivationLane::Primary);
+        fixture.step(510, held(start.lane, true));
+        fixture.idle(511, 120);
+        if allow_fire {
+            assert_eq!(fixture.accepted(start), 1, "fire allowed: the host accepts");
+            assert_eq!(fixture.ammo(), MAGAZINE - 1);
+        } else {
+            assert!(rejected(&fixture, start), "fire blocked: the host refuses");
+            assert_eq!(fixture.accepted(start), 0);
+            fixture.assert_no_host_shot();
+        }
+    }
+}
+
+// The host stops a remote burst when its pawn starts vaulting, as it does at
+// death: shots already fired stand, none after.
+#[test]
+fn a_remote_burst_stops_when_the_host_pawn_starts_vaulting() {
+    let mut fixture = Fixture::new(mandated_link(), descriptor(false, false, 3, "press"));
+    fixture.idle(500, 10);
+    let start = token(510, ActivationLane::Primary);
+    fixture.step(510, held(start.lane, true));
+    // Wait on the host itself: its first shot debits the magazine.
+    let mut tick = 511;
+    while fixture.ammo() == MAGAZINE && tick < 640 {
+        fixture.step(tick, neutral());
+        tick += 1;
+    }
+    assert_eq!(
+        fixture.ammo(),
+        MAGAZINE - 1,
+        "the burst's first shot fired on the host"
+    );
+    hold_host_vault(&fixture, false);
+    let spent = MAGAZINE - fixture.ammo();
+    fixture.idle(tick, 120);
+    assert!(fixture.cancelled(start), "the host cancels the burst");
+    assert_eq!(
+        MAGAZINE - fixture.ammo(),
+        spent,
+        "no shot after the vault started"
+    );
+    assert!(spent < 3, "the burst did not complete");
+}

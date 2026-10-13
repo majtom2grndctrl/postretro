@@ -28,6 +28,7 @@ pub mod activation_prediction;
 pub mod execution;
 #[cfg(test)]
 mod execution_tests;
+pub mod pawn_gate;
 mod shot;
 pub use shot::{ResolvedWeaponShot, freeze_weapon_shot};
 mod client_resolution;

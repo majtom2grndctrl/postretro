@@ -5118,6 +5118,7 @@ impl App {
                     resolved.pawn,
                     *tick,
                 );
+                host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);
                 let mut command = Self::prepare_remote_pawn_command(
                     allocator,
                     &registry,

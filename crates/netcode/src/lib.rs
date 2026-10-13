@@ -88,6 +88,9 @@ mod predict_reconcile_harness_fluid_tables;
 // E24 co-op swim parity: swim entry, exit, fluid jump and its latch through reconcile.
 #[cfg(test)]
 mod predict_reconcile_harness_swim;
+// Co-op vault parity: a predicted mantle replayed from acked baselines.
+#[cfg(test)]
+mod predict_reconcile_harness_vault;
 // E24 swim slots: the output-only immersion component is never read by prediction,
 // replay or the wire merge.
 #[cfg(test)]
@@ -668,31 +671,32 @@ impl NetworkIdAllocator {
 /// keep this numerically equal to `ComponentPayload::kind()` in `postretro-net`.
 pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
     match kind {
-        ComponentKind::Transform => 0,
-        ComponentKind::Light => 1,
-        ComponentKind::BillboardEmitter => 2,
-        ComponentKind::ParticleState => 3,
-        ComponentKind::SpriteVisual => 4,
-        ComponentKind::FogVolume => 5,
-        ComponentKind::PlayerMovement => 6,
-        ComponentKind::Weapon => 7,
-        ComponentKind::DescriptorProvenance => 8,
-        ComponentKind::Mesh => 9,
-        ComponentKind::Health => 10,
-        ComponentKind::Agent => 11,
-        ComponentKind::Brain => 12,
-        ComponentKind::KinematicMover => 13,
-        ComponentKind::TriggerVolume => 14,
-        ComponentKind::AmmoReserve => 15,
-        ComponentKind::Spawner => 16,
-        ComponentKind::EntityState => 17,
-        ComponentKind::DeferredEffect => 18,
-        ComponentKind::Inventory => 19,
-        ComponentKind::Touchable => 20,
-        ComponentKind::Projectile => 21,
-        ComponentKind::HitVolume => 22,
-        ComponentKind::MapOrdinal => 23,
-        ComponentKind::Immersion => 24,
+        ComponentKind::Transform => postretro_net::wire::COMPONENT_KIND_TRANSFORM,
+        ComponentKind::Light => postretro_net::wire::COMPONENT_KIND_LIGHT,
+        ComponentKind::BillboardEmitter => postretro_net::wire::COMPONENT_KIND_BILLBOARD_EMITTER,
+        ComponentKind::SpriteVisual => postretro_net::wire::COMPONENT_KIND_SPRITE_VISUAL,
+        ComponentKind::FogVolume => postretro_net::wire::COMPONENT_KIND_FOG_VOLUME,
+        ComponentKind::PlayerMovement => postretro_net::wire::COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+        ComponentKind::Weapon => postretro_net::wire::COMPONENT_KIND_WEAPON,
+        ComponentKind::DescriptorProvenance => {
+            postretro_net::wire::COMPONENT_KIND_DESCRIPTOR_PROVENANCE
+        }
+        ComponentKind::Mesh => postretro_net::wire::COMPONENT_KIND_MESH_ANIMATION_STATE,
+        ComponentKind::Health => postretro_net::wire::COMPONENT_KIND_HEALTH,
+        ComponentKind::Agent => postretro_net::wire::COMPONENT_KIND_AGENT,
+        ComponentKind::Brain => postretro_net::wire::COMPONENT_KIND_BRAIN,
+        ComponentKind::KinematicMover => postretro_net::wire::COMPONENT_KIND_KINEMATIC_MOVER_STATE,
+        ComponentKind::TriggerVolume => postretro_net::wire::COMPONENT_KIND_TRIGGER_VOLUME,
+        ComponentKind::AmmoReserve => postretro_net::wire::COMPONENT_KIND_AMMO_RESERVE,
+        ComponentKind::Spawner => postretro_net::wire::COMPONENT_KIND_SPAWNER,
+        ComponentKind::EntityState => postretro_net::wire::COMPONENT_KIND_ENTITY_STATE,
+        ComponentKind::DeferredEffect => postretro_net::wire::COMPONENT_KIND_DEFERRED_EFFECT,
+        ComponentKind::Inventory => postretro_net::wire::COMPONENT_KIND_INVENTORY,
+        ComponentKind::Touchable => postretro_net::wire::COMPONENT_KIND_TOUCHABLE,
+        ComponentKind::Projectile => postretro_net::wire::COMPONENT_KIND_PROJECTILE,
+        ComponentKind::HitVolume => postretro_net::wire::COMPONENT_KIND_HIT_VOLUME,
+        ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
+        ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
     }
 }
 
@@ -787,6 +791,18 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
                 && floor_normal
                     .as_ref()
                     .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
+        }
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover: _,
+            entry_speed,
+        } => {
+            elapsed_ms.is_finite()
+                && target.iter().all(|c| c.is_finite())
+                && start_offset.iter().all(|c| c.is_finite())
+                && entry_speed.is_finite()
         }
     };
     m.velocity.iter().all(|c| c.is_finite())
@@ -1142,7 +1158,15 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
         registry.get_component::<Transform>(armed.entity_id),
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
-        (Ok(transform), Ok(movement)) => (*transform, movement.clone()),
+        (Ok(transform), Ok(movement)) => {
+            // Death is host-authoritative; a client that predicts past its own
+            // death takes one correction, inside the vault tolerance. The same
+            // verdict bars vault entry this tick, as on the host; reconcile
+            // replay has no registry and keeps the verdict this call leaves.
+            let mut movement = movement.clone();
+            crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
+            (*transform, movement)
+        }
         _ => {
             return ClientPredictionTickResult {
                 client_tick,
@@ -3462,6 +3486,7 @@ mod tests {
             sway: None,
             impulse: None,
             slide: None,
+            vault: None,
         });
         let descriptors = [local_descriptor.clone()];
         let mut registry = EntityRegistry::new();
@@ -4196,7 +4221,7 @@ mod tests {
 
     /// What one pass of the production host intake produced at one host tick.
     struct HostIntake {
-        /// Impact-burst particles the host's own registry holds afterwards.
+        /// Impact-burst particles the host's local frame pool holds afterwards.
         particles: usize,
         /// Every `impact` emission raised for the host's scripts and sounds;
         /// its emitter is what the observer impact cue freezes.
@@ -4236,10 +4261,12 @@ mod tests {
             |_, point| projectile_contacts.push(point),
             |emission| impacts.push(emission),
         );
-        let particles = fixture
-            .registry
-            .iter_with_kind(ComponentKind::ParticleState)
-            .count();
+        weapon::drain_impact_particle_requests(
+            &mut fixture.registry,
+            &mut fixture.particle_pool,
+            &mut Vec::new(),
+        );
+        let particles = fixture.particle_pool.len();
         HostIntake {
             particles,
             impacts,
@@ -4310,6 +4337,12 @@ mod tests {
 
         assert_eq!(impacts, 1, "one impact per remote shot");
         assert_eq!(particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::NEG_X) > 0.0)
+        );
     }
 
     // A contact the host rejects is not presented: no burst for a wall the
@@ -4345,6 +4378,12 @@ mod tests {
 
         assert!(hitscan.hit_accepted);
         assert_eq!(hitscan.particles, 2 * weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::Y) > 0.0)
+        );
         let cue_contacts = observer_cue_contacts(&fixture, &hitscan);
         assert_eq!(cue_contacts.len(), 2, "{cue_contacts:?}");
         assert!(
@@ -4366,6 +4405,12 @@ mod tests {
 
         assert!(direct.hit_accepted);
         assert_eq!(direct.particles, weapon::IMPACT_PARTICLE_COUNT);
+        assert!(
+            fixture
+                .particle_pool
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::Y) > 0.0)
+        );
         assert_eq!(direct.projectile_contacts, vec![Vec3::new(4.0, 0.5, 0.0)]);
         let cue_contacts = observer_cue_contacts(&fixture, &direct);
         assert_eq!(cue_contacts.len(), 1, "{cue_contacts:?}");
@@ -4659,6 +4704,7 @@ mod tests {
 
     struct HitIngestFixture {
         registry: EntityRegistry,
+        particle_pool: postretro_sim::particle_pool::ParticlePool,
         allocator: NetworkIdAllocator,
         owners: MovementOwners,
         open_shots: OpenAuthorizedShots,
@@ -4722,8 +4768,11 @@ mod tests {
                 7,
             );
 
+            let mut particle_pool = postretro_sim::particle_pool::ParticlePool::new();
+            particle_pool.configure_impact_collection(0);
             Self {
                 registry,
+                particle_pool,
                 allocator,
                 owners,
                 open_shots,
@@ -6365,13 +6414,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            29,
-            "the push-drift layer in player movement requires wire version 29"
+            31,
+            "the vault movement state requires wire version 31"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            19,
-            "the push-drift layer in player movement requires snapshot version 19"
+            20,
+            "the vault movement state requires snapshot version 20"
         );
     }
 
@@ -6910,8 +6959,7 @@ mod tests {
             match kind {
                 ComponentKind::Transform => Some(ComponentKind::Light),
                 ComponentKind::Light => Some(ComponentKind::BillboardEmitter),
-                ComponentKind::BillboardEmitter => Some(ComponentKind::ParticleState),
-                ComponentKind::ParticleState => Some(ComponentKind::SpriteVisual),
+                ComponentKind::BillboardEmitter => Some(ComponentKind::SpriteVisual),
                 ComponentKind::SpriteVisual => Some(ComponentKind::FogVolume),
                 ComponentKind::FogVolume => Some(ComponentKind::PlayerMovement),
                 ComponentKind::PlayerMovement => Some(ComponentKind::Weapon),
@@ -6944,6 +6992,10 @@ mod tests {
                 component_kind_discriminant(kind),
                 kind as u16,
                 "discriminant must equal enum layout for {kind:?}"
+            );
+            assert_eq!(
+                kind as usize, visited,
+                "component discriminants must be gapless"
             );
             visited += 1;
             current = next_kind(kind);
@@ -7282,6 +7334,7 @@ mod tests {
                 crouch: None,
                 slide: None,
                 swim: None,
+                vault: None,
                 view_feel: None,
             }),
             weapon: None,

@@ -29,7 +29,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// Shared enemy overlay rosters and participation-framed Presentation advance it to 28.
 /// The protected push-drift layer in player movement state advances it to 29;
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
-pub const WIRE_VERSION: u32 = 29;
+/// Removal of the particle component renumbers later component kinds at 30.
+/// `WireMovementState::Vault` advances it to 31.
+pub const WIRE_VERSION: u32 = 31;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -449,8 +451,8 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 29,
-            "the push-drift layer in player movement extends the shipped layout"
+            WIRE_VERSION, 31,
+            "the vault movement state extends the shipped layout"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
@@ -597,8 +599,7 @@ mod switch_tick_epoch_tests {
 
     #[test]
     fn push_drift_layer_refuses_wire_28_peers() {
-        assert_eq!(WIRE_VERSION, 29);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 19);
+        const { assert!(WIRE_VERSION > 28) };
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 28,
@@ -608,6 +609,37 @@ mod switch_tick_epoch_tests {
             Err(ClosingCause::Protocol { .. })
         ));
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 28);
+    }
+
+    #[test]
+    fn particle_component_renumbering_refuses_wire_29_peers() {
+        const { assert!(WIRE_VERSION > 29) };
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 29,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 29);
+    }
+
+    // A pre-vault peer cannot decode `WireMovementState::Vault`, so gate 1
+    // refuses it before any snapshot decode.
+    #[test]
+    fn vault_movement_state_refuses_wire_30_peers() {
+        assert_eq!(WIRE_VERSION, 31);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 20);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 30,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 30);
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.

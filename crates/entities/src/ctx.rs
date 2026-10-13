@@ -51,7 +51,8 @@ pub struct ScriptCtx {
     /// EnvironmentVolumes PRL header) on every level load via
     /// `self.script_ctx.gravity.set(...)`, mutated by the `worldSetGravity`
     /// primitive through the captured `ScriptCtx` clone, and read each frame
-    /// by `App` (`script_ctx.gravity.get()`) to pass into `particle_sim::tick`
+    /// by `App` (`script_ctx.gravity.get()`) as the particle pool environment resolver
+    /// default outside authored gravity volumes
     /// for buoyancy integration. The `Cell` lets the primitive closures mutate
     /// without a `&mut ScriptCtx` borrow.
     pub gravity: Rc<Cell<f32>>,

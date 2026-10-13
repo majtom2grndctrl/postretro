@@ -558,6 +558,14 @@ where
     }
     drop(stage);
 
+    // The host player's fire gate reads its movement at tick start, as the
+    // client's and the remote path's do, before this tick's movement runs.
+    let local_fire_blocked = {
+        let registry = registry.borrow();
+        registry
+            .local_player_movement_pawn()
+            .is_some_and(|pawn| crate::weapon::pawn_gate::pawn_fire_blocked(&registry, pawn))
+    };
     let stage = cpu.scope(SimStage::Movement);
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
@@ -894,6 +902,7 @@ where
                 primary: command.fire_button,
                 secondary: command.secondary_button,
             }),
+            local_fire_blocked,
         );
     let mut reload_deliveries = remote_weapon_result.reload_deliveries;
     reload_deliveries.extend(local_result.reload_deliveries);
@@ -1632,6 +1641,7 @@ pub use reload::{
 };
 pub use weapon_stage::apply_authorized_weapon_impact_damage;
 
+pub use host_movement::drop_vault_if_dead;
 #[cfg(any(test, feature = "test-support"))]
 pub use host_movement::run_host_movement_tick;
 
@@ -2101,6 +2111,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         })
     }

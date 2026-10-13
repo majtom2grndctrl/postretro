@@ -167,8 +167,8 @@ impl StageSet for StreamingStage {
 }
 
 /// The CPU particle path inside the render-prep stage: the emitter bridge's
-/// spawning and the particle simulation's integrate-and-expire walk. Both are
-/// roots, placed under `render_prep` by label.
+/// spawning, integrate/expire and collection roots sit under `render_prep`.
+/// Point environment resolution nests in simulation; live count is per frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParticleStage {
     /// Emitter bridge: bursts, rate emission and particle spawns.
@@ -179,10 +179,20 @@ pub(crate) enum ParticleStage {
     /// The particle render collector: per-sprite cell cull and instance
     /// packing for the billboard pass.
     Collect,
+    /// Point gravity/push resolution, included in Sim.
+    Environment,
+    /// Live particles after this rendered frame's step, including zero.
+    Live,
 }
 
 impl StageSet for ParticleStage {
-    const ALL: &'static [Self] = &[Self::Emit, Self::Sim, Self::Collect];
+    const ALL: &'static [Self] = &[
+        Self::Emit,
+        Self::Sim,
+        Self::Collect,
+        Self::Environment,
+        Self::Live,
+    ];
 
     fn index(self) -> usize {
         self as usize
@@ -193,6 +203,19 @@ impl StageSet for ParticleStage {
             Self::Emit => "particle_emit",
             Self::Sim => "particle_sim",
             Self::Collect => "particle_collect",
+            Self::Environment => "particle_environment",
+            Self::Live => "particle_live",
+        }
+    }
+    fn parent(self) -> Option<Self> {
+        (self == Self::Environment).then_some(Self::Sim)
+    }
+
+    fn kind(self) -> postretro_stage_timing::StageKind {
+        if self == Self::Live {
+            postretro_stage_timing::StageKind::Count
+        } else {
+            postretro_stage_timing::StageKind::Time
         }
     }
 }

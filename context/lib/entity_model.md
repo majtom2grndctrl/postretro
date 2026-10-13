@@ -37,7 +37,6 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Immersion | Output-only: the fraction of the pawn's capsule its winning fluid covered on the last authoritative movement tick. Written by host movement; read only by the `player.immersion` slot (§7b). Never replicated |
 | Light | Dynamic point-light parameters |
 | BillboardEmitter | Particle emitter configuration |
-| ParticleState | Per-particle state while particles are registry entities; retires with the particle pool (§8) |
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
 | Weapon | Descriptor-authored actions and tuning plus one live resource, shared recovery, reload, charging/execution, and input-edge state |
@@ -60,9 +59,9 @@ Type-specific data lives in the component. An entity is "a player" by virtue of 
 
 **Weapon state.** Timed weapon states live in one component-level state machine: a new state is a variant plus its transition arms, never a new component field or boolean. Fire authorization is computed without consulting weapon state, so a preemption check and the real fire gate share one evaluation and cannot drift. State-dependent terms are applied by the caller around that shared verdict, not folded into it.
 
-**Weapon activations.** Required `primary` and optional `secondary` actions share one execution, resource, and recovery gate. `press` starts once per fresh edge; `hold` requests another execution after completion and recovery. Secondary wins simultaneous fresh starts. An existing execution is never interrupted by another start, and blocked presses are consumed rather than queued. Authors compose bounded shot/wait sequences; there is no burst opcode (`scripting.md` §11).
+**Weapon activations.** Required `primary` and optional `secondary` actions share one execution, resource, and recovery gate. `press` starts once per fresh edge; `hold` requests another execution after completion and recovery. Secondary wins simultaneous fresh starts. An existing execution is never interrupted by another start, and blocked presses are consumed rather than queued. The one exception is a press refused only by the shooter's own pawn-state gate (a fire-blocking vault, `movement.md` §4): it is held and fires on the first open tick while the trigger stays held. Authors compose bounded shot/wait sequences; there is no burst opcode (`scripting.md` §11).
 
-Charge belongs to an action, independent of resource kind. It requires `press`, freezes on explicit release, and never auto-fires at full charge. Release before the minimum cancels without debit; a normal sequence continues after button release. Switch, drop, death, input suspension, disconnect, level change, and descriptor replacement cancel future work. A fresh reload press cancels before the ordinary reload gate, even when reload cannot start; holding reload does not cancel repeatedly.
+Charge belongs to an action, independent of resource kind. It requires `press`, freezes on explicit release, and never auto-fires at full charge. Release before the minimum cancels without debit; a normal sequence continues after button release. Switch, drop, death, input suspension, disconnect, level change, and descriptor replacement cancel future work, and so does entering a fire-blocking vault. `charge.interruptedBy` is a closed map from interrupt source to whether that source cancels the charge while it is still charging. Every key is optional and defaults to `true`; an unknown source, a non-boolean or a non-object rejects content, through one check both runtimes share. `vault` is the only source today: `false` keeps the charge charging through the climb and fires its release once the climb ends (`networking.md` §Combat authority). Future sources (taking damage, NPC interactions) join the same map rather than adding fields. Death, switching, dropping and the other cancels above are not interrupt sources and always cancel. A fresh reload press cancels before the ordinary reload gate, even when reload cannot start; holding reload does not cancel repeatedly.
 
 Every due shot samples current aim and freezes resolved combat and presentation tuning. Shots spend separately; waits and cancelled charge spend nothing. Accepted shots set action recovery, while later shots in the same execution bypass the start gate. Insufficient ammo/cell ends execution with one dry-fire cue and action recovery; heat lockout ends it silently. A threshold-crossing heat shot fires before cancelling remaining steps. Completion and cancellation preserve paid resources and recovery already owed. Authored visual size is independent of collision and splash radius. Authorized shots retain their captured values through later switching or content replacement.
 
@@ -91,9 +90,9 @@ Entities enter the world through two paths:
 | Source | When | Examples |
 |--------|------|----------|
 | Level entity data | Level load | Player spawn, enemies, doors, pickups, triggers, lights |
-| Runtime spawning | During gameplay | Projectiles, explosion effects |
+| Runtime spawning | During gameplay | Projectiles, scripted actors |
 
-Level-load entities are created once when the level is parsed. Runtime entities are created by game logic in response to player actions or game events.
+Level-load entities are created once when the level is parsed. Runtime entities are created by game logic in response to player actions or game events. Anonymous particles and impact bursts use the separate presentation pool (§8).
 
 ### Update
 
@@ -135,7 +134,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. `force` on `push_volume`, a modifier resolved with push, is one such amendment (decided, not yet built; `movement.md` §6). A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 ---
 
@@ -162,7 +161,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 10 | Projectile launch finalization | Closes spawn grace for projectiles launched after the flight stage without moving them. They begin flight on the next fixed tick. |
 | 11 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
-Scripting bridges run later, outside the core simulation seam. Emitter, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities. The particle sim steps the particle pool (§8) and touches no entity.
+Scripting bridges run later, outside the core simulation seam. Emitter, light and fog-volume bridges walk their configuration components. The emitter bridge writes particles into the presentation pool (§8); particle simulation updates that pool without spawning or rewriting registry entities.
 
 The host camera follows the player pawn after movement and AI resolve. When no player pawn exists (no `PlayerMovement` entity), a fly-camera moves directly from input.
 
@@ -222,7 +221,7 @@ World collision resolves inline during each entity's movement — the entity sli
 
 ### Environment Volumes
 
-Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` §Custom FGD, id 52). They are non-solid: no collision, cell, portal, lightmap, SDF or navmesh role. `postretro-collision` answers every query over them: pure geometry over level data, no movement or entities. Each authored brush is a convex leaf — a plane set with bounds and a contents mask naming the fields its volume sets — indexed by an AABB tree built at level install, not baked. Queries take a contents mask and never see a volume whose contents miss it. The tree is built after static collision, before the level content digest publishes and before the first tick; installing another level replaces it whole, and unload clears it.
+Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` §Custom FGD, id 52). They are non-solid: no collision, cell, portal, lightmap, SDF or navmesh role. `postretro-collision` answers every query over them: pure geometry over level data, no movement or entities. Each authored brush is a convex leaf — a plane set with bounds and a contents mask naming the fields its volume sets. Query indexes are built at level install, not baked, after static collision and before the level content digest publishes or the first tick runs. Installing another level replaces them whole; unload clears them. Queries take a contents mask and never see a volume whose contents miss it. Acceleration-only point queries may use bounded specialized indexes; candidate narrowing must preserve exact containment and independent field winners. Fluid and mixed queries retain the complete geometry index.
 
 **One overlap rule per field.** A field's value comes from the winning volume among those that set it and are in reach; with none, the level default applies (level gravity, zero push, dry). The winner is the highest priority, then the smallest summed brush volume — so a pool inside a room wins without priorities — then the earliest map entity. Fields resolve independently: a pool with no gravity inside a low-gravity room takes the pool's fluid and the room's gravity.
 
@@ -237,7 +236,7 @@ Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` 
 | Player pawn | The full environment (`movement.md` §4, §6) |
 | AI agent | Gravity only, clamped to its downward part. Agent collide-and-slide adds gravity every tick, grounded included, so upward gravity would lift it off the navmesh; in an upward-gravity volume it behaves as in zero gravity. Agents ignore push, never swim, and walk fluid floors |
 | Projectile | Nothing; projectiles apply no gravity |
-| Particle | Gravity and push at its post-step position, never fluid (§8; not built yet) |
+| Particle | Gravity and push at its post-step position, once per rendered frame; never fluid (§8) |
 
 **Hitscan splash facts.** A hitscan pellet reports each fluid-surface crossing strictly before its blocking hit as a fact: point, outward normal of the crossed face, fluid. A ray starting on a face never splashes there, a face shared by two brushes of one volume is no crossing, and two adjacent fluid entities give two. The fact is presentation: never replicated or hashed. Nothing consumes it yet.
 
@@ -290,17 +289,15 @@ Graph evaluation is host-only. Clients consume replicated animation state and ne
 
 Particles are anonymous presentation in a pool outside the registry. A particle has no entity id, no components and no script visibility, and is never replicated. Particle count never changes gameplay tick cost or gameplay spawn capacity.
 
-> **Not built yet.** Today each particle is a registry entity carrying `Transform`, `ParticleState` and `SpriteVisual`, and takes level gravity only. This section is the contract the pool lands against.
-
-**Producers.** The emitter bridge, a frame-time owner, writes the pool directly. Producers in the fixed tick or network ingest (impact bursts) queue plain-data requests on registry intake, drained into the pool at frame time. They never touch the pool, and the queue never reaches transport: each peer spawns its own bursts (`networking.md` §Presentation events vs. replicated state).
+**Producers.** The emitter bridge, a frame-time owner, writes the pool directly. Producers in the fixed tick or network ingest (impact bursts) queue plain-data requests on registry intake, drained into the pool at frame time. They never touch the pool, and the queue never reaches transport: each peer spawns its own bursts (`networking.md` §Presentation events vs. replicated state). Requests drain in raise order before emitter spawning; both producers feed the same frame's simulation and collection. Level unload and reload clear the pool and pending intake together.
 
 **Simulation.** Rust, once per rendered frame on frame time, after the emitter bridge and before the light bridge: velocity, buoyancy and drag, curve-evaluated size and opacity, spin. Particles stay off the fixed tick; no per-particle script callbacks. Each step integrates position first, then takes gravity and push at the post-step position under the bodies' overlap rule (§7), never fluid. Buoyancy scales gravity; push is unscaled. A particle leaves on the step its lifetime ends, and every survivor steps exactly once. Pool order carries no meaning: the billboard pass is order-independent (`rendering_pipeline.md` §7.4).
 
-**Emitter parameters.** A particle takes its emitter's curves, drag, buoyancy, sprite collection and tint at spawn and keeps them for life; a later emitter change reaches only later spawns. Parameters live in shared immutable blocks a particle references by index, never copied per particle. Spin is the one live value: a live emitter's spin rate refreshes its particles, so spin reactions turn existing smoke, and an orphan (emitter despawned) keeps rotating at the last rate.
+**Emitter parameters.** A particle takes its emitter's curves, drag, buoyancy, sprite collection and tint at spawn and keeps them for life; a later emitter change reaches only later spawns. Parameters live in shared immutable blocks a particle references by index, never copied per particle. Blocks survive until their last particle expires; a later rewrite mints a new block only when a spawn succeeds. Spin is the one live value: a live emitter's spin rate refreshes its particles, so spin reactions turn existing smoke, and an orphan (emitter despawned) keeps rotating at the last rate. Reusing an entity slot cannot reconnect that orphan to a new emitter.
 
-**Capacity.** A per-emitter cap and a global live budget. Past either, new spawns drop with a rate-limited warning; live particles are never evicted.
+**Capacity.** A per-emitter cap of 4,096 and a global live budget of 65,536, shared by emitter and impact particles. Past either, new spawns drop with a rate-limited warning; live particles are never evicted. Gameplay registry capacity is independent. Steady-state spawning, stepping and expiry perform no per-particle heap allocation; level clear retains reusable capacities.
 
-**Render collect.** Each rendered frame the collector culls each particle by its own position against the visible cells, buckets by sprite collection, and hands packed instances to the billboard pass.
+**Render collect.** Each rendered frame the collector culls each particle by its own position against the visible cells, buckets by its resolved sprite collection, and hands packed instances to the billboard pass. A conservative frustum pretest may skip a particle only when its whole rotated quad is outside; an offscreen centre alone never proves rejection. Gameplay projectiles remain individually addressed registry entities and share only the billboard collection path.
 
 ---
 

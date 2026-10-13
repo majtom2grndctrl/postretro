@@ -18,7 +18,7 @@ use postretro_test_log_capture::LogCapture;
 
 use crate::scripting::primitives::register_all;
 
-fn dev_content() -> PathBuf {
+pub(super) fn dev_content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev")
 }
 
@@ -35,7 +35,7 @@ fn luau_twin() -> String {
 
 /// Run `source` as a mod root's start script (`start-script.js` or
 /// `start-script.luau`) through a fresh runtime, as mod init does at boot.
-fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, String> {
+pub(super) fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, String> {
     let ctx = ScriptCtx::new();
     let mut primitives = PrimitiveRegistry::new();
     register_all(&mut primitives, ctx.clone());
@@ -60,7 +60,7 @@ fn run_manifest(file_name: &str, source: &str) -> Result<ModManifestResult, Stri
 }
 
 /// content/dev's own start script, initialized as at boot.
-fn dev_manifest() -> ModManifestResult {
+pub(super) fn dev_manifest() -> ModManifestResult {
     let bundle = postretro_script_compiler::bundle_entry(&dev_content().join("start-script.ts"))
         .expect("content/dev start-script.ts bundles");
     run_manifest("start-script.js", &bundle).expect("content/dev initializes")
@@ -142,7 +142,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 9.35,
+            fluid_jump_velocity: Some(9.35),
         })
     );
 
@@ -281,7 +281,7 @@ fn fluids_swim_twin_with_exit_depth_at_enter_depth_drops_the_swim_block_naming_e
 }
 
 /// Every `"fluid" "<name>"` key a map authors.
-fn fluids_named_by(map: &str) -> std::collections::BTreeSet<String> {
+pub(super) fn fluids_named_by(map: &str) -> std::collections::BTreeSet<String> {
     let source = std::fs::read_to_string(dev_content().join("maps").join(map))
         .unwrap_or_else(|error| panic!("{map} reads: {error}"));
     source

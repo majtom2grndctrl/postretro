@@ -10,10 +10,10 @@ declare module "postretro" {
 
   export type Transform = { position: Vec3; rotation: EulerDegrees; scale: Vec3 };
 
-  /** Valid values: `transform`, `light`, `billboard_emitter`, `particle_state`, `sprite_visual`, `fog_volume`. */
-  export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume";
+  /** Valid values: `transform`, `light`, `billboard_emitter`, `sprite_visual`, `fog_volume`. */
+  export type ComponentKind = "transform" | "light" | "billboard_emitter" | "sprite_visual" | "fog_volume";
 
-  export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "particle_state" } & ParticleState) | ({ kind: "sprite_visual" } & SpriteVisual) | ({ kind: "fog_volume" } & FogVolumeComponent);
+  export type ComponentValue = ({ kind: "transform" } & Transform) | ({ kind: "light" } & LightComponent) | ({ kind: "billboard_emitter" } & BillboardEmitterComponent) | ({ kind: "sprite_visual" } & SpriteVisual) | ({ kind: "fog_volume" } & FogVolumeComponent);
 
   /** Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting. */
   export type LightDescriptor = {
@@ -118,27 +118,7 @@ declare module "postretro" {
     rate_curve: ReadonlyArray<number>;
   };
 
-  /** Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn. */
-  export type ParticleState = {
-    /** Current particle velocity in metres/sec. */
-    velocity: readonly [number, number, number];
-    /** Seconds elapsed since the particle spawned. */
-    age: number;
-    /** Total particle lifetime in seconds; the particle despawns once `age` reaches it. */
-    lifetime: number;
-    /** Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`). */
-    buoyancy: number;
-    /** Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn. */
-    drag: number;
-    /** Normalized-lifetime billboard size curve, sampled evenly from spawn to death. */
-    size_curve: ReadonlyArray<number>;
-    /** Normalized-lifetime opacity curve, sampled evenly from spawn to death. */
-    opacity_curve: ReadonlyArray<number>;
-    /** Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle). */
-    emitter?: EntityId | null;
-  };
-
-  /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration. */
+  /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by projectile presentation and consumed by the billboard render integration. */
   export type SpriteVisual = {
     /** Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path. */
     collection: string;
@@ -516,6 +496,14 @@ declare module "postretro" {
     minMs: number;
     /** Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time. */
     fullMs: number;
+    /** Optional map of what may cut the charge short before its shot fires. Omitted sources interrupt it. */
+    interruptedBy?: ChargeInterrupts;
+  };
+
+  /** What may cancel a charge that is still charging, keyed by interrupt source. Every key is optional and defaults to true; unknown keys reject content. Only `vault` exists today; more sources (taking damage, NPC interactions) will join this map. Once the charged shot fires, normal rules apply. */
+  export type ChargeInterrupts = {
+    /** Whether a climb with `movement.vault.allowFire` off cancels the charge. Defaults to true. False keeps it charging through the climb; a release made during the climb fires on the first tick after it, unless the trigger is pressed again first. Death, switching and dropping still cancel it. */
+    vault?: boolean;
   };
 
   /** Action-specific fire and impact sound keys, at most 256 UTF-8 bytes each. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */
@@ -836,8 +824,10 @@ declare module "postretro" {
     crouch?: CrouchParams;
     /** Optional slide tuning. When omitted, slide is disabled. Slide requires crouch. When present, all of its fields are required. */
     slide?: SlideParams;
-    /** Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map. */
+    /** Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, every field but `fluidJumpVelocity` is required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map. */
     swim?: SwimParams;
+    /** Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map. */
+    vault?: VaultParams;
     /** Optional first-person view-feel tuning (head bob, strafe tilt, ambient sway, state-transition impulse). A render-only camera effect. When omitted, view feel is disabled. When present, each motion is independently optional. */
     viewFeel?: ViewFeelParams;
     /** Optional sound keys for the local pawn's landing and jumping, played at the pawn. Presentation only; never replicated. */
@@ -956,7 +946,7 @@ declare module "postretro" {
     minDurationMs: number;
   };
 
-  /** Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades. */
+  /** Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, every field but `fluidJumpVelocity` is required and all are validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades. */
   export type SwimParams = {
     /** Target swim speed in metres/sec. Must be finite and ≥ 0. */
     speed: number;
@@ -968,11 +958,42 @@ declare module "postretro" {
     enterDepth: number;
     /** Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`. */
     exitDepth: number;
-    /** Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0. */
-    fluidJumpVelocity: number;
+    /** Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Optional: omit it for no fluid jump, so the player leaves water by wading out or, with a `vault` block, by mantling. Must be finite and > 0 when present. */
+    fluidJumpVelocity?: number;
   };
 
-  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion. */
+  /** Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed path, starting over the lip while the rise finishes, and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads. */
+  export type VaultParams = {
+    /** Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and more than 0.01 m above `ground.stepHeight` (the step-up limit). */
+    maxHeight: number;
+    /** Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0. */
+    swimMaxHeight: number;
+    /** Time from the start of the vault to standing on the top, in milliseconds, rounded up to whole simulation ticks. Must be finite and > 0. */
+    durationMs: number;
+    /** Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: "auto", swim: "auto" }`. A present `from` replaces the default whole: a place it leaves out cannot vault. */
+    from?: VaultEntry;
+    /** Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge): firing cannot start during the climb, a burst already firing stops when it starts, and a trigger held through it fires once it ends. */
+    allowFire?: boolean;
+  };
+
+  /** The places a vault may start from, each naming its trigger. A place left out cannot vault. */
+  export type VaultEntry = {
+    /** In the air, walking or dashing. */
+    air?: VaultTrigger;
+    /** On the ground, walking or dashing. */
+    ground?: VaultTrigger;
+    /** Swimming, with the eye out of the fluid. */
+    swim?: VaultTrigger;
+  };
+
+  /** Valid values: `auto`, `jump`. */
+  export type VaultTrigger =
+    /** Vault when moving into a ledge within reach. */
+    | "auto"
+    /** Vault when jump is held or buffered at a ledge within reach. */
+    | "jump";
+
+  /** First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide and vault poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide`/`vault` is independently optional; an absent sub-object disables that motion. */
   export type ViewFeelParams = {
     /** Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`. */
     bob?: BobParams;
@@ -984,6 +1005,22 @@ declare module "postretro" {
     impulse?: ImpulseParams;
     /** Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect. */
     slide?: SlideViewParams;
+    /** Optional camera pose held while vaulting. Every field is optional. Omission disables this effect. */
+    vault?: VaultViewParams;
+  };
+
+  /** Camera pose held while vaulting. Its weight follows the vault's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the vault ends. A vault that ends early (an abort, death, a correction) eases back from wherever the pose was. This affects presentation only: aim, the shot line and the weapon model are unchanged. It composes with bob, tilt, sway and impulses and is scaled by view-feel accessibility settings; reduced motion removes it. */
+  export type VaultViewParams = {
+    /** Held pitch offset in degrees; positive looks up, so a negative value looks down toward the ledge. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit. */
+    pitch?: number;
+    /** Held roll offset in degrees. Must be finite in [-90, 90]; default 0. */
+    roll?: number;
+    /** Held horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV. */
+    fov?: number;
+    /** Share of `durationMs` spent easing in. Must be finite in [0, 1]; default 0.15. 0 holds the pose from the first frame. */
+    easeIn?: number;
+    /** Share of `durationMs` spent easing back at the end. Must be finite in [0, 1]; default 0.2. `easeIn + easeOut` must be at most 1. */
+    easeOut?: number;
   };
 
   /** Sustained slide camera tuning. The current slide state holds the dip and FOV increase; every exit eases both back to zero. This affects presentation only, composed with bob and impulses and scaled by view-feel accessibility settings. */
@@ -1068,6 +1105,8 @@ declare module "postretro" {
     crouch?: ImpulseStateParams;
     /** Optional slide-state row. */
     slide?: ImpulseStateParams;
+    /** Optional vault-state row. */
+    vault?: ImpulseStateParams;
   };
 
   /** Sparse transition displacement for one movement state. Entry and exit may both occur in the same rendered frame and therefore sum. */

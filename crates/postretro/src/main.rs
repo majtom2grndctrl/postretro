@@ -971,12 +971,6 @@ pub(crate) struct App {
     /// ring around it. `None` when nothing is focused.
     ui_focused_id: Option<String>,
 
-    /// Per-emitter live-particle tally, produced by `particle_sim::tick` and
-    /// consumed by the next frame's `emitter_bridge.update` for cap headroom.
-    /// Owned here (not re-allocated per frame) so the collapsed pass reuses one
-    /// buffer's capacity across frames. See: context/lib/scripting.md §10.1 (Emitter and Particles).
-    particle_live_counts: std::collections::HashMap<postretro_entities::EntityId, usize>,
-
     /// World-space static-geometry collider built from PRL static geometry.
     /// See: context/lib/entity_model.md §7
     collision_world: collision::CollisionWorld,
@@ -5109,13 +5103,15 @@ impl App {
         resolved
             .iter()
             .map(|resolved| {
+                let fire_blocked =
+                    host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);
                 host_activations::observe_lifecycle(
                     &mut registry,
                     allocator,
                     command_queues,
                     server,
-                    resolved.client_id,
-                    resolved.pawn,
+                    resolved,
+                    fire_blocked,
                     *tick,
                 );
                 let mut command = Self::prepare_remote_pawn_command(
@@ -7838,6 +7834,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }

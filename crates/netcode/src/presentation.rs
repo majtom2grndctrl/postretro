@@ -261,9 +261,7 @@ mod tests {
     use glam::Vec3;
     use log::Level;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
-    use postretro_entities::{
-        ComponentKind, PresentationPresenter, PresentationTemplateHandle, Transform,
-    };
+    use postretro_entities::{PresentationPresenter, PresentationTemplateHandle, Transform};
     use postretro_foundation::{PresentationEasing, SplashDescriptor};
     use postretro_net::harness::{LinkConfig, PacketConditioner};
     use postretro_net::transport::NetClient;
@@ -408,6 +406,15 @@ mod tests {
             })
             .flatten()
             .collect()
+    }
+
+    fn impact_particles(
+        registry: &mut EntityRegistry,
+    ) -> postretro_sim::particle_pool::ParticlePool {
+        let mut pool = postretro_sim::particle_pool::ParticlePool::new();
+        pool.configure_impact_collection(0);
+        crate::weapon::drain_impact_particle_requests(registry, &mut pool, &mut Vec::new());
+        pool
     }
 
     fn spawn(presenter: Option<EntityId>) -> PresentationSpawn {
@@ -842,12 +849,17 @@ mod tests {
         assert_eq!(victim_credit.last_attacker, Some(owner));
         assert_eq!(victim_credit.last_weapon, Some(weapon));
         assert_eq!(victim_credit.source_id, "weapon.test.remote-splash");
+        route_host_presentation_spawns(&mut registry, &mut server);
+        let host_particles = impact_particles(&mut registry);
         assert_eq!(
-            registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .count(),
+            host_particles.len(),
             crate::weapon::IMPACT_PARTICLE_COUNT,
             "the listen host materializes exactly one local impact burst for the remote detonation",
+        );
+        assert!(
+            host_particles
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::NEG_X) > 0.0)
         );
 
         // The firing owner predicted its own explosion and is excluded from the cue.
@@ -873,12 +885,16 @@ mod tests {
             &mut observer_registry,
             &[delivery],
         );
+        let observer_particles = impact_particles(&mut observer_registry);
         assert_eq!(
-            observer_registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .count(),
+            observer_particles.len(),
             crate::weapon::IMPACT_PARTICLE_COUNT,
             "an observer of a splash detonation bursts exactly once"
+        );
+        assert!(
+            observer_particles
+                .iter()
+                .all(|particle| particle.velocity.dot(Vec3::NEG_X) > 0.0)
         );
         let mut observer_link = PacketConditioner::new(perfect_link(0xe16_0305));
         assert!(
@@ -927,9 +943,7 @@ mod tests {
         );
 
         assert_eq!(
-            registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .count(),
+            impact_particles(&mut registry).len(),
             0,
             "the impact cue is the only observer burst route"
         );
@@ -973,12 +987,7 @@ mod tests {
         );
 
         capture.assert_logged_once(Level::Warn, "with a non-finite world anchor");
-        assert_eq!(
-            registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .count(),
-            0
-        );
+        assert_eq!(impact_particles(&mut registry).len(), 0);
         assert!(registry.take_presentation_spawns().is_empty());
     }
 }

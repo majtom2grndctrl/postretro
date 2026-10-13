@@ -310,7 +310,6 @@ mod tests {
         use crate::scripting_systems::emitter_bridge::EmitterBridge;
         use postretro_entities::Transform;
         use postretro_entities::components::health::HealthComponent;
-        use postretro_entities::components::sprite_visual::SpriteVisual;
         use postretro_scripting_core::data_descriptors::HealthDescriptor;
         use postretro_test_log_capture::LogCapture;
         use postretro_visibility::VisibleCells;
@@ -393,26 +392,24 @@ mod tests {
                 None,
             );
             let mut bridge = EmitterBridge::new();
+            let mut pool = postretro_sim::particle_pool::ParticlePool::new();
             bridge.update(
                 &mut registry,
                 1.0 / 60.0,
                 1.0 / 60.0,
                 0.0,
-                &Default::default(),
+                &mut pool,
+                &mut collector,
             );
-            let particle = registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .map(|(id, _)| id)
+            let particle = pool
+                .iter()
                 .next()
                 .expect("display copy emits its authored burst");
             assert_eq!(
-                registry
-                    .get_component::<SpriteVisual>(particle)
-                    .unwrap()
-                    .collection,
-                expected
+                particle.collection,
+                collector.resolve_collection(&expected).unwrap()
             );
-            collector.collect(&registry, None, &VisibleCells::DrawAll);
+            collector.collect(&registry, &pool, None, &VisibleCells::DrawAll);
             assert_eq!(
                 collector
                     .iter_collections()

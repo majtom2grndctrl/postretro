@@ -28,6 +28,7 @@ pub mod activation_prediction;
 pub mod execution;
 #[cfg(test)]
 mod execution_tests;
+pub mod pawn_gate;
 mod shot;
 pub use shot::{ResolvedWeaponShot, freeze_weapon_shot};
 mod client_resolution;
@@ -50,8 +51,8 @@ pub use client_pull::{
 pub use damage::DamagePayload;
 pub use fluid_splash::FluidSplashFact;
 pub use impact::{
-    IMPACT_PARTICLE_COUNT, lifetime as impact_lifetime, spawn_impact_effect_at,
-    spawn_impact_effects_for_contacts, spawn_projectile_impact_light,
+    IMPACT_PARTICLE_COUNT, drain_impact_particle_requests, lifetime as impact_lifetime,
+    spawn_impact_effect_at, spawn_impact_effects_for_contacts, spawn_projectile_impact_light,
 };
 pub use impact::{
     collection_id as impact_collection_id, emissive as impact_emissive,

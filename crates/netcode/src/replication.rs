@@ -100,7 +100,7 @@ impl ReplicableSet {
 /// *not* reused.
 ///
 /// Presentation is not eagerly replicated: unmodified client-local or baked
-/// components (`BillboardEmitter`, `ParticleState`, `SpriteVisual`, `Light`,
+/// components (`BillboardEmitter`, `SpriteVisual`, `Light`,
 /// `FogVolume`) and ordinary static map transforms remain local. For registered
 /// entities, captured `Light`, `FogVolume`, and `BillboardEmitter` overrides are
 /// appended as validated state payloads; a bound presentation record is produced

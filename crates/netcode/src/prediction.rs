@@ -57,9 +57,9 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
 /// loopback latency.
 pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 
-/// Boost-carrying correction cap: a correction on a tick whose history entry crossed
-/// dash or slide (`included_dash`) tolerates a larger smoothed offset. Both states can
-/// legitimately produce a bigger visible delta than ordinary locomotion.
+/// Wider-tolerance correction cap: a correction on a tick whose history entry crossed
+/// dash, slide or vault (`included_dash`) tolerates a larger smoothed offset. All three
+/// states can legitimately produce a bigger visible delta than ordinary locomotion.
 pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 
 /// Teleport threshold: a correction at or above this (in metres) is too large to
@@ -90,7 +90,7 @@ pub(crate) enum CorrectionClass {
     /// `<= ORDINARY_CORRECTION_MAX_M`: a small mispredict, smoothed.
     Ordinary,
     /// `<= DASH_CORRECTION_MAX_M` on an `included_dash` tick: a larger but expected
-    /// boost-carrying-state correction, smoothed.
+    /// wider-tolerance-state correction, smoothed.
     Dash,
     /// `>= TELEPORT_CORRECTION_MIN_M`: snapped, not smoothed.
     Teleport,
@@ -103,13 +103,13 @@ pub(crate) enum CorrectionClass {
 }
 
 /// Classify a correction by its displacement `magnitude` (metres) and whether the
-/// corrected tick crossed a boost-carrying movement state. Pure: the single source of truth for the AC
+/// corrected tick crossed a wider-tolerance movement state. Pure: the single source of truth for the AC
 /// thresholds, shared by the reconcile path and its tests.
 ///
 /// - `>= TELEPORT_CORRECTION_MIN_M` → [`CorrectionClass::Teleport`] (checked first:
 ///   a teleport-sized delta is a teleport regardless of dash).
 /// - `<= ORDINARY_CORRECTION_MAX_M` → [`CorrectionClass::Ordinary`].
-/// - `<= DASH_CORRECTION_MAX_M` on a boost-carrying tick → [`CorrectionClass::Dash`].
+/// - `<= DASH_CORRECTION_MAX_M` on a wider-tolerance tick → [`CorrectionClass::Dash`].
 /// - otherwise → [`CorrectionClass::OversizedSmoothed`] (still smoothed).
 pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> CorrectionClass {
     if magnitude >= TELEPORT_CORRECTION_MIN_M {
@@ -145,9 +145,10 @@ pub(crate) struct PredictedTick {
     /// The exact command frame sent to the host for this tick. Retained so
     /// reconciliation can re-feed it to [`replay`] verbatim.
     pub(crate) command: InputCommand,
-    /// Whether the movement state entered or stayed in a boost-carrying state
-    /// (`Dash` or `Sliding`) while predicting this tick. Reconciliation uses the
-    /// wider dash-tier visual correction band for either state.
+    /// Whether the movement state entered or stayed in a wider-tolerance state
+    /// (`Dash`, `Sliding` or `Vault`) while predicting this tick, including a tick
+    /// that started in `Vault` and left it. Reconciliation uses the wider dash-tier
+    /// visual correction band for any of them.
     pub(crate) included_dash: bool,
 }
 
@@ -322,12 +323,14 @@ impl ClientPrediction {
         let (start_transform, start_movement) = prev;
 
         let sim = input_command_to_sim(&command);
-        // The command's dash request and the resulting movement state together cover
-        // the whole dash window: the request bit catches the entry tick (before the
-        // state has transitioned) and the resulting `Dash` state catches the ongoing
-        // burst. Task 5 reads this to special-case the larger visible correction a
-        // dash produces during a rewound replay.
+        // The command's dash request and the movement states around this tick
+        // together cover every wider-tolerance window: the request bit catches a
+        // dash's entry tick (before the state has transitioned), the resulting
+        // state catches an ongoing dash, slide or vault, and the start state
+        // catches a vault's exit tick (see below). Reconcile reads the flag to
+        // allow these states' larger visible correction during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
+        let started_in_vault = matches!(start_movement.movement_state, MovementState::Vault { .. });
         let (transform, movement, events) = replay(
             start_transform,
             start_movement,
@@ -337,10 +340,17 @@ impl ClientPrediction {
             dt,
         );
 
+        // A vault's path follows movers and death, so it shares dash's wider
+        // tolerance for a replay that lands it somewhere a little different. The
+        // exit tick starts in `Vault` and ends in `Normal`, so the start state counts
+        // too; otherwise the tick that lands the vault would miss the widened band.
         let included_dash = dash_requested
+            || started_in_vault
             || matches!(
                 movement.movement_state,
-                MovementState::Dash { .. } | MovementState::Sliding { .. }
+                MovementState::Dash { .. }
+                    | MovementState::Sliding { .. }
+                    | MovementState::Vault { .. }
             );
 
         if self.history.len() == MAX_HISTORY {
@@ -384,7 +394,7 @@ impl ClientPrediction {
 
     /// Whether `included_dash` is set on any retained (unacked) history entry. The
     /// reconcile path reads this to classify the correction: a correction landing on
-    /// a window that crossed a boost-carrying state tolerates the larger [`DASH_CORRECTION_MAX_M`]
+    /// a window that crossed a wider-tolerance state tolerates the larger [`DASH_CORRECTION_MAX_M`]
     /// smoothed cap. Checked over the post-prune ring (the unacked tail that was
     /// replayed onto the authoritative baseline).
     pub(crate) fn unacked_window_included_dash(&self) -> bool {
@@ -564,6 +574,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }
@@ -878,6 +889,44 @@ mod tests {
             prediction.unacked_window_included_dash(),
             "a retained Sliding tick earns dash-tier correction smoothing"
         );
+    }
+
+    // The vault's exit tick starts in `Vault` and ends in `Normal`; it must still
+    // take the widened correction tolerance. A component with no `vault` block aborts
+    // a carried vault to `Normal` within the tick, giving that start/end shape.
+    #[test]
+    fn a_tick_that_starts_in_vault_and_ends_normal_uses_the_wider_correction_band() {
+        let world = floor_world();
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(11), EntityId::from_raw(6));
+
+        let mut vaulting = component();
+        vaulting.movement_state = MovementState::Vault {
+            elapsed_ms: 0.0,
+            target: Vec3::new(0.5, 1.0, 0.0),
+            start_offset: Vec3::new(-0.9, -1.0, 0.0),
+            mover: None,
+            entry_speed: 3.0,
+        };
+
+        let (_, after, _) = prediction
+            .predict_tick_with_events(
+                forward_command(0, false),
+                (start_transform(), vaulting),
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                DT,
+            )
+            .expect("armed vaulting pawn predicts a tick");
+        assert!(
+            !matches!(after.movement_state, MovementState::Vault { .. }),
+            "the tick must end outside Vault for this to pin the exit-tick shape"
+        );
+        assert!(
+            prediction.history().back().unwrap().included_dash,
+            "the vault exit tick must take the wider correction band"
+        );
+        assert!(prediction.unacked_window_included_dash());
     }
 
     // --- Correction classification reads the pinned AC thresholds (no duplicated

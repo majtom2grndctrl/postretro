@@ -327,7 +327,7 @@ The compiler draws a fluid's surface from its brush faces, using each face's tex
 
 ### Tips
 
-- **Sink pools into the floor.** Cut a pit into the world brushwork and fill it with the fluid brush. Leave the surface a little below the rim so swimmers can climb out with a jump.
+- **Sink pools into the floor.** Cut a pit into the world brushwork and fill it with the fluid brush. Leave the surface a little below the rim so swimmers can climb out with a jump, or by climbing over the edge when the player descriptor has a `movement.vault` block.
 - **Mind the depth.** A player starts swimming only once the fluid covers the share of their body that the player descriptor's `enterDepth` names; at `0.5`, about waist deep. Shallower is wading.
 - **Push is acceleration.** `8` is a firm wind; `25` up is enough to lift a player against the default gravity. Start small and tune by feel.
 - **Keep volumes clear of walls you don't mean.** Like fog, a volume does not stop at a wall.

@@ -282,6 +282,7 @@ fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
         crouch: None,
         slide: None,
         swim: None,
+        vault: None,
         view_feel: None,
     });
     h.host_registry.set_component(pawn, movement).unwrap();

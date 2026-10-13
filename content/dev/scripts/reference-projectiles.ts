@@ -29,6 +29,7 @@ export const referencePlasmaBoltEntity = defineEntity({
       secondary: {
         trigger: "press",
         recoveryMs: 400,
+        // Add `interruptedBy: { vault: false }` to keep charging through a vault.
         charge: { minMs: 200, fullMs: 1000 },
         steps: [activation.shot({
           scale: {

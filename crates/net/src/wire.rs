@@ -32,10 +32,15 @@ use bitcode::{Decode, Encode};
 
 mod components;
 pub use components::{
-    COMPONENT_KIND_BILLBOARD_EMITTER, COMPONENT_KIND_FOG_VOLUME,
-    COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT,
+    COMPONENT_KIND_AGENT, COMPONENT_KIND_AMMO_RESERVE, COMPONENT_KIND_BILLBOARD_EMITTER,
+    COMPONENT_KIND_BRAIN, COMPONENT_KIND_DEFERRED_EFFECT, COMPONENT_KIND_DESCRIPTOR_PROVENANCE,
+    COMPONENT_KIND_ENTITY_STATE, COMPONENT_KIND_FOG_VOLUME, COMPONENT_KIND_HEALTH,
+    COMPONENT_KIND_HIT_VOLUME, COMPONENT_KIND_IMMERSION, COMPONENT_KIND_INVENTORY,
+    COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT, COMPONENT_KIND_MAP_ORDINAL,
     COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
-    COMPONENT_KIND_TRANSFORM, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
+    COMPONENT_KIND_PROJECTILE, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
+    COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME,
+    COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
     WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef, WireKinematicMoverState,
     WireLightAnimation, WireLightState, WireMeshAnimationState, WireMovementState,
     WirePlayerMovementState, WireSpinAnimation, WireTransform,
@@ -343,7 +348,8 @@ impl WeaponCuesMessage {
 /// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
 /// Bumped to 19 for the protected push-drift velocity in player movement state;
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
-pub const SNAPSHOT_VERSION: u16 = 19;
+/// Bumped to 20 for `WireMovementState::Vault`.
+pub const SNAPSHOT_VERSION: u16 = 20;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -598,7 +604,9 @@ pub enum ValidationError {
     NonFiniteMovementState,
     /// A movement-state variant carried finite values that violate its state
     /// contract. Sliding boost must be horizontal, and its optional floor normal
-    /// must be safely bounded and near-unit.
+    /// must be safely bounded and near-unit. A Vault payload must have a
+    /// non-negative timer and entry speed, a bounded target and start offset,
+    /// and a start offset with a horizontal component.
     InvalidMovementState,
     /// A `Transform` payload carried a non-finite float (NaN/inf) in its position,
     /// rotation, or scale. Rejected before typed apply so no non-finite pose reaches
@@ -693,7 +701,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::InvalidMovementState => {
                 write!(
                     f,
-                    "invalid PlayerMovementState contract: Sliding boost must be horizontal and floor normal must be absent or a bounded near-unit vector"
+                    "invalid PlayerMovementState contract: a Sliding boost or floor normal, or a Vault payload, is out of contract"
                 )
             }
             ValidationError::NonFiniteTransform => {
@@ -2414,8 +2422,8 @@ mod tests {
     }
 
     // Drift guard: the wire component discriminants MUST stay numeric-equal to the
-    // engine `ComponentKind as u16` (crates/postretro/src/scripting/registry.rs):
-    // Transform = 0, PlayerMovement = 6, Mesh = 9 in Phase 2. The exhaustive match (no `_`
+    // engine `ComponentKind as u16` (crates/entities/src/registry.rs):
+    // Transform = 0, PlayerMovement = 5, Mesh = 8. The exhaustive match (no `_`
     // arm) means a new `ComponentPayload` variant is a compile error here until its
     // expected discriminant is pinned — a silently-passing guard is the failure
     // mode this prevents. The engine side asserts the same mapping independently
@@ -2433,18 +2441,18 @@ mod tests {
         for payload in cases {
             let expected = match payload {
                 ComponentPayload::Transform(_) => 0,
-                ComponentPayload::PlayerMovementState(_) => 6,
-                ComponentPayload::MeshAnimationState(_) => 9,
-                ComponentPayload::KinematicMoverState(_) => 13,
+                ComponentPayload::PlayerMovementState(_) => 5,
+                ComponentPayload::MeshAnimationState(_) => 8,
+                ComponentPayload::KinematicMoverState(_) => 12,
                 ComponentPayload::LightState(_) => 1,
                 ComponentPayload::EmitterState(_) => 2,
-                ComponentPayload::FogState(_) => 5,
+                ComponentPayload::FogState(_) => 4,
             };
             assert_eq!(payload.kind(), expected);
         }
         assert_eq!(COMPONENT_KIND_LIGHT, 1);
         assert_eq!(COMPONENT_KIND_BILLBOARD_EMITTER, 2);
-        assert_eq!(COMPONENT_KIND_FOG_VOLUME, 5);
+        assert_eq!(COMPONENT_KIND_FOG_VOLUME, 4);
     }
 
     // Drift guard: the three record_kind constants are distinct and a typed record
@@ -3082,6 +3090,78 @@ mod tests {
         );
     }
 
+    fn vault_payload(state: WireMovementState) -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            transform: None,
+            player_movement: Some(WirePlayerMovementState {
+                movement_state: state,
+                ..sample_movement()
+            }),
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        }
+    }
+
+    fn vault_state(
+        elapsed_ms: f32,
+        target: [f32; 3],
+        start_offset: [f32; 3],
+        entry_speed: f32,
+    ) -> WireMovementState {
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover: Some(77),
+            entry_speed,
+        }
+    }
+
+    // A vault's path and exit read every payload float, and its exit direction
+    // normalizes the horizontal start offset: each must be sound before replay.
+    #[test]
+    fn vault_payload_rejects_non_finite_and_out_of_contract_values_before_typed_apply() {
+        let target = [5.4, 1.2, 0.0];
+        let offset = [-0.8, -0.7, 0.0];
+        assert!(
+            vault_payload(vault_state(16.0, target, offset, 7.0))
+                .validate()
+                .is_ok(),
+            "a probe-shaped vault passes"
+        );
+        for state in [
+            vault_state(f32::NAN, target, offset, 7.0),
+            vault_state(16.0, [5.4, f32::INFINITY, 0.0], offset, 7.0),
+            vault_state(16.0, target, [-0.8, f32::NAN, 0.0], 7.0),
+            vault_state(16.0, target, offset, f32::INFINITY),
+        ] {
+            assert_eq!(
+                vault_payload(state).validate(),
+                Err(ValidationError::NonFiniteMovementState),
+                "{state:?}"
+            );
+        }
+        for state in [
+            vault_state(-1.0, target, offset, 7.0),
+            vault_state(16.0, target, offset, -0.5),
+            vault_state(16.0, target, [0.0005, -0.7, 0.0], 7.0),
+            // Finite but huge: would overflow replay's path arithmetic.
+            vault_state(16.0, [2.0e38, 1.2, 0.0], offset, 7.0),
+            vault_state(16.0, target, [2.0e38, -0.7, 0.0], 7.0),
+            vault_state(16.0, target, [60.0, 60.0, 60.0], 7.0),
+        ] {
+            assert_eq!(
+                vault_payload(state).validate(),
+                Err(ValidationError::InvalidMovementState),
+                "{state:?}"
+            );
+        }
+    }
+
     // Regression: a finite vertical slide boost previously passed raw validation
     // and could materialize an invalid engine movement state.
     #[test]
@@ -3581,13 +3661,13 @@ mod tests {
             Err(ValidationError::NonFiniteScriptTime)
         );
         snapshot.server_script_time = 0.0;
-        // The layout before the push-drift layer.
-        snapshot.version = 18;
+        // The layout before the vault movement state.
+        snapshot.version = 19;
         assert!(matches!(
             snapshot.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 19,
-                received: 18
+                expected: 20,
+                received: 19
             })
         ));
     }

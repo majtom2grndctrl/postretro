@@ -45,7 +45,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("transform", "")
         .variant("light", "")
         .variant("billboard_emitter", "")
-        .variant("particle_state", "")
         .variant("sprite_visual", "")
         .variant("fog_volume", "")
         .finish();
@@ -55,7 +54,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("transform", "Transform", "")
         .variant("light", "LightComponent", "")
         .variant("billboard_emitter", "BillboardEmitterComponent", "")
-        .variant("particle_state", "ParticleState", "")
         .variant("sprite_visual", "SpriteVisual", "")
         .variant("fog_volume", "FogVolumeComponent", "")
         .finish();
@@ -174,20 +172,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("ParticleState")
-        .doc("Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.")
-        .field("velocity", "[f32; 3]", "Current particle velocity in metres/sec.")
-        .field("age", "f32", "Seconds elapsed since the particle spawned.")
-        .field("lifetime", "f32", "Total particle lifetime in seconds; the particle despawns once `age` reaches it.")
-        .field("buoyancy", "f32", "Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).")
-        .field("drag", "f32", "Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.")
-        .field("size_curve", "Vec<f32>", "Normalized-lifetime billboard size curve, sampled evenly from spawn to death.")
-        .field("opacity_curve", "Vec<f32>", "Normalized-lifetime opacity curve, sampled evenly from spawn to death.")
-        .field("emitter", "Option<EntityId>", "Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).")
-        .finish();
-    registry
         .register_type("SpriteVisual")
-        .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.")
+        .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by projectile presentation and consumed by the billboard render integration.")
         .field("collection", "String", "Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path.")
         .field("size", "f32", "Billboard size multiplier for this frame.")
         .field("opacity", "f32", "Billboard opacity for this frame, in [0, 1].")
@@ -489,6 +475,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Optional charge timing, valid only with trigger `press`. Release before minMs cancels without firing or spending; full charge does not auto-fire.")
         .field("minMs", "f32", "Minimum held duration in milliseconds. Finite and >= 0; must be <= fullMs.")
         .field("fullMs", "f32", "Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time.")
+        .field("interruptedBy?", "ChargeInterrupts", "Optional map of what may cut the charge short before its shot fires. Omitted sources interrupt it.")
+        .finish();
+    registry
+        .register_type("ChargeInterrupts")
+        .doc("What may cancel a charge that is still charging, keyed by interrupt source. Every key is optional and defaults to true; unknown keys reject content. Only `vault` exists today; more sources (taking damage, NPC interactions) will join this map. Once the charged shot fires, normal rules apply.")
+        .field("vault?", "bool", "Whether a climb with `movement.vault.allowFire` off cancels the charge. Defaults to true. False keeps it charging through the climb; a release made during the climb fires on the first tick after it, unless the trigger is pressed again first. Death, switching and dropping still cancel it.")
         .finish();
     registry
         .register_type("ActivationSounds")
@@ -767,7 +759,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "swim?",
             "SwimParams",
-            "Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, all of its fields are required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.",
+            "Optional swim tuning. When omitted, the player cannot swim and walks fluid floors. When present, every field but `fluidJumpVelocity` is required; a block that fails validation is dropped with a warning naming `movement.swim.<field>`, and the player wades. Never overridable by a map.",
+        )
+        .field(
+            "vault?",
+            "VaultParams",
+            "Optional vault (mantle) tuning. When omitted, the player never vaults. When present, `maxHeight`, `swimMaxHeight` and `durationMs` are required; a block that fails validation is dropped with a warning naming `movement.vault.<field>`, and the player cannot vault. Never overridable by a map.",
         )
         .field(
             "viewFeel?",
@@ -868,22 +865,56 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("SwimParams")
-        .doc("Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, all fields are required and validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades.")
+        .doc("Swim tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player cannot swim. When present, every field but `fluidJumpVelocity` is required and all are validated; a missing or bad field drops the whole block with a warning naming `movement.swim.<field>`, and the rest of the descriptor loads, so the player wades.")
         .field("speed", "f32", "Target swim speed in metres/sec. Must be finite and ≥ 0.")
         .field("accel", "f32", "Acceleration toward the swim wish velocity in metres/sec². Must be finite and ≥ 0.")
         .field("sinkSpeed", "f32", "Drift along gravity with no vertical input in metres/sec, at the default level gravity (−20.32 m/s²); scales with the gravity where the swimmer is. Must be finite and ≥ 0.")
         .field("enterDepth", "f32", "Immersion fraction (0 dry, 1 fully under) at which swimming starts. Must be finite, greater than 0, and at most 1.")
         .field("exitDepth", "f32", "Immersion fraction below which swimming ends. Must be finite, greater than 0, and less than `enterDepth`.")
-        .field("fluidJumpVelocity", "f32", "Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Must be finite and > 0.")
+        .field("fluidJumpVelocity?", "f32", "Upward velocity in metres/sec a jump out of the fluid sets, ending the swim. The jump fires only while already swimming (not on the tick swimming starts), with the eye out of the fluid, and only when its predicted rise, under the local gravity and vertical push and with headroom above, clears `exitDepth`; otherwise jump at the surface does nothing. Optional: omit it for no fluid jump, so the player leaves water by wading out or, with a `vault` block, by mantling. Must be finite and > 0 when present.")
+        .finish();
+    registry
+        .register_type("VaultParams")
+        .doc("Vault (mantle) tuning. Optional on `PlayerMovementDescriptor` — when omitted, the player never vaults. The player climbs onto a ledge in front of them along a timed path, starting over the lip while the rise finishes, and stands on its top, keeping their horizontal speed. A missing or bad field drops the whole block with a warning naming `movement.vault.<field>`, and the rest of the descriptor loads.")
+        .field("maxHeight", "f32", "Highest ledge top a vault from the ground or the air reaches, in metres above the feet. Ledges at or below the step-up height step up instead. Must be finite and more than 0.01 m above `ground.stepHeight` (the step-up limit).")
+        .field("swimMaxHeight", "f32", "Highest ledge top a vault out of a fluid reaches, in metres above the fluid's surface. Must be finite and > 0.")
+        .field("durationMs", "f32", "Time from the start of the vault to standing on the top, in milliseconds, rounded up to whole simulation ticks. Must be finite and > 0.")
+        .field("from?", "VaultEntry", "Where a vault may start, and what starts it from each place. Optional; defaults to `{ air: \"auto\", swim: \"auto\" }`. A present `from` replaces the default whole: a place it leaves out cannot vault.")
+        .field("allowFire?", "bool", "Whether the player may start firing while vaulting. Optional; defaults to false (the hands are on the ledge): firing cannot start during the climb, a burst already firing stops when it starts, and a trigger held through it fires once it ends.")
+        .finish();
+    registry
+        .register_type("VaultEntry")
+        .doc("The places a vault may start from, each naming its trigger. A place left out cannot vault.")
+        .field("air?", "VaultTrigger", "In the air, walking or dashing.")
+        .field("ground?", "VaultTrigger", "On the ground, walking or dashing.")
+        .field("swim?", "VaultTrigger", "Swimming, with the eye out of the fluid.")
+        .finish();
+    registry
+        .register_enum("VaultTrigger")
+        .variant("auto", "Vault when moving into a ledge within reach.")
+        .variant(
+            "jump",
+            "Vault when jump is held or buffered at a ledge within reach.",
+        )
         .finish();
     registry
         .register_type("ViewFeelParams")
-        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide` is independently optional; an absent sub-object disables that motion.")
+        .doc("First-person view-feel tuning: a render-only camera effect bundle (head bob, strafe tilt, ambient sway, state-transition impulse, sustained slide and vault poses). Optional on `PlayerMovementDescriptor` — when omitted, view feel is disabled. When present, each of `bob`/`tilt`/`sway`/`impulse`/`slide`/`vault` is independently optional; an absent sub-object disables that motion.")
         .field("bob?", "BobParams", "Optional head-bob tuning. When omitted, head bob is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("tilt?", "TiltParams", "Optional strafe-tilt tuning. When omitted, strafe tilt is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("sway?", "SwayParams", "Optional ambient-sway tuning. When omitted, ambient sway is disabled. When present, all of its fields are required except `groundedOnly`.")
         .field("impulse?", "ImpulseParams", "Optional state-transition camera displacement. When present, `tension`, `max`, and `states` are required; state rows and their entry/exit displacements are sparse.")
         .field("slide?", "SlideViewParams", "Optional sustained slide camera dip and FOV increase. When present, all four fields are required. Omission disables this effect.")
+        .field("vault?", "VaultViewParams", "Optional camera pose held while vaulting. Every field is optional. Omission disables this effect.")
+        .finish();
+    registry
+        .register_type("VaultViewParams")
+        .doc("Camera pose held while vaulting. Its weight follows the vault's own progress through `movement.vault.durationMs`: it eases in over the first `easeIn` share, holds, and eases out over the last `easeOut` share, reaching neutral as the vault ends. A vault that ends early (an abort, death, a correction) eases back from wherever the pose was. This affects presentation only: aim, the shot line and the weapon model are unchanged. It composes with bob, tilt, sway and impulses and is scaled by view-feel accessibility settings; reduced motion removes it.")
+        .field("pitch?", "f32", "Held pitch offset in degrees; positive looks up, so a negative value looks down toward the ledge. Must be finite in [-90, 90]; default 0. The rendered pitch stays within the camera's ±89° limit.")
+        .field("roll?", "f32", "Held roll offset in degrees. Must be finite in [-90, 90]; default 0.")
+        .field("fov?", "f32", "Held horizontal field-of-view offset in degrees, added to the base FOV. Must be finite in [-90, 90]; default 0. The renderer clamps final FOV.")
+        .field("easeIn?", "f32", "Share of `durationMs` spent easing in. Must be finite in [0, 1]; default 0.15. 0 holds the pose from the first frame.")
+        .field("easeOut?", "f32", "Share of `durationMs` spent easing back at the end. Must be finite in [0, 1]; default 0.2. `easeIn + easeOut` must be at most 1.")
         .finish();
     registry
         .register_type("SlideViewParams")
@@ -948,6 +979,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional crouch-state row.",
         )
         .field("slide?", "ImpulseStateParams", "Optional slide-state row.")
+        .field("vault?", "ImpulseStateParams", "Optional vault-state row.")
         .finish();
     registry
         .register_type("ImpulseStateParams")

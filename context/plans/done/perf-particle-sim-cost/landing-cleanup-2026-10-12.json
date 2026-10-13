@@ -1,0 +1,72 @@
+{
+  "session_worktrees": [],
+  "session_owned_files": {
+    "/tmp/postretro-particle-preflight-test.log": {
+      "bytes": 593818,
+      "sha256": "ce22fcb73fbbb05c402a30fd2cdcab9bfbb36712a96da0cd629b32cc676b3618"
+    },
+    "/tmp/postretro-particle-preflight-clippy.log": {
+      "bytes": 18522,
+      "sha256": "ef5d0b8629c019abc47f21c2d39c3eab4a2ecc15e82d52b33710d8493b99d364"
+    },
+    "/tmp/postretro-particle-preflight-clippy-final.log": {
+      "bytes": 353,
+      "sha256": "4f4529ac050f0ec9508b0751c18df8619dcb8c98efc5fad53c764993a45f8d5a"
+    },
+    "/tmp/postretro-particle-preflight-test-final.log": {
+      "bytes": 1039896,
+      "sha256": "6c9c600f3183b6f1b5d002dbf26ee2351ba91863532082676ed155285efaa25c"
+    },
+    "/tmp/postretro-particle-preflight-focused-final.log": {
+      "bytes": 9649,
+      "sha256": "2065c30316ba4ebd132a116b724ff7371bf94ea28dc85f4427e5f6d99343de18"
+    },
+    "/tmp/postretro-particle-preflight-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/tmp/postretro-particle-preflight-fmt-final.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/tmp/libpostretro_collision_probe.rlib": {
+      "bytes": 776784,
+      "sha256": "e89b2073e1c43d21f05961233ffca40a46748f41b45125533213c26774522dbc"
+    },
+    "/tmp/postretro-luau-0.742-macos.zip": {
+      "bytes": 5779967,
+      "sha256": "bdd415766fbe03bc090b65fa6141531a4a54608db95a5350a5a0b49862bdac83"
+    },
+    "/tmp/postretro-luau-0.742.tar.gz": {
+      "bytes": 3437064,
+      "sha256": "c065ac4e0a7f147a5db0429163d8d4d61cd18281a83195185823d9810f0e8284"
+    },
+    "/tmp/postretro-luau-release.json": {
+      "bytes": 13612,
+      "sha256": "e88f7118b97177de20b487659ea08f6482c4b957b90370b0856b81fcbf384516"
+    }
+  },
+  "session_owned_directories": [
+    "/tmp/postretro-luau-0.742",
+    "/tmp/postretro-luau-analyzer-build",
+    "/tmp/luau-0.742"
+  ],
+  "cargo_clean_packages": [
+    "postretro-collision",
+    "postretro-sim",
+    "postretro",
+    "postretro-entities",
+    "postretro-foundation",
+    "postretro-net",
+    "postretro-netcode",
+    "postretro-scripting-core"
+  ],
+  "cargo_target_dirs": [
+    "target",
+    "target/preflight-clippy"
+  ],
+  "session_owned_map_locks": [
+    "content/dev/maps/.stress-env-volumes-particle-opt-rate0.prl.pack.lock",
+    "content/dev/maps/.stress-env-volumes-particle-opt-rate100.prl.pack.lock"
+  ]
+}

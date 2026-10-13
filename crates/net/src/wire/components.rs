@@ -5,26 +5,35 @@ use bitcode::{Decode, Encode};
 
 use super::ValidationError;
 
-/// `component_kind` discriminant for a `Transform` payload. Numeric-equal to the
-/// engine `ComponentKind::Transform as u16`.
+// Engine-aligned component discriminants. Unreplicated kinds still reserve their
+// engine number here; this inventory is not a replication allow-list.
 pub const COMPONENT_KIND_TRANSFORM: u16 = 0;
-/// Engine `ComponentKind::Light` discriminant.
 pub const COMPONENT_KIND_LIGHT: u16 = 1;
-/// Engine `ComponentKind::BillboardEmitter` discriminant.
 pub const COMPONENT_KIND_BILLBOARD_EMITTER: u16 = 2;
-/// Engine `ComponentKind::FogVolume` discriminant.
-pub const COMPONENT_KIND_FOG_VOLUME: u16 = 5;
+pub const COMPONENT_KIND_SPRITE_VISUAL: u16 = 3;
+pub const COMPONENT_KIND_FOG_VOLUME: u16 = 4;
+pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 5;
+pub const COMPONENT_KIND_WEAPON: u16 = 6;
+pub const COMPONENT_KIND_DESCRIPTOR_PROVENANCE: u16 = 7;
+pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 8;
+pub const COMPONENT_KIND_HEALTH: u16 = 9;
+pub const COMPONENT_KIND_AGENT: u16 = 10;
+pub const COMPONENT_KIND_BRAIN: u16 = 11;
+pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 12;
+pub const COMPONENT_KIND_TRIGGER_VOLUME: u16 = 13;
+pub const COMPONENT_KIND_AMMO_RESERVE: u16 = 14;
+pub const COMPONENT_KIND_SPAWNER: u16 = 15;
+pub const COMPONENT_KIND_ENTITY_STATE: u16 = 16;
+pub const COMPONENT_KIND_DEFERRED_EFFECT: u16 = 17;
+pub const COMPONENT_KIND_INVENTORY: u16 = 18;
+pub const COMPONENT_KIND_TOUCHABLE: u16 = 19;
+pub const COMPONENT_KIND_PROJECTILE: u16 = 20;
+pub const COMPONENT_KIND_HIT_VOLUME: u16 = 21;
+pub const COMPONENT_KIND_MAP_ORDINAL: u16 = 22;
+pub const COMPONENT_KIND_IMMERSION: u16 = 23;
+
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
-/// `component_kind` discriminant for a `PlayerMovementState` payload. Numeric-equal
-/// to the engine `ComponentKind::PlayerMovement as u16` (Phase 2 = 6).
-pub const COMPONENT_KIND_PLAYER_MOVEMENT_STATE: u16 = 6;
-/// `component_kind` discriminant for a mesh-animation-state payload. Numeric-equal
-/// to the engine `ComponentKind::Mesh as u16` (Phase 2 = 9).
-pub const COMPONENT_KIND_MESH_ANIMATION_STATE: u16 = 9;
-/// `component_kind` discriminant for a kinematic-mover-state payload.
-/// Numeric-equal to the engine `ComponentKind::KinematicMover as u16`.
-pub const COMPONENT_KIND_KINEMATIC_MOVER_STATE: u16 = 13;
 
 /// Wire mirror of the engine `Transform`. Phase 2 replicates `position`,
 /// `rotation`, and `scale`.
@@ -86,12 +95,39 @@ pub enum WireMovementState {
     Swim {
         fluid: u16,
     },
+    /// Mantling onto a ledge. `target` (the landing feet position) and
+    /// `start_offset` (entry feet minus `target`) are local to mover `mover`
+    /// when it is set and world otherwise; replay resolves them through the
+    /// tick's mover pose. The duration stays local tuning, and the exit
+    /// direction derives from `start_offset`, so neither is carried.
+    Vault {
+        elapsed_ms: f32,
+        target: [f32; 3],
+        start_offset: [f32; 3],
+        mover: Option<u32>,
+        entry_speed: f32,
+    },
 }
 
 /// Squared-length tolerance for collision-produced floor normals. Bitcode
 /// preserves the source `f32` values exactly, so this only accommodates normal
 /// floating-point normalization error; it is not a normalization step.
 const SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE: f32 = 1.0e-3;
+
+/// Shortest horizontal start offset a vault payload may carry, metres. The exit
+/// direction normalizes it; a probe-built vault starts most of a metre short of
+/// its target, so anything under a millimetre is malformed.
+const VAULT_MIN_EXIT_OFFSET_M: f32 = 1.0e-3;
+
+/// Longest start offset a vault payload may carry, metres. Far above any
+/// authored ledge height plus probe reach, and small enough that replay's path
+/// arithmetic cannot overflow.
+const VAULT_MAX_START_OFFSET_M: f32 = 64.0;
+
+/// Largest per-axis magnitude a vault `target` may carry, metres. No net-crate
+/// world-coordinate bound exists, so this is a generous bound well past any
+/// level extent that still keeps replay's path and frame rotation finite.
+const VAULT_MAX_TARGET_COORD_M: f32 = 1.0e6;
 
 fn sliding_floor_normal_is_valid(normal: &[f32; 3]) -> bool {
     // Bound components before squaring so even finite hostile values cannot
@@ -176,13 +212,27 @@ impl WireMovementState {
                         .as_ref()
                         .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
             }
+            WireMovementState::Vault {
+                elapsed_ms,
+                target,
+                start_offset,
+                mover: _,
+                entry_speed,
+            } => {
+                elapsed_ms.is_finite()
+                    && target.iter().all(|c| c.is_finite())
+                    && start_offset.iter().all(|c| c.is_finite())
+                    && entry_speed.is_finite()
+            }
         }
     }
 
     /// Whether variant-specific movement invariants hold after decoding. Dash may
     /// preserve vertical boost. Slide boost is horizontal, and its optional floor
     /// normal must be safely bounded and near-unit before replay projects gravity
-    /// against it.
+    /// against it. A vault's timer and speed are non-negative, its target and
+    /// start offset are bounded so replay arithmetic stays finite, and its start
+    /// offset has a horizontal component to derive the exit direction from.
     #[must_use]
     fn has_valid_state_contract(&self) -> bool {
         match self {
@@ -199,6 +249,27 @@ impl WireMovementState {
                     && floor_normal
                         .as_ref()
                         .is_none_or(sliding_floor_normal_is_valid)
+            }
+            WireMovementState::Vault {
+                elapsed_ms,
+                target,
+                start_offset,
+                entry_speed,
+                ..
+            } => {
+                // Components are finite here (`all_finite` runs first), so the
+                // per-axis bound runs before any squaring in the length.
+                *elapsed_ms >= 0.0
+                    && *entry_speed >= 0.0
+                    && target.iter().all(|c| c.abs() <= VAULT_MAX_TARGET_COORD_M)
+                    && start_offset
+                        .iter()
+                        .all(|c| c.abs() <= VAULT_MAX_START_OFFSET_M)
+                    && start_offset[0].hypot(start_offset[2]) >= VAULT_MIN_EXIT_OFFSET_M
+                    && (start_offset[0] * start_offset[0]
+                        + start_offset[1] * start_offset[1]
+                        + start_offset[2] * start_offset[2])
+                        <= VAULT_MAX_START_OFFSET_M * VAULT_MAX_START_OFFSET_M
             }
         }
     }
@@ -701,6 +772,13 @@ mod tests {
                 floor_normal: Some([0.0, 1.0, 0.0]),
             },
             WireMovementState::Swim { fluid: 3 },
+            WireMovementState::Vault {
+                elapsed_ms: 16.0,
+                target: [5.4, 1.2, 0.0],
+                start_offset: [-0.8, -0.7, 0.0],
+                mover: Some(77),
+                entry_speed: 7.0,
+            },
         ];
         for state in variants {
             // A finite instance of every variant must pass the finiteness gate.
@@ -714,6 +792,8 @@ mod tests {
                 WireMovementState::Sliding { floor_normal, .. } => {
                     5 + floor_normal.map_or(0, |_| 3)
                 }
+                // elapsed_ms + 3 target + 3 start_offset + entry_speed
+                WireMovementState::Vault { .. } => 8,
             };
             // Every variant but the payload-free `Normal` and `Swim` carries
             // floats and so is non-finite-detectable.

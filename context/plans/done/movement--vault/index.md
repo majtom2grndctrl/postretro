@@ -9,7 +9,7 @@ Owner-requested capability, Epic 11's missing traversal verb. Step-up climbs onl
 - **Mantle, not hurdle.** Vault climbs onto a top surface and stands on it. State `Vault`, descriptor key `vault`, events `vault_started` / `vault_ended`, view-feel impulse key `vault`, following per-state naming.
 - **The ledge probe is a stage before the intent** (`movement.md` §4). It runs from the tick-start pose and wish direction, and replay recomputes it, so entry needs no wire field and lags nothing. It runs only on ticks an entry could fire: block present, context listed in `from`, horizontal wish, and jump held or buffered for a `"jump"` context. It sees movers. Its cost is per pawn, never per mover; the linear mover scan inside every combined cast is a separate item.
 - **Reach.** Land: height above the feet, past the step-up limit, at most `maxHeight`. Fluid: height above the fluid surface, at most `swimMaxHeight`. Landing needs standing-capsule clearance on the top.
-- **Trigger per entry context.** `from` maps a context to its trigger; a missing key forbids entry from it. It maps one-to-one onto the composition draft's `states.<s>.vault`.
+- **Trigger per entry context.** `from` maps a context to its trigger; a missing key forbids entry from it. `from` keys name entry contexts by the composition draft's state keys (`ground`, `air`) plus the shipped `swim` state; a dash counts as the context it was entered from. The likeliest migrated home is `states.vault.from` with these keys unchanged, but `from` promises no migrated shape until that draft absorbs vault and swim.
   - Contexts: `air` (airborne `Normal` or `Dash`), `ground` (grounded `Normal` or `Dash`), `swim` (`Swim`, tick eye out of the fluid). Crouch and slide never vault.
   - `"auto"` fires when the wish pushes into a valid ledge. `"jump"` fires on jump held or buffered there; vault consumes the buffer and sets `jump_spent`.
   - Default `{ air: "auto", swim: "auto" }`. From `Swim`, a valid ledge beats the fluid jump.
@@ -22,7 +22,7 @@ Owner-requested capability, Epic 11's missing traversal verb. Step-up climbs onl
   - One predicate refuses starts on host-local, host-remote and client-predicted paths, judged at the start's stamped tick (`networking.md` §Combat authority).
 - **The fluid jump becomes optional.** Omitting `swim.fluidJumpVelocity` leaves jump treading at the surface, which with `from.swim` gives mantle-only pool exits. Existing descriptors still validate.
 - **Descriptor shape.** Flat `movement.vault` in today's shape; the composition draft migrates it. An invalid block drops with a warning naming the field, as swim does.
-- **Wire.** New `WireMovementState::Vault`. `WIRE_VERSION` 29→30, `SNAPSHOT_VERSION` 19→20. Hot reload mid-vault drops to `Normal`.
+- **Wire.** New `WireMovementState::Vault`. `WIRE_VERSION` 30→31 (main's particle-component removal took 30), `SNAPSHOT_VERSION` 19→20. Hot reload mid-vault drops to `Normal`.
 - **Non-goals.**
   - Wall-contact forwarding: `movement--wall-run` owns it (cross-cutting-policies D8); vault reads none.
   - On-screen weapon lowering: the viewmodel shows none today, even for switches. It is its own draft, which vault reuses once it lands.
@@ -50,7 +50,7 @@ movement: {
 }
 // Reactions: "vault_started", "vault_ended"
 ```
-`maxHeight`, `swimMaxHeight` and `durationMs` are required in a present block. A present `from` replaces the default whole. The Luau mirror ships with every field.
+`maxHeight`, `swimMaxHeight` and `durationMs` are required in a present block. A present `from` replaces the default whole. The Luau descriptor surface mirrors every field, proven by a TS/Luau fixture pair.
 
 ## Acceptance
 ### Automated
@@ -92,7 +92,7 @@ movement: {
 
 **Descriptor, lifecycle and netcode**
 - [ ] An invalid `vault` field drops the block with a warning naming it; the rest loads.
-- [ ] The Scripting surface example loads from `content/dev/scripts/player.ts` and its Luau twin and vaults in a test world.
+- [ ] The Scripting surface example loads from `content/dev/scripts/player.ts`, and a TS/Luau twin fixture pair `content/dev/scripts/movement-vault.{ts,luau}` declares the same `vault` block in both runtimes. All three load and vault in a test world.
 - [ ] Hot reload mid-vault leaves the pawn in `Normal`.
 - [ ] `Vault` round-trips the wire mirror; a non-finite or out-of-contract payload is rejected.
 - [ ] Predict/reconcile: a static-ledge vault with the ack on the entry tick corrects by zero. A moving-mover vault stays within the vault tolerance.

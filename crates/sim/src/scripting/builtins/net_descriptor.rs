@@ -1335,6 +1335,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }
@@ -1575,6 +1576,7 @@ mod tests {
         charge.charge = Some(ActivationCharge {
             min_ms: 200.0,
             full_ms: 1000.0,
+            interrupted_by: None,
         });
         let token = ActivationToken {
             start_tick: 10,

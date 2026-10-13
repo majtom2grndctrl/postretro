@@ -50,8 +50,13 @@ pub struct PlayerMovementDescriptor {
     /// the present-then-all-required discipline of `dash`/`crouch`.
     pub slide: Option<SlideParams>,
     /// Optional swim tuning. Absent ⇒ the pawn cannot swim and walks fluid
-    /// floors. When present, all of its fields are required and validated.
+    /// floors. When present, every field but `fluid_jump_velocity` is required,
+    /// and all are validated.
     pub swim: Option<SwimParams>,
+    /// Optional vault (mantle) tuning. Absent ⇒ the pawn never vaults. Skipped
+    /// when absent, so a descriptor without it encodes as it did before vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<VaultParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway, state-transition impulse). Absent ⇒ view feel disabled (no
     /// `ViewFeelParams` materialized).
@@ -342,9 +347,10 @@ pub struct SlideParams {
 }
 
 /// Swim tuning. Optional on [`PlayerMovementDescriptor`] (absent: the pawn
-/// cannot swim); when present, all fields are required and validated. Field
-/// names are camelCase on the wire (`sinkSpeed`, `enterDepth`, …) and
-/// snake_case in Rust. Never map-overridable.
+/// cannot swim); when present, every field but `fluid_jump_velocity` is
+/// required, and all are validated. Field names are camelCase on the wire
+/// (`sinkSpeed`, `enterDepth`, …) and snake_case in Rust. Never
+/// map-overridable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SwimParams {
     /// Target swim speed, metres/sec. Finite and ≥ 0.
@@ -362,9 +368,12 @@ pub struct SwimParams {
     /// immersion and leave the fluid-jump re-entry latch one that can never
     /// clear.
     pub exit_depth: f32,
-    /// Upward velocity a jump from the surface sets, metres/sec. Finite and
-    /// > 0: a zero jump could never clear `exit_depth`.
-    pub fluid_jump_velocity: f32,
+    /// Upward velocity a jump from the surface sets, metres/sec. When present,
+    /// finite and `> 0`: a zero jump could never clear `exit_depth`. Absent ⇒
+    /// no fluid jump: jump at the surface only treads, so a pawn leaves water
+    /// by wading out or, with a vault block, by mantling.
+    #[serde(default)]
+    pub fluid_jump_velocity: Option<f32>,
 }
 
 impl SwimParams {
@@ -398,18 +407,113 @@ impl SwimParams {
                 ),
             });
         }
-        validate_positive_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
+        if let Some(velocity) = self.fluid_jump_velocity {
+            validate_positive_finite(velocity, "movement.swim.fluidJumpVelocity")?;
+        }
         Ok(self)
     }
 }
 
+/// How far above `ground.step_height`, metres, step-up's reach ends and the
+/// vault's land reach begins; a `vault.max_height` at or below that sum could
+/// reach no ledge, so validation refuses it. Movement computes the same limit
+/// from its step-up lift less two skin widths; foundation cannot depend on
+/// physics, so this restates it, and a physics test pins the two within 1e-6.
+pub const STEP_UP_LIMIT_MARGIN: f32 = 0.01;
+
+/// Vault (mantle) tuning. Optional on [`PlayerMovementDescriptor`] (absent: the
+/// pawn never vaults). `max_height`, `swim_max_height` and `duration_ms` are
+/// required in a present block; `from` and `allow_fire` default. Never
+/// map-overridable. See `context/lib/movement.md` §4 (Vault).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultParams {
+    /// Highest ledge top a land vault reaches, metres above the feet. Finite and
+    /// above the step-up limit (`ground.step_height` plus
+    /// [`STEP_UP_LIMIT_MARGIN`]); ledges at or below that limit step up.
+    pub max_height: f32,
+    /// Highest ledge top a vault out of fluid reaches, metres above the fluid
+    /// surface. Finite and > 0.
+    pub swim_max_height: f32,
+    /// Time from entry to standing on the top, milliseconds. Finite and > 0.
+    pub duration_ms: f32,
+    /// Entry contexts and the trigger each fires on. A missing context forbids
+    /// entry from it.
+    #[serde(default)]
+    pub from: VaultEntry,
+    /// Whether the pawn may start firing while vaulting. Defaults to `false`:
+    /// the hands are on the ledge.
+    #[serde(default)]
+    pub allow_fire: bool,
+}
+
+impl VaultParams {
+    /// Range-check every field, naming the first bad one as
+    /// `movement.vault.<field>`. `step_height` is the descriptor's
+    /// `ground.step_height`; `max_height` must exceed the step-up limit above
+    /// it, or no ledge is reachable. Shared by the QuickJS and Luau parsers.
+    pub fn validated(self, step_height: f32) -> Result<Self, DescriptorError> {
+        use crate::data_descriptors::validate_positive_finite;
+        validate_positive_finite(self.max_height, "movement.vault.maxHeight")?;
+        if self.max_height <= step_height + STEP_UP_LIMIT_MARGIN {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.vault.maxHeight` must exceed `movement.ground.stepHeight` plus {STEP_UP_LIMIT_MARGIN} m (the step-up limit), got maxHeight {} with stepHeight {}",
+                    self.max_height, step_height,
+                ),
+            });
+        }
+        validate_positive_finite(self.swim_max_height, "movement.vault.swimMaxHeight")?;
+        validate_positive_finite(self.duration_ms, "movement.vault.durationMs")?;
+        Ok(self)
+    }
+}
+
+/// Which contexts a vault may start from, and the trigger each fires on. The
+/// keys follow the composition draft's state names (`ground`, `air`) plus the
+/// shipped `Swim` state; a dash counts as the context it was entered from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultEntry {
+    /// Airborne `Normal` or `Dash`.
+    #[serde(default)]
+    pub air: Option<VaultTrigger>,
+    /// Grounded `Normal` or `Dash`.
+    #[serde(default)]
+    pub ground: Option<VaultTrigger>,
+    /// `Swim` with the tick eye out of the fluid.
+    #[serde(default)]
+    pub swim: Option<VaultTrigger>,
+}
+
+impl Default for VaultEntry {
+    /// `{ air: "auto", swim: "auto" }`: a grounded pawn walking or jumping into a
+    /// ledge does not vault unless `ground` is opted in.
+    fn default() -> Self {
+        Self {
+            air: Some(VaultTrigger::Auto),
+            ground: None,
+            swim: Some(VaultTrigger::Auto),
+        }
+    }
+}
+
+/// What fires a vault from an enabled context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VaultTrigger {
+    /// The wish pushes into a valid ledge.
+    Auto,
+    /// Jump is held or buffered at a valid ledge.
+    Jump,
+}
+
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,
-/// strafe tilt, ambient sway, state-transition impulse, sustained slide). OPTIONAL on [`PlayerMovementDescriptor`] — absent
+/// strafe tilt, ambient sway, state-transition impulse, sustained slide and
+/// vault poses). OPTIONAL on [`PlayerMovementDescriptor`] — absent
 /// disables view feel entirely (no `ViewFeelParams` materialized). When present,
 /// each motion is independently optional; an absent sub-object disables that
 /// motion. Present bob, tilt, and sway blocks require all tuning fields except
 /// the optional `groundedOnly` gate. A present impulse block requires its top-level
-/// fields while its per-state rows stay sparse. Slide requires all four fields.
+/// fields while its per-state rows stay sparse. Slide requires all four fields;
+/// every vault field is optional.
 /// View feel is consumed by the
 /// render-rate evaluator in `view_feel.rs`, called from `main.rs`; this is the data surface only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -426,6 +530,9 @@ pub struct ViewFeelParams {
     /// Optional sustained slide camera dip and FOV increase. Absent ⇒ no slide view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide: Option<SlideViewParams>,
+    /// Optional camera pose held while vaulting. Absent ⇒ no vault pose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<VaultViewParams>,
 }
 
 /// Sustained slide view tuning. All four fields are required when present.
@@ -449,6 +556,40 @@ impl SlideViewParams {
     pub const MAX_RATE: f32 = 240.0;
     /// Maximum authored horizontal FOV increase, in degrees.
     pub const MAX_FOV_INCREASE: f32 = 90.0;
+}
+
+/// Camera pose held while vaulting: pitch, roll and FOV offsets whose weight
+/// follows the vault's own progress. It eases in over the first `ease_in` share
+/// of `movement.vault.durationMs`, holds, and eases out over the last
+/// `ease_out` share, reaching neutral as the vault ends; a vault that ends
+/// early eases back from where it was. Presentation only: aim and collision are
+/// unchanged. Every field is optional. Field names are camelCase in scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VaultViewParams {
+    /// Held pitch offset in degrees, positive looking up. Finite in
+    /// `[-MAX_ANGLE, MAX_ANGLE]`; default 0.
+    pub pitch: f32,
+    /// Held roll offset in degrees. Finite in `[-MAX_ANGLE, MAX_ANGLE]`;
+    /// default 0.
+    pub roll: f32,
+    /// Held horizontal FOV offset in degrees, added to the base FOV. Finite in
+    /// `[-MAX_FOV, MAX_FOV]`; default 0.
+    pub fov: f32,
+    /// Share of the vault's duration spent easing in, in `[0, 1]`; default
+    /// [`Self::DEFAULT_EASE_IN`].
+    pub ease_in: f32,
+    /// Share of the vault's duration spent easing out at its end, in `[0, 1]`;
+    /// default [`Self::DEFAULT_EASE_OUT`]. `ease_in + ease_out` is at most 1.
+    pub ease_out: f32,
+}
+
+impl VaultViewParams {
+    /// Largest held pitch or roll magnitude, in degrees.
+    pub const MAX_ANGLE: f32 = 90.0;
+    /// Largest held FOV offset magnitude, in degrees (the slide's increase bound).
+    pub const MAX_FOV: f32 = SlideViewParams::MAX_FOV_INCREASE;
+    pub const DEFAULT_EASE_IN: f32 = 0.15;
+    pub const DEFAULT_EASE_OUT: f32 = 0.2;
 }
 
 /// Render-rate state-transition impulse tuning. A present block requires a
@@ -497,6 +638,8 @@ pub struct ImpulseStates {
     pub dash: Option<ImpulseStateParams>,
     pub crouch: Option<ImpulseStateParams>,
     pub slide: Option<ImpulseStateParams>,
+    #[serde(default)]
+    pub vault: Option<ImpulseStateParams>,
 }
 
 /// One state may override the character's default settle rate and author entry
@@ -591,7 +734,7 @@ mod tests {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: Some(6.5),
         }
     }
 
@@ -622,7 +765,7 @@ mod tests {
     #[test]
     fn swim_validation_rejects_zero_fluid_jump_velocity_naming_the_field() {
         let reason = rejection_reason(SwimParams {
-            fluid_jump_velocity: 0.0,
+            fluid_jump_velocity: Some(0.0),
             ..swim()
         });
         assert!(

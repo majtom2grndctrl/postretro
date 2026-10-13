@@ -24,12 +24,54 @@ pub fn view_feel_params_from_lua(table: &Table) -> Result<ViewFeelParams, Descri
         Some(t) => Some(slide_view_params_from_lua(&t)?),
         None => None,
     };
+    // Read directly rather than through `read_optional_subtable_lua`, whose
+    // wording differs from the JS path: both runtimes say "an object".
+    let vault = match table.get::<LuaValue>("vault").map_err(lua_err)? {
+        LuaValue::Nil => None,
+        LuaValue::Table(t) => {
+            if !holds_only_named_fields(&t)? {
+                return Err(vault_view_not_an_object());
+            }
+            Some(vault_view_params_from_lua(&t)?)
+        }
+        _ => return Err(vault_view_not_an_object()),
+    };
     Ok(ViewFeelParams {
         bob,
         tilt,
         sway,
         impulse,
         slide,
+        vault,
+    })
+}
+
+/// Whether `table` is a block of named fields: no array entries and no key
+/// but a string. JS rejects an array as the block, so a Luau table with array
+/// entries (`{ -6, 2 }`) is no block either, rather than all defaults.
+fn holds_only_named_fields(table: &Table) -> Result<bool, DescriptorError> {
+    if table.raw_len() > 0 {
+        return Ok(false);
+    }
+    for pair in table.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        if !matches!(key, LuaValue::String(_)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Mirror of the JS `vault_view_params_from_js` for Luau tables; errors are
+/// worded identically.
+pub fn vault_view_params_from_lua(table: &Table) -> Result<VaultViewParams, DescriptorError> {
+    vault_view_params_from_fields(|field| {
+        Ok(match table.get::<LuaValue>(field).map_err(lua_err)? {
+            LuaValue::Nil => RawViewNumber::Absent,
+            LuaValue::Integer(value) => RawViewNumber::Number(value as f64),
+            LuaValue::Number(value) => RawViewNumber::Number(value),
+            _ => RawViewNumber::Other,
+        })
     })
 }
 
@@ -135,6 +177,7 @@ fn impulse_states_from_lua(table: &Table) -> Result<ImpulseStates, DescriptorErr
         dash: optional_impulse_state_from_lua(table, "dash")?,
         crouch: optional_impulse_state_from_lua(table, "crouch")?,
         slide: optional_impulse_state_from_lua(table, "slide")?,
+        vault: optional_impulse_state_from_lua(table, "vault")?,
     })
 }
 
@@ -150,10 +193,13 @@ fn validate_impulse_state_keys_lua(table: &Table) -> Result<(), DescriptorError>
             });
         };
         let key = key.to_str().map_err(lua_err)?.to_string();
-        if !matches!(key.as_str(), "normal" | "dash" | "crouch" | "slide") {
+        if !matches!(
+            key.as_str(),
+            "normal" | "dash" | "crouch" | "slide" | "vault"
+        ) {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, or slide"
+                    "`movement.viewFeel.impulse.states.{key}` is not a supported movement state; expected normal, dash, crouch, slide, or vault"
                 ),
             });
         }

@@ -548,6 +548,9 @@ fn plan_movement_replace(
     refreshed.push_velocity = live.push_velocity;
     refreshed.ground = live.ground;
     refreshed.air_ticks = live.air_ticks;
+    // The vault bar is the caller's liveness verdict, not tuning; a reload while
+    // dead must not let the pawn vault before the next verdict.
+    refreshed.vault_barred = live.vault_barred;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
     // budget reseeds from the new descriptor rather than carrying the live (now
     // stale-against-the-new-max) count across. `air_jumps_remaining` and
@@ -564,11 +567,17 @@ fn plan_movement_replace(
     // position history, not a budget: it carries too, so a reload mid-leap cannot
     // drop the pawn straight back into swim. A new descriptor without a `swim`
     // block leaves swim as an exit does (`leave_swim_without_swim_block`).
+    //
+    // A reload mid-vault drops it to `Normal` through the component's shared
+    // early end (`break_off_vault`), as death and an abort do: the path
+    // velocity goes, and so does a swim-entered vault's latch, or a pawn still
+    // in deep water could never swim again.
     refreshed.movement_state = match live.movement_state {
-        MovementState::Swim { fluid } => MovementState::Swim { fluid },
+        state @ (MovementState::Swim { .. } | MovementState::Vault { .. }) => state,
         _ => MovementState::Normal,
     };
     refreshed.swim_reentry_latched = live.swim_reentry_latched;
+    refreshed.break_off_vault();
     refreshed.leave_swim_without_swim_block();
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
 }
@@ -800,7 +809,6 @@ mod tests {
 
     use super::*;
     use crate::components::billboard_emitter::SpinAnimation;
-    use crate::components::particle::ParticleState;
     use crate::components::player_movement::MovementState;
     use crate::components::wieldable_state::WieldableState;
     use crate::data_descriptors::{
@@ -969,6 +977,7 @@ mod tests {
                 crouch: None,
                 slide: None,
                 swim: None,
+                vault: None,
                 view_feel: None,
             }),
             weapon: None,
@@ -1587,7 +1596,7 @@ mod tests {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: Some(6.5),
         }
     }
 
@@ -1641,6 +1650,36 @@ mod tests {
         assert!(component.swim_reentry_latched);
         assert_eq!(component.dash.as_ref().unwrap().air_dashes, 2);
         assert_eq!(component.air.jumps, 3, "tuning still reseeds");
+    }
+
+    // A reload mid-vault ends it early, as death does: `Normal`, the path
+    // velocity dropped with knockback kept, and a swim-entered vault's latch
+    // cleared so a pawn still in deep water can swim again.
+    #[test]
+    fn movement_refresh_drops_a_vault_to_normal() {
+        let old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        let new = vec![movement_descriptor_with_dash("player", 3, 2)];
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.movement_state = MovementState::Vault {
+            elapsed_ms: 48.0,
+            target: Vec3::new(5.4, 1.2, 0.0),
+            start_offset: Vec3::new(-0.8, -0.7, 0.0),
+            mover: None,
+            entry_speed: 7.0,
+        };
+        let knockback = Vec3::new(0.0, 0.0, 3.0);
+        live.knockback_velocity = knockback;
+        live.velocity = Vec3::new(1.5, 9.0, 0.0) + knockback;
+        live.swim_reentry_latched = true;
+        live.vault_barred = true;
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert_eq!(component.velocity, knockback, "only the knockback stays");
+        assert!(!component.swim_reentry_latched);
+        assert!(
+            component.vault_barred,
+            "the liveness bar survives the reload"
+        );
     }
 
     // A reload that removes the swim block leaves swim as an exit does: `Normal`,
@@ -1852,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn emitter_refresh_preserves_live_particles() {
+    fn emitter_refresh_replaces_only_the_emitter_configuration() {
         let old = vec![emitter_descriptor("smoke", "smoke", 5.0)];
         let new = vec![emitter_descriptor("smoke", "smoke", 12.0)];
         let mut registry = EntityRegistry::new();
@@ -1866,22 +1905,6 @@ mod tests {
                 provenance("smoke", &[DescriptorComponentKind::Emitter]),
             )
             .unwrap();
-        let particle_id = registry.spawn(Transform::default());
-        let particle = ParticleState {
-            velocity: [0.1, 0.2, 0.3],
-            age: 0.4,
-            lifetime: 2.0,
-            buoyancy: 0.0,
-            drag: 0.1,
-            size_curve: [1.0, 0.5].into(),
-            opacity_curve: [1.0, 0.0].into(),
-            spin_rate: 0.0,
-            emitter: Some(emitter_id),
-        };
-        registry
-            .set_component(particle_id, particle.clone())
-            .unwrap();
-
         let plan = plan_descriptor_refresh(&old, &new, &registry);
         let summary = apply_descriptor_refresh_plan(&plan, &mut registry).unwrap();
 
@@ -1893,12 +1916,12 @@ mod tests {
                 .rate,
             12.0,
         );
+        assert_eq!(registry.iter_with_kind(ComponentKind::Transform).count(), 1);
         assert_eq!(
             registry
-                .get_component::<ParticleState>(particle_id)
-                .unwrap(),
-            &particle,
-            "refreshing an emitter component must not remove or rewrite live particle entities",
+                .iter_with_kind(ComponentKind::BillboardEmitter)
+                .count(),
+            1
         );
     }
 

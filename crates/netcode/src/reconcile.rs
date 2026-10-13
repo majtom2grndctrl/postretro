@@ -128,7 +128,9 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 .is_some()
                 || base_collision.poses.pose(mover_id).is_some()
         }) {
-            log::warn!("[Net] skipping local reconcile with unknown ground mover reference");
+            log::warn!(
+                "[Net] skipping local reconcile with unknown ground or vault mover reference"
+            );
             return None;
         }
     }
@@ -346,6 +348,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }

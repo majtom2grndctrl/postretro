@@ -496,6 +496,14 @@ declare module "postretro" {
     minMs: number;
     /** Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time. */
     fullMs: number;
+    /** Optional map of what may cut the charge short before its shot fires. Omitted sources interrupt it. */
+    interruptedBy?: ChargeInterrupts;
+  };
+
+  /** What may cancel a charge that is still charging, keyed by interrupt source. Every key is optional and defaults to true; unknown keys reject content. Only `vault` exists today; more sources (taking damage, NPC interactions) will join this map. Once the charged shot fires, normal rules apply. */
+  export type ChargeInterrupts = {
+    /** Whether a climb with `movement.vault.allowFire` off cancels the charge. Defaults to true. False keeps it charging through the climb; a release made during the climb fires on the first tick after it, unless the trigger is pressed again first. Death, switching and dropping still cancel it. */
+    vault?: boolean;
   };
 
   /** Action-specific fire and impact sound keys, at most 256 UTF-8 bytes each. Each authored field overrides its weapon default; omission inherits that default. Uses the originating action for delayed impacts. */

@@ -3734,3 +3734,74 @@ fn a_late_remote_burst_delivered_after_the_vault_stops_where_it_began() {
     assert_eq!(predicted_ordinals(&fixture, second), vec![0, 1]);
     assert_host_fires_what_the_client_fired(&fixture);
 }
+
+/// [`descriptor`]'s charged secondary, with `charge.interruptedBy.vault` set,
+/// or left out with `None`.
+fn vault_charged(vault: Option<bool>) -> WeaponDescriptor {
+    let mut descriptor = descriptor(false, true, 1, "press");
+    let charge = descriptor
+        .secondary
+        .as_mut()
+        .and_then(|secondary| secondary.charge.as_mut())
+        .expect("the fixture's secondary charges");
+    charge.interrupted_by = vault.map(|vault| postretro_foundation::ChargeInterrupts { vault });
+    descriptor
+}
+
+// A charge whose action a vault does not interrupt keeps charging through the
+// client's vault on both peers. The client holds its mid-vault release and
+// sends it stamped on the first tick after the vault, where it fires the
+// charged shot; the host never cancels the charge and mints that same shot.
+// Without the opt-out both peers cancel the charge where the vault began.
+#[test]
+fn a_remote_charge_the_vault_spares_fires_the_release_held_over_the_vault() {
+    for link in [LinkConfig::perfect(), mandated_link()] {
+        for interrupts in [Some(false), None] {
+            let spared = interrupts == Some(false);
+            let mut fixture = Fixture::new(link, vault_charged(interrupts));
+            let start = token(510, ActivationLane::Secondary);
+            let vault = 514..530;
+            fixture.vault_ticks = Some(vault.clone());
+            fixture.idle(500, 10);
+            for tick in 510..600 {
+                set_vault(
+                    &mut fixture.local.borrow_mut(),
+                    fixture.local_actors.pawn,
+                    vault.contains(&tick),
+                    false,
+                );
+                let command = match tick {
+                    510 => held(start.lane, true),
+                    511..520 => held(start.lane, false),
+                    520 => {
+                        let mut release = neutral();
+                        release.activation.release = Some(ActivationRelease {
+                            token: start,
+                            release_tick: 520,
+                        });
+                        release
+                    }
+                    _ => neutral(),
+                };
+                fixture.step(tick, command);
+            }
+            fixture.idle(600, 120);
+            let label = format!("{link:?} {interrupts:?}");
+            assert_eq!(fixture.accepted(start), 1, "{label}");
+            if spared {
+                assert_eq!(
+                    fixture.snapshot_ticks,
+                    vec![vault.end],
+                    "{label}: the client fires on the first tick after the vault"
+                );
+                assert_eq!(fixture.authorized.len(), 1, "{label}");
+                assert_host_fires_what_the_client_fired(&fixture);
+                assert!(!fixture.cancelled(start), "{label}: never cancelled");
+            } else {
+                assert!(fixture.snapshots.is_empty(), "{label}");
+                assert!(fixture.cancelled(start), "{label}: the vault cancels it");
+                fixture.assert_no_host_shot();
+            }
+        }
+    }
+}

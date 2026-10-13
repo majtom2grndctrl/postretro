@@ -341,6 +341,7 @@ impl TouchSystem {
                 weapon.reload_press_consumed = false;
                 weapon.primary_press_held_over_gate = false;
                 weapon.secondary_press_held_over_gate = false;
+                weapon.release_held_over_gate = None;
                 weapon.reload_feedback = Default::default();
                 let _ = registry.set_component(item, weapon);
             }

@@ -3,6 +3,7 @@
 use crate::prediction::client_tick_le;
 use crate::sim::RemoteStartAim;
 use postretro_foundation::{ActivationInput, ActivationRelease, ActivationToken};
+use postretro_sim::weapon::pawn_gate::VaultSparedCharges;
 use std::collections::VecDeque;
 
 pub const MAX_RETAINED_ACTIVATION_EDGES: usize = 64;
@@ -97,6 +98,9 @@ pub(crate) struct ActivationEdges {
     /// `(client tick, fire gate)` as each recently resolved tick started,
     /// oldest first, at most `FIRE_GATE_HISTORY` ticks.
     fire_gates: VecDeque<(u32, bool)>,
+    /// The shooter's firing-slot actions whose charge a vault spares, as of
+    /// the latest resolution (`set_vault_spared_charges`).
+    vault_spared: VaultSparedCharges,
 }
 impl ActivationEdges {
     /// Retain a start in intake order, received on host tick `tick`.
@@ -123,12 +127,14 @@ impl ActivationEdges {
         {
             return;
         }
-        // A closed tick recorded after the start's own: it arrives late.
-        let missed = self
-            .fire_gates
-            .iter()
-            .find(|&&(gate_tick, gate)| gate && !client_tick_le(gate_tick, token.start_tick))
-            .map(|&(gate_tick, _)| gate_tick);
+        // A closed tick recorded after the start's own: it arrives late. A
+        // charge the vault spares misses only one after its known release.
+        let missed = if self.vault_spared.spares(firing_slot, token.lane) {
+            self.known_release(token)
+                .and_then(|release| self.first_closed_after(release))
+        } else {
+            self.first_closed_after(token.start_tick)
+        };
         // Unheld, the cancel could not stop the start: refuse it instead.
         let fire_blocked = missed
             .is_some_and(|closed| !self.retain(token, None, Some(closed), tick))
@@ -279,6 +285,9 @@ impl ActivationEdges {
     /// flooding client reaches, an admitted execution takes the overflow
     /// cancel at once and a retained start is refused at delivery. Either
     /// loses shots fired before `client_tick`; neither fires through the vault.
+    ///
+    /// An execution the closed tick spares (`vault_spares`) takes none: its
+    /// client kept charging it through the vault.
     pub fn cancel_before(&mut self, client_tick: u32, live: Option<ActivationToken>, tick: u32) {
         let before = |token: ActivationToken| !client_tick_le(client_tick, token.start_tick);
         let delivered = self
@@ -286,16 +295,68 @@ impl ActivationEdges {
             .map(|start| start.token)
             .filter(|&token| before(token));
         for token in live.into_iter().chain(delivered) {
-            self.retain(token, None, Some(client_tick), tick);
+            let slot = self.firing_slot(token);
+            if !self.vault_spares(token, slot, client_tick) {
+                self.retain(token, None, Some(client_tick), tick);
+            }
         }
         // `retain` never reads the retained starts.
         let mut starts = std::mem::take(&mut self.starts);
         for start in starts.iter_mut().filter(|start| before(start.token)) {
+            if self.vault_spares(start.token, Some(start.firing_slot), client_tick) {
+                continue;
+            }
             if !self.retain(start.token, None, Some(client_tick), tick) {
                 start.fire_blocked = Some(true);
             }
         }
         self.starts = starts;
+    }
+    /// Record which of the shooter's firing-slot actions charge through a
+    /// vault, read from its inventory as this resolution starts.
+    pub fn set_vault_spared_charges(&mut self, spared: VaultSparedCharges) {
+        self.vault_spared = spared;
+    }
+    /// Whether the gate closed at client tick `closed` spares `live`, as the
+    /// client spared it: the caller must not cancel it at once.
+    pub fn vault_spares_live(&self, live: ActivationToken, closed: u32) -> bool {
+        self.vault_spares(live, self.firing_slot(live), closed)
+    }
+    /// Whether a fire gate closed at client tick `closed` spares `token`'s
+    /// execution, as the client's gate did: its action, in `firing_slot`,
+    /// charges through a vault, and no release the client stamped before
+    /// `closed` is known, so it was still charging as that tick began. The
+    /// client holds a spared charge's release until the gate opens, so a
+    /// release stamped at or after `closed` never fired it before the vault.
+    /// An unknown slot spares nothing, as before.
+    fn vault_spares(&self, token: ActivationToken, firing_slot: Option<u8>, closed: u32) -> bool {
+        firing_slot.is_some_and(|slot| self.vault_spared.spares(slot, token.lane))
+            && self
+                .known_release(token)
+                .is_none_or(|release| client_tick_le(closed, release))
+    }
+    /// The firing slot `token`'s start named: retained, or the start most
+    /// recently delivered, which is the live execution's.
+    fn firing_slot(&self, token: ActivationToken) -> Option<u8> {
+        self.starts
+            .iter()
+            .chain(self.delivered.iter())
+            .find(|start| start.token == token)
+            .map(|start| start.firing_slot)
+    }
+    /// Client release tick of `token`'s release, received, delivered or not.
+    fn known_release(&self, token: ActivationToken) -> Option<u32> {
+        self.edges
+            .iter()
+            .find(|edge| edge.token == token)
+            .and_then(|edge| edge.release_tick)
+    }
+    /// The first closed gate recorded after client tick `tick`.
+    fn first_closed_after(&self, tick: u32) -> Option<u32> {
+        self.fire_gates
+            .iter()
+            .find(|&&(gate_tick, gate)| gate && !client_tick_le(gate_tick, tick))
+            .map(|&(gate_tick, _)| gate_tick)
     }
     /// The fire gate stamped on `token`'s start, once the lane delivered it.
     pub fn delivered_fire_blocked(&self, token: ActivationToken) -> Option<bool> {
@@ -311,10 +372,25 @@ impl ActivationEdges {
     }
     /// Retain the release and cancel edges a command at `client_tick` carried,
     /// received on host tick `tick`.
+    ///
+    /// A release of a charge the vault spares can arrive after a closed tick
+    /// already passed over that charge, when its command came late. Released
+    /// before that tick, the charge fired before the vault and the client's
+    /// gate stopped the rest of it there, so it takes that cancel now.
     pub fn observe(&mut self, input: ActivationInput, client_tick: u32, tick: u32) {
         self.prune(tick);
         if let Some(release) = input.release {
             self.retain(release.token, Some(release.release_tick), None, tick);
+            let token = release.token;
+            if self
+                .firing_slot(token)
+                .is_some_and(|slot| self.vault_spared.spares(slot, token.lane))
+                && let Some(closed) = self
+                    .known_release(token)
+                    .and_then(|release| self.first_closed_after(release))
+            {
+                self.retain(token, None, Some(closed), tick);
+            }
         }
         if let Some(token) = input.cancel {
             self.retain(token, None, Some(client_tick), tick);
@@ -1072,5 +1148,130 @@ mod tests {
         );
         edges.deliver(&mut delivered, 122, None, None, None);
         assert_eq!(delivered.cancel, Some(live));
+    }
+
+    fn release_at(start: u32, release_tick: u32) -> ActivationInput {
+        ActivationInput {
+            release: Some(ActivationRelease {
+                token: token(start),
+                release_tick,
+            }),
+            ..ActivationInput::default()
+        }
+    }
+    fn spared_slot_zero() -> VaultSparedCharges {
+        VaultSparedCharges::default().with(0, ActivationLane::Secondary)
+    }
+
+    // A closed gate passes over a charge whose action a vault does not
+    // interrupt while it is still charging, live or retained, as the client
+    // kept charging it; its release after the vault is delivered. Released
+    // before the closed tick, or in a slot the vault does interrupt, it is
+    // cancelled there as before, the cancel behind the release.
+    #[test]
+    fn a_closed_gate_spares_an_unreleased_charge_its_vault_does_not_interrupt() {
+        let mut edges = ActivationEdges::default();
+        edges.set_vault_spared_charges(spared_slot_zero());
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        assert!(edges.take_start(token(6)));
+        edges.stamp_fire_gate(8, true);
+        edges.cancel_before(8, Some(token(6)), 1);
+        assert!(edges.vault_spares_live(token(6), 8));
+        edges.observe(release_at(6, 12), 12, 2);
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 3, Some(token(6)), Some(12), None);
+        assert_eq!(
+            delivered,
+            release_at(6, 12),
+            "the release goes, uncancelled"
+        );
+        edges.deliver(&mut delivered, 4, Some(token(6)), Some(13), None);
+        assert_eq!(delivered.cancel, None);
+
+        // A retained start the closed tick passes over keeps no cancel either.
+        let mut edges = ActivationEdges::default();
+        edges.set_vault_spared_charges(spared_slot_zero());
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        edges.stamp_fire_gate(8, true);
+        edges.cancel_before(8, None, 1);
+        assert!(edges.take_start(token(6)));
+        edges.deliver(&mut delivered, 2, Some(token(6)), Some(9), None);
+        assert_eq!(delivered.cancel, None);
+
+        // Released before the vault, or in a slot the vault interrupts.
+        for (spared, released) in [
+            (spared_slot_zero(), Some(7)),
+            (
+                VaultSparedCharges::default().with(1, ActivationLane::Secondary),
+                None,
+            ),
+            (
+                VaultSparedCharges::default().with(0, ActivationLane::Primary),
+                None,
+            ),
+        ] {
+            let mut edges = ActivationEdges::default();
+            edges.set_vault_spared_charges(spared);
+            edges.observe_start(token(6), 0, aim(0.0), 0);
+            assert!(edges.take_start(token(6)));
+            if let Some(released) = released {
+                edges.observe(release_at(6, released), released, 0);
+            }
+            edges.stamp_fire_gate(8, true);
+            edges.cancel_before(8, Some(token(6)), 1);
+            assert!(!edges.vault_spares_live(token(6), 8), "{spared:?}");
+            if released.is_some() {
+                edges.deliver(&mut delivered, 2, Some(token(6)), Some(7), None);
+                assert_eq!(delivered.release, release_at(6, 7).release);
+                assert_eq!(delivered.cancel, None, "the release goes first");
+            }
+            edges.deliver(&mut delivered, 3, Some(token(6)), Some(8), None);
+            assert_eq!(delivered.cancel, Some(token(6)), "{spared:?}");
+        }
+    }
+
+    // A start or release arriving after a closed tick it missed: a charge the
+    // vault spares takes the cancel only when released before that tick,
+    // whichever of its start and its release reaches the lane first.
+    #[test]
+    fn a_late_spared_charge_takes_its_vault_cancel_only_when_released_before_it() {
+        // Charged through the vault (10 onward) and released at 14.
+        let mut edges = ActivationEdges::default();
+        edges.set_vault_spared_charges(spared_slot_zero());
+        edges.stamp_fire_gate(10, true);
+        edges.stamp_fire_gate(11, true);
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        edges.observe(release_at(6, 14), 14, 0);
+        assert!(edges.take_start(token(6)));
+        let mut delivered = ActivationInput::default();
+        edges.deliver(&mut delivered, 1, Some(token(6)), Some(14), None);
+        assert_eq!(delivered, release_at(6, 14));
+
+        // Released at 8, before the vault: cancelled at 10, behind the release.
+        for release_first in [true, false] {
+            let mut edges = ActivationEdges::default();
+            edges.set_vault_spared_charges(spared_slot_zero());
+            edges.stamp_fire_gate(10, true);
+            if release_first {
+                edges.observe(release_at(6, 8), 8, 0);
+                edges.observe_start(token(6), 0, aim(0.0), 0);
+            } else {
+                edges.observe_start(token(6), 0, aim(0.0), 0);
+                edges.observe(release_at(6, 8), 8, 0);
+            }
+            assert!(edges.take_start(token(6)));
+            edges.deliver(&mut delivered, 1, Some(token(6)), Some(8), None);
+            assert_eq!(
+                delivered,
+                release_at(6, 8),
+                "release first: {release_first}"
+            );
+            edges.deliver(&mut delivered, 2, Some(token(6)), Some(10), None);
+            assert_eq!(
+                delivered.cancel,
+                Some(token(6)),
+                "release first: {release_first}"
+            );
+        }
     }
 }

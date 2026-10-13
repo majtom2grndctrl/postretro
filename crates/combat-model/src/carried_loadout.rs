@@ -57,8 +57,10 @@ pub fn restore_carried_health(
 /// Bump whenever the payload's semantic contract changes. This is independent
 /// of the bitcode wire version because the payload itself is JSON. 12: the
 /// movement descriptor gains `vault` tuning, and `swim.fluid_jump_velocity`
-/// becomes nullable (an epoch-11 reader rejects the null).
-pub const TUNING_PAYLOAD_EPOCH: u32 = 12;
+/// becomes nullable (an epoch-11 reader rejects the null). 13: a weapon
+/// action's `charge` gains `interruptedBy`, which the client's vault fire gate
+/// reads (an epoch-12 reader rejects the unknown field).
+pub const TUNING_PAYLOAD_EPOCH: u32 = 13;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///

@@ -223,7 +223,20 @@ mod tests {
                 postretro_foundation::ActivationTrigger::Press,
                 240.0,
             ),
-            secondary: None,
+            // A charge a vault does not interrupt: the client's fire gate
+            // reads it from this row.
+            secondary: Some({
+                let mut secondary = postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    400.0,
+                );
+                secondary.charge = Some(postretro_foundation::ActivationCharge {
+                    min_ms: 100.0,
+                    full_ms: 800.0,
+                    interrupted_by: Some(postretro_foundation::ChargeInterrupts { vault: false }),
+                });
+                secondary
+            }),
             damage: 10.0,
             knockback: None,
             projectile: None,
@@ -584,6 +597,29 @@ mod tests {
         ));
     }
 
+    // Epoch 12 predates `charge.interruptedBy`. Its payload must report the
+    // stale epoch rather than fail as a shape error on the new field.
+    #[test]
+    fn payload_rejects_previous_epoch_without_charge_interrupts() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        assert_eq!(
+            json["wieldables"][2]["secondary"]["charge"]["interruptedBy"]["vault"],
+            serde_json::json!(false),
+            "the fixture carries a charge interrupt map"
+        );
+        json["epoch"] = serde_json::json!(12);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 12,
+            })
+        ));
+    }
+
     #[test]
     fn payload_json_matches_committed_fixture() {
         let actual = String::from_utf8(encode_tuning_payload(&full_payload())).unwrap();
@@ -629,6 +665,7 @@ mod tests {
         secondary.charge = Some(ActivationCharge {
             min_ms: 200.0,
             full_ms: 1000.0,
+            interrupted_by: None,
         });
         secondary.steps = vec![ActivationStepDescriptor::Shot {
             scale: Box::new(ShotScaleDescriptor {

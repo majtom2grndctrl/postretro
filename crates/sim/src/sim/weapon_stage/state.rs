@@ -353,6 +353,7 @@ pub(super) fn finish_lowering(component: &mut WeaponComponent) {
     // weapon must not replay it on its next raise.
     component.primary_press_held_over_gate = false;
     component.secondary_press_held_over_gate = false;
+    component.release_held_over_gate = None;
     transition_to_idle(component);
 }
 

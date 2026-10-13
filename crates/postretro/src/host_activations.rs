@@ -128,6 +128,7 @@ pub(super) fn stamp_start_fire_gate(
         resolved.client_id,
         resolved.client_tick,
         postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, resolved.pawn),
+        postretro_sim::weapon::pawn_gate::VaultSparedCharges::of_pawn(registry, resolved.pawn),
     )
 }
 
@@ -1163,7 +1164,7 @@ mod tests {
             let resolved = netcode::host_resolve_remote_commands(&owners, queues)
                 .pop()
                 .expect("the client resolves");
-            queues.stamp_start_fire_gate(7, resolved.client_tick, blocked);
+            queues.stamp_start_fire_gate(7, resolved.client_tick, blocked, Default::default());
             resolved
         };
         let start = ActivationToken {

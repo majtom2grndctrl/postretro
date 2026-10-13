@@ -161,8 +161,12 @@ fn run_local_weapon_command_inner(
                 .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
     });
     // Death and a fire-blocking vault both stop an execution in progress and
-    // refuse new starts; a vault holds a fresh press for its exit.
-    if !pawn_alive || fire_blocked {
+    // refuse new starts; a vault holds a fresh press for its exit. A charge
+    // whose action opts out of vault interruption keeps charging, its release
+    // held for the exit.
+    if !pawn_alive
+        || (fire_blocked && !weapon::pawn_gate::vault_spares_activation(&weapon_component))
+    {
         weapon_component.cancel_activation();
     }
     if let Some(activation) = activation.as_mut() {
@@ -171,6 +175,14 @@ fn run_local_weapon_command_inner(
             &mut activation.primary,
             &mut activation.secondary,
             fire_blocked,
+        );
+        weapon::pawn_gate::hold_release_over_gate(
+            &mut weapon_component,
+            &mut activation.input,
+            activation.primary,
+            activation.secondary,
+            fire_blocked,
+            activation.tick,
         );
     }
     let mut checked_command = *command;

@@ -5451,4 +5451,138 @@ mod tests {
             "vault entry stops the burst"
         );
     }
+
+    fn set_primary(
+        registry: &Rc<RefCell<EntityRegistry>>,
+        weapon: EntityId,
+        action: serde_json::Value,
+    ) {
+        let mut registry = registry.borrow_mut();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.primary = std::sync::Arc::new(serde_json::from_value(action).unwrap());
+        component.activation_programs =
+            postretro_foundation::WeaponActivationPrograms::install(&component.primary, None);
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    /// A press charge whose charge `vault` interrupts (`None` leaves
+    /// `interruptedBy` out) or does not.
+    fn vault_charge(vault: Option<bool>) -> serde_json::Value {
+        let mut charge = serde_json::json!({"minMs":0,"fullMs":100});
+        if let Some(vault) = vault {
+            charge["interruptedBy"] = serde_json::json!({ "vault": vault });
+        }
+        serde_json::json!({"trigger":"press","recoveryMs":16,"charge":charge,"steps":[{"kind":"shot"}]})
+    }
+
+    fn host_charging(registry: &Rc<RefCell<EntityRegistry>>, weapon: EntityId) -> bool {
+        matches!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::Charging(_)
+        )
+    }
+
+    fn release_command(tick: u32, start_tick: u32) -> crate::sim::SimCommand {
+        let mut command = button_command(tick, false, false);
+        command.activation.release = Some(postretro_foundation::ActivationRelease {
+            token: postretro_foundation::ActivationToken {
+                start_tick,
+                lane: postretro_foundation::ActivationLane::Primary,
+            },
+            release_tick: tick,
+        });
+        command
+    }
+
+    // A charge whose action opts out of vault interruption keeps charging
+    // through the host player's vault; a release made mid-vault is held and
+    // fires the charged shot on the first tick after it, and a re-press before
+    // the exit keeps charging. The default, and `vault: true`, cancel the
+    // charge at entry as before.
+    #[test]
+    fn a_charge_the_vault_spares_fires_the_host_players_mid_vault_release_on_exit() {
+        for (interrupts, spared) in [(Some(false), true), (None, false), (Some(true), false)] {
+            let (registry, pawn, weapon) = local_vault_pawn();
+            set_primary(&registry, weapon, vault_charge(interrupts));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(1, true, true),
+                1.0 / 60.0,
+            );
+            assert!(host_charging(&registry, weapon));
+            set_vault(&registry, pawn, Some((16.0, false)));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(2, false, true),
+                1.0 / 60.0,
+            );
+            assert_eq!(host_charging(&registry, weapon), spared, "{interrupts:?}");
+            for tick in 3..5 {
+                set_vault(&registry, pawn, Some((16.0 * tick as f32, false)));
+                let command = if tick == 3 {
+                    release_command(3, 1)
+                } else {
+                    button_command(tick, false, false)
+                };
+                run_local_only_tick(registry.clone(), weapon, &command, 1.0 / 60.0);
+            }
+            assert_eq!(
+                magazine(&registry, weapon),
+                10,
+                "{interrupts:?}: nothing fires mid-vault"
+            );
+            set_vault(&registry, pawn, None);
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(5, false, false),
+                1.0 / 60.0,
+            );
+            assert_eq!(
+                magazine(&registry, weapon) == 9,
+                spared,
+                "{interrupts:?}: only a spared charge fires on exit"
+            );
+        }
+
+        let (registry, pawn, weapon) = local_vault_pawn();
+        set_primary(&registry, weapon, vault_charge(Some(false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(1, true, true),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, Some((16.0, false)));
+        run_local_only_tick(registry.clone(), weapon, &release_command(2, 1), 1.0 / 60.0);
+        set_vault(&registry, pawn, Some((32.0, false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(3, true, true),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, None);
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(4, false, true),
+            1.0 / 60.0,
+        );
+        assert!(
+            host_charging(&registry, weapon) && magazine(&registry, weapon) == 10,
+            "pressed again before the exit: still charging"
+        );
+        run_local_only_tick(registry.clone(), weapon, &release_command(5, 1), 1.0 / 60.0);
+        assert_eq!(magazine(&registry, weapon), 9, "its later release fires");
+    }
 }

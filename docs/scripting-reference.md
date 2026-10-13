@@ -292,7 +292,7 @@ An action has `{ trigger, recoveryMs, steps, charge?, sounds?, emits? }`:
 | `trigger` | `"press" \| "hold"` | `press` starts once per fresh press. `hold` repeats after execution and recovery finish while held. A charged action requires `press`. |
 | `recoveryMs` | `number` | Shared start-gate recovery after each accepted shot, in finite milliseconds `[0, 60000]`. Zero is allowed. Remaining recovery survives completion or cancellation. |
 | `steps` | `ActivationStepDescriptor[]` | At most 64 steps and 16 shots. First and last must be shots, with at least one positive wait between shots. |
-| `charge` | `{ minMs, fullMs }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. |
+| `charge` | `{ minMs, fullMs, interruptedBy? }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. `interruptedBy` is described below. |
 | `sounds` | `{ fire?, impact? }` (optional) | Each authored field overrides the weapon's sound default for that action. A delayed impact uses its originating action's sound. |
 | `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from `activate` or `impact` respectively. |
 
@@ -379,6 +379,32 @@ engine validates evaluated scales and final scaled values before spending;
 invalid values, overflow, or invalid integer ammo conversion cancel execution
 and warn once per descriptor/field. Resources are spent per accepted shot,
 never for waits or cancelled charge.
+
+#### What interrupts a charge
+
+`charge.interruptedBy` is an optional map from an interrupt source to whether
+that source cancels the charge while it is still charging. Every key is
+optional and defaults to `true`. Once the charged shot fires, the source's
+normal rules apply again.
+
+| Key | Default | `false` means |
+|-----|---------|---------------|
+| `vault` | `true` | A climb with `movement.vault.allowFire` off does not cancel the charge. It keeps charging through the climb. Releasing the trigger during the climb fires the charged shot on the first tick after it ends, unless the trigger is pressed again first, in which case it keeps charging until the next release. |
+
+```typescript
+secondary: {
+  trigger: "press",
+  recoveryMs: 400,
+  charge: { minMs: 200, fullMs: 1000, interruptedBy: { vault: false } },
+  steps: [activation.shot()],
+},
+```
+
+The map is closed: an unknown key, a non-boolean value, or an `interruptedBy`
+that is not an object rejects content, and the error names the field. `vault`
+is the only source today; more (taking damage, NPC interactions) will join this
+map. Death, switching, dropping, a reload press and input suspension still
+cancel any charge.
 
 One execution owns the weapon. Secondary wins simultaneous fresh starts;
 neither action interrupts an execution. A blocked press is consumed, while a
@@ -2980,7 +3006,10 @@ How vaulting plays:
   of the water.
 - **Firing.** With `allowFire` false, firing cannot start during a climb, and
   a burst already firing stops when the climb starts. Holding the trigger
-  through the climb fires again once it ends.
+  through the climb fires again once it ends. A charge stops too, unless its
+  weapon action sets `charge.interruptedBy.vault: false`: it then keeps
+  charging, and a release during the climb fires once it ends (see
+  [What interrupts a charge](#what-interrupts-a-charge)).
 - **Maps cannot change vault tuning.** It belongs to the descriptor.
 
 Starting and finishing a climb fire the reserved `vault_started` and

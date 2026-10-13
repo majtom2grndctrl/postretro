@@ -57,6 +57,7 @@ pub use super::components::mesh::DEFAULT_CROSSFADE_MS;
 pub use super::conv;
 
 mod audio_profile;
+mod charge_interrupts;
 mod error;
 mod fluids;
 mod input_block;
@@ -104,6 +105,7 @@ mod lua {
 // `data_descriptors::Item` keep resolving and submodules can reach each other
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub(crate) use audio_profile::*;
+pub(crate) use charge_interrupts::*;
 pub use error::*;
 pub use fluids::{drain_fluids_js, drain_fluids_lua};
 pub(crate) use movement_sounds::*;

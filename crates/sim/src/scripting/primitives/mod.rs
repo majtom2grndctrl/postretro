@@ -475,6 +475,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Optional charge timing, valid only with trigger `press`. Release before minMs cancels without firing or spending; full charge does not auto-fire.")
         .field("minMs", "f32", "Minimum held duration in milliseconds. Finite and >= 0; must be <= fullMs.")
         .field("fullMs", "f32", "Held duration giving normalized charge 1. Finite milliseconds in (0, 60000]; charge grows linearly from zero elapsed time.")
+        .field("interruptedBy?", "ChargeInterrupts", "Optional map of what may cut the charge short before its shot fires. Omitted sources interrupt it.")
+        .finish();
+    registry
+        .register_type("ChargeInterrupts")
+        .doc("What may cancel a charge that is still charging, keyed by interrupt source. Every key is optional and defaults to true; unknown keys reject content. Only `vault` exists today; more sources (taking damage, NPC interactions) will join this map. Once the charged shot fires, normal rules apply.")
+        .field("vault?", "bool", "Whether a climb with `movement.vault.allowFire` off cancels the charge. Defaults to true. False keeps it charging through the climb; a release made during the climb fires on the first tick after it, unless the trigger is pressed again first. Death, switching and dropping still cancel it.")
         .finish();
     registry
         .register_type("ActivationSounds")

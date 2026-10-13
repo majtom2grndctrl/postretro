@@ -330,6 +330,11 @@ pub struct WeaponComponent {
     pub primary_press_held_over_gate: bool,
     #[serde(default)]
     pub secondary_press_held_over_gate: bool,
+    /// A release of a charge that a vault spares (`interruptedBy.vault:
+    /// false`), made while the vault refused fire: held for the first open
+    /// tick, where it releases if the trigger is still up.
+    #[serde(default)]
+    pub release_held_over_gate: Option<postretro_foundation::ActivationToken>,
     #[serde(default = "default_credit_source")]
     pub credit_source: String,
     #[serde(default)]
@@ -435,6 +440,7 @@ impl WeaponComponent {
             reload_press_consumed: false,
             primary_press_held_over_gate: false,
             secondary_press_held_over_gate: false,
+            release_held_over_gate: None,
             credit_source: resolve_credit_source(desc, canonical_name),
             ammo,
             magazine,

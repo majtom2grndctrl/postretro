@@ -586,6 +586,12 @@ impl PlayerMovementComponent {
     ///   clear and the pawn could not swim again.
     ///
     /// `velocity` is total here (protected layers included), as between ticks.
+    ///
+    /// On a moving target the two kinds of caller differ in one way. The
+    /// in-tick abort still rides the target's mover that tick, so the
+    /// substrate's mover release hands the pawn the mover's velocity. A break
+    /// from outside the tick has no mover pose to read and the next tick starts
+    /// airborne, so the pawn keeps none of it.
     pub fn settle_broken_vault(&mut self) {
         self.movement_state = MovementState::Normal;
         self.velocity = self.knockback_velocity + self.push_velocity;

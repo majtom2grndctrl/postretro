@@ -1688,7 +1688,9 @@ fn an_auto_vault_clears_a_buffered_jump() {
 }
 
 // Descriptor validation restates the step-up limit's margin, since foundation
-// cannot depend on physics; the two must not drift apart.
+// cannot depend on physics; the two must not drift apart. They can differ by an
+// f32 ulp (`step + 0.05 - 0.04` against `step + 0.01`), which only fails safe: a
+// `maxHeight` inside that ulp validates and never vaults.
 #[test]
 fn validation_restates_the_step_up_limit_margin() {
     use crate::collision::STEP_UP_LIFT_MARGIN;
@@ -1704,7 +1706,7 @@ fn max_height_validation_refuses_tops_the_step_up_limit_already_covers() {
     };
     assert!(
         at_limit.validated(STEP_HEIGHT).is_err(),
-        "a maxHeight at the step-up limit reaches no ledge"
+        "a maxHeight at validation's step-up floor is refused"
     );
     let past_limit = VaultParams {
         max_height: step_up_limit(STEP_HEIGHT) + 0.001,

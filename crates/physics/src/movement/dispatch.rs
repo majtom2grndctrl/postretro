@@ -6,11 +6,12 @@ use glam::Vec3;
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::{CarryRule, apply_boost, apply_horizontal};
 use crate::movement::intents::{
-    crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent,
+    crouching_intent, dash_intent, normal_intent, sliding_intent, swim_intent, vault_intent,
 };
 use crate::movement::push::{fold_vertical_drift, held_by_contact};
 use crate::movement::substrate::{JumpEdges, ResizeAnchor, resize_capsule, touches_ceiling};
 use crate::movement::swim_transition::{SwimSeam, environment_transition};
+use crate::movement::vault::vault_entry;
 use crate::movement::{MovementEvents, MovementInput, MovementStateEdge, Transition};
 use postretro_collision::{EnvironmentView, ResolvedEnvironment};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -72,6 +73,9 @@ fn outgoing_boost(state: &MovementState) -> Vec3 {
         MovementState::Crouching { .. } => Vec3::ZERO,
         // `Swim` has no boost layer: drag acts on all of its locomotion.
         MovementState::Swim { .. } => Vec3::ZERO,
+        // `Vault` authors its whole velocity along the path; its exit restores
+        // the entry speed directly, so nothing rides a boost layer.
+        MovementState::Vault { .. } => Vec3::ZERO,
     }
 }
 
@@ -143,6 +147,40 @@ pub(super) fn apply_environment_transition(
         to: next.kind(),
     });
     fluid_jump
+}
+
+/// Enter `Vault` at the pre-intent stage when [`vault_entry`] finds a ledge, so
+/// the vault owns this tick. Mirrors [`apply_environment_transition`]: the
+/// `KEEP_ALL` carry runs against the outgoing state (a no-op; the vault intent
+/// authors the velocity), an edge out of `Swim` folds the drift layer's
+/// vertical part and names the fluid left, and the edge is recorded.
+pub(super) fn apply_vault_entry(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    resolved: &ResolvedEnvironment,
+    collision: &CombinedCollisionWorld<'_>,
+    position: Vec3,
+    dt: f32,
+    events: &mut MovementEvents,
+) {
+    let Some(next) = vault_entry(component, input, resolved, collision, position, dt) else {
+        return;
+    };
+    let from = component.movement_state.kind();
+    apply_carry(
+        CarryRule::KEEP_ALL,
+        &mut component.velocity,
+        outgoing_boost(&component.movement_state),
+    );
+    if let Some(fluid) = swim_fluid(&component.movement_state) {
+        events.swim_fluid = Some(fluid);
+        fold_vertical_drift(component);
+    }
+    component.movement_state = next;
+    events.state_edges.push(MovementStateEdge {
+        from,
+        to: next.kind(),
+    });
 }
 
 /// Run the active state's velocity intent, resolving the
@@ -234,6 +272,23 @@ pub(super) fn dispatch_state_intent(
             elapsed_ms,
             boost,
             eye_current,
+        ),
+        MovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover,
+            entry_speed,
+        } => vault_intent(
+            component,
+            dt,
+            collision,
+            *position,
+            elapsed_ms,
+            *target,
+            *start_offset,
+            *mover,
+            *entry_speed,
         ),
         MovementState::Swim { fluid } => {
             let held = held_by_contact(component, |component| {

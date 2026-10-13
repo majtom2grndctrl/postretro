@@ -52,6 +52,10 @@ pub struct PlayerMovementDescriptor {
     /// Optional swim tuning. Absent ⇒ the pawn cannot swim and walks fluid
     /// floors. When present, all of its fields are required and validated.
     pub swim: Option<SwimParams>,
+    /// Optional vault (mantle) tuning. Absent ⇒ the pawn never vaults. Skipped
+    /// when absent, so a descriptor without it encodes as it did before vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<VaultParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway, state-transition impulse). Absent ⇒ view feel disabled (no
     /// `ViewFeelParams` materialized).
@@ -401,6 +405,90 @@ impl SwimParams {
         validate_positive_finite(self.fluid_jump_velocity, "movement.swim.fluidJumpVelocity")?;
         Ok(self)
     }
+}
+
+/// Vault (mantle) tuning. Optional on [`PlayerMovementDescriptor`] (absent: the
+/// pawn never vaults). `max_height`, `swim_max_height` and `duration_ms` are
+/// required in a present block; `from` and `allow_fire` default. Never
+/// map-overridable. See `context/plans/in-progress/movement--vault` until the
+/// contract lands in `movement.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultParams {
+    /// Highest ledge top a land vault reaches, metres above the feet. Finite and
+    /// above `ground.step_height`; ledges at or below the step-up limit step up.
+    pub max_height: f32,
+    /// Highest ledge top a vault out of fluid reaches, metres above the fluid
+    /// surface. Finite and > 0.
+    pub swim_max_height: f32,
+    /// Time from entry to standing on the top, milliseconds. Finite and > 0.
+    pub duration_ms: f32,
+    /// Entry contexts and the trigger each fires on. A missing context forbids
+    /// entry from it.
+    #[serde(default)]
+    pub from: VaultEntry,
+    /// Whether the pawn may start firing while vaulting. Defaults to `false`:
+    /// the hands are on the ledge.
+    #[serde(default)]
+    pub allow_fire: bool,
+}
+
+impl VaultParams {
+    /// Range-check every field, naming the first bad one as
+    /// `movement.vault.<field>`. `step_height` is the descriptor's
+    /// `ground.step_height`, which `max_height` must exceed. Shared by the
+    /// QuickJS and Luau parsers.
+    pub fn validated(self, step_height: f32) -> Result<Self, DescriptorError> {
+        use crate::data_descriptors::validate_positive_finite;
+        validate_positive_finite(self.max_height, "movement.vault.maxHeight")?;
+        if self.max_height <= step_height {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`movement.vault.maxHeight` must exceed `movement.ground.stepHeight`, got maxHeight {} with stepHeight {}",
+                    self.max_height, step_height,
+                ),
+            });
+        }
+        validate_positive_finite(self.swim_max_height, "movement.vault.swimMaxHeight")?;
+        validate_positive_finite(self.duration_ms, "movement.vault.durationMs")?;
+        Ok(self)
+    }
+}
+
+/// Which contexts a vault may start from, and the trigger each fires on. The
+/// keys follow the composition draft's state names (`ground`, `air`) plus the
+/// shipped `Swim` state; a dash counts as the context it was entered from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultEntry {
+    /// Airborne `Normal` or `Dash`.
+    #[serde(default)]
+    pub air: Option<VaultTrigger>,
+    /// Grounded `Normal` or `Dash`.
+    #[serde(default)]
+    pub ground: Option<VaultTrigger>,
+    /// `Swim` with the tick eye out of the fluid.
+    #[serde(default)]
+    pub swim: Option<VaultTrigger>,
+}
+
+impl Default for VaultEntry {
+    /// `{ air: "auto", swim: "auto" }`: a grounded pawn walking or jumping into a
+    /// ledge does not vault unless `ground` is opted in.
+    fn default() -> Self {
+        Self {
+            air: Some(VaultTrigger::Auto),
+            ground: None,
+            swim: Some(VaultTrigger::Auto),
+        }
+    }
+}
+
+/// What fires a vault from an enabled context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VaultTrigger {
+    /// The wish pushes into a valid ledge.
+    Auto,
+    /// Jump is held or buffered at a valid ledge.
+    Jump,
 }
 
 /// First-person view-feel tuning: a render-only camera effect bundle (head bob,

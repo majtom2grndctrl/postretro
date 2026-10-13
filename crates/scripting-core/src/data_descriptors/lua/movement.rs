@@ -256,6 +256,7 @@ pub fn movement_descriptor_from_lua(
         crouch,
         slide,
         swim,
+        vault: None,
         view_feel,
         sounds,
     })

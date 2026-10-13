@@ -63,6 +63,7 @@ use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, FluidRegistry,
     ForgivenessParams, GroundParams, GroundRef, HealthDescriptor, NumberOrIr,
     PlayerMovementComponent, PlayerMovementDescriptor, SlideParams, SpeedParams, SwimParams,
+    VaultParams,
 };
 
 pub(crate) const DT: f32 = 1.0 / 60.0;
@@ -272,6 +273,7 @@ pub(crate) fn player_descriptor() -> PlayerMovementDescriptor {
             min_duration_ms: 250.0,
         }),
         swim: None,
+        vault: None,
         view_feel: None,
     }
 }
@@ -741,6 +743,27 @@ impl LoopbackHarness {
         for descriptor in &mut self.descriptors {
             if let Some(movement) = descriptor.movement.as_mut() {
                 movement.swim = Some(swim.clone());
+            }
+        }
+        let movement = self.descriptors[0]
+            .movement
+            .as_ref()
+            .expect("the shared player descriptor has movement");
+        self.host_registry
+            .set_component(
+                self.host_pawn,
+                PlayerMovementComponent::from_descriptor(movement),
+            )
+            .unwrap();
+        self
+    }
+
+    /// Give both peers' shared player descriptor a vault block and
+    /// rematerialize the host pawn from it, as [`Self::with_player_swim`] does.
+    pub(crate) fn with_player_vault(mut self, vault: VaultParams) -> Self {
+        for descriptor in &mut self.descriptors {
+            if let Some(movement) = descriptor.movement.as_mut() {
+                movement.vault = Some(vault.clone());
             }
         }
         let movement = self.descriptors[0]

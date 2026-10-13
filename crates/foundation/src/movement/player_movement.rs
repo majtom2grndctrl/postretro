@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use crate::KnockbackResponse;
 use crate::data_descriptors::{
     AirParams, BoolOrIr, CapsuleParams, CrouchParams, DashParams, FallParams, ForgivenessParams,
-    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SwimParams, ViewFeelParams,
+    GroundParams, NumberOrIr, PlayerMovementDescriptor, SlideParams, SwimParams, VaultParams,
+    ViewFeelParams,
 };
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
@@ -128,8 +129,8 @@ fn bind_dash_node(node: &IrNode) -> Result<BoundProgram<MovementScope>, BindErro
 /// `Normal` (walk/run/jump/air-control baseline), `Dash` (directional
 /// velocity-impulse burst), `Crouching` (reduced-speed locomotion with a
 /// shrunk collision capsule), `Sliding` (speed-preserving crouched motion) and
-/// `Swim` (3D fluid locomotion, entered by immersion rather than input).
-/// Later states (wall-run, vault) plug in behind the same seam.
+/// `Swim` (3D fluid locomotion, entered by immersion rather than input) and
+/// `Vault` (a timed mantle onto a ledge). Wall-run plugs in behind the same seam.
 ///
 /// See: context/lib/movement.md §4 (state-machine seam).
 /// Payload-free identifier for the closed movement-state vocabulary. Render-rate
@@ -142,6 +143,7 @@ pub enum MovementStateKind {
     Crouch,
     Slide,
     Swim,
+    Vault,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -194,6 +196,21 @@ pub enum MovementState {
     /// capsule is always standing size, and the re-entry latch outlives the
     /// state, so it lives on the component.
     Swim { fluid: u16 },
+    /// Mantling onto a ledge along a timed rise-then-forward path. Entered at
+    /// the pre-intent stage when the ledge probe finds a reachable top.
+    /// `target` is the landing feet position and `start_offset` the entry feet
+    /// position minus `target`, both mover-local when `mover` is set and world
+    /// otherwise, so a ledge on a moving mover is landed on where it now is.
+    /// `entry_speed` is the horizontal speed at entry, restored along the exit
+    /// direction (`-start_offset` horizontal). `elapsed_ms` counts toward the
+    /// descriptor's `vault.duration_ms`.
+    Vault {
+        elapsed_ms: f32,
+        target: Vec3,
+        start_offset: Vec3,
+        mover: Option<u32>,
+        entry_speed: f32,
+    },
 }
 
 impl MovementState {
@@ -205,6 +222,7 @@ impl MovementState {
             Self::Crouching { .. } => MovementStateKind::Crouch,
             Self::Sliding { .. } => MovementStateKind::Slide,
             Self::Swim { .. } => MovementStateKind::Swim,
+            Self::Vault { .. } => MovementStateKind::Vault,
         }
     }
 }
@@ -243,6 +261,10 @@ pub struct PlayerMovementComponent {
     /// Optional swim tuning, materialized from the descriptor's `swim` field.
     /// `None` ⇒ the pawn cannot swim and walks fluid floors.
     pub swim: Option<SwimParams>,
+    /// Optional vault tuning, materialized from the descriptor's `vault` field.
+    /// `None` ⇒ the pawn never vaults and the ledge probe never casts.
+    #[serde(default)]
+    pub vault: Option<VaultParams>,
     /// Optional first-person view-feel tuning (head bob, strafe tilt, ambient
     /// sway), materialized from the descriptor's `view_feel` field. `None` ⇒
     /// view feel disabled. A render-only camera effect consumed by the
@@ -410,6 +432,7 @@ impl PlayerMovementComponent {
             crouch: desc.crouch.clone(),
             slide,
             swim: desc.swim.clone(),
+            vault: desc.vault.clone(),
             // View feel is a render-only camera effect: clone the descriptor's
             // tuning verbatim (no transform), mirroring ground/air/fall.
             view_feel: desc.view_feel.clone(),
@@ -591,6 +614,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }

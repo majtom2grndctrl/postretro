@@ -267,6 +267,7 @@ pub fn movement_descriptor_from_js<'js>(
         crouch,
         slide,
         swim,
+        vault: None,
         view_feel,
         sounds,
     })

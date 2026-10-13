@@ -110,16 +110,16 @@ fn state_params_by_index(
     }
 }
 
-/// The spring a state key drives. `Swim` has no authored impulse key yet
-/// (`viewFeel.impulse.states` names the four land states), so edges into and
-/// out of swim kick nothing; the other end of such an edge still kicks.
+/// The spring a state key drives. `Swim` and `Vault` have no authored impulse
+/// key yet (`viewFeel.impulse.states` names the four land states), so edges
+/// into and out of them kick nothing; the other end of such an edge still kicks.
 fn state_index(state: MovementStateKind) -> Option<usize> {
     match state {
         MovementStateKind::Normal => Some(0),
         MovementStateKind::Dash => Some(1),
         MovementStateKind::Crouch => Some(2),
         MovementStateKind::Slide => Some(3),
-        MovementStateKind::Swim => None,
+        MovementStateKind::Swim | MovementStateKind::Vault => None,
     }
 }
 

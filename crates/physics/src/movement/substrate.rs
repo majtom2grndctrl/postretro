@@ -32,6 +32,14 @@ const NORMAL_NUDGE: f32 = 1.0e-4;
 const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 
+/// Tallest ledge, metres above the feet, that step-up climbs with room to
+/// spare: the lift, `step_height + STEP_UP_LIFT_MARGIN`, leaves at least one
+/// skin width over such a top beyond the skin the feet already rest at. The
+/// vault probe refuses tops at or below it, so no height falls between the two.
+pub(super) fn step_up_limit(step_height: f32) -> f32 {
+    step_height + STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE
+}
+
 /// Cosine threshold (≈ 60°) for detecting that a second wall contact within
 /// the same tick points in a "significantly different" horizontal direction
 /// from the first — the geometric signature of an interior corner wedge.
@@ -105,7 +113,8 @@ pub(super) fn step_up_lift(
     if !(probe.time_of_impact < probe_dist && probe.normal.y.abs() < cos_walkable) {
         return None;
     }
-    let lifted = current_pos + Vec3::new(0.0, step_height + STEP_UP_LIFT_MARGIN, 0.0);
+    let lifted =
+        current_pos + Vec3::new(0.0, step_up_limit(step_height) + 2.0 * SKIN_DISTANCE, 0.0);
     let lifted_probe = cast_capsule_query(collision, lifted, capsule, dir, probe_dist);
     let lifted_clear = match lifted_probe {
         None => true,
@@ -493,7 +502,7 @@ pub(super) fn integrate_collision(
     )
 }
 
-fn cast_capsule_query(
+pub(super) fn cast_capsule_query(
     collision: &CombinedCollisionWorld<'_>,
     pos: Vec3,
     capsule: &Capsule,
@@ -511,7 +520,7 @@ fn cast_capsule_query(
     )
 }
 
-fn cast_ray_query(
+pub(super) fn cast_ray_query(
     collision: &CombinedCollisionWorld<'_>,
     origin: Vec3,
     dir: Vec3,
@@ -674,10 +683,10 @@ pub(super) fn upward_clearance_probe(
 }
 
 /// Can a capsule of `half_height` (the live radius) centred at `position`
-/// sweep `distance` metres along the unit vertical `direction` without hitting
+/// sweep `distance` metres along the unit `direction` without hitting
 /// anything? A hit strictly within the distance blocks; a distance of zero or
 /// less needs nothing cleared.
-fn clearance_probe(
+pub(super) fn clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
     position: Vec3,

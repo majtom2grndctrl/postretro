@@ -965,6 +965,10 @@ and `SNAPSHOT_VERSION` to 19; `Swim` and the swim re-entry latch share that bump
 environment (level gravity and the host fluid table) advances the tuning epoch to 11. The
 application protocol remains PRLB.
 
+`WireMovementState::Vault` advances `WIRE_VERSION` to 30 and `SNAPSHOT_VERSION` to 20.
+Vault tuning in the movement descriptor advances the tuning epoch to 12. The application
+protocol remains PRLB.
+
 ## Current contract
 
 Authoritative client-server co-op provides entity baseline, delta, and despawn replication; state-slot replication; snapshot interpolation; client input streaming; prediction; and reconciliation.

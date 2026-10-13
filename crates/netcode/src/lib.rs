@@ -88,6 +88,9 @@ mod predict_reconcile_harness_fluid_tables;
 // E24 co-op swim parity: swim entry, exit, fluid jump and its latch through reconcile.
 #[cfg(test)]
 mod predict_reconcile_harness_swim;
+// Co-op vault parity: a predicted mantle replayed from acked baselines.
+#[cfg(test)]
+mod predict_reconcile_harness_vault;
 // E24 swim slots: the output-only immersion component is never read by prediction,
 // replay or the wire merge.
 #[cfg(test)]
@@ -787,6 +790,18 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
                 && floor_normal
                     .as_ref()
                     .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
+        }
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover: _,
+            entry_speed,
+        } => {
+            elapsed_ms.is_finite()
+                && target.iter().all(|c| c.is_finite())
+                && start_offset.iter().all(|c| c.is_finite())
+                && entry_speed.is_finite()
         }
     };
     m.velocity.iter().all(|c| c.is_finite())
@@ -6365,13 +6380,13 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            29,
-            "the push-drift layer in player movement requires wire version 29"
+            30,
+            "the vault movement state requires wire version 30"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            19,
-            "the push-drift layer in player movement requires snapshot version 19"
+            20,
+            "the vault movement state requires snapshot version 20"
         );
     }
 
@@ -7282,6 +7297,7 @@ mod tests {
                 crouch: None,
                 slide: None,
                 swim: None,
+                vault: None,
                 view_feel: None,
             }),
             weapon: None,

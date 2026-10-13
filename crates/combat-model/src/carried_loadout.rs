@@ -55,8 +55,9 @@ pub fn restore_carried_health(
 }
 
 /// Bump whenever the payload's semantic contract changes. This is independent
-/// of the bitcode wire version because the payload itself is JSON.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 11;
+/// of the bitcode wire version because the payload itself is JSON. 12: the
+/// movement descriptor gains `vault` tuning.
+pub const TUNING_PAYLOAD_EPOCH: u32 = 12;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///

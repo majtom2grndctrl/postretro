@@ -86,12 +86,29 @@ pub enum WireMovementState {
     Swim {
         fluid: u16,
     },
+    /// Mantling onto a ledge. `target` (the landing feet position) and
+    /// `start_offset` (entry feet minus `target`) are local to mover `mover`
+    /// when it is set and world otherwise; replay resolves them through the
+    /// tick's mover pose. The duration stays local tuning, and the exit
+    /// direction derives from `start_offset`, so neither is carried.
+    Vault {
+        elapsed_ms: f32,
+        target: [f32; 3],
+        start_offset: [f32; 3],
+        mover: Option<u32>,
+        entry_speed: f32,
+    },
 }
 
 /// Squared-length tolerance for collision-produced floor normals. Bitcode
 /// preserves the source `f32` values exactly, so this only accommodates normal
 /// floating-point normalization error; it is not a normalization step.
 const SLIDING_FLOOR_NORMAL_LENGTH_SQUARED_TOLERANCE: f32 = 1.0e-3;
+
+/// Shortest horizontal start offset a vault payload may carry, metres. The exit
+/// direction normalizes it; a probe-built vault starts most of a metre short of
+/// its target, so anything under a millimetre is malformed.
+const VAULT_MIN_EXIT_OFFSET_M: f32 = 1.0e-3;
 
 fn sliding_floor_normal_is_valid(normal: &[f32; 3]) -> bool {
     // Bound components before squaring so even finite hostile values cannot
@@ -176,13 +193,26 @@ impl WireMovementState {
                         .as_ref()
                         .is_none_or(|normal| normal.iter().all(|c| c.is_finite()))
             }
+            WireMovementState::Vault {
+                elapsed_ms,
+                target,
+                start_offset,
+                mover: _,
+                entry_speed,
+            } => {
+                elapsed_ms.is_finite()
+                    && target.iter().all(|c| c.is_finite())
+                    && start_offset.iter().all(|c| c.is_finite())
+                    && entry_speed.is_finite()
+            }
         }
     }
 
     /// Whether variant-specific movement invariants hold after decoding. Dash may
     /// preserve vertical boost. Slide boost is horizontal, and its optional floor
     /// normal must be safely bounded and near-unit before replay projects gravity
-    /// against it.
+    /// against it. A vault's timer and speed are non-negative, and its start
+    /// offset leaves a horizontal exit direction.
     #[must_use]
     fn has_valid_state_contract(&self) -> bool {
         match self {
@@ -199,6 +229,16 @@ impl WireMovementState {
                     && floor_normal
                         .as_ref()
                         .is_none_or(sliding_floor_normal_is_valid)
+            }
+            WireMovementState::Vault {
+                elapsed_ms,
+                start_offset,
+                entry_speed,
+                ..
+            } => {
+                *elapsed_ms >= 0.0
+                    && *entry_speed >= 0.0
+                    && start_offset[0].hypot(start_offset[2]) >= VAULT_MIN_EXIT_OFFSET_M
             }
         }
     }
@@ -701,6 +741,13 @@ mod tests {
                 floor_normal: Some([0.0, 1.0, 0.0]),
             },
             WireMovementState::Swim { fluid: 3 },
+            WireMovementState::Vault {
+                elapsed_ms: 16.0,
+                target: [5.4, 1.2, 0.0],
+                start_offset: [-0.8, -0.7, 0.0],
+                mover: Some(77),
+                entry_speed: 7.0,
+            },
         ];
         for state in variants {
             // A finite instance of every variant must pass the finiteness gate.
@@ -714,6 +761,8 @@ mod tests {
                 WireMovementState::Sliding { floor_normal, .. } => {
                     5 + floor_normal.map_or(0, |_| 3)
                 }
+                // elapsed_ms + 3 target + 3 start_offset + entry_speed
+                WireMovementState::Vault { .. } => 8,
             };
             // Every variant but the payload-free `Normal` and `Swim` carries
             // floats and so is non-finite-detectable.

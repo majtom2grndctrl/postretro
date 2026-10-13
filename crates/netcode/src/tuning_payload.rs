@@ -89,7 +89,8 @@ mod tests {
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FluidRegistry,
         ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode,
-        SlideParams, SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
+        SlideParams, SlideViewParams, SpeedParams, VaultEntry, VaultParams, VaultTrigger,
+        ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -157,6 +158,17 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: Some(VaultParams {
+                max_height: 1.6,
+                swim_max_height: 0.9,
+                duration_ms: 320.0,
+                from: VaultEntry {
+                    air: Some(VaultTrigger::Auto),
+                    ground: Some(VaultTrigger::Jump),
+                    swim: None,
+                },
+                allow_fire: true,
+            }),
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -547,7 +559,7 @@ mod tests {
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 11,
+                expected: TUNING_PAYLOAD_EPOCH,
                 received: 10,
             })
         ));

@@ -8,16 +8,20 @@ mod dispatch;
 mod environment;
 mod intents;
 pub mod knockback;
+mod ledge_probe;
 mod mover_carry;
 mod push;
 mod substrate;
 mod swim_transition;
+mod vault;
 
 pub(crate) use mover_carry::mover_push_is_blocked_by_static;
 
 use crate::collision::moving::CombinedCollisionWorld;
 use crate::movement::carry::CarryRule;
-use crate::movement::dispatch::{apply_environment_transition, dispatch_state_intent};
+use crate::movement::dispatch::{
+    apply_environment_transition, apply_vault_entry, dispatch_state_intent,
+};
 use crate::movement::environment::resolve_at_tick_start;
 use crate::movement::substrate::{advance_forgiveness, derive_jump_edges, integrate_collision};
 use postretro_collision::EnvironmentView;
@@ -119,6 +123,7 @@ const fn state_entry_address(state: MovementStateKind) -> Option<&'static str> {
         MovementStateKind::Crouch => Some("crouch_started"),
         MovementStateKind::Slide => Some("slide_started"),
         MovementStateKind::Swim => Some("swim_started"),
+        MovementStateKind::Vault => Some("vault_started"),
     }
 }
 
@@ -129,6 +134,7 @@ const fn state_exit_address(state: MovementStateKind) -> Option<&'static str> {
         MovementStateKind::Crouch => Some("crouch_ended"),
         MovementStateKind::Slide => Some("slide_ended"),
         MovementStateKind::Swim => Some("swim_ended"),
+        MovementStateKind::Vault => Some("vault_ended"),
     }
 }
 
@@ -271,6 +277,20 @@ pub fn tick_with_immersion(
         &mut position,
         &mut events,
     );
+    // Vault entry runs next, from the same tick-start pose, unless the swim
+    // seam already took an edge: a swim entry on the tick a land vault would
+    // start wins. The entered vault owns this tick.
+    if events.state_edges.is_empty() {
+        apply_vault_entry(
+            component,
+            input,
+            &resolved_environment,
+            &collision,
+            position,
+            dt,
+            &mut events,
+        );
+    }
     let state_before_dispatch = component.movement_state.kind();
     let transition = dispatch_state_intent(
         component,
@@ -317,11 +337,15 @@ pub fn tick_with_immersion(
     // live buffer on a held button would reset its countdown each tick,
     // extending the window indefinitely. The guard ensures the window counts
     // from the first press and re-arms only after full expiry or consumption.
-    // A swimmer's jump swims up or leaps out; it is never buffered.
+    // A swimmer's jump swims up or leaps out, and a vault ignores jump: neither
+    // is ever buffered, or a jump held through a vault would fire on its exit.
     if input.jump_pressed
         && !previous_ground.is_grounded()
         && !events.jumped
-        && component.movement_state.kind() != MovementStateKind::Swim
+        && !matches!(
+            component.movement_state.kind(),
+            MovementStateKind::Swim | MovementStateKind::Vault
+        )
         && component.jump_buffer_ms > 0.0
         && component.jump_buffer_timer_ms <= 0.0
     {
@@ -395,6 +419,8 @@ mod environment_tests;
 mod push_tests;
 #[cfg(test)]
 mod swim_tests;
+#[cfg(test)]
+mod vault_tests;
 
 #[cfg(test)]
 mod tests {
@@ -466,6 +492,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }

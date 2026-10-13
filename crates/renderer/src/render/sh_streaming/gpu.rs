@@ -31,6 +31,8 @@ use crate::render::sh_volume::ShVolumeResources;
 
 mod bindings;
 mod capacity;
+#[cfg(test)]
+mod geometry_tests;
 mod growth;
 mod indirect;
 mod isolated_tiles;
@@ -57,6 +59,10 @@ use indirect::{RetiredIndirectSparseResources, StreamingIndirectCompose};
 use isolated_tiles::{pack_isolated_upload_span, plan_isolated_uploads};
 
 const PHYSICAL_TILE_DIMENSION: u32 = 8;
+// Seeded whole-demand churn measurement and the additional lifetime margin
+// are pinned by geometry_tests::fixture_churn_fits_fragmentation_headroom.
+const DENSE_FRAGMENTATION_HEADROOM_NUMERATOR: u64 = 9;
+const DENSE_FRAGMENTATION_HEADROOM_DENOMINATOR: u64 = 4;
 const BIND_DELTA_SUBBLOCKS: u32 = 20;
 const BIND_AFFINITY_OFFSETS: u32 = 21;
 const BIND_AFFINITY_LIGHTS: u32 = 24;
@@ -66,7 +72,7 @@ const BIND_DELTA_COMPACTION_META: u32 = 27;
 const DIRECT_DELTA_SECTION: u32 = 41;
 const ANIMATED_DIRECT_DELTA_SECTION: u32 = 45;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AtlasShape {
     pub(super) tiles_per_row: u32,
     pub(super) tiles_per_layer: u32,
@@ -75,17 +81,47 @@ pub(super) struct AtlasShape {
 }
 
 impl AtlasShape {
-    fn for_slots(slots: u32, limits: &wgpu::Limits) -> Result<Self, ShResidencyDrainError> {
+    pub(super) fn for_slots(
+        slots: u32,
+        whole_slots: u32,
+        limits: &wgpu::Limits,
+    ) -> Result<Self, ShResidencyDrainError> {
+        Self::for_slots_with_headroom(
+            slots,
+            whole_slots,
+            limits,
+            DENSE_FRAGMENTATION_HEADROOM_NUMERATOR,
+            DENSE_FRAGMENTATION_HEADROOM_DENOMINATOR,
+        )
+    }
+
+    fn for_slots_with_headroom(
+        slots: u32,
+        whole_slots: u32,
+        limits: &wgpu::Limits,
+        headroom_numerator: u64,
+        headroom_denominator: u64,
+    ) -> Result<Self, ShResidencyDrainError> {
         let maximum = limits.max_texture_dimension_2d / PHYSICAL_TILE_DIMENSION;
-        if maximum == 0 || slots == 0 {
+        if maximum == 0 || slots == 0 || limits.max_texture_array_layers == 0 {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "adapter cannot allocate an 8x8 streamed SH cell",
             });
         }
-        let tiles_per_row = integer_sqrt_ceil(slots).min(maximum).max(1);
+        let whole_with_headroom = u64::from(whole_slots)
+            .checked_mul(headroom_numerator)
+            .ok_or(ShResidencyDrainError::SlotOverflow)?
+            .div_ceil(headroom_denominator);
+        let whole_minimum =
+            whole_with_headroom.div_ceil(u64::from(limits.max_texture_array_layers));
+        let full_layer = u64::from(maximum) * u64::from(maximum);
+        let layer_target = u64::from(slots).max(whole_minimum).min(full_layer).max(1);
+        let layer_target =
+            u32::try_from(layer_target).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
+        let tiles_per_row = integer_sqrt_ceil(layer_target).min(maximum).max(1);
         // Width/height are fixed for a session. Once a layer is full, capacity
         // grows only by appending array layers, never by changing slot geometry.
-        let rows = slots.div_ceil(tiles_per_row).min(maximum).max(1);
+        let rows = layer_target.div_ceil(tiles_per_row).min(maximum).max(1);
         let tiles_per_layer = tiles_per_row
             .checked_mul(rows)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
@@ -108,6 +144,13 @@ impl AtlasShape {
         })
     }
 
+    pub(super) fn capacity_for_slots(self, slots: u32) -> Result<u32, ShResidencyDrainError> {
+        slots
+            .div_ceil(self.tiles_per_layer)
+            .checked_mul(self.tiles_per_layer)
+            .ok_or(ShResidencyDrainError::SlotOverflow)
+    }
+
     pub(super) fn extent(self) -> wgpu::Extent3d {
         wgpu::Extent3d {
             width: self.tiles_per_row * PHYSICAL_TILE_DIMENSION,
@@ -125,12 +168,16 @@ impl AtlasShape {
             return Ok(self);
         }
         let minimum_layers = required_slots.div_ceil(self.tiles_per_layer);
-        let layers = self.layers.saturating_mul(2).max(minimum_layers);
-        if layers > limits.max_texture_array_layers {
-            return Err(ShResidencyDrainError::GpuCapacity {
+        if minimum_layers > limits.max_texture_array_layers {
+            return Err(ShResidencyDrainError::GpuDeviceLimit {
                 reason: "streamed dense pool cannot append enough texture-array layers",
             });
         }
+        let layers = self
+            .layers
+            .saturating_mul(2)
+            .max(minimum_layers)
+            .min(limits.max_texture_array_layers);
         let slots = self
             .tiles_per_layer
             .checked_mul(layers)
@@ -189,6 +236,7 @@ pub(super) struct DenseGrowthInputs<'a> {
 
 pub(super) struct StreamingGpuPools {
     pub(super) shape: AtlasShape,
+    limits: wgpu::Limits,
     pub(super) base_format: wgpu::TextureFormat,
     pub(super) direct_format: Option<wgpu::TextureFormat>,
     pub(super) base: wgpu::Texture,
@@ -271,11 +319,10 @@ pub(super) fn buffer_with_zeroes(
 }
 
 pub(super) fn validate_storage_buffer_size(
-    device: &wgpu::Device,
+    limits: &wgpu::Limits,
     byte_len: u64,
     reason: &'static str,
 ) -> Result<(), ShResidencyDrainError> {
-    let limits = device.limits();
     if byte_len > limits.max_buffer_size || byte_len > limits.max_storage_buffer_binding_size {
         return Err(ShResidencyDrainError::GpuCapacity { reason });
     }

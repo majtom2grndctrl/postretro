@@ -55,6 +55,8 @@ pub(crate) struct StreamingFrame<'a> {
 /// issuer it reads through.
 #[derive(Debug, Default)]
 pub(crate) struct LevelStreaming {
+    /// Outlives SH controller generations and resets only with the level.
+    sh_device_limit_warned: Arc<std::sync::atomic::AtomicBool>,
     lightmap: Option<LightmapStreamingSession>,
     /// The level's cell-demand stage (lead L over id 51); `None` without a
     /// usable id 51. Level-scoped like the hints: it outlives a lightmap

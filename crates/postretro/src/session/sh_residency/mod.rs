@@ -1,7 +1,10 @@
 //! Session-owned SH streaming lifecycle glue: controller, workers, and the
 //! loader-to-renderer drain handoff. See: context/lib/rendering_pipeline.md §4
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +24,8 @@ use crate::streaming::issuer::ReadRoute;
 
 #[cfg(feature = "capture")]
 mod capture_summary;
+#[cfg(test)]
+mod device_limit_tests;
 mod frame_drain;
 mod session_hooks;
 #[cfg(test)]
@@ -51,6 +56,8 @@ pub(crate) struct ShStreamingSession {
     /// Read counters for the sync-proof path, which reads on the frame thread
     /// without workers. Capture runs in that mode, so its report needs them.
     sync_stats: ShWorkerStats,
+    /// Shared by replacements within the loaded level, including mode changes.
+    device_limit_warned: Arc<AtomicBool>,
 }
 
 impl ShStreamingSession {
@@ -92,7 +99,7 @@ impl ShStreamingSession {
         Self::from_renderer(manifest, renderer, hints)
     }
 
-    pub(in crate::session) fn from_snapshot(
+    pub(crate) fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
         hints: Arc<ClusterHints>,
@@ -109,6 +116,7 @@ impl ShStreamingSession {
             live: ShStreamingLiveDiagnostics::default(),
             log_window: ShStreamingLogWindow::default(),
             sync_stats: ShWorkerStats::default(),
+            device_limit_warned: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -228,13 +236,26 @@ impl ShStreamingSession {
         outcome: ShDrainOutcome,
         renderer: &Renderer,
     ) -> Result<()> {
-        self.controller.apply_drain_outcome(outcome)?;
+        self.apply_controller_outcome(outcome)?;
         let snapshot = renderer.sh_residency_snapshot().with_context(
             || "[SH streaming] renderer lost its residency snapshot before outcome accounting",
         )?;
         self.controller
             .update_gpu_charges(fixed_gpu_charges(snapshot))?;
         self.refresh_diagnostics(Some(&snapshot))
+    }
+
+    /// Warn only after the controller has validated and applied the complete
+    /// outcome. Invalid renderer handoffs must not spend the level's warning.
+    pub(crate) fn apply_controller_outcome(&mut self, outcome: ShDrainOutcome) -> Result<()> {
+        let first_refused = outcome.refused.first().copied();
+        self.controller.apply_drain_outcome(outcome)?;
+        warn_device_limit_once(&self.device_limit_warned, first_refused);
+        Ok(())
+    }
+
+    pub(in crate::session) fn share_device_limit_warning(&mut self, warned: Arc<AtomicBool>) {
+        self.device_limit_warned = warned;
     }
 
     /// Reassembles the live diagnostics after the renderer has reported this
@@ -309,6 +330,17 @@ impl ShStreamingSession {
         })?;
         self.mark_compose_submitted();
         Ok(())
+    }
+}
+
+fn warn_device_limit_once(warned: &AtomicBool, first_refused: Option<u32>) {
+    if let Some(cluster_id) = first_refused
+        && !warned.swap(true, Ordering::Relaxed)
+    {
+        log::warn!(
+            "[SH streaming] device limit refused cluster {cluster_id}; \
+             unavailable lighting uses the miss fallback for this level"
+        );
     }
 }
 

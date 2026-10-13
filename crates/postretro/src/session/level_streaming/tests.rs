@@ -993,3 +993,102 @@ fn no_production_path_calls_spawn_lightmap_preload() {
     }
     assert!(offenders.is_empty(), "{offenders:#?}");
 }
+
+// Regression: a device-limit refusal must not end Settling or reset its
+// level warning when SH's controller generation is replaced.
+#[test]
+fn sh_device_limit_refusal_holds_until_timeout_and_warns_once_across_mode_replacements() {
+    use crate::session::level_streaming::settle::{ResourceSettle, SettleReport};
+    use crate::startup::settling::{SETTLE_TIMEOUT, SettleRelease, settle_decision};
+    use postretro_level_loader::ShDrainOutcome;
+    use postretro_test_log_capture::LogCapture;
+
+    let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let manifest = Arc::clone(world.sh_stream_manifest().unwrap());
+    let wanted = |mode| WantedStreaming {
+        sh: Some((&manifest, mode)),
+        lightmap: None,
+        cluster_directory: world.cluster_directory(),
+        residency_set: None,
+    };
+    let make_sh = |manifest, mode, _| anyhow::Ok(sh_session(manifest, mode));
+    let mut level = LevelStreaming::default();
+    let mut sh = None;
+    let cpu = StageFrame::default();
+    let visible = VisibleCells::Culled(vec![0]);
+    let capture = LogCapture::start();
+
+    let refuse = |level: &mut LevelStreaming, sh: &mut Option<ShStreamingSession>| {
+        let batch = level
+            .prepare_drains(sh, None, settling_frame(&visible, 0, &cpu))
+            .unwrap();
+        assert_eq!(batch.ready.len(), 1);
+        sh.as_mut()
+            .unwrap()
+            .apply_controller_outcome(ShDrainOutcome {
+                refused: vec![0],
+                ..Default::default()
+            })
+            .unwrap();
+    };
+    level
+        .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), make_sh)
+        .unwrap();
+    let first_generation = sh.as_ref().unwrap().generation();
+    refuse(&mut level, &mut sh);
+    let report = SettleReport {
+        sh: ResourceSettle::of(Some(sh.as_ref().unwrap().unsettled_targets())),
+        lightmap: ResourceSettle::NotStreamed,
+    };
+    assert_eq!(report.sh, ResourceSettle::Unsettled(1));
+    assert_eq!(
+        settle_decision(report, SETTLE_TIMEOUT - std::time::Duration::from_millis(1)),
+        None
+    );
+    assert_eq!(
+        settle_decision(report, SETTLE_TIMEOUT),
+        Some(SettleRelease::TimedOut(report))
+    );
+    capture.assert_logged_once(log::Level::Warn, "device limit refused cluster 0");
+    capture.assert_not_logged(log::Level::Warn, "read/decode failed");
+
+    // Reveal uses the same failure state; an episode beginning here counts
+    // device-limited. Replacing just SH starts a fresh controller, not a level.
+    let batch = level
+        .prepare_drains(&mut sh, None, frame(&visible, 0, &cpu))
+        .unwrap();
+    assert!(batch.ready.is_empty());
+    sh.as_mut()
+        .unwrap()
+        .apply_controller_outcome(ShDrainOutcome::default())
+        .unwrap();
+    level
+        .ensure_sessions(&mut sh, wanted(ShStreamingMode::Async), make_sh)
+        .unwrap();
+    assert_ne!(sh.as_ref().unwrap().generation(), first_generation);
+    level
+        .ensure_sessions(&mut sh, wanted(ShStreamingMode::SyncProof), make_sh)
+        .unwrap();
+    refuse(&mut level, &mut sh);
+    capture.assert_logged_once(log::Level::Warn, "device limit refused cluster 0");
+
+    // Even the same bytes loaded anew form another level lifetime.
+    let reloaded = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    let reloaded_manifest = Arc::clone(reloaded.sh_stream_manifest().unwrap());
+    capture.clear();
+    level
+        .ensure_sessions(
+            &mut sh,
+            WantedStreaming {
+                sh: Some((&reloaded_manifest, ShStreamingMode::SyncProof)),
+                lightmap: None,
+                cluster_directory: reloaded.cluster_directory(),
+                residency_set: None,
+            },
+            make_sh,
+        )
+        .unwrap();
+    refuse(&mut level, &mut sh);
+    capture.assert_logged_once(log::Level::Warn, "device limit refused cluster 0");
+}

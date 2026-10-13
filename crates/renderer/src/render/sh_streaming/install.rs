@@ -31,6 +31,8 @@ impl ShResidencyState {
         prepared: &PreparedShCluster,
     ) -> Result<(), ShResidencyDrainError> {
         let cluster_id = prepared.chunk.cluster_id;
+        let trace_started = log::log_enabled!(log::Level::Trace).then(std::time::Instant::now);
+        let mut upload_copy_regions = 0;
         if self.gpu.is_some() && gpu.is_none() {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed install requires device handles while GPU pools exist",
@@ -83,6 +85,7 @@ impl ShResidencyState {
                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
             let staged_result =
                 self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged);
+            upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
             staged_result?;
         }
@@ -106,6 +109,12 @@ impl ShResidencyState {
             },
         );
         self.pending_promotion.insert(cluster_id);
+        if let Some(started) = trace_started {
+            log::trace!(
+                "[Renderer] streamed SH install: cluster={cluster_id} upload_copy_regions={upload_copy_regions} install_cpu_micros={}",
+                started.elapsed().as_micros()
+            );
+        }
         Ok(())
     }
 

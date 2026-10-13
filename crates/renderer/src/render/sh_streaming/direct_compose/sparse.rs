@@ -305,6 +305,7 @@ fn is_word_aligned_tile_row(row: &DirectSparseRowUpload<'_>) -> bool {
 
 pub(super) fn build_grid_and_sparse(
     device: &wgpu::Device,
+    limits: &wgpu::Limits,
     base: &ShStreamBaseMetadata,
     source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
     shape: AtlasShape,
@@ -362,7 +363,7 @@ pub(super) fn build_grid_and_sparse(
             "streamed direct compaction table exceeds adapter storage limits",
         ),
     ] {
-        validate_storage_buffer_size(device, byte_len, reason)?;
+        validate_storage_buffer_size(limits, byte_len, reason)?;
     }
     let row_pairs = buffer_with_zeroes(
         device,
@@ -423,7 +424,6 @@ pub(super) fn build_grid_and_sparse(
         compact_atlas_tiles_per_row: shape.tiles_per_row,
         compact_atlas_tiles_per_layer: shape.tiles_per_layer,
     };
-    let limits = device.limits();
     let record_size = u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE)
         .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     if record_size > limits.max_uniform_buffer_binding_size {

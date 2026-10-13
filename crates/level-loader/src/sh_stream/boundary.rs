@@ -138,6 +138,9 @@ impl ShDrainBatch {
 pub struct ShDrainOutcome {
     pub accepted: Vec<u32>,
     pub dropped: Vec<u32>,
+    /// Device-limit refusals release their payload and fail only this cluster.
+    /// Disjoint from accepted, dropped and deferred; no permit is retained.
+    pub refused: Vec<u32>,
     pub deferred: Vec<PreparedShCluster>,
     /// Clusters actually released by the renderer, not merely requested for
     /// eviction. An installed owner may remain pinned by a dependent.

@@ -6,10 +6,10 @@ read at: e8f607b94
 
 ## Corrections
 - Source changes since brief read-at 6078fff do not change SH pools, planner or controller. Re-read current geometry, growth, install/outcome, failure/retry and frame error boundaries; Decision premises hold.
-- No extra worktrees exist. Initial disk recovery cleared Cargo incremental and downloaded archive caches; owner is also running cargo clean. No builds until owner clean finishes.
+- No extra worktrees exist. Initial disk recovery cleared Cargo incremental and downloaded archive caches; owner is also running cargo clean. Owner confirmed cargo clean finished; builds remain centralized after concurrent edits.
 
 ## Delegated answers
-- Fragmentation headroom: pending the fixed seeded churn experiment; choose the smallest tested passing factor times a margin of at least 1.5, and report largest refused factor.
+- Fragmentation headroom: lightweight first-fit experiment tested 1.25× (refused) and 1.5× (passed with rectangular padding); select 2.25× = 1.5× × 1.5 lifetime margin, confirmed by `fixture_churn_fits_fragmentation_headroom` in the focused renderer run. Frozen writer-closure sizes: campaign-test (21, total 57,296 tiles) and stress-warren-hallway-inspection (193, total 1,041,044 tiles). Xorshift64 seeds [1, 7, 19, 43, 101, 313, 911, 2027], 20,000 steps/seed, shuffled full demand every 257 steps and both ends. Raw peak ratios 1.5054105 / 1.0726233; largest tested refused factor 1.25×.
 
 ## AC-to-proof
 
@@ -49,11 +49,11 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Shared geometry, captured limits, churn headroom and zero-share production-load proof (highest-risk premise) | integrating executor / renderer worker | — | pending |
-| 2 | Clamp dense and all sparse growth, distinguish refusal from contract errors, GPU ordering/rollback proof | renderer worker | 1 | pending |
-| 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | pending |
-| 4 | Level-scoped warnings, diagnostic consumers, Settling/capture integration and proof | integrating executor | 2, 3 | pending |
-| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | pending |
+| 1 | Shared geometry, captured limits, churn headroom and zero-share production-load proof (highest-risk premise) | integrating executor / renderer worker | — | complete: actual PRL zero-share load, geometry cases and seeded churn pass |
+| 2 | Clamp dense and all sparse growth, distinguish refusal from contract errors, GPU ordering/rollback proof | renderer worker | 1 | complete: real GPU clamp/refusal/rollback/readback proofs pass |
+| 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | complete: 21 refusal tests passed in 219-test focused app run |
+| 4 | Level-scoped warnings, diagnostic consumers, Settling/capture integration and proof | integrating executor | 2, 3 | complete: session/Settling/log proofs, capture serialization (1), Streaming tab (5) pass |
+| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated review-panel next |
 
 ## Shared contracts and performance
 - `ShDrainOutcome.refused: Vec<u32>` accounts for device-limit failures exclusively and is disjoint from accepted/dropped/deferred. Renderer drops refused payloads; app releases their in-drain ready charge and permit and records the latest failure cause.
@@ -66,3 +66,15 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 ## External runbook
 - After automated gates, run the pre-change and feature builds on campaign-test and the stress-warren hallway with identical default limits, path, GPU, feature set and diagnostics. Record initial dense atlas bytes, tiles/layer, growth counts, upload copy regions/install and install CPU; verify no device-limit warning. Preserve machine and walk details with results.
 - Manual proof is not yet supplied; leave brief in-progress with test-ready status until it is.
+
+## Verification log
+- `cargo check -p postretro-renderer --tests --features dev-tools`: pass.
+- `cargo check -p postretro --tests --features dev-tools,capture`: pass.
+- Required-GPU growth gate: 8 passed, none skipped, AMD Radeon Pro 5300M / Metal. A subsequent full SH-focused run passed 171/172; the newly strengthened actual-PRL fixture needed canonical stencil/node closure counts. Corrected fixture; rerun pending.
+- `CARGO_INCREMENTAL=0 cargo test -p postretro --bin postretro --features dev-tools,capture sh_`: 219 passed, 2 existing heavy tests ignored, 0 failed. Includes all 21 new controller refusal tests and real hash-error, level warning replacement and actual Settling→Running proofs.
+- Initial focused failures were corrected fixture assumptions (sparse stride, canonical body/index counts, untargeted background residents) and the named hash error’s case. No production behavior was weakened.
+- Cold rebuilds use `CARGO_INCREMENTAL=0` to contain disk use. Cargo archive restoration required normal host network access; required GPU runs use host Metal access.
+
+- Latest focused renderer gate: `POSTRETRO_REQUIRE_GPU=1 CARGO_INCREMENTAL=0 cargo test -p postretro-renderer --lib --features dev-tools render::sh_streaming -- --nocapture`: **172 passed**, zero ignored/skipped, AMD Radeon Pro 5300M / Metal. Actual PRL→loader→manifest→zero-share initialization installs all 9 clusters together.
+- Capture device-limit serialization: **1 passed**. Streaming-tab consumer: **5 passed**.
+- Review-readiness gate passed: format, touched-crate checks including tests with dev-tools/capture, and the focused test counts above.

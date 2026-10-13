@@ -210,12 +210,13 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
                     ),
                 ),
                 (
-                    "Misses: budget / compose / failed",
+                    "Misses: budget / compose / failed / device limit",
                     format!(
-                        "{} / {} / {}",
+                        "{} / {} / {} / {}",
                         d.miss_buckets.held_by_drain_budget,
                         d.miss_buckets.awaiting_compose,
                         d.miss_buckets.failed,
+                        d.miss_buckets.device_limited,
                     ),
                 ),
                 ("Re-reads", d.rereads.to_string()),
@@ -507,6 +508,10 @@ mod tests {
     #[test]
     fn sections_group_gauges_io_installs_growth_and_compose() {
         let diagnostics = ShStreamingLiveDiagnostics {
+            miss_buckets: crate::render::ShMissBuckets {
+                device_limited: 5,
+                ..Default::default()
+            },
             reads_issued: 8,
             coalesced_reads: 2,
             active_capacity_bytes: 4 * 1024 * 1024,
@@ -563,6 +568,13 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(value("Residency", "Logical occupancy"), "1.0 MiB (25%)");
+        assert_eq!(
+            value(
+                "Installs",
+                "Misses: budget / compose / failed / device limit"
+            ),
+            "0 / 0 / 0 / 5"
+        );
         assert_eq!(value("I/O", "Coalesced reads"), "2 (25% of reads)");
         assert_eq!(
             value("Installs", "Install CPU last/max drain"),

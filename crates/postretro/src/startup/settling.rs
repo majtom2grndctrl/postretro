@@ -377,6 +377,86 @@ mod tests {
     }
 
     #[test]
+    fn device_limited_mandatory_sh_reveals_into_running_only_at_timeout() {
+        use crate::session::level_streaming::{StreamingFrame, WantedStreaming};
+        use crate::session::sh_residency::ShStreamingSession;
+        use crate::sh_streaming::sync_manifest_test_fixture;
+        use postretro_level_loader::{ShDrainOutcome, ShStreamingMode};
+        use postretro_stage_timing::StageFrame;
+        use postretro_visibility::{VisibilityPath, VisibleCells};
+        use std::sync::Arc;
+
+        let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
+        let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+        let manifest = Arc::clone(world.sh_stream_manifest().unwrap());
+        let started = Instant::now();
+        let mut app = settling_app(started);
+        let capture = LogCapture::start();
+        let session = app.session.as_mut().unwrap();
+        session
+            .level_streaming
+            .ensure_sessions(
+                &mut session.sh_streaming,
+                WantedStreaming {
+                    sh: Some((&manifest, ShStreamingMode::SyncProof)),
+                    lightmap: None,
+                    cluster_directory: world.cluster_directory(),
+                    residency_set: None,
+                },
+                |manifest, _, hints| {
+                    ShStreamingSession::from_snapshot(
+                        manifest,
+                        postretro_renderer::ShResidencySnapshot {
+                            effective_floor_bytes: 1024 * 1024,
+                            ..Default::default()
+                        },
+                        hints.unwrap(),
+                    )
+                },
+            )
+            .unwrap();
+        let cpu = StageFrame::default();
+        let visible = VisibleCells::Culled(vec![0]);
+        let batch = session
+            .level_streaming
+            .prepare_drains(
+                &mut session.sh_streaming,
+                None,
+                StreamingFrame {
+                    visible_cells: &visible,
+                    camera_cell: Some(0),
+                    path: VisibilityPath::PrlPortal { walk_reach: 0 },
+                    monotonic_seconds: 0.0,
+                    settling: true,
+                    cpu: &cpu,
+                },
+            )
+            .unwrap();
+        assert_eq!(batch.ready.len(), 1);
+        session
+            .sh_streaming
+            .as_mut()
+            .unwrap()
+            .apply_controller_outcome(ShDrainOutcome {
+                refused: vec![0],
+                ..Default::default()
+            })
+            .unwrap();
+        let report = session.settle_report();
+        assert_eq!(report.sh, ResourceSettle::Unsettled(1));
+        app.advance_settle(report, started + SETTLE_TIMEOUT - Duration::from_millis(1));
+        assert_eq!(release(&app), None);
+        assert_eq!(app.boot_state, BootState::Settling);
+        app.advance_settle(report, started + SETTLE_TIMEOUT);
+        assert!(app.reveal_if_released());
+        assert_eq!(app.boot_state, BootState::Running);
+        assert!(app.exit_result.is_ok());
+        capture.assert_logged_once(log::Level::Warn, "device limit refused cluster 0");
+        capture.assert_logged_once(log::Level::Warn, TIMEOUT_WARNING);
+        capture.assert_not_logged(log::Level::Warn, "read/decode failed");
+    }
+
+    #[test]
     fn settle_timeout_warns_once_and_reveals_into_running() {
         let capture = LogCapture::start();
         let started = Instant::now();

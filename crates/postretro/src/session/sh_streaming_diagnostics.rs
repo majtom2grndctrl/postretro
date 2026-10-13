@@ -139,7 +139,8 @@ fn format_line(
         "[SH streaming] last {elapsed_seconds:.1} s: {reads} reads ({coalesced} coalesced) \
          {read_bytes} incl. {gap_bytes} gap, {installs} installs {installed_bytes}, \
          {misses} misses (reach {miss_reach}, pressure {miss_pressure}, in flight \
-         {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}), \
+         {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}, \
+         device limit {miss_device_limit}), \
          {rereads} re-reads, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
          {discarded} discarded ({discarded_bytes}), {budget_limited} budget-limited drains, \
          {growths} pool growths (+{growth_bytes}), install CPU {install_ms:.2} ms \
@@ -167,6 +168,7 @@ fn format_line(
         miss_budget = delta(|d| d.miss_buckets.held_by_drain_budget),
         miss_compose = delta(|d| d.miss_buckets.awaiting_compose),
         miss_failed = delta(|d| d.miss_buckets.failed),
+        miss_device_limit = delta(|d| d.miss_buckets.device_limited),
         rereads = delta(|d| d.rereads),
         evictions = delta(|d| d.evictions),
         retries = delta(|d| d.retries),
@@ -337,6 +339,10 @@ mod tests {
         };
         let now = ShStreamingLiveDiagnostics {
             reads_issued: 13,
+            miss_buckets: postretro_renderer::ShMissBuckets {
+                device_limited: 3,
+                ..Default::default()
+            },
             coalesced_reads: 1,
             read_bytes: 3 * 1024 * 1024,
             gap_bytes: 2048,
@@ -371,6 +377,7 @@ mod tests {
         let line = format_line(5.0, &before, &now);
         assert!(line.starts_with("[SH streaming] last 5.0 s: 3 reads (1 coalesced)"));
         assert!(line.contains("2.0 MiB incl. 2.0 KiB gap"), "{line}");
+        assert!(line.contains("device limit 3"), "{line}");
         assert!(line.contains("24 targets (8 lead)"), "{line}");
         assert!(line.contains("4/8 permits"), "{line}");
         assert!(line.contains("p95 9.3"), "{line}");

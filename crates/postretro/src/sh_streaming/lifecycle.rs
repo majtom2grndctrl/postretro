@@ -234,6 +234,7 @@ impl ShResidencyController {
             .accepted
             .iter()
             .chain(&outcome.dropped)
+            .chain(&outcome.refused)
             .copied()
             .chain(
                 outcome
@@ -314,6 +315,21 @@ impl ShResidencyController {
                 .expect("preflight validated dropped permit");
             self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
         }
+        for cluster_id in outcome.refused {
+            let byte_charge = self
+                .in_drain
+                .remove(&cluster_id)
+                .expect("outcome ids were checked");
+            self.release_ready_charge(byte_charge)
+                .expect("preflight validated refused ready bytes");
+            self.mark_failure(
+                cluster_id,
+                FailureCause::DeviceLimit {
+                    refused_at: self.last_time.expect("drained target has an update time"),
+                },
+            )
+            .expect("preflight validated refused permit");
+        }
         for prepared in outcome.deferred {
             let cluster_id = prepared.chunk.cluster_id;
             let tracked = self
@@ -381,7 +397,7 @@ impl ShResidencyController {
             accounting.add_logical(self.topology.requested_resident_bytes[cluster_id as usize])?;
             Self::increment_counter(&mut counters.installs, "stream installs")?;
         }
-        for &cluster_id in &outcome.dropped {
+        for &cluster_id in outcome.dropped.iter().chain(&outcome.refused) {
             self.preflight_drained_ready_state(cluster_id)?;
             let byte_charge = self.in_drain[&cluster_id];
             accounting.cpu.ready.remove(byte_charge, "ready bytes")?;

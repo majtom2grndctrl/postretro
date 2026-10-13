@@ -105,6 +105,7 @@ impl LevelStreaming {
         if level_changed {
             self.hints = None;
             self.cell_demand = None;
+            self.sh_device_limit_warned = Arc::default();
         }
         if self.cell_demand.is_none() {
             self.cell_demand = wanted
@@ -117,7 +118,9 @@ impl LevelStreaming {
                 .context("[Streaming] id-49 cluster hints")?;
         }
         if let Some((manifest, mode)) = wanted.sh {
-            *sh = Some(make_sh(Arc::clone(manifest), mode, self.hints.clone())?);
+            let mut streaming = make_sh(Arc::clone(manifest), mode, self.hints.clone())?;
+            streaming.share_device_limit_warning(Arc::clone(&self.sh_device_limit_warned));
+            *sh = Some(streaming);
         }
         if let Some(view) = lightmap
             && self.lightmap.is_none()
@@ -135,6 +138,7 @@ impl LevelStreaming {
         self.retire(sh);
         self.hints = None;
         self.cell_demand = None;
+        self.sh_device_limit_warned = Arc::default();
         self.poll_retirement();
     }
 

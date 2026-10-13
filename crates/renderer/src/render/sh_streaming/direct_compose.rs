@@ -79,6 +79,7 @@ impl StreamingDirectCompose {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,
@@ -99,6 +100,7 @@ impl StreamingDirectCompose {
         };
         let promotion = StreamingPromotionPass::new(
             device,
+            limits,
             base,
             sources.direct_delta.as_ref(),
             shape,
@@ -111,6 +113,7 @@ impl StreamingDirectCompose {
         let animated = match sources.animated_direct_delta.as_ref() {
             Some(source) => Some(StreamingAnimatedPass::new(
                 device,
+                limits,
                 base,
                 source,
                 shape,
@@ -192,6 +195,7 @@ impl StreamingDirectCompose {
     pub(super) fn build_sparse_replacement(
         &self,
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,
@@ -215,6 +219,7 @@ impl StreamingDirectCompose {
                 };
                 let replacement = StreamingPromotionPass::new(
                     device,
+                    limits,
                     base,
                     sources.direct_delta.as_ref(),
                     shape,
@@ -237,6 +242,7 @@ impl StreamingDirectCompose {
                 )?;
                 let replacement = StreamingAnimatedPass::new(
                     device,
+                    limits,
                     base,
                     source,
                     shape,

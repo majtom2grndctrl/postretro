@@ -76,8 +76,15 @@ The device limit is reachable, but only at the edge of the content range.
   (`FirstFitRanges`, whose capacity is an address high-water) can still push the high-water past
   the live total, hence the headroom factor.
 - **Probe-indirection addressing** (`PROBE_INDIRECTION_SLOT_SHIFT`, 27 slot bits) is a further
-  capacity bound reported as `SlotOverflow`. It sits orders of magnitude past the layer limit,
-  so it is out of scope.
+  capacity bound reported as `SlotOverflow`. It binds only past about 200 GB of dense data, so it
+  is not a growth limit; overflow stays a fatal guard.
+- **Sparse caps on a streamed level.** The loader's 128 MiB per-section floor
+  (`MAX_DELTA_SECTION_BINDING_BYTES`) runs only on non-streamed loads; the streamed manifest reads
+  ids 27/41/45 with no size floor. The only bound is the compiler's delta cap
+  (`DEFAULT_MAX_PAYLOAD_BYTES` = 256 MiB, `--sh-delta-max-size`, no upper bound). A sparse GPU
+  buffer can outgrow its source: growth doubles the allocator high-water, and the compaction table
+  adds 12 bytes per whole-level affinity cell, which the cap does not count. At the default cap a
+  buffer reaches the binding only past about 4× sparse fragmentation.
 
 ## Commitments touched
 
@@ -114,21 +121,20 @@ The device limit is reachable, but only at the edge of the content range.
 - `index.md` §1.1: 2 GB VRAM target. The device limit sits above that target for all but the
   degenerate dense case. A VRAM ceiling belongs to stage 5's tiers.
 
-## Deferral semantics
+## Refusal semantics
 
 - `ShDrainOutcome::deferred` keeps a chunk's payload, ready bytes and stream permit, and the
-  controller returns it to `Ready` (`apply_drain_outcome`). Retirement-pressure deferrals use
-  this path today, and their misses count as `ShMissBuckets::held_by_drain_budget`
-  (`targeting.rs` `MissCause::HeldByDrainBudget`).
-- Permits: `MAX_STREAM_PERMITS` = 8. A permit covers a cluster from request until install, drop
-  or failure, and every exit releases it. A device-limited cluster therefore leaves through the
-  departure path at refusal, releasing payload and permit once; it holds nothing while it waits.
-- Retry cost: a device-limited cluster is staged again only after a wake, so each wake costs one read and at most one failed staging per cluster.
-- Priority at the limit: with mandatory never evicted and hysteresis residents holding room
-  until their window passes, a refused Visible cluster can sit on the ambient floor while
-  off-screen Lead or hysteresis clusters stay resident, inverting §4's Visible-first order.
-  Lead is mandatory and cannot yield; untargeted hysteresis residents could release early.
-  Only reachable past a true device limit once the layer geometry covers the level.
+  controller returns it to `Ready` (`apply_drain_outcome`). Retirement-pressure deferrals keep
+  this path, and their misses count as `ShMissBuckets::held_by_drain_budget`.
+- A device-limit refusal is a separate outcome. The app marks the cluster failed through the
+  existing failure state, releasing payload, ready bytes and permit once. A permit covers a
+  cluster from request until install, drop or failure, and every exit releases it exactly once.
+- Retry: the existing `FailureState` allows one retry per identity (`retry_spent`) and warns per
+  chunk identity. A device-limit failure leaves the retry unspent and warns through a level-scoped
+  latch instead, so it is retried on every leave and re-entry of its targets. A retry requires the
+  cluster to leave the target set (after hysteresis expires or under pressure) and re-enter on a
+  later horizon change.
+- No wake and no yield: nothing evicts to make room for a refused cluster.
 - Partial growth: a cluster that needs dense growth (fits) and sparse growth (does not) keeps
   the dense growth. The install's own comment accepts this: "a larger pool with the same live
   contents is still a valid pool."
@@ -146,27 +152,24 @@ The device limit is reachable, but only at the edge of the content range.
   which a compile-time check rejects better.
 - **Sparse growth clamped to whole-level need.** Doubling can allocate past what the level could
   ever use (`whole_sparse_capacity` is known at setup). Fixing that is VRAM efficiency, not
-  survival. For dense, whole-level layer sizing makes the device's layer cap equal whole need
-  times the headroom.
+  survival, now that a sparse refusal does not end the session.
 
 ## Rivals
 
-- **Deferral alone, without load-time geometry.** It keeps today's small-layer degenerate case
-  and turns it into ambient-floor pop-in on a level the device can hold, which the 2026-09-28
-  owner decision rules out.
-- **Load-time feasibility instead of runtime deferral.** After whole-level geometry and clamped
-  growth, the remaining runtime refusals are fragmentation past the headroom and a sparse family
-  past the binding. The second is a property of the compiled level and can be rejected at build,
-  and is rejected at build per camera cell, like `LayerOverflow`. Fragmentation is a
-  runtime state, so it still needs a non-fatal backstop.
+- **Refusal handling alone, without load-time geometry.** It keeps today's small-layer degenerate
+  case and turns it into ambient-floor pop-in on a level the device can hold, which the
+  2026-09-28 owner decision rules out.
+- **Load-time feasibility instead of runtime refusal.** After whole-level geometry and clamped
+  growth, the remaining refusals are fragmentation and a sparse family past the binding under a
+  raised delta cap. Fragmentation is runtime state and needs a non-fatal backstop either way; a
+  per-cell build check was weighed and cut (§Reshape).
 - **Compact dense slots at the limit before refusing**, as the lightmap pool repacks before it
   grows. Costlier for SH: every moved node's probe-indirection words must be rewritten. It only
   helps fragmentation past the headroom, which is speculative.
-- **Hold the refused cluster's payload until a wake (parking).** Rejected in round 2: the app
-  learns of confirmed evictions only after the drain, every exit already releases the permit,
-  and permits were the only bound on held payload. Dropping and re-requesting on a wake keeps
-  memory bounded and reuses the departure path; the re-read costs I/O only for content at the
-  device limit.
+- **Hold the refused cluster's payload until a wake (parking), or wake on evictions.** Rejected:
+  the app learns of confirmed evictions only after the drain, a held payload has no bound, and a
+  per-family wake needs eviction reports the outcome lacks. The failure path with an unspent
+  retry reuses existing state and costs a re-read only for content at the device limit.
 
 ## Ordering pins
 
@@ -177,10 +180,21 @@ From `/review-brief` (rows lens, round 1).
 | P1 | Two clusters in one drain: one refused at the limit, one that fits, either order | The refused install rolls back its provisional dense and sparse ranges, address high-water included, before the next ready cluster stages | The fitting cluster installs; the refused one is refused and dropped as device-limited; neither order changes the result |
 | P3 | One cluster needs dense growth that fits and sparse growth that does not | Dense growth commits during staging; the sparse refusal then rolls back the install, not the growth | Dense growth stays (valid pool, one dense retirement pending); cluster is refused and dropped as device-limited; a later cluster this drain that needs dense growth defers as retirement pressure, not device-limited |
 | P4 | A cluster's needed size exceeds the limit while that family's previous generation still retires | The limit verdict precedes the retirement wait, in dense and sparse alike (today dense checks the limit first, sparse checks retirement first) | Device-limited refusal and drop; a cluster that fits but waits defers as retirement pressure |
-| P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The refusal's failure mark lands with outcome N and is read before N+1 retargets | The miss counts device-limited, and so does a dependent whose owner chain waits on the refused owner; the existing failure retry applies on leaving and re-entering the targets or a generation change |
+| P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The refusal's failure mark lands with outcome N and is read before N+1 retargets | A visible episode that starts after the refusal counts device-limited, as does a dependent's episode that starts behind the refused owner; an episode already counted keeps its bucket (P10) |
 | P6 | Refusal during Settling; timeout decided on frame N; reveal on N+1 | Settling counts no misses; the reveal frame is the first Running frame | Settling warns once; reveal proceeds; the reveal frame counts one device-limit miss per refused visible cluster and no second warning |
 | P7 | Refusals across generations within one level, then a level change | Warning latch is level-scoped, not generation- or boot-state-scoped | One warning per level; the next level's first refusal warns again |
 | P9 | Several sparse families need growth for one cluster; one is refused | Every replacement is built before any copy or swap | No family commits when any is refused (current transaction); the cluster is refused and dropped as device-limited |
+| P10 | Visible cluster missing at frame N (counted read-in-flight or held-by-drain-budget), refused in drain N | Misses are counted per visible episode, bucketed at episode start, before the frame's drain | N+1 counts no second miss and moves none between buckets; the device-limit bucket counts only episodes that start after the refusal |
+| P11 | Refusal in the reveal frame's own drain | The reveal frame records misses before its drain | The refused visible cluster's reveal miss stays in held-by-drain-budget; the device-limit warning logs once if no earlier refusal in the level warned; Running continues |
+| P12 | Refusal in drain N; cluster leaves the view at N+1 and returns | A drained cluster is targeted when refused; `left_target` is set only when the cluster leaves the target set, after hysteresis expires or under pressure, stamped with that update's horizon revision | A return within the 2 s hysteresis window is no retry; a return after the cluster left the targets, on a later horizon change, retries; a suppression lifted without a horizon change does not retry |
+| P13 | Owner refused while dependents want it | Dependents are requested only after their whole owner closure is Sampleable | No dependent is Ready or holds a permit behind a refused owner; dependents stay Absent and unrequested while it is failed, and are requested after its retry installs |
+| P14 | A cluster refused, retried, then refused again in the same level; or read-failed, retried, then refused | A device-limit failure never spends `retry_spent`; a read failure spends it once | The twice-refused cluster retries again on its next leave and re-entry; a read failure that already spent its retry is not retried again, and a later refusal of that cluster still retries on leave and re-entry |
+| P15 | Cluster failed by refusal; SH session replaced within the level (mode change) | A new residency generation is a new controller; level-scoped state survives | The new controller holds no failure and requests the cluster afresh; the device-limit latch, held at level scope, does not warn again |
+| P16 | Eviction and refusal in one drain; eviction in a later drain | The renderer evicts before it stages installs | A cluster refused in drain N already saw that drain's freed room; an eviction in N+k does not change its failed state |
+
+## Review history
+
+Rounds 2–4 below argued designs the reshape cut (parking, per-family wake, yield, shared derivations, per-cell build check). Live rulings from them: no yield rule; the `GpuCapacity` device-limit/contract split; corrupt-on-disk chunks fail per cluster through the loader's hash and body checks. Everything else in those rounds is history.
 
 ## Premise review notes (round 1)
 

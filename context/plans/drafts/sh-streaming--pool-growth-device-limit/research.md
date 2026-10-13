@@ -193,3 +193,9 @@ From `/review-brief` (rows lens, round 1).
 - The device limits are private renderer constants (`REQUIRED_MAX_TEXTURE_ARRAY_LAYERS`, and the storage binding and buffer sizes in `renderer_init_resources.rs`). level-compiler sits in a lower layer and cannot depend on the renderer.
 - Precedent: the lightmap side mirrors its limit as `RUNTIME_LAYER_FLOOR` in the dry run's `layouts.rs`. Either hoist the limits to a shared lower crate or mirror them with an equality test.
 - The baked set is id 51 (`cell_residency_set.rs`) plus id-49 pins plus owner closure. Sparse bytes per cluster follow `grow_sparse` sizing.
+
+## Premise review notes (round 1)
+
+- A sparse family's device limit is its tightest buffer, not the entry or tile pool alone. Each replacement validates the tile pool (tiles ÷ 2 words), the entry pool (entries words) and the compaction table (3 × affinity rows + entries words) against the 2 GiB − 8 binding; the compaction table binds first on entries. A clamp or build check that caps entries at binding ÷ 4 still fails (`StreamingIndirectCompose::new`, direct sparse replacement, `validate_storage_buffer_size`).
+- `GpuCapacity` from install splits cleanly at two growth seams. Device-limit: `grown_for_slots` (layers) and `validate_storage_buffer_size` inside a sparse replacement. Contract, still fatal: missing device handles, lost id-35 or compose views during growth, no id-35 base, unsupported format, upload misalignment after commit, and the post-growth checks "streamed indirect sparse pool needs growth", "streamed indirect compaction metadata needs growth" and "streamed direct sparse row exceeds its GPU pool capacity". Those last three fire only when growth undersized a pool; classing them as device-limit would turn a growth bug into silent deferral.
+- The per-cell build check can run only after the ClusterDirectory stage: id 51 is baked after the SH bake, and the cell→cluster map, pins and directory exist from ClusterDirectory on.

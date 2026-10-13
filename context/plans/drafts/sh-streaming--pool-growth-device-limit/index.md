@@ -70,8 +70,8 @@ Pins P1–P10 are in `research.md` §Ordering pins.
   it fails if layer size still follows the initial share.
 - [ ] At load, tiles per layer hold the whole dense set times the headroom within the layer limit.
   Past one full layer's worth, the layer is full and the cap holds. In both cases, and at zero
-  share, the planner's physical slot count and charged floor bytes equal the GPU atlas's for
-  the same level and limits.
+  share, the planner's physical slot count, charged floor bytes and largest-closure dense
+  minimum equal the GPU atlas's for the same level and limits.
 - [ ] Atlas width, height and tiles per layer are identical across every growth in a session, the
   clamped growth to the limit included.
 - [ ] A dense pool at 200 layers, limit 256, needing 201 grows to 256 and installs. One needing

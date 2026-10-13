@@ -128,7 +128,7 @@ export const playerEntity = defineEntity({
       vault: {
         maxHeight: 1.6, // m above the feet; above stepHeight
         swimMaxHeight: 0.9, // m above the fluid surface
-        durationMs: 420, // rise-and-over time
+        durationMs: 800, // rise-and-over time
         from: {
           // place → "auto" | "jump"; a missing place cannot vault
           air: "auto",
@@ -183,11 +183,11 @@ export const playerEntity = defineEntity({
         // the first 15% of durationMs, rests through the climb, and levels
         // out over the last 20% as the pawn moves onto the top.
         vault: {
-          pitch: -6, // degrees; + looks up
+          pitch: -38.5, // degrees; + looks up
           roll: 0,
-          fov: 0, // horizontal degrees added to the base FOV
-          easeIn: 0.15, // share of durationMs spent easing in
-          easeOut: 0.2, // share spent easing back at the end
+          fov: -30, // horizontal degrees added to the base FOV
+          easeIn: 0.33, // share of durationMs spent easing in
+          easeOut: 0.33, // share spent easing back at the end
         },
       },
     },

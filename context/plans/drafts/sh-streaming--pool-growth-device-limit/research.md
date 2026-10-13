@@ -120,13 +120,10 @@ The device limit is reachable, but only at the edge of the content range.
   controller returns it to `Ready` (`apply_drain_outcome`). Retirement-pressure deferrals use
   this path today, and their misses count as `ShMissBuckets::held_by_drain_budget`
   (`targeting.rs` `MissCause::HeldByDrainBudget`).
-- Permits: `MAX_STREAM_PERMITS` = 8. Device-limited clusters that stay deferred hold permits.
-  That blocks only reads of other clusters, and those reads could not install either while the
-  pool is full of mandatory content. When targets change, `install_ready` drops untargeted
-  deferred chunks and their permits release. Optional work cannot hold the limit:
-  `apply_budget_policy` trims evictable optional targets whenever projected demand exceeds the
-  floor, and the device limit sits above the floor. Clusters kept resident by hysteresis can
-  hold capacity until their window expires.
+- Permits: `MAX_STREAM_PERMITS` = 8. A permit covers a cluster from request until install, drop
+  or failure, and every exit releases it. A device-limited cluster therefore leaves through the
+  departure path at refusal, releasing payload and permit once; it holds nothing while it waits.
+  Hysteresis residents release first when a mandatory cluster is refused (owner ruling, round 2).
 - Retry cost: each drain re-stages a device-limited cluster and rolls it back. The lightmap pool
   bounds the equivalent walk with a per-drain "no smaller extent can fit" skip. Without a bound,
   an SH level past the limit pays one failed allocation per deferred cluster per drain.
@@ -168,8 +165,11 @@ The device limit is reachable, but only at the edge of the content range.
 - **Compact dense slots at the limit before refusing**, as the lightmap pool repacks before it
   grows. Costlier for SH: every moved node's probe-indirection words must be rewritten. It only
   helps fragmentation past the headroom, which is speculative.
-- **Drop the refused cluster and re-read it later.** This releases the permit, but it churns I/O
-  every frame while the pool stays full. Holding the payload wins.
+- **Hold the refused cluster's payload until a wake (parking).** Rejected in round 2: the app
+  learns of confirmed evictions only after the drain, every exit already releases the permit,
+  and permits were the only bound on held payload. Dropping and re-requesting on a wake keeps
+  memory bounded and reuses the departure path; the re-read costs I/O only for content at the
+  device limit.
 
 ## Ordering pins
 
@@ -178,15 +178,19 @@ From `/review-brief` (rows lens, round 1).
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | Two clusters in one drain: one refused at the limit, one that fits, either order | The refused install rolls back its provisional dense and sparse ranges, address high-water included, before the next ready cluster stages | The fitting cluster installs; the refused one defers device-limited; neither order changes the result |
-| P2 | Drain N refuses C; drain N+1 confirms an eviction whose freed range holds C | Evictions run before installs inside one drain | C installs in drain N+1 from its held payload; no read issued; freed space counts only as a first-fit hole, since the high-water never falls |
+| P2 | Drain N refuses C; drain N+1 confirms an eviction whose freed range holds C | The app learns of a confirmed eviction only from drain N+1's outcome, after that drain offered its ready set | C is requested again after drain N+1, reads again, and installs on a later drain; no install happens in the confirming drain |
 | P3 | One cluster needs dense growth that fits and sparse growth that does not | Dense growth commits during staging; the sparse refusal then rolls back the install, not the growth | Dense growth stays (valid pool, one dense retirement pending); cluster defers device-limited; a later cluster this drain that needs dense growth defers as retirement pressure, not device-limited |
 | P4 | A cluster's needed size exceeds the limit while that family's previous generation still retires | The limit verdict precedes the retirement wait, in dense and sparse alike (today dense checks the limit first, sparse checks retirement first) | Device-limited deferral; a cluster that fits but waits defers as retirement pressure |
 | P5 | Refusal in drain N; visible misses recorded at frame N+1's target update | The device-limited mark lands with outcome N, is read before N+1 retargets, and clears on install, drop, target departure or generation change | The miss counts device-limited, and so does a dependent whose owner chain waits on a device-limited owner |
-| P6 | Refusal during Settling; timeout decided on frame N; reveal on N+1 | Settling counts no misses; the reveal frame is the first Running frame and drains again | Settling warns once; reveal proceeds; the reveal frame's refusal is non-fatal and counts one device-limit miss with no second warning |
+| P6 | Refusal during Settling; timeout decided on frame N; reveal on N+1 | Settling counts no misses; the reveal frame is the first Running frame | Settling warns once; reveal proceeds; the reveal frame counts one device-limit miss per device-limited visible cluster and no second warning |
 | P7 | Refusals across generations within one level, then a level change | Warning latch is level-scoped, not generation- or boot-state-scoped | One warning per level; the next level's first refusal warns again |
-| P8 | A refused cluster held in Ready when its target departs, or when the level unloads | Departure is handled at the next drain's ready cleanup; unload drops the controller | Payload, ready bytes and permit all return; the next level starts with a full permit set and no device-limited marks |
+| P8 | A device-limited cluster when its target departs, or when the level unloads | The cluster already left through the departure path at refusal and holds no payload or permit | Departure only clears its mark; unload drops the controller with every mark; the next level starts with a full permit set |
 | P9 | Several sparse families need growth for one cluster; one is refused | Every replacement is built before any copy or swap | No family commits when any is refused (current transaction); the cluster defers device-limited |
-| P10 | Lead L raised mid-session, up to the baked maximum | Runtime L clamps to the baked maximum; the build check runs at that maximum | A level that passed prl-build is never refused for mandatory demand inside its baked set; only fragmentation past the headroom or drawn demand outside the set reaches the deferral backstop |
+| P10 | Camera cell change, or lead L raised up to the baked maximum | Runtime L clamps to the baked maximum; untargeted hysteresis residents release before a mandatory cluster waits on the device limit | A level that passed prl-build is never refused for mandatory demand inside its baked set; only fragmentation past the headroom or drawn demand outside the set reaches the refusal backstop |
+| P11 | C is refused in drain N, then its target departs, the level unloads, or it is re-requested | Refusal releases payload and permit once through the departure path | No later exit releases a second permit; the permit count equals reads in flight plus ready clusters |
+| P12 | Drain N confirms an eviction and refuses C | Drain N's evictions run before its installs, so C already saw that space | C is not requested again on the strength of drain N's eviction; only a later confirmation or a class rise wakes it |
+| P18 | A level with SH but no usable id 51 | The check runs before Packing and keys "streamed" off the same inputs that make Packing emit id 50 | One warning per build, warm cache included; no per-cell error; the level compiles |
+| P19 | A map fails the per-cell check | The check runs after ClusterDirectory and before Packing, outside any cached stage | No .prl is written by that build; the stage cache does not record success; a warm-cache rebuild fails the same way |
 
 ## Build-check seams
 
@@ -199,3 +203,20 @@ From `/review-brief` (rows lens, round 1).
 - A sparse family's device limit is its tightest buffer, not the entry or tile pool alone. Each replacement validates the tile pool (tiles ÷ 2 words), the entry pool (entries words) and the compaction table (3 × affinity rows + entries words) against the 2 GiB − 8 binding; the compaction table binds first on entries. A clamp or build check that caps entries at binding ÷ 4 still fails (`StreamingIndirectCompose::new`, direct sparse replacement, `validate_storage_buffer_size`).
 - `GpuCapacity` from install splits cleanly at two growth seams. Device-limit: `grown_for_slots` (layers) and `validate_storage_buffer_size` inside a sparse replacement. Contract, still fatal: missing device handles, lost id-35 or compose views during growth, no id-35 base, unsupported format, upload misalignment after commit, and the post-growth checks "streamed indirect sparse pool needs growth", "streamed indirect compaction metadata needs growth" and "streamed direct sparse row exceeds its GPU pool capacity". Those last three fire only when growth undersized a pool; classing them as device-limit would turn a growth bug into silent deferral.
 - The per-cell build check can run only after the ClusterDirectory stage: id 51 is baked after the SH bake, and the cell→cluster map, pins and directory exist from ClusterDirectory on.
+
+## Premise review notes (round 2)
+
+- The dense slot address is 27 bits (`ownership.rs`, `sh_indirection.rs` raise `SlotOverflow`
+  past 2^27 − 1), while one full layer × 256 is 2^28 slots. The dense limit is the smaller of the
+  two; the scale is far past VRAM.
+- The shared sparse rule gives the minimum need (owned-row sizes with per-row padding). The
+  runtime compares the allocator high-water, so the two agree only up to sparse fragmentation;
+  the headroom covers dense only.
+- The hoisted limits are renderer-wide: 256 layers is justified by the lightmap, and the buffer
+  limits apply to every storage buffer. `level-format` already holds `MAX_SH_ATLAS_LAYERS` and
+  `MAX_SH_ATLAS_DIMENSION`, which the renderer duplicates privately.
+- Owner closure is derived on `level-loader` types in the app and again in the renderer;
+  `build_pipeline.md`'s claim that `level-format` is the only crate below both is stale, since
+  level-compiler already depends on level-loader.
+- The lightmap's fatal class is batch identity and generation only; its capacity and upload
+  errors roll back and retry, and a payload that does not fill its block counts as a failed read.

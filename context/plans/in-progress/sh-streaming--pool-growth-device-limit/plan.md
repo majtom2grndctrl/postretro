@@ -81,8 +81,8 @@ From the workspace root, with the two existing compiled PRLs retained:
 
 ```bash
 CARGO_INCREMENTAL=0 cargo build -p postretro -p postretro-script-compiler -p postretro-tool --features postretro/dev-tools
-RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . content/dev/maps/campaign-test.prl
-RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . content/dev/maps/stress-warren-hallway-inspection.prl
+RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . maps/campaign-test.prl
+RUST_LOG=info,postretro_renderer::render::sh_streaming=trace target/debug/postretro-tool run --install-root . maps/stress-warren-hallway-inspection.prl
 ```
 
 Run the two walks separately. These commands do not rebuild the PRLs. Build and launch the instrumentation-only baseline from its isolated checkout in the same way, using identical PRL bytes. Keep the logs and measurements until M1 is recorded.
@@ -91,7 +91,9 @@ Run the two walks separately. These commands do not rebuild the PRLs. Build and 
 
 Pre-change executables are ready in the ignored `target/sh-before-walks/` bundle. Built from `e8f607b94744e338039fcc4389ead98ef91ef6d6` with only `baseline-measurement.patch`, default dev profile and `postretro/dev-tools`. Separate worktree/target; no shared Cargo artifacts. Build passed in 24m 13s. Copied and hash-verified engine, script compiler and tool total 93.4 MiB. The primary feature executable hash did not change during preparation.
 
-Baseline engine SHA-256: `8653e9a0a83ecbe03b1ccca3658a85d2092aa13a01037d73d2f3d3919a7d2d32`. Bundle `build-info.json` records executable hashes and build provenance. Helper CLI, both project-launch routes and shell syntax passed. Temporary target was removed; the clean checkout was archived after verifying its commit is preserved on remote main. About 23 GiB remained free after cleanup.
+Baseline engine SHA-256: `8653e9a0a83ecbe03b1ccca3658a85d2092aa13a01037d73d2f3d3919a7d2d32`. Bundle `build-info.json` records executable hashes and build provenance. Helper CLI and shell syntax passed. The initial launch check bypassed engine argument validation and missed incorrect map paths; see the correction below. Temporary target was removed; the clean checkout was archived after verifying its commit is preserved on remote main. About 23 GiB remained free after cleanup.
+
+Launcher correction: `postretro-tool run` supplies `--mod dev`, so both engine arguments must be mod-relative `maps/…` paths. Filesystem hash checks retain absolute `content/dev/maps/…` paths. Both routes were checked through the baseline tool with an argument-recording engine substitute: correct map argument, `--mod dev`, unchanged PRL hashes and log headers. This verifies launch arguments; it does not substitute for the manual walks. The feature launch examples above use the same corrected path form.
 
 From the primary workspace root, run these separately. Repeat the new-build routes and settings, then quit each game completely:
 

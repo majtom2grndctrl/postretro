@@ -97,9 +97,23 @@ pub(crate) struct ActivationEdges {
     fire_gates: VecDeque<(u32, bool)>,
 }
 impl ActivationEdges {
-    /// Retain a start in intake order. Duplicates, settled starts, and starts past
-    /// the per-client bound are not retained, so playout never delivers them.
-    pub fn observe_start(&mut self, token: ActivationToken, firing_slot: u8, aim: RemoteStartAim) {
+    /// Retain a start in intake order, received on host tick `tick`.
+    /// Duplicates, settled starts, and starts past the per-client bound are not
+    /// retained, so playout never delivers them.
+    ///
+    /// A start whose own tick already resolved arrives late, such as a later
+    /// copy of a command the playout yielded past. It missed `cancel_before`
+    /// for any closed tick recorded since, so it takes a cancel at the first
+    /// one now, before any of its edges can be delivered: a release the client
+    /// stamped at or after that tick is then suppressed, as the client's gate
+    /// cancelled the charge before it.
+    pub fn observe_start(
+        &mut self,
+        token: ActivationToken,
+        firing_slot: u8,
+        aim: RemoteStartAim,
+        tick: u32,
+    ) {
         if self.is_settled(token)
             || self.admitted.contains(&token)
             || self.starts.iter().any(|start| start.token == token)
@@ -107,12 +121,22 @@ impl ActivationEdges {
         {
             return;
         }
+        // A closed tick recorded after the start's own: it arrives late.
+        let missed = self
+            .fire_gates
+            .iter()
+            .find(|&&(gate_tick, gate)| gate && !client_tick_le(gate_tick, token.start_tick))
+            .map(|&(gate_tick, _)| gate_tick);
+        // Unheld, the cancel could not stop the start: refuse it instead.
+        let fire_blocked = missed
+            .is_some_and(|closed| !self.retain(token, None, Some(closed), tick))
+            .then_some(true);
         self.starts.push_back(RetainedStart {
             token,
             firing_slot,
             aim,
             due_since: None,
-            fire_blocked: None,
+            fire_blocked,
         });
     }
     /// The oldest retained start once its command tick is resolved; the caller
@@ -202,23 +226,21 @@ impl ActivationEdges {
     /// Record `blocked`, the shooter's fire gate at the start of client tick
     /// `resolved_tick`, and stamp every retained or just-delivered start
     /// stamped at or before it that has no verdict yet. Called once per
-    /// resolution, before its movement runs, with `tick` the host tick.
-    /// Returns the gate recorded for `resolved_tick`, which the caller judges
-    /// that tick by.
+    /// resolution, before its movement runs. Returns the gate recorded for
+    /// `resolved_tick`, which the caller judges that tick by.
     ///
     /// A start takes the gate recorded for its own tick. One that reached the
     /// lane after its tick resolved, such as a later copy of a command the
-    /// playout yielded past, finds it here, and also carries a cancel at the
-    /// first closed tick recorded after its own, which it missed while
-    /// absent (`cancel_before`). A start whose tick never resolved, because a
-    /// catch-up trim reseated the cursor past it, or resolved before the
+    /// playout yielded past, finds it here; it took its missed vault cancel
+    /// at intake (`observe_start`). A start whose tick never resolved, because
+    /// a catch-up trim reseated the cursor past it, or resolved before the
     /// history's reach, takes the gate of the resolution that stamps it.
-    pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool, tick: u32) -> bool {
+    pub fn stamp_fire_gate(&mut self, resolved_tick: u32, blocked: bool) -> bool {
         // The cursor never moves back, so a repeat is the same tick resolving
-        // again after a frontier hold. The first resolution ran from the pawn
-        // as the client's own commands left it; each hold since ran one more
-        // host-only step repeating the previous command, which can enter or
-        // leave a vault the client never did. Keep the first.
+        // again after a frontier hold. The first resolution is the closest the
+        // host has to the client's start of that tick; each re-resolution adds
+        // a host-only held step on top, which can enter or leave a vault the
+        // client never did. Keep the first.
         let recorded = match self.fire_gates.back() {
             Some(&(last, gate)) if last == resolved_tick => gate,
             _ => {
@@ -229,35 +251,19 @@ impl ActivationEdges {
                 blocked
             }
         };
-        // `retain` never reads the starts, so they leave the struct meanwhile.
-        let mut starts = std::mem::take(&mut self.starts);
-        let mut delivered = self.delivered.take();
-        for start in starts.iter_mut().chain(delivered.iter_mut()) {
+        let gates = &self.fire_gates;
+        for start in self.starts.iter_mut().chain(self.delivered.iter_mut()) {
             let own_tick = start.token.start_tick;
             if start.fire_blocked.is_some() || !client_tick_le(own_tick, resolved_tick) {
                 continue;
             }
-            let own = self
-                .fire_gates
+            let own = gates
                 .iter()
                 .rev()
                 .find(|&&(gate_tick, _)| gate_tick == own_tick)
                 .map_or(recorded, |&(_, gate)| gate);
             start.fire_blocked = Some(own);
-            let closed = self
-                .fire_gates
-                .iter()
-                .find(|&&(gate_tick, gate)| gate && !client_tick_le(gate_tick, own_tick))
-                .map(|&(gate_tick, _)| gate_tick);
-            if !own
-                && let Some(closed) = closed
-                && !self.retain(start.token, None, Some(closed), tick)
-            {
-                start.fire_blocked = Some(true);
-            }
         }
-        self.starts = starts;
-        self.delivered = delivered;
         recorded
     }
     /// Retain a cancel stamped `client_tick`, received on host tick `tick`, for
@@ -385,13 +391,17 @@ impl ActivationEdges {
     /// Deliver at most one cancel and one release. `horizon`: client tick the
     /// live execution's clock has reached; a cancel stamped after it waits, so
     /// every shot the client fired before cancelling is minted first. A cancel
-    /// never overtakes a release of its own execution stamped before it.
+    /// never overtakes a release of its own execution stamped before it, since
+    /// that release may fire a charge; `spent_release` names the execution
+    /// whose release can no longer fire anything (it does not charge, or its
+    /// charge already fired), whose cancel goes regardless.
     pub fn deliver(
         &mut self,
         command: &mut ActivationInput,
         tick: u32,
         live: Option<ActivationToken>,
         horizon: Option<u32>,
+        spent_release: Option<ActivationToken>,
     ) {
         self.prune(tick);
         command.release = None;
@@ -409,7 +419,7 @@ impl ActivationEdges {
             .filter(|edge| {
                 edge.cancel
                     && !edge.cancel_delivered
-                    && !edge.release_pending()
+                    && (!edge.release_pending() || spent_release == Some(edge.token))
                     && reached(edge)
                     && self.admitted.contains(&edge.token)
             })
@@ -530,9 +540,9 @@ mod tests {
     #[test]
     fn a_retained_start_keeps_the_fire_gate_stamped_when_its_tick_resolved() {
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(10), 0, aim(0.0));
-        edges.observe_start(token(12), 0, aim(0.0));
-        edges.stamp_fire_gate(9, true, 0);
+        edges.observe_start(token(10), 0, aim(0.0), 0);
+        edges.observe_start(token(12), 0, aim(0.0), 0);
+        edges.stamp_fire_gate(9, true);
         assert!(
             edges
                 .starts
@@ -540,9 +550,9 @@ mod tests {
                 .all(|start| start.fire_blocked.is_none()),
             "a start is stamped only once its own tick resolves"
         );
-        edges.stamp_fire_gate(10, false, 0);
-        edges.stamp_fire_gate(11, true, 0);
-        edges.stamp_fire_gate(12, true, 0);
+        edges.stamp_fire_gate(10, false);
+        edges.stamp_fire_gate(11, true);
+        edges.stamp_fire_gate(12, true);
         assert!(edges.take_start(token(10)));
         assert_eq!(edges.delivered_fire_blocked(token(10)), Some(false));
         assert!(edges.take_start(token(12)));
@@ -551,10 +561,10 @@ mod tests {
         // Delivered on its own resolution, before the stamp: the stamp still
         // reaches it.
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(20), 0, aim(0.0));
+        edges.observe_start(token(20), 0, aim(0.0), 0);
         assert!(edges.take_start(token(20)));
         assert_eq!(edges.delivered_fire_blocked(token(20)), None);
-        edges.stamp_fire_gate(20, true, 0);
+        edges.stamp_fire_gate(20, true);
         assert_eq!(edges.delivered_fire_blocked(token(20)), Some(true));
     }
     // Regression: a start that reached the lane after its own tick resolved was
@@ -564,16 +574,16 @@ mod tests {
     #[test]
     fn a_start_arriving_after_its_tick_resolved_takes_that_ticks_fire_gate() {
         let mut edges = ActivationEdges::default();
-        assert!(!edges.stamp_fire_gate(10, false, 0));
+        assert!(!edges.stamp_fire_gate(10, false));
         // A frontier hold resolves tick 10 again after a host-only movement
         // step that entered a vault; the first resolution stands.
         assert!(
-            !edges.stamp_fire_gate(10, true, 1),
+            !edges.stamp_fire_gate(10, true),
             "the first resolution of a tick is the faithful one"
         );
-        edges.stamp_fire_gate(11, true, 2);
-        edges.observe_start(token(10), 0, aim(0.0));
-        edges.stamp_fire_gate(12, true, 3);
+        edges.stamp_fire_gate(11, true);
+        edges.observe_start(token(10), 0, aim(0.0), 0);
+        edges.stamp_fire_gate(12, true);
         assert!(edges.take_start(token(10)));
         assert_eq!(
             edges.delivered_fire_blocked(token(10)),
@@ -581,9 +591,9 @@ mod tests {
             "its own tick's gate, not the stamping resolution's"
         );
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 4, Some(token(10)), Some(10));
+        edges.deliver(&mut delivered, 4, Some(token(10)), Some(10), None);
         assert_eq!(delivered.cancel, None);
-        edges.deliver(&mut delivered, 5, Some(token(10)), Some(11));
+        edges.deliver(&mut delivered, 5, Some(token(10)), Some(11), None);
         assert_eq!(
             delivered.cancel,
             Some(token(10)),
@@ -593,10 +603,10 @@ mod tests {
         // A tick older than the history falls back to the stamping resolution.
         let mut edges = ActivationEdges::default();
         for tick in 0..=FIRE_GATE_HISTORY as u32 {
-            edges.stamp_fire_gate(tick, false, 0);
+            edges.stamp_fire_gate(tick, false);
         }
-        edges.observe_start(token(0), 0, aim(0.0));
-        edges.stamp_fire_gate(FIRE_GATE_HISTORY as u32 + 1, true, 0);
+        edges.observe_start(token(0), 0, aim(0.0), 0);
+        edges.stamp_fire_gate(FIRE_GATE_HISTORY as u32 + 1, true);
         assert!(edges.take_start(token(0)));
         assert_eq!(edges.delivered_fire_blocked(token(0)), Some(true));
     }
@@ -613,7 +623,7 @@ mod tests {
             ..ActivationInput::default()
         };
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(6), 0, aim(0.0));
+        edges.observe_start(token(6), 0, aim(0.0), 0);
         edges.observe(release, 8, 0);
         edges.cancel_before(10, None, 1);
         assert_eq!(
@@ -623,12 +633,12 @@ mod tests {
         );
         assert!(edges.take_start(token(6)));
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 2, None, Some(8));
+        edges.deliver(&mut delivered, 2, None, Some(8), None);
         assert_eq!(delivered.release, release.release);
         assert_eq!(delivered.cancel, None);
-        edges.deliver(&mut delivered, 3, Some(token(6)), Some(9));
+        edges.deliver(&mut delivered, 3, Some(token(6)), Some(9), None);
         assert_eq!(delivered, ActivationInput::default());
-        edges.deliver(&mut delivered, 4, Some(token(6)), Some(10));
+        edges.deliver(&mut delivered, 4, Some(token(6)), Some(10), None);
         assert_eq!(delivered.cancel, Some(token(6)));
 
         // Nothing holding the cancel still never lets it overtake the release.
@@ -636,10 +646,10 @@ mod tests {
         edges.admit(token(6));
         edges.observe(release, 8, 0);
         edges.cancel_before(10, Some(token(6)), 1);
-        edges.deliver(&mut delivered, 2, Some(token(6)), None);
+        edges.deliver(&mut delivered, 2, Some(token(6)), None, None);
         assert_eq!(delivered.release, release.release);
         assert_eq!(delivered.cancel, None);
-        edges.deliver(&mut delivered, 3, Some(token(6)), None);
+        edges.deliver(&mut delivered, 3, Some(token(6)), None, None);
         assert_eq!(delivered.cancel, Some(token(6)));
     }
     // With the edge table full, a retained start that cannot carry its vault
@@ -657,8 +667,8 @@ mod tests {
                 0,
             );
         }
-        edges.observe_start(token(6), 0, aim(0.0));
-        edges.stamp_fire_gate(6, false, 0);
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        edges.stamp_fire_gate(6, false);
         edges.cancel_before(10, None, 0);
         assert!(edges.take_start(token(6)));
         assert_eq!(edges.delivered_fire_blocked(token(6)), Some(true));
@@ -670,18 +680,18 @@ mod tests {
     #[test]
     fn a_cancel_before_a_tick_waits_for_each_executions_clock() {
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(6), 0, aim(0.0));
-        edges.observe_start(token(10), 0, aim(0.0));
+        edges.observe_start(token(6), 0, aim(0.0), 0);
+        edges.observe_start(token(10), 0, aim(0.0), 0);
         edges.cancel_before(10, None, 0);
         assert!(edges.take_start(token(6)));
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1, Some(token(6)), Some(9));
+        edges.deliver(&mut delivered, 1, Some(token(6)), Some(9), None);
         assert_eq!(delivered.cancel, None, "held until the clock reaches 10");
-        edges.deliver(&mut delivered, 2, Some(token(6)), Some(10));
+        edges.deliver(&mut delivered, 2, Some(token(6)), Some(10), None);
         assert_eq!(delivered.cancel, Some(token(6)));
         edges.terminal(token(6));
         assert!(edges.take_start(token(10)));
-        edges.deliver(&mut delivered, 3, Some(token(10)), Some(30));
+        edges.deliver(&mut delivered, 3, Some(token(10)), Some(30), None);
         assert_eq!(
             delivered.cancel, None,
             "a start on the closed tick is not cancelled"
@@ -698,14 +708,14 @@ mod tests {
             8,
             1,
         );
-        edges.deliver(&mut delivered, 2, Some(token(4)), Some(8));
+        edges.deliver(&mut delivered, 2, Some(token(4)), Some(8), None);
         assert_eq!(delivered.cancel, Some(token(4)), "the earlier stamp wins");
     }
     #[test]
     fn activation_start_lane_retains_a_duplicate_once_with_its_first_carrying_aim() {
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(4), 0, aim(0.0));
-        edges.observe_start(token(4), 0, aim(0.7));
+        edges.observe_start(token(4), 0, aim(0.0), 0);
+        edges.observe_start(token(4), 0, aim(0.7), 0);
         assert_eq!(edges.starts.len(), 1, "a duplicate start is retained once");
         assert_eq!(edges.due_start(3, 0), None, "not due before its tick");
         let Some(DueStart::Start(start)) = edges.due_start(4, 0) else {
@@ -723,11 +733,11 @@ mod tests {
     #[test]
     fn activation_start_lane_never_retains_a_settled_start_again() {
         let mut edges = ActivationEdges::default();
-        edges.observe_start(token(4), 0, aim(0.0));
+        edges.observe_start(token(4), 0, aim(0.0), 0);
         assert!(edges.take_start(token(4)));
         edges.terminal(token(4));
-        edges.observe_start(token(4), 0, aim(0.0));
-        edges.observe_start(token(3), 0, aim(0.0));
+        edges.observe_start(token(4), 0, aim(0.0), 0);
+        edges.observe_start(token(3), 0, aim(0.0), 0);
         assert!(edges.starts.is_empty());
     }
     #[test]
@@ -736,7 +746,7 @@ mod tests {
         let first = 5;
         let overflow = first + MAX_RETAINED_ACTIVATION_EDGES as u32;
         for tick in first..=overflow {
-            edges.observe_start(token(tick), 0, aim(0.0));
+            edges.observe_start(token(tick), 0, aim(0.0), 0);
         }
         assert_eq!(edges.starts.len(), MAX_RETAINED_ACTIVATION_EDGES);
         assert!(
@@ -753,8 +763,8 @@ mod tests {
     fn activation_edge_expiry_never_settles_a_still_retained_start() {
         let mut edges = ActivationEdges::default();
         let (front, behind, unknown) = (token(4), token(6), token(8));
-        edges.observe_start(front, 0, aim(0.0));
-        edges.observe_start(behind, 0, aim(0.0));
+        edges.observe_start(front, 0, aim(0.0), 0);
+        edges.observe_start(behind, 0, aim(0.0), 0);
         for edge in [behind, unknown] {
             edges.observe(
                 ActivationInput {
@@ -770,7 +780,7 @@ mod tests {
         }
         let late = RETENTION_TICKS * 2;
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, late, None, None);
+        edges.deliver(&mut delivered, late, None, None, None);
         assert!(edges.take_start(front));
         edges.terminal(front);
         let Some(DueStart::Start(start)) = edges.due_start(6, late) else {
@@ -780,15 +790,15 @@ mod tests {
             edges.take_start(start.token),
             "never settled while retained"
         );
-        edges.deliver(&mut delivered, late + 1, None, None);
+        edges.deliver(&mut delivered, late + 1, None, None, None);
         assert_eq!(
             delivered.release.map(|release| release.token),
             Some(behind),
             "its own release still follows it"
         );
         // Nothing retained shields the expired unknown edge now; it settles.
-        edges.deliver(&mut delivered, late + 2, None, None);
-        edges.observe_start(unknown, 0, aim(0.0));
+        edges.deliver(&mut delivered, late + 2, None, None, None);
+        edges.observe_start(unknown, 0, aim(0.0), 0);
         assert!(edges.starts.is_empty());
     }
     #[test]
@@ -805,17 +815,17 @@ mod tests {
         };
         edges.observe(release, 0, 10);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 10, None, None);
+        edges.deliver(&mut delivered, 10, None, None, None);
         assert_eq!(delivered.release, release.release);
         let cancel = ActivationInput {
             cancel: Some(token),
             ..ActivationInput::default()
         };
         edges.observe(cancel, 0, 11);
-        edges.deliver(&mut delivered, 11, None, None);
+        edges.deliver(&mut delivered, 11, None, None, None);
         assert_eq!(delivered.cancel, Some(token));
         edges.observe(cancel, 0, 12);
-        edges.deliver(&mut delivered, 12, None, None);
+        edges.deliver(&mut delivered, 12, None, None, None);
         assert_eq!(delivered, ActivationInput::default());
     }
     #[test]
@@ -833,11 +843,11 @@ mod tests {
         edges.admit(token);
         edges.observe(input, 0, 0);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1, None, None);
+        edges.deliver(&mut delivered, 1, None, None, None);
         assert_eq!(delivered.cancel, Some(token));
         assert!(delivered.release.is_none());
         edges.observe(input, 0, 2);
-        edges.deliver(&mut delivered, 2, None, None);
+        edges.deliver(&mut delivered, 2, None, None, None);
         assert_eq!(delivered, ActivationInput::default());
     }
     #[test]
@@ -852,7 +862,7 @@ mod tests {
         edges.observe(input, 0, 119);
         edges.admit(token);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 120, None, None);
+        edges.deliver(&mut delivered, 120, None, None, None);
         assert!(delivered.cancel.is_none());
     }
     #[test]
@@ -883,10 +893,10 @@ mod tests {
             1,
         );
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1, None, None);
+        edges.deliver(&mut delivered, 1, None, None, None);
         assert_eq!(delivered.cancel, Some(active));
         assert_eq!(edges.edges.len(), 64);
-        edges.deliver(&mut delivered, 2, None, None);
+        edges.deliver(&mut delivered, 2, None, None, None);
         assert_eq!(delivered.cancel, Some(token(0)));
     }
     #[test]
@@ -906,7 +916,7 @@ mod tests {
             0,
         );
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1, None, None);
+        edges.deliver(&mut delivered, 1, None, None, None);
         edges.observe(
             ActivationInput {
                 cancel: Some(token),
@@ -915,7 +925,7 @@ mod tests {
             0,
             119,
         );
-        edges.deliver(&mut delivered, 120, None, None);
+        edges.deliver(&mut delivered, 120, None, None, None);
         assert_eq!(delivered.cancel, Some(token));
         edges.observe(
             ActivationInput {
@@ -925,7 +935,7 @@ mod tests {
             0,
             121,
         );
-        edges.deliver(&mut delivered, 121, None, None);
+        edges.deliver(&mut delivered, 121, None, None, None);
         assert!(delivered.cancel.is_none());
     }
     #[test]
@@ -941,10 +951,10 @@ mod tests {
         let mut edges = ActivationEdges::default();
         edges.observe(release, 0, 0);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 120, None, None);
+        edges.deliver(&mut delivered, 120, None, None, None);
         edges.observe(release, 0, 121);
         edges.admit(token);
-        edges.deliver(&mut delivered, 122, None, None);
+        edges.deliver(&mut delivered, 122, None, None, None);
         assert_eq!(delivered, ActivationInput::default());
         assert!(edges.edges.is_empty());
         assert!(edges.admitted.is_empty());
@@ -963,7 +973,7 @@ mod tests {
         };
         edges.observe(release, 0, 0);
         let mut delivered = ActivationInput::default();
-        edges.deliver(&mut delivered, 1, None, None);
+        edges.deliver(&mut delivered, 1, None, None, None);
         assert_eq!(delivered.release, release.release);
         edges.observe(
             ActivationInput {
@@ -973,9 +983,9 @@ mod tests {
             0,
             0,
         );
-        edges.deliver(&mut delivered, 120, None, None);
+        edges.deliver(&mut delivered, 120, None, None, None);
         edges.observe(release, 0, 121);
-        edges.deliver(&mut delivered, 121, None, None);
+        edges.deliver(&mut delivered, 121, None, None, None);
         assert_eq!(delivered, ActivationInput::default());
         edges.observe(
             ActivationInput {
@@ -985,7 +995,7 @@ mod tests {
             0,
             122,
         );
-        edges.deliver(&mut delivered, 122, None, None);
+        edges.deliver(&mut delivered, 122, None, None, None);
         assert_eq!(delivered.cancel, Some(live));
     }
 }

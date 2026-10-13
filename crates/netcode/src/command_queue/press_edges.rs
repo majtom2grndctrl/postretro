@@ -574,6 +574,7 @@ mod tests {
                 pitch: 0.0,
                 yaw: 0.0,
             },
+            0,
         );
         queues.clients.insert(CLIENT, state);
         let frozen = queues.resolve_tick(CLIENT).unwrap();

@@ -331,6 +331,20 @@ impl ActivationCadence {
         Some(execution.clock(host_tick))
     }
 
+    /// The execution whose release can no longer fire a shot: it does not
+    /// charge, or its charge already fired. The machine reads a release only
+    /// while charging, so a cancel for it never waits behind its release.
+    /// `None` while the machine has not yet admitted the execution.
+    pub fn spent_release(&self) -> Option<ActivationToken> {
+        self.execution
+            .filter(|execution| {
+                execution
+                    .charges
+                    .is_some_and(|charges| !charges || execution.fired)
+            })
+            .map(|execution| execution.token)
+    }
+
     /// A release was delivered to `token`'s execution on `host_tick`. It moves
     /// the cadence clock only if that execution's shots began at it, which
     /// `recovery_began` learns from the host machine.

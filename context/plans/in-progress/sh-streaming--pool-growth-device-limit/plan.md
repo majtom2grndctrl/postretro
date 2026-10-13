@@ -140,7 +140,8 @@ Partial M1 evidence supplied by the owner on 2026-10-13. Source: temporary works
 | Target/sampleable consistency | all targets sampleable at each report; 9–17 targets |
 | Queued / Ready / held permits at report times | 0 / 0 / 0 in every report |
 | Re-reads / evictions / retries | 11 / 19 / 0 across reported windows |
-| Initial dense atlas bytes / tiles per layer | missing from excerpt; owner will paste earlier startup line |
+| Initial dense atlas allocation | 62,949,120 B (60.033 MiB), supplied startup line at 21:19:19 UTC |
+| Initial tiles per layer / layers / slots | 37,830 / 1 / 37,830 |
 | Reported active SH pool capacity | 71.0 MiB; includes other SH allocations, so cannot substitute for initial dense atlas bytes |
 
 Per-install trace measurements split at the `[Startup]` report. CPU percentiles use nearest rank; copy means include zero-copy installs.
@@ -155,7 +156,9 @@ Periodic drain CPU sums to 72.71 ms: 42.03 ms in the first startup-containing wi
 
 One lightmap refusal and one repack appear in its separate diagnostics, with zero reported lightmap visible misses or failed installs/reads. These do not count as SH device-limit warnings.
 
-The captured SH warning check passes for this excerpt. M1 remains outstanding: add the initial dense-pool line, matching pre-change campaign measurements, both hallway measurements and run conditions. Visual smoothness/lighting cannot be inferred from logs. Keep the original temporary log untracked and unchanged.
+The owner supplied the missing startup measurement separately in chat: `[Renderer] streamed SH initial dense pool: bytes=62949120 tiles_per_layer=37830 layers=1 slots=37830` at 21:19:19 UTC. The original temporary log and its recorded hash remain unchanged. The 8 B monolithic base-atlas placeholder in the adjacent line is separate from this streamed dense pool.
+
+The captured SH warning check passes for this excerpt. M1 remains outstanding: matching pre-change campaign measurements, both hallway measurements and run conditions. Visual smoothness/lighting cannot be inferred from logs. Keep the original temporary log untracked and unchanged.
 
 ## Handoff
 

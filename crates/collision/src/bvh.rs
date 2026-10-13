@@ -9,8 +9,8 @@ const MAX_LEAF_ENTRIES: usize = 4;
 /// Binned-SAH bins per axis.
 const SAH_BINS: usize = 16;
 
-/// Deepest node the builder creates (the root is depth 0). A node at this depth is
-/// a leaf whatever its entry count, so the traversal stack bound below always holds.
+/// Cap recursive construction and escape-link setup even on adversarial input.
+/// A node at this depth is a leaf whatever its entry count.
 const MAX_DEPTH: usize = 64;
 
 /// From this depth on the builder splits at the median entry instead of by SAH.
@@ -19,12 +19,6 @@ const MAX_DEPTH: usize = 64;
 /// leaf size; SAH alone can produce a chain of one-entry peels on adversarial
 /// input.
 const MEDIAN_SPLIT_DEPTH: usize = 40;
-
-/// Traversal stack capacity. Popping a node at depth `d` leaves at most one pending
-/// sibling per depth `1..=d` on the stack, then pushes two children; internal nodes
-/// sit at depth at most `MAX_DEPTH - 1`, so the stack never holds more than
-/// `MAX_DEPTH + 1` entries.
-const STACK_CAPACITY: usize = MAX_DEPTH + 1;
 
 /// One leaf entry: closed bounds plus the payload a query hands back.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,17 +36,18 @@ impl<P> TreeEntry<P> {
 
 /// A node's bounds enclose every entry beneath it. `count == 0` marks an internal
 /// node whose children are `first` and `first + 1`; otherwise the node is a leaf
-/// over `entries[first..first + count]`.
+/// over `entries[first..first + count]`. `escape` skips the entire subtree.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct TreeNode {
     min: Vec3,
     max: Vec3,
     first: u32,
     count: u32,
+    escape: u32,
 }
 
-/// A bounding-volume tree built once from its entries. Queries walk it on a
-/// fixed-size stack and never allocate; an entry is visited when its own bounds
+/// A bounding-volume tree built once from its entries. Queries follow subtree
+/// escape links and never allocate; an entry is visited when its own bounds
 /// pass the query's overlap test, so the visited set never depends on tree shape.
 /// Distinct from the render BVH (PRL section 19): this one is built at load and
 /// holds arbitrary payloads.
@@ -86,6 +81,8 @@ impl<P> AabbTree<P> {
         let len = entries.len();
         let deepest = build_node(&mut nodes, &mut entries, 0, 0, len, 0);
         debug_assert!(deepest <= MAX_DEPTH, "builder exceeded MAX_DEPTH");
+        let end = nodes.len() as u32;
+        set_escape(&mut nodes, 0, end);
         Self { nodes, entries }
     }
 
@@ -127,35 +124,25 @@ impl<P> AabbTree<P> {
     }
 
     fn visit_overlapping(&self, overlaps: impl Fn(Vec3, Vec3) -> bool, mut visit: impl FnMut(&P)) {
-        if self.nodes.is_empty() {
-            return;
-        }
-        let mut stack = [0u32; STACK_CAPACITY];
-        let mut len = 1;
-        while len > 0 {
-            len -= 1;
-            let node = &self.nodes[stack[len] as usize];
+        let mut index = 0;
+        while let Some(node) = self.nodes.get(index) {
             if !overlaps(node.min, node.max) {
-                continue;
-            }
-            if node.count > 0 {
+                index = node.escape as usize;
+            } else if node.count > 0 {
                 let first = node.first as usize;
                 for entry in &self.entries[first..first + node.count as usize] {
                     if overlaps(entry.min, entry.max) {
                         visit(&entry.payload);
                     }
                 }
+                index = node.escape as usize;
             } else {
-                // Indexing past STACK_CAPACITY would panic rather than drop a
-                // subtree; the depth cap makes it unreachable.
-                stack[len] = node.first;
-                stack[len + 1] = node.first + 1;
-                len += 2;
+                index = node.first as usize;
             }
         }
     }
 
-    /// Depth of the deepest node (root = 0); test support for the stack bound.
+    /// Depth of the deepest node (root = 0); test support for the recursion cap.
     #[cfg(test)]
     pub(crate) fn depth(&self) -> usize {
         fn walk(nodes: &[TreeNode], index: usize, depth: usize) -> usize {
@@ -213,12 +200,24 @@ pub(crate) fn line_overlaps_box(
     true
 }
 
+// A rejected left subtree resumes at its right sibling; a completed right
+// subtree resumes outside its parent. The root sentinel is one past the nodes.
+fn set_escape(nodes: &mut [TreeNode], index: usize, escape: u32) {
+    nodes[index].escape = escape;
+    if nodes[index].count == 0 {
+        let first = nodes[index].first as usize;
+        set_escape(nodes, first, (first + 1) as u32);
+        set_escape(nodes, first + 1, escape);
+    }
+}
+
 fn placeholder_node() -> TreeNode {
     TreeNode {
         min: Vec3::ZERO,
         max: Vec3::ZERO,
         first: 0,
         count: 0,
+        escape: 0,
     }
 }
 
@@ -240,6 +239,7 @@ fn build_node<P>(
             max,
             first: start as u32,
             count: count as u32,
+            escape: 0,
         };
         return depth;
     }
@@ -259,6 +259,7 @@ fn build_node<P>(
         max,
         first: left as u32,
         count: 0,
+        escape: 0,
     };
     let left_depth = build_node(nodes, entries, left, start, mid, depth + 1);
     let right_depth = build_node(nodes, entries, left + 1, mid, end, depth + 1);
@@ -428,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_depth_stays_within_stack_bound_for_degenerate_input() {
+    fn tree_depth_stays_bounded_for_degenerate_input() {
         // Nested boxes all centred on the origin: no centroid split exists, and a
         // long chain of thin slabs invites one-entry SAH peels. The builder must
         // stay within MAX_DEPTH either way.

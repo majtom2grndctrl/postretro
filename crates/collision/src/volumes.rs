@@ -3,6 +3,7 @@
 
 use glam::Vec3;
 
+use crate::acceleration::AccelerationIndex;
 use crate::bvh::{AabbTree, TreeEntry};
 use crate::leaf::{ContentsMask, ConvexLeaf};
 
@@ -97,6 +98,8 @@ pub struct EnvironmentVolumes {
     volumes: Vec<EnvironmentVolume>,
     records: Vec<VolumeRecord>,
     tree: AabbTree<LeafRef>,
+    // Point acceleration queries never need fluid-only brush bounds.
+    acceleration_index: AccelerationIndex,
 }
 
 impl Default for EnvironmentVolumes {
@@ -112,6 +115,7 @@ impl EnvironmentVolumes {
             volumes: Vec::new(),
             records: Vec::new(),
             tree: AabbTree::empty(),
+            acceleration_index: AccelerationIndex::empty(),
         }
     }
 
@@ -128,7 +132,7 @@ impl EnvironmentVolumes {
             });
             for (brush_index, brush) in volume.brushes.iter().enumerate() {
                 let (min, max) = brush.padded_bounds();
-                entries.push(TreeEntry {
+                let entry = TreeEntry {
                     min,
                     max,
                     payload: LeafRef {
@@ -136,13 +140,30 @@ impl EnvironmentVolumes {
                         brush: brush_index as u32,
                         contents,
                     },
-                });
+                };
+                entries.push(entry);
             }
         }
+        // A compact total rank keeps hot field reductions off the cold volume
+        // and size-key arrays, with exactly the public overlap rule's ordering.
+        let mut order: Vec<_> = (0..volumes.len()).collect();
+        order.sort_unstable_by_key(|&index| {
+            (
+                std::cmp::Reverse(volumes[index].priority),
+                records[index].size_key,
+                index,
+            )
+        });
+        let mut ranks = vec![0; volumes.len()];
+        for (rank, index) in order.into_iter().enumerate() {
+            ranks[index] = rank;
+        }
+        let acceleration_index = AccelerationIndex::build(&volumes, &ranks);
         Self {
             volumes,
             records,
             tree: AabbTree::build(entries),
+            acceleration_index,
         }
     }
 
@@ -182,6 +203,11 @@ impl EnvironmentVolumes {
         mask: ContentsMask,
         mut visit: impl FnMut(usize),
     ) {
+        if (ContentsMask::GRAVITY | ContentsMask::PUSH).contains(mask) {
+            self.acceleration_index
+                .visit_containing_point(&self.volumes, point, mask, visit);
+            return;
+        }
         self.tree.visit_point(point, |leaf| {
             if !leaf.contents.intersects(mask) {
                 return;
@@ -190,6 +216,11 @@ impl EnvironmentVolumes {
                 visit(leaf.volume as usize);
             }
         });
+    }
+
+    pub(crate) fn acceleration(&self, point: Vec3, level_gravity: f32) -> (f32, Vec3) {
+        self.acceleration_index
+            .resolve(&self.volumes, point, level_gravity)
     }
 
     /// Call `visit(volume, brush_index, brush)` for every brush of a volume whose
@@ -274,6 +305,7 @@ impl EnvironmentVolumes {
     /// priority, then smaller summed brush volume compared by its quantized key
     /// ([`SIZE_KEY_MANTISSA_BITS`]), then earlier map order. Map order decides
     /// only when both keys tie, so the order is total.
+    #[inline]
     pub(crate) fn outranks(&self, a: usize, b: usize) -> bool {
         let priority_a = self.volumes[a].priority;
         let priority_b = self.volumes[b].priority;

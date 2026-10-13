@@ -427,7 +427,8 @@ fn sample_deltas(app: &mut App, clock: f64, delta: f32, spin_delta: f32) -> Vec<
         delta,
         spin_delta,
         clock as f32,
-        &HashMap::new(),
+        &mut session.particle_pool,
+        &mut session.particle_render,
     );
     brightness
 }

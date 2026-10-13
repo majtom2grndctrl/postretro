@@ -9,7 +9,7 @@ use crate::scripting::error::ScriptError;
 use postretro_foundation::Vec3Lit;
 
 /// Shared lifetime curve (size / opacity over lifetime). `Arc<[f32]>` so the
-/// per-spawn path and the per-tick sim snapshot hand particles a cheap
+/// parameter-block mint path shares these handles through a cheap
 /// reference-counted handle instead of deep-cloning the sample `Vec`. Curves are
 /// immutable once authored; reactions that change a curve install a fresh `Arc`
 /// rather than mutating in place, so sharing across many live particles is safe.
@@ -24,8 +24,8 @@ pub struct SpinAnimation {
     pub rate_curve: Vec<f32>,
 }
 
-/// Emitter configuration carried by the parent ECS entity. The bridge reads
-/// this each tick to spawn particle entities; reactions mutate fields on it.
+/// Emitter configuration carried by the parent entity. The bridge samples
+/// this each rendered frame to spawn pool particles; reactions mutate its fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BillboardEmitterComponent {

@@ -1781,30 +1781,60 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         {
             let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Emit);
             let mut registry = script_ctx.registry.borrow_mut();
-            // Cap headroom comes from the previous frame's sim tally
-            // (see particle_sim::tick) — the bridge no longer walks the
-            // ParticleState column itself.
+            session.particle_pool.set_current_time(app.script_time);
+            let impact_collection = session
+                .particle_render
+                .resolve_collection(crate::weapon::impact_collection_id())
+                .unwrap_or(usize::MAX);
+            session
+                .particle_pool
+                .configure_impact_collection(impact_collection);
+            crate::weapon::drain_impact_particle_requests(
+                &mut registry,
+                &mut session.particle_pool,
+                &mut session.impact_particle_requests,
+            );
             session.emitter_bridge.update(
                 &mut registry,
                 frame_dt,
                 frame_script_delta,
                 app.script_time as f32,
-                &app.particle_live_counts,
+                &mut session.particle_pool,
+                &mut session.particle_render,
             );
         }
 
-        // Particle sim — after emitter bridge, before light bridge.
-        // Pure Rust; scripts never observe individual particles.
-        // Refills `particle_live_counts` with this frame's per-emitter
-        // survivor count for the next frame's bridge headroom.
+        // Anonymous presentation steps once on frame time after all producers.
         {
             let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Sim);
-            let mut registry = script_ctx.registry.borrow_mut();
-            scripting_systems::particle_sim::tick(
-                &mut registry,
-                frame_dt,
+            let registry = script_ctx.registry.borrow();
+            let environment_timer = postretro_collision::EnvironmentQueryTimer::new();
+            let mut environment = postretro_collision::EnvironmentView::new(
                 script_ctx.gravity.get(),
-                &mut app.particle_live_counts,
+                &app.environment_volumes,
+                &[],
+            );
+            if app.cpu_timer.gate().is_enabled() {
+                environment = environment.timed(&environment_timer);
+            }
+            scripting_systems::particle_sim::tick_batched(
+                &mut session.particle_pool,
+                &registry,
+                frame_dt,
+                |positions, accelerations| {
+                    postretro_collision::resolve_particle_accelerations(
+                        environment,
+                        positions,
+                        accelerations,
+                    )
+                },
+            );
+            if let Some(nanos) = environment_timer.body_resolve_nanos() {
+                particle_cpu.add_nanos(cpu_timing::ParticleStage::Environment, nanos);
+            }
+            particle_cpu.add_count(
+                cpu_timing::ParticleStage::Live,
+                session.particle_pool.len() as u64,
             );
         }
 
@@ -1894,11 +1924,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // collection; the collector never touches wgpu directly.
         {
             let registry = script_ctx.registry.borrow();
-            // Cull non-visible emitters at render-collect, mirroring
-            // the mesh path below: thread the level world + this
-            // frame's visible-cell set so off-screen / adjacent-room
-            // smoke is never packed for drawing. `visible_cells` is
-            // still live here (reclaimed after the frame).
+            // Cull each billboard by its own position against this
+            // frame's visible cells. Pool particles also receive a
+            // conservative full-frustum pretest before the cell lookup.
+            // `visible_cells` remains live here and is reclaimed after
+            // the frame.
             let presentation_tick = match session.net_endpoint.as_ref() {
                 Some(netcode::NetEndpoint::Host { tick, .. }) => f64::from(*tick),
                 Some(netcode::NetEndpoint::Client {
@@ -1913,9 +1943,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let _scope = particle_cpu.scope(cpu_timing::ParticleStage::Collect);
             session.particle_render.collect_at_tick(
                 &registry,
+                &session.particle_pool,
                 app.level.as_ref(),
                 &visible_cells,
                 presentation_tick,
+                Some(&postretro_visibility::extract_frustum_planes(view_proj)),
             );
         }
         app.cpu_timer.nested_mut().extend_from(

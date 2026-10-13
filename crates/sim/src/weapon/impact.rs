@@ -5,33 +5,22 @@ use std::sync::LazyLock;
 
 use glam::Vec3;
 use postretro_entities::FalloffKind;
-use postretro_entities::components::billboard_emitter::LifetimeCurve;
 use postretro_entities::components::light::{LightAnimation, LightComponent, LightKind};
-use postretro_entities::components::particle::ParticleState;
-use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::reactions::emitter::ImpactContact;
 use postretro_entities::registry::{EntityRegistry, Transform};
-use postretro_foundation::ProjectileImpactLight;
+use postretro_foundation::{ImpactParticleRequest, ProjectileImpactLight};
 
 use crate::impact_effects;
 use crate::sprite_collection::derive_collection_id;
 
 const IMPACT_SPRITE_COLLECTION: &str = "impact";
 
-// Impact curves are identical for every burst particle and every shot. Build
-// each `Arc<[f32]>` once and hand every spawned particle a refcount bump
-// (`LifetimeCurve::clone`) instead of allocating a fresh `Vec` per particle —
-// the same curve-sharing model the emitter/particle hot paths use.
-static IMPACT_SIZE_CURVE: LazyLock<LifetimeCurve> =
-    LazyLock::new(|| LifetimeCurve::from([0.18, 0.12, 0.0]));
-static IMPACT_OPACITY_CURVE: LazyLock<LifetimeCurve> =
-    LazyLock::new(|| LifetimeCurve::from([1.0, 0.7, 0.0]));
 const IMPACT_LIFETIME: f32 = 0.18;
 const IMPACT_EMISSIVE: f32 = 0.0;
 const IMPACT_SPEC_INTENSITY: f32 = 0.45;
 const IMPACT_SPEC_EXPONENT: f32 = 4.0;
 /// Spark particles in one impact burst. Tests count in multiples of this.
-pub const IMPACT_PARTICLE_COUNT: usize = 9;
+pub use crate::particle_pool::IMPACT_PARTICLE_COUNT;
 const SURFACE_OFFSET: f32 = 0.03;
 
 static IMPACT_COLLECTION_ID: LazyLock<String> = LazyLock::new(|| {
@@ -73,20 +62,7 @@ pub fn collection_id() -> &'static str {
 /// from `normal`. Future data-defined impact descriptors replace the body of
 /// this function; callers stay on this named effect chokepoint.
 pub fn spawn_impact_effect_at(registry: &mut EntityRegistry, point: Vec3, normal: Vec3) {
-    let (normal, tangent, bitangent) = impact_frame(normal);
-    let origin = point + normal * SURFACE_OFFSET;
-
-    for index in 0..IMPACT_PARTICLE_COUNT {
-        let angle = std::f32::consts::TAU * index as f32 / IMPACT_PARTICLE_COUNT as f32;
-        let ring = tangent * angle.cos() + bitangent * angle.sin();
-        let fan = if index == 0 {
-            normal
-        } else {
-            (normal * 0.82 + ring * 0.58).normalize_or_zero()
-        };
-        let speed = 4.5 + (index % 3) as f32 * 1.35;
-        spawn_particle(registry, origin, fan * speed, index);
-    }
+    registry.push_impact_particle_request(ImpactParticleRequest { point, normal });
 }
 
 /// Spawn one impact burst per contact, each along that contact's own normal.
@@ -178,42 +154,32 @@ fn impact_frame(normal: Vec3) -> (Vec3, Vec3, Vec3) {
     (normal, tangent, bitangent)
 }
 
-fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, velocity: Vec3, index: usize) {
-    let Some(id) = registry.try_spawn(
-        Transform {
-            position,
-            ..Transform::default()
-        },
-        &[],
-    ) else {
-        log::warn!("[WeaponImpact] entity registry exhausted; dropping impact particle");
-        return;
-    };
-
-    let lifetime = IMPACT_LIFETIME * (0.8 + index as f32 * 0.025);
-    let particle = ParticleState {
-        velocity: velocity.to_array(),
-        age: 0.0,
-        lifetime,
-        buoyancy: 0.0,
-        drag: 4.0,
-        size_curve: IMPACT_SIZE_CURVE.clone(),
-        opacity_curve: IMPACT_OPACITY_CURVE.clone(),
-        spin_rate: 0.0,
-        emitter: None,
-    };
-    let visual = SpriteVisual {
-        // Registration is keyed from the fixed impact draw contract, not this
-        // particle's intentionally varied simulation lifetime.
-        collection: collection_id().to_string(),
-        size: 0.0,
-        opacity: 0.0,
-        rotation: index as f32 * 0.73,
-        tint: [1.0, 0.88, 0.45],
-    };
-
-    let _ = registry.set_component(id, particle);
-    let _ = registry.set_component(id, visual);
+/// Drain local burst intake in raise order before frame-time emitter spawning.
+/// The caller retains `requests` so warmed frames allocate no request storage.
+pub fn drain_impact_particle_requests(
+    registry: &mut EntityRegistry,
+    pool: &mut crate::particle_pool::ParticlePool,
+    requests: &mut Vec<ImpactParticleRequest>,
+) {
+    registry.drain_impact_particle_requests_into(requests);
+    for request in requests.iter() {
+        let (normal, tangent, bitangent) = impact_frame(request.normal);
+        let origin = request.point + normal * SURFACE_OFFSET;
+        for index in 0..IMPACT_PARTICLE_COUNT {
+            let angle = std::f32::consts::TAU * index as f32 / IMPACT_PARTICLE_COUNT as f32;
+            let ring = tangent * angle.cos() + bitangent * angle.sin();
+            let fan = if index == 0 {
+                normal
+            } else {
+                (normal * 0.82 + ring * 0.58).normalize_or_zero()
+            };
+            let speed = 4.5 + (index % 3) as f32 * 1.35;
+            if !pool.spawn_impact(origin, fan * speed, index) {
+                break;
+            }
+        }
+    }
+    requests.clear();
 }
 
 #[cfg(test)]
@@ -221,15 +187,16 @@ mod tests {
     use super::*;
     use crate::scripting_systems::particle_sim;
     use postretro_entities::components::light::LightComponent;
-    use postretro_entities::registry::{ComponentKind, ComponentValue};
+    use postretro_entities::registry::ComponentKind;
     use postretro_foundation::ProjectileImpactLight;
 
     const EPSILON: f32 = 1.0e-5;
 
-    fn count_particles(registry: &EntityRegistry) -> usize {
-        registry
-            .iter_with_kind(ComponentKind::ParticleState)
-            .count()
+    fn drain(registry: &mut EntityRegistry) -> crate::particle_pool::ParticlePool {
+        let mut pool = crate::particle_pool::ParticlePool::new();
+        pool.configure_impact_collection(7);
+        drain_impact_particle_requests(registry, &mut pool, &mut Vec::new());
+        pool
     }
 
     #[test]
@@ -237,40 +204,16 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let point = Vec3::new(1.0, 2.0, 3.0);
         let normal = Vec3::Z;
-
         spawn_impact_effect_at(&mut registry, point, normal);
-
-        assert_eq!(count_particles(&registry), IMPACT_PARTICLE_COUNT);
-        assert!(
-            registry
-                .iter_with_kind(ComponentKind::BillboardEmitter)
-                .next()
-                .is_none(),
-            "impact burst should not leave behind a persistent emitter"
-        );
-
-        for (id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
-            let ComponentValue::ParticleState(particle) = value else {
-                continue;
-            };
-            let transform = registry.get_component::<Transform>(id).unwrap();
-            assert!(
-                (transform.position - (point + normal * SURFACE_OFFSET)).length() < EPSILON,
-                "impact particles should spawn just off the hit surface"
-            );
-            let velocity = Vec3::from_array(particle.velocity);
-            assert!(
-                velocity.dot(normal) > 0.0,
-                "impact velocity should point away from surface normal: {velocity:?}"
-            );
-            assert_eq!(
-                registry
-                    .get_component::<SpriteVisual>(id)
-                    .expect("impact particle has a sprite visual")
-                    .collection,
-                collection_id(),
-                "every impact particle must target the registered impact collection"
-            );
+        let pool = drain(&mut registry);
+        assert_eq!(pool.len(), IMPACT_PARTICLE_COUNT);
+        assert_eq!(registry.iter_with_kind(ComponentKind::Transform).count(), 0);
+        for (index, p) in pool.iter().enumerate() {
+            assert!((p.position - (point + normal * SURFACE_OFFSET)).length() < EPSILON);
+            assert!(p.velocity.dot(normal) > 0.0);
+            assert_eq!(p.collection, 7);
+            assert!((p.rotation - index as f32 * 0.73).abs() < EPSILON);
+            assert!((p.lifetime - IMPACT_LIFETIME * (0.8 + index as f32 * 0.025)).abs() < EPSILON);
         }
     }
 
@@ -278,34 +221,26 @@ mod tests {
     fn contact_bursts_spawn_one_burst_per_contact_along_its_own_normal() {
         let mut registry = EntityRegistry::new();
         let contacts = [
-            ImpactContact::new(Vec3::new(0.0, 0.0, 0.0), Vec3::X, None),
+            ImpactContact::new(Vec3::ZERO, Vec3::X, None),
             ImpactContact::new(Vec3::new(10.0, 0.0, 0.0), Vec3::NEG_X, None),
             ImpactContact::new(Vec3::new(20.0, 0.0, 0.0), Vec3::Z, None),
         ];
-
         spawn_impact_effects_for_contacts(&mut registry, &contacts);
-
-        assert_eq!(count_particles(&registry), 3 * IMPACT_PARTICLE_COUNT);
-        // A burst's particles share one origin just off its own surface, and the
-        // first ejects straight along the normal, so each contact's normal and
-        // point show in the particles found at its origin.
+        let pool = drain(&mut registry);
+        assert_eq!(pool.len(), 3 * IMPACT_PARTICLE_COUNT);
         for contact in &contacts {
-            let at_contact = registry
-                .iter_with_kind(ComponentKind::ParticleState)
-                .filter_map(|(id, value)| {
-                    let ComponentValue::ParticleState(particle) = value else {
-                        return None;
-                    };
-                    let position = registry.get_component::<Transform>(id).ok()?.position;
-                    ((position - (contact.point + contact.normal * SURFACE_OFFSET)).length()
-                        < EPSILON)
-                        .then(|| Vec3::from_array(particle.velocity).normalize())
+            let particles = pool
+                .iter()
+                .filter(|p| {
+                    (p.position - (contact.point + contact.normal * SURFACE_OFFSET)).length()
+                        < EPSILON
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(at_contact.len(), IMPACT_PARTICLE_COUNT);
+            assert_eq!(particles.len(), IMPACT_PARTICLE_COUNT);
             assert!(
-                at_contact.iter().any(|v| v.dot(contact.normal) > 0.9999),
-                "the burst ejects along its own contact's normal"
+                particles
+                    .iter()
+                    .any(|p| p.velocity.normalize().dot(contact.normal) > 0.9999)
             );
         }
     }
@@ -314,20 +249,13 @@ mod tests {
     fn contact_bursts_take_the_upward_fallback_for_degenerate_normals() {
         for normal in [Vec3::ZERO, Vec3::new(f32::NAN, 0.0, 1.0), Vec3::INFINITY] {
             let mut registry = EntityRegistry::new();
-            spawn_impact_effects_for_contacts(
-                &mut registry,
-                &[ImpactContact::new(Vec3::ZERO, normal, None)],
+            spawn_impact_effect_at(&mut registry, Vec3::ZERO, normal);
+            let pool = drain(&mut registry);
+            assert_eq!(pool.len(), IMPACT_PARTICLE_COUNT);
+            assert!(
+                pool.iter()
+                    .all(|p| p.velocity.is_finite() && p.velocity.y > 0.0)
             );
-            assert_eq!(count_particles(&registry), IMPACT_PARTICLE_COUNT);
-            for (_id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
-                let ComponentValue::ParticleState(particle) = value else {
-                    continue;
-                };
-                assert!(
-                    particle.velocity.iter().all(|c| c.is_finite()) && particle.velocity[1] > 0.0,
-                    "{normal:?} must burst upward with finite velocity"
-                );
-            }
         }
     }
 
@@ -335,37 +263,58 @@ mod tests {
     fn impact_particles_clean_up_after_lifetime() {
         let mut registry = EntityRegistry::new();
         spawn_impact_effect_at(&mut registry, Vec3::ZERO, Vec3::Y);
-
-        let mut live_counts = std::collections::HashMap::new();
-        particle_sim::tick(
-            &mut registry,
-            IMPACT_LIFETIME * 2.0,
-            -9.81,
-            &mut live_counts,
-        );
-
-        assert_eq!(
-            count_particles(&registry),
-            0,
-            "impact particles should despawn through the particle sim"
-        );
+        let mut pool = drain(&mut registry);
+        particle_sim::tick(&mut pool, &registry, IMPACT_LIFETIME * 2.0, |_| {
+            (-9.81, Vec3::ZERO)
+        });
+        assert!(pool.is_empty());
+        assert_eq!(pool.parameter_block_count(), 9);
     }
 
     #[test]
     fn zero_normal_falls_back_to_upward_burst() {
         let mut registry = EntityRegistry::new();
         spawn_impact_effect_at(&mut registry, Vec3::ZERO, Vec3::ZERO);
+        let pool = drain(&mut registry);
+        assert_eq!(pool.len(), IMPACT_PARTICLE_COUNT);
+        assert!(pool.iter().all(|p| p.velocity.y > 0.0));
+    }
 
-        for (_id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
-            let ComponentValue::ParticleState(particle) = value else {
-                continue;
-            };
-            let velocity = Vec3::from_array(particle.velocity);
+    #[test]
+    fn requests_from_several_ticks_drain_in_raise_order_and_step_in_the_frame() {
+        let mut registry = EntityRegistry::new();
+        for tick in 0..3 {
+            spawn_impact_effect_at(&mut registry, Vec3::X * tick as f32 * 10.0, Vec3::Y);
+        }
+        let mut pool = drain(&mut registry);
+        let before = pool
+            .iter()
+            .map(|p| (p.position, p.velocity))
+            .collect::<Vec<_>>();
+        assert_eq!(before.len(), 3 * IMPACT_PARTICLE_COUNT);
+        for tick in 0..3 {
             assert!(
-                velocity.y > 0.0,
-                "zero normal should produce upward impact velocity: {velocity:?}"
+                (before[tick * IMPACT_PARTICLE_COUNT].0.x - tick as f32 * 10.0).abs() < EPSILON
             );
         }
+        particle_sim::tick(&mut pool, &registry, 0.02, |_| (-9.81, Vec3::ZERO));
+        for (p, (position, velocity)) in pool.iter().zip(before) {
+            assert!((p.age - 0.02).abs() < EPSILON);
+            assert!((p.position - (position + velocity * 0.02)).length() < EPSILON);
+        }
+    }
+
+    #[test]
+    fn request_queued_before_clear_never_enters_reloaded_pool() {
+        let mut registry = EntityRegistry::new();
+        spawn_impact_effect_at(&mut registry, Vec3::ZERO, Vec3::Y);
+        registry.clear_for_level_unload();
+        let mut pool = drain(&mut registry);
+        assert!(pool.is_empty());
+        spawn_impact_effect_at(&mut registry, Vec3::X, Vec3::Y);
+        drain_impact_particle_requests(&mut registry, &mut pool, &mut Vec::new());
+        assert_eq!(pool.len(), IMPACT_PARTICLE_COUNT);
+        assert_eq!(pool.parameter_block_count(), 9);
     }
 
     #[test]

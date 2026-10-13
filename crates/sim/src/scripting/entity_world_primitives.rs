@@ -73,8 +73,7 @@ enum QueryFilter {
     Spawner {
         tag: Option<String>,
     },
-    /// Always returns an empty array. Particles and sprite-visuals are
-    /// engine-managed; scripts have no business iterating individual ones.
+    /// Always returns an empty array. Sprite visuals are engine-managed.
     AlwaysEmpty,
 }
 
@@ -89,11 +88,11 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
         "spawner" => Ok(QueryFilter::Spawner { tag }),
-        "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
+        "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"sprite_visual\""
             ),
         }),
     }
@@ -101,8 +100,8 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"particle\" | \"sprite_visual\", tag?: string }. \
-     `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"sprite_visual\", tag?: string }. \
+     `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
 
@@ -1124,45 +1123,53 @@ mod tests {
     }
 
     #[test]
-    fn world_query_unknown_component_errors() {
+    fn world_query_unknown_and_removed_particle_components_error() {
         let _level = LevelDataContext::enter();
         let (ctx, _id) = test_ctx_with_light(true, None);
         let r = registry_for(ctx);
 
         let rt = rquickjs::Runtime::new().unwrap();
         let jsctx = rquickjs::Context::full(&rt).unwrap();
-        jsctx.with(|qjs| {
-            install_all(&r, &qjs);
-            let msg: String = qjs
-                .eval::<String, _>(
-                    r#"try { worldQuery({ component: "decal" }); "no-throw" }
+        for component in ["decal", "particle_state", "particle"] {
+            jsctx.with(|qjs| {
+                install_all(&r, &qjs);
+                qjs.globals().set("removedComponent", component).unwrap();
+                let msg: String = qjs
+                    .eval::<String, _>(
+                        r#"try { worldQuery({ component: removedComponent }); "no-throw" }
                        catch (e) { String(e.message || e) }"#,
-                )
-                .unwrap();
-            assert!(
-                msg.contains("invalid argument") && msg.contains("decal"),
-                "expected InvalidArgument from QuickJS, got: {msg}"
-            );
-        });
+                    )
+                    .unwrap();
+                assert!(
+                    msg.contains("invalid argument")
+                        && msg.contains("unknown component")
+                        && msg.contains(component),
+                    "expected InvalidArgument from QuickJS, got: {msg}"
+                );
+            });
 
-        let lua = mlua::Lua::new();
-        install_all_lua(&r, &lua);
-        let (ok, err): (bool, String) = lua
-            .load(
-                r#"
+            let lua = mlua::Lua::new();
+            install_all_lua(&r, &lua);
+            lua.globals().set("removedComponent", component).unwrap();
+            let (ok, err): (bool, String) = lua
+                .load(
+                    r#"
                 local ok, err = pcall(function()
-                    return worldQuery({ component = "decal" })
+                    return worldQuery({ component = removedComponent })
                 end)
                 return ok, tostring(err)
                 "#,
-            )
-            .eval()
-            .unwrap();
-        assert!(!ok, "expected Luau call to error");
-        assert!(
-            err.contains("invalid argument") && err.contains("decal"),
-            "expected InvalidArgument from Luau, got: {err}"
-        );
+                )
+                .eval()
+                .unwrap();
+            assert!(!ok, "expected Luau call to error");
+            assert!(
+                err.contains("invalid argument")
+                    && err.contains("unknown component")
+                    && err.contains(component),
+                "expected InvalidArgument from Luau, got: {err}"
+            );
+        }
     }
 
     #[test]

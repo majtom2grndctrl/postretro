@@ -49,40 +49,40 @@ When done:
 
 ## Acceptance
 ### Automated
-- [ ] Integration matches today's for one particle over many steps, with level-default gravity and zero push: position, velocity, buoyancy and drag, size and opacity curves, spin. It also holds when the emitter's spin rate changes mid-life, and after the emitter despawns (orphan keeps its last rate), including when a new emitter takes its registry slot on the same tick (P7).
-- [ ] Two particles given different gravity and push in one step each integrate their own.
-- [ ] Expiry: a particle reaching its lifetime is gone after that step and not counted toward headroom. Two expiring in one step both leave, including when one is the last element, and a step that expires every particle leaves the pool empty. No survivor is skipped or double-stepped (P17).
-- [ ] The per-emitter cap still clamps bursts and rate spawns to headroom, counting the emitter's particles across every block it has minted (P6).
-- [ ] Past the global budget, spawns drop, the warning fires once per throttle interval, and no live particle is evicted. The pool never exceeds the budget when impact requests and several emitters spawn on one frame. A full impact-request queue drops with the same throttled warning (P11).
-- [ ] At the global budget, a burst lands up to the remaining room and drops the rest. A blocked rate spawn carries no backlog into the frame room frees (P10, P12).
-- [ ] After a level clear, the first budget or queue overflow in the next level warns (P13).
-- [ ] A particle spawned before an emitter's curves, drag, buoyancy, sprite, lifetime or tint change keeps its spawn-time values for its whole life. A particle spawned after the change, including later on the same frame, takes the new values (P1).
-- [ ] An emitter rewritten many times between two spawns mints one block, and an emitter rewritten with no spawn mints none. Rewrites of only rate, spin or burst mint none. Live blocks never exceed live particles plus the static impact blocks. Once every emitter particle expires, only the static impact blocks remain (P2, P3, P5).
-- [ ] A block freed by its last particle's expiry and then reused by another emitter's mint never reaches the first emitter's later spawns (P4).
-- [ ] Impact bursts mint no blocks. After a level clear the block table holds only the static impact blocks, and the next level's first impact draws from them (P15).
-- [ ] An impact burst raised during a fixed tick, by client prediction, by an observer cue, and by host hit-declaration ingest appears in the pool on the same rendered frame as today, with the same count and orientation. The predicted owner still receives no second burst, and the listen host still materializes exactly one local burst for a remote detonation.
-- [ ] A particle spawned by the emitter bridge or drained from an impact request is stepped once, by that frame's delta, before that frame's collect. Impact requests raised across several fixed ticks of one frame drain in raise order, before the emitter bridge spawns (P8, P9).
-- [ ] A host's impact request is never routed to remote clients. A remote client still materializes exactly one burst per contact (P16).
-- [ ] The registry holds no particle entities after emission, impact and simulation. A level clear and a reload empty the pool and its pending requests, including a request queued in the last tick before the clear (P14).
-- [ ] Steady-state spawn, step and expire allocate nothing per particle, under the allocation probe: with the pool and block table at their high-water mark, a frame's allocation count is the same at 100 and at 10,000 live particles, including frames where an emitter is rewritten every frame.
-- [ ] The collector packs the current rule's set minus at most particles whose quads lie wholly outside the view frustum: in visible cells, in culled cells, drifted from their emitter, orphaned, draw-all frames. A particle centred just outside the frustum whose rotated quad, at its current size, overlaps it is still drawn. Batching and the 32-byte instance stride are unchanged.
-- [ ] A CPU-timing window reports the live-particle count under `render_prep` beside the particle stages: zero on frames with no live particles, and absent when timing is off (P18).
-- [ ] A script naming the `particle_state` kind, or its `particle` alias, is rejected by the TypeScript and Luau type-checks, and by the FFI on read and query as an unknown kind, not with the bridge-managed refusal.
-- [ ] Every surviving component kind's engine discriminant equals its wire constant, with no gap, and a peer at the pre-renumber wire version is refused at handshake.
-- [ ] Existing emitter-bridge, particle-sim, particle-render and impact suites pass, re-pointed at the pool.
-- [ ] *(From E24.)* A particle in a push volume accelerates by the push regardless of its buoyancy.
-- [ ] *(From E24.)* A particle inside a low-gravity volume accelerates at that volume's gravity times its buoyancy. On the particle step it drifts out, it takes level gravity. A zero-buoyancy particle floats in every volume.
-- [ ] *(From E24.)* On the step a particle's position crosses a volume boundary, that step's velocity update uses the gravity at its post-step position.
+- [x] Integration matches today's for one particle over many steps, with level-default gravity and zero push: position, velocity, buoyancy and drag, size and opacity curves, spin. It also holds when the emitter's spin rate changes mid-life, and after the emitter despawns (orphan keeps its last rate), including when a new emitter takes its registry slot on the same tick (P7).
+- [x] Two particles given different gravity and push in one step each integrate their own.
+- [x] Expiry: a particle reaching its lifetime is gone after that step and not counted toward headroom. Two expiring in one step both leave, including when one is the last element, and a step that expires every particle leaves the pool empty. No survivor is skipped or double-stepped (P17).
+- [x] The per-emitter cap still clamps bursts and rate spawns to headroom, counting the emitter's particles across every block it has minted (P6).
+- [x] Past the global budget, spawns drop, the warning fires once per throttle interval, and no live particle is evicted. The pool never exceeds the budget when impact requests and several emitters spawn on one frame. A full impact-request queue drops with the same throttled warning (P11).
+- [x] At the global budget, a burst lands up to the remaining room and drops the rest. A blocked rate spawn carries no backlog into the frame room frees (P10, P12).
+- [x] After a level clear, the first budget or queue overflow in the next level warns (P13).
+- [x] A particle spawned before an emitter's curves, drag, buoyancy, sprite, lifetime or tint change keeps its spawn-time values for its whole life. A particle spawned after the change, including later on the same frame, takes the new values (P1).
+- [x] An emitter rewritten many times between two spawns mints one block, and an emitter rewritten with no spawn mints none. Rewrites of only rate, spin or burst mint none. Live blocks never exceed live particles plus the static impact blocks. Once every emitter particle expires, only the static impact blocks remain (P2, P3, P5).
+- [x] A block freed by its last particle's expiry and then reused by another emitter's mint never reaches the first emitter's later spawns (P4).
+- [x] Impact bursts mint no blocks. After a level clear the block table holds only the static impact blocks, and the next level's first impact draws from them (P15).
+- [x] An impact burst raised during a fixed tick, by client prediction, by an observer cue, and by host hit-declaration ingest appears in the pool on the same rendered frame as today, with the same count and orientation. The predicted owner still receives no second burst, and the listen host still materializes exactly one local burst for a remote detonation.
+- [x] A particle spawned by the emitter bridge or drained from an impact request is stepped once, by that frame's delta, before that frame's collect. Impact requests raised across several fixed ticks of one frame drain in raise order, before the emitter bridge spawns (P8, P9).
+- [x] A host's impact request is never routed to remote clients. A remote client still materializes exactly one burst per contact (P16).
+- [x] The registry holds no particle entities after emission, impact and simulation. A level clear and a reload empty the pool and its pending requests, including a request queued in the last tick before the clear (P14).
+- [x] Steady-state spawn, step and expire allocate nothing per particle, under the allocation probe: with the pool and block table at their high-water mark, a frame's allocation count is the same at 100 and at 10,000 live particles, including frames where an emitter is rewritten every frame.
+- [x] The collector packs the current rule's set minus at most particles whose quads lie wholly outside the view frustum: in visible cells, in culled cells, drifted from their emitter, orphaned, draw-all frames. A particle centred just outside the frustum whose rotated quad, at its current size, overlaps it is still drawn. Batching and the 32-byte instance stride are unchanged.
+- [x] A CPU-timing window reports the live-particle count under `render_prep` beside the particle stages: zero on frames with no live particles, and absent when timing is off (P18).
+- [x] A script naming the `particle_state` kind, or its `particle` alias, is rejected by the TypeScript and Luau type-checks, and by the FFI on read and query as an unknown kind, not with the bridge-managed refusal.
+- [x] Every surviving component kind's engine discriminant equals its wire constant, with no gap, and a peer at the pre-renumber wire version is refused at handshake.
+- [x] Existing emitter-bridge, particle-sim, particle-render and impact suites pass, re-pointed at the pool.
+- [x] *(From E24.)* A particle in a push volume accelerates by the push regardless of its buoyancy.
+- [x] *(From E24.)* A particle inside a low-gravity volume accelerates at that volume's gravity times its buoyancy. On the particle step it drifts out, it takes level gravity. A zero-buoyancy particle floats in every volume.
+- [x] *(From E24.)* On the step a particle's position crosses a volume boundary, that step's velocity update uses the gravity at its post-step position.
 ### Manual
-- [ ] Stress, pinned per `testing_guide.md` §Resource bounds:
+- [x] Stress, pinned per `testing_guide.md` §Resource bounds:
   - **Run:** `stress-env-volumes.prl` recompiled from the committed map, mixed pose `114.60,2.44,-138.99,45,0`, release with dev-tools on this Intel Mac, `caffeinate`, window frontmost, no screen saver or lock, at least five 120-frame windows after warmup, load average recorded, live count read from the window.
   - **Baseline (2026-10-05), about 10k live:** `particle_sim` 3.5–3.8, `particle_collect` 2.8–2.9 and `particle_emit` 0.24 ms per frame; `sim_tick` 9.8 ms per tick.
   - **Budget at 10k:** `particle_sim` ≤ 0.6 ms excluding any nested environment-resolve stage, `particle_collect` ≤ 1.0 ms, `particle_emit` ≤ 0.3 ms.
   - **Upstream limit:** the GPU-bound smoke frame caps `total`, so judge stage costs.
   - **E24 particle environment stage (from E24):** a stage nested in `particle_sim` times the per-particle environment resolve; budget under 0.5 ms per frame at 10k live particles, excluded from `particle_sim`'s own budget.
   - **Cleanup:** sweep maps and their PRLs deleted.
-- [ ] Particle-independent tick: the same run with zero, about 10k and about 20k live particles (emitter-rate sweep). `sim_tick` per tick differs by no more than 10% across the three. Baseline 3.4, 9.8 and 15.2 ms.
-- [ ] Visual: smoke, sparks and impact bursts look unchanged in the particle zone (d) and a weapon test room. Check spin, drift through doorways, culling at portal edges and particles at the screen edge.
+- [x] Particle-independent tick: the same run with zero, about 10k and about 20k live particles (emitter-rate sweep). `sim_tick` per tick differs by no more than 10% across the three. Baseline 3.4, 9.8 and 15.2 ms.
+- [x] Visual: smoke, sparks and impact bursts look unchanged in the particle zone (d) and a weapon test room. Check spin, drift through doorways, culling at portal edges and particles at the screen edge.
 
 ## Path
 - **Seams.** Producers: `EmitterBridge::update` and `spawn_one`; the impact raise sites in `research.md` §Source pins. Sim: `particle_sim::tick`. Collector: `ParticleRenderCollector::collect_at_tick` / `collect_sprite`, which also packs projectile bodies. The binary's render-prep call site.

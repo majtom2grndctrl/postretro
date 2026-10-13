@@ -466,10 +466,13 @@ mod tests {
         );
     }
 
-    fn burst_particles(registry: &EntityRegistry) -> usize {
-        registry
-            .iter_with_kind(postretro_entities::ComponentKind::ParticleState)
-            .count()
+    fn burst_particles(
+        registry: &mut EntityRegistry,
+    ) -> postretro_sim::particle_pool::ParticlePool {
+        let mut pool = postretro_sim::particle_pool::ParticlePool::new();
+        pool.configure_impact_collection(0);
+        crate::weapon::drain_impact_particle_requests(registry, &mut pool, &mut Vec::new());
+        pool
     }
 
     /// Freeze `emitter` as a cue of `kind`, then materialize it as a client would.
@@ -503,11 +506,28 @@ mod tests {
 
         spawn_observer_impact_bursts(&mut registry, &[cue]);
 
+        let particles = burst_particles(&mut registry);
         assert_eq!(
-            burst_particles(&registry),
+            particles.len(),
             3 * crate::weapon::IMPACT_PARTICLE_COUNT,
             "a zero normal still bursts, along the burst's own fallback"
         );
+        for (index, particle) in particles.iter().enumerate() {
+            let normal = if index < crate::weapon::IMPACT_PARTICLE_COUNT {
+                Vec3::X
+            } else {
+                Vec3::Y
+            };
+            assert!(
+                particle.velocity.dot(normal) > 0.0,
+                "each contact uses its own normal or fallback"
+            );
+            let contact_x = 1.0 + (index / crate::weapon::IMPACT_PARTICLE_COUNT) as f32;
+            assert!(
+                (particle.position - (Vec3::new(contact_x, 0.0, 0.0) + normal * 0.03)).length()
+                    < 1.0e-6
+            );
+        }
     }
 
     #[test]
@@ -527,11 +547,11 @@ mod tests {
         let mut registry = EntityRegistry::new();
 
         spawn_observer_impact_bursts(&mut registry, &[activate, entity_anchored]);
-        assert_eq!(burst_particles(&registry), 0);
+        assert_eq!(burst_particles(&mut registry).len(), 0);
 
         spawn_observer_impact_bursts(&mut registry, &[impact]);
         assert_eq!(
-            burst_particles(&registry),
+            burst_particles(&mut registry).len(),
             crate::weapon::IMPACT_PARTICLE_COUNT
         );
     }

@@ -9,10 +9,10 @@ export type EulerDegrees = { pitch: number, yaw: number, roll: number }
 
 export type Transform = { position: Vec3, rotation: EulerDegrees, scale: Vec3 }
 
---- Valid values: `transform`, `light`, `billboard_emitter`, `particle_state`, `sprite_visual`, `fog_volume`.
-export type ComponentKind = "transform" | "light" | "billboard_emitter" | "particle_state" | "sprite_visual" | "fog_volume"
+--- Valid values: `transform`, `light`, `billboard_emitter`, `sprite_visual`, `fog_volume`.
+export type ComponentKind = "transform" | "light" | "billboard_emitter" | "sprite_visual" | "fog_volume"
 
-export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (ParticleState & { kind: "particle_state" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
+export type ComponentValue = (Transform & { kind: "transform" }) | (LightComponent & { kind: "light" }) | (BillboardEmitterComponent & { kind: "billboard_emitter" }) | (SpriteVisual & { kind: "sprite_visual" }) | (FogVolumeComponent & { kind: "fog_volume" })
 
 --- Authored dynamic-light preset attached to `EntityTypeDescriptor.components.light`. Field names are snake_case on the script surface. Descriptor-spawned lights are runtime-only and do not participate in baked indirect lighting.
 export type LightDescriptor = {
@@ -117,27 +117,7 @@ export type SpinAnimation = {
   rate_curve: {number},
 }
 
---- Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.
-export type ParticleState = {
-  --- Current particle velocity in metres/sec.
-  velocity: {number},
-  --- Seconds elapsed since the particle spawned.
-  age: number,
-  --- Total particle lifetime in seconds; the particle despawns once `age` reaches it.
-  lifetime: number,
-  --- Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).
-  buoyancy: number,
-  --- Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.
-  drag: number,
-  --- Normalized-lifetime billboard size curve, sampled evenly from spawn to death.
-  size_curve: {number},
-  --- Normalized-lifetime opacity curve, sampled evenly from spawn to death.
-  opacity_curve: {number},
-  --- Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).
-  emitter: EntityId?,
-}
-
---- Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.
+--- Per-frame visual state of a sprite as a `sprite_visual` component. Authored by projectile presentation and consumed by the billboard render integration.
 export type SpriteVisual = {
   --- Derived sprite collection id resolved by the billboard renderer. It identifies one asset reference plus its draw contract, not a texture path.
   collection: string,

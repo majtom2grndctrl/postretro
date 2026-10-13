@@ -1,161 +1,162 @@
-// Particle render collector: packs ParticleState and projectile SpriteVisual bytes per collection.
-// See: context/lib/scripting.md
+// Particle-pool and projectile billboard collection into shared renderer instance bytes.
+// See: context/lib/entity_model.md §8 · context/lib/rendering_pipeline.md §7.4
 
 use std::collections::{HashMap, HashSet};
 
+use glam::Vec3;
 use postretro_entities::components::sprite_visual::SpriteVisual;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
-use postretro_visibility::VisibleCells;
+use postretro_sim::particle_pool::ParticlePool;
+use postretro_visibility::{Frustum, VisibleCells};
 
-/// Per-collection scratch buffers and warning state for the particle render
-/// path. Owned by the game layer (not the renderer) so the wgpu boundary stays
-/// inside `SmokePass`.
+struct CollectionBuffer {
+    name: String,
+    bytes: Vec<u8>,
+    registered: bool,
+}
+
+/// The game layer owns collection bookkeeping; GPU resources remain in SmokePass.
 pub(crate) struct ParticleRenderCollector {
-    buffers: HashMap<String, Vec<u8>>,
-    /// Pre-built collection-id → collection-key resolution map. Built once per
-    /// level at `register_sprite` time; read on the per-particle hot path so
-    /// `collect` resolves a collection id to its target buffer key with a single
-    /// borrowed lookup and **zero per-particle heap allocation** (the old
-    /// `resolve_collection` allocated a `String` for every particle). Every
-    /// registered collection maps to itself; the resolution borrows the stored
-    /// key (`&str`) rather than cloning it.
-    sprite_to_collection: HashMap<String, String>,
-    /// First-registered collection key — the fallback target for runtime
-    /// collection ids that were never registered at level load.
-    default_collection: Option<String>,
+    buffers: Vec<CollectionBuffer>,
+    sprite_to_collection: HashMap<String, usize>,
+    default_collection: Option<usize>,
     warned_unregistered: HashSet<String>,
+    visible_cells: HashSet<u32>,
+    cull_cells: bool,
 }
 
 impl ParticleRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
-            buffers: HashMap::new(),
+            buffers: Vec::new(),
             sprite_to_collection: HashMap::new(),
             default_collection: None,
             warned_unregistered: HashSet::new(),
+            visible_cells: HashSet::new(),
+            cull_cells: false,
         }
     }
 
-    /// Pre-register a sprite collection id at level load. The first registered
-    /// collection becomes the fallback for unregistered runtime ids. Caller
-    /// is responsible for the matching `SmokePass::register_collection` upload
-    /// — this collector only tracks bookkeeping.
-    ///
-    /// Called at level load for every derived collection id after classname
-    /// dispatch. Populates the
-    /// `sprite_to_collection` map so the render-collect hot path never allocates.
-    pub(crate) fn register_sprite(&mut self, collection: &str) {
-        let is_new = self
-            .sprite_to_collection
-            .insert(collection.to_string(), collection.to_string())
-            .is_none();
-        if is_new && self.default_collection.is_none() {
-            self.default_collection = Some(collection.to_string());
+    /// Return an index stable for the loaded level. Registration and renderer
+    /// upload happen together at level load, before producers resolve blocks.
+    pub(crate) fn register_sprite(&mut self, collection: &str) -> usize {
+        if let Some(&index) = self.sprite_to_collection.get(collection) {
+            return index;
         }
-        self.buffers.entry(collection.to_string()).or_default();
+        // Reuse a prior level's byte buffer when the same collection returns.
+        let index = self
+            .buffers
+            .iter()
+            .position(|buffer| buffer.name == collection)
+            .unwrap_or_else(|| {
+                self.buffers.push(CollectionBuffer {
+                    name: collection.to_owned(),
+                    bytes: Vec::new(),
+                    registered: false,
+                });
+                self.buffers.len() - 1
+            });
+        self.buffers[index].registered = true;
+        self.sprite_to_collection
+            .insert(collection.to_owned(), index);
+        self.default_collection.get_or_insert(index);
+        index
     }
 
-    /// Drop all per-level state (resolution map, default, warning record).
-    /// Buffers are retained so capacity carries across reloads.
+    /// Resolve once when minting a parameter block, outside the particle hot loop.
+    /// Projectile bodies also use this path because they retain string components.
+    pub(crate) fn resolve_collection(&mut self, collection: &str) -> Option<usize> {
+        if let Some(&index) = self.sprite_to_collection.get(collection) {
+            return Some(index);
+        }
+        let fallback = self.default_collection?;
+        if !self.warned_unregistered.contains(collection) {
+            self.warned_unregistered.insert(collection.to_owned());
+            log::warn!(
+                "[ParticleRender] collection id '{collection}' was not registered at level load; \
+                 falling back to default collection '{}'. \
+                 Add it to the level-load definition sweep.",
+                self.buffers[fallback].name,
+            );
+        }
+        Some(fallback)
+    }
+
+    /// Forget level registrations and warnings while retaining high-water scratch.
     pub(crate) fn reset_for_level(&mut self) {
         self.sprite_to_collection.clear();
         self.default_collection = None;
         self.warned_unregistered.clear();
-        for buf in self.buffers.values_mut() {
-            buf.clear();
+        self.visible_cells.clear();
+        self.cull_cells = false;
+        for buffer in &mut self.buffers {
+            buffer.bytes.clear();
+            buffer.registered = false;
         }
     }
 
-    /// Walk particle and projectile-body sprites, bucket by `SpriteVisual.collection`,
-    /// and pack bytes. Clears each per-collection buffer first so capacity is
-    /// reused across frames.
-    ///
-    /// Mirrors the mesh collector's render-frame cull (`mesh_render.rs`): each
-    /// particle is gated against this frame's `visible` cell set, so off-screen /
-    /// adjacent-room smoke is never packed for drawing. The world (`None` only
-    /// when no level is loaded — particles cannot exist without an emitter, which
-    /// requires a level) supplies the point-to-cell query.
-    ///
-    /// Cull granularity is the **particle**, not its emitter. Each billboard is
-    /// gated by the cell of *its own* world position — the same
-    /// `transform.position` that `pack_sprite_instance` writes into the GPU
-    /// instance — so a smoke puff that has drifted into a portal-visible cell is
-    /// drawn even when its emitter sits behind a wall, and a puff that drifted
-    /// out is culled even when its emitter is on-screen. (A per-emitter decision
-    /// dropped drifted-in-view particles; that was a correctness bug.)
-    /// `ParticleState.emitter` is no longer consulted here; it survives only for
-    /// the sim-tick spin-rate lookup.
-    ///
-    /// **Orphaned particles** (emitter despawned) need no special case: a
-    /// particle always carries its own `Transform`, so it is culled or drawn by
-    /// its own cell exactly like any other particle.
-    ///
-    /// **Cost.** The membership half of the cull
-    /// (`VisibleCells::Culled(cells).contains`) is a linear scan, so testing it
-    /// per particle would be `O(particles x visible_cells)`. Instead this builds
-    /// a `HashSet<u32>` of visible cell ids **once per collect** and tests
-    /// each particle in `O(1)`; `locate_cell` itself is `O(tree depth)` and cheap.
     #[cfg(test)]
     pub(crate) fn collect(
         &mut self,
         registry: &EntityRegistry,
+        particles: &ParticlePool,
         world: Option<&LevelWorld>,
         visible: &VisibleCells,
     ) {
-        self.collect_at_tick(registry, world, visible, 0.0);
+        self.collect_at_tick(registry, particles, world, visible, 0.0, None);
     }
 
-    /// Fixed-tick-aware collector entry point used by the renderer path. The
-    /// supplied tick is the host simulation epoch (fractional on interpolating
-    /// clients), never render-frame delta or local snapshot-arrival time.
+    /// The optional frustum is the full camera frustum, never a narrowed portal
+    /// frustum. Exact own-position cell culling follows the conservative pretest.
+    /// `presentation_tick` is the host simulation epoch, fractional on clients.
     pub(crate) fn collect_at_tick(
         &mut self,
         registry: &EntityRegistry,
+        particles: &ParticlePool,
         world: Option<&LevelWorld>,
         visible: &VisibleCells,
         presentation_tick: f64,
+        frustum: Option<&Frustum>,
     ) {
-        for buf in self.buffers.values_mut() {
-            buf.clear();
+        for buffer in &mut self.buffers {
+            buffer.bytes.clear();
         }
-
-        // Build the per-frame O(1) visible-cell membership set once. `None` is
-        // the draw-all short-circuit (DrawAll, or no world loaded): every
-        // particle draws and no locator descent runs. Otherwise the set is
-        // the visible cell ids, hoisting `Culled(_).contains` (a linear
-        // scan) out of the per-particle loop.
-        let visible_cells: Option<HashSet<u32>> = match (visible, world) {
-            (VisibleCells::Culled(cells), Some(_)) => Some(cells.iter().copied().collect()),
-            _ => None,
+        self.visible_cells.clear();
+        self.cull_cells = if let (VisibleCells::Culled(cells), Some(_)) = (visible, world) {
+            self.visible_cells.extend(cells.iter().copied());
+            true
+        } else {
+            false
         };
 
-        for (id, value) in registry.iter_with_kind(ComponentKind::ParticleState) {
-            let ComponentValue::ParticleState(particle) = value else {
+        for particle in particles.iter() {
+            if frustum.is_some_and(|frustum| {
+                quad_outside_frustum(particle.position, particle.size, frustum)
+            }) || !self.position_visible(particle.position, world)
+            {
+                continue;
+            }
+            let Some(buffer) = self
+                .buffers
+                .get_mut(particle.collection)
+                .filter(|buffer| buffer.registered)
+            else {
                 continue;
             };
-            let Ok(transform) = registry.get_component::<Transform>(id) else {
-                continue;
-            };
-            let Ok(visual) = registry.get_component::<SpriteVisual>(id) else {
-                continue;
-            };
-
-            self.collect_sprite(
-                transform,
-                visual,
+            pack_sprite_instance(
+                particle.position,
                 particle.age,
-                world,
-                visible_cells.as_ref(),
+                particle.size,
+                particle.rotation,
+                particle.opacity,
+                &mut buffer.bytes,
             );
         }
 
-        // A local travelling projectile has `SpriteVisual` but deliberately no
-        // `ParticleState`: its visual is persistent until collision/expiry, not
-        // a simulated smoke puff. A cadence-enabled body carries its fixed-tick
-        // flight age; every other body must retain the exact static age zero.
+        // Gameplay projectiles remain individually addressed registry entities.
         for (id, value) in registry.iter_with_kind(ComponentKind::Projectile) {
             let ComponentValue::Projectile(projectile) = value else {
                 continue;
@@ -171,13 +172,10 @@ impl ParticleRenderCollector {
             } else {
                 0.0
             };
-            self.collect_sprite(transform, visual, age, world, visible_cells.as_ref());
+            self.collect_sprite(transform, visual, age, world);
         }
 
-        // A host-replicated observer copy intentionally carries no gameplay
-        // ProjectileComponent. Its provenance marks the exact visual-only
-        // projectile shape, preventing this path from broadening into a generic
-        // renderer for every entity that happens to carry SpriteVisual.
+        // Provenance restricts this to replicated projectile display copies.
         for (id, value) in registry.iter_with_kind(ComponentKind::DescriptorProvenance) {
             let ComponentValue::DescriptorProvenance(provenance) = value else {
                 continue;
@@ -185,9 +183,6 @@ impl ParticleRenderCollector {
             if provenance.spawn_path != DescriptorSpawnPath::ProjectilePresentation
                 || registry
                     .has_component_kind(id, ComponentKind::Projectile)
-                    .unwrap_or(false)
-                || registry
-                    .has_component_kind(id, ComponentKind::ParticleState)
                     .unwrap_or(false)
             {
                 continue;
@@ -207,87 +202,47 @@ impl ParticleRenderCollector {
                         * crate::frame_timing::TICK_DURATION.as_secs_f32()
                 })
                 .unwrap_or(0.0);
-            self.collect_sprite(transform, visual, age, world, visible_cells.as_ref());
+            self.collect_sprite(transform, visual, age, world);
         }
     }
 
-    /// Cull and pack one sprite into its registered collection. The caller passes
-    /// a particle's animated age or zero for a persistent projectile body.
+    fn position_visible(&self, position: Vec3, world: Option<&LevelWorld>) -> bool {
+        !self.cull_cells
+            || self.visible_cells.contains(
+                &(world
+                    .expect("cell culling requires a loaded world")
+                    .locate_cell(position) as u32),
+            )
+    }
+
     fn collect_sprite(
         &mut self,
         transform: &Transform,
         visual: &SpriteVisual,
         age: f32,
         world: Option<&LevelWorld>,
-        visible_cells: Option<&HashSet<u32>>,
     ) {
-        // Per-billboard cull: test this sprite's OWN cell (from the same position
-        // that gets packed) against the visible set. `None` => draw-all
-        // short-circuit, so skip the locator descent entirely.
-        if let Some(cells) = visible_cells {
-            // `world` is `Some` whenever `visible_cells` is `Some`.
-            let world = world.expect("visible_cells implies a loaded world");
-            let cell = world.locate_cell(transform.position) as u32;
-            if !cells.contains(&cell) {
-                return;
-            }
+        if !self.position_visible(transform.position, world) {
+            return;
         }
-
-        // Resolve the target collection key. The common case (collection id was
-        // registered at level load) is a borrowed map lookup with no allocation.
-        // Only an unregistered runtime collection id takes the cold fallback branch.
-        let target: &str = match self.sprite_to_collection.get(&visual.collection) {
-            Some(key) => key.as_str(),
-            None => match Self::resolve_fallback(
-                &self.default_collection,
-                &mut self.warned_unregistered,
-                &visual.collection,
-            ) {
-                Some(key) => key,
-                None => return,
-            },
-        };
-        let Some(buf) = self.buffers.get_mut(target) else {
+        let Some(index) = self.resolve_collection(&visual.collection) else {
             return;
         };
-        pack_sprite_instance(transform, age, visual, buf);
+        pack_sprite_instance(
+            transform.position,
+            age,
+            visual.size,
+            visual.rotation,
+            visual.opacity,
+            &mut self.buffers[index].bytes,
+        );
     }
 
-    /// Cold-path resolution for a collection id that was **not** pre-registered at
-    /// level load (so it missed the `sprite_to_collection` map). Falls back to
-    /// the default collection, emitting a one-time `log::warn!` per offending
-    /// collection id. Returns the borrowed default key, or `None` when no collections
-    /// are registered at all (no fallback target available).
-    ///
-    /// Takes the two fields it touches by reference (not `&mut self`) so the
-    /// caller's hot path can borrow `self.buffers` and `self.sprite_to_collection`
-    /// disjointly without aliasing. The returned `&str` borrows
-    /// `default_collection`; no per-particle allocation occurs on either path.
-    fn resolve_fallback<'a>(
-        default_collection: &'a Option<String>,
-        warned_unregistered: &mut HashSet<String>,
-        collection: &str,
-    ) -> Option<&'a str> {
-        let fallback = default_collection.as_deref()?;
-        if !warned_unregistered.contains(collection) {
-            warned_unregistered.insert(collection.to_string());
-            log::warn!(
-                "[ParticleRender] collection id '{collection}' was not registered at level load; \
-                 falling back to default collection '{fallback}'. \
-                 Add it to the level-load definition sweep."
-            );
-        }
-        Some(fallback)
-    }
-
-    /// Iterate `(collection, bytes)` pairs with non-empty payloads. Order is
-    /// HashMap-iteration order; under additive blending, draw order does not
-    /// affect the composited result — contributions are commutative.
     pub(crate) fn iter_collections(&self) -> impl Iterator<Item = (&str, &[u8])> + '_ {
         self.buffers
             .iter()
-            .filter(|(_, bytes)| !bytes.is_empty())
-            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .filter(|buffer| buffer.registered && !buffer.bytes.is_empty())
+            .map(|buffer| (buffer.name.as_str(), buffer.bytes.as_slice()))
     }
 }
 
@@ -297,23 +252,31 @@ impl Default for ParticleRenderCollector {
     }
 }
 
-/// Pack one particle into the shared sprite-instance layout pinned by
-/// `postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE` and the
-/// `billboard.wgsl` `SpriteInstance` contract.
-///
-/// Layout: `(position.xyz, age) + (size, rotation, opacity, _pad)`.
-/// `SpriteVisual.tint` is intentionally not packed — the current GPU layout
-/// has no color channel (plan §Non-goals).
-fn pack_sprite_instance(transform: &Transform, age: f32, visual: &SpriteVisual, out: &mut Vec<u8>) {
+/// The shader expands a square with half-side `size / 2` then rotates it in the
+/// camera plane. Its circumradius bounds every corner at every rotation.
+fn quad_outside_frustum(position: Vec3, size: f32, frustum: &Frustum) -> bool {
+    let radius = size.abs() * std::f32::consts::FRAC_1_SQRT_2 + 1.0e-4;
+    frustum
+        .planes
+        .iter()
+        .any(|plane| plane.normal.dot(position) + plane.dist < -radius)
+}
+
+/// Match billboard.wgsl SpriteInstance's two vec4s. Tint has no GPU channel.
+fn pack_sprite_instance(
+    position: Vec3,
+    age: f32,
+    size: f32,
+    rotation: f32,
+    opacity: f32,
+    out: &mut Vec<u8>,
+) {
     let start_len = out.len();
-    out.extend_from_slice(&transform.position.x.to_ne_bytes());
-    out.extend_from_slice(&transform.position.y.to_ne_bytes());
-    out.extend_from_slice(&transform.position.z.to_ne_bytes());
-    out.extend_from_slice(&age.to_ne_bytes());
-    out.extend_from_slice(&visual.size.to_ne_bytes());
-    out.extend_from_slice(&visual.rotation.to_ne_bytes());
-    out.extend_from_slice(&visual.opacity.to_ne_bytes());
-    out.extend_from_slice(&0.0f32.to_ne_bytes());
+    for value in [
+        position.x, position.y, position.z, age, size, rotation, opacity, 0.0,
+    ] {
+        out.extend_from_slice(&value.to_ne_bytes());
+    }
     debug_assert_eq!(out.len() - start_len, SPRITE_INSTANCE_SIZE);
 }
 
@@ -321,7 +284,6 @@ fn pack_sprite_instance(transform: &Transform, age: f32, visual: &SpriteVisual, 
 mod tests {
     use super::*;
     use glam::Vec3;
-    use postretro_entities::components::particle::ParticleState;
     use postretro_entities::components::projectile::ProjectileComponent;
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
@@ -444,56 +406,42 @@ mod tests {
         world
     }
 
-    /// Spawn an emitter-less particle (orphan back-ref `None`).
-    fn spawn_particle(registry: &mut EntityRegistry, position: Vec3, sprite: &str, age: f32) {
-        spawn_particle_for(registry, position, sprite, age, None);
-    }
-
-    /// Spawn a particle whose `emitter` back-reference is `emitter`.
-    fn spawn_particle_for(
-        registry: &mut EntityRegistry,
+    /// Spawn through the production pool path. Collection names resolve only here.
+    fn spawn_particle(
+        pool: &mut ParticlePool,
+        collector: &mut ParticleRenderCollector,
         position: Vec3,
         sprite: &str,
-        age: f32,
-        emitter: Option<EntityId>,
     ) {
-        let id = registry.spawn(Transform {
-            position,
-            ..Transform::default()
-        });
-        registry
-            .set_component(
-                id,
-                ParticleState {
-                    velocity: [0.0, 0.0, 0.0],
-                    age,
-                    lifetime: 1.0,
-                    buoyancy: 0.0,
-                    drag: 0.0,
-                    size_curve: [1.0].into(),
-                    opacity_curve: [1.0].into(),
-                    spin_rate: 0.0,
-                    emitter,
-                },
-            )
-            .unwrap();
-        registry
-            .set_component(
-                id,
-                SpriteVisual {
-                    collection: sprite.into(),
-                    size: 1.0,
-                    opacity: 0.5,
-                    rotation: 0.25,
-                    tint: [1.0, 1.0, 1.0],
-                },
-            )
-            .unwrap();
+        spawn_particle_for(pool, collector, position, sprite, None);
     }
 
-    /// Spawn the static billboard body of a travelling projectile. It has no
-    /// `ParticleState`: flight is owned by `ProjectileComponent` and the body
-    /// remains visible until the projectile resolves.
+    fn spawn_particle_for(
+        pool: &mut ParticlePool,
+        collector: &mut ParticleRenderCollector,
+        position: Vec3,
+        sprite: &str,
+        emitter: Option<EntityId>,
+    ) {
+        let parameters = postretro_sim::particle_pool::ParticleParameters {
+            lifetime: 10.0,
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_curve: [1.0].into(),
+            opacity_curve: [0.5].into(),
+            collection: collector.resolve_collection(sprite).unwrap_or(usize::MAX),
+            tint: [1.0; 3],
+        };
+        assert!(pool.spawn_emitter(
+            emitter.unwrap_or(EntityId::from_raw(1)),
+            &parameters,
+            position,
+            Vec3::ZERO,
+            0.0
+        ));
+    }
+
+    /// Projectile flight stays in the registry and the body persists until impact.
     fn spawn_projectile_sprite(
         registry: &mut EntityRegistry,
         position: Vec3,
@@ -561,12 +509,20 @@ mod tests {
 
     #[test]
     fn collect_packs_one_particle_into_registered_collection_buffer() {
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        spawn_particle(&mut registry, Vec3::new(1.0, 2.0, 3.0), "smoke", 0.4);
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(1.0, 2.0, 3.0),
+            "smoke",
+        );
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        particles.step(&registry, 0.4, |_| (0.0, Vec3::ZERO));
+
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         let (name, bytes) = pairs[0];
@@ -580,20 +536,20 @@ mod tests {
     }
 
     #[test]
-    fn collect_packs_projectile_sprite_body_without_particle_state() {
-        // Regression: projectile bodies attach SpriteVisual but not ParticleState,
-        // so the particle-only collector silently omitted them while travelling.
+    fn collect_packs_registry_projectile_sprite_body_without_pool_particles() {
+        // Regression: the travelling body must still draw beside pooled particles.
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("sprites/plasma.png");
-        let projectile = spawn_projectile_sprite(
+        spawn_projectile_sprite(
             &mut registry,
             Vec3::new(1.0, 2.0, 3.0),
             "sprites/plasma.png",
         );
-        assert!(registry.get_component::<ParticleState>(projectile).is_err());
+        assert!(particles.is_empty());
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         let (name, bytes) = pairs[0];
@@ -611,6 +567,7 @@ mod tests {
     #[test]
     fn collect_packs_projectile_age_only_when_flipbook_is_active() {
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("sprites/animated-plasma");
         let projectile = spawn_projectile_sprite(
@@ -627,7 +584,7 @@ mod tests {
             .set_component(projectile, component)
             .expect("projectile component updates");
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let bytes = collector
             .iter_collections()
             .next()
@@ -644,7 +601,7 @@ mod tests {
         registry
             .set_component(projectile, component)
             .expect("projectile component enables cadence");
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let bytes = collector
             .iter_collections()
             .next()
@@ -657,6 +614,7 @@ mod tests {
     #[test]
     fn collect_keeps_single_and_multi_frame_bodies_static_without_cadence() {
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         let cases = [
             "sprites/projectiles/single-frame.png",
@@ -676,12 +634,13 @@ mod tests {
             registry.set_component(projectile, component).unwrap();
         }
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         for sprite in cases {
             let bytes = collector
-                .buffers
-                .get(sprite)
-                .expect("registered body is collected");
+                .iter_collections()
+                .find(|(name, _)| *name == sprite)
+                .expect("registered body is collected")
+                .1;
             let age = f32::from_ne_bytes(bytes[12..16].try_into().unwrap());
             assert_eq!(
                 age.to_bits(),
@@ -694,6 +653,7 @@ mod tests {
     #[test]
     fn collect_delayed_remote_projectile_uses_original_fixed_spawn_tick() {
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("sprites/animated-plasma");
         let id = registry.spawn(Transform {
@@ -733,7 +693,14 @@ mod tests {
             )
             .expect("remote presentation timing attaches");
 
-        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
+        collector.collect_at_tick(
+            &registry,
+            &particles,
+            None,
+            &VisibleCells::DrawAll,
+            71.0,
+            None,
+        );
         let bytes = collector
             .iter_collections()
             .next()
@@ -751,7 +718,14 @@ mod tests {
                 },
             )
             .expect("remote presentation cadence enables");
-        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
+        collector.collect_at_tick(
+            &registry,
+            &particles,
+            None,
+            &VisibleCells::DrawAll,
+            71.0,
+            None,
+        );
         let bytes = collector
             .iter_collections()
             .next()
@@ -768,6 +742,7 @@ mod tests {
     #[test]
     fn collect_matches_flipbook_age_across_local_predicted_and_presentation_bodies() {
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         const SPRITE: &str = "sprites/projectiles/animated-plasma";
         let elapsed = 11.0 * crate::frame_timing::TICK_DURATION.as_secs_f32();
@@ -829,11 +804,19 @@ mod tests {
             )
             .unwrap();
 
-        collector.collect_at_tick(&registry, None, &VisibleCells::DrawAll, 71.0);
+        collector.collect_at_tick(
+            &registry,
+            &particles,
+            None,
+            &VisibleCells::DrawAll,
+            71.0,
+            None,
+        );
         let bytes = collector
-            .buffers
-            .get(SPRITE)
-            .expect("all three bodies share the animated collection");
+            .iter_collections()
+            .find(|(name, _)| *name == SPRITE)
+            .expect("all three bodies share the animated collection")
+            .1;
         assert_eq!(bytes.len(), 3 * SPRITE_INSTANCE_SIZE);
         for instance in bytes.as_chunks::<SPRITE_INSTANCE_SIZE>().0 {
             let age = f32::from_ne_bytes(instance[12..16].try_into().unwrap());
@@ -847,6 +830,7 @@ mod tests {
     #[test]
     fn collect_does_not_broaden_bare_sprite_visual_into_projectile_rendering() {
         let mut registry = EntityRegistry::new();
+        let particles = ParticlePool::new();
         let id = registry.spawn(Transform::default());
         registry
             .set_component(
@@ -863,21 +847,32 @@ mod tests {
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("sprites/decorative.png");
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
 
         assert_eq!(collector.iter_collections().count(), 0);
     }
 
     #[test]
     fn multiple_emitters_one_collection_share_one_record_draw_call() {
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        spawn_particle(&mut registry, Vec3::ZERO, "smoke", 0.1);
-        spawn_particle(&mut registry, Vec3::new(0.0, 1.0, 0.0), "smoke", 0.2);
-        spawn_particle(&mut registry, Vec3::new(0.0, 2.0, 0.0), "smoke", 0.3);
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "smoke");
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(0.0, 1.0, 0.0),
+            "smoke",
+        );
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(0.0, 2.0, 0.0),
+            "smoke",
+        );
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1, "single collection => single draw");
         assert_eq!(pairs[0].1.len(), 3 * SPRITE_INSTANCE_SIZE);
@@ -885,15 +880,16 @@ mod tests {
 
     #[test]
     fn different_collections_produce_separate_draws() {
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         collector.register_sprite("spark");
-        spawn_particle(&mut registry, Vec3::ZERO, "smoke", 0.1);
-        spawn_particle(&mut registry, Vec3::ZERO, "spark", 0.1);
-        spawn_particle(&mut registry, Vec3::ZERO, "spark", 0.2);
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "smoke");
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "spark");
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "spark");
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let mut pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         pairs.sort_by_key(|(n, _)| *n);
         assert_eq!(pairs.len(), 2);
@@ -908,15 +904,16 @@ mod tests {
         use log::Level;
         use postretro_test_log_capture::LogCapture;
 
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke"); // first registered = default
         collector.register_sprite("spark");
-        spawn_particle(&mut registry, Vec3::ZERO, "ghost", 0.1);
-        spawn_particle(&mut registry, Vec3::ZERO, "ghost", 0.2);
         let capture = LogCapture::start();
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "ghost");
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "ghost");
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         // Both ghost particles bucket into the default ("smoke") collection.
         let smoke_bytes = pairs.iter().find(|(n, _)| *n == "smoke").unwrap().1;
@@ -926,7 +923,7 @@ mod tests {
             "[ParticleRender] collection id 'ghost' was not registered at level load",
         );
         // A second collect tick must not add a duplicate warning.
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         capture.assert_logged_once(
             Level::Warn,
             "[ParticleRender] collection id 'ghost' was not registered at level load",
@@ -938,15 +935,16 @@ mod tests {
         use log::Level;
         use postretro_test_log_capture::LogCapture;
 
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        spawn_particle(&mut registry, Vec3::ZERO, "ghost-a", 0.1);
-        spawn_particle(&mut registry, Vec3::ZERO, "ghost-a", 0.2);
-        spawn_particle(&mut registry, Vec3::ZERO, "ghost-b", 0.3);
         let capture = LogCapture::start();
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "ghost-a");
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "ghost-a");
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "ghost-b");
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
 
         capture.assert_logged_once(
             Level::Warn,
@@ -975,13 +973,19 @@ mod tests {
         // Regression for the AC: a `billboard_emitter` map entity with
         // `sprite = "dust"` and no script preset referencing "dust" must still
         // render into the "dust" collection rather than the default fallback.
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke"); // default, from a script preset
         collector.register_sprite("dust"); // from a map-only sweep
-        spawn_particle(&mut registry, Vec3::new(5.0, 0.0, 0.0), "dust", 0.1);
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(5.0, 0.0, 0.0),
+            "dust",
+        );
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0, "dust");
@@ -991,26 +995,31 @@ mod tests {
 
     #[test]
     fn collect_clears_buffers_between_frames_without_dropping_capacity() {
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
-        spawn_particle(&mut registry, Vec3::ZERO, "smoke", 0.1);
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
-        let cap_after_first = collector.buffers["smoke"].capacity();
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "smoke");
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
+        let cap_after_first = collector.buffers[collector.sprite_to_collection["smoke"]]
+            .bytes
+            .capacity();
         assert!(cap_after_first >= SPRITE_INSTANCE_SIZE);
 
-        // Despawn everything: next collect should produce an empty buffer
-        // but preserve capacity.
-        let ids: Vec<_> = registry
-            .iter_with_kind(ComponentKind::ParticleState)
-            .map(|(id, _)| id)
-            .collect();
-        for id in ids {
-            registry.despawn(id).unwrap();
-        }
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
-        assert!(collector.buffers["smoke"].is_empty());
-        assert_eq!(collector.buffers["smoke"].capacity(), cap_after_first);
+        // Clear the pool: the next collect empties bytes but retains capacity.
+        particles.clear();
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
+        assert!(
+            collector.buffers[collector.sprite_to_collection["smoke"]]
+                .bytes
+                .is_empty()
+        );
+        assert_eq!(
+            collector.buffers[collector.sprite_to_collection["smoke"]]
+                .bytes
+                .capacity(),
+            cap_after_first
+        );
     }
 
     #[test]
@@ -1021,12 +1030,13 @@ mod tests {
         // If level load harvested zero sprites (no emitters anywhere), the
         // collector has no fallback target. Particles existing in that state
         // are anomalous; collect must not panic and must produce no draws.
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
-        spawn_particle(&mut registry, Vec3::ZERO, "smoke", 0.1);
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "smoke");
         let capture = LogCapture::start();
 
-        collector.collect(&registry, None, &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, None, &VisibleCells::DrawAll);
         assert!(collector.iter_collections().next().is_none());
         capture.assert_not_logged(Level::Warn, "was not registered at level load");
     }
@@ -1035,13 +1045,24 @@ mod tests {
     fn collect_packs_particle_in_a_visible_cell() {
         // Particle lands in cell 0; the visible set includes cell 0 => packed.
         // Mirrors `mesh_render::collect_emits_one_visible_*`.
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = single_cell_world();
-        spawn_particle(&mut registry, Vec3::new(1.0, 2.0, 3.0), "smoke", 0.4);
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(1.0, 2.0, 3.0),
+            "smoke",
+        );
 
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1.len(), SPRITE_INSTANCE_SIZE);
@@ -1051,13 +1072,24 @@ mod tests {
     fn collect_excludes_particle_in_a_nonvisible_cell() {
         // Particle lands in cell 0, but only cell 1 is visible => culled out.
         // Mirrors `mesh_render::collect_excludes_mesh_in_nonvisible_cell`.
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = single_cell_world();
-        spawn_particle(&mut registry, Vec3::new(1.0, 2.0, 3.0), "smoke", 0.4);
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(1.0, 2.0, 3.0),
+            "smoke",
+        );
 
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![1]),
+        );
         assert!(
             collector.iter_collections().next().is_none(),
             "particle whose own cell is not visible must not be packed"
@@ -1071,20 +1103,26 @@ mod tests {
         // the FRONT half (cell 0, visible). The billboard must draw: it is in
         // view, even though its emitter's cell is culled.
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(-5.0, 0.0, 0.0)); // cell 1
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(5.0, 0.0, 0.0), // cell 0 - drifted into view
             "smoke",
-            0.4,
             Some(emitter),
         );
 
         // Only cell 0 is visible (the emitter's cell 1 is hidden behind a wall).
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(
             pairs.len(),
@@ -1101,20 +1139,26 @@ mod tests {
         // The billboard must be culled — it is out of view — even though its
         // emitter is on-screen.
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // cell 0
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(-5.0, 0.0, 0.0), // cell 1 - drifted out of view
             "smoke",
-            0.4,
             Some(emitter),
         );
 
         // Only cell 0 (the emitter's own cell) is visible.
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         assert!(
             collector.iter_collections().next().is_none(),
             "particle that drifted out of view must be culled even when its emitter is on-screen"
@@ -1128,26 +1172,32 @@ mod tests {
         // (hidden). The cull is per-particle, so exactly one draws — the shared
         // emitter does NOT gate both alike.
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0)); // cell 0
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(5.0, 0.0, 0.0), // cell 0 - visible
             "smoke",
-            0.1,
             Some(emitter),
         );
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(-5.0, 0.0, 0.0), // cell 1 - hidden
             "smoke",
-            0.2,
             Some(emitter),
         );
 
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(
             pairs.len(),
@@ -1166,29 +1216,40 @@ mod tests {
         // An orphaned particle (emitter despawned) gets no special case: it is
         // culled or drawn purely by its own cell, like any other particle.
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(5.0, 0.0, 0.0));
         // Particle in the hidden back cell 1.
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(-5.0, 0.0, 0.0),
             "smoke",
-            0.4,
             Some(emitter),
         );
 
         // Orphan it: its own cell (1) is not visible => culled, no special case.
         registry.despawn(emitter).unwrap();
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         assert!(
             collector.iter_collections().next().is_none(),
             "orphaned particle in a hidden cell is culled by its own cell"
         );
 
         // Make the orphan's own cell visible => it draws.
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![1]),
+        );
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1, "orphaned particle in a visible cell draws");
         assert_eq!(pairs[0].1.len(), SPRITE_INSTANCE_SIZE);
@@ -1198,21 +1259,34 @@ mod tests {
     fn collect_culls_particle_with_no_emitter_backref_by_its_own_cell() {
         // A particle with `emitter == None` is culled by its own cell, same as
         // any other — there is no orphan/no-backref escape hatch anymore.
-        let mut registry = EntityRegistry::new();
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         // Particle in cell 1, which is not visible => culled.
-        spawn_particle_for(&mut registry, Vec3::new(-5.0, 0.0, 0.0), "smoke", 0.4, None);
+        particles.configure_impact_collection(collector.resolve_collection("smoke").unwrap());
+        assert!(particles.spawn_impact(Vec3::new(-5.0, 0.0, 0.0), Vec3::ZERO, 0));
+        assert!(particles.iter().next().unwrap().emitter.is_none());
 
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![0]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+        );
         assert!(
             collector.iter_collections().next().is_none(),
             "no-backref particle in a hidden cell is culled by its own cell"
         );
 
         // Its own cell becomes visible => it draws.
-        collector.collect(&registry, Some(&world), &VisibleCells::Culled(vec![1]));
+        collector.collect(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![1]),
+        );
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1.len(), SPRITE_INSTANCE_SIZE);
@@ -1225,62 +1299,58 @@ mod tests {
         // in the hidden back cell 1, yet `DrawAll` packs both. Mirrors the mesh
         // draw-all path.
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = two_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(-5.0, 0.0, 0.0));
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(-5.0, 0.0, 0.0),
             "smoke",
-            0.1,
             Some(emitter),
         );
         spawn_particle_for(
-            &mut registry,
+            &mut particles,
+            &mut collector,
             Vec3::new(-5.0, 1.0, 0.0),
             "smoke",
-            0.2,
             Some(emitter),
         );
 
-        collector.collect(&registry, Some(&world), &VisibleCells::DrawAll);
+        collector.collect(&registry, &particles, Some(&world), &VisibleCells::DrawAll);
         let pairs: Vec<(&str, &[u8])> = collector.iter_collections().collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1.len(), 2 * SPRITE_INSTANCE_SIZE);
     }
 
-    /// Sibling bench to `particle_sim::bench_500_particles_one_frame_*`,
-    /// covering the **render-collect** path: 500 particles in a visible cell, so
-    /// each particle exercises the per-billboard cull — `locate_cell` plus the
-    /// O(1) `HashSet<u32>` visible-cell membership test built once per collect —
-    /// and the `sprite_to_collection` resolution (the path that used to allocate
-    /// a `String` per particle). Same 500-particle scale and < 500µs budget as
-    /// the tick bench, so a regression on either hot path is caught.
+    /// Retained release collector budget for 500 particles in an exact visible cell.
     #[test]
     #[ignore = "release-mode bench; run with `cargo test --release -- --ignored`"]
     fn bench_500_particles_collect_under_half_a_millisecond() {
         let mut registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
         let mut collector = ParticleRenderCollector::new();
         collector.register_sprite("smoke");
         let world = single_cell_world();
         let emitter = spawn_emitter(&mut registry, Vec3::new(1.0, 2.0, 3.0));
         for i in 0..500 {
             spawn_particle_for(
-                &mut registry,
+                &mut particles,
+                &mut collector,
                 Vec3::new(i as f32 * 0.01, 1.0, 0.0),
                 "smoke",
-                0.4,
                 Some(emitter),
             );
         }
         // Warm the buffers' capacity so the timed run reuses it (matches
         // steady-state production where buffers persist across frames).
         let visible = VisibleCells::Culled(vec![0]);
-        collector.collect(&registry, Some(&world), &visible);
+        collector.collect(&registry, &particles, Some(&world), &visible);
 
         let start = std::time::Instant::now();
-        collector.collect(&registry, Some(&world), &visible);
+        collector.collect(&registry, &particles, Some(&world), &visible);
         let elapsed = start.elapsed();
 
         // Sanity: all 500 packed into the one collection.
@@ -1291,5 +1361,225 @@ mod tests {
             elapsed.as_micros() < 500,
             "500-particle collect took {elapsed:?}; expected < 500µs"
         );
+    }
+    #[test]
+    fn collect_keeps_rotated_quad_overlapping_frustum_with_center_outside() {
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        let collection = collector.register_sprite("smoke");
+        let parameters = postretro_sim::particle_pool::ParticleParameters {
+            lifetime: 10.0,
+            buoyancy: 0.0,
+            drag: 0.0,
+            size_curve: [2.0].into(),
+            opacity_curve: [0.5].into(),
+            collection,
+            tint: [1.0; 3],
+        };
+        // The shader's size-2 square, rotated pi/4, reaches 1.414 from its
+        // center. A half-side-only bound would incorrectly drop its left tip.
+        assert!(particles.spawn_emitter(
+            EntityId::from_raw(1),
+            &parameters,
+            Vec3::new(1.2, 0.0, 0.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_4
+        ));
+        assert!(particles.spawn_emitter(
+            EntityId::from_raw(2),
+            &parameters,
+            Vec3::new(1.6, 0.0, 0.0),
+            Vec3::ZERO,
+            std::f32::consts::FRAC_PI_4
+        ));
+        particles.step(&registry, 1.0, |_| (0.0, Vec3::ZERO));
+        let frustum = Frustum {
+            planes: vec![postretro_visibility::FrustumPlane {
+                normal: -Vec3::X,
+                dist: 0.0,
+            }],
+        };
+        let world = single_cell_world();
+        for visible in [VisibleCells::Culled(vec![0]), VisibleCells::DrawAll] {
+            collector.collect_at_tick(
+                &registry,
+                &particles,
+                Some(&world),
+                &visible,
+                0.0,
+                Some(&frustum),
+            );
+            let bytes = collector
+                .iter_collections()
+                .next()
+                .expect("overlapping quad draws")
+                .1;
+            assert_eq!(bytes.len(), SPRITE_INSTANCE_SIZE);
+            let position_x = f32::from_ne_bytes(bytes[0..4].try_into().unwrap());
+            let size = f32::from_ne_bytes(bytes[16..20].try_into().unwrap());
+            let rotation = f32::from_ne_bytes(bytes[20..24].try_into().unwrap());
+            assert!((position_x - 1.2).abs() < 1e-6);
+            assert!((size - 2.0).abs() < 1e-6);
+            assert!((rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn collect_rejects_offscreen_quad_before_cell_locator_descent() {
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        spawn_particle(
+            &mut particles,
+            &mut collector,
+            Vec3::new(-5.0, 0.0, 0.0),
+            "smoke",
+        );
+        let frustum = Frustum {
+            planes: vec![postretro_visibility::FrustumPlane {
+                normal: Vec3::X,
+                dist: 0.0,
+            }],
+        };
+        let mut world = single_cell_world();
+        // A deliberately invalid locator makes any accidental descent fail.
+        world.cell_locator_root = postretro_level_loader::CellLocatorChild::Node(usize::MAX);
+        collector.collect_at_tick(
+            &registry,
+            &particles,
+            Some(&world),
+            &VisibleCells::Culled(vec![0]),
+            0.0,
+            Some(&frustum),
+        );
+        assert!(collector.iter_collections().next().is_none());
+    }
+
+    #[test]
+    fn collection_indices_keep_batching_and_reset_level_registration() {
+        use log::Level;
+        use postretro_test_log_capture::LogCapture;
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        let smoke = collector.register_sprite("smoke");
+        let spark = collector.register_sprite("spark");
+        assert_ne!(smoke, spark);
+        assert_eq!(collector.register_sprite("smoke"), smoke);
+        assert_eq!(collector.resolve_collection("spark"), Some(spark));
+        spawn_particle(&mut particles, &mut collector, Vec3::ZERO, "smoke");
+        collector.collect(&registry, &particles, None, &VisibleCells::Culled(vec![0]));
+        let capacity = collector.buffers[smoke].bytes.capacity();
+        let capture = LogCapture::start();
+        assert_eq!(collector.resolve_collection("unknown"), Some(smoke));
+        assert_eq!(collector.resolve_collection("unknown"), Some(smoke));
+        capture.assert_logged_once(Level::Warn, "collection id 'unknown' was not registered");
+        particles.clear();
+        collector.reset_for_level();
+        assert!(collector.iter_collections().next().is_none());
+        assert_eq!(collector.resolve_collection("smoke"), None);
+        assert_eq!(collector.register_sprite("smoke"), smoke);
+        assert_eq!(collector.buffers[smoke].bytes.capacity(), capacity);
+        assert_eq!(collector.resolve_collection("unknown"), Some(smoke));
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.level == Level::Warn)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn collect_ten_thousand_particles_uses_resolved_indices_and_retained_scratch() {
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        collector.register_sprite("spark");
+        let world = two_cell_world();
+        let visible = VisibleCells::Culled(vec![0]);
+        for index in 0..10_000 {
+            let x = if index % 2 == 0 { 1.0 } else { -1.0 };
+            let sprite = if index % 4 == 0 { "spark" } else { "smoke" };
+            spawn_particle(
+                &mut particles,
+                &mut collector,
+                Vec3::new(x, 0.0, 0.0),
+                sprite,
+            );
+        }
+        collector.collect(&registry, &particles, Some(&world), &visible);
+        let capacities: Vec<_> = collector
+            .buffers
+            .iter()
+            .map(|buffer| buffer.bytes.capacity())
+            .collect();
+        let visible_capacity = collector.visible_cells.capacity();
+        collector.collect(&registry, &particles, Some(&world), &visible);
+        let bytes: usize = collector
+            .iter_collections()
+            .map(|(_, bytes)| bytes.len())
+            .sum();
+        assert_eq!(bytes, 5_000 * SPRITE_INSTANCE_SIZE);
+        assert_eq!(collector.iter_collections().count(), 2);
+        assert_eq!(
+            collector
+                .buffers
+                .iter()
+                .map(|buffer| buffer.bytes.capacity())
+                .collect::<Vec<_>>(),
+            capacities
+        );
+        assert_eq!(collector.visible_cells.capacity(), visible_capacity);
+        assert_eq!(registry.iter_with_kind(ComponentKind::Transform).count(), 0);
+    }
+
+    /// CPU-only scaling aid; the brief's Intel Mac stress run remains the budget gate.
+    #[test]
+    #[ignore = "release-mode particle collector scale profiling"]
+    fn profile_particle_collect_scale_with_exact_cell_culling() {
+        let registry = EntityRegistry::new();
+        let mut particles = ParticlePool::new();
+        let mut collector = ParticleRenderCollector::new();
+        collector.register_sprite("smoke");
+        let world = two_cell_world();
+        let visible = VisibleCells::Culled(vec![0]);
+        for live in [0, 1_000, 5_000, 10_000, 20_000] {
+            particles.clear();
+            for index in 0..live {
+                spawn_particle(
+                    &mut particles,
+                    &mut collector,
+                    Vec3::new(if index % 2 == 0 { 1.0 } else { -1.0 }, 0.0, 0.0),
+                    "smoke",
+                );
+            }
+            collector.collect(&registry, &particles, Some(&world), &visible);
+            let start = std::time::Instant::now();
+            for _ in 0..120 {
+                collector.collect(&registry, &particles, Some(&world), &visible);
+                std::hint::black_box(
+                    collector
+                        .iter_collections()
+                        .map(|(_, bytes)| bytes.len())
+                        .sum::<usize>(),
+                );
+            }
+            eprintln!(
+                "particle_collect live={live} average={:?}",
+                start.elapsed() / 120
+            );
+            assert_eq!(
+                collector
+                    .iter_collections()
+                    .map(|(_, bytes)| bytes.len())
+                    .sum::<usize>(),
+                live / 2 * SPRITE_INSTANCE_SIZE
+            );
+        }
     }
 }

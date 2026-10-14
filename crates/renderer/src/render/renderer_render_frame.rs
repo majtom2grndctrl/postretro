@@ -652,6 +652,13 @@ impl Renderer {
         // its own visible draws, never on the smoke pass's particle gate.
         if render_world && self.full().fluid_surface.has_draws() {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
+            {
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fluid_surface.upload_scene_inputs(queue);
+            }
             let fluid_ts = self
                 .full()
                 .frame_timing
@@ -668,12 +675,11 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                // Read-only: the pass tests depth without writing it, and its
+                // group 5 loads the same texture for depth fog.
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.full().depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: None,
                     stencil_ops: None,
                 }),
                 timestamp_writes: fluid_ts,

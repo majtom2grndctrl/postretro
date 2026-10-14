@@ -75,6 +75,6 @@ read at: afb4acaa4
 |---|---|---|---|---|
 | 1 | Wave CPU twin in `motion.rs` + coherence, reference and wrap tests (A12, A18, A19, A22) — falsifies the coherence bound first | worker (Opus) | — | done: arc peak slope 0.7607 texel/cell at L = 8A, bound 1 texel; 45 `fluid_surface` render-cpu tests pass |
 | 2 | Scripting surface: `FluidDescriptor` fields, parser helpers, validation, typedefs, SDK, docs, dev content (A1–A11, A13, A14, A17) | worker (Opus) | — | |
-| 3 | Renderer: stride-48 row + packing + collector, group 5 (depth + scene uniform), read-only depth, rebuild seam, WGSL fog + wave, CPU fog reference, budgets, GPU tests (A15, A16, A20, A21, A23–A25, A29, A31–A36) | worker (Opus) | 1 | |
+| 3 | Renderer: stride-48 row + packing + collector, group 5 (depth + scene uniform), read-only depth, rebuild seam, WGSL fog + wave, CPU fog reference, budgets, GPU tests (A15, A16, A20, A21, A23–A25, A29, A31–A36) | worker (Opus) | 1 | done: render-cpu `fluid_surface` 61 pass, renderer `fluid` 33 pass; P1, P4 and fog GPU cases ran on the 1660 Super; DX12 FXC compiles every full-init pipeline. Group 5 split into `render/fluid_scene_inputs.rs` (`fluid_surface.rs` hit 663 lines); the weight uploads in the fluid pass only when changed |
 | 4 | App plumbing: descriptor → row look, eye fog weight, per-frame handoff (A26–A28, A30) | worker (Opus) | 2, 3 | |
 | 5 | Preflight, review panel, fix loop, full gate | integrating executor | 4 | |

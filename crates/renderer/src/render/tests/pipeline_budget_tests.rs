@@ -349,9 +349,10 @@ fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_ver
 
 // The fluid surface pipeline lights per fragment on the billboard's shared
 // camera, lighting and SH groups, which already hold the whole FRAGMENT
-// storage budget. Its world-material and per-volume parameter groups must
-// therefore add no storage buffer; derived from the same GPU-free builders the
-// layout is created from, so a widened entry fails here before a real GPU.
+// storage budget. Its world-material, per-volume parameter and scene-input
+// groups must therefore add no storage buffer; derived from the same GPU-free
+// builders the layout is created from, so a widened entry fails here before a
+// real GPU.
 #[cfg(debug_assertions)]
 #[test]
 fn fluid_pipeline_fragment_storage_request_matches_bgl_definitions() {
@@ -360,10 +361,11 @@ fn fluid_pipeline_fragment_storage_request_matches_bgl_definitions() {
         .iter()
         .map(|entries| fragment_storage_buffers(entries))
         .collect();
-    // 0 camera, 1 world material, 2 lighting, 3 SH volume, 4 per-volume params.
+    // 0 camera, 1 world material, 2 lighting, 3 SH volume, 4 per-volume params,
+    // 5 scene inputs.
     assert_eq!(
         per_group,
-        [0, 0, 5, 3, 0],
+        [0, 0, 5, 3, 0, 0],
         "fluid BGL fragment storage-buffer inventory changed"
     );
     let derived: u32 = per_group.iter().sum();
@@ -390,14 +392,16 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     // Group 2's light/chunk buffers are VERTEX | FRAGMENT for billboards; the
     // fluid vertex stage reads none of them but is still charged for them.
     let vertex_storage = per_group(vertex_storage_buffers);
-    assert_eq!(vertex_storage, [0, 0, 5, 0, 0]);
+    assert_eq!(vertex_storage, [0, 0, 5, 0, 0, 0]);
     assert!(vertex_storage.iter().sum::<u32>() <= 8);
 
-    // Albedo, emissive, specular and normal (group 1) plus the SH atlas, depth
-    // moments and direct atlas (group 3).
+    // Albedo, emissive, specular and normal (group 1), the SH atlas, depth
+    // moments and direct atlas (group 3), and scene depth for depth fog
+    // (group 5): 8 of the 16.
     let fragment_sampled = per_group(fragment_sampled_textures);
-    assert_eq!(fragment_sampled, [0, 4, 0, 3, 0]);
+    assert_eq!(fragment_sampled, [0, 4, 0, 3, 0, 1]);
     let fragment_total: u32 = fragment_sampled.iter().sum();
+    assert_eq!(fragment_total, 8);
     assert_eq!(
         fluid_surface::fluid_pipeline_stage_count(fragment_sampled_textures),
         fragment_total
@@ -406,7 +410,7 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
 
     // Group 3's VERTEX-visible textures, the billboard scatter volume included.
     let vertex_sampled = per_group(vertex_sampled_textures);
-    assert_eq!(vertex_sampled, [0, 0, 0, 4, 0]);
+    assert_eq!(vertex_sampled, [0, 0, 0, 4, 0, 0]);
     assert!(vertex_sampled.iter().sum::<u32>() <= 16);
 }
 

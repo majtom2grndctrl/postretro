@@ -13,14 +13,20 @@ use postretro_render_cpu::fluid_surface::{
     FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces, slot_window,
 };
 
+#[cfg(test)]
+pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
+pub(crate) use super::fluid_scene_inputs::{
+    FLUID_SCENE_INPUTS_GROUP, FluidSceneInputs, fluid_scene_inputs_bind_group_layout_entries,
+};
+
 use super::*;
 
 /// Pipeline group of the per-volume parameter window.
 pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
 /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
-/// 2 lighting, 3 SH volume, 4 per-volume parameters.
+/// 2 lighting, 3 SH volume, 4 per-volume parameters, 5 scene inputs.
 #[cfg(any(test, debug_assertions))]
-pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 5;
+pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 6;
 
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/fluid_surface.wgsl"),
@@ -37,8 +43,8 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
 );
 
-/// Group 4: one 64 KiB uniform window of per-volume `vec4` rows, selected by a
-/// dynamic offset. Textures, samplers and uniforms only: the shared groups
+/// Group 4: one uniform window (at most 64 KiB) of per-volume rows, selected
+/// by a dynamic offset. Textures, samplers and uniforms only: the shared groups
 /// already spend the whole FRAGMENT storage budget.
 pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
     [wgpu::BindGroupLayoutEntry {
@@ -65,6 +71,7 @@ pub(crate) fn fluid_pipeline_bind_group_layout_entries()
         lighting_bind_group_layout_entries().to_vec(),
         sh_volume::sh_bind_group_layout_entries(),
         fluid_params_bind_group_layout_entries().to_vec(),
+        fluid_scene_inputs_bind_group_layout_entries().to_vec(),
     ]
 }
 
@@ -95,7 +102,8 @@ pub(crate) fn fluid_blend_state() -> wgpu::BlendState {
 
 /// Depth tested like the billboard pass and never written: a fluid face hides
 /// nothing drawn after it, so smoke above the water stays undimmed and fog
-/// composites over it.
+/// composites over it. Never writing is also what lets the pass open depth
+/// read-only and load it in group 5.
 pub(crate) fn fluid_depth_stencil_state(format: wgpu::TextureFormat) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format,
@@ -166,6 +174,9 @@ struct InstalledFluidSurfaces {
 pub(crate) struct FluidSurfacePass {
     pipeline: wgpu::RenderPipeline,
     params_bind_group_layout: wgpu::BindGroupLayout,
+    /// Group 5. Built at full init, level or not, and rebuilt only by the
+    /// scene-target rebuild; level install and clear never touch it.
+    scene_inputs: FluidSceneInputs,
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
     installed: Option<InstalledFluidSurfaces>,
@@ -173,7 +184,8 @@ pub(crate) struct FluidSurfacePass {
 
 impl FluidSurfacePass {
     /// Build the pipeline over the renderer-owned shared layouts: camera
-    /// (group 0), world material (1), lighting (2) and SH volume (3).
+    /// (group 0), world material (1), lighting (2) and SH volume (3), and
+    /// group 5 over the current scene depth.
     pub fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -181,6 +193,7 @@ impl FluidSurfacePass {
         material_bgl: &wgpu::BindGroupLayout,
         lighting_bgl: &wgpu::BindGroupLayout,
         sh_bgl: &wgpu::BindGroupLayout,
+        scene_depth: &wgpu::TextureView,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fluid Surface Shader"),
@@ -191,6 +204,7 @@ impl FluidSurfacePass {
                 label: Some("Fluid Surface Params BGL (group 4)"),
                 entries: &fluid_params_bind_group_layout_entries(),
             });
+        let scene_inputs = FluidSceneInputs::new(device, scene_depth);
         // Same group order as `fluid_pipeline_bind_group_layout_entries`.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fluid Surface Pipeline Layout"),
@@ -200,6 +214,7 @@ impl FluidSurfacePass {
                 Some(lighting_bgl),
                 Some(sh_bgl),
                 Some(&params_bind_group_layout),
+                Some(scene_inputs.layout()),
             ],
             immediate_size: 0,
         });
@@ -242,8 +257,31 @@ impl FluidSurfacePass {
         Self {
             pipeline,
             params_bind_group_layout,
+            scene_inputs,
             installed: None,
         }
+    }
+
+    /// Rebuild group 5 over a recreated scene depth. The scene-target rebuild
+    /// is its only caller: the frame never builds a bind group.
+    pub fn rebuild_scene_inputs(&mut self, device: &wgpu::Device, scene_depth: &wgpu::TextureView) {
+        self.scene_inputs.rebuild(device, scene_depth);
+    }
+
+    /// Store the frame's eye fog weight; it uploads before the next fluid pass.
+    pub fn set_fog_weight(&mut self, weight: f32) {
+        self.scene_inputs.set_fog_weight(weight);
+    }
+
+    /// Write the scene uniform if the fog weight changed. Called just before
+    /// the fluid pass opens.
+    pub fn upload_scene_inputs(&mut self, queue: &crate::render::uploads::UploadQueue) {
+        self.scene_inputs.upload(queue);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scene_inputs(&self) -> &FluidSceneInputs {
+        &self.scene_inputs
     }
 
     /// Drop the installed level's fluid geometry. Level install and unload
@@ -286,7 +324,7 @@ impl FluidSurfacePass {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        // Zeroed at creation; each slot uploads its opacity on first draw.
+        // Zeroed at creation; each slot uploads its row on first draw.
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Fluid Surface Params"),
             size: u64::from(slots.window_count()) * FLUID_PARAMS_WINDOW_BYTES,
@@ -368,7 +406,7 @@ impl FluidSurfacePass {
             .map(|installed| installed.param_uploads)
     }
 
-    /// Replace this frame's draws, uploading only opacity rows that changed.
+    /// Replace this frame's draws, uploading only parameter rows that changed.
     pub fn set_draws(
         &mut self,
         queue: &crate::render::uploads::UploadQueue,
@@ -398,7 +436,8 @@ impl FluidSurfacePass {
             .is_some_and(|installed| installed.slots.has_draws())
     }
 
-    /// Record this frame's draws. The caller binds groups 0, 2 and 3.
+    /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
+    /// binds 1, 4 and the scene inputs built with the scene targets (5).
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
         let Some(installed) = self.installed.as_ref() else {
             return;
@@ -407,6 +446,11 @@ impl FluidSurfacePass {
             return;
         }
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(
+            FLUID_SCENE_INPUTS_GROUP,
+            self.scene_inputs.bind_group(),
+            &[],
+        );
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -482,6 +526,14 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         full.fluid_surface.set_draws(queue, draws);
+    }
+
+    /// Store the frame's eye fog weight (0..1): 0 while the eye is inside any
+    /// fluid, else one minus the view tint's ramp. Send it every presented
+    /// frame beside `set_fluid_view_tint`. Held until replaced; before the
+    /// first write it is 1, so a renderer recreated mid-level still fogs.
+    pub fn set_fluid_fog_weight(&mut self, weight: f32) {
+        self.full_mut().fluid_surface.set_fog_weight(weight);
     }
 }
 

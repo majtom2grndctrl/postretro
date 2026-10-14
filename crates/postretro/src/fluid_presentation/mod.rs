@@ -16,7 +16,9 @@ use postretro_collision::{EnvironmentView, EnvironmentVolumes};
 use postretro_combat_model::FluidMovementTable;
 use postretro_foundation::{FluidDescriptor, FluidRegistry};
 use postretro_level_loader::LevelWorld;
-use postretro_render_cpu::fluid_surface::{FluidSurfaceDraw, FluidSurfaceRenderCollector};
+use postretro_render_cpu::fluid_surface::{
+    FluidSurfaceDraw, FluidSurfaceLook, FluidSurfaceRenderCollector,
+};
 use postretro_visibility::VisibleCells;
 
 use crate::App;
@@ -60,7 +62,7 @@ pub(crate) fn collect_fluid_surface_draws<'c>(
         camera_eye,
         |volume| {
             local_fluid_presentation(volumes, fluids, local, volume)
-                .map(|fluid| fluid.surface_opacity)
+                .map(|fluid| FluidSurfaceLook::surface_only(fluid.surface_opacity))
         },
     )
 }

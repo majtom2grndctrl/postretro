@@ -102,12 +102,29 @@ struct AnimationDescriptor {
 @group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 // --- Group 4: per-volume parameters, one uniform window of draw slots ---
-// x = surface opacity, yzw reserved. The window rides a dynamic offset; the
-// draw's instance index picks the slot inside it.
+// Mirrors render-cpu `FluidParamsRow`, packed CPU-side. The window rides a
+// dynamic offset; the draw's instance index picks the slot inside it.
+struct FluidVolumeRow {
+    // x = surface opacity, y = fog extinction (3 / fogDistance, 0 = no fog), zw spare.
+    surface: vec4<f32>,
+    // rgb = fog albedo (fogColor scaled), w spare.
+    fog_albedo: vec4<f32>,
+    // x = 1 / wavePeriod, y = amplitude, z = length min, w = length max; all 0 = no wave.
+    wave: vec4<f32>,
+};
 struct FluidVolumeParams {
-    slots: array<vec4<f32>, 4096>,
+    slots: array<FluidVolumeRow, 1360>,
 };
 @group(4) @binding(0) var<uniform> fluid_volumes: FluidVolumeParams;
+
+// --- Group 5: fluid scene inputs, rebuilt only with the scene targets ---
+// Scene depth, loaded under the pass's read-only depth attachment.
+@group(5) @binding(0) var scene_depth: texture_depth_2d;
+struct FluidSceneInputs {
+    // x = the frame's eye fog weight; yzw spare.
+    fog: vec4<f32>,
+};
+@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -156,6 +173,11 @@ const FLUID_SALT_SHIMMER: u32 = 0x85EBCA6Bu;
 const FLUID_SALT_FADE: u32 = 0xC2B2AE35u;
 const FLUID_SALT_BLOCK: u32 = 0x27D4EB2Fu;
 const FLUID_SALT_DROP: u32 = 0x165667B1u;
+const FLUID_SALT_WAVE_U: u32 = 0x4C957F2Du;
+const FLUID_SALT_WAVE_V: u32 = 0x5851F42Du;
+const FLUID_WAVE_PAIRS: i32 = 4096;
+const FLUID_WAVE_ARC_LINEAR: f32 = 3.0;
+const FLUID_WAVE_ARC_QUADRATIC: f32 = 4.0;
 const FLUID_HASH_MUL_A: u32 = 0x7FEB352Du;
 const FLUID_HASH_MUL_B: u32 = 0x846CA68Bu;
 
@@ -269,15 +291,138 @@ fn fluid_drift_scroll(rate: vec2<f32>, time: f32) -> vec2<f32> {
     return periods - floor(periods) - vec2<f32>(0.5);
 }
 
+// a * b as a whole count and a fraction in [0, 1) from one split, so the two
+// never disagree: the four exact partial products give their floors to the
+// count and their fractions, with the carry, to the fraction.
+struct FluidSplit {
+    count: i32,
+    fraction: f32,
+};
+
+fn fluid_exact_split_product(a: f32, b: f32) -> FluidSplit {
+    let a_hi = fluid_high_half(a);
+    let b_hi = fluid_high_half(b);
+    let a_lo = a - a_hi;
+    let b_lo = b - b_hi;
+    let p0 = a_hi * b_hi;
+    let p1 = a_hi * b_lo;
+    let p2 = a_lo * b_hi;
+    let p3 = a_lo * b_lo;
+    let f0 = floor(p0);
+    let f1 = floor(p1);
+    let f2 = floor(p2);
+    let f3 = floor(p3);
+    let fraction = (p0 - f0) + (p1 - f1) + (p2 - f2) + (p3 - f3);
+    let carry = floor(fraction);
+    let count = i32(f0) + i32(f1) + i32(f2) + i32(f3) + i32(carry);
+    return FluidSplit(count, fraction - carry);
+}
+
+// The crest at `position` texels along the wave's axis: x = distance into it,
+// y = its length. Crests come in hashed pairs spanning two mean lengths; the
+// phase count wraps over whole hash-repeat spans, so every crest keeps its
+// length across the wrap. `wave` is the row's (1/period, amplitude, min, max).
+fn fluid_wave_crest(position: f32, time: f32, wave: vec4<f32>, salt: u32) -> vec2<f32> {
+    let split = fluid_exact_split_product(time, wave.x);
+    let count = split.count & (2 * FLUID_WAVE_PAIRS - 1);
+    let pairs = count >> 1u;
+    let parity = f32(count & 1);
+    let pair_length = wave.z + wave.w;
+    let pair_position = position / pair_length - (parity + split.fraction) * 0.5;
+    let whole = floor(pair_position);
+    let pair = (i32(whole) - pairs) & (FLUID_WAVE_PAIRS - 1);
+    let into_pair = (pair_position - whole) * pair_length;
+    let d = (2.0 * fluid_hash_unit(fluid_hash_u32(bitcast<u32>(pair) ^ salt)) - 1.0)
+        * (wave.w - wave.z)
+        * 0.5;
+    let first = 0.5 * pair_length + d;
+    return select(vec2<f32>(into_pair - first, pair_length - first), vec2<f32>(into_pair, first),
+        into_pair < first);
+}
+
+// A positive half-arc then a negative one, each zero at both ends.
+fn fluid_wave_arc(crest: vec2<f32>) -> f32 {
+    let half = 0.5 * crest.y;
+    let second = crest.x >= half;
+    let x = (crest.x - select(0.0, half, second)) / half;
+    let g = x * (1.0 - x);
+    let h = g * (FLUID_WAVE_ARC_LINEAR + FLUID_WAVE_ARC_QUADRATIC * g);
+    return select(h, -h, second);
+}
+
+// A real guard, not a select: a no-wave or unwritten row has zero lengths,
+// and the crest divides by their sum.
+fn fluid_wave_value(position: f32, time: f32, wave: vec4<f32>, salt: u32) -> f32 {
+    if wave.y == 0.0 || wave.x == 0.0 {
+        return 0.0;
+    }
+    return wave.y * fluid_wave_arc(fluid_wave_crest(position, time, wave, salt));
+}
+
+// Whole-texel wave offset for a cell: u keyed on the cell's v, v on its u.
+fn fluid_wave_offset(cell: vec2<i32>, time: f32, wave: vec4<f32>) -> vec2<i32> {
+    let shift = vec2<f32>(
+        fluid_wave_value(f32(cell.y) + 0.5, time, wave, FLUID_SALT_WAVE_U),
+        fluid_wave_value(f32(cell.x) + 0.5, time, wave, FLUID_SALT_WAVE_V),
+    );
+    return vec2<i32>(floor(shift + vec2<f32>(0.5)));
+}
+
 // The warped sample UV. Cells are floored from the UNWARPED texel UV, so
-// shimmer and rings stay on the fixed grid while the drift scrolls beneath.
-fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, time: f32,
-                 texels_per_pixel: f32) -> vec2<f32> {
+// shimmer, rings and the wave stay on the fixed grid while the drift scrolls
+// beneath. The wave adds beside drift, outside the displayed offset.
+fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, wave: vec4<f32>,
+                 time: f32, texels_per_pixel: f32) -> vec2<f32> {
     let texel_uv = uv * dims;
     let cell = vec2<i32>(floor(texel_uv));
     let drift_texels = floor(drift_scroll * dims);
+    let wave_texels = vec2<f32>(fluid_wave_offset(cell, time, wave));
     let cell_texels = vec2<f32>(fluid_displayed_offset(cell, time, texels_per_pixel));
-    return (texel_uv + drift_texels + cell_texels) / dims;
+    return (texel_uv + drift_texels + wave_texels + cell_texels) / dims;
+}
+
+// Depth fog. Mirrors `postretro_render_cpu::fluid_surface::fog`; every body and
+// constant is pinned to it.
+const FLUID_FOG_BAND: f32 = 0.08;
+const FLUID_FOG_PATH_MAX: f32 = 1.0e4;
+const FLUID_FOG_DENOM_EPSILON: f32 = 1.0e-8;
+const FLUID_FOG_ALPHA_EPSILON: f32 = 1.0e-4;
+
+// Metres the view ray runs past the fragment to the scene depth behind it.
+// The ray is linear in clip space, so solving its NDC depth needs no inverse.
+fn fluid_fog_path(view_proj: mat4x4<f32>, camera: vec3<f32>, frag: vec3<f32>, depth: f32) -> f32 {
+    let c0 = view_proj * vec4<f32>(camera, 1.0);
+    let c1 = view_proj * vec4<f32>(frag, 1.0);
+    let denom = (c1.z - c0.z) - depth * (c1.w - c0.w);
+    let s = select(FLUID_FOG_PATH_MAX, (depth * c0.w - c0.z) / denom,
+        abs(denom) > FLUID_FOG_DENOM_EPSILON);
+    return clamp(s - 1.0, 0.0, FLUID_FOG_PATH_MAX) * length(frag - camera);
+}
+
+fn fluid_fog_transmittance(extinction: f32, path: f32) -> f32 {
+    return exp(-extinction * path);
+}
+
+// 0 at and below the face's own plane, 1 one band above it along the
+// outward normal, so an eye bobbing at a plane never flips the murk.
+fn fluid_fog_proximity(camera: vec3<f32>, frag: vec3<f32>, outward: vec3<f32>) -> f32 {
+    return clamp(dot(camera - frag, outward) / FLUID_FOG_BAND, 0.0, 1.0);
+}
+
+fn fluid_fog_seen_from_outside(outward: vec3<f32>, view: vec3<f32>) -> bool {
+    return dot(outward, view) > 0.0;
+}
+
+fn fluid_fog_layer_opacity(weight: f32, proximity: f32, transmittance: f32) -> f32 {
+    return weight * proximity * (1.0 - transmittance);
+}
+
+// Surface over fog over scene, as one straight-alpha output.
+fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opacity: f32) -> vec4<f32> {
+    let total = 1.0 - (1.0 - alpha) * (1.0 - fog_opacity);
+    let out = (rgb * alpha + fog_rgb * ((1.0 - alpha) * fog_opacity))
+        / max(total, FLUID_FOG_ALPHA_EPSILON);
+    return vec4<f32>(out, total);
 }
 
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
@@ -400,13 +545,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
     let dims = vec2<f32>(textureDimensions(base_texture, 0));
     let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
-    let uv = fluid_warp_uv(in.uv, in.drift_scroll, dims, uniforms.time, texels_per_pixel);
+    let row = fluid_volumes.slots[in.slot];
+    let uv = fluid_warp_uv(in.uv, in.drift_scroll, dims, row.wave, uniforms.time, texels_per_pixel);
     let albedo = sample_post_retro(base_texture, aniso_sampler, uv, ddx, ddy);
 
     // Two-sided: shade the side the camera sees. For a planar face this is
-    // exactly the back-face test, and it holds whatever the winding.
+    // exactly the back-face test, and it holds whatever the winding. Fog reads
+    // the outward normal, never this viewer-flipped one.
     let V = normalize(uniforms.camera_position - in.world_position);
-    var n = normalize(in.world_normal);
+    let outward = normalize(in.world_normal);
+    var n = outward;
     if dot(n, V) < 0.0 {
         n = -n;
     }
@@ -451,6 +599,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         rgb = rgb + sample_post_retro(emissive_texture, aniso_sampler, uv, ddx, ddy).rgb
             * material.emissive_strength;
     }
-    let opacity = clamp(fluid_volumes.slots[in.slot].x, 0.0, 1.0);
-    return vec4<f32>(rgb, albedo.a * opacity);
+    let opacity = clamp(row.surface.x, 0.0, 1.0);
+    let alpha = albedo.a * opacity;
+    // Seen from outside a fogged fluid, the scene behind the face lies under
+    // it: composite surface over fog over scene in one output. Clear fluids
+    // and faces seen from inside output exactly the surface.
+    let extinction = row.surface.y;
+    if extinction > 0.0 && fluid_fog_seen_from_outside(outward, V) {
+        let depth = textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0);
+        let path = fluid_fog_path(uniforms.view_proj, uniforms.camera_position, in.world_position,
+            depth);
+        let transmittance = fluid_fog_transmittance(extinction, path);
+        let proximity = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+        let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog.x, proximity, transmittance);
+        return fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
+    }
+    return vec4<f32>(rgb, alpha);
 }

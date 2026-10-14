@@ -120,6 +120,10 @@ impl Renderer {
             full.screen_effects.scene_color_texture(),
         );
         full.fog.resize(device, width, height, &full.depth_view);
+        // Group 5 of the fluid pass loads scene depth; this is its only
+        // rebuild, with or without a level installed.
+        full.fluid_surface
+            .rebuild_scene_inputs(device, &full.depth_view);
         // The SDF shadow target is half the scene; the depth view also changed,
         // so its pass bind group is rebuilt.
         full.sdf_shadow_pass

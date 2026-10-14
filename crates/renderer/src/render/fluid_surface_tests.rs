@@ -106,6 +106,19 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         struct_span(&module, "FluidVolumeParams") as u64,
         FLUID_PARAMS_WINDOW_BYTES
     );
+    // One row is the CPU `FluidParamsRow`: three vec4, stride 48.
+    assert_eq!(
+        struct_span(&module, "FluidVolumeRow") as usize,
+        FLUID_PARAMS_STRIDE
+    );
+    assert_eq!(
+        std::mem::size_of::<postretro_render_cpu::fluid_surface::FluidParamsRow>(),
+        FLUID_PARAMS_STRIDE
+    );
+    assert_eq!(
+        struct_span(&module, "FluidSceneInputs") as u64,
+        FLUID_SCENE_UNIFORM_BYTES
+    );
     assert_eq!(
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
@@ -152,7 +165,8 @@ fn fluid_lighting_is_evaluated_per_fragment_from_direct_sh() {
     assert!(!source.contains("billboard_direct_scatter"));
     assert!(!source.contains("@binding(17)"));
     // The opacity is the per-volume slot's, read in the fragment.
-    assert!(fragment.contains("fluid_volumes.slots[in.slot].x"));
+    assert!(fragment.contains("letrow=fluid_volumes.slots[in.slot];"));
+    assert!(fragment.contains("letopacity=clamp(row.surface.x,0.0,1.0);"));
 }
 
 #[test]
@@ -280,6 +294,17 @@ fn fluid_motion_shader_constants_match_the_cpu_reference() {
     assert_eq!(shader_u32("FLUID_SALT_FADE"), m::FLUID_SALT_FADE);
     assert_eq!(shader_u32("FLUID_SALT_BLOCK"), m::FLUID_SALT_BLOCK);
     assert_eq!(shader_u32("FLUID_SALT_DROP"), m::FLUID_SALT_DROP);
+    assert_eq!(shader_u32("FLUID_SALT_WAVE_U"), m::FLUID_SALT_WAVE_U);
+    assert_eq!(shader_u32("FLUID_SALT_WAVE_V"), m::FLUID_SALT_WAVE_V);
+    assert_eq!(shader_i32("FLUID_WAVE_PAIRS"), m::FLUID_WAVE_PAIRS);
+    assert_eq!(
+        shader_f32("FLUID_WAVE_ARC_LINEAR"),
+        m::FLUID_WAVE_ARC_LINEAR
+    );
+    assert_eq!(
+        shader_f32("FLUID_WAVE_ARC_QUADRATIC"),
+        m::FLUID_WAVE_ARC_QUADRATIC
+    );
     assert_eq!(shader_u32("FLUID_HASH_MUL_A"), m::FLUID_HASH_MUL_A);
     assert_eq!(shader_u32("FLUID_HASH_MUL_B"), m::FLUID_HASH_MUL_B);
 }
@@ -299,8 +324,9 @@ fn fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv() {
         fragment.contains("lettexels_per_pixel=max(length(ddx*dims),length(ddy*dims));"),
         "{fragment}"
     );
+    // The wave reads the draw's own row.
     assert!(fragment.contains(
-        "letuv=fluid_warp_uv(in.uv,in.drift_scroll,dims,uniforms.time,texels_per_pixel);"
+        "letuv=fluid_warp_uv(in.uv,in.drift_scroll,dims,row.wave,uniforms.time,texels_per_pixel);"
     ));
     assert!(fragment.contains("sample_post_retro(base_texture,aniso_sampler,uv,ddx,ddy)"));
     assert!(fragment.contains("sample_post_retro(emissive_texture,aniso_sampler,uv,ddx,ddy)"));
@@ -344,7 +370,20 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
             "letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));"
         )
     );
-    assert!(warp.contains("return(texel_uv+drift_texels+cell_texels)/dims;"));
+    // The wave is whole texels on the same fixed grid, beside drift and
+    // outside the displayed offset the flash guards measure.
+    assert!(warp.contains("letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));"));
+    assert!(warp.contains("return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;"));
+    let displayed_body = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_displayed_offset",
+    ));
+    assert!(!displayed_body.contains("wave"));
+    let wave = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_wave_offset",
+    ));
+    assert!(wave.contains("->vec2<i32>{"));
     let displayed = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
         "fluid_displayed_offset",
@@ -543,13 +582,14 @@ fn fluid_motion_wgsl_bodies_match_the_cpu_reference() {
     );
     assert_eq!(
         function("fluid_warp_uv"),
-        "fnfluid_warp_uv(uv:vec2<f32>,drift_scroll:vec2<f32>,dims:vec2<f32>,\
+        "fnfluid_warp_uv(uv:vec2<f32>,drift_scroll:vec2<f32>,dims:vec2<f32>,wave:vec4<f32>,\
          time:f32,texels_per_pixel:f32)->vec2<f32>{\
          lettexel_uv=uv*dims;\
          letcell=vec2<i32>(floor(texel_uv));\
          letdrift_texels=floor(drift_scroll*dims);\
+         letwave_texels=vec2<f32>(fluid_wave_offset(cell,time,wave));\
          letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));\
-         return(texel_uv+drift_texels+cell_texels)/dims;}"
+         return(texel_uv+drift_texels+wave_texels+cell_texels)/dims;}"
     );
 }
 
@@ -665,4 +705,431 @@ fn fluid_motion_cpu_reference_bodies_are_pinned() {
     for (name, expected) in pinned {
         assert_eq!(function(name), expected, "CPU `{name}` body drifted");
     }
+}
+
+// The wave is the CPU twin's `exact_split_product`, `wave_crest`, `wave_arc`,
+// `wave_value` and `wave_offset` in WGSL, `if` branches as `select` and the
+// tuple as a struct. Both sides are pinned as exact comment-free text, so an
+// edit to either alone fails here while the property tests stay green.
+#[test]
+fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 5] = [
+        (
+            "fluid_exact_split_product",
+            "fnfluid_exact_split_product(a:f32,b:f32)->FluidSplit{\
+             leta_hi=fluid_high_half(a);letb_hi=fluid_high_half(b);\
+             leta_lo=a-a_hi;letb_lo=b-b_hi;letp0=a_hi*b_hi;\
+             letp1=a_hi*b_lo;letp2=a_lo*b_hi;letp3=a_lo*b_lo;\
+             letf0=floor(p0);letf1=floor(p1);letf2=floor(p2);\
+             letf3=floor(p3);letfraction=(p0-f0)+(p1-f1)+(p2-f2)+(p3-f3);\
+             letcarry=floor(fraction);letcount=i32(f0)+i32(f1)+i32(f2)+i32(f3)+i32(carry);\
+             returnFluidSplit(count,fraction-carry);}",
+        ),
+        (
+            "fluid_wave_crest",
+            "fnfluid_wave_crest(position:f32,time:f32,wave:vec4<f32>,salt:u32)->vec2<f32>{\
+             letsplit=fluid_exact_split_product(time,wave.x);\
+             letcount=split.count&(2*FLUID_WAVE_PAIRS-1);\
+             letpairs=count>>1u;letparity=f32(count&1);\
+             letpair_length=wave.z+wave.w;\
+             letpair_position=position/pair_length-(parity+split.fraction)*0.5;\
+             letwhole=floor(pair_position);letpair=(i32(whole)-pairs)&(FLUID_WAVE_PAIRS-1);\
+             letinto_pair=(pair_position-whole)*pair_length;\
+             letd=(2.0*fluid_hash_unit(fluid_hash_u32(bitcast<u32>(pair)^salt))-1.0)\
+             *(wave.w-wave.z)*0.5;\
+             letfirst=0.5*pair_length+d;\
+             returnselect(vec2<f32>(into_pair-first,pair_length-first),\
+             vec2<f32>(into_pair,first),into_pair<first);}",
+        ),
+        (
+            "fluid_wave_arc",
+            "fnfluid_wave_arc(crest:vec2<f32>)->f32{lethalf=0.5*crest.y;\
+             letsecond=crest.x>=half;letx=(crest.x-select(0.0,half,second))/half;\
+             letg=x*(1.0-x);leth=g*(FLUID_WAVE_ARC_LINEAR+FLUID_WAVE_ARC_QUADRATIC*g);\
+             returnselect(h,-h,second);}",
+        ),
+        (
+            // A real guard: an unwritten or no-wave row has zero lengths, and
+            // the crest divides by their sum.
+            "fluid_wave_value",
+            "fnfluid_wave_value(position:f32,time:f32,wave:vec4<f32>,salt:u32)->f32{\
+             ifwave.y==0.0||wave.x==0.0{return0.0;}\
+             returnwave.y*fluid_wave_arc(fluid_wave_crest(position,time,wave,salt));}",
+        ),
+        (
+            "fluid_wave_offset",
+            "fnfluid_wave_offset(cell:vec2<i32>,time:f32,wave:vec4<f32>)->vec2<i32>{\
+             letshift=vec2<f32>(\
+             fluid_wave_value(f32(cell.y)+0.5,time,wave,FLUID_SALT_WAVE_U),\
+             fluid_wave_value(f32(cell.x)+0.5,time,wave,FLUID_SALT_WAVE_V),);\
+             returnvec2<i32>(floor(shift+vec2<f32>(0.5)));}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "WGSL `{name}` body drifted");
+    }
+    // `round` is half-to-even in WGSL; the twin rounds half up.
+    assert!(!code_only(source).contains("round("));
+}
+
+#[test]
+fn fluid_wave_cpu_twin_bodies_are_pinned() {
+    let source = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 6] = [
+        (
+            "exact_split_product",
+            "fnexact_split_product(a:f32,b:f32)->(i32,f32){\
+             let(a_hi,b_hi)=(high_half(a),high_half(b));\
+             let(a_lo,b_lo)=(a-a_hi,b-b_hi);\
+             let(p0,p1,p2,p3)=(a_hi*b_hi,a_hi*b_lo,a_lo*b_hi,a_lo*b_lo);\
+             let(f0,f1,f2,f3)=(p0.floor(),p1.floor(),p2.floor(),p3.floor());\
+             letfraction=(p0-f0)+(p1-f1)+(p2-f2)+(p3-f3);\
+             letcarry=fraction.floor();\
+             letcount=f0asi32+f1asi32+f2asi32+f3asi32+carryasi32;\
+             (count,fraction-carry)}",
+        ),
+        (
+            "wave_crest",
+            "fnwave_crest(position:f32,time:f32,wave:FluidWaveParams,salt:u32)->Vec2{\
+             let(count,fraction)=exact_split_product(time,wave.inv_period);\
+             letcount=count&(2*FLUID_WAVE_PAIRS-1);letpairs=count>>1;\
+             letparity=(count&1)asf32;letpair_length=wave.length_min+wave.length_max;\
+             letpair_position=position/pair_length-(parity+fraction)*0.5;\
+             letwhole=pair_position.floor();letpair=(wholeasi32-pairs)&(FLUID_WAVE_PAIRS-1);\
+             letinto_pair=(pair_position-whole)*pair_length;\
+             letd=(2.0*hash_unit(hash_u32(pairasu32^salt))-1.0)\
+             *(wave.length_max-wave.length_min)*0.5;\
+             letfirst=0.5*pair_length+d;\
+             ifinto_pair<first{Vec2::new(into_pair,first)}\
+             else{Vec2::new(into_pair-first,pair_length-first)}}",
+        ),
+        (
+            "wave_arc",
+            "fnwave_arc(crest:Vec2)->f32{lethalf=0.5*crest.y;\
+             letsecond=crest.x>=half;\
+             letx=(crest.x-ifsecond{half}else{0.0})/half;\
+             letg=x*(1.0-x);leth=g*(FLUID_WAVE_ARC_LINEAR+FLUID_WAVE_ARC_QUADRATIC*g);\
+             ifsecond{-h}else{h}}",
+        ),
+        (
+            "wave_value",
+            "fnwave_value(position:f32,time:f32,wave:FluidWaveParams,salt:u32)->f32{\
+             ifwave.amplitude==0.0||wave.inv_period==0.0{return0.0;}\
+             wave.amplitude*wave_arc(wave_crest(position,time,wave,salt))}",
+        ),
+        (
+            "wave_offset",
+            "fnwave_offset(cell:IVec2,time:f32,wave:FluidWaveParams)->IVec2{\
+             letshift=Vec2::new(\
+             wave_value(cell.yasf32+0.5,time,wave,FLUID_SALT_WAVE_U),\
+             wave_value(cell.xasf32+0.5,time,wave,FLUID_SALT_WAVE_V),);\
+             (shift+0.5).floor().as_ivec2()}",
+        ),
+        (
+            "warped_texel_uv",
+            "fnwarped_texel_uv(texel_uv:Vec2,drift_rate:Vec2,dims:Vec2,wave:FluidWaveParams,\
+             time:f32,texels_per_pixel:f32,)->Vec2{\
+             letcell=texel_cell(texel_uv);\
+             texel_uv+drift_texels(drift_rate,time,dims)\
+             +wave_offset(cell,time,wave).as_vec2()\
+             +displayed_offset(cell,time,texels_per_pixel).as_vec2()}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "CPU `{name}` body drifted");
+    }
+}
+
+#[test]
+fn fluid_fog_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::fog as f;
+    assert_eq!(shader_f32("FLUID_FOG_BAND"), f::FLUID_FOG_BAND);
+    assert_eq!(shader_f32("FLUID_FOG_PATH_MAX"), f::FLUID_FOG_PATH_MAX);
+    assert_eq!(
+        shader_f32("FLUID_FOG_DENOM_EPSILON"),
+        f::FLUID_FOG_DENOM_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_FOG_ALPHA_EPSILON"),
+        f::FLUID_FOG_ALPHA_EPSILON
+    );
+}
+
+// The fog path solve, transmittance, proximity, outside gate, layer opacity
+// and composite are the CPU fog reference in WGSL, pinned on both sides.
+#[test]
+fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/fog.rs");
+    let pinned: [(&str, &str, &str, &str); 6] = [
+        (
+            "fluid_fog_path",
+            "fnfluid_fog_path(view_proj:mat4x4<f32>,camera:vec3<f32>,frag:vec3<f32>,depth:f32)\
+             ->f32{\
+             letc0=view_proj*vec4<f32>(camera,1.0);letc1=view_proj*vec4<f32>(frag,1.0);\
+             letdenom=(c1.z-c0.z)-depth*(c1.w-c0.w);\
+             lets=select(FLUID_FOG_PATH_MAX,(depth*c0.w-c0.z)/denom,\
+             abs(denom)>FLUID_FOG_DENOM_EPSILON);\
+             returnclamp(s-1.0,0.0,FLUID_FOG_PATH_MAX)*length(frag-camera);}",
+            "fog_path",
+            "fnfog_path(view_proj:Mat4,camera:Vec3,frag:Vec3,depth:f32)->f32{\
+             letc0=view_proj*camera.extend(1.0);letc1=view_proj*frag.extend(1.0);\
+             letdenom=(c1.z-c0.z)-depth*(c1.w-c0.w);\
+             lets=ifdenom.abs()>FLUID_FOG_DENOM_EPSILON{(depth*c0.w-c0.z)/denom}\
+             else{FLUID_FOG_PATH_MAX};\
+             (s-1.0).clamp(0.0,FLUID_FOG_PATH_MAX)*(frag-camera).length()}",
+        ),
+        (
+            "fluid_fog_transmittance",
+            "fnfluid_fog_transmittance(extinction:f32,path:f32)->f32{\
+             returnexp(-extinction*path);}",
+            "fog_transmittance",
+            "fnfog_transmittance(extinction:f32,path:f32)->f32{(-extinction*path).exp()}",
+        ),
+        (
+            "fluid_fog_proximity",
+            "fnfluid_fog_proximity(camera:vec3<f32>,frag:vec3<f32>,outward:vec3<f32>)->f32{\
+             returnclamp(dot(camera-frag,outward)/FLUID_FOG_BAND,0.0,1.0);}",
+            "fog_proximity",
+            "fnfog_proximity(camera:Vec3,frag:Vec3,outward:Vec3)->f32{\
+             ((camera-frag).dot(outward)/FLUID_FOG_BAND).clamp(0.0,1.0)}",
+        ),
+        (
+            "fluid_fog_seen_from_outside",
+            "fnfluid_fog_seen_from_outside(outward:vec3<f32>,view:vec3<f32>)->bool{\
+             returndot(outward,view)>0.0;}",
+            "fog_seen_from_outside",
+            "fnfog_seen_from_outside(outward:Vec3,view:Vec3)->bool{outward.dot(view)>0.0}",
+        ),
+        (
+            "fluid_fog_layer_opacity",
+            "fnfluid_fog_layer_opacity(weight:f32,proximity:f32,transmittance:f32)->f32{\
+             returnweight*proximity*(1.0-transmittance);}",
+            "fog_layer_opacity",
+            "fnfog_layer_opacity(weight:f32,proximity:f32,transmittance:f32)->f32{\
+             weight*proximity*(1.0-transmittance)}",
+        ),
+        (
+            "fluid_fog_composite",
+            "fnfluid_fog_composite(rgb:vec3<f32>,alpha:f32,fog_rgb:vec3<f32>,fog_opacity:f32)\
+             ->vec4<f32>{\
+             lettotal=1.0-(1.0-alpha)*(1.0-fog_opacity);\
+             letout=(rgb*alpha+fog_rgb*((1.0-alpha)*fog_opacity))\
+             /max(total,FLUID_FOG_ALPHA_EPSILON);\
+             returnvec4<f32>(out,total);}",
+            "fog_composite",
+            "fnfog_composite(rgb:Vec3,alpha:f32,fog_rgb:Vec3,fog_opacity:f32)->Vec4{\
+             lettotal=1.0-(1.0-alpha)*(1.0-fog_opacity);\
+             letout=(rgb*alpha+fog_rgb*((1.0-alpha)*fog_opacity))\
+             /total.max(FLUID_FOG_ALPHA_EPSILON);\
+             out.extend(total)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+}
+
+// `fs_main`'s tail is the CPU reference's `fog_fragment`: no fog or an inside
+// view returns the surface unchanged; otherwise one depth load, then path,
+// transmittance, proximity, layer and composite. The outside gate and the
+// proximity read the interpolated outward normal, never the viewer-flipped
+// shading normal `n`, which always faces the camera.
+#[test]
+fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
+    let fragment = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main",
+    ));
+    let tail = [
+        "letoutward=normalize(in.world_normal);",
+        "varn=outward;",
+        "letalpha=albedo.a*opacity;",
+        "letextinction=row.surface.y;",
+        "ifextinction>0.0&&fluid_fog_seen_from_outside(outward,V){",
+        "letdepth=textureLoad(scene_depth,vec2<i32>(in.clip_position.xy),0);",
+        "letpath=fluid_fog_path(uniforms.view_proj,uniforms.camera_position,in.world_position,\
+         depth);",
+        "lettransmittance=fluid_fog_transmittance(extinction,path);",
+        "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
+        "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog.x,proximity,transmittance);",
+        "returnfluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
+        "returnvec4<f32>(rgb,alpha);}",
+    ];
+    let mut at = 0;
+    for line in tail {
+        let found = fragment[at..]
+            .find(line)
+            .unwrap_or_else(|| panic!("fs_main must contain, in order: {line}\n{fragment}"));
+        at += found + line.len();
+    }
+    assert_eq!(at, fragment.len(), "the composite is the shader's output");
+    for flipped in [
+        "fluid_fog_seen_from_outside(n,",
+        "in.world_position,n)",
+        "normalize(n)",
+    ] {
+        assert!(!fragment.contains(flipped), "fog reads `{flipped}`");
+    }
+
+    let cpu = code_only(wgsl_fn(
+        include_str!("../../../render-cpu/src/fluid_surface/fog.rs"),
+        "fog_fragment",
+    ));
+    assert_eq!(
+        cpu,
+        "fnfog_fragment(rgb:Vec3,alpha:f32,fragment:&FluidFogFragment)->Vec4{\
+         letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
+         if!(fragment.extinction>0.0&&fog_seen_from_outside(fragment.outward,view)){\
+         returnrgb.extend(alpha);}\
+         letpath=fog_path(fragment.view_proj,fragment.camera,fragment.world_position,\
+         fragment.scene_depth,);\
+         lettransmittance=fog_transmittance(fragment.extinction,path);\
+         letproximity=fog_proximity(fragment.camera,fragment.world_position,fragment.outward);\
+         letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
+         fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
+    );
+}
+
+/// The frame's fluid pass block: from its gate to the end of its draws.
+fn fluid_pass_block() -> &'static str {
+    let frame = include_str!("renderer_render_frame.rs");
+    let start = frame
+        .find("if render_world && self.full().fluid_surface.has_draws()")
+        .expect("fluid pass gate");
+    let end = start
+        + frame[start..]
+            .find(".record_draws(&mut fluid_pass")
+            .expect("fluid draws");
+    &frame[start..end]
+}
+
+// The pass opens depth read-only so group 5 can load the same texture; it
+// tests depth and never writes it.
+#[test]
+fn fluid_pass_opens_depth_read_only() {
+    let block = code_only(fluid_pass_block());
+    let attachment = &block[block
+        .find("depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{")
+        .expect("fluid pass depth attachment")..];
+    let attachment = &attachment[..attachment.find("}),").expect("attachment closes")];
+    assert!(attachment.contains("view:&self.full().depth_view,"));
+    assert!(attachment.contains("depth_ops:None,"), "{attachment}");
+    assert!(attachment.contains("stencil_ops:None,"), "{attachment}");
+    assert_eq!(
+        fluid_depth_stencil_state(DEPTH_FORMAT).depth_write_enabled,
+        Some(false)
+    );
+}
+
+// Pin P4: group 5 is built at full init and rebuilt only by the scene-target
+// rebuild, never in the frame. Level install and clear never touch it.
+#[test]
+fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets() {
+    let block = fluid_pass_block();
+    assert!(!block.contains("create_bind_group"), "{block}");
+    assert!(!block.contains("rebuild_scene_inputs"), "{block}");
+    assert!(code_only(block).contains("fluid_surface.upload_scene_inputs(queue);"));
+
+    let source = include_str!("fluid_surface.rs");
+    let record = code_only(wgsl_fn(source, "record_draws"));
+    assert!(!record.contains("create_bind_group"));
+    assert!(record.contains(
+        "pass.set_bind_group(FLUID_SCENE_INPUTS_GROUP,self.scene_inputs.bind_group(),&[],);"
+    ));
+    // Group 5's own module builds its bind group in `new` and `rebuild` only.
+    let inputs = include_str!("fluid_scene_inputs.rs");
+    assert_eq!(
+        code_only(inputs)
+            .matches("device.create_bind_group(")
+            .count(),
+        1
+    );
+    assert_eq!(code_only(inputs).matches("=create_bind_group(").count(), 2);
+    for builder in ["new", "rebuild"] {
+        assert!(code_only(wgsl_fn(inputs, builder)).contains("create_bind_group(device,"));
+    }
+    for per_frame in ["upload", "set_fog_weight", "bind_group"] {
+        assert!(!code_only(wgsl_fn(inputs, per_frame)).contains("create_bind_group"));
+    }
+    for level_path in ["install", "clear"] {
+        let body = code_only(wgsl_fn(source, level_path));
+        assert!(
+            !body.contains("scene_inputs"),
+            "level `{level_path}` must not touch group 5"
+        );
+    }
+    assert_eq!(
+        code_only(source).matches(".rebuild_scene_inputs(").count(),
+        0
+    );
+
+    // The one rebuild: after the scene depth is recreated and the fog pass
+    // rebinds it.
+    let extent = include_str!("renderer_extent.rs");
+    let rebuild = code_only(wgsl_fn(extent, "rebuild_scene_targets"));
+    let depth = rebuild
+        .find("full.depth_view=depth_view;")
+        .expect("depth recreated");
+    let fog = rebuild.find("full.fog.resize(").expect("fog resize");
+    let fluid = rebuild
+        .find("full.fluid_surface.rebuild_scene_inputs(device,&full.depth_view);")
+        .expect("fluid group 5 rebuild");
+    assert!(depth < fog && fog < fluid);
+    assert!(
+        !code_only(include_str!("renderer_resources.rs")).contains("rebuild_scene_inputs"),
+        "level release must not rebuild group 5"
+    );
+
+    // Full init builds it over the scene depth, level or not.
+    let init = code_only(include_str!("renderer_full_init.rs"));
+    let new = init
+        .find("fluid_surface::FluidSurfacePass::new(")
+        .expect("fluid pass built at full init");
+    assert!(init[new..].starts_with(
+        "fluid_surface::FluidSurfacePass::new(device,DEPTH_FORMAT,&uniform_bind_group_layout,\
+         &texture_bind_group_layout,&lighting_bind_group_layout,\
+         &sh_volume_resources.bind_group_layout,&depth_view,);"
+    ));
+}
+
+#[test]
+fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
+    let entries = fluid_scene_inputs_bind_group_layout_entries();
+    assert!(matches!(
+        entries[0].ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        }
+    ));
+    assert!(matches!(
+        entries[1].ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            ..
+        }
+    ));
+    assert_eq!(FLUID_SCENE_UNIFORM_BYTES, 16);
+    assert_eq!(
+        FLUID_SCENE_INPUTS_GROUP as usize,
+        FLUID_BIND_GROUP_COUNT - 1
+    );
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    assert!(source.contains("@group(5) @binding(0) var scene_depth: texture_depth_2d;"));
+    assert!(source.contains("@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;"));
 }

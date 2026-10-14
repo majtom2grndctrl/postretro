@@ -1,5 +1,6 @@
 // Fluid surface data logic: surface faces packed into one shared mesh, per-face
-// drift maps and rates, visible draws, draw slots and the warp's CPU reference.
+// drift maps and rates, visible draws, draw slots and their parameter rows, and
+// the warp's and depth fog's CPU references.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
@@ -11,12 +12,15 @@ use postretro_level_format::geometry::NO_TEXTURE;
 
 mod cull;
 mod drift;
+pub mod fog;
 pub mod motion;
 mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;
 pub use drift::{FluidFaceDriftMap, fill_drift_rates};
-pub use slots::{FluidSurfaceSlots, slot_window};
+pub use slots::{
+    FLUID_FOG_COLOR_SCALE, FluidParamsRow, FluidSurfaceLook, FluidSurfaceSlots, slot_window,
+};
 
 /// One fluid surface vertex: world position, the face's outward normal, and
 /// the texture UV normalized by the face texture's dimensions.
@@ -39,14 +43,21 @@ const _: () = assert!(std::mem::size_of::<FluidSurfaceVertex>() == FLUID_SURFACE
 /// second) in the second vertex buffer, which drift re-resolves rewrite.
 pub const FLUID_DRIFT_RATE_STRIDE: usize = 8;
 
-/// Per-volume parameters are one `vec4<f32>` per draw slot.
-pub const FLUID_PARAMS_STRIDE: usize = 16;
-/// Slots one uniform window holds: 64 KiB, the WebGPU default
-/// `max_uniform_buffer_binding_size` and D3D's constant-buffer ceiling.
-pub const FLUID_SLOTS_PER_WINDOW: u32 = 4096;
+/// Per-volume parameters are three `vec4<f32>` per draw slot ([`FluidParamsRow`]).
+pub const FLUID_PARAMS_STRIDE: usize = 48;
+const _: () = assert!(std::mem::size_of::<FluidParamsRow>() == FLUID_PARAMS_STRIDE);
+/// Slots one uniform window holds. 1365 rows would fill 64 KiB (the WebGPU
+/// default `max_uniform_buffer_binding_size` and D3D's constant-buffer
+/// ceiling), but 65 520 B is no multiple of the 256 B dynamic-offset
+/// alignment; 1360 rows are 65 280 B = 255 × 256, so every window's offset is.
+pub const FLUID_SLOTS_PER_WINDOW: u32 = 1360;
 /// Byte size of one uniform window, which is also its dynamic-offset step.
 pub const FLUID_PARAMS_WINDOW_BYTES: u64 =
     FLUID_SLOTS_PER_WINDOW as u64 * FLUID_PARAMS_STRIDE as u64;
+const _: () = assert!(
+    FLUID_PARAMS_WINDOW_BYTES.is_multiple_of(256) && FLUID_PARAMS_WINDOW_BYTES <= 65_536,
+    "a params window must be a 256 B dynamic-offset step within 64 KiB"
+);
 
 /// One contiguous index range of one volume drawn with one world material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,11 +91,11 @@ pub struct FluidSurfaceMesh {
     pub face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
 }
 
-/// One fluid volume to draw this frame, at its fluid's surface opacity.
+/// One fluid volume to draw this frame, with its fluid's packed look.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FluidSurfaceDraw {
     pub volume_index: u32,
-    pub surface_opacity: f32,
+    pub params: FluidParamsRow,
 }
 
 /// Outward unit normal of a convex face from its winding (Newell's method),

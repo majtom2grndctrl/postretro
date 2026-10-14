@@ -21,7 +21,7 @@ use postretro_render_cpu::flash_clamp::ChannelClamp;
 use postretro_render_cpu::flash_limiter::{
     HITCH_CEILING_SECONDS, LimiterFrameInput, flash_limiter_enabled,
 };
-use postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector;
+use postretro_render_cpu::fluid_surface::{FluidSurfaceLook, FluidSurfaceRenderCollector};
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 use postretro_visibility::VisibleCells;
 
@@ -644,7 +644,7 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
     .to_vec();
     assert_eq!(draws.len(), 1, "{draws:?}");
     assert_eq!(draws[0].volume_index, 0);
-    assert!((draws[0].surface_opacity - 0.6).abs() < 1e-6);
+    assert!((draws[0].params.opacity() - 0.6).abs() < 1e-6);
 
     // A connected client resolves the host's table: `sludge` exists there but
     // not in this machine's manifest, so it shows none.
@@ -681,7 +681,10 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
         &VisibleCells::DrawAll,
         |_| None,
         Vec3::ZERO,
-        |v| local_fluid_presentation(&volumes, &host_table, &local, v).map(|f| f.surface_opacity),
+        |v| {
+            local_fluid_presentation(&volumes, &host_table, &local, v)
+                .map(|f| FluidSurfaceLook::surface_only(f.surface_opacity))
+        },
     );
     assert_eq!(draws.len(), 1);
     assert_eq!(draws[0].volume_index, 0);

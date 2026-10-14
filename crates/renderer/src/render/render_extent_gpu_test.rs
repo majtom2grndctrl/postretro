@@ -57,6 +57,11 @@ fn assert_targets(renderer: &Renderer, scene: Extent, surface: Extent, when: &st
         "{when}: scene depth"
     );
     assert_eq!(
+        texture_extent(full.fluid_surface.scene_inputs().scene_depth().0.texture()),
+        scene,
+        "{when}: fluid scene inputs (group 5) depth"
+    );
+    assert_eq!(
         texture_extent(full.screen_effects.scene_color_texture()),
         scene,
         "{when}: scene colour"

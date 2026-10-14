@@ -2,6 +2,7 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use glam::IVec2;
 use postretro_level_format::environment_volumes::EnvironmentSurfaceVertex;
 use postretro_visibility::VisibleCells;
 
@@ -456,8 +457,19 @@ fn packing_gives_slots_only_to_volumes_with_drawable_faces_and_keeps_their_bound
     assert!(pack_fluid_surfaces(&[], &[], 1).indices.is_empty());
 }
 
-fn opacity_all(opacity: f32) -> impl Fn(usize) -> Option<f32> {
-    move |_| Some(opacity)
+fn opacity_all(opacity: f32) -> impl Fn(usize) -> Option<FluidSurfaceLook> {
+    move |_| Some(FluidSurfaceLook::surface_only(opacity))
+}
+
+fn draw(volume_index: u32, look: FluidSurfaceLook) -> FluidSurfaceDraw {
+    FluidSurfaceDraw {
+        volume_index,
+        params: look.pack(),
+    }
+}
+
+fn clear_draw(volume_index: u32, opacity: f32) -> FluidSurfaceDraw {
+    draw(volume_index, FluidSurfaceLook::surface_only(opacity))
 }
 
 /// Two pools on the X axis, at x 0..1 and x 10..11, plus a dry volume.
@@ -498,7 +510,7 @@ fn collector_draws_every_present_fluid_under_draw_all() {
     );
     // Far to near from a camera at the first pool.
     assert_eq!(volume_indices(draws), [2, 0]);
-    assert!(draws.iter().all(|draw| draw.surface_opacity == 0.6));
+    assert!(draws.iter().all(|draw| draw.params.opacity() == 0.6));
 }
 
 #[test]
@@ -557,8 +569,8 @@ fn collector_skips_volumes_without_a_presentation_opacity() {
         Vec3::ZERO,
         |index| match index {
             0 => None,
-            2 => Some(0.0),
-            _ => Some(1.0),
+            2 => Some(FluidSurfaceLook::surface_only(0.0)),
+            _ => Some(FluidSurfaceLook::surface_only(1.0)),
         },
     );
     assert!(draws.is_empty());
@@ -569,15 +581,10 @@ fn collector_skips_volumes_without_a_presentation_opacity() {
         &VisibleCells::DrawAll,
         cell_bounds,
         Vec3::ZERO,
-        |index| (index == 2).then_some(4.0),
+        |index| (index == 2).then_some(FluidSurfaceLook::surface_only(4.0)),
     );
-    assert_eq!(
-        draws,
-        [FluidSurfaceDraw {
-            volume_index: 2,
-            surface_opacity: 1.0,
-        }]
-    );
+    assert_eq!(draws, [clear_draw(2, 1.0)]);
+    assert_eq!(draws[0].params.opacity(), 1.0);
 }
 
 #[test]
@@ -624,7 +631,7 @@ fn collector_rebuilds_bounds_when_the_level_changes() {
 }
 
 #[test]
-fn slots_upload_only_changed_opacity_and_skip_volumes_without_surfaces() {
+fn slots_upload_only_changed_rows_and_skip_volumes_without_surfaces() {
     let volumes = two_pools();
     let mesh = pack_fluid_surfaces(&volumes, &[], 1);
     let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
@@ -632,29 +639,18 @@ fn slots_upload_only_changed_opacity_and_skip_volumes_without_surfaces() {
     assert_eq!(slots.window_count(), 1);
 
     let draws = [
-        FluidSurfaceDraw {
-            volume_index: 2,
-            surface_opacity: 0.5,
-        },
+        clear_draw(2, 0.5),
         // Dry and out-of-range volumes have no slot.
-        FluidSurfaceDraw {
-            volume_index: 1,
-            surface_opacity: 0.5,
-        },
-        FluidSurfaceDraw {
-            volume_index: 99,
-            surface_opacity: 0.5,
-        },
-        FluidSurfaceDraw {
-            volume_index: 0,
-            surface_opacity: 0.25,
-        },
+        clear_draw(1, 0.5),
+        clear_draw(99, 0.5),
+        clear_draw(0, 0.25),
     ];
     slots.set_draws(&draws);
     assert_eq!(slots.frame_slots(), [1, 0]);
     let (range, rows) = slots.take_dirty().expect("first draw uploads");
     assert_eq!(range, 0..2);
-    assert_eq!(rows, [[0.25, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]]);
+    assert_eq!(rows[0].surface, [0.25, 0.0, 0.0, 0.0]);
+    assert_eq!(rows[1].surface, [0.5, 0.0, 0.0, 0.0]);
 
     // Same opacities next frame: nothing to upload.
     slots.set_draws(&draws);
@@ -662,34 +658,285 @@ fn slots_upload_only_changed_opacity_and_skip_volumes_without_surfaces() {
     assert!(slots.has_draws());
 
     // One fluid's opacity changes (a manifest reload): only its slot uploads.
-    slots.set_draws(&[FluidSurfaceDraw {
-        volume_index: 2,
-        surface_opacity: 0.75,
-    }]);
+    slots.set_draws(&[clear_draw(2, 0.75)]);
     let (range, rows) = slots.take_dirty().expect("changed slot uploads");
     assert_eq!(range, 1..2);
-    assert_eq!(rows, [[0.75, 0.0, 0.0, 0.0]]);
+    assert_eq!(rows[0].surface, [0.75, 0.0, 0.0, 0.0]);
 
     slots.set_draws(&[]);
     assert!(!slots.has_draws());
 }
 
+/// Dev water by the brief's dev values.
+fn water_look() -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        surface_opacity: 0.75,
+        fog_distance: Some(1.0),
+        fog_color: [0.16, 0.22, 0.19],
+        wave_period: Some(63.0),
+        wave_amplitude: 8.0,
+        wave_length: [64.0, 80.0],
+    }
+}
+
+fn sludge_look() -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        fog_color: [0.2, 0.3, 0.1],
+        ..FluidSurfaceLook::surface_only(0.9)
+    }
+}
+
 #[test]
-fn slot_windows_address_4096_vec4_uniform_windows() {
-    assert_eq!(FLUID_PARAMS_WINDOW_BYTES, 65_536);
-    assert_eq!(slot_window(0), (0, 0));
-    assert_eq!(slot_window(4095), (0, 4095));
-    assert_eq!(slot_window(4096), (1, 0));
-    assert_eq!(slot_window(9000), (2, 808));
-    // A slot's flat byte offset is its window offset plus its element offset,
-    // so one contiguous buffer holds every window.
-    let (window, element) = slot_window(9000);
+fn packing_lays_out_opacity_fog_and_wave_rows_with_spare_floats() {
+    let row = water_look().pack();
+    assert_eq!(row.surface, [0.75, 3.0, 0.0, 0.0]);
+    let albedo = [0.16 * 0.25, 0.22 * 0.25, 0.19 * 0.25];
+    for (packed, expected) in row.fog_albedo.iter().zip(albedo) {
+        assert!((packed - expected).abs() < 1.0e-7);
+    }
+    assert_eq!(FLUID_FOG_COLOR_SCALE, 0.25);
+    assert_eq!(row.wave, [1.0 / 63.0, 8.0, 64.0, 80.0]);
     assert_eq!(
-        window as u64 * FLUID_PARAMS_WINDOW_BYTES + element as u64 * FLUID_PARAMS_STRIDE as u64,
-        9000 * FLUID_PARAMS_STRIDE as u64
+        row.wave(),
+        motion::FluidWaveParams {
+            inv_period: 1.0 / 63.0,
+            amplitude: 8.0,
+            length_min: 64.0,
+            length_max: 80.0,
+        }
     );
 
-    let many: Vec<FluidSurfaceVolume> = (0..4097)
+    // At least one float stays unused for any look (SSR's reflectivity).
+    for look in [
+        water_look(),
+        sludge_look(),
+        FluidSurfaceLook::surface_only(1.0),
+    ] {
+        let row = look.pack();
+        assert_eq!(
+            [row.surface[2], row.surface[3], row.fog_albedo[3]],
+            [0.0; 3]
+        );
+    }
+    assert_eq!(std::mem::size_of::<FluidParamsRow>(), FLUID_PARAMS_STRIDE);
+}
+
+// Pin P3: a declared amplitude with no period, or amplitude 0, packs no wave,
+// so every cell's wave offset is 0 at every time; fog omitted packs extinction 0.
+#[test]
+fn packing_zeroes_the_wave_without_a_period_or_amplitude_and_the_fog_without_a_distance() {
+    let no_period = FluidSurfaceLook {
+        wave_period: None,
+        ..water_look()
+    }
+    .pack();
+    assert_eq!(no_period.wave[1], 0.0);
+    let flat = FluidSurfaceLook {
+        wave_amplitude: 0.0,
+        ..water_look()
+    }
+    .pack();
+    assert_eq!(flat.wave[1], 0.0);
+    for row in [no_period, flat] {
+        for time in [0.0, 17.5, 86_399.0] {
+            for cell in [IVec2::new(0, 0), IVec2::new(-37, 91), IVec2::new(500, -2)] {
+                assert_eq!(motion::wave_offset(cell, time, row.wave()), IVec2::ZERO);
+            }
+        }
+    }
+
+    let clear = FluidSurfaceLook {
+        fog_distance: None,
+        ..water_look()
+    }
+    .pack();
+    assert_eq!(clear.fog_extinction(), 0.0);
+    for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        let row = FluidSurfaceLook {
+            fog_distance: Some(bad),
+            ..water_look()
+        }
+        .pack();
+        assert_eq!(row.fog_extinction(), 0.0, "fogDistance {bad} packs no fog");
+    }
+}
+
+// Pin P6: a reload that changes `wavePeriod` 63 → 20 draws, on its first
+// frame, exactly a fresh evaluation of the wave at period 20 and that frame's
+// time: the row carries no phase, so nothing eases across the change.
+#[test]
+fn a_reloaded_wave_period_takes_effect_as_a_fresh_evaluation_on_the_next_row() {
+    let time = 4_321.25;
+    let before = water_look().pack();
+    let after = FluidSurfaceLook {
+        wave_period: Some(20.0),
+        ..water_look()
+    }
+    .pack();
+    assert_ne!(before, after);
+    let fresh = motion::FluidWaveParams {
+        inv_period: 1.0 / 20.0,
+        amplitude: 8.0,
+        length_min: 64.0,
+        length_max: 80.0,
+    };
+    for x in -40..40 {
+        let cell = IVec2::new(x * 7, x * 13 - 5);
+        assert_eq!(
+            motion::wave_offset(cell, time, after.wave()),
+            motion::wave_offset(cell, time, fresh)
+        );
+    }
+}
+
+// Pin P2: a reload that changes only one fluid's fog, wave or (with `fogColor`
+// omitted) `viewTint` rgb re-uploads exactly that fluid's slots on the next
+// frame; a reload that changes nothing uploads nothing.
+#[test]
+fn a_reload_reuploads_exactly_the_changed_fluids_slots_and_nothing_when_unchanged() {
+    // Water in volumes 0 and 2, sludge in volume 3.
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        dry_volume(),
+        volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let frame = |water: FluidSurfaceLook| [draw(3, sludge_look()), draw(2, water), draw(0, water)];
+    slots.set_draws(&frame(water_look()));
+    assert_eq!(slots.take_dirty().map(|(range, _)| range), Some(0..3));
+
+    // A reload that changes nothing.
+    slots.set_draws(&frame(water_look()));
+    assert!(
+        slots.take_dirty().is_none(),
+        "an unchanged reload uploads nothing"
+    );
+
+    let changes = [
+        FluidSurfaceLook {
+            fog_distance: Some(3.0),
+            ..water_look()
+        },
+        // A `viewTint` rgb change with `fogColor` omitted reaches the look as
+        // a new resolved fog colour.
+        FluidSurfaceLook {
+            fog_color: [0.1, 0.3, 0.4],
+            ..water_look()
+        },
+        FluidSurfaceLook {
+            wave_period: Some(20.0),
+            ..water_look()
+        },
+        FluidSurfaceLook {
+            wave_amplitude: 6.0,
+            ..water_look()
+        },
+        FluidSurfaceLook {
+            wave_length: [48.0, 80.0],
+            ..water_look()
+        },
+    ];
+    for changed in changes {
+        slots.set_draws(&frame(water_look()));
+        slots.take_dirty();
+        slots.set_draws(&frame(changed));
+        let (range, rows) = slots.take_dirty().expect("the changed fluid uploads");
+        // Water's slots are 0 and 1; sludge's (2) stays clean.
+        assert_eq!(range, 0..2, "{changed:?}");
+        assert!(rows.iter().all(|row| *row == changed.pack()));
+        slots.set_draws(&frame(changed));
+        assert!(slots.take_dirty().is_none());
+    }
+}
+
+// A fogged fluid at surface opacity 0 draws its fog alone; with fog omitted it
+// still draws nothing (rendering_pipeline.md §7.3a).
+#[test]
+fn collector_keeps_a_zero_opacity_fluid_only_when_it_has_fog() {
+    let volumes = two_pools();
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let fogged = FluidSurfaceLook {
+        fog_distance: Some(1.0),
+        fog_color: [0.1, 0.3, 0.4],
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| Some(fogged),
+    );
+    assert_eq!(volume_indices(draws), [2, 0]);
+    assert!(
+        draws
+            .iter()
+            .all(|draw| draw.params.opacity() == 0.0 && draw.params.fog_extinction() == 3.0)
+    );
+
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| {
+            Some(FluidSurfaceLook {
+                fog_distance: None,
+                ..fogged
+            })
+        },
+    );
+    assert!(draws.is_empty());
+}
+
+// Steady-state collection reuses its buffers: later frames of the same view
+// keep the first frame's draw allocation.
+#[test]
+fn collector_reuses_its_buffers_in_steady_state() {
+    let volumes = two_pools();
+    let visible = VisibleCells::Culled(vec![0, 1]);
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let mut collect = || {
+        collector
+            .collect(&volumes, &visible, cell_bounds, Vec3::ZERO, |_| {
+                Some(water_look())
+            })
+            .as_ptr()
+    };
+    let first = collect();
+    for _ in 0..4 {
+        assert_eq!(collect(), first);
+    }
+}
+
+#[test]
+fn slot_windows_address_1360_row_uniform_windows_at_256_byte_offsets() {
+    assert_eq!(FLUID_PARAMS_STRIDE, 48);
+    assert_eq!(FLUID_SLOTS_PER_WINDOW, 1360);
+    assert_eq!(FLUID_PARAMS_WINDOW_BYTES, 65_280);
+    assert_eq!(slot_window(0), (0, 0));
+    assert_eq!(slot_window(1359), (0, 1359));
+    assert_eq!(slot_window(1360), (1, 0));
+    assert_eq!(slot_window(9000), (6, 840));
+    // Pin P1: every window's dynamic offset is a multiple of 256 and fits the
+    // 64 KiB D3D constant-buffer ceiling.
+    for window in 0..8u64 {
+        assert_eq!((window * FLUID_PARAMS_WINDOW_BYTES) % 256, 0);
+    }
+    const { assert!(FLUID_PARAMS_WINDOW_BYTES <= 65_536) };
+    // A slot's flat byte offset is its window offset plus its element offset,
+    // so one contiguous buffer holds every window.
+    for slot in [1359, 1360, 9000] {
+        let (window, element) = slot_window(slot);
+        assert_eq!(
+            window as u64 * FLUID_PARAMS_WINDOW_BYTES + element as u64 * FLUID_PARAMS_STRIDE as u64,
+            slot as u64 * FLUID_PARAMS_STRIDE as u64
+        );
+    }
+
+    let many: Vec<FluidSurfaceVolume> = (0..1361)
         .map(|i| FluidSurfaceVolume {
             volume_index: i,
             bounds_min: Vec3::ZERO,
@@ -698,4 +945,5 @@ fn slot_windows_address_4096_vec4_uniform_windows() {
         })
         .collect();
     assert_eq!(FluidSurfaceSlots::new(&many).window_count(), 2);
+    assert_eq!(FluidSurfaceSlots::new(&many[..1360]).window_count(), 1);
 }

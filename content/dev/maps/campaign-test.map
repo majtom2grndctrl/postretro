@@ -5777,15 +5777,15 @@
 }
 }
 // Pond alcove spotlight: high at the back of the alcove, aimed out of it (west) and 20 degrees down.
-// 30 degree beam: _cone2 is the half-angle from the axis.
+// 40 degree beam: _cone2 is the half-angle from the axis.
 {
 "classname" "light_spot"
 "origin" "2560 1736 192"
-"light" "400"
+"light" "500"
 "_color" "255 240 220"
 "_falloff_range" "1024"
 "angles" "-20 180 0"
-"_cone" "10"
-"_cone2" "15"
+"_cone" "15"
+"_cone2" "20"
 "_shadow_type" "static_light_map"
 }

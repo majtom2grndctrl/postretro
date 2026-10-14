@@ -124,7 +124,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 exit_sound: Some("fixtures/jump".into()),
                 fog_distance: Some(3.0),
                 fog_color: Some([0.16, 0.22, 0.19]),
-                wave_period: Some(31.5),
+                wave_period: Some(7.875),
                 // Amplitude and length left to their defaults.
                 wave_amplitude: 8.0,
                 wave_length: [64.0, 80.0],
@@ -255,12 +255,12 @@ fn fluids_swim_twin_with_a_too_short_water_wave_period_drops_water_naming_the_fi
     let capture = LogCapture::start();
     let ts = run_manifest(
         "start-script.js",
-        &mutate(&bundled_ts_twin(), "wavePeriod: 31.5", "wavePeriod: 5"),
+        &mutate(&bundled_ts_twin(), "wavePeriod: 7.875", "wavePeriod: 5"),
     )
     .expect("a rejected fluid never rejects the TS manifest");
     let luau = run_manifest(
         "start-script.luau",
-        &mutate(&luau_twin(), "wavePeriod = 31.5", "wavePeriod = 5"),
+        &mutate(&luau_twin(), "wavePeriod = 7.875", "wavePeriod = 5"),
     )
     .expect("a rejected fluid never rejects the Luau manifest");
     for manifest in [&ts, &luau] {

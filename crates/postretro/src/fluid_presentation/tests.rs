@@ -1394,14 +1394,14 @@ fn frame_fog_weight_is_sent_beside_the_view_tint_every_frame_and_reset_at_unload
 }
 
 /// content/dev's water as its manifest declares it: `fogDistance` 3,
-/// `fogColor` [0.16, 0.22, 0.19], `wavePeriod` 31.5, amplitude and length at
+/// `fogColor` [0.16, 0.22, 0.19], `wavePeriod` 7.875, amplitude and length at
 /// their defaults.
 fn dev_water() -> FluidDescriptor {
     FluidDescriptor {
         view_tint: [0.1, 0.3, 0.4, 0.35],
         fog_distance: Some(3.0),
         fog_color: Some([0.16, 0.22, 0.19]),
-        wave_period: Some(31.5),
+        wave_period: Some(7.875),
         ..descriptor("water", 0.75)
     }
 }
@@ -1417,7 +1417,7 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
             surface_opacity: 0.75,
             fog_distance: Some(3.0),
             fog_color: [0.16, 0.22, 0.19],
-            wave_period: Some(31.5),
+            wave_period: Some(7.875),
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
         }
@@ -1431,7 +1431,7 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
             row.fog_albedo
         );
     }
-    assert_eq!(row.wave, [1.0 / 31.5, 8.0, 64.0, 80.0]);
+    assert_eq!(row.wave, [1.0 / 7.875, 8.0, 64.0, 80.0]);
 
     let clear = FluidDescriptor {
         fog_distance: None,

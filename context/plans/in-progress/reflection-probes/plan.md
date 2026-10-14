@@ -1,7 +1,7 @@
 # reflection-probes — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 41f21c8ae
 branch: feature/reflection-probes
 

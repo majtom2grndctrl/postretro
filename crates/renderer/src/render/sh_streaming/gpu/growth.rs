@@ -26,9 +26,7 @@ impl StreamingGpuPools {
             return Ok(());
         }
         let started = std::time::Instant::now();
-        let shape = self
-            .shape
-            .grown_for_slots(required_slots, &device.limits())?;
+        let shape = self.shape.grown_for_slots(required_slots, &self.limits)?;
         if self.retiring_dense.is_some() {
             return Err(ShResidencyDrainError::GpuRetirementPressure {
                 family: "dense atlas",
@@ -215,30 +213,41 @@ impl StreamingGpuPools {
             if required_entries <= current_entries && required_tiles <= current_tiles {
                 continue;
             }
-            let waiting_for_retirement = sparse_family_has_retiring_generation(
-                section_id,
-                self.retiring_indirect.is_some(),
-                self.retiring_direct_promotion.is_some(),
-                self.retiring_direct_animated.is_some(),
-            );
-            if waiting_for_retirement {
-                return Err(ShResidencyDrainError::GpuRetirementPressure {
-                    family: "sparse compose",
-                });
+            let source = match section_id {
+                27 => sources.indirect_delta.as_ref(),
+                DIRECT_DELTA_SECTION => sources.direct_delta.as_ref(),
+                ANIMATED_DIRECT_DELTA_SECTION => sources.animated_direct_delta.as_ref(),
+                _ => None,
             }
-            let grown_entries = current_entries
-                .checked_mul(2)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?
-                .max(required_entries);
-            let grown_tiles = current_tiles
-                .checked_mul(2)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?
-                .max(required_tiles);
-            floors.insert(section_id, (grown_entries, grown_tiles));
+            .ok_or(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed sparse growth names an absent family",
+            })?;
+            let rows = checked_cell_count(source.affinity_dims)?;
+            let grown = clamped_sparse_capacity(
+                (current_entries, current_tiles),
+                (required_entries, required_tiles),
+                rows,
+                &self.limits,
+            )?;
+            floors.insert(section_id, grown);
             sections_to_grow.push(section_id);
         }
         if sections_to_grow.is_empty() {
             return Ok(());
+        }
+        // Take every family's limit verdict before a retirement can defer
+        // this cluster. No replacement has been allocated or committed yet.
+        if sections_to_grow.iter().any(|&section_id| {
+            sparse_family_has_retiring_generation(
+                section_id,
+                self.retiring_indirect.is_some(),
+                self.retiring_direct_promotion.is_some(),
+                self.retiring_direct_animated.is_some(),
+            )
+        }) {
+            return Err(ShResidencyDrainError::GpuRetirementPressure {
+                family: "sparse compose",
+            });
         }
         let started = std::time::Instant::now();
         // Construct every replacement before encoding a copy or swapping an
@@ -248,6 +257,7 @@ impl StreamingGpuPools {
             let floor = *floors.get(&27).ok_or(ShResidencyDrainError::SlotOverflow)?;
             Some(StreamingIndirectCompose::new(
                 device,
+                &self.limits,
                 base,
                 sources,
                 self.shape,
@@ -304,6 +314,7 @@ impl StreamingGpuPools {
                     .ok_or(ShResidencyDrainError::SlotOverflow)?;
                 let replacement = direct.build_sparse_replacement(
                     device,
+                    &self.limits,
                     base,
                     sources,
                     self.shape,
@@ -563,4 +574,32 @@ impl StreamingGpuPools {
                 ..Default::default()
             })
     }
+}
+
+/// The compaction table includes three immutable words per affinity row plus
+/// one word per entry. It therefore bounds entries before the entry buffer;
+/// tile backing is packed into whole u32 words. Both obey buffer and binding
+/// limits, including a lowered test grant.
+fn clamped_sparse_capacity(
+    current: (u32, u32),
+    required: (u32, u32),
+    rows: u32,
+    limits: &wgpu::Limits,
+) -> Result<(u32, u32), ShResidencyDrainError> {
+    let words = limits
+        .max_buffer_size
+        .min(limits.max_storage_buffer_binding_size)
+        / 4;
+    let prefix = u64::from(rows) * 3;
+    let entry_limit = words.saturating_sub(prefix).min(u64::from(u32::MAX)) as u32;
+    let tile_limit = words.saturating_mul(2).min(u64::from(u32::MAX - 1)) as u32;
+    if required.0 > entry_limit || required.1 > tile_limit {
+        return Err(ShResidencyDrainError::GpuDeviceLimit {
+            reason: "streamed sparse pool needs backing beyond its tightest buffer limit",
+        });
+    }
+    Ok((
+        current.0.saturating_mul(2).max(required.0).min(entry_limit),
+        current.1.saturating_mul(2).max(required.1).min(tile_limit),
+    ))
 }

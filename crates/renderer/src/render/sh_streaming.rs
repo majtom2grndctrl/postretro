@@ -218,6 +218,11 @@ pub enum ShResidencyDrainError {
     GpuCapacity {
         reason: &'static str,
     },
+    /// Only a growth whose required backing exceeds the captured device
+    /// limit. The drain consumes this internal verdict into `refused`.
+    GpuDeviceLimit {
+        reason: &'static str,
+    },
     /// A valid replacement is waiting only for this family’s previous GPU
     /// generation to drain. Unlike adapter limits, this is safe to retry
     /// while retaining the loader-owned ready permit.
@@ -268,6 +273,9 @@ impl fmt::Display for ShResidencyDrainError {
             Self::GpuCapacity { reason } => {
                 write!(f, "SH streamed GPU pool capacity error: {reason}")
             }
+            Self::GpuDeviceLimit { reason } => {
+                write!(f, "SH streamed GPU device limit: {reason}")
+            }
             Self::GpuRetirementPressure { family } => write!(
                 f,
                 "SH streamed {family} pool growth waits for its retiring generation"
@@ -299,9 +307,9 @@ impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
 }
 
 impl ShResidencyDrainError {
-    /// Only a submitted replacement that is still fenced is retryable. An
-    /// adapter limit, malformed pool shape, or arithmetic overflow is a real
-    /// renderer failure and must return the ready permit to the controller.
+    /// Only a submitted replacement that is still fenced retains the ready
+    /// payload for this drain's retry. Device limits consume it into a refusal;
+    /// malformed shape and arithmetic guards remain fatal contract errors.
     const fn is_retryable_retirement_pressure(&self) -> bool {
         matches!(self, Self::GpuRetirementPressure { .. })
     }

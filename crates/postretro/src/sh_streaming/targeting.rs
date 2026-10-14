@@ -18,6 +18,7 @@ enum MissCause {
     HeldByDrainBudget,
     AwaitingCompose,
     Failed,
+    DeviceLimited,
 }
 
 impl ShResidencyController {
@@ -85,7 +86,7 @@ impl ShResidencyController {
 
         let mut targets: BTreeSet<u32> = classes.keys().copied().collect();
         self.close_owner_targets(&mut targets, &mut classes)?;
-        self.transition_failed_retries(&targets)?;
+        self.transition_failed_retries(&targets, monotonic_seconds, horizon_changed)?;
         self.drop_departed_ready(&targets)?;
         for (&cluster_id, directive) in &classes {
             let state = &mut self.states[cluster_id as usize];
@@ -250,6 +251,7 @@ impl ShResidencyController {
             MissCause::HeldByDrainBudget => &mut buckets.held_by_drain_budget,
             MissCause::AwaitingCompose => &mut buckets.awaiting_compose,
             MissCause::Failed => &mut buckets.failed,
+            MissCause::DeviceLimited => &mut buckets.device_limited,
         }
     }
 
@@ -258,8 +260,13 @@ impl ShResidencyController {
     /// dependent is requested and installed only after its owners.
     fn miss_cause(&self, cluster_id: u32) -> MissCause {
         let state = &self.states[cluster_id as usize];
+        // A newly visible dependent may not have been targeted in the prior
+        // frame. Its refused closure still explains why it cannot be read.
+        if self.owner_wait_cause(cluster_id) == Some(MissCause::DeviceLimited) {
+            return MissCause::DeviceLimited;
+        }
         match state.state {
-            ClusterResidencyState::Failed => MissCause::Failed,
+            ClusterResidencyState::Failed => self.failure_miss_cause(cluster_id),
             ClusterResidencyState::InstalledUncomposed => MissCause::AwaitingCompose,
             ClusterResidencyState::Queued => MissCause::ReadInFlight,
             ClusterResidencyState::Ready => self
@@ -280,21 +287,30 @@ impl ShResidencyController {
     }
 
     /// `None` when every owner in the closure is Sampleable. A failed owner
-    /// anywhere in the closure wins, since no read gets past it. Otherwise the
+    /// anywhere in the closure wins, with device refusal ahead of read failure.
+    /// Otherwise the
     /// first non-Sampleable owner names the cause, following its own owner
     /// wait down the chain the way requests and installs do.
     fn owner_wait_cause(&self, cluster_id: u32) -> Option<MissCause> {
         let mut pending = VecDeque::from([cluster_id]);
         let mut seen = BTreeSet::from([cluster_id]);
+        let mut read_failed = false;
         while let Some(current) = pending.pop_front() {
             for &owner in &self.topology.owners[current as usize] {
                 if self.states[owner as usize].state == ClusterResidencyState::Failed {
-                    return Some(MissCause::Failed);
+                    if self.failure_miss_cause(owner) == MissCause::DeviceLimited {
+                        return Some(MissCause::DeviceLimited);
+                    }
+                    read_failed = true;
                 }
                 if seen.insert(owner) {
                     pending.push_back(owner);
                 }
             }
+        }
+
+        if read_failed {
+            return Some(MissCause::Failed);
         }
 
         let mut waiting = None;
@@ -320,6 +336,17 @@ impl ShResidencyController {
             }
         }
         waiting
+    }
+
+    fn failure_miss_cause(&self, cluster_id: u32) -> MissCause {
+        if self.states[cluster_id as usize]
+            .failure
+            .is_some_and(|failure| matches!(failure.cause, FailureCause::DeviceLimit { .. }))
+        {
+            MissCause::DeviceLimited
+        } else {
+            MissCause::Failed
+        }
     }
 
     /// The cause a non-Sampleable owner's own state names; `None` once it is
@@ -484,6 +511,8 @@ impl ShResidencyController {
     fn transition_failed_retries(
         &mut self,
         targets: &BTreeSet<u32>,
+        monotonic_seconds: f64,
+        horizon_changed: bool,
     ) -> Result<(), ShResidencyControllerError> {
         let mut retries = 0u64;
         for (cluster_id, state) in self.states.iter_mut().enumerate() {
@@ -501,14 +530,26 @@ impl ShResidencyController {
                 cluster_id: cluster_id as u32,
                 chunk_hash: self.topology.chunk_hashes[cluster_id],
             };
+            let retry_allowed = match failure.cause {
+                FailureCause::Read => !failure.retry_spent,
+                FailureCause::DeviceLimit { refused_at } => {
+                    horizon_changed
+                        && !self.targets.contains(&(cluster_id as u32))
+                        && monotonic_seconds - refused_at >= HYSTERESIS_SECONDS
+                }
+            };
             if failure.identity == expected_identity
                 && failure.left_target
-                && !failure.retry_spent
+                && retry_allowed
                 && failure
                     .left_target_horizon_revision
                     .is_some_and(|left_revision| self.horizon_revision > left_revision)
             {
-                failure.retry_spent = true;
+                if failure.cause == FailureCause::Read {
+                    failure.retry_spent = true;
+                }
+                failure.left_target = false;
+                failure.left_target_horizon_revision = None;
                 state.state = ClusterResidencyState::Absent;
                 retries = retries.checked_add(1).ok_or(
                     ShResidencyControllerError::AccountingOverflow("stream retries"),
@@ -537,7 +578,7 @@ impl ShResidencyController {
                 .remove(&cluster_id)
                 .expect("id came from ready map");
             self.release_ready_charge(ready.byte_charge)?;
-            self.release_permit()?;
+            self.release_permit(cluster_id)?;
             self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
         }
         Ok(())
@@ -549,10 +590,7 @@ impl ShResidencyController {
             .iter()
             .copied()
             .filter(|&cluster_id| {
-                let state = &self.states[cluster_id as usize];
-                state.state == ClusterResidencyState::Absent
-                    && (self.permits_in_use < MAX_OPTIONAL_STREAM_PERMITS
-                        || state.class.is_some_and(TargetClass::is_mandatory))
+                self.states[cluster_id as usize].state == ClusterResidencyState::Absent
             })
             .collect();
         // Authored priority outranks reach lead.
@@ -568,7 +606,15 @@ impl ShResidencyController {
         });
         for cluster_id in candidates {
             if let Some(next) = self.first_missing_owner(cluster_id, &mut BTreeSet::new())? {
-                return Ok(Some(next));
+                let needed = self
+                    .permits_in_use
+                    .saturating_sub(self.request_permit_limit(next) - 1);
+                if needed == 0
+                    || (self.ready_dependents(next).next().is_some()
+                        && self.ready_reclaim_candidates(next).take(needed).count() == needed)
+                {
+                    return Ok(Some(next));
+                }
             }
         }
         Ok(None)
@@ -609,8 +655,15 @@ impl ShResidencyController {
             }
         }
         Ok(
-            (self.states[cluster_id as usize].state == ClusterResidencyState::Absent)
-                .then_some(cluster_id),
+            (self.states[cluster_id as usize].state == ClusterResidencyState::Absent
+                // An old dependent read can outlive this owner's eviction.
+                // Keep its permit until completion: identities have no request
+                // nonce, so releasing it early could let it consume a fresh read.
+                && !self.request_owners.iter().any(|(&dependent, owners)| {
+                    self.states[dependent as usize].state == ClusterResidencyState::Queued
+                        && owners.contains(&cluster_id)
+                }))
+            .then_some(cluster_id),
         )
     }
 }

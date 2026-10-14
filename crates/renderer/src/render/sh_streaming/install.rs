@@ -31,6 +31,8 @@ impl ShResidencyState {
         prepared: &PreparedShCluster,
     ) -> Result<(), ShResidencyDrainError> {
         let cluster_id = prepared.chunk.cluster_id;
+        let trace_started = log::log_enabled!(log::Level::Trace).then(std::time::Instant::now);
+        let mut upload_copy_regions = 0;
         if self.gpu.is_some() && gpu.is_none() {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed install requires device handles while GPU pools exist",
@@ -83,6 +85,7 @@ impl ShResidencyState {
                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
             let staged_result =
                 self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged);
+            upload_copy_regions = uploads.copy_count();
             self.submit_uploads(uploads, gpu.device, gpu.queue);
             staged_result?;
         }
@@ -106,6 +109,12 @@ impl ShResidencyState {
             },
         );
         self.pending_promotion.insert(cluster_id);
+        if let Some(started) = trace_started {
+            log::trace!(
+                "[Renderer] streamed SH install: cluster={cluster_id} upload_copy_regions={upload_copy_regions} install_cpu_micros={}",
+                started.elapsed().as_micros()
+            );
+        }
         Ok(())
     }
 
@@ -123,7 +132,7 @@ impl ShResidencyState {
         let cluster_id = prepared.chunk.cluster_id;
         let sparse_rows = self.collect_sparse_rows(cluster_id, &prepared.chunk)?;
         if has_dense_payload {
-            self.allocate_owned_nodes(journal, gpu.as_deref_mut(), cluster_id)?;
+            self.allocate_owned_nodes(journal, cluster_id)?;
         } else if self
             .nodes_by_owner
             .get(&cluster_id)
@@ -162,8 +171,14 @@ impl ShResidencyState {
             }
         }
         let sparse_plan = self.allocate_sparse_rows(journal, cluster_id, sparse_rows)?;
-        self.ensure_sparse_capacity(gpu)?;
-        self.validate_staged_on_gpu(prepared, has_dense_payload, &local_slots, &sparse_plan)?;
+        self.validate_staged_on_gpu(
+            prepared,
+            has_dense_payload,
+            &local_slots,
+            &sparse_plan,
+            self.dense_slots.capacity,
+            Some(&self.sparse_pools),
+        )?;
         // Halo closures can carry the same wire blocks as their canonical
         // owner while contributing no new address. Only actual writer
         // work waits for the following compose epoch.
@@ -173,6 +188,19 @@ impl ShResidencyState {
             self.direct_compose_required,
             !patches.is_empty(),
             sparse_plan.iter().map(|row| row.section_id),
+        )?;
+        // Fatal metadata, wire and address contracts must win over a
+        // recoverable growth verdict. All CPU reservations above roll back
+        // together; dense growth still commits before a sparse refusal.
+        self.ensure_dense_capacity(gpu.as_deref_mut())?;
+        self.ensure_sparse_capacity(gpu)?;
+        self.validate_staged_on_gpu(
+            prepared,
+            has_dense_payload,
+            &local_slots,
+            &sparse_plan,
+            self.gpu.as_ref().map_or(0, |pools| pools.shape.slots),
+            None,
         )?;
         Ok(StagedInstall {
             local_slots,
@@ -191,6 +219,8 @@ impl ShResidencyState {
         has_dense_payload: bool,
         local_slots: &[SlotRun],
         sparse_plan: &[SparseInstallPlan],
+        dense_capacity: u32,
+        planned_sparse: Option<&BTreeMap<u32, SparsePool>>,
     ) -> Result<(), ShResidencyDrainError> {
         let Some(gpu) = self.gpu.as_ref() else {
             return Ok(());
@@ -199,10 +229,11 @@ impl ShResidencyState {
         if has_dense_payload {
             let indirect = isolated_atlas(&prepared.chunk, INDIRECT_BASE_ID)
                 .ok_or(malformed(cluster_id, "chunk has no id-34 isolated atlas"))?;
-            gpu.validate_isolated_tiles(
+            gpu.validate_isolated_tiles_for_capacity(
                 gpu.base_format,
                 prepared.chunk.block_bytes(indirect),
                 local_slots,
+                dense_capacity.max(gpu.shape.slots),
             )?;
         }
         if let Some(direct) = isolated_atlas(&prepared.chunk, DIRECT_BASE_ID) {
@@ -210,13 +241,39 @@ impl ShResidencyState {
                 cluster_id,
                 "streamed direct pool lacks a source format",
             ))?;
-            gpu.validate_isolated_tiles(format, prepared.chunk.block_bytes(direct), local_slots)?;
+            gpu.validate_isolated_tiles_for_capacity(
+                format,
+                prepared.chunk.block_bytes(direct),
+                local_slots,
+                dense_capacity.max(gpu.shape.slots),
+            )?;
         }
         for row in sparse_plan {
+            let current = (
+                gpu.sparse_entry_capacity(row.section_id),
+                gpu.sparse_tile_f16_capacity(row.section_id),
+            );
+            let capacity = planned_sparse
+                .and_then(|pools| pools.get(&row.section_id))
+                .map_or(current, |pool| {
+                    (
+                        current.0.max(pool.entries.capacity),
+                        current.1.max(pool.tiles.capacity),
+                    )
+                });
             if row.section_id == INDIRECT_DELTA_ID {
-                gpu.validate_indirect_sparse_row(row.entries.start, row.tiles.start, &row.payload)?;
+                gpu.validate_indirect_sparse_row_for_capacity(
+                    row.entries.start,
+                    row.tiles.start,
+                    &row.payload,
+                    capacity,
+                )?;
             } else {
-                gpu.validate_direct_sparse_rows(row.section_id, &[row.direct_upload()?])?;
+                gpu.validate_direct_sparse_rows_for_capacity(
+                    row.section_id,
+                    &[row.direct_upload()?],
+                    capacity,
+                )?;
             }
         }
         Ok(())
@@ -356,7 +413,6 @@ impl ShResidencyState {
     fn allocate_owned_nodes(
         &mut self,
         journal: &mut InstallJournal,
-        gpu: Option<&mut InstallGpu<'_>>,
         cluster_id: u32,
     ) -> Result<(), ShResidencyDrainError> {
         // Per-cluster list; cloning it keeps the node loop free to mutate the
@@ -378,6 +434,13 @@ impl ShResidencyState {
                 .tile_count;
             self.journal_allocate_node(journal, node, tile_count)?;
         }
+        Ok(())
+    }
+
+    fn ensure_dense_capacity(
+        &mut self,
+        gpu: Option<&mut InstallGpu<'_>>,
+    ) -> Result<(), ShResidencyDrainError> {
         // Grow the fixed active atlas before any upload can address the new
         // ranges. `FirstFitRanges::capacity` is only an address high-water
         // and may exceed the GPU shape after fragmentation; never let that

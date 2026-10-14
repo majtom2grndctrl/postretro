@@ -10,6 +10,19 @@ impl StreamingIndirectCompose {
         &self.affinity_lights
     }
 
+    #[cfg(test)]
+    pub(in crate::render::sh_streaming::gpu) fn undersize_compaction_for_test(
+        &mut self,
+        device: &wgpu::Device,
+    ) {
+        self.compaction_metadata = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Broken post-growth SH compaction contract"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+    }
+
     /// Dense growth changes only the sampled/storage atlas views and the
     /// compact atlas geometry. The renderer-owned CSR backing remains live
     /// in this family; rebuilding it here would transiently duplicate every
@@ -55,13 +68,47 @@ impl StreamingIndirectCompose {
         tile_f16_start: u32,
         row: &ParsedSparseRow,
     ) -> Result<(), ShResidencyDrainError> {
+        self.validate_sparse_row_for_capacity(
+            entry_start,
+            tile_f16_start,
+            row,
+            (self.entry_capacity, self.tile_f16_capacity),
+        )
+    }
+
+    /// Validate planned addresses against the capacity growth must provide.
+    /// Existing buffers must still back their declared current capacity.
+    pub(in crate::render::sh_streaming::gpu) fn validate_sparse_row_for_capacity(
+        &self,
+        entry_start: u32,
+        tile_f16_start: u32,
+        row: &ParsedSparseRow,
+        capacity: (u32, u32),
+    ) -> Result<(), ShResidencyDrainError> {
+        if u64::from(self.entry_capacity) * 4 > self.affinity_lights.size()
+            || u64::from(self.tile_f16_capacity.div_ceil(2)) * 4 > self.delta_subblocks.size()
+        {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed indirect sparse pool needs growth",
+            });
+        }
+        let cell_count = checked_cell_count(self.grid.affinity_dims)?;
+        let current_compaction_words = cell_count
+            .checked_mul(3)
+            .and_then(|base| base.checked_add(self.entry_capacity))
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if u64::from(current_compaction_words) * 4 > self.compaction_metadata.size() {
+            return Err(ShResidencyDrainError::GpuCapacity {
+                reason: "streamed indirect compaction metadata needs growth",
+            });
+        }
         let entry_end = entry_start
             .checked_add(row.entry_count)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         let tile_end = tile_f16_start
             .checked_add(row.tile_f16_count)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        if entry_end > self.entry_capacity || tile_end > self.tile_f16_capacity {
+        if entry_end > capacity.0 || tile_end > capacity.1 {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed indirect sparse pool needs growth",
             });
@@ -80,7 +127,6 @@ impl StreamingIndirectCompose {
                 reason: "streamed sparse tile allocation is not word aligned",
             });
         }
-        let cell_count = checked_cell_count(self.grid.affinity_dims)?;
         let entry_offset_base = cell_count
             .checked_mul(3)
             .and_then(|base| base.checked_add(entry_start))
@@ -88,10 +134,11 @@ impl StreamingIndirectCompose {
         let compaction_end = entry_offset_base
             .checked_add(row.entry_count)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        if u64::from(compaction_end)
-            .checked_mul(4)
-            .is_none_or(|end| end > self.compaction_metadata.size())
-        {
+        let compaction_capacity = cell_count
+            .checked_mul(3)
+            .and_then(|base| base.checked_add(capacity.0))
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if compaction_end > compaction_capacity {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed indirect compaction metadata needs growth",
             });

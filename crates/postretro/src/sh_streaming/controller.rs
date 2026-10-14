@@ -94,7 +94,7 @@ pub(crate) enum ShResidencyControllerError {
 enum TargetClass {
     Visible,
     Pinned,
-    /// In the level's id-51 reach within lead L: mandatory, never refused.
+    /// In the level's id-51 reach within lead L: mandatory, protected from eviction.
     Lead,
     SeamWarm,
     /// In the reach past L, up to the baked maximum: optional.
@@ -107,7 +107,7 @@ impl TargetClass {
         matches!(self, Self::SeamWarm | Self::Band)
     }
 
-    /// The mandatory tier: never refused, read before optional work.
+    /// The mandatory tier: protected from eviction, read before optional work.
     const fn is_mandatory(self) -> bool {
         matches!(self, Self::Visible | Self::Pinned | Self::Lead)
     }
@@ -226,10 +226,18 @@ struct FailureIdentity {
     chunk_hash: [u8; 32],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FailureCause {
+    Read,
+    DeviceLimit { refused_at: f64 },
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FailureState {
     identity: FailureIdentity,
     retry_spent: bool,
+    read_failed: bool,
+    cause: FailureCause,
     left_target: bool,
     left_target_horizon_revision: Option<u64>,
 }
@@ -293,6 +301,9 @@ pub(crate) struct ShResidencyController {
     in_drain: BTreeMap<u32, u64>,
     in_drain_evictions: BTreeSet<u32>,
     permits_in_use: usize,
+    /// One transitive closure per held permit, at most MAX_STREAM_PERMITS.
+    /// Cached at request time so waiting on an old read never rewalks topology.
+    request_owners: BTreeMap<u32, BTreeSet<u32>>,
     accounting: ShResidencyAccounting,
     non_evictable_overshoot_bytes: u64,
     overshoot_reported: bool,
@@ -367,6 +378,7 @@ impl ShResidencyController {
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
             permits_in_use: 0,
+            request_owners: BTreeMap::new(),
             accounting: ShResidencyAccounting::new(gpu_budget)?,
             non_evictable_overshoot_bytes: 0,
             overshoot_reported: false,
@@ -526,26 +538,71 @@ impl ShResidencyController {
                 })
     }
 
+    fn request_permit_limit(&self, cluster_id: u32) -> usize {
+        if self.states[cluster_id as usize]
+            .class
+            .is_some_and(TargetClass::is_mandatory)
+        {
+            MAX_STREAM_PERMITS
+        } else {
+            MAX_OPTIONAL_STREAM_PERMITS
+        }
+    }
+
+    fn ready_dependents(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
+        self.ready.keys().copied().filter(move |cluster_id| {
+            self.request_owners
+                .get(cluster_id)
+                .is_some_and(|owners| owners.contains(&owner))
+        })
+    }
+
+    fn ready_reclaim_candidates(&self, owner: u32) -> impl Iterator<Item = u32> + '_ {
+        // Several stalled cohorts may jointly exceed the optional reservation.
+        // Reclaim this owner's dependents first, then other payloads which need
+        // an absent owner. Installable work and pending reads stay intact.
+        self.ready_dependents(owner)
+            .chain(self.ready.keys().copied().filter(move |cluster_id| {
+                self.request_owners.get(cluster_id).is_some_and(|owners| {
+                    !owners.contains(&owner)
+                        && owners.iter().any(|&missing| {
+                            self.states[missing as usize].state == ClusterResidencyState::Absent
+                        })
+                })
+            }))
+    }
+
     fn mark_failed(&mut self, cluster_id: u32) -> Result<bool, ShResidencyControllerError> {
+        self.mark_failure(cluster_id, FailureCause::Read)
+    }
+
+    fn mark_failure(
+        &mut self,
+        cluster_id: u32,
+        cause: FailureCause,
+    ) -> Result<bool, ShResidencyControllerError> {
         let identity = FailureIdentity {
             generation: self.generation,
             content_tag: self.content_tag,
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
         };
-        self.release_permit()?;
+        self.release_permit(cluster_id)?;
         let state = &mut self.states[cluster_id as usize];
         let same_identity = state
             .failure
             .is_some_and(|failure| failure.identity == identity);
         let retry_spent = same_identity && state.failure.is_some_and(|failure| failure.retry_spent);
-        // The retained failure survives its one permitted leave/re-enter
-        // retry, so the retry cannot emit the same identity's warning again.
-        let should_warn = !same_identity;
+        // Device refusals retain the independent read retry and warning history.
+        let prior_read_failed =
+            same_identity && state.failure.is_some_and(|failure| failure.read_failed);
+        let should_warn = cause == FailureCause::Read && !prior_read_failed;
         state.state = ClusterResidencyState::Failed;
         state.failure = Some(FailureState {
             identity,
             retry_spent,
+            read_failed: prior_read_failed || cause == FailureCause::Read,
+            cause,
             left_target: false,
             left_target_horizon_revision: None,
         });
@@ -556,10 +613,11 @@ impl ShResidencyController {
         self.accounting.cpu.ready.remove(bytes, "ready bytes")
     }
 
-    fn release_permit(&mut self) -> Result<(), ShResidencyControllerError> {
+    fn release_permit(&mut self, cluster_id: u32) -> Result<(), ShResidencyControllerError> {
         self.permits_in_use = self.permits_in_use.checked_sub(1).ok_or(
             ShResidencyControllerError::AccountingUnderflow("stream permits"),
         )?;
+        self.request_owners.remove(&cluster_id);
         Ok(())
     }
 
@@ -607,11 +665,12 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
         .accepted
         .iter()
         .chain(&outcome.dropped)
+        .chain(&outcome.refused)
         .chain(&outcome.evicted)
     {
         if !ids.insert(cluster_id) {
             return Err(ShResidencyControllerError::InvalidDrainOutcome(
-                "accepted, dropped, and evicted ids must not overlap or repeat".into(),
+                "accepted, dropped, refused, and evicted ids must not overlap or repeat".into(),
             ));
         }
     }
@@ -634,3 +693,7 @@ mod tests;
 #[cfg(test)]
 #[path = "controller_trace_tests.rs"]
 mod trace_tests;
+
+#[cfg(test)]
+#[path = "controller_refusal_tests.rs"]
+mod refusal_tests;

@@ -640,7 +640,7 @@ fn only_retiring_generation_pressure_is_deferred() {
     );
     assert!(
         !ShResidencyDrainError::GpuCapacity {
-            reason: "adapter storage binding limit"
+            reason: "post-growth sparse pool remains undersized"
         }
         .is_retryable_retirement_pressure()
     );

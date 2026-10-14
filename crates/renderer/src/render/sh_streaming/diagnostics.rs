@@ -68,7 +68,7 @@ fn duration_micros(elapsed: Duration) -> u64 {
 /// would pull. Every miss lands in exactly one bucket. A cluster that waits
 /// on its owner closure, unrequested or read but not installable, takes the
 /// bucket of the wait it is behind, followed down the owner chain, and any
-/// failed owner makes it `failed`.
+/// device-limited owner takes precedence over a read-failed owner.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShMissBuckets {
     /// Not targeted before it became visible: outside the reach.
@@ -83,8 +83,10 @@ pub struct ShMissBuckets {
     pub held_by_drain_budget: u64,
     /// Installed, waiting for its compose to be submitted.
     pub awaiting_compose: u64,
-    /// Its read or install failed, or an owner's did.
+    /// Its read failed, or an owner's did.
     pub failed: u64,
+    /// Its install was refused at a device limit, or an owner's was.
+    pub device_limited: u64,
 }
 
 /// One frame's view of SH streaming for the dev-tools Streaming tab and the

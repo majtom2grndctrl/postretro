@@ -57,6 +57,7 @@ impl StreamingIndirectCompose {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,
@@ -145,7 +146,7 @@ impl StreamingIndirectCompose {
                 "streamed indirect descriptor index table exceeds adapter storage limits",
             ),
         ] {
-            validate_storage_buffer_size(device, byte_len, reason)?;
+            validate_storage_buffer_size(limits, byte_len, reason)?;
         }
 
         let grid = ComposeGridParams {
@@ -161,7 +162,6 @@ impl StreamingIndirectCompose {
             compact_atlas_tiles_per_row: shape.tiles_per_row,
             compact_atlas_tiles_per_layer: shape.tiles_per_layer,
         };
-        let limits = device.limits();
         let rows = checked_cell_count(affinity_dims)?;
         let record_size = u64::try_from(DYNAMIC_COMPOSE_GRID_DIMS_SIZE)
             .map_err(|_| ShResidencyDrainError::SlotOverflow)?;

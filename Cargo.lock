@@ -4660,6 +4660,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-sim",
+ "proptest",
 ]
 
 [[package]]
@@ -4693,6 +4694,7 @@ name = "postretro-renderer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytemuck",
  "egui",
  "egui-wgpu",
@@ -4721,6 +4723,7 @@ dependencies = [
  "proptest",
  "splines",
  "syn 3.0.6",
+ "tempfile",
  "wgpu",
  "winit",
 ]

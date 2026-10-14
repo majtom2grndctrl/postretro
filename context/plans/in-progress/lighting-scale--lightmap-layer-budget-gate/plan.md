@@ -94,3 +94,7 @@ Resolution: the owner explicitly requested an Astra assessment, internal discuss
 Consensus adds an adversarial witness: seven full-height blocks of width 681 at edge 2048 (or width 21 at edge 64) need four layers when rounded to alignment 8, versus three without rounding. The decoded parity test must run the production compiler adapter on its finalized layout, construct id 22 through the production section builder from that layout, decode it, and call the unchanged render-cpu placement entry. Calling a shared function twice on decoded extents alone would not prove the seam.
 
 Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `LightmapBlockIndex::from_prefix`, and `place_all_resident`: both halves are achievable. Only AC14 wording changed. All Decisions and other Acceptance rows remain unchanged. Status restored to active; task 1 resumed from pre-change baseline capture, which has not yet completed.
+
+## Execution checkpoints
+- Pre-change baseline captured: focused `layer_budget_ -- --ignored --nocapture` ran two tests, both passed. Frozen section/owner/report goldens cover all GATE_FIXTURES, the four-layer cut and six synthetic pin variants.
+- Extracted the unchanged SH-delta projection/gate from oversized pipeline.rs before adding lightmap integration; behavior unchanged, focused retest queued after concurrent edits.

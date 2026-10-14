@@ -492,14 +492,32 @@
 ( 2275.872 992 0 ) ( 2140.128 992 256 ) ( 2140.128 992 0 ) concrete_stone_030 0 0 0 1 1
 ( 2275.872 800 0 ) ( 2275.872 992 256 ) ( 2275.872 992 0 ) concrete_stone_030 0 0 0 1 1
 }
-// brush 54
+// brush 54 (floor, south of the pond)
 {
-( 1040 2864 -16 ) ( 1040 1296 0 ) ( 1040 1296 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
-( 1040 1296 -16 ) ( 2608 1296 0 ) ( 2608 1296 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
-( 1040 1296 -16 ) ( 2608 2864 -16 ) ( 1040 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
-( 1040 2864 0 ) ( 2608 1296 0 ) ( 1040 1296 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
-( 2608 2864 -16 ) ( 1040 2864 0 ) ( 1040 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
-( 2608 1296 -16 ) ( 2608 2864 0 ) ( 2608 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 -16 ) ( 1040 1424 -16 ) ( 1040 1296 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 2608 1296 -16 ) ( 2608 1296 0 ) ( 2608 1424 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 -16 ) ( 1040 1296 0 ) ( 2608 1296 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1424 -16 ) ( 2608 1424 -16 ) ( 1040 1424 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 -16 ) ( 2608 1296 -16 ) ( 1040 1424 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1296 0 ) ( 1040 1424 0 ) ( 2608 1296 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+}
+// brush 54b (floor, north of the pond)
+{
+( 1040 2048 -16 ) ( 1040 2864 -16 ) ( 1040 2048 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 2608 2048 -16 ) ( 2608 2048 0 ) ( 2608 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2048 -16 ) ( 1040 2048 0 ) ( 2608 2048 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2864 -16 ) ( 2608 2864 -16 ) ( 1040 2864 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2048 -16 ) ( 2608 2048 -16 ) ( 1040 2864 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2048 0 ) ( 1040 2864 0 ) ( 2608 2048 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+}
+// brush 54c (floor, west of the pond)
+{
+( 1040 1424 -16 ) ( 1040 2048 -16 ) ( 1040 1424 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1712 1424 -16 ) ( 1712 1424 0 ) ( 1712 2048 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1424 -16 ) ( 1040 1424 0 ) ( 1712 1424 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 2048 -16 ) ( 1712 2048 -16 ) ( 1040 2048 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1424 -16 ) ( 1712 1424 -16 ) ( 1040 2048 -16 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1040 1424 0 ) ( 1040 2048 0 ) ( 1712 1424 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
 }
 // brush 55
 {
@@ -582,14 +600,32 @@
 ( 2592 2864 0 ) ( 1056 2864 640 ) ( 1056 2864 0 ) concrete_stone_033 0 0 0 1 1
 ( 2592 2848 0 ) ( 2592 2864 640 ) ( 2592 2864 0 ) concrete_stone_033 0 0 0 1 1
 }
-// brush 64
+// brush 64 (shelf cliff, south of the alcove)
 {
-( 2336 2848 0 ) ( 2336 1312 512 ) ( 2336 1312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 2336 1312 0 ) ( 2592 1312 512 ) ( 2592 1312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 2336 1312 0 ) ( 2592 2848 0 ) ( 2336 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 2336 2848 512 ) ( 2592 1312 512 ) ( 2336 1312 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 2592 2848 0 ) ( 2336 2848 512 ) ( 2336 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 2592 1312 0 ) ( 2592 2848 512 ) ( 2592 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 0 ) ( 2336 1440 0 ) ( 2336 1312 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1312 0 ) ( 2592 1312 512 ) ( 2592 1440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 0 ) ( 2336 1312 512 ) ( 2592 1312 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1440 0 ) ( 2592 1440 0 ) ( 2336 1440 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 0 ) ( 2592 1312 0 ) ( 2336 1440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1312 512 ) ( 2336 1440 512 ) ( 2592 1312 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 64b (shelf cliff, north of the alcove)
+{
+( 2336 2032 0 ) ( 2336 2848 0 ) ( 2336 2032 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 2032 0 ) ( 2592 2032 512 ) ( 2592 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2032 0 ) ( 2336 2032 512 ) ( 2592 2032 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2848 0 ) ( 2592 2848 0 ) ( 2336 2848 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2032 0 ) ( 2592 2032 0 ) ( 2336 2848 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2032 512 ) ( 2336 2848 512 ) ( 2592 2032 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 64c (shelf cliff over the pond alcove)
+{
+( 2336 1440 224 ) ( 2336 2032 224 ) ( 2336 1440 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1440 224 ) ( 2592 1440 512 ) ( 2592 2032 224 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1440 224 ) ( 2336 1440 512 ) ( 2592 1440 224 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 2032 224 ) ( 2592 2032 224 ) ( 2336 2032 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1440 224 ) ( 2592 1440 224 ) ( 2336 2032 224 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2336 1440 512 ) ( 2336 2032 512 ) ( 2592 1440 512 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
 // brush 65
 {
@@ -1202,6 +1238,60 @@
 ( 1904 1296 128 ) ( 1920 1040 128 ) ( 1904 1040 128 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004" -32 0 0 1 1
 ( 1920 1296 0 ) ( 1904 1296 112 ) ( 1904 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004" -32 0 0 1 1
 ( 1920 1040 0 ) ( 1920 1296 112 ) ( 1920 1296 0 ) "Level Eleven Games Sci-Fi Texture Pack v1/Metal-Panel_Base-004" 0 0 0 1 1
+}
+// Pond pit floor, 30 m below the water surface
+{
+( 1712 1424 -1216 ) ( 1712 2048 -1216 ) ( 1712 1424 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2608 1424 -1216 ) ( 2608 1424 -1200 ) ( 2608 2048 -1216 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 1424 -1216 ) ( 1712 1424 -1200 ) ( 2608 1424 -1216 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 2048 -1216 ) ( 2608 2048 -1216 ) ( 1712 2048 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 1424 -1216 ) ( 2608 1424 -1216 ) ( 1712 2048 -1216 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1712 1424 -1200 ) ( 1712 2048 -1200 ) ( 2608 1424 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// Pond bank, west (beach edge)
+{
+( 1712 1424 -1200 ) ( 1712 2048 -1200 ) ( 1712 1424 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1728 1424 -1200 ) ( 1728 1424 0 ) ( 1728 2048 -1200 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1712 1424 -1200 ) ( 1712 1424 0 ) ( 1728 1424 -1200 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1712 2048 -1200 ) ( 1728 2048 -1200 ) ( 1712 2048 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1712 1424 -1200 ) ( 1728 1424 -1200 ) ( 1712 2048 -1200 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1712 1424 0 ) ( 1712 2048 0 ) ( 1728 1424 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+}
+// Pond bank, south (curb)
+{
+( 1728 1424 -1200 ) ( 1728 1440 -1200 ) ( 1728 1424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2608 1424 -1200 ) ( 2608 1424 0 ) ( 2608 1440 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 1424 -1200 ) ( 1728 1424 0 ) ( 2608 1424 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 1440 -1200 ) ( 2608 1440 -1200 ) ( 1728 1440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 1424 -1200 ) ( 2608 1424 -1200 ) ( 1728 1440 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 1424 0 ) ( 1728 1440 0 ) ( 2608 1424 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// Pond bank, north (curb)
+{
+( 1728 2032 -1200 ) ( 1728 2048 -1200 ) ( 1728 2032 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2608 2032 -1200 ) ( 2608 2032 0 ) ( 2608 2048 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 2032 -1200 ) ( 1728 2032 0 ) ( 2608 2032 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 2048 -1200 ) ( 2608 2048 -1200 ) ( 1728 2048 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 2032 -1200 ) ( 2608 2032 -1200 ) ( 1728 2048 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 2032 0 ) ( 1728 2048 0 ) ( 2608 2032 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// Pond pit wall, east (closes under the room wall)
+{
+( 2592 1440 -1200 ) ( 2592 2032 -1200 ) ( 2592 1440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2608 1440 -1200 ) ( 2608 1440 0 ) ( 2608 2032 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1440 -1200 ) ( 2592 1440 0 ) ( 2608 1440 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 2032 -1200 ) ( 2608 2032 -1200 ) ( 2592 2032 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1440 -1200 ) ( 2608 1440 -1200 ) ( 2592 2032 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2592 1440 0 ) ( 2592 2032 0 ) ( 2608 1440 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// Pond beach: walkable 1-in-2 ramp from the floor to the drop-off
+{
+( 1728 1440 0 ) ( 1728 2032 0 ) ( 2112 1440 -192 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1728 1440 -1200 ) ( 1728 2032 -1200 ) ( 1728 1440 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 2112 1440 -1200 ) ( 2112 1440 0 ) ( 2112 2032 -1200 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1728 1440 -1200 ) ( 1728 1440 0 ) ( 2112 1440 -1200 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1728 2032 -1200 ) ( 2112 2032 -1200 ) ( 1728 2032 0 ) 50-free-textures/default_dirt_014 0 0 0 1 1
+( 1728 1440 -1200 ) ( 2112 1440 -1200 ) ( 1728 2032 -1200 ) 50-free-textures/default_dirt_014 0 0 0 1 1
 }
 }
 // entity 1
@@ -5665,4 +5755,24 @@
 "origin" "1816 1272 88"
 "_falloff_range" "800"
 "light" "250"
+}
+// Spawn-room pond: one fluid_volume, two brushes (over the beach, and the 30 m deep drop).
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1728 1440 0 ) ( 2112 1440 -192 ) ( 1728 2032 0 ) fluids/water_64 0 0 0 1 1
+( 1728 1440 -16 ) ( 1728 2032 -16 ) ( 2112 1440 -16 ) fluids/water_64 0 0 0 1 1
+( 2112 1440 -1200 ) ( 2112 1440 0 ) ( 2112 2032 -1200 ) fluids/water_64 0 0 0 1 1
+( 1728 1440 -1200 ) ( 1728 1440 0 ) ( 2112 1440 -1200 ) fluids/water_64 0 0 0 1 1
+( 1728 2032 -1200 ) ( 2112 2032 -1200 ) ( 1728 2032 0 ) fluids/water_64 0 0 0 1 1
+}
+{
+( 2112 1440 -1200 ) ( 2112 2032 -1200 ) ( 2112 1440 -16 ) fluids/water_64 0 0 0 1 1
+( 2592 1440 -1200 ) ( 2592 1440 -16 ) ( 2592 2032 -1200 ) fluids/water_64 0 0 0 1 1
+( 2112 1440 -1200 ) ( 2112 1440 -16 ) ( 2592 1440 -1200 ) fluids/water_64 0 0 0 1 1
+( 2112 2032 -1200 ) ( 2592 2032 -1200 ) ( 2112 2032 -16 ) fluids/water_64 0 0 0 1 1
+( 2112 1440 -1200 ) ( 2592 1440 -1200 ) ( 2112 2032 -1200 ) fluids/water_64 0 0 0 1 1
+( 2112 1440 -16 ) ( 2112 2032 -16 ) ( 2592 1440 -16 ) fluids/water_64 0 0 0 1 1
+}
 }

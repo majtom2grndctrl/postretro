@@ -56,8 +56,8 @@ pub(crate) fn movement_state_to_wire(
 /// descriptor-derived `PlayerMovementComponent`. This is the inverse of
 /// [`movement_state_to_wire`], but it is a *merge*, not a constructor: it writes
 /// only the mutable tick fields and the live capsule dimensions onto `component`,
-/// leaving everything the descriptor owns untouched — tuning (`ground`/`air`/
-/// `fall`/`dash`/`crouch`), `view_feel`, `standing_*`, `stuck_stop_*`,
+/// leaving everything the descriptor owns untouched — every descriptor tuning
+/// block, `view_feel`, `standing_*`, `stuck_stop_*`,
 /// `cos_walkable`, the forgiveness *windows* (`coyote_ms`/`jump_buffer_ms`), and
 /// the derived `dash_programs`. A reconcile/apply path materializes the component
 /// from the local descriptor first, then merges authoritative tick state in here.
@@ -66,10 +66,20 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     wire: &WirePlayerMovementState,
     ground_mover_known: impl Fn(u32) -> bool,
 ) -> bool {
-    let Some(ground) = wire_ground_ref_to_foundation_checked(wire.ground, ground_mover_known)
+    let Some(ground) = wire_ground_ref_to_foundation_checked(wire.ground, &ground_mover_known)
     else {
         return false;
     };
+    // A vault onto a mover this client cannot resolve could never find its
+    // target; refuse it like an unknown ground mover.
+    if let WireMovementState::Vault {
+        mover: Some(mover_id),
+        ..
+    } = wire.movement_state
+        && !ground_mover_known(mover_id)
+    {
+        return false;
+    }
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
     component.knockback_velocity = Vec3::from_array(wire.knockback_velocity);
     component.push_velocity = Vec3::from_array(wire.push_velocity);
@@ -102,7 +112,9 @@ pub(crate) fn merge_wire_into_movement_state_checked(
 /// the host's pawn still holds: swim state, the re-entry latch and the 3D drift
 /// layer included. A swimmer whose new tuning has no `swim` block then leaves
 /// swim as an exit does
-/// (`PlayerMovementComponent::leave_swim_without_swim_block`).
+/// (`PlayerMovementComponent::leave_swim_without_swim_block`). The local vault
+/// bar carries too: it is not on the wire, and a rebuild while dead would
+/// otherwise let the next reconcile replay re-enter a vault.
 pub(crate) fn carry_live_tick_state(
     rebuilt: &mut PlayerMovementComponent,
     live: &PlayerMovementComponent,
@@ -111,7 +123,9 @@ pub(crate) fn carry_live_tick_state(
     // The live ground reference names a mover this client already resolved.
     merge_wire_into_movement_state_checked(rebuilt, &wire, |_| true);
     rebuilt.last_floor_normal = live.last_floor_normal;
+    rebuilt.vault_barred = live.vault_barred;
     rebuilt.leave_swim_without_swim_block();
+    rebuilt.leave_vault_without_vault_block();
 }
 
 /// Map the engine `MovementState` to its wire mirror. Exhaustive (no `_` arm) so
@@ -139,6 +153,19 @@ fn movement_state_enum_to_wire(state: MovementState) -> WireMovementState {
             floor_normal: None,
         },
         MovementState::Swim { fluid } => WireMovementState::Swim { fluid },
+        MovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover,
+            entry_speed,
+        } => WireMovementState::Vault {
+            elapsed_ms,
+            target: target.to_array(),
+            start_offset: start_offset.to_array(),
+            mover,
+            entry_speed,
+        },
     }
 }
 
@@ -163,6 +190,19 @@ fn wire_to_movement_state_enum(state: WireMovementState) -> MovementState {
             eye_current,
         },
         WireMovementState::Swim { fluid } => MovementState::Swim { fluid },
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover,
+            entry_speed,
+        } => MovementState::Vault {
+            elapsed_ms,
+            target: Vec3::from_array(target),
+            start_offset: Vec3::from_array(start_offset),
+            mover,
+            entry_speed,
+        },
     }
 }
 
@@ -176,7 +216,7 @@ fn ground_ref_to_wire(ground: GroundRef) -> WireGroundRef {
 
 fn wire_ground_ref_to_foundation_checked(
     ground: WireGroundRef,
-    ground_mover_known: impl Fn(u32) -> bool,
+    ground_mover_known: &impl Fn(u32) -> bool,
 ) -> Option<GroundRef> {
     match ground {
         WireGroundRef::Airborne => Some(GroundRef::Airborne),
@@ -263,12 +303,14 @@ mod tests {
                 min_duration_ms: 100.0,
             }),
             swim: None,
+            vault: None,
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
                 sway: None,
                 impulse: None,
                 slide: None,
+                vault: None,
             }),
         }
     }
@@ -305,7 +347,7 @@ mod tests {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: Some(6.5),
         });
         desc
     }
@@ -509,9 +551,76 @@ mod tests {
         assert!((component.velocity - before.velocity).length() < EPSILON);
     }
 
-    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim) through the
-    /// wire enum. Constructed from the source enum via an exhaustive list so a new
-    /// variant must be added here to compile-cover it.
+    // A tuning rebuild that removes the vault block cannot finish a carried
+    // vault; one that keeps it carries the vault on.
+    #[test]
+    fn a_tuning_rebuild_without_a_vault_block_drops_a_carried_vault() {
+        let mut with_vault = rich_descriptor();
+        with_vault.vault = Some(postretro_foundation::VaultParams {
+            max_height: 1.6,
+            swim_max_height: 0.9,
+            duration_ms: 320.0,
+            from: postretro_foundation::VaultEntry::default(),
+            allow_fire: false,
+        });
+        let mut live = PlayerMovementComponent::from_descriptor(&with_vault);
+        live.movement_state = MovementState::Vault {
+            elapsed_ms: 32.0,
+            target: Vec3::new(0.5, 2.0, 0.0),
+            start_offset: Vec3::new(-0.9, -1.4, 0.0),
+            mover: None,
+            entry_speed: 3.0,
+        };
+        let mut kept = PlayerMovementComponent::from_descriptor(&with_vault);
+        carry_live_tick_state(&mut kept, &live);
+        assert_eq!(kept.movement_state, live.movement_state);
+        let mut dropped = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        carry_live_tick_state(&mut dropped, &live);
+        assert_eq!(dropped.movement_state, MovementState::Normal);
+    }
+
+    // Regression: a tuning rebuild reset the local vault bar, so a dead pawn's
+    // next reconcile replay could re-enter a vault.
+    #[test]
+    fn a_tuning_rebuild_keeps_the_vault_bar() {
+        let mut live = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        live.vault_barred = true;
+        let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        carry_live_tick_state(&mut rebuilt, &live);
+        assert!(rebuilt.vault_barred);
+    }
+
+    // A vault onto a mover the client never loaded could not resolve its target;
+    // the merge refuses it as it refuses an unknown ground mover.
+    #[test]
+    fn merge_refuses_a_vault_onto_an_unknown_mover() {
+        let mut component = PlayerMovementComponent::from_descriptor(&rich_descriptor());
+        let mut vaulting = component.clone();
+        vaulting.movement_state = MovementState::Vault {
+            elapsed_ms: 32.0,
+            target: Vec3::new(0.5, 2.0, 0.0),
+            start_offset: Vec3::new(-0.9, -1.4, 0.0),
+            mover: Some(77),
+            entry_speed: 3.0,
+        };
+        let wire = movement_state_to_wire(&vaulting, 0.0);
+        assert!(!merge_wire_into_movement_state_checked(
+            &mut component,
+            &wire,
+            |id| id != 77
+        ));
+        assert_eq!(component.movement_state, MovementState::Normal);
+        assert!(merge_wire_into_movement_state_checked(
+            &mut component,
+            &wire,
+            |id| id == 77
+        ));
+        assert_eq!(component.movement_state, vaulting.movement_state);
+    }
+
+    /// Per-variant `MovementState` round-trip (Normal/Dash/Crouching/Sliding/Swim/Vault)
+    /// through the wire enum. Constructed from the source enum via an exhaustive list so
+    /// a new variant must be added here to compile-cover it.
     #[test]
     fn movement_state_variants_round_trip_through_wire() {
         let variants = [
@@ -527,6 +636,20 @@ mod tests {
                 eye_current: 0.75,
             },
             MovementState::Swim { fluid: 2 },
+            MovementState::Vault {
+                elapsed_ms: 48.0,
+                target: Vec3::new(5.44, 1.22, -0.5),
+                start_offset: Vec3::new(-0.84, -0.72, 0.1),
+                mover: None,
+                entry_speed: 7.0,
+            },
+            MovementState::Vault {
+                elapsed_ms: 0.0,
+                target: Vec3::new(0.5, 2.0, 0.0),
+                start_offset: Vec3::new(-0.9, -1.4, 0.0),
+                mover: Some(77),
+                entry_speed: 0.0,
+            },
         ];
         for state in variants {
             let wire = movement_state_enum_to_wire(state);

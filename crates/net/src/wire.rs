@@ -348,7 +348,8 @@ impl WeaponCuesMessage {
 /// Bumped to 17 for frozen projectile body size, model scale, and shot provenance.
 /// Bumped to 19 for the protected push-drift velocity in player movement state;
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
-pub const SNAPSHOT_VERSION: u16 = 19;
+/// Bumped to 20 for `WireMovementState::Vault`.
+pub const SNAPSHOT_VERSION: u16 = 20;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -603,7 +604,9 @@ pub enum ValidationError {
     NonFiniteMovementState,
     /// A movement-state variant carried finite values that violate its state
     /// contract. Sliding boost must be horizontal, and its optional floor normal
-    /// must be safely bounded and near-unit.
+    /// must be safely bounded and near-unit. A Vault payload must have a
+    /// non-negative timer and entry speed, a bounded target and start offset,
+    /// and a start offset with a horizontal component.
     InvalidMovementState,
     /// A `Transform` payload carried a non-finite float (NaN/inf) in its position,
     /// rotation, or scale. Rejected before typed apply so no non-finite pose reaches
@@ -698,7 +701,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::InvalidMovementState => {
                 write!(
                     f,
-                    "invalid PlayerMovementState contract: Sliding boost must be horizontal and floor normal must be absent or a bounded near-unit vector"
+                    "invalid PlayerMovementState contract: a Sliding boost or floor normal, or a Vault payload, is out of contract"
                 )
             }
             ValidationError::NonFiniteTransform => {
@@ -3087,6 +3090,78 @@ mod tests {
         );
     }
 
+    fn vault_payload(state: WireMovementState) -> RawComponentPayload {
+        RawComponentPayload {
+            component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
+            transform: None,
+            player_movement: Some(WirePlayerMovementState {
+                movement_state: state,
+                ..sample_movement()
+            }),
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        }
+    }
+
+    fn vault_state(
+        elapsed_ms: f32,
+        target: [f32; 3],
+        start_offset: [f32; 3],
+        entry_speed: f32,
+    ) -> WireMovementState {
+        WireMovementState::Vault {
+            elapsed_ms,
+            target,
+            start_offset,
+            mover: Some(77),
+            entry_speed,
+        }
+    }
+
+    // A vault's path and exit read every payload float, and its exit direction
+    // normalizes the horizontal start offset: each must be sound before replay.
+    #[test]
+    fn vault_payload_rejects_non_finite_and_out_of_contract_values_before_typed_apply() {
+        let target = [5.4, 1.2, 0.0];
+        let offset = [-0.8, -0.7, 0.0];
+        assert!(
+            vault_payload(vault_state(16.0, target, offset, 7.0))
+                .validate()
+                .is_ok(),
+            "a probe-shaped vault passes"
+        );
+        for state in [
+            vault_state(f32::NAN, target, offset, 7.0),
+            vault_state(16.0, [5.4, f32::INFINITY, 0.0], offset, 7.0),
+            vault_state(16.0, target, [-0.8, f32::NAN, 0.0], 7.0),
+            vault_state(16.0, target, offset, f32::INFINITY),
+        ] {
+            assert_eq!(
+                vault_payload(state).validate(),
+                Err(ValidationError::NonFiniteMovementState),
+                "{state:?}"
+            );
+        }
+        for state in [
+            vault_state(-1.0, target, offset, 7.0),
+            vault_state(16.0, target, offset, -0.5),
+            vault_state(16.0, target, [0.0005, -0.7, 0.0], 7.0),
+            // Finite but huge: would overflow replay's path arithmetic.
+            vault_state(16.0, [2.0e38, 1.2, 0.0], offset, 7.0),
+            vault_state(16.0, target, [2.0e38, -0.7, 0.0], 7.0),
+            vault_state(16.0, target, [60.0, 60.0, 60.0], 7.0),
+        ] {
+            assert_eq!(
+                vault_payload(state).validate(),
+                Err(ValidationError::InvalidMovementState),
+                "{state:?}"
+            );
+        }
+    }
+
     // Regression: a finite vertical slide boost previously passed raw validation
     // and could materialize an invalid engine movement state.
     #[test]
@@ -3586,13 +3661,13 @@ mod tests {
             Err(ValidationError::NonFiniteScriptTime)
         );
         snapshot.server_script_time = 0.0;
-        // The layout before the push-drift layer.
-        snapshot.version = 18;
+        // The layout before the vault movement state.
+        snapshot.version = 19;
         assert!(matches!(
             snapshot.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 19,
-                received: 18
+                expected: 20,
+                received: 19
             })
         ));
     }

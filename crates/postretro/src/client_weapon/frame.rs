@@ -118,16 +118,41 @@ impl ClientWeaponFrame {
             && !registry
                 .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
                 .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite());
+        // Judged before this tick's movement is predicted: the pawn as the tick
+        // starts, the state every fire path reads.
+        let fire_blocked = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn);
         let ComponentValue::Weapon(component) = registry
             .get_component_value_mut(id, ComponentKind::Weapon)
             .ok()?
         else {
             return None;
         };
-        if !alive && let Some(cursor) = component.state.activation_cursor() {
+        // A closed vault gate cancels as death does, except a charge whose
+        // action opts out of vault interruption: it keeps charging.
+        let gate_cancels =
+            fire_blocked && !postretro_sim::weapon::pawn_gate::vault_spares_activation(component);
+        if (!alive || gate_cancels)
+            && let Some(cursor) = component.state.activation_cursor()
+        {
             self.records.local_terminal(cursor.token);
             component.cancel_activation();
         }
+        postretro_sim::weapon::pawn_gate::hold_presses_over_gate(
+            component,
+            &mut command.fire_button,
+            &mut command.secondary_button,
+            fire_blocked,
+        );
+        // The release this command carries, and so sends, is the held one:
+        // the host-remote lane sees it stamped on the first open tick.
+        postretro_sim::weapon::pawn_gate::hold_release_over_gate(
+            component,
+            &mut command.activation,
+            command.fire_button,
+            command.secondary_button,
+            fire_blocked,
+            tick,
+        );
         if let Some(token) = command.activation.initiation {
             self.records.request(token, id);
         }
@@ -145,7 +170,7 @@ impl ClientWeaponFrame {
             },
             command.reload,
             dt_ms,
-            alive,
+            alive && !fire_blocked,
         );
         if let Some(token) = advanced.initiated {
             command.activation.initiation = Some(token);

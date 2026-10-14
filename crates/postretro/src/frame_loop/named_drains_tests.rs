@@ -65,6 +65,7 @@ fn movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
         crouch: None,
         slide: None,
         swim: None,
+        vault: None,
         view_feel: None,
     }
 }

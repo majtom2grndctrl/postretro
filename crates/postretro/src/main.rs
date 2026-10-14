@@ -5103,13 +5103,15 @@ impl App {
         resolved
             .iter()
             .map(|resolved| {
+                let fire_blocked =
+                    host_activations::stamp_start_fire_gate(&registry, command_queues, resolved);
                 host_activations::observe_lifecycle(
                     &mut registry,
                     allocator,
                     command_queues,
                     server,
-                    resolved.client_id,
-                    resolved.pawn,
+                    resolved,
+                    fire_blocked,
                     *tick,
                 );
                 let mut command = Self::prepare_remote_pawn_command(
@@ -7832,6 +7834,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }

@@ -89,7 +89,8 @@ mod tests {
     use postretro_foundation::{
         AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, FluidRegistry,
         ForgivenessParams, GroundParams, NumberOrIr, PlayerMovementDescriptor, ResolutionMode,
-        SlideParams, SlideViewParams, SpeedParams, ViewFeelParams, WeaponPlacementDescriptor,
+        SlideParams, SlideViewParams, SpeedParams, VaultEntry, VaultParams, VaultTrigger,
+        ViewFeelParams, WeaponPlacementDescriptor,
     };
 
     use super::*;
@@ -157,6 +158,17 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: Some(VaultParams {
+                max_height: 1.6,
+                swim_max_height: 0.9,
+                duration_ms: 320.0,
+                from: VaultEntry {
+                    air: Some(VaultTrigger::Auto),
+                    ground: Some(VaultTrigger::Jump),
+                    swim: None,
+                },
+                allow_fire: true,
+            }),
             view_feel: Some(ViewFeelParams {
                 bob: None,
                 tilt: None,
@@ -168,6 +180,7 @@ mod tests {
                     enter_rate: 18.0,
                     exit_rate: 12.0,
                 }),
+                vault: None,
             }),
         }
     }
@@ -211,7 +224,20 @@ mod tests {
                 postretro_foundation::ActivationTrigger::Press,
                 240.0,
             ),
-            secondary: None,
+            // A charge a vault does not interrupt: the client's fire gate
+            // reads it from this row.
+            secondary: Some({
+                let mut secondary = postretro_foundation::WeaponActivationDescriptor::single(
+                    postretro_foundation::ActivationTrigger::Press,
+                    400.0,
+                );
+                secondary.charge = Some(postretro_foundation::ActivationCharge {
+                    min_ms: 100.0,
+                    full_ms: 800.0,
+                    interrupted_by: Some(postretro_foundation::ChargeInterrupts { vault: false }),
+                });
+                secondary
+            }),
             damage: 10.0,
             knockback: None,
             projectile: None,
@@ -547,8 +573,51 @@ mod tests {
         assert!(matches!(
             decode_tuning_payload(&previous_epoch),
             Err(TuningPayloadError::EpochMismatch {
-                expected: 11,
+                expected: TUNING_PAYLOAD_EPOCH,
                 received: 10,
+            })
+        ));
+    }
+
+    // Epoch 11 predates descriptor `vault` tuning and the nullable
+    // `swim.fluid_jump_velocity`. Its payload must report the stale epoch rather
+    // than fail as a shape error on either field.
+    #[test]
+    fn payload_rejects_previous_epoch_without_vault_tuning() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        json["epoch"] = serde_json::json!(11);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 11,
+            })
+        ));
+    }
+
+    // Epoch 12 predates `charge.interruptedBy`. A payload stamped 12 must
+    // report the stale epoch, even carrying the new field, rather than fail as
+    // a shape error on it.
+    #[test]
+    fn payload_rejects_epoch_12_before_charge_interrupts() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        assert_eq!(
+            json["wieldables"][2]["secondary"]["charge"]["interruptedBy"]["vault"],
+            serde_json::json!(false),
+            "the fixture carries a charge interrupt map"
+        );
+        json["epoch"] = serde_json::json!(12);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 12,
             })
         ));
     }
@@ -598,6 +667,7 @@ mod tests {
         secondary.charge = Some(ActivationCharge {
             min_ms: 200.0,
             full_ms: 1000.0,
+            interrupted_by: None,
         });
         secondary.steps = vec![ActivationStepDescriptor::Shot {
             scale: Box::new(ShotScaleDescriptor {

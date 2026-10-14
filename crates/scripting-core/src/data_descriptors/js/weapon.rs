@@ -118,10 +118,14 @@ fn validate_activation_shapes(weapon: &Object<'_>) -> Result<(), DescriptorError
         let Some(action) = optional_object_field_js(weapon, lane, &path, true)? else {
             continue;
         };
-        for child in ["charge", "sounds", "emits"] {
+        if let Some(charge) =
+            optional_object_field_js(&action, "charge", &format!("{path}.charge"), true)?
+        {
+            validate_charge_interrupts_js(&charge, &path)?;
+        }
+        for child in ["sounds", "emits"] {
             if let Some(object) =
                 optional_object_field_js(&action, child, &format!("{path}.{child}"), true)?
-                && child != "charge"
             {
                 for field in if child == "sounds" {
                     ["fire", "impact"]
@@ -168,4 +172,38 @@ fn validate_activation_shapes(weapon: &Object<'_>) -> Result<(), DescriptorError
         }
     }
     Ok(())
+}
+
+/// `charge.interruptedBy` reaches the JSON bridge only as a closed map of
+/// booleans; the shared check gives both runtimes one diagnostic.
+fn validate_charge_interrupts_js(
+    charge: &Object<'_>,
+    action_path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(interrupts) = optional_object_field_js(
+        charge,
+        "interruptedBy",
+        &format!("{action_path}.charge.interruptedBy"),
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    let mut entries = Vec::new();
+    for key in interrupts.keys::<String>() {
+        let key = key.map_err(js_err)?;
+        let value: JsValue = interrupts.get(key.as_str()).map_err(js_err)?;
+        let value = if value.is_undefined() {
+            RawInterruptValue::Absent
+        } else if value.as_bool().is_some() {
+            RawInterruptValue::Bool
+        } else {
+            RawInterruptValue::Other
+        };
+        entries.push(RawChargeInterrupt {
+            key: Some(key),
+            value,
+        });
+    }
+    validate_charge_interrupts(action_path, entries)
 }

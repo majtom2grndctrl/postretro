@@ -46,7 +46,7 @@ pub enum MoverCommand {
 /// Waypoints, speed, wait, spin axis, acceleration, and carry policy are static
 /// data seeded when the mover is constructed. The remaining fields are phase
 /// mirrored by the wire payload without replicating the path itself.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct KinematicMoverComponent {
     pub mover_id: u32,
     pub waypoints: Vec<Vec3>,
@@ -116,6 +116,167 @@ pub struct KinematicMoverComponent {
     pub spin_target_rate_rad_s: f32,
 }
 
+// Hand-written so `clone_from` reuses the path, name and event buffers: client
+// replay re-seeds a working phase from history every snapshot. Both methods
+// destructure exhaustively, so a new field fails to compile until listed here.
+impl Clone for KinematicMoverComponent {
+    fn clone(&self) -> Self {
+        let Self {
+            mover_id,
+            waypoints,
+            waypoint_names,
+            speed_mps,
+            wait_ms,
+            mode,
+            spin_axis,
+            spin_accel_rad_s2,
+            carry_yaw,
+            block_policy,
+            crush_damage,
+            crush_interval_ms,
+            auto_close_ms,
+            open_event,
+            close_event,
+            blocked_event,
+            crush_event,
+            open_sound,
+            close_sound,
+            blocked_sound,
+            crush_sound,
+            sealed_portal_ids,
+            segment_index,
+            direction_sign,
+            segment_elapsed_ms,
+            wait_remaining_ms,
+            current_linear_velocity,
+            started,
+            completed,
+            blocked,
+            target_segment,
+            spin_angle_rad,
+            spin_angle_before_tick_rad,
+            was_active_this_tick,
+            spin_rate_rad_s,
+            spin_target_rate_rad_s,
+        } = self;
+        Self {
+            mover_id: *mover_id,
+            waypoints: waypoints.clone(),
+            waypoint_names: waypoint_names.clone(),
+            speed_mps: *speed_mps,
+            wait_ms: *wait_ms,
+            mode: *mode,
+            spin_axis: *spin_axis,
+            spin_accel_rad_s2: *spin_accel_rad_s2,
+            carry_yaw: *carry_yaw,
+            block_policy: *block_policy,
+            crush_damage: *crush_damage,
+            crush_interval_ms: *crush_interval_ms,
+            auto_close_ms: *auto_close_ms,
+            open_event: open_event.clone(),
+            close_event: close_event.clone(),
+            blocked_event: blocked_event.clone(),
+            crush_event: crush_event.clone(),
+            open_sound: open_sound.clone(),
+            close_sound: close_sound.clone(),
+            blocked_sound: blocked_sound.clone(),
+            crush_sound: crush_sound.clone(),
+            sealed_portal_ids: sealed_portal_ids.clone(),
+            segment_index: *segment_index,
+            direction_sign: *direction_sign,
+            segment_elapsed_ms: *segment_elapsed_ms,
+            wait_remaining_ms: *wait_remaining_ms,
+            current_linear_velocity: *current_linear_velocity,
+            started: *started,
+            completed: *completed,
+            blocked: *blocked,
+            target_segment: *target_segment,
+            spin_angle_rad: *spin_angle_rad,
+            spin_angle_before_tick_rad: *spin_angle_before_tick_rad,
+            was_active_this_tick: *was_active_this_tick,
+            spin_rate_rad_s: *spin_rate_rad_s,
+            spin_target_rate_rad_s: *spin_target_rate_rad_s,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            mover_id,
+            waypoints,
+            waypoint_names,
+            speed_mps,
+            wait_ms,
+            mode,
+            spin_axis,
+            spin_accel_rad_s2,
+            carry_yaw,
+            block_policy,
+            crush_damage,
+            crush_interval_ms,
+            auto_close_ms,
+            open_event,
+            close_event,
+            blocked_event,
+            crush_event,
+            open_sound,
+            close_sound,
+            blocked_sound,
+            crush_sound,
+            sealed_portal_ids,
+            segment_index,
+            direction_sign,
+            segment_elapsed_ms,
+            wait_remaining_ms,
+            current_linear_velocity,
+            started,
+            completed,
+            blocked,
+            target_segment,
+            spin_angle_rad,
+            spin_angle_before_tick_rad,
+            was_active_this_tick,
+            spin_rate_rad_s,
+            spin_target_rate_rad_s,
+        } = self;
+        *mover_id = source.mover_id;
+        waypoints.clone_from(&source.waypoints);
+        waypoint_names.clone_from(&source.waypoint_names);
+        *speed_mps = source.speed_mps;
+        *wait_ms = source.wait_ms;
+        *mode = source.mode;
+        *spin_axis = source.spin_axis;
+        *spin_accel_rad_s2 = source.spin_accel_rad_s2;
+        *carry_yaw = source.carry_yaw;
+        *block_policy = source.block_policy;
+        *crush_damage = source.crush_damage;
+        *crush_interval_ms = source.crush_interval_ms;
+        *auto_close_ms = source.auto_close_ms;
+        open_event.clone_from(&source.open_event);
+        close_event.clone_from(&source.close_event);
+        blocked_event.clone_from(&source.blocked_event);
+        crush_event.clone_from(&source.crush_event);
+        open_sound.clone_from(&source.open_sound);
+        close_sound.clone_from(&source.close_sound);
+        blocked_sound.clone_from(&source.blocked_sound);
+        crush_sound.clone_from(&source.crush_sound);
+        sealed_portal_ids.clone_from(&source.sealed_portal_ids);
+        *segment_index = source.segment_index;
+        *direction_sign = source.direction_sign;
+        *segment_elapsed_ms = source.segment_elapsed_ms;
+        *wait_remaining_ms = source.wait_remaining_ms;
+        *current_linear_velocity = source.current_linear_velocity;
+        *started = source.started;
+        *completed = source.completed;
+        *blocked = source.blocked;
+        *target_segment = source.target_segment;
+        *spin_angle_rad = source.spin_angle_rad;
+        *spin_angle_before_tick_rad = source.spin_angle_before_tick_rad;
+        *was_active_this_tick = source.was_active_this_tick;
+        *spin_rate_rad_s = source.spin_rate_rad_s;
+        *spin_target_rate_rad_s = source.spin_target_rate_rad_s;
+    }
+}
+
 /// Static mover authoring data and its initial runtime phase.
 ///
 /// Rates are expressed in radians, and the constructor normalizes `spin_axis`.
@@ -180,6 +341,70 @@ impl KinematicMoverComponent {
 mod tests {
     use super::*;
     use crate::registry::{Component, ComponentKind, ComponentValue};
+
+    fn configured(id: u32, waypoints: Vec<Vec3>) -> KinematicMoverComponent {
+        let names = (0..waypoints.len()).map(|i| format!("n{i}")).collect();
+        KinematicMoverComponent::new(
+            id,
+            KinematicMoverConfig {
+                waypoints,
+                waypoint_names: names,
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: false,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        )
+    }
+
+    #[test]
+    fn clone_from_matches_clone_across_shape_changes() {
+        let mut long = configured(1, vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z]);
+        long.open_event = Some("opened".to_string());
+        long.crush_sound = Some("crunch".to_string());
+        long.sealed_portal_ids = vec![3, 4, 5];
+        long.segment_index = 2;
+        long.target_segment = Some(1);
+        long.spin_angle_rad = -0.0;
+        long.blocked = true;
+        let mut short = configured(2, vec![Vec3::NEG_X]);
+        short.close_event = Some("closed".to_string());
+        short.blocked_sound = Some("thud".to_string());
+        // Every scalar differs from `long`, so a dropped copy cannot pass.
+        short.speed_mps = 7.0;
+        short.wait_ms = 30.0;
+        short.mode = KinematicMoverMode::PingPong;
+        short.spin_axis = Vec3::X;
+        short.spin_accel_rad_s2 = 0.5;
+        short.carry_yaw = true;
+        short.block_policy = BlockPolicy::Crush;
+        short.crush_damage = 12.0;
+        short.crush_interval_ms = 250.0;
+        short.auto_close_ms = 900.0;
+        short.direction_sign = -1;
+        short.segment_elapsed_ms = 41.0;
+        short.wait_remaining_ms = 9.0;
+        short.current_linear_velocity = Vec3::Y;
+        short.started = true;
+        short.completed = true;
+        short.spin_angle_rad = 1.5;
+        short.spin_angle_before_tick_rad = 1.25;
+        short.was_active_this_tick = true;
+        short.spin_rate_rad_s = 3.0;
+        short.spin_target_rate_rad_s = 4.0;
+
+        // Shrinking vectors, Some -> None, None -> Some, and back again.
+        for (target, source) in [(long.clone(), &short), (short.clone(), &long)] {
+            let mut target = target;
+            target.clone_from(source);
+            assert_eq!(&target, source);
+            assert_eq!(format!("{target:?}"), format!("{:?}", source.clone()));
+        }
+    }
 
     #[test]
     fn kinematic_mover_component_registers_kind_and_round_trips_serde() {

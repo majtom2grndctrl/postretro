@@ -11,6 +11,7 @@ mod dash;
 mod normal;
 mod slide;
 mod swim;
+mod vault;
 
 pub(super) use crouching::crouching_intent;
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub(super) use normal::normal_intent;
 pub(super) use slide::SLIDE_MAX_MS;
 pub(super) use slide::sliding_intent;
 pub(super) use swim::{fluid_jump_input, leave_swim, swim_intent};
+pub(super) use vault::vault_intent;
 
 /// Exponential-style ground deceleration (`v *= max(0, 1 - k*dt)`) — not the Q3
 /// stop/slide-threshold friction model. Value matches Quake's default

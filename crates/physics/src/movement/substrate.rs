@@ -4,10 +4,10 @@
 use glam::{Vec2, Vec3};
 use parry3d::shape::Capsule;
 
-use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::{
     CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined_parry, cast_ray_combined_parry,
 };
+use crate::collision::{SKIN_DISTANCE, STEP_UP_LIFT_MARGIN};
 use crate::movement::SubstrateResult;
 use crate::movement::mover_carry::{
     apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
@@ -25,12 +25,21 @@ use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 /// iterations.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
-/// Vertical lift margin added on top of `step_height` when the step-up probe
-/// commits to a lifted position. Must exceed `SKIN_DISTANCE` so the lifted
-/// hemisphere clears the step's top edge without parry reporting an
-/// immediate skin-contact hit.
-const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+// The step-up lift (`step_height + STEP_UP_LIFT_MARGIN`) must exceed
+// `SKIN_DISTANCE` over the step so the lifted hemisphere clears the step's top
+// edge without parry reporting an immediate skin-contact hit.
 const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
+
+/// Tallest ledge, metres above the feet, that step-up climbs with room to
+/// spare: the lift, `step_height + STEP_UP_LIFT_MARGIN`, leaves at least one
+/// skin width over such a top beyond the skin the feet already rest at. The
+/// vault probe refuses tops at or below it, so no height falls between the two.
+/// Foundation's `STEP_UP_LIMIT_MARGIN` restates `STEP_UP_LIFT_MARGIN - 2 ·
+/// SKIN_DISTANCE` for descriptor validation, which cannot depend on physics; a
+/// vault test pins the two together.
+pub(super) fn step_up_limit(step_height: f32) -> f32 {
+    step_height + STEP_UP_LIFT_MARGIN - 2.0 * SKIN_DISTANCE
+}
 
 /// Cosine threshold (≈ 60°) for detecting that a second wall contact within
 /// the same tick points in a "significantly different" horizontal direction
@@ -153,13 +162,18 @@ pub(super) fn step_up_lift(
 /// in `tick` (the landing-refresh point), driven by `SubstrateResult::hit_floor`.
 ///
 /// `was_grounded` is the pre-intent grounded flag carried from the start of the
-/// tick; `jumped` is whether step 2/3 launched a jump this tick.
+/// tick; `jumped` is whether step 2/3 launched a jump this tick. `carry_ground`
+/// is the ground mover carry, overlap recovery and release velocity treat the
+/// body as riding: `previous_ground`, except while vaulting, when it is the
+/// vault target's mover (none for a static ledge), so the vaulting body rides it
+/// as a grounded rider does.
 pub(super) fn integrate_collision(
     component: &mut PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
     dt: f32,
     position: Vec3,
     previous_ground: GroundRef,
+    carry_ground: GroundRef,
     jumped: bool,
 ) -> (Vec3, SubstrateResult) {
     // 7. Move + collide. Iterative sweep-and-slide against the world trimesh.
@@ -169,9 +183,8 @@ pub(super) fn integrate_collision(
     // does not change inside the substrate.
     let drift_is_3d = matches!(component.movement_state, MovementState::Swim { .. });
 
-    let mut current_pos = apply_mover_carry(position, previous_ground, collision);
-    current_pos =
-        displace_from_movers(component, previous_ground, collision, &capsule, current_pos);
+    let mut current_pos = apply_mover_carry(position, carry_ground, collision);
+    current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);
     let mut remaining_dt = dt;
     let mut hit_floor_this_tick = false;
     // Each of the substrate's walkable-contact paths overwrites this with its
@@ -466,7 +479,11 @@ pub(super) fn integrate_collision(
         // no floor contact this tick. The jump branch already cleared it.
         component.ground = GroundRef::Airborne;
     }
-    apply_mover_release_velocity(component, previous_ground, collision, current_pos);
+    // Release keys off the mover the body rode this tick, so a vault aborted (or
+    // an exit that misses the top) while riding its target's mover keeps that
+    // mover's velocity instead of stopping dead. On a continuing vault tick the
+    // next path velocity overwrites it.
+    apply_mover_release_velocity(component, carry_ground, collision, current_pos);
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the
@@ -493,7 +510,7 @@ pub(super) fn integrate_collision(
     )
 }
 
-fn cast_capsule_query(
+pub(super) fn cast_capsule_query(
     collision: &CombinedCollisionWorld<'_>,
     pos: Vec3,
     capsule: &Capsule,
@@ -511,7 +528,7 @@ fn cast_capsule_query(
     )
 }
 
-fn cast_ray_query(
+pub(super) fn cast_ray_query(
     collision: &CombinedCollisionWorld<'_>,
     origin: Vec3,
     dir: Vec3,
@@ -674,10 +691,10 @@ pub(super) fn upward_clearance_probe(
 }
 
 /// Can a capsule of `half_height` (the live radius) centred at `position`
-/// sweep `distance` metres along the unit vertical `direction` without hitting
+/// sweep `distance` metres along the unit `direction` without hitting
 /// anything? A hit strictly within the distance blocks; a distance of zero or
 /// less needs nothing cleared.
-fn clearance_probe(
+pub(super) fn clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
     position: Vec3,

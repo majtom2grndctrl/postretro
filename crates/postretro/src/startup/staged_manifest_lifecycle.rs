@@ -451,6 +451,7 @@ mod tests {
     fn lifecycle_view_feel(impulse_tension: f32) -> ViewFeelParams {
         ViewFeelParams {
             slide: None,
+            vault: None,
             bob: Some(BobParams {
                 vertical_frequency: 1.0,
                 lateral_frequency: 0.5,
@@ -491,6 +492,7 @@ mod tests {
                     }),
                     crouch: None,
                     slide: None,
+                    vault: None,
                 },
             }),
         }

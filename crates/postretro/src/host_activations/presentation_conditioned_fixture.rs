@@ -801,6 +801,7 @@ fn movement() -> PlayerMovementComponent {
         crouch: None,
         slide: None,
         swim: None,
+        vault: None,
         view_feel: None,
     })
 }

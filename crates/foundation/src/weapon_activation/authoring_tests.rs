@@ -27,6 +27,7 @@ fn action(multiplier: f32) -> WeaponActivationDescriptor {
     result.charge = Some(ActivationCharge {
         min_ms: 200.0,
         full_ms: 1000.0,
+        interrupted_by: None,
     });
     result.steps = vec![ActivationStepDescriptor::Shot {
         scale: Box::new(ShotScaleDescriptor {

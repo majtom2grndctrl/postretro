@@ -1543,6 +1543,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                             velocity: component.velocity,
                             is_grounded: component.is_grounded(),
                             movement_state: component.movement_state.kind(),
+                            vault: presented_vault(component, tick_dt, frame_result.alpha),
                             eye_height_above_feet: frame_eye::presented_eye_clearance(
                                 presented_eye.y,
                                 app.camera.position.y,
@@ -2633,4 +2634,25 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(cpu_stages);
     app.cpu_timer.finish_frame(Instant::now());
     postretro_stage_timing::mark_frame();
+}
+
+/// The local pawn's vault as this frame presents it, for the held vault pose.
+/// `alpha` is the frame's interpolation share toward the latest tick, whose
+/// movement state `component` holds.
+fn presented_vault(
+    component: &postretro_foundation::PlayerMovementComponent,
+    tick_dt: f32,
+    alpha: f32,
+) -> Option<crate::view_feel::vault::VaultViewInput> {
+    let postretro_foundation::MovementState::Vault { elapsed_ms, .. } = component.movement_state
+    else {
+        return None;
+    };
+    let duration_ms = component.vault.as_ref()?.duration_ms;
+    Some(crate::view_feel::vault::VaultViewInput::presented(
+        elapsed_ms,
+        duration_ms,
+        tick_dt,
+        alpha,
+    ))
 }

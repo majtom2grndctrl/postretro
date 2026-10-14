@@ -147,7 +147,7 @@ fn movement_swim_block_parses_identically_in_both_runtimes() {
             sink_speed: 0.8,
             enter_depth: 0.5,
             exit_depth: 0.35,
-            fluid_jump_velocity: 6.5,
+            fluid_jump_velocity: Some(6.5),
         }
     );
     assert_eq!(lua.movement.unwrap().swim, Some(swim));
@@ -235,4 +235,28 @@ fn a_valid_or_absent_swim_block_logs_no_swim_warning() {
     let [(js, js_warnings), (lua, lua_warnings)] = parse_both("undefined", "nil");
     assert_eq!((js, lua), (None, None));
     assert!(js_warnings.is_empty() && lua_warnings.is_empty());
+}
+
+// A swim block may leave out its fluid jump: the pawn then treads at the
+// surface and leaves water by wading out or mantling. Present, it is still
+// range-checked (`swim_block_drops_each_out_of_range_field_by_name`).
+#[test]
+fn a_swim_block_without_a_fluid_jump_loads_in_both_runtimes() {
+    let without = |body: String, key_value: &str| body.replace(&format!(", {key_value}"), "");
+    let js = without(js_swim(&[]), "fluidJumpVelocity: 6.5");
+    let lua = without(lua_swim(&[]), "fluidJumpVelocity = 6.5");
+    assert!(!js.contains("fluidJumpVelocity") && !lua.contains("fluidJumpVelocity"));
+    for [(js, js_warnings), (lua, lua_warnings)] in [
+        parse_both(&js, &lua),
+        parse_both(
+            &js_swim(&[("fluidJumpVelocity", "null")]),
+            &lua_swim(&[("fluidJumpVelocity", "nil")]),
+        ),
+    ] {
+        let js = js.expect("the JS block loads");
+        let lua = lua.expect("the Luau block loads");
+        assert_eq!(js.fluid_jump_velocity, None);
+        assert_eq!(js, lua);
+        assert!(js_warnings.is_empty() && lua_warnings.is_empty());
+    }
 }

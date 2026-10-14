@@ -292,7 +292,7 @@ An action has `{ trigger, recoveryMs, steps, charge?, sounds?, emits? }`:
 | `trigger` | `"press" \| "hold"` | `press` starts once per fresh press. `hold` repeats after execution and recovery finish while held. A charged action requires `press`. |
 | `recoveryMs` | `number` | Shared start-gate recovery after each accepted shot, in finite milliseconds `[0, 60000]`. Zero is allowed. Remaining recovery survives completion or cancellation. |
 | `steps` | `ActivationStepDescriptor[]` | At most 64 steps and 16 shots. First and last must be shots, with at least one positive wait between shots. |
-| `charge` | `{ minMs, fullMs }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. |
+| `charge` | `{ minMs, fullMs, interruptedBy? }` (optional) | Finite milliseconds: `0 <= minMs <= fullMs`, `0 < fullMs <= 60000`. Press starts charge; release before `minMs` cancels without spending. Other releases execute using frozen charge. Holding at full charge does not fire. `interruptedBy` is described below; with `interruptedBy.vault: false`, a release during a climb counts as made when the climb ends, so its charge is measured to that moment and a quick tap mid-climb can pass `minMs`. |
 | `sounds` | `{ fire?, impact? }` (optional) | Each authored field overrides the weapon's sound default for that action. A delayed impact uses its originating action's sound. |
 | `emits` | `{ activate?, impact? }` (optional) | Adds named reaction dispatch alongside each built-in event. Aliases must be non-empty, at most 256 UTF-8 bytes, and differ from `activate` or `impact` respectively. |
 
@@ -379,6 +379,42 @@ engine validates evaluated scales and final scaled values before spending;
 invalid values, overflow, or invalid integer ammo conversion cancel execution
 and warn once per descriptor/field. Resources are spent per accepted shot,
 never for waits or cancelled charge.
+
+#### What interrupts a charge
+
+`charge.interruptedBy` is an optional map from an interrupt source to whether
+that source cancels the charge while it is still charging. Every key is
+optional and defaults to `true`. Once the charged shot fires, the source's
+normal rules apply again.
+
+| Key | Default | `false` means |
+|-----|---------|---------------|
+| `vault` | `true` | A climb with `movement.vault.allowFire` off does not cancel the charge. It keeps charging through the climb. Releasing the trigger during the climb fires the charged shot on the first tick after it ends, unless the trigger is pressed again first, in which case it keeps charging until the next release. |
+
+A release held over a climb counts as made on the first tick after the climb,
+not when the trigger came up. Its charge is measured from the press to that
+tick, capped at `fullMs`:
+
+- Every release during the climb gains the rest of the climb as charge.
+- A tap during the climb that would fall short of `minMs` on its own still
+  fires a charged shot once the climb has run long enough to carry the charge
+  past `minMs`. Only a charge that is still under `minMs` when the climb ends
+  cancels.
+
+```typescript
+secondary: {
+  trigger: "press",
+  recoveryMs: 400,
+  charge: { minMs: 200, fullMs: 1000, interruptedBy: { vault: false } },
+  steps: [activation.shot()],
+},
+```
+
+The map is closed: an unknown key, a non-boolean value, or an `interruptedBy`
+that is not an object rejects content, and the error names the field. `vault`
+is the only source today; more (taking damage, NPC interactions) will join this
+map. Death, switching, dropping, a reload press and input suspension still
+cancel any charge.
 
 One execution owns the weapon. Secondary wins simultaneous fresh starts;
 neither action interrupts an execution. A blocked press is consumed, while a
@@ -655,7 +691,7 @@ movement updates carry the resulting momentum through client reconciliation.
 
 ### Reserved engine-fired reaction addresses
 
-The engine owns the following 24 bare addresses. A mod may register one or more
+The engine owns the following 26 bare addresses. A mod may register one or more
 reactions at any of them, but should not use one as a private address: the
 engine may fire it whenever the listed gameplay event occurs. All other
 mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
@@ -665,7 +701,7 @@ mod-private addresses should use a namespaced name such as `myMod.doorOpened`.
 | Level lifecycle | `levelLoad` |
 | Weapon fire | `activate`, `dry_fire`, `overheat`, `impact`, `spawned` |
 | Weapon reload | `reload_started`, `reload_shell_loaded`, `reload_completed`, `reload_cancelled`, `reload_blocked_full`, `reload_blocked_empty` |
-| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended`, `swim_started`, `swim_ended` |
+| Player death and movement | `playerDied`, `landed`, `jumped`, `dash_started`, `dash_ended`, `crouch_started`, `crouch_ended`, `slide_started`, `slide_ended`, `swim_started`, `swim_ended`, `vault_started`, `vault_ended` |
 | Enemy AI | `enemyAttack` |
 
 Movement addresses fire only for the local player pawn. A state change emits
@@ -713,6 +749,70 @@ the final FOV. These are camera effects: collision and aim stay unchanged.
 Both channels follow the player's resolved view-feel scale, including reduced
 motion. `viewFeel.impulse.states.slide` remains a separate entry/exit kick;
 keep its FOV channel small or zero when authoring a sustained FOV increase.
+
+---
+
+## Vault camera pose
+
+`components.movement.viewFeel.vault` holds a camera pose while the player
+vaults: the view eases into it as the climb starts, rests there for most of the
+climb, and eases back as the player steps onto the top. Use it to look down at
+the ledge being climbed. Leave it out for no pose. It needs a
+[`movement.vault`](#movementvault) block to have anything to follow.
+
+```typescript
+viewFeel: {
+  vault: {
+    pitch: -6, fov: 0, roll: 0, // held offsets while vaulting
+    easeIn: 0.15,               // share of the climb spent easing in (optional)
+    easeOut: 0.2,               // share spent easing back at the end (optional)
+  },
+}
+```
+
+```lua
+viewFeel = {
+  vault = { pitch = -6, fov = 0, roll = 0, easeIn = 0.15, easeOut = 0.2 },
+}
+```
+
+Every field is optional. Wrong types, non-finite numbers, and values outside
+these ranges reject the descriptor at load time, and the error names the field
+(for example `movement.viewFeel.vault.pitch`).
+
+| Field | Units | Accepted values |
+|---|---|---|
+| `pitch` | degrees, positive looks up | finite in [-90, 90]; default 0 |
+| `roll` | degrees | finite in [-90, 90]; default 0 |
+| `fov` | horizontal degrees added to the base FOV | finite in [-90, 90]; default 0 |
+| `easeIn` | share of the climb | finite in [0, 1]; default 0.15 |
+| `easeOut` | share of the climb | finite in [0, 1]; default 0.2 |
+
+`easeIn` plus `easeOut` must be at most 1. The pose follows the climb itself,
+not a timer. The climb lasts `durationMs` rounded up to whole simulation ticks
+(433 ms for 420 at 60 Hz), and both shares are of that time. The pose is fully
+in after the first `easeIn` of the climb and back to neutral exactly as the
+player reaches the top.
+
+- **`easeIn` 0** starts the pose at full strength.
+- **`easeOut` 0** holds the pose at full strength to the end of the climb, then
+  eases it back over 0.1 s after the player is on the top.
+- **A climb that ends early** eases back from wherever the pose was, over the
+  climb's time × `easeOut` (at least 0.1 s). It ends early when it is blocked,
+  the player dies, or a network correction ends it. A new climb started
+  meanwhile picks up from there.
+- **A climb that appears already under way** eases in from neutral over the
+  climb's time × `easeIn`, then follows the climb. A network correction can
+  start a climb your machine did not predict, and a descriptor reload can
+  reset the pose mid-climb.
+
+The pose moves only the camera: aim, the shot line and collision are unchanged,
+and the first-person weapon stays where it is in view. With `allowFire: true`
+the crosshair sits off the shot line by the held pose during the climb, so keep
+the pose small if you allow fire. The view never tips past straight up or
+down. The pose composes with bob, tilt, sway and transition impulses and
+follows the player's resolved view-feel scale; reduced motion removes it.
+`viewFeel.impulse.states.vault` remains a separate kick on the climb's edges.
 
 ---
 
@@ -2871,7 +2971,7 @@ Fluid declarations do not affect who can join.
 Add a `swim` block to the player descriptor's `movement` to let the player swim.
 Without one the player cannot swim and walks along the bottom of any fluid,
 which suits a wade-only game; loading a level with fluids for such a player
-logs one warning. All six fields are required:
+logs one warning. Every field but `fluidJumpVelocity` is required:
 
 | Field | Units | Range | What it does |
 |---|---|---|---|
@@ -2880,9 +2980,9 @@ logs one warning. All six fields are required:
 | `sinkSpeed` | m/s | `≥ 0` | Drift with no up or down input, at the default level gravity (−20.32 m/s²). It scales with the local gravity: half gravity sinks at half speed, a weightless pool floats, and a pool whose gravity pulls up rises. |
 | `enterDepth` | fraction | above `0`, up to `1` | How much of the body, feet to head, must be in the fluid to start swimming. |
 | `exitDepth` | fraction | above `0`, below `enterDepth` | Swimming stops once immersion falls below this. The gap keeps a swimmer treading at the surface from flickering in and out. |
-| `fluidJumpVelocity` | m/s | above `0` | Upward speed of a jump out of the fluid. |
+| `fluidJumpVelocity` | m/s | above `0`, optional | Upward speed of a jump out of the fluid. Leave it out for no fluid jump: jump at the surface then only treads, and the player leaves the water by wading out or, with a [`movement.vault`](#movementvault) block, by climbing out. |
 
-A swim block with a missing field, a field that is not a number, a field out of
+A swim block with a missing required field, a field that is not a number, a field out of
 range, or `exitDepth` at or above `enterDepth` is dropped with a warning naming
 the field (for example `movement.swim.exitDepth`). The rest of the descriptor
 and the mod still load, and the player wades, as if the descriptor had no
@@ -2910,6 +3010,91 @@ How swimming plays:
 
 Starting and stopping a swim fire the reserved `swim_started` and `swim_ended`
 addresses, and play the fluid's `enterSound` and `exitSound`.
+
+### `movement.vault`
+
+Add a `vault` block to the player descriptor's `movement` to let the player
+climb onto ledges, from the air or out of a fluid. Without one the player
+never vaults.
+
+```typescript
+movement: {
+  // ...capsule, ground, air, fall...
+  vault: {
+    maxHeight: 1.6,
+    swimMaxHeight: 0.9,
+    durationMs: 320,
+    from: { air: "auto", swim: "auto" },
+    allowFire: false,
+  },
+},
+```
+
+```lua
+vault = {
+  maxHeight = 1.6,
+  swimMaxHeight = 0.9,
+  durationMs = 320,
+  from = { air = "auto", swim = "auto" },
+  allowFire = false,
+},
+```
+
+| Field | Units | Range | What it does |
+|---|---|---|---|
+| `maxHeight` | m | more than 0.01 above `ground.stepHeight` | Highest ledge top a vault reaches from the ground or the air, measured from the feet. Anything the player can step up stays a step. |
+| `swimMaxHeight` | m | above `0` | Highest ledge top a vault reaches out of a fluid, measured from the fluid's surface, so pool edges tune apart from land ledges. |
+| `durationMs` | ms | above `0` | Time from starting the climb to standing on the top, rounded up to whole simulation ticks. |
+| `from` | object | optional | Where a vault may start, each place naming what starts it. Defaults to `{ air: "auto", swim: "auto" }`. |
+| `allowFire` | boolean | optional | Whether the player may start firing while climbing. Defaults to `false`. |
+
+The places in `from` are `air` (in the air, walking or dashing), `ground` (on
+the ground, walking or dashing) and `swim` (swimming with the eye above the
+surface). Each takes `"auto"`, which climbs when the player moves into a ledge
+within reach, or `"jump"`, which climbs when jump is held or was pressed just
+before reaching it. A place left out cannot vault, and a `from` you write
+replaces the default whole: `from: { ground: "jump" }` vaults only with a jump
+from standing. Crouching and sliding never vault.
+
+A vault block with a missing required field, a field of the wrong type, a value
+out of range, a place other than `air`, `ground` or `swim`, or a trigger other
+than `"auto"` or `"jump"` is dropped with a warning naming the field (for
+example `movement.vault.from.air`). The rest of the descriptor and the mod
+still load, and the player cannot vault.
+
+How vaulting plays:
+
+- **Reach.** The ledge's top must be within reach, with room for the standing
+  player on it. Ledges at or below the step-up height are steps, not vaults.
+- **The climb.** The player rises, and starts moving over the lip while the
+  rise is finishing, as soon as the body clears it, along a path the engine
+  checked is clear. The move onto the top speeds up to the speed the player had
+  when the climb started and stands them on the top after `durationMs`, still
+  moving at that speed. Dash, jump and crouch do nothing until it ends. A climb that is blocked part way, or whose ledge stops
+  existing, ends at once and the player falls.
+- **Moving ledges.** A ledge on a moving platform is climbed where it is when
+  the climb ends, and the player ends standing on the platform.
+- **Out of the water.** With `swim` in `from`, a swimmer with the eye above the
+  surface climbs out of a pool at an edge within `swimMaxHeight`. At such an
+  edge the climb wins over `fluidJumpVelocity`'s jump; elsewhere jump at the
+  surface behaves as before. Swimming cannot restart until the player is clear
+  of the water.
+- **Firing.** With `allowFire` false, firing cannot start during a climb, and
+  a burst already firing stops when the climb starts. Holding the trigger
+  through the climb fires again once it ends. A charge stops too, unless its
+  weapon action sets `charge.interruptedBy.vault: false`: it then keeps
+  charging, and a release during the climb fires once it ends (see
+  [What interrupts a charge](#what-interrupts-a-charge)).
+- **Maps cannot change vault tuning.** It belongs to the descriptor.
+
+Starting and finishing a climb fire the reserved `vault_started` and
+`vault_ended` addresses. `viewFeel.impulse.states.vault` adds a camera kick on
+either edge, and [`viewFeel.vault`](#vault-camera-pose) holds a camera pose
+through the climb. A climb cut short by the player's death ends without
+`vault_ended`, so a reaction that pairs the two (a looping climb sound, say)
+should also stop on `playerDied`. A descriptor hot reload does the same but
+fires no `playerDied`; it is a development-time event, so a paired reaction may
+stay started until the next climb after one.
 
 ### The readonly `player.swimming` and `player.immersion` slots
 
@@ -3518,7 +3703,7 @@ resolved value, live during play whether or not a menu is open:
 | `accessibility.reduceMotion` | boolean | Reduce motion. Follows the OS setting until the player chooses. |
 | `accessibility.reduceMotionFollowsSystem` | boolean | True while reduce motion follows the OS. |
 | `accessibility.screenShakeScale` | number, 0–1 | Screen-shake scale. |
-| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide) scale. |
+| `accessibility.viewFeelScale` | number, 0–1 | View-feel (bob, tilt, sway, impulses, slide, vault pose) scale. |
 | `accessibility.flashLimiter` | boolean | Photosensitivity flash limiter. Limits `screen.flash` and `screen.vignette`. |
 | `accessibility.masterVolume`, `sfxVolume`, `musicVolume`, `uiVolume` | number, 0–1 | Volumes. |
 | `accessibility.monoAudio` | boolean | Mono audio. |

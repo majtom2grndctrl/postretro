@@ -5266,4 +5266,323 @@ mod tests {
             0
         );
     }
+
+    // --- Vault fire gate on the host's own player ------------------------------
+
+    /// Mark `pawn` mid-vault, `elapsed_ms` into a 320 ms vault, with fire
+    /// allowed or not; `None` returns it to `Normal`. The test world has no
+    /// ledge, so the movement tick would abort the vault: each tick re-arms it,
+    /// as the weapon stage reads the pawn as the tick starts.
+    fn set_vault(
+        registry: &Rc<RefCell<EntityRegistry>>,
+        pawn: EntityId,
+        vault: Option<(f32, bool)>,
+    ) {
+        let mut registry = registry.borrow_mut();
+        let mut movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        movement.vault = vault.map(|(_, allow_fire)| postretro_foundation::VaultParams {
+            max_height: 1.6,
+            swim_max_height: 0.9,
+            duration_ms: 320.0,
+            from: postretro_foundation::VaultEntry::default(),
+            allow_fire,
+        });
+        movement.movement_state = match vault {
+            Some((elapsed_ms, _)) => postretro_foundation::MovementState::Vault {
+                elapsed_ms,
+                target: Vec3::new(1.0, 1.0, 0.0),
+                start_offset: Vec3::new(-0.8, -0.7, 0.0),
+                mover: None,
+                entry_speed: 0.0,
+            },
+            None => postretro_foundation::MovementState::Normal,
+        };
+        registry.set_component(pawn, movement).unwrap();
+    }
+
+    fn local_vault_pawn() -> (Rc<RefCell<EntityRegistry>>, EntityId, EntityId) {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 10);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            (pawn, weapon)
+        };
+        (registry, pawn, weapon)
+    }
+
+    fn magazine(registry: &Rc<RefCell<EntityRegistry>>, weapon: EntityId) -> u32 {
+        registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .magazine
+    }
+
+    fn button_command(tick: u32, pressed: bool, active: bool) -> crate::sim::SimCommand {
+        let mut command = sim_command_at(tick, false, false);
+        command.fire_button = FireButtonState { pressed, active };
+        command
+    }
+
+    #[test]
+    fn a_vault_refuses_the_host_players_starts_until_its_last_tick_unless_fire_is_allowed() {
+        for (vault, fires) in [
+            (Some((16.0, false)), false),
+            (Some((320.0, false)), true),
+            (Some((16.0, true)), true),
+            (None, true),
+        ] {
+            let (registry, pawn, weapon) = local_vault_pawn();
+            set_vault(&registry, pawn, vault);
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(1, true, true),
+                1.0 / 60.0,
+            );
+            assert_eq!(magazine(&registry, weapon) == 9, fires, "{vault:?}");
+        }
+    }
+
+    #[test]
+    fn a_press_held_through_the_host_players_vault_fires_on_exit() {
+        let (registry, pawn, weapon) = local_vault_pawn();
+        set_vault(&registry, pawn, Some((16.0, false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(1, true, true),
+            1.0 / 60.0,
+        );
+        for tick in 2..5 {
+            set_vault(&registry, pawn, Some((16.0 * tick as f32, false)));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(tick, false, true),
+                1.0 / 60.0,
+            );
+        }
+        assert_eq!(magazine(&registry, weapon), 10, "nothing fires mid-vault");
+        set_vault(&registry, pawn, None);
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(5, false, true),
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            magazine(&registry, weapon),
+            9,
+            "the held press fires on exit"
+        );
+
+        // A press released before the vault ends is forgotten.
+        let (registry, pawn, weapon) = local_vault_pawn();
+        set_vault(&registry, pawn, Some((16.0, false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(1, true, true),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, Some((32.0, false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(2, false, false),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, None);
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(3, false, true),
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            magazine(&registry, weapon),
+            10,
+            "a released press never fires"
+        );
+    }
+
+    #[test]
+    fn vault_entry_stops_the_host_players_burst() {
+        let (registry, pawn, weapon) = local_vault_pawn();
+        {
+            let mut registry = registry.borrow_mut();
+            let mut component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            component.primary = std::sync::Arc::new(
+                serde_json::from_value(serde_json::json!({"trigger":"press","recoveryMs":16,"steps":[{"kind":"shot"},{"kind":"wait","durationMs":32},{"kind":"shot"},{"kind":"wait","durationMs":32},{"kind":"shot"}]}))
+                    .unwrap(),
+            );
+            component.activation_programs =
+                postretro_foundation::WeaponActivationPrograms::install(&component.primary, None);
+            registry.set_component(weapon, component).unwrap();
+        }
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(1, true, true),
+            1.0 / 60.0,
+        );
+        assert_eq!(magazine(&registry, weapon), 9, "the burst's first shot");
+        for tick in 2..10 {
+            set_vault(&registry, pawn, Some((16.0 * tick as f32, false)));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(tick, false, false),
+                1.0 / 60.0,
+            );
+        }
+        assert_eq!(
+            magazine(&registry, weapon),
+            9,
+            "vault entry stops the burst"
+        );
+    }
+
+    fn set_primary(
+        registry: &Rc<RefCell<EntityRegistry>>,
+        weapon: EntityId,
+        action: serde_json::Value,
+    ) {
+        let mut registry = registry.borrow_mut();
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.primary = std::sync::Arc::new(serde_json::from_value(action).unwrap());
+        component.activation_programs =
+            postretro_foundation::WeaponActivationPrograms::install(&component.primary, None);
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    /// A press charge whose charge `vault` interrupts (`None` leaves
+    /// `interruptedBy` out) or does not.
+    fn vault_charge(vault: Option<bool>) -> serde_json::Value {
+        let mut charge = serde_json::json!({"minMs":0,"fullMs":100});
+        if let Some(vault) = vault {
+            charge["interruptedBy"] = serde_json::json!({ "vault": vault });
+        }
+        serde_json::json!({"trigger":"press","recoveryMs":16,"charge":charge,"steps":[{"kind":"shot"}]})
+    }
+
+    fn host_charging(registry: &Rc<RefCell<EntityRegistry>>, weapon: EntityId) -> bool {
+        matches!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .state,
+            WieldableState::Charging(_)
+        )
+    }
+
+    fn release_command(tick: u32, start_tick: u32) -> crate::sim::SimCommand {
+        let mut command = button_command(tick, false, false);
+        command.activation.release = Some(postretro_foundation::ActivationRelease {
+            token: postretro_foundation::ActivationToken {
+                start_tick,
+                lane: postretro_foundation::ActivationLane::Primary,
+            },
+            release_tick: tick,
+        });
+        command
+    }
+
+    // A charge whose action opts out of vault interruption keeps charging
+    // through the host player's vault; a release made mid-vault is held and
+    // fires the charged shot on the first tick after it, and a re-press before
+    // the exit keeps charging. The default, and `vault: true`, cancel the
+    // charge at entry as before.
+    #[test]
+    fn a_charge_the_vault_spares_fires_the_host_players_mid_vault_release_on_exit() {
+        for (interrupts, spared) in [(Some(false), true), (None, false), (Some(true), false)] {
+            let (registry, pawn, weapon) = local_vault_pawn();
+            set_primary(&registry, weapon, vault_charge(interrupts));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(1, true, true),
+                1.0 / 60.0,
+            );
+            assert!(host_charging(&registry, weapon));
+            set_vault(&registry, pawn, Some((16.0, false)));
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(2, false, true),
+                1.0 / 60.0,
+            );
+            assert_eq!(host_charging(&registry, weapon), spared, "{interrupts:?}");
+            for tick in 3..5 {
+                set_vault(&registry, pawn, Some((16.0 * tick as f32, false)));
+                let command = if tick == 3 {
+                    release_command(3, 1)
+                } else {
+                    button_command(tick, false, false)
+                };
+                run_local_only_tick(registry.clone(), weapon, &command, 1.0 / 60.0);
+            }
+            assert_eq!(
+                magazine(&registry, weapon),
+                10,
+                "{interrupts:?}: nothing fires mid-vault"
+            );
+            set_vault(&registry, pawn, None);
+            run_local_only_tick(
+                registry.clone(),
+                weapon,
+                &button_command(5, false, false),
+                1.0 / 60.0,
+            );
+            assert_eq!(
+                magazine(&registry, weapon) == 9,
+                spared,
+                "{interrupts:?}: only a spared charge fires on exit"
+            );
+        }
+
+        let (registry, pawn, weapon) = local_vault_pawn();
+        set_primary(&registry, weapon, vault_charge(Some(false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(1, true, true),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, Some((16.0, false)));
+        run_local_only_tick(registry.clone(), weapon, &release_command(2, 1), 1.0 / 60.0);
+        set_vault(&registry, pawn, Some((32.0, false)));
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(3, true, true),
+            1.0 / 60.0,
+        );
+        set_vault(&registry, pawn, None);
+        run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &button_command(4, false, true),
+            1.0 / 60.0,
+        );
+        assert!(
+            host_charging(&registry, weapon) && magazine(&registry, weapon) == 10,
+            "pressed again before the exit: still charging"
+        );
+        run_local_only_tick(registry.clone(), weapon, &release_command(5, 1), 1.0 / 60.0);
+        assert_eq!(magazine(&registry, weapon), 9, "its later release fires");
+    }
 }

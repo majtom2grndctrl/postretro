@@ -1632,3 +1632,245 @@ mod impact_burst {
         }
     }
 }
+
+// --- Vault fire gate ---------------------------------------------------------
+
+/// Put the fixture pawn mid-vault (`elapsed_ms` into a 320 ms vault) with fire
+/// allowed or not, or back to `Normal` with `None`.
+fn set_vault(registry: &mut EntityRegistry, pawn: EntityId, vault: Option<(f32, bool)>) {
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    match vault {
+        Some((elapsed_ms, allow_fire)) => {
+            movement.vault = Some(postretro_foundation::VaultParams {
+                max_height: 1.6,
+                swim_max_height: 0.9,
+                duration_ms: 320.0,
+                from: postretro_foundation::VaultEntry::default(),
+                allow_fire,
+            });
+            movement.movement_state = postretro_foundation::MovementState::Vault {
+                elapsed_ms,
+                target: Vec3::new(1.0, 1.0, 0.0),
+                start_offset: Vec3::new(-0.8, -0.7, 0.0),
+                mover: None,
+                entry_speed: 0.0,
+            };
+        }
+        None => movement.movement_state = postretro_foundation::MovementState::Normal,
+    }
+    registry.set_component(pawn, movement).unwrap();
+}
+
+fn single_shot() -> serde_json::Value {
+    serde_json::json!({"trigger":"press","recoveryMs":16.0,"steps":[{"kind":"shot"}]})
+}
+
+#[test]
+fn client_weapon_vault_refuses_starts_until_its_last_tick_unless_fire_is_allowed() {
+    for (vault, starts) in [
+        (Some((16.0, false)), false),
+        (Some((320.0, false)), true),
+        (Some((16.0, true)), true),
+    ] {
+        let (mut registry, pawn, _) = fixture(single_shot(), false);
+        set_vault(&mut registry, pawn, vault);
+        let mut frame = ClientWeaponFrame::default();
+        let mut command = command(true, true);
+        predict(&mut frame, &mut registry, &mut command, 0);
+        assert_eq!(
+            command.activation.initiation.is_some(),
+            starts,
+            "{vault:?}: a start is sent only when the gate is open"
+        );
+        assert_eq!(frame.due.len(), usize::from(starts), "{vault:?}");
+    }
+}
+
+#[test]
+fn client_weapon_vault_entry_stops_a_burst_and_a_held_trigger_fires_after_exit() {
+    let burst = serde_json::json!({"trigger":"press","recoveryMs":16.0,"steps":[{"kind":"shot"},{"kind":"wait","durationMs":32.0},{"kind":"shot"},{"kind":"wait","durationMs":32.0},{"kind":"shot"}]});
+    let (mut registry, pawn, _) = fixture(burst, false);
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 0);
+    assert_eq!(frame.due.len(), 1, "the burst's first shot");
+    // The vault starts; the burst's later shots never fire.
+    set_vault(&mut registry, pawn, Some((16.0, false)));
+    for tick in 1..8 {
+        let mut held = command(false, false);
+        predict(&mut frame, &mut registry, &mut held, tick);
+    }
+    assert_eq!(frame.due.len(), 1, "vault entry stops the burst");
+
+    // A press made mid-vault and held to exit fires on the exit, without a
+    // re-press, for a press trigger and a hold trigger alike.
+    for action in [
+        single_shot(),
+        serde_json::json!({"trigger":"hold","recoveryMs":16.0,"steps":[{"kind":"shot"}]}),
+    ] {
+        let (mut registry, pawn, _) = fixture(action.clone(), false);
+        let mut frame = ClientWeaponFrame::default();
+        set_vault(&mut registry, pawn, Some((16.0, false)));
+        let mut press = command(true, true);
+        predict(&mut frame, &mut registry, &mut press, 0);
+        for tick in 1..4 {
+            let mut held = command(false, true);
+            predict(&mut frame, &mut registry, &mut held, tick);
+            assert!(
+                held.activation.initiation.is_none(),
+                "{action}: still vaulting"
+            );
+        }
+        set_vault(&mut registry, pawn, None);
+        let mut held = command(false, true);
+        predict(&mut frame, &mut registry, &mut held, 4);
+        assert!(
+            held.activation.initiation.is_some(),
+            "{action}: the held trigger fires on exit"
+        );
+    }
+}
+
+/// A press charge of `shots` shots, 32 ms apart, whose charge `vault` either
+/// interrupts (`None` leaves `interruptedBy` out) or does not.
+fn vault_charge(vault: Option<bool>, shots: usize) -> serde_json::Value {
+    let mut steps = vec![serde_json::json!({"kind":"shot"})];
+    for _ in 1..shots {
+        steps.push(serde_json::json!({"kind":"wait","durationMs":32.0}));
+        steps.push(serde_json::json!({"kind":"shot"}));
+    }
+    let mut charge = serde_json::json!({"minMs":0,"fullMs":100});
+    if let Some(vault) = vault {
+        charge["interruptedBy"] = serde_json::json!({ "vault": vault });
+    }
+    serde_json::json!({"trigger":"press","recoveryMs":16.0,"charge":charge,"steps":steps})
+}
+
+fn charging(registry: &EntityRegistry, weapon: EntityId) -> bool {
+    matches!(
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .state,
+        postretro_entities::components::wieldable_state::WieldableState::Charging(_)
+    )
+}
+
+fn released(token: ActivationToken, tick: u32) -> sim::SimCommand {
+    let mut command = command(false, false);
+    command.activation.release = Some(postretro_foundation::ActivationRelease {
+        token,
+        release_tick: tick,
+    });
+    command
+}
+
+// A charge whose action opts out of vault interruption keeps charging through
+// the vault. A release made mid-vault is held, not sent, and released on the
+// first tick after the vault, where the charged shot fires; pressing the
+// trigger again before the exit keeps it charging. With the default, or
+// `vault: true`, vault entry cancels the charge as before.
+#[test]
+fn client_weapon_a_charge_the_vault_spares_fires_its_mid_vault_release_after_exit() {
+    let (mut registry, pawn, id) = fixture(vault_charge(Some(false), 1), false);
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 0);
+    let token = start.activation.initiation.unwrap();
+    set_vault(&mut registry, pawn, Some((16.0, false)));
+    predict(&mut frame, &mut registry, &mut command(false, true), 1);
+    assert!(charging(&registry, id), "vault entry spares the charge");
+    let mut release = released(token, 2);
+    predict(&mut frame, &mut registry, &mut release, 2);
+    assert!(
+        release.activation.release.is_none(),
+        "a mid-vault release is held, not sent"
+    );
+    predict(&mut frame, &mut registry, &mut command(false, false), 3);
+    assert!(frame.due.is_empty() && charging(&registry, id));
+    set_vault(&mut registry, pawn, None);
+    let mut exit = command(false, false);
+    predict(&mut frame, &mut registry, &mut exit, 4);
+    assert_eq!(
+        exit.activation.release,
+        Some(postretro_foundation::ActivationRelease {
+            token,
+            release_tick: 4,
+        }),
+        "the held release is sent stamped on the first tick after the vault"
+    );
+    assert_eq!(frame.due.len(), 1, "the charged shot fires on exit");
+    assert!((frame.due[0].shot.activation.charge - 4.0 / 6.0).abs() < 1e-6);
+
+    // Pressed again before the exit: still charging after it, until released.
+    let (mut registry, pawn, id) = fixture(vault_charge(Some(false), 1), false);
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 0);
+    let token = start.activation.initiation.unwrap();
+    set_vault(&mut registry, pawn, Some((16.0, false)));
+    predict(&mut frame, &mut registry, &mut released(token, 1), 1);
+    predict(&mut frame, &mut registry, &mut command(true, true), 2);
+    set_vault(&mut registry, pawn, None);
+    let mut held = command(false, true);
+    predict(&mut frame, &mut registry, &mut held, 3);
+    assert!(held.activation.release.is_none(), "re-pressed: no release");
+    assert!(frame.due.is_empty() && charging(&registry, id));
+    predict(&mut frame, &mut registry, &mut released(token, 4), 4);
+    assert_eq!(frame.due.len(), 1, "the later release fires the charge");
+
+    for interrupts in [None, Some(true)] {
+        let (mut registry, pawn, id) = fixture(vault_charge(interrupts, 1), false);
+        let mut frame = ClientWeaponFrame::default();
+        let mut start = command(true, true);
+        predict(&mut frame, &mut registry, &mut start, 0);
+        let token = start.activation.initiation.unwrap();
+        set_vault(&mut registry, pawn, Some((16.0, false)));
+        predict(&mut frame, &mut registry, &mut command(false, true), 1);
+        assert!(!charging(&registry, id), "{interrupts:?}: entry cancels");
+        predict(&mut frame, &mut registry, &mut released(token, 2), 2);
+        set_vault(&mut registry, pawn, None);
+        predict(&mut frame, &mut registry, &mut command(false, false), 3);
+        assert!(frame.due.is_empty(), "{interrupts:?}: nothing fires");
+    }
+}
+
+// The opt-out covers the charge phase only: once a spared charge's shot fires
+// before the vault, entry stops the rest of its burst. Death cancels a spared
+// charge mid-vault, as it cancels any execution.
+#[test]
+fn client_weapon_a_spared_charge_stops_its_burst_once_fired_and_dies_with_its_owner() {
+    let (mut registry, pawn, _) = fixture(vault_charge(Some(false), 3), false);
+    let mut frame = ClientWeaponFrame::default();
+    let mut start = command(true, true);
+    predict(&mut frame, &mut registry, &mut start, 0);
+    let token = start.activation.initiation.unwrap();
+    predict(&mut frame, &mut registry, &mut released(token, 1), 1);
+    assert_eq!(frame.due.len(), 1, "the burst's first shot");
+    set_vault(&mut registry, pawn, Some((16.0, false)));
+    for tick in 2..10 {
+        predict(&mut frame, &mut registry, &mut command(false, false), tick);
+    }
+    assert_eq!(frame.due.len(), 1, "vault entry stops the fired burst");
+
+    let (mut registry, pawn, id) = fixture(vault_charge(Some(false), 1), false);
+    let mut frame = ClientWeaponFrame::default();
+    predict(&mut frame, &mut registry, &mut command(true, true), 0);
+    set_vault(&mut registry, pawn, Some((16.0, false)));
+    predict(&mut frame, &mut registry, &mut command(false, true), 1);
+    assert!(charging(&registry, id));
+    let mut health = registry
+        .get_component::<HealthComponent>(pawn)
+        .unwrap()
+        .clone();
+    health.current = 0.0;
+    registry.set_component(pawn, health).unwrap();
+    predict(&mut frame, &mut registry, &mut command(false, true), 2);
+    assert!(!charging(&registry, id), "death cancels the spared charge");
+    set_vault(&mut registry, pawn, None);
+    predict(&mut frame, &mut registry, &mut command(false, false), 3);
+    assert!(frame.due.is_empty());
+}

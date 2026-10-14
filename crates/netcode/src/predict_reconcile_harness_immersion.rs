@@ -32,7 +32,7 @@ fn swim() -> SwimParams {
         sink_speed: 0.8,
         enter_depth: 0.5,
         exit_depth: 0.35,
-        fluid_jump_velocity: 6.5,
+        fluid_jump_velocity: Some(6.5),
     }
 }
 

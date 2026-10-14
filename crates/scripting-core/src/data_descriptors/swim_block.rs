@@ -30,16 +30,24 @@ pub(crate) fn swim_block_not_an_object() -> DescriptorError {
 }
 
 /// Read the six fields in authored order through `read` (one VM's field
-/// reader), then range-check them with [`SwimParams::validated`].
+/// reader, `None` for an absent or null field), then range-check them with
+/// [`SwimParams::validated`]. `fluidJumpVelocity` is optional; the rest are
+/// required.
 pub(crate) fn swim_params_from_fields(
-    mut read: impl FnMut(&'static str) -> Result<f32, DescriptorError>,
+    mut read: impl FnMut(&'static str) -> Result<Option<f32>, DescriptorError>,
 ) -> Result<SwimParams, DescriptorError> {
+    let mut required = |field| read(field)?.ok_or_else(|| swim_field_missing(field));
+    let speed = required("speed")?;
+    let accel = required("accel")?;
+    let sink_speed = required("sinkSpeed")?;
+    let enter_depth = required("enterDepth")?;
+    let exit_depth = required("exitDepth")?;
     SwimParams {
-        speed: read("speed")?,
-        accel: read("accel")?,
-        sink_speed: read("sinkSpeed")?,
-        enter_depth: read("enterDepth")?,
-        exit_depth: read("exitDepth")?,
+        speed,
+        accel,
+        sink_speed,
+        enter_depth,
+        exit_depth,
         fluid_jump_velocity: read("fluidJumpVelocity")?,
     }
     .validated()

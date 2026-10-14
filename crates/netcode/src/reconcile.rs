@@ -80,6 +80,8 @@ pub(crate) fn reconcile_local_pawn(
 /// wrapper above preserves existing static/live collision callers; production client
 /// snapshot apply uses this path so carry/release during replay reads mover poses from
 /// the authoritative tick axis instead of the live post-apply mover table.
+/// The history is taken mutably because replay resolves each replayed tick's
+/// mover poses into the history's memo before that tick's queries run.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconcile_local_pawn_with_mover_history(
     registry: &mut EntityRegistry,
@@ -89,7 +91,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     movement: Option<&WirePlayerMovementState>,
     acked_tick: Option<u32>,
     authoritative_server_tick: u32,
-    mover_history: Option<&MoverHistoryBuffer>,
+    mut mover_history: Option<&mut MoverHistoryBuffer>,
     collision: &impl MovementCollisionSource,
     environment: EnvironmentView<'_>,
     dt: f32,
@@ -121,11 +123,14 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         let base_collision = collision.combined_collision();
         if !merge_wire_into_movement_state_checked(&mut component, wire, |mover_id| {
             mover_history
+                .as_deref()
                 .and_then(|history| history.pose(mover_id))
                 .is_some()
                 || base_collision.poses.pose(mover_id).is_some()
         }) {
-            log::warn!("[Net] skipping local reconcile with unknown ground mover reference");
+            log::warn!(
+                "[Net] skipping local reconcile with unknown ground or vault mover reference"
+            );
             return None;
         }
     }
@@ -153,11 +158,15 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         let base_collision = collision.combined_collision();
         for (index, entry) in prediction.history().iter().enumerate() {
             let sim = crate::netcode::wire_convert::input_command_to_sim(&entry.command);
+            let server_tick = authoritative_server_tick.wrapping_add(index as u32 + 1);
+            // Resolve every mover once for this tick; the replayed movement's
+            // queries then read the memo instead of re-extrapolating per cast.
+            if let Some(history) = mover_history.as_deref_mut() {
+                history.resolve_replay_tick(server_tick, dt);
+            }
             let replay_collision = ReplayCollisionSource {
                 base: base_collision,
-                mover_history,
-                server_tick: authoritative_server_tick.wrapping_add(index as u32 + 1),
-                tick_dt: dt,
+                mover_history: mover_history.as_deref(),
             };
             let (next_transform, next_movement, _events) = replay(
                 reconciled_transform,
@@ -229,17 +238,17 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     Some(class)
 }
 
+/// Mover poses for one replayed tick: the history memo resolved for that tick,
+/// falling back to the live table for movers with no history.
 struct ReplayCollisionSource<'a> {
     base: CombinedCollisionWorld<'a>,
     mover_history: Option<&'a MoverHistoryBuffer>,
-    server_tick: u32,
-    tick_dt: f32,
 }
 
 impl MoverPoseSource for ReplayCollisionSource<'_> {
     fn pose(&self, mover_id: u32) -> Option<MoverPose> {
         self.mover_history
-            .and_then(|history| history.pose_at_tick(mover_id, self.server_tick, self.tick_dt))
+            .and_then(|history| history.replay_pose(mover_id))
             .or_else(|| self.base.poses.pose(mover_id))
     }
 }
@@ -339,6 +348,7 @@ mod tests {
             crouch: None,
             slide: None,
             swim: None,
+            vault: None,
             view_feel: None,
         }
     }
@@ -919,7 +929,7 @@ mod tests {
             Some(&authoritative),
             Some(4),
             10,
-            Some(&history),
+            Some(&mut history),
             &world,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
@@ -1024,7 +1034,7 @@ mod tests {
             Some(&authoritative),
             Some(4),
             10,
-            Some(&history),
+            Some(&mut history),
             &live_collision,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,

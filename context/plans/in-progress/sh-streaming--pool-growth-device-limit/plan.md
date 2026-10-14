@@ -43,7 +43,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 | A24 | `fixture_churn_fits_fragmentation_headroom` with named frozen arrays and eight deterministic seeds | achievable as stated | pass: focused proof and source/contract review |
 | A25 | Captured-limit propagation source inspection and all GPU growth/geometry tests | achievable as stated | pass: focused proof and source/contract review |
 | A26 | Final `POSTRETRO_REQUIRE_GPU=1` growth suite after preflight; no skips, overrides ≤ device grants | achievable as stated | pass: final 10 required-GPU growth tests, zero ignored/skipped |
-| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | partial: both feature logs recorded below; pre-change comparison outstanding |
+| M1 | Owner in-engine A/B walks: campaign-test and stress-warren hallway at default limits; no warning; initial bytes, tiles/layer, growth, copy regions/install and install CPU | external manual proof; blocks landing | pass: both before/feature walks recorded; zero SH device-limit warnings; allocation/growth/copy/CPU comparison below; hallway route differs |
 
 ## Tasks
 
@@ -53,7 +53,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 | 2 | Clamp dense and all sparse growth, distinguish refusal from contract errors, GPU ordering/rollback proof | renderer worker | 1 | complete: real GPU clamp/refusal/rollback/readback proofs pass |
 | 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | complete: 26 refusal tests passed in 224-test focused app run, including late-read and split-cohort recovery |
 | 4 | Level-scoped warnings, diagnostic consumers, Settling/capture integration and proof | integrating executor | 2, 3 | complete: session/Settling/log proofs, capture serialization (1), Streaming tab (5) pass |
-| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated complete: review fixes approved; fmt/Clippy/full serial workspace suite and final 10 required-GPU tests pass; M1 blocks landing |
+| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated complete: review fixes approved; fmt/Clippy/full serial workspace suite and final 10 required-GPU tests and M1 pass; awaiting owner landing instruction |
 
 ## Shared contracts and performance
 - `ShDrainOutcome.refused: Vec<u32>` accounts for device-limit failures exclusively and is disjoint from accepted/dropped/deferred. Renderer drops refused payloads; app releases their in-drain ready charge and permit and records the latest failure cause.
@@ -65,7 +65,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 
 ## External runbook
 
-M1 blocks landing. Automated results cannot substitute for these walks.
+M1 required these walks before landing; its completed result is recorded below. Automated results cannot substitute for manual evidence.
 
 1. Baseline: `e8f607b94` (claim-only commit, before implementation). Feature: this branch after final checks. Use the same compiled `campaign-test` and `stress-warren-hallway-inspection` PRLs for both; do not rebake between runs. Keep their content hashes with the measurements.
 2. Pin machine/GPU/backend, window resolution, lighting options and the route through each map. Record the route/poses and run duration. Use the same feature set (`dev-tools`) and default device limits/streaming settings; no test-limit overrides. Record other GPU workloads so contention is visible.
@@ -114,7 +114,7 @@ If a log already exists, its replacement run gets a timestamp/PID suffix instead
 | campaign-test | `868cf5db03ec7c9a97f75d54cad1f9d8d9c6c4b7337af6c64c3de22793a70ee2` |
 | stress-warren-hallway-inspection | `9a4a5d089c5cfaf8f068c13c8d39e6b472ecf72d39f8e15eb37c2db91a1eb53a` |
 
-Do not rebake between comparison runs. Preserve the bundle until both baseline walks are recorded and analyzed, then remove it during landing cleanup. M1 is still outstanding; no baseline walk was performed during preparation.
+Do not rebake between comparison runs. Preserve the bundle until both baseline walks are recorded and analyzed, then remove it during landing cleanup. At preparation M1 was outstanding; no baseline walk was performed during preparation. Completed walks are recorded below.
 
 ## Verification log
 
@@ -219,6 +219,82 @@ The full log also contains 135 non-SH warning records: 100 typedef-generation wa
 
 Both feature-map logs satisfy the captured zero-SH-device-warning check. The hallway's early capacity growth and install costs require the pre-change comparison; no performance pass or regression is inferred. M1 remains outstanding for the two baseline walks and matched run conditions. Preserve both original temporary logs untracked and unchanged.
 
+## Manual evidence — completed before/feature comparison
+
+M1 passes its stated manual acceptance: both default-limit maps logged zero SH device-limit warnings, and initial allocation, growth, copy regions/install and CPU measurements are reported against the pre-change build. Owner completed both before walks and confirmed the same GPU, resolution and lighting settings, with no test-limit overrides. Owner reports similar fast turns/hallway traversal, not an identical hallway route. This is an observational comparison, not proof of a performance improvement or absence of hitches.
+
+Baseline provenance: launcher headers identify `e8f607b94744e338039fcc4389ead98ef91ef6d6`, logging-only instrumentation, dev profile/dev-tools, baseline engine hash and unchanged PRL hashes from the prepared bundle. Baseline logs and the full feature hallway log confirm AMD Radeon Pro 5300M / Metal; surface 2560×1440, scene 1280×720, divisor 2. Feature campaign startup was supplied separately in chat; its excerpt lacks executable/map hashes. Other GPU workloads and exact feature executable revision remain unrecorded.
+
+Selected baseline sources (retained untracked):
+
+| Log | Lines | SHA-256 |
+|---|---:|---|
+| `campaign-test-before-sh-log-20261013-165822-34484.txt` | 382 | `67bcb6c5a320305780e54f85acdd5cf0efdd2f88ea26ff0238cb4e336efc4a0f` |
+| `stress-warren-hallway-inspection-before-sh-log.txt` | 634 | `23ab20cafc27121360682ecfc5d1a0052a657457800c23c110c7f48c6ff1e558` |
+
+The earlier campaign run `campaign-test-before-sh-log-20261013-165744-34387.txt` contains only 16 installs and little traversal; use the later 32-install run above. The unsuffixed campaign file is the failed path launch and supplies no walk evidence. Do not combine these runs.
+
+| Measurement | Campaign before → feature | Hallway before → feature |
+|---|---|---|
+| Initial dense bytes | 62,949,120 → 62,949,120 | 169,861,120 → 169,861,120 |
+| Initial tiles/layer; layers | 37,830; 1 → 37,830; 1 | 102,080; 1 → 102,080; 1 |
+| Pool growth count / added capacity | 0 / 0 → 0 / 0 | 12 / 1,260 MiB → 12 / 1,260 MiB |
+| Growth CPU | 0 → 0 ms | 76.99 → 70.89 ms; first window only |
+| SH device-limit warnings / visible misses | 0 / 0 → 0 / 0 | 0 / 0 → 0 / 0 |
+| Whole-capture installs / copy regions | 32 / 1,828 → 32 / 1,828 | 309 / 34,568 → 136 / 14,080 |
+| Whole-capture trace CPU | 60.906 → 65.557 ms | 1,362.432 → 592.039 ms |
+| Whole-capture periodic drain CPU | 71.28 → 72.71 ms | 1,448.94 → 633.42 ms |
+| Re-read requests / evictions | 11 / 19 → 11 / 19 | 182 / 210 → 13 / 94 |
+| Budget-limited drains | 0 → 0 | 21 → 2 |
+
+Baseline trace phases split by line order at the level `[Startup] worker_dispatch=…` report. This avoids assigning all same-second work to Settling. CPU p95 uses nearest rank. Copy means include zero-copy installs.
+
+| Map / phase | Installs | Copy regions total / mean / range | CPU total / mean / median / p95 / max (ms) |
+|---|---:|---|---|
+| Campaign before startup report | 13 | 938 / 72.15 / 0–347 | 38.537 / 2.964 / 1.192 / 22.232 / 22.232 |
+| Campaign after startup report | 19 | 890 / 46.84 / 0–140 | 22.369 / 1.177 / 0.394 / 4.779 / 4.779 |
+| Campaign whole capture | 32 | 1,828 / 57.13 / 0–347 | 60.906 / 1.903 / 0.492 / 4.779 / 22.232 |
+| Hallway before startup report | 80 | 9,503 / 118.79 / 0–313 | 459.306 / 5.741 / 3.698 / 24.412 / 42.608 |
+| Hallway after startup report | 229 | 25,065 / 109.45 / 0–219 | 903.126 / 3.944 / 3.305 / 9.278 / 39.298 |
+| Hallway whole capture | 309 | 34,568 / 111.87 / 0–313 | 1,362.432 / 4.409 / 3.440 / 12.680 / 42.608 |
+
+### Campaign workload match
+
+Owner reports a closer, though not mechanically identical, campaign route. Both captures have the same 13 before-startup and 19 after-startup installs, 1,828 total copy regions, 11 re-reads and 19 evictions. This is the stronger workload comparison. Trace CPU rises 60.906 → 65.557 ms overall (+4.651 ms, ~7.6%); periodic drain CPU rises only 71.28 → 72.71 ms. After-startup mean CPU rises 1.177 → 1.354 ms (~0.177 ms/install), while median falls 0.394 → 0.369 ms. Maximum rises 4.779 → 5.877 ms; with only 19 samples nearest-rank p95 is also the maximum. Mixed timing and one run per build cannot establish either a speed improvement or a regression. It gives no support for attributing the hallway’s large upload-count reduction to this feature.
+
+### Hallway duration, frequency and payload normalization
+
+Full recorded spans: before 00:00:31–00:01:58 UTC on October 14 (87 s), feature 21:30:47–21:32:09 UTC on October 13 (82 s). Local dates are October 13 for both. Startup-report-to-exit spans are about 80 / 76 s; 229 / 59 installs yield 2.86 / 0.78 installs/s and 11.29 / 2.65 trace CPU ms/s. Timestamps have one-second precision and cannot identify frame boundaries or exact movement duration.
+
+Exclude the first reporting window from both to separate early growth/reveal work. Remaining complete periodic windows span 75 / 70 s. They account for 224 / 51 installs; the first window in each accounts for 85 installs and 206.7 MiB. Payload totals below sum rounded logged decoded-install sizes, not measured GPU transfer bytes.
+
+| Later-window measurement | Before | Feature |
+|---|---:|---:|
+| Installs per second | 2.99 | 0.73 |
+| Installed payload total / per second | ~398.8 MiB / 5.32 MiB/s | ~59.0 MiB / 0.84 MiB/s |
+| Mean installed payload / install | ~1.78 MiB | ~1.16 MiB |
+| Copy regions / install | 108.95 | 76.76 |
+| Trace CPU total / mean / p95 / max | 832.447 / 3.716 / 8.329 / 20.636 ms | 118.646 / 2.326 / 4.418 / 5.747 ms |
+| Trace CPU per MiB of installed payload | ~2.09 ms | ~2.01 ms |
+| Periodic drain CPU per MiB of installed payload | ~2.23 ms | ~2.15 ms |
+| Re-read requests / evictions | 181 / 209 | 12 / 93 |
+| Windows with installs / later windows | 12 / 15 | 11 / 14 |
+| Largest five-second install count | 36 | 26 |
+
+The similar duration does not explain the upload difference. Before had more repeat loading and larger average payloads. Its lower-level CPU cost per payload MiB is close to the feature's; lower feature CPU per install is consistent with smaller payloads. Route/demand differences and unrecorded machine load prevent attributing this to the change. Both runs spread uploads across most five-second windows, with bursts rather than uniform intervals. At one-second log resolution the largest later bursts contain 33 / 23 installs and 129.484 / 78.579 ms summed trace CPU; neither sum is a frame time. Feature's largest burst occurs about 45 s after its startup report; before's about 60 s after its report.
+
+Expected behavior at these default limits: protect against device-limit crashes, hold the whole-level geometry minimum and preserve ordinary growth. Both maps retain the same initial geometry and growth counts. No device-limit refusal was triggered. This evidence does not show that the change reduces routine upload frequency; automated lowered-limit and zero-share tests exercise its intended new paths.
+
+### Hitch evidence
+
+Before hallway at 00:01:13 UTC / 17:01:13 local: clusters 2452, 2613 and 3067 cost 20.636, 19.097 and 16.726 ms individually (raw log lines 452, 455, 462). Later work includes 16.376 ms at 00:01:48 and 15.898 ms at 00:01:49 (lines 585, 592). These occur after the startup-containing window. Individual work around or above a 16.67 ms frame budget can contribute to the observed hitches. Source `crates/renderer/src/render/sh_streaming/install.rs` times CPU preparation/staging/submission through install completion, not GPU execution or presentation.
+
+The before hallway lifetime maximum drain is 49.57 ms (also no-growth maximum), already present at its first report and unchanged afterward. It cannot be interpreted as a repeated 49.57 ms walking hitch. The feature's maxima are 36.14 ms overall / 34.15 ms no-growth, also fixed from its first report. Both runs report no later growth. Baseline 39.298 ms and feature 20.584 ms individual after-startup maxima occur immediately after their startup reports; later-window maxima are the separate 20.636 / 5.747 ms values above.
+
+Campaign's 19 after-startup installs have max CPU 4.779 → 5.877 ms. Its lifetime drain max 23.53 → 25.13 ms is already present at each first report. No large late SH-install spike appears there. Lightmap maxima (campaign 112.36 → 106.33 ms; hallway 88.59 → 86.47 ms) are also present at first reports and never increase. Asynchronous read latency, pending optional targets and budget-limited drains are not direct frame-stall measurements. No CPU frame-stage or GPU timing capture is present, so the logs cannot attribute every perceived hitch or prove smooth frame delivery.
+
+Manual acceptance is complete. Full frame-timing attribution or a repeatable matched-route performance study would be separate work. Keep comparison artifacts until landing cleanup; preserve the owner's raw logs unless cleanup is authorized.
+
 ## Handoff
 
-Automated A1–A26 pass. M1 remains outstanding and blocks landing; status is `test-ready`. The feature branch is `codex/sh-streaming-pool-growth-device-limit`. The supplied `baseline-measurement.patch` applies cleanly to the exact claim-only baseline. Use the External runbook for the two pinned A/B walks, record actual results here, then wait for the owner to say “land the plane.” Do not move the brief to done or push the feature before the blocking result arrives.
+Automated A1–A26 and manual M1 pass. Status remains `test-ready`, awaiting the owner’s “land the plane.” Feature branch: `codex/sh-streaming-pool-growth-device-limit`. Both before/feature measurements are recorded above; the hallway routes differ, so no causal performance improvement is claimed. SH upload spikes can contribute to the owner’s reported before-walk hitches; full frame timing was not captured. Do not move the brief to done or push the feature before the owner’s landing instruction. Comparison checkout is archived; preserve the baseline bundle until landing cleanup and preserve owner raw logs.

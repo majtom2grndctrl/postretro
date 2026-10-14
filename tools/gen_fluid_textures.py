@@ -216,14 +216,16 @@ def bubble_overrides(bubbles, size, rim, hilite, inner=None):
 
 # --- fluids -----------------------------------------------------------------
 
+# Water is muted and murky: a narrow, desaturated value range, so the surface
+# reads as depth rather than pattern (screen-space reflection is the star).
 WATER = hex_palette(
-    "050b1c", "081633", "0b2147", "0f2f5c", "123f70", "155083",
-    "186394", "1c78a4", "2390b3", "34aac2", "58c8d4", "9ee8ea", "e2fffb",
+    "0a0f0e", "0f1513", "131b19", "18211e", "1d2724", "212d29",
+    "26322e", "2b3834", "2f3e39", "34443f", "394a44", "3d504a", "42564f",
 )
 
 WATER_NEON = hex_palette(
-    "0a0618", "140a2c", "1f0e40", "2c1155", "3d1368", "541579",
-    "6e1a86", "8a2190", "a62c97", "1c5c9a", "2392b8", "3fd0d8", "c8fff8",
+    "0d0b13", "110f18", "15131d", "1a1822", "1e1c27", "22202c",
+    "262432", "2a2837", "2e2c3c", "323041", "373546", "3b394b", "3f3d50",
 )
 
 SLUDGE = hex_palette(
@@ -255,11 +257,12 @@ def water(size, seed, cells, palette):
         wv = v + (warp_v.sample(u, v) - 0.5) * 0.18
         f1, f2 = caustic.sample(wu, wv)
         g1, g2 = caustic_fine.sample(wu + 0.37, wv + 0.11)
-        # Bright caustic web where two cells meet; a fainter fine web on top.
+        # A faint caustic web where two cells meet, and a fainter fine web,
+        # over a murky swell.
         web = 1.0 - clamp01((f2 - f1) / 0.22)
         fine = 1.0 - clamp01((g2 - g1) / 0.18)
         base = swell.sample(u, v)
-        return 0.08 + base * 0.48 + web * web * 0.55 + fine * 0.14
+        return 0.10 + base * 0.62 + web * web * 0.20 + fine * 0.06
 
     return render(size, palette, field, dither=0.9)
 

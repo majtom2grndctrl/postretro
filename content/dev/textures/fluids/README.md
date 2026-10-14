@@ -4,13 +4,14 @@ Procedural, seamlessly tiling liquid textures for dev fixture maps. They exist t
 judge fluid-surface motion (whole-texel shimmer, ripple rings, current drift)
 against real fluid art. Each one uses a small palette (12–13 colours) with
 chunky texel-scale features, so a one-texel offset is visible under nearest
-sampling.
+sampling. The water textures are deliberately muted: a narrow, desaturated
+ramp, so contrast is low but the features stay texel-scale.
 
 | Map-facing name | Size | Look |
 |---|---|---|
-| `fluids/water_64` | 64×64 | Deep blue-teal pool with a bright cyan caustic web. |
-| `fluids/water_128` | 128×128 | Water at twice the extent from its own seed: caustic cells keep the same texel size, while the swell and warp scale with the texture. |
-| `fluids/water_neon_64` | 64×64 | Cyberpunk canal water: violet body, magenta-to-cyan caustic web. |
+| `fluids/water_64` | 64×64 | Murky dark green-grey water: a soft swell under a faint caustic web. |
+| `fluids/water_128` | 128×128 | Murky water at twice the extent from its own seed: caustic cells keep the same texel size, while the swell and warp scale with the texture. |
+| `fluids/water_neon_64` | 64×64 | Cyberpunk canal water, muted: dusky slate-violet swell under a faint caustic web. |
 | `fluids/sludge_64` | 64×64 | Murky olive-brown ooze with oily contour sheen and pale bubble rims. |
 | `fluids/lava_64` | 64×64 | Dark cooled crust plates split by glowing orange-yellow cracks, a few hot bubbles. Has an `_e` emissive sibling. |
 | `fluids/slime_64` | 64×64 | Toxic green gel with glowing lumps and pale bubble rings. |

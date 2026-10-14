@@ -40,9 +40,26 @@ pub const FLUID_SALT_SHIMMER: u32 = 0x85EB_CA6B;
 pub const FLUID_SALT_FADE: u32 = 0xC2B2_AE35;
 pub const FLUID_SALT_BLOCK: u32 = 0x27D4_EB2F;
 pub const FLUID_SALT_DROP: u32 = 0x1656_67B1;
+/// Wave crest-pair salts, one per axis, so the `u` and `v` patterns differ.
+pub const FLUID_SALT_WAVE_U: u32 = 0x4C95_7F2D;
+pub const FLUID_SALT_WAVE_V: u32 = 0x5851_F42D;
+/// Crest pairs per hash-repeat span: a power of two, so a pair hashes on
+/// `pair & (FLUID_WAVE_PAIRS − 1)` and the phase count wraps by masking. At
+/// the shortest pair (16 texels) the layout repeats every 65 536 texels.
+pub const FLUID_WAVE_PAIRS: i32 = 4096;
+/// Half-arc `h(x) = g · (LINEAR + QUADRATIC · g)`, `g = x(1 − x)`: zero at
+/// both ends, 1 at the middle, peak slope ≈ 3.043 per unit arc (a parabola's
+/// is 4), so a crest of 8 × amplitude peaks at ≈ 0.761 texel per cell.
+pub const FLUID_WAVE_ARC_LINEAR: f32 = 3.0;
+pub const FLUID_WAVE_ARC_QUADRATIC: f32 = 4.0;
 /// `lowbias32` multipliers (Chris Wellons' integer hash).
 pub const FLUID_HASH_MUL_A: u32 = 0x7FEB_352D;
 pub const FLUID_HASH_MUL_B: u32 = 0x846C_A68B;
+
+const _: () = assert!(
+    FLUID_WAVE_PAIRS > 0 && FLUID_WAVE_PAIRS & (FLUID_WAVE_PAIRS - 1) == 0,
+    "the wave's pair span must be a power of two to wrap by masking"
+);
 
 const _: () = assert!(
     (FLUID_RING_LIFETIME_STEPS - 1) as f32 * FLUID_RING_STEP_TEXELS + 0.5
@@ -197,21 +214,126 @@ pub fn drift_texels(rate: Vec2, time: f32, dims: Vec2) -> Vec2 {
     (drift_scroll_periods(rate, time) * dims).floor()
 }
 
+/// `a * b` as a whole count and a fraction in `[0, 1)`, both from one split:
+/// the four exact partial products of [`exact_fract_product`] give their
+/// floors to the count and their fractions to the fraction, and the
+/// fractions' carry moves into the count, so the two never disagree.
+pub fn exact_split_product(a: f32, b: f32) -> (i32, f32) {
+    let (a_hi, b_hi) = (high_half(a), high_half(b));
+    let (a_lo, b_lo) = (a - a_hi, b - b_hi);
+    let (p0, p1, p2, p3) = (a_hi * b_hi, a_hi * b_lo, a_lo * b_hi, a_lo * b_lo);
+    let (f0, f1, f2, f3) = (p0.floor(), p1.floor(), p2.floor(), p3.floor());
+    let fraction = (p0 - f0) + (p1 - f1) + (p2 - f2) + (p3 - f3);
+    let carry = fraction.floor();
+    let count = f0 as i32 + f1 as i32 + f2 as i32 + f3 as i32 + carry as i32;
+    (count, fraction - carry)
+}
+
+/// A fluid's wave, as its params row packs it. All zero is no wave.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FluidWaveParams {
+    /// `1 / wavePeriod`; 0 is no wave.
+    pub inv_period: f32,
+    /// Peak sideways shift, texels; 0 is no wave.
+    pub amplitude: f32,
+    /// Crest length range, texels.
+    pub length_min: f32,
+    pub length_max: f32,
+}
+
+impl FluidWaveParams {
+    pub const NONE: Self = Self {
+        inv_period: 0.0,
+        amplitude: 0.0,
+        length_min: 0.0,
+        length_max: 0.0,
+    };
+}
+
+/// The crest at `position` (texels along the wave's axis) at `time`: `x` is
+/// the distance into the crest, `y` its length. Crests come in pairs spanning
+/// exactly two mean lengths, the first `mean + d` and the second `mean − d`,
+/// with `d` hashed per pair, so every crest lies in the length range and a
+/// pair is found in O(1). The layout translates by one mean length per period.
+///
+/// The phase, in mean lengths, splits exactly into a whole count and a
+/// fraction ([`exact_split_product`]). The count wraps over whole hash-repeat
+/// spans and splits into pairs and a parity, so pair indices stay integers and
+/// every f32 here stays small at any script time. Wrapping over whole spans,
+/// never one period, keeps every crest's hashed length across the wrap.
+pub fn wave_crest(position: f32, time: f32, wave: FluidWaveParams, salt: u32) -> Vec2 {
+    let (count, fraction) = exact_split_product(time, wave.inv_period);
+    let count = count & (2 * FLUID_WAVE_PAIRS - 1);
+    let pairs = count >> 1;
+    let parity = (count & 1) as f32;
+    let pair_length = wave.length_min + wave.length_max;
+    let pair_position = position / pair_length - (parity + fraction) * 0.5;
+    let whole = pair_position.floor();
+    let pair = (whole as i32 - pairs) & (FLUID_WAVE_PAIRS - 1);
+    let into_pair = (pair_position - whole) * pair_length;
+    let d = (2.0 * hash_unit(hash_u32(pair as u32 ^ salt)) - 1.0)
+        * (wave.length_max - wave.length_min)
+        * 0.5;
+    let first = 0.5 * pair_length + d;
+    if into_pair < first {
+        Vec2::new(into_pair, first)
+    } else {
+        Vec2::new(into_pair - first, pair_length - first)
+    }
+}
+
+/// A crest's signed shape at `crest` ([`wave_crest`]): a positive half-arc
+/// then a negative one, each half the crest long, each zero at both ends, so
+/// crests of different lengths join continuously.
+pub fn wave_arc(crest: Vec2) -> f32 {
+    let half = 0.5 * crest.y;
+    let second = crest.x >= half;
+    let x = (crest.x - if second { half } else { 0.0 }) / half;
+    let g = x * (1.0 - x);
+    let h = g * (FLUID_WAVE_ARC_LINEAR + FLUID_WAVE_ARC_QUADRATIC * g);
+    if second { -h } else { h }
+}
+
+/// The wave's continuous shift, in texels, at `position` along its axis,
+/// before rounding. Exactly zero with no amplitude or no period.
+pub fn wave_value(position: f32, time: f32, wave: FluidWaveParams, salt: u32) -> f32 {
+    if wave.amplitude == 0.0 || wave.inv_period == 0.0 {
+        return 0.0;
+    }
+    wave.amplitude * wave_arc(wave_crest(position, time, wave, salt))
+}
+
+/// The wave's whole-texel offset for `cell` at `time`: the `u` shift keyed on
+/// the cell's `v`, the `v` shift on its `u`, each sampled at the cell centre
+/// on the fixed grid. Texels count, not texture periods, so the offset is the
+/// same whatever the texture's size.
+pub fn wave_offset(cell: IVec2, time: f32, wave: FluidWaveParams) -> IVec2 {
+    let shift = Vec2::new(
+        wave_value(cell.y as f32 + 0.5, time, wave, FLUID_SALT_WAVE_U),
+        wave_value(cell.x as f32 + 0.5, time, wave, FLUID_SALT_WAVE_V),
+    );
+    (shift + 0.5).floor().as_ivec2()
+}
+
 /// The texel-space sample point for a fragment at unwarped texel UV
-/// `texel_uv`: drift beneath, then the cell offset keyed on the fixed grid.
-/// Three layers add: shimmer and rings per cell, and drift scrolling the whole
-/// face beneath the fixed cell grid ([`drift_scroll_periods`]), with the cell
-/// offset fading to flat as texels shrink below a pixel.
+/// `texel_uv`: drift beneath, then the cell offsets keyed on the fixed grid.
+/// Four layers add: shimmer and rings per cell, fading to flat as texels
+/// shrink below a pixel; the declared wave per cell, which never fades; and
+/// drift scrolling the whole face beneath the fixed cell grid
+/// ([`drift_scroll_periods`]). The wave sits beside drift, outside
+/// [`displayed_offset`], so the flash guards measure shimmer and rings alone.
 pub fn warped_texel_uv(
     texel_uv: Vec2,
     drift_rate: Vec2,
     dims: Vec2,
+    wave: FluidWaveParams,
     time: f32,
     texels_per_pixel: f32,
 ) -> Vec2 {
     let cell = texel_cell(texel_uv);
     texel_uv
         + drift_texels(drift_rate, time, dims)
+        + wave_offset(cell, time, wave).as_vec2()
         + displayed_offset(cell, time, texels_per_pixel).as_vec2()
 }
 

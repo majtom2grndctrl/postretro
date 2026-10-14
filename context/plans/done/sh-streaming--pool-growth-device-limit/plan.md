@@ -1,7 +1,7 @@
 # sh-streaming--pool-growth-device-limit — plan of record
 
 mode: compact
-status: test-ready
+status: done
 read at: e8f607b94
 
 ## Corrections
@@ -53,7 +53,7 @@ Numbered in the order of the brief’s Automated rows; M1 is its Manual row.
 | 2 | Clamp dense and all sparse growth, distinguish refusal from contract errors, GPU ordering/rollback proof | renderer worker | 1 | complete: real GPU clamp/refusal/rollback/readback proofs pass |
 | 3 | Controller refusal failure cause, accounting, retries, pressure/miss policy and focused tests | app worker | shared outcome contract | complete: 26 refusal tests passed in 224-test focused app run, including late-read and split-cohort recovery |
 | 4 | Level-scoped warnings, diagnostic consumers, Settling/capture integration and proof | integrating executor | 2, 3 | complete: session/Settling/log proofs, capture serialization (1), Streaming tab (5) pass |
-| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated complete: review fixes approved; fmt/Clippy/full serial workspace suite and final 10 required-GPU tests and M1 pass; awaiting owner landing instruction |
+| 5 | Review-readiness, isolated review-panel/fix loop, final preflight plus required-GPU run | integrating executor | 1–4 | readiness passed; isolated complete: review fixes approved; fmt/Clippy/full serial workspace suite and final 10 required-GPU tests and M1 pass; complete; owner authorized landing and PR on 2026-10-13 |
 
 ## Shared contracts and performance
 - `ShDrainOutcome.refused: Vec<u32>` accounts for device-limit failures exclusively and is disjoint from accepted/dropped/deferred. Renderer drops refused payloads; app releases their in-drain ready charge and permit and records the latest failure cause.
@@ -71,7 +71,7 @@ M1 required these walks before landing; its completed result is recorded below. 
 2. Pin machine/GPU/backend, window resolution, lighting options and the route through each map. Record the route/poses and run duration. Use the same feature set (`dev-tools`) and default device limits/streaming settings; no test-limit overrides. Record other GPU workloads so contention is visible.
 3. Build the authoring engine and helpers before launching through `postretro-tool run --install-root .`. Existing compiled PRLs live under `content/dev/maps/`. Check disk budget before any comparison checkout/build; never share target dirs across checkouts. Copy comparison binaries out and remove their temporary target after building.
 4. Enable `RUST_LOG=info,postretro_renderer::render::sh_streaming=trace`. The global `info` filter is required to retain the app's device-limit warnings and periodic counters. The feature's load log reports `[Renderer] streamed SH initial dense pool: bytes=… tiles_per_layer=… layers=… slots=…`. Each successful nonempty install trace reports cluster ID, `upload_copy_regions` and `install_cpu_micros`; periodic logs report pool growth and steady/growth install cost.
-5. The baseline predates the measurement logs. From its isolated checkout at `e8f607b94`, apply `git apply /Users/dhiester/Projects/Personal/postretro/context/plans/in-progress/sh-streaming--pool-growth-device-limit/baseline-measurement.patch`. This supplied patch adds only initial dense-pool logging and the same conditional install timing/copy counts; it preserves baseline geometry and policy. The patch was checked against the exact baseline files. Discard its temporary instrumentation after the comparison.
+5. The baseline predates the measurement logs. From its isolated checkout at `e8f607b94`, apply `git apply /Users/dhiester/Projects/Personal/postretro/context/plans/done/sh-streaming--pool-growth-device-limit/baseline-measurement.patch`. This supplied patch adds only initial dense-pool logging and the same conditional install timing/copy counts; it preserves baseline geometry and policy. The patch was checked against the exact baseline files. Discard its temporary instrumentation after the comparison.
 6. For each map/build, walk the pinned route from a fresh level entry. Report device-limit warning count (must be zero), initial dense atlas bytes and tiles/layer, pool growth count, copy regions per install, and install CPU (total, per-install distribution and slowest steady drain). Keep settling and running costs distinct and report sample counts.
 7. Record pass/fail and actual measurements in M1. Clean comparison binaries, logs and temporary instrumentation/checkouts after recording the result. A failure remains a blocking result to investigate; no inferred pass.
 
@@ -89,7 +89,7 @@ Run the two walks separately. These commands do not rebuild the PRLs. Build and 
 
 ### Prepared before-walk launchers
 
-Pre-change executables are ready in the ignored `target/sh-before-walks/` bundle. Built from `e8f607b94744e338039fcc4389ead98ef91ef6d6` with only `baseline-measurement.patch`, default dev profile and `postretro/dev-tools`. Separate worktree/target; no shared Cargo artifacts. Build passed in 24m 13s. Copied and hash-verified engine, script compiler and tool total 93.4 MiB. The primary feature executable hash did not change during preparation.
+Historical preparation record; this bundle is removed during landing cleanup. Pre-change executables were prepared in the ignored `target/sh-before-walks/` bundle. Built from `e8f607b94744e338039fcc4389ead98ef91ef6d6` with only `baseline-measurement.patch`, default dev profile and `postretro/dev-tools`. Separate worktree/target; no shared Cargo artifacts. Build passed in 24m 13s. Copied and hash-verified engine, script compiler and tool total 93.4 MiB. The primary feature executable hash did not change during preparation.
 
 Baseline engine SHA-256: `8653e9a0a83ecbe03b1ccca3658a85d2092aa13a01037d73d2f3d3919a7d2d32`. Bundle `build-info.json` records executable hashes and build provenance. Helper CLI and shell syntax passed. The initial launch check bypassed engine argument validation and missed incorrect map paths; see the correction below. Temporary target was removed; the clean checkout was archived after verifying its commit is preserved on remote main. About 23 GiB remained free after cleanup.
 
@@ -295,6 +295,10 @@ Campaign's 19 after-startup installs have max CPU 4.779 → 5.877 ms. Its lifeti
 
 Manual acceptance is complete. Full frame-timing attribution or a repeatable matched-route performance study would be separate work. Keep comparison artifacts until landing cleanup; preserve the owner's raw logs unless cleanup is authorized.
 
-## Handoff
+## Landing
 
-Automated A1–A26 and manual M1 pass. Status remains `test-ready`, awaiting the owner’s “land the plane.” Feature branch: `codex/sh-streaming-pool-growth-device-limit`. Both before/feature measurements are recorded above; the hallway routes differ, so no causal performance improvement is claimed. SH upload spikes can contribute to the owner’s reported before-walk hitches; full frame timing was not captured. Do not move the brief to done or push the feature before the owner’s landing instruction. Comparison checkout is archived; preserve the baseline bundle until landing cleanup and preserve owner raw logs.
+Owner authorized “land the plane” and requested a PR on 2026-10-13. Automated A1–A26 and manual M1 pass. Durable renderer and Settling contracts now describe shipped behavior; all acceptance boxes are complete. Brief moved to `done/`. Roadmap contains no entry for this brief.
+
+Current remote main merges cleanly with the tested feature branch; no source integration changes were needed. Final edits only close documentation and acceptance state. Cargo format and diff checks cover these edits; completed full preflight and required-GPU results above remain the implementation proof.
+
+Landing cleanup removes the session comparison bundle and dedicated Clippy target, cleans the heavily changed app/renderer packages from the primary target, and removes session-owned temporary tools and diagnostics. The comparison worktree was already archived cleanly with its baseline commit preserved on remote main. Preserve all owner walk logs and the separate local edit in this plan. Publish the feature branch and open a PR; do not merge it automatically. After owner reports merge, follow the build-brief merged cleanup procedure.

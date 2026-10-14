@@ -3838,6 +3838,7 @@ mod tests {
                 priority: 0,
                 gravity: None,
                 push: None,
+                force: 1.0,
                 fluid: Some(4),
                 brushes: vec![postretro_collision::ConvexLeaf {
                     planes: [

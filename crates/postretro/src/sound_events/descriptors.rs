@@ -1094,6 +1094,7 @@ mod tests {
             priority: 0,
             gravity: None,
             push: None,
+            force: 1.0,
             fluid: Some(1),
             brushes: vec![ConvexLeaf {
                 planes: vec![

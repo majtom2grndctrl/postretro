@@ -729,6 +729,11 @@ pub struct LevelWorld {
     /// (PRL section 52). Always present in a loaded level.
     #[cfg(feature = "load-prl")]
     pub environment_volumes: EnvironmentVolumesSection,
+    /// One current force per `environment_volumes` record (PRL section 53),
+    /// validated against them at load. Empty when the section is absent,
+    /// which means every force is 1; read through [`LevelWorld::push_force`].
+    #[cfg(feature = "load-prl")]
+    pub environment_push_forces: Vec<f32>,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
     /// `None` only when the map has no canonical fog volumes.
     #[cfg(feature = "load-prl")]
@@ -762,6 +767,16 @@ pub struct LevelWorld {
 }
 
 impl LevelWorld {
+    /// The current force of environment-volume record `index`: how hard its
+    /// push shoves a body. 1 when the level carries no PushForces section.
+    #[cfg(feature = "load-prl")]
+    pub fn push_force(&self, index: usize) -> f32 {
+        self.environment_push_forces
+            .get(index)
+            .copied()
+            .unwrap_or(1.0)
+    }
+
     pub fn new_visibility_only(
         cells: Vec<CellData>,
         cell_portal_refs: Vec<u32>,
@@ -873,6 +888,7 @@ impl LevelWorld {
             fog_pixel_scale: 4,
             #[cfg(feature = "load-prl")]
             environment_volumes: EnvironmentVolumesSection::default(),
+            environment_push_forces: Vec::new(),
             #[cfg(feature = "load-prl")]
             fog_cell_masks: None,
             #[cfg(feature = "load-prl")]
@@ -1970,6 +1986,7 @@ mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
+            environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2073,6 +2090,7 @@ mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
+            environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2130,6 +2148,7 @@ mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
+            environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2697,6 +2716,137 @@ mod tests {
         assert_eq!(world.environment_volumes, environment);
         assert_eq!(world.environment_volumes.level_gravity, 4.0);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    fn push_and_fluid_environment() -> EnvironmentVolumesSection {
+        use postretro_level_format::environment_volumes::{
+            EnvironmentBrush, EnvironmentPlane, EnvironmentVolumeRecord,
+        };
+        let plane = |normal: [f32; 3], distance: f32| EnvironmentPlane { normal, distance };
+        let brush = EnvironmentBrush {
+            aabb_min: [0.0; 3],
+            aabb_max: [1.0; 3],
+            planes: vec![
+                plane([1.0, 0.0, 0.0], 1.0),
+                plane([-1.0, 0.0, 0.0], 0.0),
+                plane([0.0, 1.0, 0.0], 1.0),
+                plane([0.0, -1.0, 0.0], 0.0),
+                plane([0.0, 0.0, 1.0], 1.0),
+                plane([0.0, 0.0, -1.0], 0.0),
+            ],
+        };
+        let record = |push: Option<[f32; 3]>, fluid: &str| EnvironmentVolumeRecord {
+            source_entity: 1,
+            priority: 0,
+            gravity: None,
+            push,
+            fluid: fluid.to_string(),
+            brushes: vec![brush.clone()],
+            surface_faces: Vec::new(),
+        };
+        EnvironmentVolumesSection {
+            level_gravity: -9.81,
+            volumes: vec![
+                record(None, "water"),
+                record(Some([6.0, 0.0, 0.0]), ""),
+                record(Some([0.0, 8.0, 0.0]), ""),
+            ],
+        }
+    }
+
+    fn load_with_push_forces(
+        forces: Option<prl_format::SectionBlob>,
+        name: &str,
+    ) -> Result<LevelWorld, PrlLoadError> {
+        let mut sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            environment_volumes_blob(&push_and_fluid_environment()),
+        ];
+        sections.extend(forces);
+        let tmp = write_prl_fixture(sections, name);
+        let world = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        world
+    }
+
+    fn push_forces_blob(data: Vec<u8>) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::PushForces as u32,
+            version: 1,
+            data,
+        }
+    }
+
+    // R15 / R12: a map authoring no force, and a map built before the force
+    // section existed, load with every force at 1.
+    #[test]
+    fn load_prl_without_a_push_force_section_reads_every_force_as_one() {
+        let world = load_with_push_forces(None, "postretro_test_no_push_forces.prl")
+            .expect("a PRL without PushForces loads");
+        assert!(world.environment_push_forces.is_empty());
+        for index in 0..3 {
+            assert_eq!(world.push_force(index), 1.0);
+        }
+    }
+
+    #[test]
+    fn load_prl_round_trips_one_authored_force_and_reads_the_rest_as_one() {
+        use postretro_level_format::push_forces::PushForcesSection;
+        let section = PushForcesSection {
+            forces: vec![1.0, 0.0, 1.0],
+        };
+        let world = load_with_push_forces(
+            Some(push_forces_blob(section.to_bytes())),
+            "postretro_test_push_forces_round_trip.prl",
+        )
+        .expect("a PRL with one authored force loads");
+        assert_eq!(world.push_force(0), 1.0);
+        assert_eq!(world.push_force(1), 0.0);
+        assert_eq!(world.push_force(2), 1.0);
+    }
+
+    #[test]
+    fn load_prl_rejects_a_malformed_or_mismatched_push_force_section() {
+        use postretro_level_format::push_forces::PushForcesSection;
+        let bytes = |forces: Vec<f32>| PushForcesSection { forces }.to_bytes();
+        let mut wrong_version = bytes(vec![1.0, 1.0, 1.0]);
+        wrong_version[0] = 2;
+        let mut short_payload = bytes(vec![1.0, 1.0, 1.0]);
+        short_payload.pop();
+        let mut negative = bytes(vec![1.0, 1.0, 1.0]);
+        negative[6 + 4..6 + 8].copy_from_slice(&(-1.0f32).to_le_bytes());
+        let mut infinite = bytes(vec![1.0, 1.0, 1.0]);
+        infinite[6 + 8..6 + 12].copy_from_slice(&f32::INFINITY.to_le_bytes());
+        for (label, data, expected) in [
+            (
+                "count",
+                bytes(vec![1.0, 1.0]),
+                "2 forces for 3 environment volumes",
+            ),
+            ("version", wrong_version, "unsupported version 2"),
+            ("payload", short_payload, "need 18 bytes"),
+            ("negative", negative, "force 1"),
+            ("non-finite", infinite, "force 2"),
+            (
+                "pushless",
+                bytes(vec![0.5, 1.0, 1.0]),
+                "volume 0 sets no push",
+            ),
+        ] {
+            let error = load_with_push_forces(
+                Some(push_forces_blob(data)),
+                &format!("postretro_test_push_forces_{label}.prl"),
+            )
+            .expect_err("a malformed PushForces section fails the load");
+            let message = error.to_string();
+            assert!(
+                message.contains("PushForces") && message.contains(expected),
+                "{label}: {message}"
+            );
+        }
     }
 
     // A PRL built before level gravity left FogVolumes carries no

@@ -3,16 +3,19 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentVolumeRecord,
 };
 use postretro_level_format::geometry::NO_TEXTURE;
 
 mod cull;
+mod drift;
+pub mod motion;
 mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;
+pub use drift::{FluidFaceDriftMap, fill_drift_rates};
 pub use slots::{FluidSurfaceSlots, slot_window};
 
 /// One fluid surface vertex: world position, the face's outward normal, and
@@ -31,6 +34,10 @@ pub struct FluidSurfaceVertex {
 /// buffer layout and `fluid_surface.wgsl`'s `VertexInput`.
 pub const FLUID_SURFACE_VERTEX_STRIDE: usize = 32;
 const _: () = assert!(std::mem::size_of::<FluidSurfaceVertex>() == FLUID_SURFACE_VERTEX_STRIDE);
+
+/// Byte stride of one per-vertex drift rate (`[f32; 2]`, texture periods per
+/// second) in the second vertex buffer, which drift re-resolves rewrite.
+pub const FLUID_DRIFT_RATE_STRIDE: usize = 8;
 
 /// Per-volume parameters are one `vec4<f32>` per draw slot.
 pub const FLUID_PARAMS_STRIDE: usize = 16;
@@ -67,6 +74,10 @@ pub struct FluidSurfaceMesh {
     pub vertices: Vec<FluidSurfaceVertex>,
     pub indices: Vec<u32>,
     pub volumes: Vec<FluidSurfaceVolume>,
+    /// One entry per surface face of every volume, in record order (volume,
+    /// then face), `None` for a face that draws nothing. A drift slice in the
+    /// same order turns into per-vertex rates ([`fill_drift_rates`]).
+    pub face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
 }
 
 /// One fluid volume to draw this frame, at its fluid's surface opacity.
@@ -126,19 +137,22 @@ pub fn material_index(texture_index: u32, material_count: usize) -> usize {
     if index < material_count { index } else { 0 }
 }
 
+/// Texels per normalized UV unit for a face texture.
+fn uv_scale(texture_index: u32, texture_dimensions: &[[u32; 2]]) -> Vec2 {
+    // Surface UVs are texel-space, as world and mover UVs are before
+    // `normalize_world_uvs`. Unknown dimensions leave them raw, as there.
+    match texture_dimensions.get(texture_index as usize) {
+        Some(&[width, height]) if width > 0 && height > 0 => Vec2::new(width as f32, height as f32),
+        _ => Vec2::ONE,
+    }
+}
+
 fn normalized_uv(
     texel_uv: [f32; 2],
     texture_index: u32,
     texture_dimensions: &[[u32; 2]],
 ) -> [f32; 2] {
-    // Surface UVs are texel-space, as world and mover UVs are before
-    // `normalize_world_uvs`. Unknown dimensions leave them raw, as there.
-    match texture_dimensions.get(texture_index as usize) {
-        Some(&[width, height]) if width > 0 && height > 0 => {
-            [texel_uv[0] / width as f32, texel_uv[1] / height as f32]
-        }
-        _ => texel_uv,
-    }
+    (Vec2::from(texel_uv) / uv_scale(texture_index, texture_dimensions)).to_array()
 }
 
 /// Fan-triangulate every drawable surface face into one shared mesh. Each
@@ -150,19 +164,30 @@ pub fn pack_fluid_surfaces(
     material_count: usize,
 ) -> FluidSurfaceMesh {
     let mut mesh = FluidSurfaceMesh::default();
-    let mut faces: Vec<(usize, Vec3, &EnvironmentSurfaceFace)> = Vec::new();
+    let mut faces: Vec<(usize, Vec3, usize)> = Vec::new();
+    let mut vertex_starts: Vec<Option<u32>> = Vec::new();
     for (volume_index, volume) in volumes.iter().enumerate() {
         faces.clear();
-        faces.extend(volume.surface_faces.iter().filter_map(|face| {
-            face_normal(face).map(|normal| {
-                (
-                    material_index(face.texture_index, material_count),
-                    normal,
-                    face,
-                )
-            })
-        }));
+        faces.extend(
+            volume
+                .surface_faces
+                .iter()
+                .enumerate()
+                .filter_map(|(face_index, face)| {
+                    face_normal(face).map(|normal| {
+                        (
+                            material_index(face.texture_index, material_count),
+                            normal,
+                            face_index,
+                        )
+                    })
+                }),
+        );
+        vertex_starts.clear();
+        vertex_starts.resize(volume.surface_faces.len(), None);
         if faces.is_empty() {
+            mesh.face_drift_maps
+                .extend(std::iter::repeat_n(None, volume.surface_faces.len()));
             continue;
         }
         // Stable: faces keep compiled order within a material.
@@ -171,8 +196,10 @@ pub fn pack_fluid_surfaces(
         let mut ranges: Vec<FluidMaterialRange> = Vec::new();
         let mut bounds_min = Vec3::splat(f32::INFINITY);
         let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
-        for &(material, normal, face) in &faces {
+        for &(material, normal, face_index) in &faces {
+            let face = &volume.surface_faces[face_index];
             let base = mesh.vertices.len() as u32;
+            vertex_starts[face_index] = Some(base);
             let index_start = mesh.indices.len() as u32;
             for vertex in &face.vertices {
                 let position = Vec3::from(vertex.position);
@@ -204,6 +231,18 @@ pub fn pack_fluid_surfaces(
             bounds_max,
             material_ranges: ranges,
         });
+        mesh.face_drift_maps.extend(drift::volume_drift_maps(
+            volume,
+            &vertex_starts,
+            |face, vertex| {
+                Vec2::from(normalized_uv(
+                    face.vertices[vertex].uv,
+                    face.texture_index,
+                    texture_dimensions,
+                ))
+            },
+            |face| uv_scale(face.texture_index, texture_dimensions),
+        ));
     }
     mesh
 }

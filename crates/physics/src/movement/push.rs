@@ -303,3 +303,26 @@ pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, pu
         component.velocity -= along * remaining;
     }
 }
+
+/// The drift a swimmer settles at in a steady current: the fixed point of
+/// [`apply`]'s swimming branch, where each tick first decays the drift by the
+/// fluid's linear drag (`max(0, 1 - viscosity × dt)`) and then accrues
+/// `push × dt`, capped by magnitude at `terminal_velocity` ([`cap_swim_drift`]).
+///
+/// That is `push × dt / (1 - factor)`: push / viscosity in a thin fluid, and
+/// `push × dt` once viscosity × dt ≥ 1, where decay clamps the drift to zero
+/// before the tick's push accrues. An inviscid fluid never settles below the
+/// cap, so it drifts at terminal velocity along the push, or not at all with
+/// no cap. Fluid surfaces drift at this speed so look and feel agree at any
+/// viscosity (`movement.md` §6).
+pub fn steady_drift_velocity(push: Vec3, viscosity: f32, terminal_velocity: f32, dt: f32) -> Vec3 {
+    let factor = (1.0 - viscosity * dt).max(0.0);
+    let settled = if factor < 1.0 {
+        push * dt / (1.0 - factor)
+    } else if terminal_velocity.is_finite() {
+        push.normalize_or_zero() * terminal_velocity
+    } else {
+        Vec3::ZERO
+    };
+    settled.clamp_length_max(terminal_velocity)
+}

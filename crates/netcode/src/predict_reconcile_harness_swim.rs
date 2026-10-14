@@ -560,3 +560,32 @@ fn pawn_tuning_rebuild_on_a_swimming_client_costs_no_correction_and_no_swim_edge
         .count();
     assert_eq!(entries, 1, "one swim entry: {:?}", run.swim_emissions);
 }
+
+/// The pool under a sideways current at half force.
+fn half_force_current_course() -> Vec<NamedEnvironmentVolume> {
+    let mut course = current_course();
+    let current = &mut course[1].volume;
+    current.push = Some(Vec3::new(6.0, 0.0, 0.0));
+    current.force = 0.5;
+    course
+}
+
+// Host movement, client prediction and reconcile replay all read the felt
+// push (push × force) from the same per-volume force, so a half-force current
+// carries the swimmer at half its settled drift with zero corrections.
+#[test]
+fn half_force_current_reconciles_without_correction_under_light_link() {
+    let run = run_records(
+        half_force_current_course(),
+        host_fluids(),
+        300,
+        walk_into_the_current,
+        |_, _| {},
+    );
+    assert!(run.host_swam, "fixture: the host pawn must swim");
+    assert_no_correction(&run);
+    assert!(
+        run.windows.iter().any(|window| window.0.is_some()),
+        "reconcile replays must run through the current"
+    );
+}

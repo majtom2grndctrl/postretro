@@ -1,8 +1,9 @@
-// EnvironmentVolumes (id 52) decode: the level default gravity and the static regional volume records.
+// EnvironmentVolumes (id 52) decode, and its optional PushForces (id 53) sibling.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::SectionId;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
+use postretro_level_format::push_forces::PushForcesSection;
 
 use crate::prl::PrlLoadError;
 use crate::prl_loader::section_validation_from_error;
@@ -33,4 +34,42 @@ pub(crate) fn decode_environment_volumes(
         section.level_gravity,
     );
     Ok(section)
+}
+
+/// Decode the optional PushForces section against its records. Absent means
+/// every force is 1 and yields an empty list. Present, it holds one finite
+/// force >= 0 per record, and a record without push carries exactly 1.
+pub(crate) fn decode_push_forces(
+    data: Option<Vec<u8>>,
+    environment: &EnvironmentVolumesSection,
+) -> Result<Vec<f32>, PrlLoadError> {
+    let Some(data) = data else {
+        return Ok(Vec::new());
+    };
+    let section = PushForcesSection::from_bytes(&data)
+        .map_err(|err| section_validation_from_error("PushForces", err))?;
+    if section.forces.len() != environment.volumes.len() {
+        return Err(section_validation_from_error(
+            "PushForces",
+            format!(
+                "{} forces for {} environment volumes",
+                section.forces.len(),
+                environment.volumes.len()
+            ),
+        ));
+    }
+    for (index, (force, record)) in section.forces.iter().zip(&environment.volumes).enumerate() {
+        if record.push.is_none() && *force != 1.0 {
+            return Err(section_validation_from_error(
+                "PushForces",
+                format!("volume {index} sets no push but carries force {force}"),
+            ));
+        }
+    }
+    log::info!(
+        "[PRL] PushForces: {} of {} volume(s) scaled",
+        section.forces.iter().filter(|force| **force != 1.0).count(),
+        section.forces.len(),
+    );
+    Ok(section.forces)
 }

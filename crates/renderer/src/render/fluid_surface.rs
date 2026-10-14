@@ -1,5 +1,5 @@
 // Fluid surface pass: environment-volume surface faces drawn translucent,
-// two-sided and warped after skinned meshes and before billboards.
+// two-sided and moving in whole texels, after skinned meshes and before billboards.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use std::num::NonZeroU64;
@@ -8,8 +8,9 @@ use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_render_cpu::fluid_surface::{
-    FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES, FLUID_SURFACE_VERTEX_STRIDE, FluidSurfaceDraw,
-    FluidSurfaceSlots, FluidSurfaceVolume, pack_fluid_surfaces, slot_window,
+    FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
+    FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidSurfaceDraw, FluidSurfaceSlots,
+    FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces, slot_window,
 };
 
 use super::*;
@@ -133,15 +134,33 @@ const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     },
 ];
 
+/// The second vertex buffer: one drift rate per vertex, texture periods per
+/// second, rewritten in place whenever drift re-resolves.
+const DRIFT_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    offset: 0,
+    shader_location: 3,
+    format: wgpu::VertexFormat::Float32x2,
+}];
+
 /// One installed level's fluid geometry and per-volume parameter buffer.
 struct InstalledFluidSurfaces {
     vertex_buffer: wgpu::Buffer,
+    /// Zeroed at install: a level draws still until drift resolves, and
+    /// capture, which resolves none, always draws still.
+    drift_buffer: wgpu::Buffer,
+    /// One map per surface face of every volume, in record order.
+    face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
+    /// Reused per re-resolve.
+    drift_rates: Vec<[f32; 2]>,
     index_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
     params_bind_group: wgpu::BindGroup,
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
     slots: FluidSurfaceSlots,
+    /// Parameter-row uploads so far; tests read it.
+    #[cfg(test)]
+    param_uploads: u32,
 }
 
 pub(crate) struct FluidSurfacePass {
@@ -190,11 +209,18 @@ impl FluidSurfacePass {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &VERTEX_ATTRIBUTES,
-                })],
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &VERTEX_ATTRIBUTES,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: FLUID_DRIFT_RATE_STRIDE as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &DRIFT_ATTRIBUTES,
+                    }),
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: fluid_primitive_state(),
@@ -248,6 +274,12 @@ impl FluidSurfacePass {
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let drift_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Surface Drift Buffer"),
+            size: (mesh.vertices.len() * FLUID_DRIFT_RATE_STRIDE) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Index Buffer"),
             contents: bytemuck::cast_slice(&mesh.indices),
@@ -279,12 +311,48 @@ impl FluidSurfacePass {
         );
         self.installed = Some(InstalledFluidSurfaces {
             vertex_buffer,
+            drift_buffer,
+            drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
+            face_drift_maps: mesh.face_drift_maps,
             index_buffer,
             params_buffer,
             params_bind_group,
             volumes: mesh.volumes,
             slots,
+            #[cfg(test)]
+            param_uploads: 0,
         });
+    }
+
+    /// Replace every face's drift: `drifts` holds one world drift per surface
+    /// face of every installed volume, in record order. Only the drift buffer
+    /// is rewritten, so draws, slots and parameter rows carry over untouched.
+    pub fn set_drift(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        drifts: &[glam::Vec3],
+    ) {
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        fill_drift_rates(
+            &installed.face_drift_maps,
+            drifts,
+            &mut installed.drift_rates,
+        );
+        queue.write_buffer(
+            &installed.drift_buffer,
+            0,
+            bytemuck::cast_slice(&installed.drift_rates),
+        );
+    }
+
+    /// Parameter-row uploads since install.
+    #[cfg(test)]
+    pub(crate) fn param_uploads(&self) -> Option<u32> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed.param_uploads)
     }
 
     /// Replace this frame's draws, uploading only opacity rows that changed.
@@ -298,6 +366,10 @@ impl FluidSurfacePass {
         };
         installed.slots.set_draws(draws);
         if let Some((range, rows)) = installed.slots.take_dirty() {
+            #[cfg(test)]
+            {
+                installed.param_uploads += 1;
+            }
             queue.write_buffer(
                 &installed.params_buffer,
                 u64::from(range.start) * FLUID_PARAMS_STRIDE as u64,
@@ -323,6 +395,7 @@ impl FluidSurfacePass {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         let mut bound_window = None;
@@ -373,6 +446,18 @@ impl Renderer {
         let material_count = full.gpu_textures.len();
         full.fluid_surface
             .install(device, volumes, &texture_dimensions, material_count);
+    }
+
+    /// Every installed fluid face's world drift, one per surface face of every
+    /// volume in record order (`EnvironmentVolumeRecord::surface_faces`). Call
+    /// after `install_fluid_surfaces` and whenever drift re-resolves; a slice
+    /// of the wrong length draws every face still.
+    pub fn set_fluid_surface_drift(&mut self, drifts: &[glam::Vec3]) {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        full.fluid_surface.set_drift(queue, drifts);
     }
 
     /// This frame's visible fluid draws, far to near, from

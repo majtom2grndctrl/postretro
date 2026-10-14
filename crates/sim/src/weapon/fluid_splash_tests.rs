@@ -31,6 +31,7 @@ fn fluid_volume(source_entity: u32, fluid: u16, brushes: Vec<ConvexLeaf>) -> Env
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(fluid),
         brushes,
     }

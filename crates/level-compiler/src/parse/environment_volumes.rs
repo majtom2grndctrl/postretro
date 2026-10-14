@@ -24,6 +24,8 @@ const GRAVITY_SHAPE: &str = "`gravity` is one signed vertical number in m/s², l
                              `initialGravity` (\"-3\" is low gravity, \"0\" is weightless)";
 const PUSH_SHAPE: &str = "`push` is three numbers, an acceleration in map axes in m/s² \
                           (\"0 0 25\" is an updraft, \"8 0 0\" a wind)";
+const FORCE_SHAPE: &str = "`force` is one number >= 0 scaling how hard the push shoves \
+                           (\"1\" is the default, \"0\" is decorative)";
 
 pub(super) fn is_environment_volume_classname(classname: &str) -> bool {
     matches!(classname, FLUID_VOLUME | GRAVITY_VOLUME | PUSH_VOLUME)
@@ -50,6 +52,12 @@ pub(super) fn resolve_environment_volume(
         FLUID_VOLUME => (None, None, Some(parse_fluid(props, &entity)?)),
         _ => anyhow::bail!("{entity} is not an environment volume"),
     };
+    // `force` belongs to the push; another volume's key is not read.
+    let force = if push.is_some() {
+        parse_force(props, &entity)?
+    } else {
+        1.0
+    };
     let priority = parse_priority(props, &entity)?;
 
     if brush_ids.is_empty() {
@@ -71,6 +79,7 @@ pub(super) fn resolve_environment_volume(
         priority,
         gravity,
         push,
+        force,
         fluid,
         brushes,
     })
@@ -118,6 +127,18 @@ fn parse_push(props: &HashMap<String, String>, entity: &str) -> Result<Vec3> {
     };
     let map_axes = DVec3::new(f64::from(*x), f64::from(*y), f64::from(*z));
     Ok(quake_to_engine(map_axes).as_vec3())
+}
+
+/// Optional, default 1. Any finite value >= 0 with no upper cap: 0 makes a
+/// decorative current, and above 1 shoves harder than the current looks.
+fn parse_force(props: &HashMap<String, String>, entity: &str) -> Result<f32> {
+    let Some(raw) = required(props, "force") else {
+        return Ok(1.0);
+    };
+    match raw.parse::<f32>() {
+        Ok(force) if force.is_finite() && force >= 0.0 => Ok(force),
+        _ => anyhow::bail!("{entity} `force` \"{raw}\" is not a finite number >= 0; {FORCE_SHAPE}"),
+    }
 }
 
 fn parse_fluid(props: &HashMap<String, String>, entity: &str) -> Result<String> {

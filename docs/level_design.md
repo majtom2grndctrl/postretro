@@ -284,11 +284,12 @@ Each brush is one convex piece of the volume. One entity may own several brushes
 | `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
 | `gravity` | `gravity_volume` | float | **required** | Gravity inside the volume, in **m/s²**, signed like worldspawn `initialGravity`: negative pulls down. `-20.32` is the level default, `-6` is low gravity, `0` is weightless, and a positive value pulls up. It replaces the level's gravity inside the volume. A script's `setGravity` changes the level's gravity everywhere else, never inside a gravity volume, and `getGravity` returns the level's gravity even inside one. |
 | `push` | `push_volume` | three floats | **required** | An acceleration in **m/s²**, in map axes (X, Y, Z, with Z up, as TrenchBroom shows them). `0 0 25` is an updraft, `8 0 0` a wind toward +X, `0 6 0` a current toward +Y. A push never changes which way is down. |
+| `force` | `push_volume` | float | `1` | How hard the push shoves the player, who feels `push` × `force`. `push` keeps its direction and look: a current's surface drifts, and particles flow, the same at any force. `0` makes a decorative current that pushes nothing; above `1` shoves harder than it looks. Any number from `0` up. |
 | `priority` | all three | integer | `0` | Which volume wins where volumes that set the same key overlap. Higher wins. |
 
 `gravity` and `push` are in metres per second squared, not map units. The level default is −20.32 m/s², about twice Earth's 9.81: shooter jumps use exaggerated gravity so they land quickly.
 
-A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, or a volume entity with no brush fails the build, and the error names the entity.
+A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, a negative or non-numeric `force`, or a volume entity with no brush fails the build, and the error names the entity.
 
 ### How overlapping volumes combine
 
@@ -307,7 +308,7 @@ Push is one winner, never a sum. That gives you two patterns:
 - **A calm pocket.** Put a `push_volume` with `push` `0 0 0` inside a wind, at a higher `priority`. Nothing pushes inside the pocket.
 - **Lift and drift together.** A shaft that should both lift and drift sideways is one `push_volume` carrying the combined vector, such as `4 0 15`.
 
-A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push.
+A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push, and the fluid's surface drifts with it, at the speed the current carries a swimmer. A bending river is one `fluid_volume` under several `push_volume` brushes, one per stretch: the surface drifts along each, exactly where its push is. A push whose bottom rests on the waterline, such as a wind over the water, moves no water.
 
 ### What the player feels
 
@@ -319,7 +320,7 @@ Enemies take only a volume's gravity, and only when it pulls down: in a volume w
 
 ### Fluid surfaces
 
-The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent, warped, and visible from both above and below.
+The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent and visible from both above and below. It moves in whole texels on its texture's own grid, so a fluid has the grain of a wall at the same texture scale: still water shimmers and rings, and a current drifts the way it pushes. Scale the texture down for finer water.
 
 - A face flush against solid world draws nothing, so a pool sunk into the floor shows only its top. A face partly against solid world draws only its open part.
 - A face shared by two brushes of the same `fluid_volume` draws nothing.

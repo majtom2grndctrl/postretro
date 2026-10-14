@@ -16,6 +16,7 @@ struct AccelerationBrush {
     contents: ContentsMask,
     gravity: Option<f32>,
     push: Option<Vec3>,
+    force: f32,
     bounds_prove_containment: bool,
 }
 
@@ -53,6 +54,7 @@ impl AccelerationIndex {
                     contents,
                     gravity: volume.gravity,
                     push: volume.push,
+                    force: volume.force,
                     bounds_prove_containment,
                 });
             }
@@ -68,8 +70,8 @@ impl AccelerationIndex {
         volumes: &[EnvironmentVolume],
         point: Vec3,
         level_gravity: f32,
-    ) -> (f32, Vec3) {
-        let (mut gravity, mut push) = (level_gravity, Vec3::ZERO);
+    ) -> (f32, Vec3, f32) {
+        let (mut gravity, mut push, mut force) = (level_gravity, Vec3::ZERO, 1.0);
         let (mut gravity_rank, mut push_rank) = (usize::MAX, usize::MAX);
         self.grid.visit_point(point, |index| {
             let brush = &self.brushes[*index as usize];
@@ -84,10 +86,11 @@ impl AccelerationIndex {
             }
             if push_better {
                 push = brush.push.expect("push candidate carries push");
+                force = brush.force;
                 push_rank = brush.rank;
             }
         });
-        (gravity, push)
+        (gravity, push, force)
     }
 
     pub(crate) fn visit_containing_point(

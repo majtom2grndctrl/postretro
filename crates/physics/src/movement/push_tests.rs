@@ -558,3 +558,76 @@ fn upward_level_gravity_keeps_grounded_player_grounded_until_it_jumps() {
         );
     }
 }
+
+// R11: lift-off reads the felt push. A force-0 updraft far stronger than
+// gravity never lifts a grounded player.
+#[test]
+fn force_zero_updraft_never_lifts_a_grounded_player() {
+    let world = floor_world();
+    let mut updraft = push_box(
+        Vec3::new(-500.0, -1.0, -500.0),
+        Vec3::new(500.0, 50.0, 500.0),
+        Vec3::new(0.0, 60.0, 0.0),
+    );
+    updraft.force = 0.0;
+    let volumes = EnvironmentVolumes::build(vec![updraft]);
+    let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+    let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
+    let rest = position;
+    for _ in 0..120 {
+        step(
+            &mut component,
+            &world,
+            environment,
+            &idle_input(),
+            &mut position,
+        );
+        assert!(
+            component.is_grounded(),
+            "a decorative updraft lifts nothing"
+        );
+    }
+    assert!(
+        (position - rest).length() < POS_EPS,
+        "the pawn never moved: {position}"
+    );
+    assert_eq!(component.push_velocity, Vec3::ZERO);
+}
+
+// Force scales the felt push: a standing player drifts at force × the full
+// push's settled ground drift.
+#[test]
+fn force_scales_the_ground_drift_a_standing_player_settles_at() {
+    let world = floor_world();
+    let settle = |force: f32| {
+        let mut wind = push_box(
+            Vec3::new(-500.0, -1.0, -500.0),
+            Vec3::new(500.0, 50.0, 500.0),
+            Vec3::new(6.0, 0.0, 0.0),
+        );
+        wind.force = force;
+        let volumes = EnvironmentVolumes::build(vec![wind]);
+        let environment = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &[]);
+        let (mut component, mut position) = grounded_pawn(&descriptor(), &world);
+        for _ in 0..600 {
+            step(
+                &mut component,
+                &world,
+                environment,
+                &idle_input(),
+                &mut position,
+            );
+        }
+        component.push_velocity.x
+    };
+    let full = settle(1.0);
+    assert!(full > 0.1, "{full}");
+    for force in [0.0, 0.5, 3.0] {
+        let scaled = settle(force);
+        assert!(
+            (scaled - force * full).abs() < 1.0e-3,
+            "force {force}: {scaled} vs {}",
+            force * full
+        );
+    }
+}

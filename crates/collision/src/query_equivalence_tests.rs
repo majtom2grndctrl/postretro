@@ -362,6 +362,7 @@ fn environment_volume() -> impl Strategy<Value = EnvironmentVolume> {
                 priority,
                 gravity: gravity.map(|g| g as f32),
                 push,
+                force: 1.0,
                 fluid,
                 brushes,
             },
@@ -595,6 +596,7 @@ fn resolve_matches_brute_force_when_the_segment_meets_more_fluid_brushes_than_it
                 priority: 0,
                 gravity: None,
                 push: None,
+                force: 1.0,
                 fluid: Some(u16::from(layer % 3 == 2)),
                 brushes: vec![axis_box(
                     Vec3::new(-1.0, y, -1.0),

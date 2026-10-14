@@ -89,7 +89,9 @@ pub struct BodyProbe {
 pub struct ResolvedEnvironment {
     /// Signed vertical acceleration, m/s².
     pub gravity: f32,
-    /// Extra acceleration in any direction, m/s². Never defines "down".
+    /// The push a body feels, m/s²: the winning volume's nominal push times
+    /// its force. Never defines "down". Particles read the nominal push
+    /// instead ([`resolve_particle_acceleration`]).
     pub push: Vec3,
     /// The winning fluid, if any: the overlap-rule winner's fluid among the
     /// fluid volumes in reach. `None` exactly when `immersion` is 0.
@@ -132,7 +134,8 @@ fn resolve_environment_untimed(
     if !probe.position.is_finite() {
         return level_defaults(view.level_gravity);
     }
-    let (gravity, push) = resolve_particle_acceleration_untimed(view, probe.position);
+    let (gravity, push, force) = resolve_acceleration_untimed(view, probe.position);
+    let push = push * force;
     let fluid = resolve_fluid(view, probe);
     let viscosity = fluid
         .fluid
@@ -150,8 +153,10 @@ fn resolve_environment_untimed(
     }
 }
 
-/// Point gravity and push under the full resolve's per-field overlap rule.
-/// Anonymous particles read neither fluids nor capsule immersion.
+/// Point gravity and the NOMINAL push under the full resolve's per-field
+/// overlap rule: a current's direction and look, unscaled by its force, so a
+/// decorative (force 0) river still carries foam. Anonymous particles read
+/// neither fluids nor capsule immersion; fluid surface drift reads this too.
 pub fn resolve_particle_acceleration(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
     timed(view.timer, QueryFamily::BodyResolve, || {
         resolve_particle_acceleration_untimed(view, position)
@@ -182,8 +187,14 @@ pub fn resolve_particle_accelerations(
 }
 
 fn resolve_particle_acceleration_untimed(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3) {
+    let (gravity, push, _) = resolve_acceleration_untimed(view, position);
+    (gravity, push)
+}
+
+/// Point gravity, nominal push and the push's force.
+fn resolve_acceleration_untimed(view: EnvironmentView<'_>, position: Vec3) -> (f32, Vec3, f32) {
     if !position.is_finite() {
-        return (view.level_gravity, Vec3::ZERO);
+        return (view.level_gravity, Vec3::ZERO, 1.0);
     }
     view.volumes.acceleration(position, view.level_gravity)
 }

@@ -208,3 +208,177 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     assert!(!gate.contains("has_any_sheet"), "{gate}");
     assert!(!gate.contains("particle_collections"), "{gate}");
 }
+
+/// The literal of `const name: ty = literal;` in the fluid shader.
+fn shader_const(name: &str, ty: &str) -> String {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let needle = format!("const {name}: {ty} = ");
+    let at = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("fluid_surface.wgsl must declare {name}: {ty}"));
+    let rest = &source[at + needle.len()..];
+    rest[..rest.find(';').expect("const terminates")]
+        .trim()
+        .to_owned()
+}
+
+fn shader_f32(name: &str) -> f32 {
+    shader_const(name, "f32")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} must be an f32 literal"))
+}
+
+fn shader_i32(name: &str) -> i32 {
+    shader_const(name, "i32")
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} must be an i32 literal"))
+}
+
+fn shader_u32(name: &str) -> u32 {
+    let literal = shader_const(name, "u32");
+    let digits = literal
+        .strip_suffix('u')
+        .unwrap_or_else(|| panic!("{name} must be a u32 literal"));
+    match digits.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16),
+        None => digits.parse(),
+    }
+    .unwrap_or_else(|_| panic!("{name} literal `{literal}` must parse"))
+}
+
+#[test]
+fn fluid_motion_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::motion as m;
+    assert_eq!(shader_f32("FLUID_MOTION_STEP_HZ"), m::FLUID_MOTION_STEP_HZ);
+    assert_eq!(
+        shader_i32("FLUID_SHIMMER_AMPLITUDE"),
+        m::FLUID_SHIMMER_AMPLITUDE
+    );
+    assert_eq!(shader_i32("FLUID_RING_AMPLITUDE"), m::FLUID_RING_AMPLITUDE);
+    assert_eq!(
+        shader_i32("FLUID_RING_BLOCK_SHIFT"),
+        m::FLUID_RING_BLOCK_SHIFT
+    );
+    assert_eq!(
+        shader_i32("FLUID_RING_LIFETIME_STEPS"),
+        m::FLUID_RING_LIFETIME_STEPS
+    );
+    assert_eq!(shader_i32("FLUID_RING_MARGIN"), m::FLUID_RING_MARGIN);
+    assert_eq!(
+        shader_f32("FLUID_RING_STEP_TEXELS"),
+        m::FLUID_RING_STEP_TEXELS
+    );
+    assert_eq!(
+        shader_f32("FLUID_FADE_START_TEXELS_PER_PIXEL"),
+        m::FLUID_FADE_START_TEXELS_PER_PIXEL
+    );
+    assert_eq!(
+        shader_f32("FLUID_FADE_END_TEXELS_PER_PIXEL"),
+        m::FLUID_FADE_END_TEXELS_PER_PIXEL
+    );
+    assert_eq!(shader_u32("FLUID_SALT_CELL"), m::FLUID_SALT_CELL);
+    assert_eq!(shader_u32("FLUID_SALT_SHIMMER"), m::FLUID_SALT_SHIMMER);
+    assert_eq!(shader_u32("FLUID_SALT_FADE"), m::FLUID_SALT_FADE);
+    assert_eq!(shader_u32("FLUID_SALT_BLOCK"), m::FLUID_SALT_BLOCK);
+    assert_eq!(shader_u32("FLUID_SALT_DROP"), m::FLUID_SALT_DROP);
+    assert_eq!(shader_u32("FLUID_HASH_MUL_A"), m::FLUID_HASH_MUL_A);
+    assert_eq!(shader_u32("FLUID_HASH_MUL_B"), m::FLUID_HASH_MUL_B);
+}
+
+#[test]
+fn fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv() {
+    let fragment = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main",
+    ));
+    // The warp reads the unwarped UV and its derivatives' footprint.
+    assert!(fragment.contains("letddx=dpdx(in.uv);"));
+    assert!(fragment.contains("letddy=dpdy(in.uv);"));
+    assert!(fragment.contains(
+        "letuv=fluid_warp_uv(in.uv,in.drift_scroll,dims,uniforms.time,texels_per_pixel);"
+    ));
+    assert!(fragment.contains("sample_post_retro(base_texture,aniso_sampler,uv,ddx,ddy)"));
+    assert!(fragment.contains("sample_post_retro(emissive_texture,aniso_sampler,uv,ddx,ddy)"));
+    assert!(!fragment.contains("sample_post_retro(base_texture,aniso_sampler,in.uv"));
+}
+
+#[test]
+fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
+    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    assert!(
+        !code.contains("sin("),
+        "fluid_surface.wgsl must not call sin"
+    );
+    assert!(
+        !code.contains("cos("),
+        "fluid_surface.wgsl must not call cos"
+    );
+
+    // R10: cells floor the UNWARPED texel UV, before any scroll joins it.
+    let warp = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_warp_uv",
+    ));
+    let texel = warp
+        .find("lettexel_uv=uv*dims;")
+        .expect("texel UV from the unwarped UV");
+    let cell = warp
+        .find("letcell=vec2<i32>(floor(texel_uv));")
+        .expect("cell floored from the unwarped texel UV");
+    assert!(texel < cell);
+    assert!(
+        !warp[texel..cell].contains("drift"),
+        "the scroll must not reach the cell index"
+    );
+
+    // Both offsets are whole texels before they move the sample point: the
+    // drift is floored, and the cell offset is an integer vector.
+    assert!(warp.contains("letdrift_texels=floor(drift_scroll*dims);"));
+    assert!(
+        warp.contains(
+            "letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));"
+        )
+    );
+    assert!(warp.contains("return(texel_uv+drift_texels+cell_texels)/dims;"));
+    let displayed = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_displayed_offset",
+    ));
+    assert!(displayed.contains("->vec2<i32>{"));
+}
+
+// Water motion is world animation, not view feel: no reduce-motion,
+// accessibility or author render-profile input reaches it.
+#[test]
+fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
+    let sources = [
+        include_str!("../shaders/fluid_surface.wgsl"),
+        include_str!("../../../render-cpu/src/fluid_surface/motion.rs"),
+        include_str!("../../../render-cpu/src/fluid_surface/drift.rs"),
+        include_str!("../../../postretro/src/fluid_presentation/drift.rs"),
+    ];
+    for source in sources {
+        let code = code_only(source).to_lowercase();
+        for forbidden in [
+            "reduce_motion",
+            "reducemotion",
+            "accessibility",
+            "render_profile",
+            "renderprofile",
+            "bloom",
+        ] {
+            assert!(!code.contains(forbidden), "fluid warp reads `{forbidden}`");
+        }
+    }
+}
+
+#[test]
+fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
+    use postretro_render_cpu::fluid_surface::FLUID_DRIFT_RATE_STRIDE;
+    assert_eq!(DRIFT_ATTRIBUTES.len(), 1);
+    assert_eq!(DRIFT_ATTRIBUTES[0].shader_location, 3);
+    assert_eq!(DRIFT_ATTRIBUTES[0].format, wgpu::VertexFormat::Float32x2);
+    assert_eq!(FLUID_DRIFT_RATE_STRIDE, std::mem::size_of::<[f32; 2]>());
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
+}

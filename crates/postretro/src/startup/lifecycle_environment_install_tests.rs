@@ -991,3 +991,139 @@ fn a_swimming_player_or_a_dry_level_never_warns_about_the_swim_block() {
     app.warn_if_local_player_cannot_swim();
     capture.assert_not_logged(log::Level::Warn, WADE_ONLY_WARNING);
 }
+
+/// A level with one `water` pool spanning `0..4` on every axis, its top face
+/// drawn, under a coincident current pushing +X at `push` m/s².
+fn level_with_current(push: f32) -> LevelWorld {
+    use postretro_level_format::environment_volumes::{
+        EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+    };
+    let corner = |x: f32, z: f32| EnvironmentSurfaceVertex {
+        position: [x, 4.0, z],
+        uv: [x * 39.37, z * 39.37],
+    };
+    let mut world = level_with_fluid_volume(7, "water");
+    world.environment_volumes.volumes[0].surface_faces = vec![EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: vec![
+            corner(0.0, 4.0),
+            corner(4.0, 4.0),
+            corner(4.0, 0.0),
+            corner(0.0, 0.0),
+        ],
+    }];
+    world
+        .environment_volumes
+        .volumes
+        .push(EnvironmentVolumeRecord {
+            source_entity: 8,
+            priority: 0,
+            gravity: None,
+            push: Some([push, 0.0, 0.0]),
+            fluid: String::new(),
+            brushes: vec![box_brush(Vec3::ZERO, Vec3::splat(4.0))],
+            surface_faces: Vec::new(),
+        });
+    world
+}
+
+#[track_caller]
+fn assert_drift(app: &App, expected_x: f32) {
+    assert_eq!(app.fluid_surface_drift.len(), 1, "one drawn face");
+    let drift = app.fluid_surface_drift[0];
+    assert!(
+        (drift - Vec3::new(expected_x, 0.0, 0.0)).length() < 1.0e-4,
+        "drift {drift}, expected {expected_x} m/s along +X"
+    );
+}
+
+// R1: a host manifest reload that changes only a viscosity, names unchanged,
+// still re-resolves drift.
+#[test]
+fn a_viscosity_only_host_reload_re_resolves_fluid_surface_drift() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // push 6 ÷ water viscosity 2.
+    assert_drift(&app, 3.0);
+
+    script_ctx(&app).data_registry.borrow_mut().replace_fluids(
+        postretro_foundation::FluidRegistry::from_declarations(
+            "test",
+            [Ok(fluid_with("water", 6.0, [0.1, 0.3, 0.4, 0.35]))].into_iter(),
+        ),
+    );
+    let capture = postretro_test_log_capture::LogCapture::start();
+    app.refresh_environment_fluids();
+    capture.assert_not_logged(log::Level::Info, "[Loader] environment volumes:");
+    assert_drift(&app, 1.0);
+}
+
+// R1, R2: a client draws drift only from the host's table. Before the tuning
+// arrives its fluid shows nothing and drifts none; each tuning, a
+// viscosity-only resend included, re-resolves drift; a demotion stills it, and
+// the next tuning brings the new table's drift.
+#[test]
+fn a_connected_client_resolves_drift_from_each_host_tuning() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert_drift(&app, 0.0);
+    let local = script_ctx(&app).data_registry.borrow().fluids.clone();
+    assert!(
+        crate::fluid_presentation::local_fluid_presentation(
+            &app.environment_volumes,
+            &app.environment_fluids,
+            &local,
+            0,
+        )
+        .is_none(),
+        "no fluid surface draws before the host's table"
+    );
+
+    deliver_host_fluids(&mut app, &[("water", 2.0)]);
+    assert_drift(&app, 3.0);
+    deliver_host_fluids(&mut app, &[("water", 1.25)]);
+    assert_drift(&app, 4.8);
+
+    crate::client_drain_control(
+        &mut app,
+        vec![postretro_net::wire::ServerControlMessage::Divergence(
+            postretro_net::wire::DivergenceReason::Holding(
+                postretro_net::wire::HoldingCause::HostLevelAbsent,
+            ),
+        )],
+    );
+    assert_drift(&app, 0.0);
+    deliver_host_fluids(&mut app, &[("water", 6.0)]);
+    assert_drift(&app, 1.0);
+}
+
+// R2: tuning before the level install and after it draw identical drift.
+#[test]
+fn a_client_tuned_before_its_level_install_draws_the_same_drift_as_one_tuned_after() {
+    let mut tuned_first = test_app();
+    declare_fluids(&tuned_first, &["water"]);
+    connect_as_client(&mut tuned_first);
+    deliver_host_fluids(&mut tuned_first, &[("water", 2.0)]);
+    tuned_first
+        .install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+
+    let mut tuned_after = test_app();
+    declare_fluids(&tuned_after, &["water"]);
+    connect_as_client(&mut tuned_after);
+    tuned_after
+        .install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    deliver_host_fluids(&mut tuned_after, &[("water", 2.0)]);
+
+    assert_drift(&tuned_first, 3.0);
+    assert_eq!(
+        tuned_first.fluid_surface_drift,
+        tuned_after.fluid_surface_drift
+    );
+}

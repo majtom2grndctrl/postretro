@@ -13,12 +13,24 @@ read at: 06237f700
 - R14 → drift lives in a second vertex buffer the re-resolve rewrites in place; install, slots and parameter rows are untouched by a re-resolve.
 - Terminal velocity source → a connected client reads its installed tuning payload's movement descriptor; host and offline read the local player's descriptor (the pawn's class, else `player`) from the data registry. No movement descriptor means no swimmer: drift takes no cap.
 - Fixed tick → `frame_timing::TICK_DURATION` (16 667 µs), the dt movement integrates with.
+- Fixture → the e24 map gains an east wing through a doorway from the north hall: still, current and scale-0.25 pools with grain-marker walls, a two-brush pool under a partial push, a force-0 bending river and a force-3 trap, textured from a new procedural set (`content/dev/textures/fluids/`, generator `tools/gen_fluid_textures.py`). Existing areas are unchanged.
 
 ## Delegated answers
 - Shimmer step rate, ring density and lifetime, shimmer amplitude, fade threshold — recorded in *Tuning* after the first capture.
 
 ## Tuning
-- (filled at first capture)
+First tuning by capture on the 1660 Super; the owner tunes by eye in-engine (M1–M4). Every value lives in `render-cpu::fluid_surface::motion`, mirrored by `fluid_surface.wgsl` and pinned by `fluid_motion_shader_constants_match_the_cpu_reference`.
+- Step rate 2.5 Hz (a change at most every 0.4 s, under the 3 Hz threshold with margin).
+- Shimmer: ±1 texel along a fixed per-cell direction (one of nine, zero included), cycle `0, +d, 0, −d`. A per-cycle direction was tried first and failed the 0.05-texel mean row: a 10 s window could catch an unmatched `−d` at one end and an unrelated `+d` at the other (worst mean 0.08). Fixed direction bounds any window to one step (0.04).
+- Rings: one drop per 32-texel block per 5-step lifetime (2 s), radius growing 2 texels per step to 8, one texel thick, pushing cells one texel outward. Drops land ≥ 9 texels inside their block, so a ring never leaves it and a cell evaluates one block. Every block drips each lifetime, which makes "steps n and n + 1 differ in a 64×64 grid" hold by construction; a 50 % drop chance left four-block grids with unchanged steps.
+- Fade: per-cell threshold hashed across 0.75–1.5 texels per pixel.
+
+## GPU timing (M6)
+Capture measurement (`postretro.capture.measurement.v3`), e24 pool room, camera 2.0 m engine-Y over the pool looking down (pitch −89°), 1920×1080, 240 warmup + 1200 samples, `POSTRETRO_SH_STREAMING=sync-proof`, Vulkan, GTX 1660 SUPER, dev profile with `capture,dev-tools`. `fluid_surface` pass, mean of 10 windows:
+- Before (sine warp): 3.73 ms (3.68–3.80).
+- First build, 3×3 ring neighbourhood: 4.68 ms. Reach-culled neighbourhood: 4.20 ms. Diagnosis: cell offset off 3.63 ms; shimmer only 3.67 ms; rings were the cost.
+- After (rings confined to their own block): 3.77 ms (3.77–3.84), +0.04 ms.
+The owner's in-engine `POSTRETRO_GPU_TIMING=1` read remains manual.
 
 ## AC-to-proof
 
@@ -50,10 +62,10 @@ read at: 06237f700
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Shimmer + rings + fade: CPU reference (`render-cpu`), shader warp, parity and textual tests; first capture at scale 1 and 0.25 to tune constants and check cell borders | integrating executor | — | |
-| 2 | `force`: compiler parse, format section 53, loader validation, collision force + felt push, physics adapter, digest, FGD + docs | integrating executor | — | |
-| 3 | Steady-state drift function in `physics::movement::push` + swimmer settle tests | integrating executor | 2 | |
-| 4 | Compiler face split along push brushes | integrating executor | — | |
-| 5 | Drift: second vertex buffer, face map clusters, app resolve at install and every refresh, shader scroll; tests | integrating executor | 1, 3, 4 | |
-| 6 | Fixture map: still/current pools, partial push, force-0 bending river, force-3 trap, scale 1/0.25 beside walls | integrating executor | 2, 4 | |
+| 1 | Shimmer + rings + fade: CPU reference (`render-cpu`), shader warp, parity and textual tests; first capture at scale 1 and 0.25 to tune constants and check cell borders | integrating executor | — | done: render-cpu motion tests (30 with drift), renderer fluid tests (18, incl. GPU frame test) |
+| 2 | `force`: compiler parse, format section 53, loader validation, collision force + felt push, physics adapter, digest, FGD + docs | integrating executor | — | done: compiler, format, loader, collision, physics, netcode, digest tests; FGD + docs |
+| 3 | Steady-state drift function in `physics::movement::push` + swimmer settle tests | integrating executor | 2 | done: swim_tests steady-state rows |
+| 4 | Compiler face split along push brushes | integrating executor | — | done: surface_tests split rows + e24 fixture test |
+| 5 | Drift: second vertex buffer, face map clusters, app resolve at install and every refresh, shader scroll; tests | integrating executor | 1, 3, 4 | done: render-cpu drift tests, postretro drift + install tests |
+| 6 | Fixture map: still/current pools, partial push, force-0 bending river, force-3 trap, scale 1/0.25 beside walls | integrating executor | 2, 4 | done: e24 east wing (six pools) with fluids/ textures |
 | 7 | GPU timing before/after, preflight, review loop | integrating executor | 1–6 | |

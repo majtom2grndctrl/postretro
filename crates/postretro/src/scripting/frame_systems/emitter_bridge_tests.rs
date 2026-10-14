@@ -514,6 +514,7 @@ fn allocation_test_volume(
         priority: 0,
         gravity: has_gravity.then_some(0.0),
         push: has_push.then_some(Vec3::ZERO),
+        force: 1.0,
         fluid,
         brushes: vec![leaf],
     }

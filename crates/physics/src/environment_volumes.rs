@@ -8,7 +8,8 @@ use postretro_level_loader::LevelWorld;
 /// Build the level's environment volume set from its loaded records, keeping
 /// map order (the overlap rule's last tiebreak). `resolve_fluid` maps a
 /// record's fluid name to the session fluid index; a name it does not know, and
-/// an empty name, load dry. Surface faces are presentation and stay behind.
+/// an empty name, load dry. Each volume takes its record's force from the
+/// optional PushForces section. Surface faces are presentation and stay behind.
 pub fn environment_volumes_from_level(
     world: &LevelWorld,
     resolve_fluid: impl Fn(&str) -> Option<u16>,
@@ -17,11 +18,13 @@ pub fn environment_volumes_from_level(
         .environment_volumes
         .volumes
         .iter()
-        .map(|record| EnvironmentVolume {
+        .enumerate()
+        .map(|(index, record)| EnvironmentVolume {
             source_entity: record.source_entity,
             priority: record.priority,
             gravity: record.gravity,
             push: record.push.map(Vec3::from),
+            force: world.push_force(index),
             fluid: if record.fluid.is_empty() {
                 None
             } else {

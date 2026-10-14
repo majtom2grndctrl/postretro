@@ -2044,6 +2044,8 @@ fn run_after_parsing(
     // Fluid surfaces intern their textures here, after geometry and movers and
     // just before the mip bake reads the table: a fluid-only texture appends
     // past every world entry, and no earlier stage's cache key sees it.
+    let push_forces_section =
+        environment_volumes::encode_push_forces_section(&map_data.environment_volumes);
     let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
         &map_data.environment_volumes,
         map_data.initial_gravity,
@@ -2146,6 +2148,7 @@ fn run_after_parsing(
         kinematic_geometry: kinematic_geometry_section.as_ref(),
         trigger_volumes: trigger_volumes_section.as_ref(),
         environment_volumes: &environment_volumes_section,
+        push_forces: push_forces_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
         cell_residency_set: cell_residency_set_section.as_ref(),

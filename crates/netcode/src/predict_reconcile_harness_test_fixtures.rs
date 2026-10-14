@@ -162,6 +162,7 @@ pub(crate) fn gravity_box_volume(min: Vec3, max: Vec3, gravity: f32) -> Environm
         priority: 0,
         gravity: Some(gravity),
         push: None,
+        force: 1.0,
         fluid: None,
         brushes: vec![ConvexLeaf {
             planes: vec![

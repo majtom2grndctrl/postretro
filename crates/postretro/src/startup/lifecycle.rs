@@ -694,6 +694,7 @@ impl App {
                     // The level stays installed, so its collision does too.
                     self.collision_world = static_collision;
                     self.level = Some(world);
+                    self.resolve_fluid_surface_drift();
                     return Ok(());
                 }
             };
@@ -929,6 +930,9 @@ impl App {
         self.trigger_bindings = products.trigger_bindings;
         self.warn_hosted_trigger_machine_local();
         self.warn_if_local_player_cannot_swim();
+        // After the boot pawn spawns, so the host reads its own descriptor's
+        // terminal velocity; the surfaces installed still until now.
+        self.resolve_fluid_surface_drift();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.
         self.rebuild_player_events(false);
@@ -1909,6 +1913,7 @@ pub(crate) mod tests {
             environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
             environment_fluids: Default::default(),
             environment_fluid_source: Default::default(),
+            fluid_surface_drift: Vec::new(),
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
@@ -2300,6 +2305,7 @@ pub(crate) mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
+            environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

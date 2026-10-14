@@ -401,3 +401,277 @@ fn fluid_textures_reuse_world_indices_and_append_new_ones_after_the_world() {
             .all(|face| face.texture_index == 2)
     );
 }
+
+fn push(push: &str, brushes: &[String]) -> String {
+    entity("push_volume", &format!("\"push\" \"{push}\""), brushes)
+}
+
+/// The +z faces of a record, as (area in square map units, Quake centroid).
+fn top_parts(record: &EnvironmentVolumeRecord) -> Vec<(f64, DVec3)> {
+    let mut parts: Vec<(f64, DVec3)> = record
+        .surface_faces
+        .iter()
+        .filter(|face| facing(face) == "+z")
+        .map(|face| {
+            let centroid = face
+                .vertices
+                .iter()
+                .map(|v| quake(v.position))
+                .sum::<DVec3>()
+                / face.vertices.len() as f64;
+            (area(face), centroid)
+        })
+        .collect();
+    parts.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+    parts
+}
+
+#[track_caller]
+fn assert_part_areas(parts: &[(f64, DVec3)], expected: &[f64]) {
+    let areas: Vec<f64> = parts.iter().map(|(area, _)| *area).collect();
+    assert_eq!(areas.len(), expected.len(), "parts: {parts:?}");
+    for (got, want) in areas.iter().zip(expected) {
+        assert!(
+            (got - want).abs() < 1e-2,
+            "areas {areas:?}, expected {expected:?}"
+        );
+    }
+}
+
+/// A fluid box spanning Quake x 0..128, y 0..64, z 0..64 (waterline z 64).
+fn channel() -> String {
+    fluid(&[box_brush([0, 0, 0], [128, 64, 64], "water_tex")])
+}
+
+#[test]
+fn a_push_over_half_a_fluid_face_splits_it_at_the_push_boundary() {
+    // The FGD's coincident current: the push's top is flush with the waterline.
+    let (_, section) = compile(
+        &distant_world(),
+        &[
+            channel(),
+            push("0 8 0", &[box_brush([0, 0, 0], [64, 64, 64], "push_tex")]),
+        ],
+    );
+    let parts = top_parts(&section.volumes[0]);
+    assert_part_areas(&parts, &[64.0 * 64.0, 64.0 * 64.0]);
+    assert!(parts[0].1.x < 64.0 && parts[1].1.x > 64.0);
+}
+
+// R3: a push whose bottom sits on the waterline meets the face from outside.
+#[test]
+fn a_push_resting_on_the_waterline_from_above_leaves_the_face_whole() {
+    let (_, unpushed) = compile(&distant_world(), &[channel()]);
+    let (_, section) = compile(
+        &distant_world(),
+        &[
+            channel(),
+            push("8 0 0", &[box_brush([0, 0, 64], [64, 64, 128], "push_tex")]),
+        ],
+    );
+    assert_part_areas(&top_parts(&section.volumes[0]), &[128.0 * 64.0]);
+    assert_eq!(section.volumes[0], unpushed.volumes[0]);
+}
+
+#[test]
+fn a_push_covering_the_whole_fluid_leaves_every_face_unsplit() {
+    let (_, unpushed) = compile(&distant_world(), &[channel()]);
+    let (_, section) = compile(
+        &distant_world(),
+        &[
+            channel(),
+            push(
+                "0 8 0",
+                &[box_brush([-16, -16, -16], [144, 80, 64], "push_tex")],
+            ),
+        ],
+    );
+    assert_eq!(section.volumes[0], unpushed.volumes[0]);
+}
+
+// R4: the face is cut by every push brush over it, not only the winner's.
+#[test]
+fn overlapping_pushes_split_a_face_into_parts_under_one_set_of_pushes_each() {
+    let (_, section) = compile(
+        &distant_world(),
+        &[
+            channel(),
+            push("0 8 0", &[box_brush([0, 0, 0], [80, 64, 64], "push_tex")]),
+            push(
+                "0 -8 0",
+                &[box_brush([48, 0, 0], [128, 64, 64], "push_tex")],
+            ),
+        ],
+    );
+    assert_part_areas(
+        &top_parts(&section.volumes[0]),
+        &[48.0 * 64.0, 32.0 * 64.0, 48.0 * 64.0],
+    );
+}
+
+// R5: touches bury nothing and slivers are never kept; parts tile the face.
+#[test]
+fn push_touches_and_sliver_overlaps_leave_the_face_whole() {
+    let (_, unpushed) = compile(&distant_world(), &[channel()]);
+    for brush in [
+        // Edge touch: the push abuts the +x side from outside.
+        box_brush([128, 0, 0], [192, 64, 64], "push_tex"),
+        // Corner touch.
+        box_brush([128, 64, 0], [192, 128, 64], "push_tex"),
+    ] {
+        let (_, section) = compile(&distant_world(), &[channel(), push("0 8 0", &[brush])]);
+        assert_eq!(section.volumes[0], unpushed.volumes[0]);
+    }
+
+    // A corner overlap far under 1 mm².
+    let sliver = "{\n\
+        ( 127.99 0 0 ) ( 127.99 1 0 ) ( 127.99 0 1 ) push_tex 0 0 0 1 1\n\
+        ( 192 0 0 ) ( 192 0 1 ) ( 192 1 0 ) push_tex 0 0 0 1 1\n\
+        ( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) push_tex 0 0 0 1 1\n\
+        ( 0 0.01 0 ) ( 1 0.01 0 ) ( 0 0.01 1 ) push_tex 0 0 0 1 1\n\
+        ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) push_tex 0 0 0 1 1\n\
+        ( 0 0 64 ) ( 0 1 64 ) ( 1 0 64 ) push_tex 0 0 0 1 1\n\
+        }"
+    .to_string();
+    let (_, section) = compile(&distant_world(), &[channel(), push("0 8 0", &[sliver])]);
+    let parts = top_parts(&section.volumes[0]);
+    assert_eq!(
+        parts.len(),
+        1,
+        "a sub-mm² overlap split the face: {parts:?}"
+    );
+    assert!((parts[0].0 - 128.0 * 64.0).abs() < 1e-2);
+}
+
+#[test]
+fn a_thin_push_strip_splits_off_a_thin_part_and_the_parts_tile_the_face() {
+    // A 0.1-unit (2.5 mm) strip along the face's +x edge: far above 1 mm².
+    let strip = "{\n\
+        ( 127.9 0 0 ) ( 127.9 1 0 ) ( 127.9 0 1 ) push_tex 0 0 0 1 1\n\
+        ( 160 0 0 ) ( 160 0 1 ) ( 160 1 0 ) push_tex 0 0 0 1 1\n\
+        ( 0 -16 0 ) ( 0 -16 1 ) ( 1 -16 0 ) push_tex 0 0 0 1 1\n\
+        ( 0 80 0 ) ( 1 80 0 ) ( 0 80 1 ) push_tex 0 0 0 1 1\n\
+        ( 0 0 -16 ) ( 1 0 -16 ) ( 0 1 -16 ) push_tex 0 0 0 1 1\n\
+        ( 0 0 64 ) ( 0 1 64 ) ( 1 0 64 ) push_tex 0 0 0 1 1\n\
+        }"
+    .to_string();
+    let (_, section) = compile(&distant_world(), &[channel(), push("0 8 0", &[strip])]);
+    let parts = top_parts(&section.volumes[0]);
+    assert_eq!(parts.len(), 2, "{parts:?}");
+    assert!((parts[1].0 - 0.1 * 64.0).abs() < 1e-2, "{parts:?}");
+    let total: f64 = parts.iter().map(|(area, _)| area).sum();
+    // 1 mm² in square map units.
+    assert!((total - 128.0 * 64.0).abs() < 1e-6 / (UNIT * UNIT));
+}
+
+// R15: a map with pushes and no fluid has no surface faces to split.
+#[test]
+fn push_volumes_without_fluid_emit_identical_records() {
+    let wind = push("8 0 0", &[box_brush([0, 0, 0], [64, 64, 64], "push_tex")]);
+    let (_, section) = compile(&distant_world(), &[wind]);
+    assert!(section.volumes[0].surface_faces.is_empty());
+}
+
+/// Engine-space sample point 2 mm inside the fluid below a face's centroid,
+/// where drift samples the push (the face normal points out of the fluid).
+fn inside_sample(face: &EnvironmentSurfaceFace) -> DVec3 {
+    let points: Vec<DVec3> = face
+        .vertices
+        .iter()
+        .map(|v| DVec3::from(v.position.map(f64::from)))
+        .collect();
+    let centroid = points.iter().sum::<DVec3>() / points.len() as f64;
+    let mut normal = DVec3::ZERO;
+    for i in 0..points.len() {
+        normal += points[i].cross(points[(i + 1) % points.len()]);
+    }
+    centroid - normal.normalize() * 0.002
+}
+
+fn record_contains(record: &EnvironmentVolumeRecord, point: DVec3) -> bool {
+    record.brushes.iter().any(|brush| {
+        brush.planes.iter().all(|plane| {
+            DVec3::from(plane.normal.map(f64::from)).dot(point) - f64::from(plane.distance) <= 0.0
+        })
+    })
+}
+
+/// The push records whose brushes contain `point`.
+fn pushes_at(section: &EnvironmentVolumesSection, point: DVec3) -> Vec<[f32; 3]> {
+    section
+        .volumes
+        .iter()
+        .filter(|record| record.push.is_some() && record_contains(record, point))
+        .map(|record| record.push.unwrap())
+        .collect()
+}
+
+// The e24 fixture's current channel samples its coincident push on every
+// face, so no face of it is left still; the fluid-motion wing's pools split
+// exactly where their pushes are.
+#[test]
+fn e24_fixture_current_and_wing_pools_sample_the_pushes_over_them() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/maps/e24-environment-test.map");
+    let map = parse_map_file(&path, MapFormat::IdTech2).expect("e24 fixture parses");
+    let mut texture_names = TextureNamesSection { names: Vec::new() };
+    let section = encode_environment_volumes_section(
+        &map.environment_volumes,
+        map.initial_gravity,
+        &map.brush_volumes,
+        &mut texture_names,
+    );
+    let fluid_at = |quake_point: [f64; 3]| {
+        section
+            .volumes
+            .iter()
+            .find(|record| !record.fluid.is_empty() && record_contains(record, engine(quake_point)))
+            .expect("a fluid record holds the point")
+    };
+    // `0 6 0` in map axes is a current toward map +Y: engine -X.
+    let north = [-6.0f32, 0.0, 0.0];
+
+    let channel = fluid_at([1360.0, 784.0, -64.0]);
+    assert!(!channel.surface_faces.is_empty());
+    for face in &channel.surface_faces {
+        assert_eq!(pushes_at(&section, inside_sample(face)), vec![north]);
+    }
+
+    // The two-brush pool: its east brush's top face splits at the push edge
+    // (x 1904); only the part west of it samples the push.
+    let partial = fluid_at([1700.0, 544.0, -64.0]);
+    let tops: Vec<&EnvironmentSurfaceFace> = partial
+        .surface_faces
+        .iter()
+        .filter(|face| facing(face) == "+z")
+        .collect();
+    assert_eq!(
+        tops.len(),
+        3,
+        "west top, east top's pushed part, east top's still part"
+    );
+    let pushed = tops
+        .iter()
+        .filter(|face| !pushes_at(&section, inside_sample(face)).is_empty())
+        .count();
+    assert_eq!(pushed, 2);
+
+    // The bending river: every top part samples exactly one push, east then
+    // north, and no surface is drawn between its two brushes.
+    let river = fluid_at([2200.0, 512.0, -64.0]);
+    let mut directions = std::collections::BTreeSet::new();
+    for face in river
+        .surface_faces
+        .iter()
+        .filter(|face| facing(face) == "+z")
+    {
+        let pushes = pushes_at(&section, inside_sample(face));
+        assert_eq!(pushes.len(), 1, "each river part lies under one push");
+        directions.insert(format!("{:?}", pushes[0]));
+    }
+    assert_eq!(
+        directions.len(),
+        2,
+        "the river drifts along both legs: {directions:?}"
+    );
+}

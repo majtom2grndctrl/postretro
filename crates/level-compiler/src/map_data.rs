@@ -238,8 +238,12 @@ pub struct MapEnvironmentVolume {
     pub priority: i32,
     /// Gravity override, m/s², signed vertical (negative = downward).
     pub gravity: Option<f32>,
-    /// Push acceleration, m/s², engine axes (Y-up).
+    /// Push acceleration, m/s², engine axes (Y-up): the nominal current, its
+    /// direction and look.
     pub push: Option<glam::Vec3>,
+    /// How hard the push shoves a body: bodies feel `push × force`. Finite and
+    /// ≥ 0; 1 unless a `push_volume` authors `force`.
+    pub force: f32,
     /// Fluid name the mod manifest resolves.
     pub fluid: Option<String>,
     /// One convex leaf per authored brush, in authored order.

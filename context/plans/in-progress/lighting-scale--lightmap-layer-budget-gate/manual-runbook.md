@@ -1,6 +1,6 @@
 # External acceptance runbook
 
-Compiler measurements 34–35 pass. Engine observations 36–37 still block landing. Record results in plan.md; do not infer a visual or RSS pass from unit tests.
+All checks below pass. Compiler measurements are recorded in measurement-results.md; owner normal-streaming and forced-all-resident visual/log observations are recorded in plan.md. Commands remain here for reproduction.
 
 ## Compiler measurements (34–35)
 

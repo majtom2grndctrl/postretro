@@ -1,6 +1,6 @@
 # Dev-map verification measurements
 
-AC34–35 pass. Owner reports normal streaming with no missing lightmaps (AC36 visual portion passed; placeholder-error log check unconfirmed). Owner also reports the full-bright test-grid fallback (AC37 visual portion passed; exact rejection-log count unconfirmed). All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
+All37 Acceptance rows pass, including compiler measurements34–35 and owner visual/log checks36–37. All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
 
 ## Conditions
 
@@ -35,7 +35,7 @@ SH remains a substantial upstream cost in the 0.025 run: the lightmap interval b
 
 `lightmap-runtime-floor-verification.map` preserves the two-room geometry and streaming hints from `sh-streaming-hinted-door.map`. It adds a player spawn facing the doorway and one static SDF light. At density 0.0006, the successful final compile warns that 340 cell blocks need 340 pool layers, exceeding the 256-layer runtime floor; id51 allows streaming. Default 16 GiB budget admitted the 5,153,603,458-byte prediction.
 
-Published metadata confirms 340 real id22 blocks and nonempty id51; id42 is absent because no face admits a mask owner. Four additional singleton SH-cluster diagnostics report 65 primitives against a 64-primitive target. Exit status is zero. The fixture proves admission and provides an output for AC37; it does not prove the engine observation.
+Published metadata confirms 340 real id22 blocks and nonempty id51; id42 is absent because no face admits a mask owner. Four additional singleton SH-cluster diagnostics report 65 primitives against a 64-primitive target. Exit status is zero. The bake proves admission; the later owner visual observation and matching rejection log complete AC37.
 
 The 0.025 hallway uses 230 runtime layers and does not warn. Use the separate fixture for forced-all-resident rejection. Engine launch commands and expected observations are in [manual-runbook.md](./manual-runbook.md).
 
@@ -94,6 +94,14 @@ Measurements were collected under `/private/tmp/postretro-lightmap-proof-ztdf8vx
 
 ## Owner engine observations
 
-Owner reports no missing hallway lightmaps under normal streaming, then effectively full-bright test-grid geometry and a fully dark weapon under forced all-resident loading. Both visual portions are recorded as passed. Still awaiting confirmation that normal streaming had no placeholder-lightmap error and forced loading logged340 required layers against256 with neutral-placeholder fallback.
+Owner reports no missing hallway lightmaps under normal streaming, then effectively full-bright test-grid geometry and a fully dark weapon under forced all-resident loading. Owner then searched the logs and reported that the only rejection entry was the expected forced-all-resident rejection below. Both visual/log checks are recorded as passed.
 
 The dark weapon is not proof of missing SH data. Fixture id34 contains a7×8×14 grid (784 positions) with395 valid probe records; id34 is20,764bytes, and id35 is14,476bytes. This metadata read confirms baked data exists, not runtime residency or brightness.
+
+Owner-supplied renderer entry, timestamp2026-10-14T14:25:30Z:
+
+```text
+[Renderer] Lightmap cell blocks rejected: the pool needs 340 array layer(s) for 340 cell block(s), exceeding device maxTextureArrayLayers 256; degrading to the neutral placeholder for this level
+```
+
+The340-layer rejection matches the compiler warning exactly. AC36–37 pass; no outstanding acceptance proof remains.

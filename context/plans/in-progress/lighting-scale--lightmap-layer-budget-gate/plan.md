@@ -1,8 +1,9 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: test-ready
+status: active
 read at: e00493c95
+execution: complete; all 37 acceptance rows pass; awaiting owner landing instruction
 
 ## Corrections
 - Relevant compiler, format, render-cpu placement and loader portal symbols are unchanged since 45c4fe5. Other renderer changes concern SH streaming and do not alter the cited lightmap boundaries.
@@ -53,8 +54,8 @@ read at: e00493c95
 | 33 | The predicted working set counts each encoded section once. | predicted_peak_charges_one_layer_fill_scratch_and_each_section_once | focused proof passed | pass |
 | 34 | Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS. | Release bake and 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — exit 0; 310 bake / 230 runtime layers; predicted 3,910,553,420 bytes; stage peak 5,668,252 KiB; 1,995.885 s total; SH upstream cost recorded |
 | 35 | Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline. | Same-host release/no-cache 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — current 3,883,364 KiB ≤ baseline 5,501,040 KiB (29.41% lower); zero sampling errors |
-| 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner normal-streaming engine observation | visual portion passed; log check unconfirmed | owner ran first runbook command and saw no missing lightmaps; no placeholder-error log result supplied |
-| 37 | A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor. | Owner forced-all-resident engine observation | visual portion passed; rejection log unconfirmed | owner reports effectively full-bright test-grid level; exact 340-layer renderer rejection not yet confirmed |
+| 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner normal-streaming observation and log search | owner proof passed | owner saw no missing lightmaps; reported the only rejection entry in checked logs was the expected forced-all-resident fixture rejection |
+| 37 | A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor. | Owner forced-all-resident observation and exact renderer log | owner proof passed | owner saw full-bright test-grid fallback; supplied renderer rejection naming 340 array layers for 340 blocks, device limit 256, and neutral-placeholder fallback, matching compiler warning |
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -64,7 +65,7 @@ read at: e00493c95
 | 3 | Stream id-22 cache write, ids 22/42 PRL writes and read-back; verify exact bytes and bounded writes | serialization worker + integrating executor | baseline capture | done — focused proof passed |
 | 4 | Replace cap and pre-cut area refusal with shared working-set budget; gate cold/warm before memo and bake, price per-layer/carry and one section copy, skip unconsumed no-static layouts; enforce runtime floor from emitted id 51 | integrating executor | 1, 2, 3 | done — focused proof passed |
 | 5 | Focused readiness, review-panel/fix loop, final preflight once, and complete AC evidence table | integrating executor | 4 | done — all automated proofs, review repairs and full preflight pass |
-| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | compiler measurements complete — owner visual AC36–37 outstanding |
+| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | done — compiler measurements and owner visual/log proofs passed |
 
 ## Manual runbook
 - Concrete commands and measurement interval: [manual-runbook.md](./manual-runbook.md).
@@ -115,13 +116,13 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Final formatting and strict Clippy passed. Clippy identified two mechanical iteration forms; equivalent iterator/chunk expressions were applied, formatting and lint rerun clean. The full workspace test suite is running for the first final-preflight pass.
 
 ## Final verification and landing gates
-- All 33 automated Acceptance rows and measured compiler rows34–35 pass. Engine visual rows36–37 remain outstanding; see manual-runbook.md and measurement-results.md. Status test-ready records this external-proof checkpoint, not landing approval.
+- All 37 Acceptance rows pass: 33 automated, two compiler measurements, and two owner visual/log checks. Execution is complete. Awaiting owner instruction to land; no feature push or landing performed.
 - Formatting: pass. Strict Clippy in its dedicated target: pass after two mechanical iteration fixes.
 - Full workspace tests with local sockets enabled and all targets continued: 10,997 passed, two failed, 48 ignored across 66 result groups. Every compiler and renderer target passed on the final run. The GPU staging test failed once under the earlier full run, passed in isolation, and passed in the final full run; no source change was made for it.
 - Initial sandboxed full run could not bind local sockets (65 failures). Reran with socket access; no networking code changed.
 - The full run exposed stale animated-only fixtures and a hypothetical runtime-floor witness relying on the retired no-static placements. Adapted only the fixtures: real static blocks for animated weight tests, independently sized hypothetical charts for the 257-layer witness. Assertions unchanged. Focused animated33/runtime2 passed; final workspace compiler target passed.
 - The last full run found two pre-existing failures in the postretro binary target, both unchanged at claim commit e00493c95: `startup::movement_vault_surface_tests::the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick` expects roll0 but content/dev/scripts/player.ts declares10; `host_activations::conditioned_tests::receive_alternate::receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots` expects (min,full) ticks(12,60) but content/dev/scripts/reference-projectiles.ts declares200/2000ms, yielding(12,120). The vault expectation is resolved by the owner follow-up below. Plasma is also resolved by the later owner follow-up below.
-- Automated preflight and compiler measurements are clean (later owner follow-up); landing still needs engine AC36–37. No feature push or landing performed. After the blocking results arrive, wait for the owner to say "land the plane."
+- Automated preflight, compiler measurements and owner engine checks are clean (later follow-ups). No feature push or landing performed. Wait for the owner to say "land the plane."
 - Disk after final verification:16GiB free; no cleanup threshold crossed.
 
 ## Owner follow-up: vault roll expectation
@@ -160,3 +161,8 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 ## Owner follow-up: forced all-resident observation
 - Owner reports effectively full-bright test-grid geometry and a fully dark weapon during the second check. Record AC37 visual portion as passed; exact rejection-log count remains unconfirmed. Asked owner to confirm both outstanding log checks.
 - Dark weapon does not establish absent SH probes. Read actual fixture id34 metadata: grid7×8×14 (784 positions),395 valid probes; id34 is20,764bytes and id35 is14,476bytes. Probe data exists in the PRL; runtime illumination/residency at the weapon is not established by this inspection. No renderer diagnosis or product change inferred.
+
+## Owner follow-up: matching rejection log
+- Owner searched the logs and reported one rejection entry, the expected forced-all-resident fixture rejection. Combined with the earlier normal-streaming observation, AC36 passes.
+- Owner supplied the exact renderer entry at2026-10-14T14:25:30Z: `Lightmap cell blocks rejected: the pool needs 340 array layer(s) for 340 cell block(s), exceeding device maxTextureArrayLayers 256; degrading to the neutral placeholder for this level`. It matches the compiler warning's340-layer count. Combined with the earlier fallback visual observation, AC37 passes.
+- All37 Acceptance rows pass; task6 complete. Execution complete, awaiting owner landing instruction. No new source change requires another preflight; no feature push or landing performed.

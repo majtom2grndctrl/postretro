@@ -53,7 +53,7 @@ read at: e00493c95
 | 33 | The predicted working set counts each encoded section once. | predicted_peak_charges_one_layer_fill_scratch_and_each_section_once | focused proof passed | pass |
 | 34 | Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS. | Release bake and 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — exit 0; 310 bake / 230 runtime layers; predicted 3,910,553,420 bytes; stage peak 5,668,252 KiB; 1,995.885 s total; SH upstream cost recorded |
 | 35 | Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline. | Same-host release/no-cache 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — current 3,883,364 KiB ≤ baseline 5,501,040 KiB (29.41% lower); zero sampling errors |
-| 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
+| 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner normal-streaming engine observation | visual portion passed; log check unconfirmed | owner ran first runbook command and saw no missing lightmaps; no placeholder-error log result supplied |
 | 37 | A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
 ## Tasks
 
@@ -153,3 +153,6 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 
 - Runtime-floor final bake completed: exit0;340 bake/runtime layers; predicted5,153,603,458bytes; stage peak2,076,020KiB,1,252samples, zero errors; stage125.145s,total127.720s. Published PRL contains340 real id22 blocks and nonempty id51; no id42 (no mask owners). Compiler warning names340 required layers against256 floor. All four requested dev-folder outputs are retained.
 - Verification checkpoint: AC34–35 pass; all33 automated rows pass; AC36–37 remain owner visual proof. Status test-ready. Full plasma/vault preflight remains clean; no product source changed during these bakes. Disk crossed15GB after final output; cleared only active Cargo incremental data, restoring15.176GB free. Existing stage cache untouched.
+
+## Owner follow-up: normal streaming observation
+- Owner ran the first engine check with normal streaming and reported no missing lightmaps. Record the visual portion of AC36 as passed. No placeholder-error log result was supplied; app terminal access returned no attached session, so that part is unconfirmed. AC37 remains outstanding. Status stays test-ready; no landing or feature push.

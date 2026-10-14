@@ -1,6 +1,6 @@
 # Dev-map verification measurements
 
-AC34–35 pass. AC36–37 remain owner visual checks. All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
+AC34–35 pass. Owner reports normal streaming with no missing lightmaps (AC36 visual portion passed; placeholder-error log check unconfirmed). AC37 remains an owner engine check. All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
 
 ## Conditions
 

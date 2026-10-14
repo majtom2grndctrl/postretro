@@ -1,7 +1,7 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: e00493c95
 
 ## Corrections
@@ -28,7 +28,7 @@ read at: e00493c95
 | 11 | A map without static lights but with animated lights compiles without a warning that names its cell blocks or the runtime limits as the reason it has no animated chunks. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 12 | The pool-layer check, given block extents and alignment that place into 257 pool layers at the runtime pool edge, refuses by name for a level that cannot stream and warns by name for one that can, each giving 257 and the floor. At exactly 256 neither fires, on a layout whose bake-layer count exceeds 256. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 13 | One cheap compile shows the check runs on the packed layout and reads whether the compiler emitted id 51: under a test floor, a fixture without usable portals refuses and the same fixture with them warns. | Focused compiler/format/placement regression; final preflight | achievable as stated |
-| 14 | On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`. | Blocked: format decoder rejects the required synthetic section | needs restatement |
+| 14 | At direction texel scale 8, a synthetic unaligned placement fixture spanning several pool layers produces the same shared-placement result as its extents rounded up to alignment 8; assert an exact layer count that would differ if alignment were ignored. Separately, on a valid scale-8 id-22 section produced from the same finalized compiler layout, the production compiler pool-layer count equals the renderer's all-resident placement count from that section's decoded index, spanning several pool layers. Both checks are non-ignored. | Non-ignored alignment witness + production layout/section/decode/renderer placement parity | achievable as clarified |
 | 15 | A warm rebuild that hits the lightmap section memo logs the same pool-layer warning, or refuses with the same error, as the cold build (pin P13). | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 16 | A level with no static lights whose charts, packed, would need more than 256 pool layers compiles with neither the warning nor the refusal, whether or not it can stream: its id 22 has no blocks. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 17 | The residency dry run still labels layouts against a 256-layer runtime floor. The check and the dry-run label read one named constant, and no compiler pack or area check reads it. Grep gate. | Focused compiler/format/placement regression; final preflight | achievable as stated |
@@ -72,7 +72,7 @@ read at: e00493c95
 - Load a compiler-warning layout with POSTRETRO_LIGHTMAP_STREAMING=all-resident: placeholder renders and renderer names the same pool-layer count.
 - Delete session outputs and cache after measurements. Outstanding manual rows never become inferred passes.
 
-## Blocking acceptance clarification
+## Resolved acceptance clarification
 
 AC14 currently reads:
 > On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`.
@@ -88,4 +88,9 @@ A scale-8 id-22 section with nonmultiples of 8 cannot decode. Silently rounding 
 Proposed replacement (owner approval required):
 > On synthetic placement inputs with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the shared placement produces the same pool-layer count as those extents rounded up to alignment 8. Separately, on a valid scale-8 id-22 section spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the index decoded from that same section. Both checks are non-ignored.
 
-Resume: after the owner approves wording, update only AC14 as authorized, re-run its feasibility check, restore `status: active`, and resume task 1 from baseline capture. No baseline digests were captured and no implementation has landed. The baseline test build was interrupted before tests ran; temporary harness edits are removed. All other Acceptance rows and Decisions remain unchanged.
+Resolution: the owner explicitly requested an Astra assessment, internal discussion to consensus, and then continuation. Astra independently verified the decoder conflict and agreed that the following clarification preserves the intended rounding and producer/consumer proof without changing any Decision:
+> At direction texel scale 8, a synthetic unaligned placement fixture spanning several pool layers produces the same shared-placement result as its extents rounded up to alignment 8; assert an exact layer count that would differ if alignment were ignored. Separately, on a valid scale-8 id-22 section produced from the same finalized compiler layout, the production compiler pool-layer count equals the renderer's all-resident placement count from that section's decoded index, spanning several pool layers. Both checks are non-ignored.
+
+Consensus adds an adversarial witness: seven full-height blocks of width 681 at edge 2048 (or width 21 at edge 64) need four layers when rounded to alignment 8, versus three without rounding. The decoded parity test must run the production compiler adapter on its finalized layout, construct id 22 through the production section builder from that layout, decode it, and call the unchanged render-cpu placement entry. Calling a shared function twice on decoded extents alone would not prove the seam.
+
+Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `LightmapBlockIndex::from_prefix`, and `place_all_resident`: both halves are achievable. Only AC14 wording changed. All Decisions and other Acceptance rows remain unchanged. Status restored to active; task 1 resumed from pre-change baseline capture, which has not yet completed.

@@ -2597,6 +2597,10 @@ pub(crate) fn load_prl_from_container(
     let environment_volumes = crate::prl_environment::decode_environment_volumes(read_section(
         SectionId::EnvironmentVolumes,
     )?)?;
+    let environment_push_forces = crate::prl_environment::decode_push_forces(
+        read_section(SectionId::PushForces)?,
+        &environment_volumes,
+    )?;
 
     // Required — carries the worldspawn fog pixel scale even with no fog volumes.
     let (fog_volumes, fog_pixel_scale): (Vec<FogVolumeRecord>, u32) =
@@ -3002,6 +3006,7 @@ pub(crate) fn load_prl_from_container(
         fog_volumes,
         fog_pixel_scale,
         environment_volumes,
+        environment_push_forces,
         fog_cell_masks,
         navmesh,
         cell_draw_index,

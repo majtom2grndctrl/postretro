@@ -25,6 +25,13 @@ default cutoff. Output PNGs are deliberately untagged (no `sRGB`, `gAMA`, or
 regardless of PNG color-space metadata. Run with `python3 tools/gen_emissive.py
 --help` for usage.
 
+### `gen_fluid_textures.py`
+
+Generates the dev mod's tileable fluid surface textures (`content/dev/textures/fluids/`):
+water, neon water, sludge, lava and slime, each on a periodic domain and quantized to a
+small palette so single-texel motion stays visible. Standard library only, fixed seeds.
+Run with `python3 tools/gen_fluid_textures.py --out content/dev/textures/fluids`.
+
 ### `gen_dev_glyphs.py`
 
 Generates the dev mod's placeholder input glyph art: one PNG per input name for

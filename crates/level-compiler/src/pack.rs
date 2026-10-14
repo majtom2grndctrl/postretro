@@ -45,6 +45,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
+use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
@@ -483,6 +484,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         kinematic_geometry,
         trigger_volumes,
         &environment_volumes,
+        None,
         cell_draw_index_section,
         cell_visibility_section,
         None,
@@ -526,6 +528,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
     environment_volumes: &EnvironmentVolumesSection,
+    // PushForces (id 53), or `None` when every force is 1.
+    push_forces: Option<&PushForcesSection>,
     // CellDrawIndex (id 37), or `None` for zero-leaf maps. Emission is
     // independent of portal presence.
     cell_draw_index_section: Option<&CellDrawIndexSection>,
@@ -664,6 +668,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        push_forces,
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
         cell_residency_set: cell_residency_set_section,

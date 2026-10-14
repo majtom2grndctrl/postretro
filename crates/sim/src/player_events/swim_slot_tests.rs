@@ -54,6 +54,7 @@ fn pool() -> EnvironmentVolumes {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![ConvexLeaf {
             planes: vec![

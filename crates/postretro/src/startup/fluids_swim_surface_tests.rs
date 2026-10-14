@@ -119,7 +119,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 viscosity: 2.0,
                 view_tint: [0.1, 0.3, 0.4, 0.35],
                 muffle: 0.8,
-                surface_opacity: 0.6,
+                surface_opacity: 0.75,
                 enter_sound: Some("fixtures/land".into()),
                 exit_sound: Some("fixtures/jump".into()),
             },

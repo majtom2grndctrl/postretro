@@ -31,7 +31,7 @@ return Postretro.defineMod({
       viscosity = 2.0, -- 1/s drag while swimming; >= 0
       viewTint = { 0.1, 0.3, 0.4, 0.35 }, -- rgb + strength, each 0..=1
       muffle = 0.8, -- 0 = none, 1 = maximum low-pass
-      surfaceOpacity = 0.6, -- 0..=1
+      surfaceOpacity = 0.75, -- 0..=1
       enterSound = "fixtures/land", -- optional
       exitSound = "fixtures/jump", -- optional
     }),

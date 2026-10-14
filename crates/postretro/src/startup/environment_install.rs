@@ -145,7 +145,9 @@ impl App {
     /// arrives. Source-agnostic: a host manifest reload, a client's tuning
     /// install or a client's demotion all land here. A viscosity-only change
     /// replaces the table without a rebuild. No level leaves only the table
-    /// updated.
+    /// updated and the drift cleared. Every call re-resolves the fluid surfaces'
+    /// drift, after any rebuild, since a viscosity or a terminal velocity alone
+    /// changes it.
     ///
     /// A renamed table moves fluid indices, so every swimming pawn's fluid is
     /// remapped by name first: its exit edge then names the fluid it is in.
@@ -160,14 +162,13 @@ impl App {
         }
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
-        if !renamed && !resourced {
-            return;
+        if (renamed || resourced)
+            && let Some(world) = self.level.as_ref()
+        {
+            self.environment_volumes =
+                environment_volumes_for(world, self.environment_fluids.names(), source);
         }
-        let Some(world) = self.level.as_ref() else {
-            return;
-        };
-        self.environment_volumes =
-            environment_volumes_for(world, self.environment_fluids.names(), source);
+        self.resolve_fluid_surface_drift();
     }
 
     /// Point every `Swim { fluid }` pawn at `next`'s index for the name its

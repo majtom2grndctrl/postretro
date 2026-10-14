@@ -1187,6 +1187,7 @@ fn pool_water() -> EnvironmentVolumes {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![box_leaf(
             Vec3::new(-50.0, POOL_FLOOR_Y, -50.0),
@@ -1656,6 +1657,7 @@ fn a_vault_inside_a_push_volume_completes() {
         priority: 0,
         gravity: None,
         push: Some(Vec3::new(0.0, 0.0, 30.0)),
+        force: 1.0,
         fluid: None,
         brushes: vec![box_leaf(
             Vec3::new(-50.0, -10.0, -50.0),

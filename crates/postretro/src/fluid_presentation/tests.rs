@@ -66,6 +66,7 @@ fn pool() -> EnvironmentVolumes {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![axis_leaf(
             Vec3::new(-50.0, -10.0, -50.0),
@@ -80,6 +81,7 @@ fn water_volume(brushes: Vec<ConvexLeaf>) -> EnvironmentVolume {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes,
     }
@@ -662,6 +664,7 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(fluid),
         brushes: vec![axis_leaf(
             Vec3::new(x, 0.0, 0.0),
@@ -724,6 +727,7 @@ fn eye_moving_between_adjacent_fluid_volumes_switches_once_at_the_band() {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: Some(fluid),
         brushes: vec![axis_leaf(
             Vec3::new(min_x, -10.0, -10.0),

@@ -5,7 +5,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 use postretro_combat_model::{EnvironmentTuning, TuningPayload};
-use postretro_foundation::Seat;
+use postretro_foundation::{PlayerMovementDescriptor, Seat};
 use postretro_net::wire::JoinSeedValue;
 
 /// The active network endpoint held by `App`. `None` for single-player; a
@@ -792,6 +792,16 @@ impl NetEndpoint {
     pub fn client_host_environment(&self) -> Option<&EnvironmentTuning> {
         match self {
             Self::Client { tuning, .. } => tuning.as_deref().map(|payload| &payload.environment),
+            Self::Host { .. } => None,
+        }
+    }
+
+    /// The movement tuning this client predicts its own pawn with, from the
+    /// installed tuning payload. `None` on a host, before a payload installs,
+    /// or when the host's pawn class has no movement descriptor.
+    pub fn client_movement_tuning(&self) -> Option<&PlayerMovementDescriptor> {
+        match self {
+            Self::Client { tuning, .. } => tuning.as_deref()?.movement.as_ref(),
             Self::Host { .. } => None,
         }
     }

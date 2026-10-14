@@ -134,7 +134,7 @@ Unknown classnames are logged as warnings and skipped. The engine does not crash
 
 Entity properties arrive as string key-value pairs. The loader parses these into typed values (floats, vectors, integers, enums). Malformed values log a warning and fall back to defaults.
 
-**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. `force` on `push_volume`, a modifier resolved with push, is one such amendment (decided, not yet built; `movement.md` §6). A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
+**Map declarations seed level state; descriptors tune archetypes.** Maps may declare initial level gameplay values at load, including world gravity, so basic content does not require a script. Maps may also place static regional gravity, push and fluid volumes, baked at compile time (§7, Environment Volumes); any further regional field needs its own amendment, and gas and haze stay with fog volumes. `force` on `push_volume` is one such amendment: a modifier that rides its volume's push and wins with it, scaling what bodies feel while particles and fluid surfaces show the nominal push (`movement.md` §6). A map declaration cannot mutate gameplay after load or override per-archetype descriptor tuning. Weapon damage/range/action timing, player movement tuning, and future wieldable/ability tuning remain descriptor-owned. Scripts may mutate runtime values through their supported primitives, including on events. An archetype may need FGD presence to be map-placeable (a pickup's position), but never its tuning surface.
 
 ---
 
@@ -225,7 +225,7 @@ Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` 
 
 **One overlap rule per field.** A field's value comes from the winning volume among those that set it and are in reach; with none, the level default applies (level gravity, zero push, dry). The winner is the highest priority, then the smallest summed brush volume — so a pool inside a room wins without priorities — then the earliest map entity. Fields resolve independently: a pool with no gravity inside a low-gravity room takes the pool's fluid and the room's gravity.
 
-- **Gravity and push** reach is the body's position.
+- **Gravity and push** reach is the body's position. Push yields two outputs: the winner's nominal push, and the felt push, nominal times the winner's force (default 1). Force never ranks a winner, so a force-0 push still carves its region.
 - **Fluid** reach is the capsule's vertical segment, feet to head. A fluid volume is in reach only when it covers a positive length of the segment, so feet resting on the surface stay dry. Immersion is the segment's coverage by the union of every in-reach volume carrying the winner's fluid, so a pool split into several entities of one fluid reads whole, a different fluid never adds, and leaving through any face, bottom included, drops it.
 - A non-finite probe resolves the defaults, dry. Resolution is deterministic and allocation-free; its result never depends on tree shape or visit order.
 
@@ -233,10 +233,11 @@ Maps place static regional gravity, push and fluid volumes (`build_pipeline.md` 
 
 | Body | Resolves |
 |---|---|
-| Player pawn | The full environment (`movement.md` §4, §6) |
+| Player pawn | The full environment, felt push (`movement.md` §4, §6) |
 | AI agent | Gravity only, clamped to its downward part. Agent collide-and-slide adds gravity every tick, grounded included, so upward gravity would lift it off the navmesh; in an upward-gravity volume it behaves as in zero gravity. Agents ignore push, never swim, and walk fluid floors |
 | Projectile | Nothing; projectiles apply no gravity |
-| Particle | Gravity and push at its post-step position, once per rendered frame; never fluid (§8) |
+| Particle | Gravity and the nominal push at its post-step position, once per rendered frame; never fluid (§8). A force-0 river still carries foam |
+| Fluid surface face | The nominal push 2 mm inside the face, at install and on every fluid-table or tuning refresh, for its drift (`rendering_pipeline.md` §7.3a) |
 
 **Hitscan splash facts.** A hitscan pellet reports each fluid-surface crossing strictly before its blocking hit as a fact: point, outward normal of the crossed face, fluid. A ray starting on a face never splashes there, a face shared by two brushes of one volume is no crossing, and two adjacent fluid entities give two. The fact is presentation: never replicated or hashed. Nothing consumes it yet.
 
@@ -291,7 +292,7 @@ Particles are anonymous presentation in a pool outside the registry. A particle 
 
 **Producers.** The emitter bridge, a frame-time owner, writes the pool directly. Producers in the fixed tick or network ingest (impact bursts) queue plain-data requests on registry intake, drained into the pool at frame time. They never touch the pool, and the queue never reaches transport: each peer spawns its own bursts (`networking.md` §Presentation events vs. replicated state). Requests drain in raise order before emitter spawning; both producers feed the same frame's simulation and collection. Level unload and reload clear the pool and pending intake together.
 
-**Simulation.** Rust, once per rendered frame on frame time, after the emitter bridge and before the light bridge: velocity, buoyancy and drag, curve-evaluated size and opacity, spin. Particles stay off the fixed tick; no per-particle script callbacks. Each step integrates position first, then takes gravity and push at the post-step position under the bodies' overlap rule (§7), never fluid. Buoyancy scales gravity; push is unscaled. A particle leaves on the step its lifetime ends, and every survivor steps exactly once. Pool order carries no meaning: the billboard pass is order-independent (`rendering_pipeline.md` §7.4).
+**Simulation.** Rust, once per rendered frame on frame time, after the emitter bridge and before the light bridge: velocity, buoyancy and drag, curve-evaluated size and opacity, spin. Particles stay off the fixed tick; no per-particle script callbacks. Each step integrates position first, then takes gravity and push at the post-step position under the bodies' overlap rule (§7), never fluid. Buoyancy scales gravity; push is the nominal push, unscaled by buoyancy or force. A particle leaves on the step its lifetime ends, and every survivor steps exactly once. Pool order carries no meaning: the billboard pass is order-independent (`rendering_pipeline.md` §7.4).
 
 **Emitter parameters.** A particle takes its emitter's curves, drag, buoyancy, sprite collection and tint at spawn and keeps them for life; a later emitter change reaches only later spawns. Parameters live in shared immutable blocks a particle references by index, never copied per particle. Blocks survive until their last particle expires; a later rewrite mints a new block only when a spawn succeeds. Spin is the one live value: a live emitter's spin rate refreshes its particles, so spin reactions turn existing smoke, and an orphan (emitter despawned) keeps rotating at the last rate. Reusing an entity slot cannot reconnect that orphan to a new emitter.
 

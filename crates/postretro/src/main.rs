@@ -987,6 +987,11 @@ pub(crate) struct App {
     /// host's table builds every volume with its fluid dry, so gravity and
     /// push still hold; the host's table re-resolves the fluids on arrival.
     environment_fluid_source: startup::environment_install::FluidTableSource,
+    /// Each installed fluid surface face's world drift, one per surface face of
+    /// every environment record in record order; empty with no level. Resolved
+    /// at level install and on every fluid-table or tuning refresh, then handed
+    /// to the renderer.
+    fluid_surface_drift: Vec<glam::Vec3>,
     /// Local-space collider payloads for PRL-loaded kinematic movers.
     kinematic_mover_colliders: Vec<collision::moving::MoverCollider>,
     /// Live fixed-tick mover poses, published before player movement consumes

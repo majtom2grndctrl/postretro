@@ -333,6 +333,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         environment_volumes: postretro_collision::EnvironmentVolumes::empty(),
         environment_fluids: Default::default(),
         environment_fluid_source: Default::default(),
+        fluid_surface_drift: Vec::new(),
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
         mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,

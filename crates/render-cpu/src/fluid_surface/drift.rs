@@ -28,6 +28,8 @@ const ROUNDING_SLACK: f64 = 8.0;
 pub struct FluidFaceDriftMap {
     /// First vertex of the face in [`super::FluidSurfaceMesh::vertices`].
     pub vertex_start: u32,
+    /// Mesh vertices the face owns, contiguous from `vertex_start`: its own,
+    /// plus the centroid its triangulation may add.
     pub vertex_count: u32,
     /// Gradients of the normalized U and V over world space, per meter. Both
     /// lie in the face's plane, so a world drift's normal part never scrolls.
@@ -181,9 +183,10 @@ fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
     Vec3::from(vertex.position).as_dvec3()
 }
 
-/// Build every drawable face's drift map for one volume. `vertex_start[i]`
-/// is face `i`'s first mesh vertex, or `None` for a face that draws nothing;
-/// `uv_of(face, vertex)` is the normalized UV the mesh stores and
+/// Build every drawable face's drift map for one volume. `vertex_ranges[i]`
+/// is face `i`'s first mesh vertex and mesh vertex count, or `None` for a
+/// face that draws nothing. Maps are fitted to each face's own vertices:
+/// `uv_of(face, vertex)` is the normalized UV the mesh stores for one, and
 /// `uv_scale(face)` its texels per normalized unit.
 ///
 /// A split brush side reaches the runtime as several faces, and a thin part's
@@ -193,14 +196,14 @@ fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
 /// part far from the origin still fits its side's map.
 pub(super) fn volume_drift_maps(
     volume: &EnvironmentVolumeRecord,
-    vertex_start: &[Option<u32>],
+    vertex_ranges: &[Option<(u32, u32)>],
     uv_of: impl Fn(&EnvironmentSurfaceFace, usize) -> Vec2,
     uv_scale: impl Fn(&EnvironmentSurfaceFace) -> Vec2,
 ) -> Vec<Option<FluidFaceDriftMap>> {
     let faces = &volume.surface_faces;
     let normals: Vec<Option<Vec3>> = faces.iter().map(face_normal).collect();
     let mut order: Vec<usize> = (0..faces.len())
-        .filter(|&i| normals[i].is_some() && vertex_start[i].is_some())
+        .filter(|&i| normals[i].is_some() && vertex_ranges[i].is_some())
         .collect();
     order.sort_by(|&a, &b| face_area(&faces[b]).total_cmp(&face_area(&faces[a])));
 
@@ -222,9 +225,11 @@ pub(super) fn volume_drift_maps(
                 maps.len() - 1
             }),
         };
+        let (vertex_start, vertex_count) =
+            vertex_ranges[index].expect("ordered faces have vertices");
         result[index] = fitted.map(|map| FluidFaceDriftMap {
-            vertex_start: vertex_start[index].expect("ordered faces have vertices"),
-            vertex_count: face.vertices.len() as u32,
+            vertex_start,
+            vertex_count,
             uv_gradient: maps[map].uv_gradient.map(DVec3::as_vec3),
         });
     }
@@ -247,8 +252,10 @@ fn face_area(face: &EnvironmentSurfaceFace) -> f64 {
 /// Per-vertex scroll rates for `faces` (one map per surface face of every
 /// volume, in record order, `None` for faces that draw nothing) under
 /// `drifts`, one world drift per surface face in the same order. Writes into
-/// `rates`, one entry per mesh vertex; vertices of faces without a drift stay
-/// still. A `drifts` slice of the wrong length leaves every vertex still.
+/// `rates`, one entry per mesh vertex. A face's rate covers every vertex it
+/// owns, any added centroid included, since the shader reads it flat from the
+/// provoking vertex. Vertices of faces without a drift stay still. A `drifts`
+/// slice of the wrong length leaves every vertex still.
 pub fn fill_drift_rates(
     faces: &[Option<FluidFaceDriftMap>],
     drifts: &[Vec3],

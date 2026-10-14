@@ -931,7 +931,7 @@ impl App {
         self.warn_hosted_trigger_machine_local();
         self.warn_if_local_player_cannot_swim();
         // After the boot pawn spawns, so the host reads its own descriptor's
-        // terminal velocity; the surfaces installed still until now.
+        // terminal velocity; the surfaces drew still until now.
         self.resolve_fluid_surface_drift();
         // A level install starts every player unobserved: no edge memory
         // carries from the previous level.

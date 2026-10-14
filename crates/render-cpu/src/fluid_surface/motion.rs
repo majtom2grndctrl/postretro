@@ -22,9 +22,8 @@ pub const FLUID_RING_BLOCK_SHIFT: i32 = 5;
 /// Steps a ring lives, its birth step included (which draws nothing).
 pub const FLUID_RING_LIFETIME_STEPS: i32 = 5;
 /// A drop lands at least this many texels inside its block's edges, so its
-/// widest ring never leaves the block and a cell evaluates one block, not a
-/// neighbourhood. Evaluating the 3x3 neighbourhood was the measured cost of
-/// rings on a view-filling pool.
+/// widest ring never leaves the block, so a cell reads one block instead of
+/// the nine around it.
 pub const FLUID_RING_MARGIN: i32 = 9;
 /// Ring radius growth per step, texels.
 pub const FLUID_RING_STEP_TEXELS: f32 = 2.0;

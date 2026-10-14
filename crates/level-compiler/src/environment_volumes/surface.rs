@@ -1,5 +1,6 @@
 // Fluid surface faces: each fluid brush side minus solid world and sibling
-// brushes, split along the push brushes over it with its seams T-junction free.
+// brushes, split along the push brushes over it, closing T-junctions in
+// volumes a push cut.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;

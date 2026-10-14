@@ -3,7 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec2, Vec3};
+use glam::{DVec2, DVec3, Vec2, Vec3};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
@@ -155,86 +155,101 @@ fn normalized_uv(
     (Vec2::from(texel_uv) / uv_scale(texture_index, texture_dimensions)).to_array()
 }
 
-/// A vertex nearer than this fraction of its face's extent to the line
-/// through its ring neighbours is collinear: 0.1 mm on a 1 m face, the
-/// compiler's T-junction tolerance at that scale. Erring large is safe:
-/// skipping a near-flat corner as an ear costs nothing, while clipping a
-/// collinear vertex leaves a chord across it.
-const COLLINEAR_TOLERANCE: f32 = 1.0e-4;
+/// A vertex within this distance, meters, of the line through its ring
+/// neighbours, or of the neighbour before it, is collinear. The compiler
+/// inserts a T-junction vertex within 0.1 mm of its edge's line; twice that
+/// also covers f32 position rounding within about 1 km of the origin.
+/// Absolute, as the compiler's vertex spacing is: vertices 0.1 mm apart are
+/// as near on a 10 m face as on a 10 cm one.
+const COLLINEAR_DISTANCE: f64 = 2.0e-4;
+/// A face under 2 cm across takes this fraction of its extent instead, so its
+/// real corners keep the plain fan.
+const COLLINEAR_EXTENT_FRACTION: f64 = 1.0e-2;
 
-/// Triangulate one convex face by clipping ears with area, appending indices
-/// offset by `base`. The compiler inserts collinear vertices on face edges to
-/// close T-junctions between a volume's pieces. A fan from one apex collapses
-/// beside them and spans an edge across them; here every vertex stays a corner
-/// of a real triangle and every edge segment borders exactly one. A face with
-/// no collinear vertex yields the fan from its first vertex, `n - 2`
-/// triangles. A degenerate remainder draws nothing more.
-fn triangulate_convex_face(
-    vertices: &[EnvironmentSurfaceVertex],
-    normal: Vec3,
-    base: u32,
-    ring: &mut Vec<u32>,
-    indices: &mut Vec<u32>,
-) {
-    let position = |vertex: u32| Vec3::from(vertices[vertex as usize].position);
-    let origin = position(0);
+fn world_position(vertex: &EnvironmentSurfaceVertex) -> DVec3 {
+    Vec3::from(vertex.position).as_dvec3()
+}
+
+/// Whether a convex face has a vertex on, or within [`COLLINEAR_DISTANCE`]
+/// of, the line through its ring neighbours, or one (nearly) repeating the
+/// vertex before it.
+fn has_collinear_vertex(vertices: &[EnvironmentSurfaceVertex]) -> bool {
+    let count = vertices.len();
+    let at = |i: usize| world_position(&vertices[i % count]);
+    let origin = at(0);
     let extent = vertices
         .iter()
-        .map(|vertex| Vec3::from(vertex.position).distance(origin))
-        .fold(0.0, f32::max);
-    let tolerance = COLLINEAR_TOLERANCE * extent;
-    // Distance of `p` from the line through `a` and `c`, positive where the
-    // winding turns convexly at `p` between them.
-    let height = |a: Vec3, p: Vec3, c: Vec3| {
+        .map(|vertex| world_position(vertex).distance(origin))
+        .fold(0.0, f64::max);
+    let tolerance = COLLINEAR_DISTANCE.min(COLLINEAR_EXTENT_FRACTION * extent);
+    (0..count).any(|i| {
+        let (a, p, c) = (at(i + count - 1), at(i), at(i + 1));
         let chord = c - a;
         let length = chord.length();
-        if length > 0.0 {
-            (p - a).cross(chord).dot(normal) / length
-        } else {
-            0.0
-        }
-    };
+        p.distance(a) <= tolerance
+            || length <= tolerance
+            || (p - a).cross(chord).length() / length <= tolerance
+    })
+}
 
-    ring.clear();
-    ring.extend(0..vertices.len() as u32);
-    while ring.len() > 3 {
-        let count = ring.len();
-        // Scanning from the second vertex makes a face without collinear
-        // vertices clip into the fan from its first.
-        let ear = (1..=count).map(|k| k % count).find(|&k| {
-            let prev = (k + count - 1) % count;
-            let next = (k + 1) % count;
-            let a = position(ring[prev]);
-            let c = position(ring[next]);
-            // Clipping the one corner beside a collinear run would leave a
-            // chord spanning the run's vertices; clip its neighbour instead.
-            height(a, position(ring[k]), c) > tolerance
-                && ring.iter().enumerate().any(|(j, &vertex)| {
-                    j != k
-                        && j != prev
-                        && j != next
-                        && height(a, position(vertex), c).abs() > tolerance
-                })
-        });
-        let Some(k) = ear else {
-            return;
-        };
-        let prev = ring[(k + count - 1) % count];
-        let next = ring[(k + 1) % count];
-        indices.extend_from_slice(&[base + prev, base + ring[k], base + next]);
-        ring.remove(k);
+/// Triangulate one convex face whose vertices start at `base` in `vertices`,
+/// appending indices with the face's CCW-from-outside winding.
+///
+/// The surface is translucent, so a T-junction shows as a crack. In a volume a
+/// push cut, the compiler closes them by inserting collinear vertices on face
+/// edges, at its own absolute spacing (down to 0.1 mm, plus duplicates after
+/// f32 rounding). A fan from one apex cannot honour such a vertex: the
+/// triangle beside it collapses and a chord spans an edge across it. A face
+/// with a collinear vertex therefore gains one vertex at its vertex centroid,
+/// which lies inside the convex face, and fans from it over every boundary
+/// segment. Every boundary vertex stays a corner, every segment borders one
+/// triangle, and no area is dropped, whatever the spacing; only a zero-length
+/// segment draws nothing. Taking a near-flat real corner for collinear is
+/// harmless. Every other face keeps the fan from its first vertex: `n - 2`
+/// triangles and no extra vertex.
+fn triangulate_convex_face(
+    face: &EnvironmentSurfaceFace,
+    base: u32,
+    vertices: &mut Vec<FluidSurfaceVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let count = face.vertices.len() as u32;
+    if !has_collinear_vertex(&face.vertices) {
+        for i in 1..count - 1 {
+            indices.extend_from_slice(&[base, base + i, base + i + 1]);
+        }
+        return;
     }
-    if let [a, p, c] = ring[..]
-        && height(position(a), position(p), position(c)) > tolerance
-    {
-        indices.extend_from_slice(&[base + a, base + p, base + c]);
+    let ring = &vertices[base as usize..];
+    let mut position_sum = DVec3::ZERO;
+    let mut uv_sum = DVec2::ZERO;
+    for vertex in ring {
+        position_sum += Vec3::from(vertex.position).as_dvec3();
+        uv_sum += Vec2::from(vertex.uv).as_dvec2();
+    }
+    let inverse = 1.0 / f64::from(count);
+    // UV is affine in position, so the mean UV is the centroid's exact UV.
+    let centroid = FluidSurfaceVertex {
+        position: (position_sum * inverse).as_vec3().to_array(),
+        normal: ring[0].normal,
+        uv: (uv_sum * inverse).as_vec2().to_array(),
+    };
+    vertices.push(centroid);
+    let center = base + count;
+    for i in 0..count {
+        let (a, b) = (base + i, base + (i + 1) % count);
+        if vertices[a as usize].position != vertices[b as usize].position {
+            indices.extend_from_slice(&[center, a, b]);
+        }
     }
 }
 
-/// Triangulate every drawable surface face into one shared mesh, clipping
-/// ears so the collinear vertices that close T-junctions stay triangle
-/// corners. Each volume's faces are grouped by material, so a volume draws
-/// one range per material. Volumes without drawable faces get no slot.
+/// Triangulate every drawable surface face into one shared mesh. A face with
+/// a collinear vertex fans from an added centroid vertex, so the vertices
+/// that close T-junctions stay triangle corners; every other face is the fan
+/// from its first vertex. Each face's mesh vertices stay contiguous. Each
+/// volume's faces are grouped by material, so a volume draws one range per
+/// material. Volumes without drawable faces get no slot.
 pub fn pack_fluid_surfaces(
     volumes: &[EnvironmentVolumeRecord],
     texture_dimensions: &[[u32; 2]],
@@ -242,8 +257,8 @@ pub fn pack_fluid_surfaces(
 ) -> FluidSurfaceMesh {
     let mut mesh = FluidSurfaceMesh::default();
     let mut faces: Vec<(usize, Vec3, usize)> = Vec::new();
-    let mut vertex_starts: Vec<Option<u32>> = Vec::new();
-    let mut ring: Vec<u32> = Vec::new();
+    // Per surface face: its first mesh vertex and its mesh vertex count.
+    let mut vertex_ranges: Vec<Option<(u32, u32)>> = Vec::new();
     for (volume_index, volume) in volumes.iter().enumerate() {
         faces.clear();
         faces.extend(
@@ -261,8 +276,8 @@ pub fn pack_fluid_surfaces(
                     })
                 }),
         );
-        vertex_starts.clear();
-        vertex_starts.resize(volume.surface_faces.len(), None);
+        vertex_ranges.clear();
+        vertex_ranges.resize(volume.surface_faces.len(), None);
         if faces.is_empty() {
             mesh.face_drift_maps
                 .extend(std::iter::repeat_n(None, volume.surface_faces.len()));
@@ -277,7 +292,6 @@ pub fn pack_fluid_surfaces(
         for &(material, normal, face_index) in &faces {
             let face = &volume.surface_faces[face_index];
             let base = mesh.vertices.len() as u32;
-            vertex_starts[face_index] = Some(base);
             let index_start = mesh.indices.len() as u32;
             for vertex in &face.vertices {
                 let position = Vec3::from(vertex.position);
@@ -289,7 +303,8 @@ pub fn pack_fluid_surfaces(
                     uv: normalized_uv(vertex.uv, face.texture_index, texture_dimensions),
                 });
             }
-            triangulate_convex_face(&face.vertices, normal, base, &mut ring, &mut mesh.indices);
+            triangulate_convex_face(face, base, &mut mesh.vertices, &mut mesh.indices);
+            vertex_ranges[face_index] = Some((base, mesh.vertices.len() as u32 - base));
             let index_count = mesh.indices.len() as u32 - index_start;
             match ranges.last_mut() {
                 Some(last) if last.material_index == material => last.index_count += index_count,
@@ -308,7 +323,7 @@ pub fn pack_fluid_surfaces(
         });
         mesh.face_drift_maps.extend(drift::volume_drift_maps(
             volume,
-            &vertex_starts,
+            &vertex_ranges,
             |face, vertex| {
                 Vec2::from(normalized_uv(
                     face.vertices[vertex].uv,

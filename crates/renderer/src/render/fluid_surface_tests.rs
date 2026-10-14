@@ -293,6 +293,12 @@ fn fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv() {
     // The warp reads the unwarped UV and its derivatives' footprint.
     assert!(fragment.contains("letddx=dpdx(in.uv);"));
     assert!(fragment.contains("letddy=dpdy(in.uv);"));
+    // The fade input: texels one pixel spans, from the unwarped footprint.
+    assert!(fragment.contains("letdims=vec2<f32>(textureDimensions(base_texture,0));"));
+    assert!(
+        fragment.contains("lettexels_per_pixel=max(length(ddx*dims),length(ddy*dims));"),
+        "{fragment}"
+    );
     assert!(fragment.contains(
         "letuv=fluid_warp_uv(in.uv,in.drift_scroll,dims,uniforms.time,texels_per_pixel);"
     ));
@@ -382,10 +388,11 @@ fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
     assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
 }
 
-// Install and render-profile commit assert an empty upload batch, so the drift
-// buffer is written directly; a batched write there panics debug builds.
+// Drift re-resolves at install, reload commit and fluid-table or tuning
+// refreshes. Some of those points assert an empty upload batch, and nothing
+// ever batch-writes the drift buffer, so a direct write is safe at every one.
 #[test]
-fn fluid_drift_writes_directly_so_install_and_commit_points_stay_unbatched() {
+fn fluid_drift_writes_directly_so_every_re_resolve_point_stays_unbatched() {
     let source = include_str!("fluid_surface.rs");
     let body = code_only(wgsl_fn(source, "set_drift"));
     assert!(
@@ -544,4 +551,118 @@ fn fluid_motion_wgsl_bodies_match_the_cpu_reference() {
          letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));\
          return(texel_uv+drift_texels+cell_texels)/dims;}"
     );
+}
+
+// The other half of the pin above. The WGSL bodies are held to exact text, so
+// the CPU reference must be too: a change to a shift amount, the `% 9`
+// direction table or the ring band in `motion.rs` alone would leave the
+// property tests green while the shader and its reference disagree. Each
+// expected body is the CPU source as it stands, comment-free.
+#[test]
+fn fluid_motion_cpu_reference_bodies_are_pinned() {
+    let source = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    let pinned: [(&str, &str); 13] = [
+        (
+            "hash_u32",
+            "fnhash_u32(mutx:u32)->u32{\
+             x^=x>>16;\
+             x=x.wrapping_mul(FLUID_HASH_MUL_A);\
+             x^=x>>15;\
+             x=x.wrapping_mul(FLUID_HASH_MUL_B);\
+             x^=x>>16;\
+             x}",
+        ),
+        (
+            "hash3",
+            "fnhash3(a:u32,b:u32,c:u32)->u32{hash_u32(a^hash_u32(b^hash_u32(c)))}",
+        ),
+        (
+            "hash_unit",
+            "fnhash_unit(h:u32)->f32{(h>>8)asf32*(1.0/16_777_216.0)}",
+        ),
+        (
+            "cell_seed",
+            "fncell_seed(cell:IVec2)->u32{hash3(cell.xasu32,cell.yasu32,FLUID_SALT_CELL)}",
+        ),
+        (
+            "texel_cell",
+            "fntexel_cell(texel_uv:Vec2)->IVec2{texel_uv.floor().as_ivec2()}",
+        ),
+        (
+            "cell_step",
+            "fncell_step(cell:IVec2,time:f32)->i32{\
+             letphase=hash_unit(cell_seed(cell));\
+             (time*FLUID_MOTION_STEP_HZ+phase).floor()asi32}",
+        ),
+        (
+            "shimmer_offset",
+            "fnshimmer_offset(cell:IVec2,step:i32)->IVec2{\
+             letposition=step&3;\
+             ifposition&1==0{returnIVec2::ZERO;}\
+             leth=hash_u32(cell_seed(cell)^FLUID_SALT_SHIMMER);\
+             letdirection=(h>>8)%9;\
+             letd=IVec2::new((direction%3)asi32-1,(direction/3)asi32-1);\
+             ifposition==1{d}else{-d}}",
+        ),
+        (
+            "ring_offset",
+            "fnring_offset(cell:IVec2,step:i32)->IVec2{\
+             letblock=cell>>FLUID_RING_BLOCK_SHIFT;\
+             letseed=hash3(block.xasu32,block.yasu32,FLUID_SALT_BLOCK);\
+             letshifted=step+(seed%FLUID_RING_LIFETIME_STEPSasu32)asi32;\
+             letepoch=shifted.div_euclid(FLUID_RING_LIFETIME_STEPS);\
+             letage=shifted.rem_euclid(FLUID_RING_LIFETIME_STEPS);\
+             ifage==0{returnIVec2::ZERO;}\
+             letposition=hash_u32(seed^hash_u32(epochasu32^FLUID_SALT_DROP));\
+             letspan=((1<<FLUID_RING_BLOCK_SHIFT)-2*FLUID_RING_MARGIN)asu32;\
+             letcenter=(block<<FLUID_RING_BLOCK_SHIFT)\
+             +IVec2::splat(FLUID_RING_MARGIN)\
+             +IVec2::new((position%span)asi32,((position>>16)%span)asi32);\
+             letdiff=(cell-center).as_vec2();\
+             letdistance_sq=diff.length_squared();\
+             letradius=ageasf32*FLUID_RING_STEP_TEXELS;\
+             ifdistance_sq<=(radius-0.5)*(radius-0.5)\
+             ||distance_sq>=(radius+0.5)*(radius+0.5){returnIVec2::ZERO;}\
+             (diff/distance_sq.sqrt()+0.5).floor().as_ivec2()}",
+        ),
+        (
+            "faded_flat",
+            "fnfaded_flat(cell:IVec2,texels_per_pixel:f32)->bool{\
+             letthreshold=FLUID_FADE_START_TEXELS_PER_PIXEL\
+             +(FLUID_FADE_END_TEXELS_PER_PIXEL-FLUID_FADE_START_TEXELS_PER_PIXEL)\
+             *hash_unit(hash_u32(cell_seed(cell)^FLUID_SALT_FADE));\
+             texels_per_pixel>threshold}",
+        ),
+        (
+            "displayed_offset",
+            "fndisplayed_offset(cell:IVec2,time:f32,texels_per_pixel:f32)->IVec2{\
+             iffaded_flat(cell,texels_per_pixel){returnIVec2::ZERO;}\
+             letstep=cell_step(cell,time);\
+             shimmer_offset(cell,step)+ring_offset(cell,step)}",
+        ),
+        (
+            "high_half",
+            "fnhigh_half(x:f32)->f32{f32::from_bits(x.to_bits()&0xFFFF_F000)}",
+        ),
+        (
+            "exact_fract_product",
+            "fnexact_fract_product(a:f32,b:f32)->f32{\
+             let(a_hi,b_hi)=(high_half(a),high_half(b));\
+             let(a_lo,b_lo)=(a-a_hi,b-b_hi);\
+             letfract=|x:f32|x-x.floor();\
+             fract(fract(a_hi*b_hi)+fract(a_hi*b_lo)+fract(a_lo*b_hi)+fract(a_lo*b_lo))}",
+        ),
+        (
+            "drift_scroll_periods",
+            "fndrift_scroll_periods(rate:Vec2,time:f32)->Vec2{\
+             letwrap=|rate:f32|{\
+             letperiods=exact_fract_product(time,rate)+0.5;\
+             periods-periods.floor()-0.5};\
+             Vec2::new(wrap(rate.x),wrap(rate.y))}",
+        ),
+    ];
+    for (name, expected) in pinned {
+        assert_eq!(function(name), expected, "CPU `{name}` body drifted");
+    }
 }

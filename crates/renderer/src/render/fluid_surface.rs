@@ -254,9 +254,9 @@ impl FluidSurfacePass {
 
     /// Upload every drawable surface face of `volumes`, triangulated by
     /// `pack_fluid_surfaces` into one shared buffer with per-volume material
-    /// ranges. UVs normalize by
-    /// `texture_dimensions` (indexed by texture index); faces whose texture is
-    /// past `material_count` draw with the placeholder material.
+    /// ranges. UVs normalize by `texture_dimensions` (indexed by texture
+    /// index); faces whose texture is past `material_count` draw with the
+    /// placeholder material.
     pub fn install(
         &mut self,
         device: &wgpu::Device,
@@ -349,9 +349,10 @@ impl FluidSurfacePass {
             drifts,
             &mut installed.drift_rates,
         );
-        // Drift re-resolves at install and commit points, which require an
-        // empty upload batch; a direct write lands now, and nothing else
-        // batches this buffer.
+        // Drift re-resolves at install, reload commit and fluid-table or
+        // tuning refreshes. Some of those points require an empty upload
+        // batch. Nothing ever batch-writes this buffer, so a direct write,
+        // which lands now, is safe at every one.
         queue.direct_write_buffer(
             &installed.drift_buffer,
             0,

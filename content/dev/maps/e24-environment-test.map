@@ -1,8 +1,10 @@
 // Game: Postretro
 // Format: Standard
 // E24 environment-volume playtest: pools, a floating fluid block, a low-gravity
-// room, an updraft, a wind corridor with a calm pocket, a current and a sludge
-// pool. See e24-environment-test.README.md for what each area tests.
+// room, an updraft, a wind corridor with a calm pocket, a current, a sludge
+// pool and an east wing of fluid-surface motion (pools split under partial
+// pushes, a bending river). See e24-environment-test.README.md for what each
+// area tests.
 // Axis-aligned box brushes; 1 map unit = 0.0254 m. Floor at z 0,
 // pits floor at z -112, fluid surfaces at z -16, ceiling at z 512.
 // Fluids `water` and `sludge` are declared in content/dev/start-script.ts.

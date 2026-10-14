@@ -966,6 +966,12 @@ fn e24_fixture_current_and_wing_pools_sample_the_pushes_over_them() {
         .filter(|face| !pushes_at(&section, inside_sample(face)).is_empty())
         .count();
     assert_eq!(pushed, 2);
+    // The pieces come from two brushes; the cut closes the seam between them.
+    assert_eq!(
+        t_junctions(partial),
+        Vec::<DVec3>::new(),
+        "the two-brush partial-push pool has T-junctions"
+    );
 
     // The bending river: every top part samples exactly one push, east then
     // north, and no surface is drawn between its two brushes.

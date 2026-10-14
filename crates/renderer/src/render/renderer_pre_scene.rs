@@ -114,6 +114,13 @@ impl Renderer {
             streaming.direct_has_active_animation(&full.sh_volume_resources.animation)
         }) || animated_override.active();
         let force_full_resident = full.force_full_resident_sh_compose;
+        // Probe markers can read resident rows outside the scene's sample regions.
+        #[cfg(feature = "dev-tools")]
+        let force_full_resident = force_full_resident
+            || full
+                .sh_streaming
+                .as_ref()
+                .is_some_and(|streaming| streaming.probe_overlay_wanted());
         let Some(streaming) = full.sh_streaming.as_mut() else {
             return Ok(());
         };

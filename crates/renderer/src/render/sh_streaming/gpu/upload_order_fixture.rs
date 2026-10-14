@@ -12,7 +12,7 @@ use crate::render::uploads::UploadQueue;
 
 pub(crate) struct UploadOrderSh {
     map: SyntheticMap,
-    state: ShResidencyState,
+    pub(in crate::render::sh_streaming) state: ShResidencyState,
     sh: ShVolumeResources,
     uniforms: wgpu::BindGroupLayout,
     weights: wgpu::Buffer,

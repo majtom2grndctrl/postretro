@@ -52,6 +52,8 @@ mod patches;
 mod payload;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
+#[cfg(feature = "dev-tools")]
+mod probe_readback;
 mod row_bitset;
 mod row_refs;
 mod rows;
@@ -400,6 +402,8 @@ pub(super) struct ShResidencyState {
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
     gpu: Option<StreamingGpuPools>,
+    #[cfg(feature = "dev-tools")]
+    probe_readback: probe_readback::StreamedProbeReadback,
 }
 
 impl ShResidencyState {

@@ -25,7 +25,7 @@ pub enum MarkerMode {
     DensityLevel,
     /// All probes drawn with the same neutral color.
     Uniform,
-    /// Each marker tinted by the probe's averaged baked irradiance.
+    /// Each marker tinted by the probe's averaged live indirect irradiance.
     Irradiance,
     /// Each probe colored by what the renderer's residency mirrors say the
     /// shader can actually sample right now. Only meaningful while a
@@ -121,7 +121,7 @@ pub(super) fn density_level_marker_color(level: u8, scale: u8) -> [u8; 4] {
 /// washing hue toward white the way per-channel tonemap would. The debug-line
 /// target is sRGB and the shader passes vertex color through untouched, so emit
 /// *linear* values here — the hardware encodes.
-fn irradiance_marker_color(irradiance: [f32; 3]) -> [u8; 4] {
+pub(super) fn irradiance_marker_color(irradiance: [f32; 3]) -> [u8; 4] {
     let rgb = [
         irradiance[0].max(0.0),
         irradiance[1].max(0.0),

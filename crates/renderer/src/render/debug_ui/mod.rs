@@ -614,11 +614,7 @@ fn draw_volumes_tab(
                 );
             }
             if sh_state.marker_mode == MarkerMode::Irradiance && streaming_active {
-                // The live "total"-atlas readback is fixed at renderer init to
-                // the whole-loaded atlas geometry and bind group; a streaming
-                // session owns a differently sized atlas behind its own bind
-                // group, so this mode has no data source while streaming.
-                ui.label("Irradiance unavailable while streaming (needs the whole-loaded atlas)");
+                ui.label("Live indirect irradiance · cold or pending probes grey");
             }
 
             ui.label("Marker scale");

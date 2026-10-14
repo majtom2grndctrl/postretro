@@ -18,7 +18,8 @@ use postretro_level_loader::{LevelWorld, ShStreamBaseMetadata};
 use super::debug_lines::DebugLineRenderer;
 use super::sh_diagnostics::{
     COLOR_BASE_AABB, COLOR_PROBE_INVALID, COLOR_PROBE_UNIFORM, COLOR_PROBE_VALID, MarkerMode,
-    ShDiagnosticsState, density_level_marker_color, emit_cells, probe_index,
+    ShDiagnosticsState, density_level_marker_color, emit_cells, irradiance_marker_color,
+    probe_index,
 };
 use super::sh_streaming::{ProbeResidencyClass, ShResidencyState};
 
@@ -160,9 +161,16 @@ fn emit_markers(
                     continue;
                 }
                 let idx = probe_index(x, y, z, dims);
-                let Some(color) =
-                    marker_color(state.marker_mode, base, residency_classes.as_deref(), idx)
-                else {
+                let irradiance = (state.marker_mode == MarkerMode::Irradiance)
+                    .then(|| residency.probe_irradiance(idx))
+                    .flatten();
+                let Some(color) = marker_color(
+                    state.marker_mode,
+                    base,
+                    residency_classes.as_deref(),
+                    irradiance,
+                    idx,
+                ) else {
                     continue;
                 };
                 lines.push_marker(pos, state.marker_scale, color);
@@ -172,19 +180,14 @@ fn emit_markers(
 }
 
 /// Resolve one streamed probe's marker color. `None` means "draw nothing":
-/// used for `Irradiance`, which has no data source on a streamed map (the
-/// live "total"-atlas readback is fixed at renderer init to the whole-loaded
-/// atlas geometry and bind group — a streaming session owns a differently
-/// sized atlas behind its own bind group, `ShResidencyState::bind_group`;
-/// wiring it here would mean a second readback path, out of scope for this
-/// overlay — the panel shows a label instead, see `debug_ui`), and for
-/// `Residency` before a streaming session has classified anything. An
+/// used for `Residency` before a streaming session has classified anything. An
 /// out-of-range probe index otherwise degrades to the invalid color, the same
 /// tolerance `sh_diagnostics::emit_markers` applies to a partial mirror.
 fn marker_color(
     mode: MarkerMode,
     base: &ShStreamBaseMetadata,
     residency_classes: Option<&[ProbeResidencyClass]>,
+    irradiance: Option<[f32; 3]>,
     idx: usize,
 ) -> Option<[u8; 4]> {
     match mode {
@@ -208,7 +211,11 @@ fn marker_color(
                 .unwrap_or_default();
             Some(density_level_marker_color(level, scale))
         }
-        MarkerMode::Irradiance => None,
+        MarkerMode::Irradiance => Some(
+            irradiance
+                .map(irradiance_marker_color)
+                .unwrap_or(COLOR_RESIDENCY_INVALID),
+        ),
         MarkerMode::Residency => {
             let class = residency_classes?
                 .get(idx)
@@ -317,32 +324,41 @@ mod tests {
         ]);
 
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 0),
+            marker_color(MarkerMode::Validity, &base, None, None, 0),
             Some(COLOR_PROBE_VALID)
         );
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 1),
+            marker_color(MarkerMode::Validity, &base, None, None, 1),
             Some(COLOR_PROBE_INVALID)
         );
         assert_eq!(
-            marker_color(MarkerMode::DensityLevel, &base, None, 0),
+            marker_color(MarkerMode::DensityLevel, &base, None, None, 0),
             Some(density_level_marker_color(1, 0))
         );
         // Out of range: tolerated like the whole-loaded path — treated as
         // invalid rather than skipped, so a partial mirror doesn't panic.
         assert_eq!(
-            marker_color(MarkerMode::Validity, &base, None, 5),
+            marker_color(MarkerMode::Validity, &base, None, None, 5),
             Some(COLOR_PROBE_INVALID)
         );
     }
 
     #[test]
-    fn irradiance_mode_draws_nothing_on_a_streamed_map() {
+    fn irradiance_mode_draws_live_colors_and_marks_unavailable_streamed_probes_grey() {
+        // Regression: streamed maps emitted no markers at all in irradiance mode.
         let base = base_with_probes(vec![OctahedralShProbe {
             validity: 1,
             ..Default::default()
         }]);
-        assert_eq!(marker_color(MarkerMode::Irradiance, &base, None, 0), None);
+        assert_eq!(
+            marker_color(MarkerMode::Irradiance, &base, None, None, 0),
+            Some(COLOR_RESIDENCY_INVALID)
+        );
+        let rgb = [2.0, 0.5, 0.25];
+        assert_eq!(
+            marker_color(MarkerMode::Irradiance, &base, None, Some(rgb), 0),
+            Some(irradiance_marker_color(rgb))
+        );
     }
 
     #[test]
@@ -355,7 +371,10 @@ mod tests {
             validity: 1,
             ..Default::default()
         }]);
-        assert_eq!(marker_color(MarkerMode::Residency, &base, None, 0), None);
+        assert_eq!(
+            marker_color(MarkerMode::Residency, &base, None, None, 0),
+            None
+        );
     }
 
     #[test]
@@ -366,7 +385,7 @@ mod tests {
         }]);
         let classes = [ProbeResidencyClass::Sampleable];
         assert_eq!(
-            marker_color(MarkerMode::Residency, &base, Some(&classes), 0),
+            marker_color(MarkerMode::Residency, &base, Some(&classes), None, 0),
             Some(COLOR_RESIDENCY_SAMPLEABLE)
         );
     }

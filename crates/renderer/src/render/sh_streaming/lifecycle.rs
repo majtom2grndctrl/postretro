@@ -16,6 +16,13 @@ impl ShResidencyState {
         // Validate the complete public handoff before target transitions,
         // retirement, promotion, eviction, or installation can mutate state.
         self.validate_batch_contract(&batch)?;
+        #[cfg(feature = "dev-tools")]
+        if !batch.ready.is_empty()
+            || !batch.evictions.is_empty()
+            || !self.pending_promotion.is_empty()
+        {
+            self.probe_readback.invalidate();
+        }
         self.apply_targets(device, queue, &batch)?;
         self.release_retired_generations();
         // Promotion and eviction share one upload batch, submitted before any
@@ -250,6 +257,8 @@ impl ShResidencyState {
     /// The CPU half of a session clear: every residency mirror, the compose
     /// planner, and the frame scratch return to their post-load state.
     pub(super) fn clear_session_mirrors(&mut self) {
+        #[cfg(feature = "dev-tools")]
+        self.probe_readback.invalidate();
         self.targets.clear();
         self.node_slots.clear();
         self.dense_slots = FirstFitRanges::default();

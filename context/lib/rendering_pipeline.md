@@ -343,6 +343,19 @@ miss, or invalid. Per-pass compose counters report rows composed, dispatches, ro
 because they lagged, resident rows still lagging, and CPU planning time through the same
 log, Streaming-tab, and capture-report surfaces.
 
+Irradiance markers also work while streaming: they show the live indirect total,
+averaged over logical tile interiors and reconstructed with the same adaptive node
+corner weights as whole-loaded markers. Cold, invalid and pending probes are grey.
+While these markers are enabled with a positive radius, compose covers every resident
+row so markers outside the scene's sample gate stay current. A renderer-owned compute
+reduction reads only nearby sampleable markers after compose in the scene encoder;
+its sampled-texture dependency avoids copying the live storage-written atlas. One
+asynchronous buffer readback runs at most ten times per second, capped to the existing
+three-segment marker budget (87,381 probes, about 8 MiB of lazily allocated GPU buffers).
+Disabling the overlay stops new work. Residency changes invalidate cached and pending
+colors before slots can be reused; level unload drops the readback, and callbacks retain
+no GPU handles.
+
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
 Encoded, decoding, and ready host payloads are separate checked phase ledgers. Growth

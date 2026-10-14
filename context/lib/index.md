@@ -25,7 +25,7 @@
 - **Portal walk cost bound / bounded-region walk / visible-set superset contract (what consumers may assume)** → `rendering_pipeline.md` §2
 - **Cell→cell coupling relation / baked cell-visibility substrate / network relevance, audio occlusion, AI-perception broad phase, or VFX cull shared foundation** → `build_pipeline.md` §PRL section IDs
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
-- **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs** → `build_pipeline.md` §Compiler pipeline
+- **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs / compile working-set budget / lightmap bake scale** → `build_pipeline.md` §Compiler pipeline
 - **Build cache / warm vs cold builds / why a stage re-baked / cache disk footprint / stage epochs and keys** → `build_pipeline.md` §Build Cache
 - **Audio / spatial sound / positional sound events / descriptor sound fields / reverb zones** → `audio.md` · emitter token: `scripting.md` §12
 - **Entity model / game objects / sprites** → `entity_model.md`

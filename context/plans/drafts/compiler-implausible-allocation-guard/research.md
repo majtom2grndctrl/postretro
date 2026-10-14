@@ -12,7 +12,9 @@ legitimate lengths in the lightmap-atlas bake path.
 256 (`lightmap_bake.rs`). The largest single allocation any per-light structure in that path
 can reach is one light's texel vector over a full atlas: 8192 × 8192 × 256 × 48 B =
 824,633,720,832 B, with 48 B pinned by the `size_of` const assert on `LayerTexel`
-(`lightmap_layer.rs`). The observed request is **51.98×** that.
+(`lightmap_layer.rs`). The observed request is **51.98×** that. Taking the layer term from the
+packed count instead (`lighting-scale--lightmap-layer-budget-gate` removes `MAX_ATLAS_LAYERS`)
+only tightens this ceiling on any map packing fewer than 256 layers.
 
 **Its 2-adic valuation is wrong for a plane multiple.** The size factors as
 2⁶ · 3 · 199 · 1,121,909,639, so it is divisible by 64 and not by 128. `round_atlas_dim`

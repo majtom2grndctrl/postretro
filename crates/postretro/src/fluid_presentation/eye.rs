@@ -3,7 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
 use glam::Vec3;
-use postretro_collision::{EnvironmentView, fluid_at_eye, fluid_volume_plane_depth};
+use postretro_collision::{EnvironmentView, EyeFluid, fluid_at_eye, fluid_volume_plane_depth};
 use postretro_foundation::FluidDescriptor;
 use postretro_render_cpu::flash_limiter::HITCH_CEILING_SECONDS;
 
@@ -14,7 +14,8 @@ use postretro_render_cpu::flash_limiter::HITCH_CEILING_SECONDS;
 /// face; the band is still this wide, since off needs the eye this far back
 /// out. It must exceed the head-bob amplitude, so an eye bobbing about the
 /// surface never crosses the whole band; content/dev bobs ±0.05 m
-/// (`scripts/player.ts`), so a treading player sees no flicker.
+/// (`scripts/player.ts`), so a treading player sees no flicker. The depth
+/// fog's proximity ramp (render-cpu `fog::FLUID_FOG_BAND`) is this same width.
 pub(crate) const EYE_FLUID_MARGIN: f32 = 0.08;
 
 /// Seconds for the tint and muffle to ramp fully in or out. A full-strength
@@ -50,7 +51,8 @@ pub(crate) struct EyeFluidTrigger {
 }
 
 impl EyeFluidTrigger {
-    /// Advance to `eye` and return the volume the eye is in.
+    /// Advance to `eye`, where `fluid_at_eye` reported `hit`, and return the
+    /// volume the eye is in.
     ///
     /// Off, it turns on in the fluid winning at the eye once the eye is
     /// `margin` below that fluid's surface: vertical depth, exact through any
@@ -65,6 +67,7 @@ impl EyeFluidTrigger {
         &mut self,
         view: EnvironmentView<'_>,
         eye: Vec3,
+        hit: Option<EyeFluid>,
         margin: f32,
     ) -> Option<usize> {
         if let Some(volume) = self.active
@@ -72,7 +75,7 @@ impl EyeFluidTrigger {
         {
             self.active = None;
         }
-        if let Some(hit) = fluid_at_eye(view, eye)
+        if let Some(hit) = hit
             && hit.signed_depth >= margin
         {
             let active_fluid = self
@@ -106,10 +109,14 @@ fn eye_has_left(view: EnvironmentView<'_>, volume: usize, eye: Vec3, margin: f32
 }
 
 /// The camera eye's fluid presentation across frames: the trigger, the look of
-/// the fluid it is in (held through the ramp out), and the ramp.
+/// the fluid it is in (held through the ramp out), the ramp, and whether the
+/// eye is inside any fluid at all.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FluidEye {
     trigger: EyeFluidTrigger,
+    /// Inside a fluid brush this frame, from the plane down, whatever the
+    /// trigger, the ramp, or whether this machine presents that fluid.
+    contained: bool,
     look: FluidLook,
     /// 0 dry, 1 fully presented. Moves linearly toward the trigger's state, so
     /// a reversal mid-ramp turns back from where it is.
@@ -130,7 +137,9 @@ impl FluidEye {
         dt: f32,
         look_of: impl FnOnce(usize) -> Option<FluidLook>,
     ) {
-        let active = self.trigger.step(view, eye, EYE_FLUID_MARGIN);
+        let hit = fluid_at_eye(view, eye);
+        self.contained = hit.is_some();
+        let active = self.trigger.step(view, eye, hit, EYE_FLUID_MARGIN);
         let presented = active.and_then(look_of);
         if let Some(look) = presented {
             self.look = look;
@@ -164,6 +173,17 @@ impl FluidEye {
     /// The world muffle amount: the fluid's muffle times the ramp.
     pub(crate) fn muffle(&self) -> f32 {
         self.look.muffle * self.ramp
+    }
+
+    /// The frame's depth fog weight (render-cpu `fog::fog_layer_opacity`): 0
+    /// while the eye is inside any fluid, else one minus the ramp, so murk
+    /// fades in as the tint fades out. Containment, not the trigger, gates it:
+    /// between the plane and the trigger depth, during a ramp-in after a side
+    /// entry or a teleport under, and in a fluid this machine does not present,
+    /// the ramp alone would let outside faces of neighbouring volumes fog a
+    /// swimmer's view. Exactly 1 when dry and fully ramped out.
+    pub(crate) fn fog_weight(&self) -> f32 {
+        if self.contained { 0.0 } else { 1.0 - self.ramp }
     }
 
     /// The muffle amount when it differs from the one last taken.

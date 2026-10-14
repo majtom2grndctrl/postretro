@@ -43,9 +43,25 @@ pub(crate) fn local_fluid_presentation<'r>(
     fluids.local_presentation(fluid, local)
 }
 
+/// A fluid's surface look as the renderer packs it: opacity, depth fog and
+/// wave from the local declaration.
+pub(crate) fn surface_look(fluid: &FluidDescriptor) -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        surface_opacity: fluid.surface_opacity,
+        fog_distance: fluid.fog_distance,
+        // Resolved, never the raw field: an omitted `fogColor` follows the
+        // fluid's `viewTint`, so a reload that changes only the tint changes
+        // the packed murk too (pin P2).
+        fog_color: fluid.resolved_fog_color(),
+        wave_period: fluid.wave_period,
+        wave_amplitude: fluid.wave_amplitude,
+        wave_length: fluid.wave_length,
+    }
+}
+
 /// This frame's fluid surface draws, far to near: surfaces whose bounds touch
-/// a visible cell, at their fluid's local surface opacity. A dry volume, or
-/// one whose fluid this machine does not declare, draws nothing.
+/// a visible cell, in their fluid's local look. A dry volume, or one whose
+/// fluid this machine does not declare, draws nothing.
 pub(crate) fn collect_fluid_surface_draws<'c>(
     collector: &'c mut FluidSurfaceRenderCollector,
     world: &LevelWorld,
@@ -60,10 +76,7 @@ pub(crate) fn collect_fluid_surface_draws<'c>(
         visible,
         |cell| world.cell_bounds(cell as usize),
         camera_eye,
-        |volume| {
-            local_fluid_presentation(volumes, fluids, local, volume)
-                .map(|fluid| FluidSurfaceLook::surface_only(fluid.surface_opacity))
-        },
+        |volume| local_fluid_presentation(volumes, fluids, local, volume).map(surface_look),
     )
 }
 
@@ -162,14 +175,18 @@ impl App {
         });
     }
 
-    /// Drop the eye's fluid presentation at level unload: no tint or muffle
-    /// outlives its level, including on the world-less frames that follow.
+    /// Drop the eye's fluid presentation at level unload: no tint, muffle or
+    /// fog weight outlives its level, including on the world-less frames that
+    /// follow.
     pub(crate) fn clear_fluid_eye_presentation(&mut self) {
         self.fluid_eye = FluidEye::default();
         if let Some(renderer) = self.renderer.as_mut()
             && renderer.is_full_ready()
         {
             renderer.set_fluid_view_tint([0.0; 4]);
+            // The dry weight (1): the next level's first frame fogs from
+            // outside, as a freshly built renderer would.
+            renderer.set_fluid_fog_weight(self.fluid_eye.fog_weight());
         }
         if let Some(audio) = self
             .session

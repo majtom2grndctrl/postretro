@@ -761,6 +761,27 @@ fn packing_zeroes_the_wave_without_a_period_or_amplitude_and_the_fog_without_a_d
     }
 }
 
+// The smallest positive `fogDistance` validates, but `3 / distance` overflows
+// to +inf there, and the shader's `exp(-inf * 0)` on a zero path is NaN. The
+// packed extinction stays finite, and on a zero path still shows the scene.
+#[test]
+fn packing_keeps_the_extinction_finite_for_the_smallest_positive_fog_distance() {
+    for distance in [f32::from_bits(1), f32::MIN_POSITIVE, 1.0e-38] {
+        let row = FluidSurfaceLook {
+            fog_distance: Some(distance),
+            ..water_look()
+        }
+        .pack();
+        let extinction = row.fog_extinction();
+        assert!(
+            extinction.is_finite() && extinction > 0.0,
+            "fogDistance {distance:e} packs extinction {extinction}"
+        );
+        assert_eq!(fog::fog_transmittance(extinction, 0.0), 1.0);
+        assert_eq!(fog::fog_transmittance(extinction, 1.0e-3), 0.0);
+    }
+}
+
 // Pin P6: a reload that changes `wavePeriod` 63 → 20 draws, on its first
 // frame, exactly a fresh evaluation of the wave at period 20 and that frame's
 // time: the row carries no phase, so nothing eases across the change.

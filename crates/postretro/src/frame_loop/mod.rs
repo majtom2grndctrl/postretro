@@ -2441,8 +2441,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let limiter_frame = App::next_limiter_frame(&mut app.last_resolve_at, now);
         renderer.set_limiter_frame(limiter_frame);
         // Rewritten every frame with the effect uniform it rides, so a
-        // recreated renderer picks it up on its first frame.
+        // recreated renderer picks it up on its first frame. The fog weight
+        // travels beside it for the same reason, from the same eye update.
         renderer.set_fluid_view_tint(app.fluid_eye.tint());
+        renderer.set_fluid_fog_weight(app.fluid_eye.fog_weight());
 
         drop(stage_scope.take());
         let render_scope = cpu_stages.scope(cpu_timing::FrameStage::Render);

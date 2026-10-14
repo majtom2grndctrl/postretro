@@ -59,8 +59,11 @@ impl FluidSurfaceLook {
             0.0
         };
         let extinction = match self.fog_distance {
+            // Validation admits the smallest positive distance, whose quotient
+            // overflows to +inf; the shader's `exp(-inf * 0)` on a zero path
+            // is NaN. The largest finite extinction is still total murk.
             Some(distance) if distance.is_finite() && distance > 0.0 => {
-                FLUID_FOG_EXTINCTION_PER_DISTANCE / distance
+                (FLUID_FOG_EXTINCTION_PER_DISTANCE / distance).min(f32::MAX)
             }
             _ => 0.0,
         };

@@ -2,7 +2,7 @@
 
 Procedural, seamlessly tiling liquid textures for dev fixture maps. They exist to
 judge fluid-surface motion (whole-texel shimmer, ripple rings, current drift)
-against real fluid art. Each one uses a small palette (11–13 colours) with
+against real fluid art. Each one uses a small palette (12–13 colours) with
 chunky texel-scale features, so a one-texel offset is visible under nearest
 sampling.
 
@@ -22,7 +22,7 @@ names above.
 ## Regenerating
 
 The textures are output of `tools/gen_fluid_textures.py`. It uses only the
-Python standard library and fixed seeds, so it reproduces these files exactly.
+Python standard library and fixed seeds, so it reproduces the same pixels (PNG bytes can differ between zlib builds).
 From the repository root:
 
 ```sh

@@ -1,4 +1,5 @@
-// Canonical environment volumes → PRL EnvironmentVolumes section (id 52).
+// Canonical environment volumes → PRL EnvironmentVolumes section (id 52) and its
+// optional PushForces sibling (id 53).
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 mod push_split;
@@ -27,11 +28,13 @@ use surface::{SolidWorld, SurfacePiece, fluid_surface_pieces};
 /// volume in source map order, each fluid volume with its surface faces.
 ///
 /// `solid_world` is the static world brush set; a fluid face buried in it
-/// draws nothing. Each face is split along every push brush over it, so a
-/// current drifts exactly the part of the surface its push covers. Surface textures join the shared level texture table: a
+/// draws nothing. Surface textures join the shared level texture table: a
 /// texture the world already uses keeps its index, and a fluid-only texture
 /// appends after every world entry, so no world index moves. Call this once
 /// every other texture user has interned its names.
+///
+/// Each face is split along every push brush over it, so a current drifts
+/// exactly the part of the surface its push covers.
 pub fn encode_environment_volumes_section(
     volumes: &[MapEnvironmentVolume],
     level_gravity: f32,

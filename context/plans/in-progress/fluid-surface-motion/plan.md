@@ -15,6 +15,9 @@ read at: 06237f700
 - Fixed tick → `frame_timing::TICK_DURATION` (16 667 µs), the dt movement integrates with.
 - Fixture → the e24 map gains an east wing through a doorway from the north hall: still, current and scale-0.25 pools with grain-marker walls, a two-brush pool under a partial push, a force-0 bending river and a force-3 trap, textured from a new procedural set (`content/dev/textures/fluids/`, generator `tools/gen_fluid_textures.py`). Existing areas are unchanged.
 
+- Fade crossings (review round 1) → the shader decides fade per fragment from that fragment's texels per pixel, with no hysteresis (a stateless shader has none), so camera motion can flatten or restore a cell off its step boundary. Clarification, same meaning: the 3 Hz bound governs the animation clock at a fixed view; a camera-driven fade crossing is a view change, like a mip or LOD transition, and happens only where texels are about a pixel. Tests pin the bound at a fixed view. Flagged to the owner in the report.
+- Face split (review round 1) → the compiler cuts each fluid face against push planes shifted to the runtime's 2 mm drift sample depth, so a part's split and its runtime sample always agree (near-flush and oblique planes included), and closes the T-junctions splitting and burial leave between a volume's pieces, since the surface is translucent.
+
 ## Delegated answers
 - Shimmer step rate, ring density and lifetime, shimmer amplitude, fade threshold — recorded in *Tuning* after the first capture.
 
@@ -68,4 +71,7 @@ The owner's in-engine `POSTRETRO_GPU_TIMING=1` read remains manual.
 | 4 | Compiler face split along push brushes | integrating executor | — | done: surface_tests split rows + e24 fixture test |
 | 5 | Drift: second vertex buffer, face map clusters, app resolve at install and every refresh, shader scroll; tests | integrating executor | 1, 3, 4 | done: render-cpu drift tests, postretro drift + install tests |
 | 6 | Fixture map: still/current pools, partial push, force-0 bending river, force-3 trap, scale 1/0.25 beside walls | integrating executor | 2, 4 | done: e24 east wing (six pools) with fluids/ textures |
-| 7 | GPU timing before/after, preflight, review loop | integrating executor | 1–6 | |
+| 7 | GPU timing before/after, preflight, review loop | integrating executor | 1–6 | in progress: see Review loop |
+
+## Review loop
+- Round 1 (10 lenses, 3 slices + seam): 2 🔴 — drift write batched at install/commit points (debug panic on any water map load or reload), missing `load-prl` cfg on a loader initializer. 🟡: compiler/runtime classification band, absolute face-map fit tolerance far from the origin, split T-junctions, fade per fragment (clarified above), test gaps (adapter force, terminal-velocity source, section 53 through a real compile, netcode half force), doc and comment drift. All fixed; focused gate green (14 runs).

@@ -62,9 +62,11 @@ fn cell_offsets_are_whole_texels_and_constant_within_a_cell() {
     }
 }
 
-// R7: a ring centred on one cell spans neighbours stepping on other phases.
+// At a fixed texels-per-pixel (the 3 Hz bound governs the animation clock, not
+// camera-driven fade crossings). A ring centred on one cell spans neighbours
+// stepping on other phases.
 #[test]
-fn displayed_offset_changes_only_on_the_cells_own_step_boundaries_under_3_hz() {
+fn displayed_offset_at_a_fixed_view_changes_only_on_the_cells_own_step_boundaries_under_3_hz() {
     const SAMPLE_HZ: f32 = 600.0;
     let cells = grid(IVec2::new(-40, -40), 80);
     for &cell in &cells {
@@ -92,7 +94,7 @@ fn displayed_offset_changes_only_on_the_cells_own_step_boundaries_under_3_hz() {
     }
 }
 
-// R8: cells at negative texel coordinates hash to their own phases.
+// Cells at negative texel coordinates hash to their own phases.
 #[test]
 fn no_frame_changes_more_than_a_tenth_of_a_grid_including_negative_cells() {
     let phase = |cell: IVec2| hash_unit(cell_seed(cell));
@@ -254,7 +256,7 @@ fn drift_scroll_moves_at_its_rate_in_whole_texels_and_reverses() {
     );
 }
 
-// R9: after 24 h of script time in f32 the scroll stays whole-texel, on speed
+// After 24 h of script time in f32 the scroll stays whole-texel, on speed
 // and within one period of the unwarped UV.
 #[test]
 fn drift_scroll_after_a_day_of_script_time_keeps_whole_texels_and_true_speed() {
@@ -286,7 +288,7 @@ fn drift_scroll_after_a_day_of_script_time_keeps_whole_texels_and_true_speed() {
     );
 }
 
-// R10: shimmer and rings key on the fixed grid, so a scroll wrap leaves them.
+// Shimmer and rings key on the fixed grid, so a scroll wrap leaves them.
 #[test]
 fn wrapping_the_drift_scroll_changes_no_cell_state() {
     let dims = Vec2::splat(64.0);

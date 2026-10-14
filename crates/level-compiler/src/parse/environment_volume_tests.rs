@@ -309,13 +309,24 @@ fn push_force_defaults_to_one_and_accepts_any_finite_non_negative_value() {
         let volume = one_volume("push_volume", properties).unwrap();
         assert_eq!(volume.force, 1.0, "{properties}");
     }
-    for (authored, expected) in [("0", 0.0), ("0.5", 0.5), ("3", 3.0), (" 250 ", 250.0)] {
+    for (authored, expected) in [
+        ("0", 0.0f32),
+        ("-0", 0.0),
+        ("0.5", 0.5),
+        ("3", 3.0),
+        (" 250 ", 250.0),
+    ] {
         let volume = one_volume(
             "push_volume",
             &format!("\"push\" \"8 0 0\"\n\"force\" \"{authored}\""),
         )
         .unwrap_or_else(|error| panic!("force \"{authored}\" must compile: {error:#}"));
-        assert_eq!(volume.force, expected, "force \"{authored}\"");
+        // Bits, not `==`: -0 equals 0 but writes and hashes differently.
+        assert_eq!(
+            volume.force.to_bits(),
+            expected.to_bits(),
+            "force \"{authored}\""
+        );
         assert_eq!(volume.push, Some(Vec3::new(0.0, 0.0, -8.0)));
     }
 }
@@ -337,8 +348,8 @@ fn force_on_other_environment_volumes_is_ignored() {
     assert_eq!(fluid.force, 1.0);
 }
 
-// R15: a force section exists only when some push volume authors a force
-// other than 1; a push-only map emits none.
+// A force section exists only when some push volume authors a force other
+// than 1; a push-only map emits none.
 #[test]
 fn push_force_section_is_written_only_for_an_authored_force_other_than_one() {
     let push = |properties: &str| {

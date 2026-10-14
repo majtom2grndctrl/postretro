@@ -2,7 +2,8 @@
 """
 Generate the dev mod's tileable fluid surface textures.
 
-Writes `<out>/<name>.png` for each fluid below: water, sludge, lava, slime.
+Writes `<out>/<name>.png` for each fluid in FLUIDS: water_64, water_128,
+water_neon_64, sludge_64, lava_64, slime_64.
 Every texture is built on a periodic domain (wrapping value noise, wrapping
 Worley cells, toroidal bubble distances, a 4x4 ordered dither), so it tiles
 seamlessly and can scroll or shimmer without seams. Each one is quantized to a

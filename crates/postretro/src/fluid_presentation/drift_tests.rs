@@ -139,7 +139,7 @@ fn a_face_over_a_push_drifts_at_its_steady_state_and_a_face_beside_it_is_still()
     assert_near(got[1], Vec3::ZERO);
 }
 
-// R3: a wind whose bottom sits on the waterline moves no water.
+// A wind whose bottom sits on the waterline moves no water.
 #[test]
 fn a_push_resting_on_the_waterline_from_above_gives_no_drift() {
     let records = [fluid_record("water", vec![top_face(0.0, 1.0)])];
@@ -198,7 +198,10 @@ fn viscosity_is_read_by_fluid_name_and_an_undeclared_fluid_drifts_none() {
 
     let lava = [fluid_record("lava", vec![top_face(0.0, 1.0)])];
     assert_near(drifts(&lava, push(), &water_table())[0], Vec3::ZERO);
-    assert!(drifts(&lava, push(), &FluidMovementTable::default())[0] == Vec3::ZERO);
+    assert_near(
+        drifts(&lava, push(), &FluidMovementTable::default())[0],
+        Vec3::ZERO,
+    );
 }
 
 #[test]
@@ -235,7 +238,9 @@ fn force_never_changes_the_drift() {
 
 // Frame capture loads no fluid table, so it resolves no drift: its surfaces
 // install with the renderer's zeroed drift buffer and draw still, at the fixed
-// capture opacity.
+// capture opacity. This is a regression tripwire on capture's source: capture
+// must never resolve drift. The renderer's zeroed drift buffer and the GPU
+// frame test cover the drawn result.
 #[test]
 fn frame_capture_installs_fluid_surfaces_still_at_the_capture_opacity() {
     let prepared = include_str!("../capture/prepared.rs");
@@ -245,7 +250,7 @@ fn frame_capture_installs_fluid_surfaces_still_at_the_capture_opacity() {
     assert!(!prepared.contains("resolve_fluid_surface_drift"));
 }
 
-// R12: a map built before the compiler split faces along pushes carries one
+// A map built before the compiler split faces along pushes carries one
 // face under part of a push. It drifts whole when its sample point lies under
 // the push, and stays still when it does not.
 #[test]

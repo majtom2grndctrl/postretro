@@ -93,9 +93,11 @@ impl App {
 
     /// The terminal velocity that caps the local player's drift layer. A
     /// connected client reads its installed tuning payload, which arrives with
-    /// the host's fluid table; host and offline read the local player's own
-    /// descriptor (its pawn's class, else `player`). With no movement
-    /// descriptor no swimmer exists to agree with, and drift takes no cap.
+    /// the host's fluid table; host and offline read the local pawn's live
+    /// `PlayerMovementComponent`, the value movement caps against, and fall back
+    /// to the player descriptor (the pawn's class, else `player`) while no pawn
+    /// carries one. With no movement tuning at all no swimmer exists to agree
+    /// with, and drift takes no cap.
     fn drift_terminal_velocity(&self) -> f32 {
         let Some(session) = self.session.as_ref() else {
             return f32::INFINITY;
@@ -108,8 +110,15 @@ impl App {
                 .map_or(f32::INFINITY, |movement| movement.fall.terminal_velocity);
         }
         let registry = session.scripting.script_ctx.registry.borrow();
-        let class = registry
-            .local_player_pawn()
+        let pawn = registry.local_player_pawn();
+        if let Some(movement) = pawn.and_then(|pawn| {
+            registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                .ok()
+        }) {
+            return movement.fall.terminal_velocity;
+        }
+        let class = pawn
             .and_then(|pawn| {
                 registry
                     .get_component::<postretro_entities::provenance::DescriptorProvenance>(pawn)

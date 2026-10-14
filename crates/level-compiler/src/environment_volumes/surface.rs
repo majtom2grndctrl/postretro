@@ -15,7 +15,7 @@ use super::solid_index::SolidIndex;
 /// face this close to a solid face is flush, not a gap.
 pub(super) const FLUSH_EPSILON: f64 = 1e-3;
 /// `1 - |n·m|` below this makes two plane normals parallel (≈ 0.08°).
-pub(super) const PARALLEL_EPSILON: f64 = 1e-6;
+const PARALLEL_EPSILON: f64 = 1e-6;
 /// Point classification for a cutting plane: 0.1 mm, face extraction's
 /// coplanar-subtraction epsilon. Tight, because it cuts visible faces.
 pub(super) const SPLIT_EPSILON: f64 = 1e-4;
@@ -24,6 +24,9 @@ pub(super) const SPLIT_EPSILON: f64 = 1e-4;
 pub(super) const MIN_PIECE_AREA: f64 = 1e-6;
 /// Consecutive vertices closer than this collapse into one.
 const WELD_EPSILON: f64 = 1e-6;
+/// A piece's vertex within this distance of another piece's edge lies on it:
+/// the split epsilon, so a corner one cut left on a neighbour's edge counts.
+const T_JUNCTION_EPSILON: f64 = SPLIT_EPSILON;
 
 /// One exposed convex piece of a fluid brush side, wound like its side:
 /// counter-clockwise seen from outside the fluid, around the outward normal.
@@ -102,8 +105,8 @@ impl<'a> SolidWorld<'a> {
 }
 
 /// Exposed surface pieces of one volume, in brush then side order, each cut
-/// along every push brush over it. A dry volume, or a fluid volume whose
-/// brushes carry no sides, has none.
+/// along every push brush over it, with no T-junction between them. A dry
+/// volume, or a fluid volume whose brushes carry no sides, has none.
 pub(super) fn fluid_surface_pieces<'a>(
     volume: &'a MapEnvironmentVolume,
     solid: &SolidWorld<'_>,
@@ -155,7 +158,109 @@ pub(super) fn fluid_surface_pieces<'a>(
             );
         }
     }
+    close_t_junctions(&mut pieces);
     pieces
+}
+
+/// Give every piece each vertex of the volume's other pieces that lies inside
+/// one of its edges.
+///
+/// Cuts leave one piece's corner on a neighbour's edge: along a split line on
+/// one side, or along the edge where a split side meets another side. Each
+/// face draws as its own triangle fan of a translucent surface, so a corner
+/// meeting a straight edge rasterizes as gaps and double blends along the
+/// seam. The inserted vertex is the neighbour's own position, so both sides
+/// of the seam share it; it is collinear, so the piece keeps its shape and
+/// winding. A piece that gains vertices starts its fan where the fewest fan
+/// triangles collapse, so the seam's edges belong to real triangles. A piece
+/// with no vertex on its edges is left exactly as it was.
+fn close_t_junctions(pieces: &mut [SurfacePiece<'_>]) {
+    if pieces.len() < 2 {
+        return;
+    }
+    let bounds: Vec<Aabb> = pieces
+        .iter()
+        .map(|piece| expanded_bounds(&piece.vertices, T_JUNCTION_EPSILON))
+        .collect();
+    // Found against every piece's original vertices, then inserted, so the
+    // result does not depend on piece order.
+    let mut found: Vec<Vec<(usize, f64, DVec3)>> = vec![Vec::new(); pieces.len()];
+    for (own, piece) in pieces.iter().enumerate() {
+        for (other, neighbour) in pieces.iter().enumerate() {
+            if other == own || !bounds[own].intersects(&bounds[other]) {
+                continue;
+            }
+            for &vertex in &neighbour.vertices {
+                if let Some((edge, along)) = edge_holding(&piece.vertices, vertex) {
+                    found[own].push((edge, along, vertex));
+                }
+            }
+        }
+    }
+    for (piece, mut inserts) in pieces.iter_mut().zip(found) {
+        if inserts.is_empty() {
+            continue;
+        }
+        inserts.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut inserts = inserts.into_iter().peekable();
+        let mut vertices = Vec::with_capacity(piece.vertices.len() + inserts.len());
+        for (edge, &corner) in piece.vertices.iter().enumerate() {
+            vertices.push(corner);
+            while let Some((_, _, vertex)) = inserts.next_if(|insert| insert.0 == edge) {
+                // Two neighbours sharing one corner insert it once.
+                if vertices
+                    .last()
+                    .is_none_or(|last| last.distance(vertex) > T_JUNCTION_EPSILON)
+                {
+                    vertices.push(vertex);
+                }
+            }
+        }
+        let start = fan_start(&vertices);
+        vertices.rotate_left(start);
+        piece.vertices = vertices;
+    }
+}
+
+/// The edge of convex `polygon` whose interior holds `vertex`, with the
+/// vertex's position along it (0 at the edge's start, 1 at its end). A vertex
+/// on or near a corner is on no edge's interior.
+fn edge_holding(polygon: &[DVec3], vertex: DVec3) -> Option<(usize, f64)> {
+    (0..polygon.len()).find_map(|edge| {
+        let start = polygon[edge];
+        let end = polygon[(edge + 1) % polygon.len()];
+        if vertex.distance(start) <= T_JUNCTION_EPSILON
+            || vertex.distance(end) <= T_JUNCTION_EPSILON
+        {
+            return None;
+        }
+        let direction = end - start;
+        let along = (vertex - start).dot(direction) / direction.length_squared();
+        let on_line = vertex.distance(start + direction * along) <= T_JUNCTION_EPSILON;
+        (on_line && along > 0.0 && along < 1.0).then_some((edge, along))
+    })
+}
+
+/// The vertex to start the piece's triangle fan at: the one whose fan holds
+/// the fewest collapsed triangles, the first such on a tie. A fan from a
+/// corner with a collinear vertex on one of its own edges collapses there, and
+/// the edge then belongs only to a triangle with no area.
+fn fan_start(polygon: &[DVec3]) -> usize {
+    let count = polygon.len();
+    let collapsed = |start: usize| {
+        let apex = polygon[start];
+        (1..count.saturating_sub(1))
+            .filter(|&i| {
+                let b = polygon[(start + i) % count];
+                let c = polygon[(start + i + 1) % count];
+                // The apex's distance from the line through b and c.
+                (b - apex).cross(c - apex).length() <= T_JUNCTION_EPSILON * b.distance(c)
+            })
+            .count()
+    };
+    (0..count)
+        .min_by_key(|&start| collapsed(start))
+        .unwrap_or(0)
 }
 
 /// Replace every piece with its part outside `remover`.
@@ -222,8 +327,18 @@ fn outside_parts(
 
 /// Whether the remover's box reaches the face's plane. A box wholly in front
 /// of it or wholly behind it cannot hold any point of the face.
-pub(super) fn box_touches_plane(bounds: &Aabb, side: &BrushSide) -> bool {
-    let normal = side.normal;
+fn box_touches_plane(bounds: &Aabb, side: &BrushSide) -> bool {
+    box_reaches_plane(bounds, side.normal, side.distance, FLUSH_EPSILON)
+}
+
+/// Whether `bounds` reaches the plane `(normal, distance)` within `tolerance`:
+/// not wholly in front of it, and not wholly behind it.
+pub(super) fn box_reaches_plane(
+    bounds: &Aabb,
+    normal: DVec3,
+    distance: f64,
+    tolerance: f64,
+) -> bool {
     let near = DVec3::new(
         if normal.x >= 0.0 {
             bounds.min.x
@@ -258,8 +373,7 @@ pub(super) fn box_touches_plane(bounds: &Aabb, side: &BrushSide) -> bool {
             bounds.min.z
         },
     );
-    near.dot(normal) - side.distance <= FLUSH_EPSILON
-        && far.dot(normal) - side.distance >= -FLUSH_EPSILON
+    near.dot(normal) - distance <= tolerance && far.dot(normal) - distance >= -tolerance
 }
 
 pub(super) fn distance_range(polygon: &[DVec3], normal: DVec3, distance: f64) -> (f64, f64) {

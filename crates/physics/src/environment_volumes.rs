@@ -54,7 +54,9 @@ pub fn environment_volumes_from_level(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_collision::{BodyProbe, EnvironmentView, resolve_environment};
+    use postretro_collision::{
+        BodyProbe, EnvironmentView, resolve_environment, resolve_particle_acceleration,
+    };
     use postretro_level_format::environment_volumes::{
         EnvironmentBrush, EnvironmentPlane, EnvironmentVolumeRecord, EnvironmentVolumesSection,
     };
@@ -163,6 +165,49 @@ mod tests {
         assert_eq!(outside.gravity, -9.81);
         let windy = resolve_environment(view, &probe(Vec3::new(12.0, 2.0, 2.0)));
         assert_eq!(windy.push, Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn environment_volumes_from_level_carries_each_records_force_and_defaults_to_one() {
+        let mut low_gravity = record(7, box_brush([0.0; 3], [4.0; 3]));
+        low_gravity.gravity = Some(-2.0);
+        let mut wind = record(9, box_brush([10.0, 0.0, 0.0], [14.0, 4.0, 4.0]));
+        wind.push = Some([1.0, 2.0, 3.0]);
+        let mut world = world_with(EnvironmentVolumesSection {
+            level_gravity: -9.81,
+            volumes: vec![low_gravity, wind],
+        });
+        let windy_point = probe(Vec3::new(12.0, 2.0, 2.0));
+        let wind_position = windy_point.position;
+
+        // No PushForces section: every force is 1, and the felt push is nominal.
+        assert!(world.environment_push_forces.is_empty());
+        let volumes = environment_volumes_from_level(&world, |_| None);
+        assert_eq!(volumes.volume(0).unwrap().force, 1.0);
+        assert_eq!(volumes.volume(1).unwrap().force, 1.0);
+        let view = EnvironmentView::new(world.environment_volumes.level_gravity, &volumes, &[]);
+        assert_eq!(
+            resolve_environment(view, &windy_point).push,
+            Vec3::new(1.0, 2.0, 3.0)
+        );
+
+        // One force per record, in map order.
+        world.environment_push_forces = vec![0.5, 2.5];
+        let volumes = environment_volumes_from_level(&world, |_| None);
+        assert_eq!(volumes.volume(0).unwrap().force, 0.5);
+        assert_eq!(volumes.volume(1).unwrap().force, 2.5);
+        let view = EnvironmentView::new(world.environment_volumes.level_gravity, &volumes, &[]);
+        assert_eq!(
+            resolve_environment(view, &windy_point).push,
+            Vec3::new(1.0, 2.0, 3.0) * 2.5,
+            "a body feels the nominal push times the force"
+        );
+        let (_, nominal) = resolve_particle_acceleration(view, wind_position);
+        assert_eq!(
+            nominal,
+            Vec3::new(1.0, 2.0, 3.0),
+            "particles and surfaces read the nominal push"
+        );
     }
 
     #[test]

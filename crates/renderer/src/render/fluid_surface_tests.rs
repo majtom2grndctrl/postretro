@@ -382,3 +382,66 @@ fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
     let source = include_str!("../shaders/fluid_surface.wgsl");
     assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
 }
+
+// Regression: `set_drift` once wrote the drift buffer through the batched
+// `UploadQueue::write_buffer`. Level install and render-profile commit call it
+// and then `UploadQueue::assert_empty`, so a debug build panicked with
+// "pending renderer uploads". The drift buffer is only ever written directly.
+#[test]
+fn fluid_drift_writes_directly_so_install_and_commit_points_stay_unbatched() {
+    let source = include_str!("fluid_surface.rs");
+    let body = code_only(wgsl_fn(source, "set_drift"));
+    assert!(
+        body.contains("queue.direct_write_buffer(&installed.drift_buffer,"),
+        "set_drift must write the drift buffer with direct_write_buffer"
+    );
+    assert!(
+        !body.contains("queue.write_buffer("),
+        "set_drift must not batch its write"
+    );
+    // The direct write asserts no pending batched write touches its target,
+    // which holds only while nothing batches the drift buffer elsewhere.
+    let code = code_only(source);
+    assert_eq!(code.matches("&installed.drift_buffer,0,").count(), 1);
+    assert!(!code.contains("queue.write_buffer(&installed.drift_buffer"));
+}
+
+// The drift scroll is the CPU mirror's `exact_fract_product` and
+// `drift_scroll_periods` in WGSL. A silent edit to either side would desync
+// the displayed scroll from the CPU reference, so the exact text is pinned.
+#[test]
+fn fluid_drift_scroll_wgsl_matches_the_cpu_mirror() {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    assert_eq!(
+        function("fluid_high_half"),
+        "fnfluid_high_half(x:f32)->f32{returnbitcast<f32>(bitcast<u32>(x)&0xFFFFF000u);}"
+    );
+    assert_eq!(
+        function("fluid_exact_fract_product"),
+        "fnfluid_exact_fract_product(a:f32,b:f32)->f32{\
+         leta_hi=fluid_high_half(a);\
+         letb_hi=fluid_high_half(b);\
+         leta_lo=a-a_hi;\
+         letb_lo=b-b_hi;\
+         returnfract(fract(a_hi*b_hi)+fract(a_hi*b_lo)+fract(a_lo*b_hi)+fract(a_lo*b_lo));}"
+    );
+    assert_eq!(
+        function("fluid_drift_scroll"),
+        "fnfluid_drift_scroll(rate:vec2<f32>,time:f32)->vec2<f32>{\
+         letperiods=vec2<f32>(\
+         fluid_exact_fract_product(time,rate.x),\
+         fluid_exact_fract_product(time,rate.y),\
+         )+vec2<f32>(0.5);\
+         returnperiods-floor(periods)-vec2<f32>(0.5);}"
+    );
+    assert!(
+        function("vs_main")
+            .contains("out.drift_scroll=fluid_drift_scroll(in.drift_rate,uniforms.time);")
+    );
+
+    // Both sides keep the high 12 significant bits.
+    assert!(source.contains("0xFFFFF000u"));
+    let mirror = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
+    assert!(code_only(mirror).contains("x.to_bits()&0xFFFF_F000"));
+}

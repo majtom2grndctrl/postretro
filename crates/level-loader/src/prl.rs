@@ -888,6 +888,7 @@ impl LevelWorld {
             fog_pixel_scale: 4,
             #[cfg(feature = "load-prl")]
             environment_volumes: EnvironmentVolumesSection::default(),
+            #[cfg(feature = "load-prl")]
             environment_push_forces: Vec::new(),
             #[cfg(feature = "load-prl")]
             fog_cell_masks: None,
@@ -2780,8 +2781,8 @@ mod tests {
         }
     }
 
-    // R15 / R12: a map authoring no force, and a map built before the force
-    // section existed, load with every force at 1.
+    // A map authoring no force, and a map built before the force section
+    // existed, load with every force at 1.
     #[test]
     fn load_prl_without_a_push_force_section_reads_every_force_as_one() {
         let world = load_with_push_forces(None, "postretro_test_no_push_forces.prl")

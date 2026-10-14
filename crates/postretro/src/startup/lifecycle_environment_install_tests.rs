@@ -446,6 +446,16 @@ fn connect_as_client(app: &mut App) {
 /// Deliver a host tuning payload carrying `fluids` through the production
 /// client Control drain, as `net_poll_and_apply` does.
 fn deliver_host_fluids(app: &mut App, fluids: &[(&str, f32)]) {
+    deliver_host_tuning(app, fluids, None);
+}
+
+/// Like [`deliver_host_fluids`], with the host's player movement descriptor
+/// riding the same payload.
+fn deliver_host_tuning(
+    app: &mut App,
+    fluids: &[(&str, f32)],
+    movement: Option<postretro_foundation::PlayerMovementDescriptor>,
+) {
     use postretro_combat_model::{
         EnvironmentTuning, FluidMovementTable, FluidMovementTuning, TuningPayload,
     };
@@ -460,7 +470,7 @@ fn deliver_host_fluids(app: &mut App, fluids: &[(&str, f32)]) {
     )
     .expect("valid host table");
     let payload = TuningPayload::new(
-        None,
+        movement,
         std::array::from_fn(|_| None),
         EnvironmentTuning {
             level_gravity: LEVEL_GRAVITY,
@@ -1037,8 +1047,8 @@ fn assert_drift(app: &App, expected_x: f32) {
     );
 }
 
-// R1: a host manifest reload that changes only a viscosity, names unchanged,
-// still re-resolves drift.
+// A host manifest reload that changes only a viscosity, names unchanged, still
+// re-resolves drift.
 #[test]
 fn a_viscosity_only_host_reload_re_resolves_fluid_surface_drift() {
     let mut app = test_app();
@@ -1060,7 +1070,7 @@ fn a_viscosity_only_host_reload_re_resolves_fluid_surface_drift() {
     assert_drift(&app, 1.0);
 }
 
-// R1, R2: a client draws drift only from the host's table. Before the tuning
+// A client draws drift only from the host's table. Before the tuning
 // arrives its fluid shows nothing and drifts none; each tuning, a
 // viscosity-only resend included, re-resolves drift; a demotion stills it, and
 // the next tuning brings the new table's drift.
@@ -1102,7 +1112,7 @@ fn a_connected_client_resolves_drift_from_each_host_tuning() {
     assert_drift(&app, 1.0);
 }
 
-// R2: tuning before the level install and after it draw identical drift.
+// Tuning before the level install and after it draw identical drift.
 #[test]
 fn a_client_tuned_before_its_level_install_draws_the_same_drift_as_one_tuned_after() {
     let mut tuned_first = test_app();
@@ -1126,4 +1136,66 @@ fn a_client_tuned_before_its_level_install_draws_the_same_drift_as_one_tuned_aft
         tuned_first.fluid_surface_drift,
         tuned_after.fluid_surface_drift
     );
+}
+
+// A connected client caps drift at the terminal velocity of the movement
+// descriptor on the host's tuning payload, the one its own prediction reads.
+#[test]
+fn a_connected_clients_drift_caps_at_the_host_tuning_terminal_velocity() {
+    let mut app = test_app();
+    connect_as_client(&mut app);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+
+    let mut movement = crate::tests::minimal_player_descriptor();
+    movement.fall.terminal_velocity = 1.5;
+    deliver_host_tuning(&mut app, &[("water", 2.0)], Some(movement));
+    // push 6 ÷ water viscosity 2 would settle at 3; the host's cap holds it.
+    assert_drift(&app, 1.5);
+
+    // A payload without a movement descriptor leaves drift uncapped.
+    deliver_host_tuning(&mut app, &[("water", 2.0)], None);
+    assert_drift(&app, 3.0);
+}
+
+// Host and offline cap drift at the local pawn's live movement component, the
+// value movement caps against, not at a descriptor looked up by class name.
+#[test]
+fn a_hosts_drift_caps_at_the_local_pawns_live_terminal_velocity() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // No pawn and no registered descriptor: no cap.
+    assert_drift(&app, 3.0);
+
+    spawn_local_pawn(&app, "swimmer", None);
+    let ctx = script_ctx(&app);
+    {
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        let mut movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .clone();
+        movement.fall.terminal_velocity = 1.5;
+        registry.set_component(pawn, movement).expect("movement");
+    }
+    // No descriptor named `swimmer` is registered, so only the pawn's own
+    // component can supply this cap.
+    app.resolve_fluid_surface_drift();
+    assert_drift(&app, 1.5);
+}
+
+// Unloading a level leaves no drift behind for the next frames.
+#[test]
+fn unloading_a_level_clears_its_fluid_surface_drift() {
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    assert_drift(&app, 3.0);
+
+    app.unload_level();
+    assert!(app.fluid_surface_drift.is_empty());
 }

@@ -65,6 +65,7 @@ impl AccelerationIndex {
         }
     }
 
+    /// Returns `(gravity, nominal push, the push winner's force — 1 with no push)`.
     pub(crate) fn resolve(
         &self,
         volumes: &[EnvironmentVolume],

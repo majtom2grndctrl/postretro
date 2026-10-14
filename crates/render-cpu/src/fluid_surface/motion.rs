@@ -1,34 +1,21 @@
-//! Fluid surface motion: the CPU reference for `fluid_surface.wgsl`'s warp.
-//!
-//! See: context/lib/rendering_pipeline.md §7.3a (Fluid Surface Pass).
-//!
-//! Motion moves the albedo sample point by whole texels on the face texture's
-//! own texel grid, so a fluid keeps the grain a wall at the same scale has.
-//! Three layers add:
-//! - **Shimmer.** Each texel cell steps at [`FLUID_MOTION_STEP_HZ`] on its own
-//!   hashed phase, so a view-filling pool never changes on one frame. Its
-//!   offset cycles `0, +d, 0, −d` along the cell's own hashed direction `d`,
-//!   so over any window it averages to zero within one step.
-//! - **Rings.** Every block of the grid takes one drop per ring lifetime, at
-//!   a hashed spot and phase, and spreads one ring per step, never past its
-//!   own block, so a cell reads one block. A cell
-//!   reads the ring at its own step, so its displayed offset changes only on
-//!   its own step boundaries.
-//! - **Drift.** A current scrolls the whole face by a whole-texel offset
-//!   beneath the fixed cell grid ([`drift_scroll_periods`]).
-//!
-//! The offset fades to flat cell by cell as texels shrink below a pixel.
-//! Every function here is GPU-free and pure; the shader mirrors each constant,
-//! pinned by `render/fluid_surface_tests.rs`.
+// Fluid surface motion: the pure, GPU-free CPU reference for `fluid_surface.wgsl`'s warp.
+// See: context/lib/rendering_pipeline.md §7.3a
 
 use glam::{IVec2, Vec2};
+
+// The shader mirrors each constant below; `render/fluid_surface_tests.rs` pins
+// them against it.
 
 /// Cell step rate. Under the 3 Hz general flash threshold, with margin, so
 /// a cell's offset changes at most every 0.4 s.
 pub const FLUID_MOTION_STEP_HZ: f32 = 2.5;
-/// Shimmer offset bound per texel axis, in texels.
+/// Pinned per-axis bound, in texels, on a shimmer offset. The shimmer
+/// directions' `{−1, 0, 1}` components guarantee it; nothing reads this
+/// constant to size them. Tests and the shader-constant pin hold the bound.
 pub const FLUID_SHIMMER_AMPLITUDE: i32 = 1;
-/// Ring offset bound per texel axis, in texels.
+/// Pinned per-axis bound, in texels, on a ring offset. The rounded unit-vector
+/// push guarantees it; nothing reads this constant to size the push. Tests and
+/// the shader-constant pin hold the bound.
 pub const FLUID_RING_AMPLITUDE: i32 = 1;
 /// Ring drop blocks are `1 << FLUID_RING_BLOCK_SHIFT` texels square.
 pub const FLUID_RING_BLOCK_SHIFT: i32 = 5;
@@ -36,8 +23,8 @@ pub const FLUID_RING_BLOCK_SHIFT: i32 = 5;
 pub const FLUID_RING_LIFETIME_STEPS: i32 = 5;
 /// A drop lands at least this many texels inside its block's edges, so its
 /// widest ring never leaves the block and a cell evaluates one block, not a
-/// neighbourhood. Evaluating the 3x3 neighbourhood cost about 0.5 ms on a
-/// view-filling 1080p pool (1660 Super).
+/// neighbourhood. Evaluating the 3x3 neighbourhood was the measured cost of
+/// rings on a view-filling pool.
 pub const FLUID_RING_MARGIN: i32 = 9;
 /// Ring radius growth per step, texels.
 pub const FLUID_RING_STEP_TEXELS: f32 = 2.0;
@@ -118,9 +105,12 @@ pub fn shimmer_offset(cell: IVec2, step: i32) -> IVec2 {
     if position == 1 { d } else { -d }
 }
 
-/// The ring reaching `cell` at `step`, if its block's drop has one there. A
-/// ring pushes its cells one texel outward from its drop, at most
-/// [`FLUID_RING_AMPLITUDE`] per axis.
+/// The ring reaching `cell` at `step`, if its block's drop has one there. Every
+/// block takes one drop per ring lifetime, at a hashed spot and phase, and
+/// spreads one ring per step, never past its own block, so a cell reads one
+/// block. A ring pushes its cells one texel outward from its drop (a rounded
+/// unit vector, so within [`FLUID_RING_AMPLITUDE`] per axis). A cell reads the
+/// ring at its own step, so the offset changes only on its own step boundaries.
 pub fn ring_offset(cell: IVec2, step: i32) -> IVec2 {
     let block = cell >> FLUID_RING_BLOCK_SHIFT;
     let seed = hash3(block.x as u32, block.y as u32, FLUID_SALT_BLOCK);
@@ -148,7 +138,15 @@ pub fn ring_offset(cell: IVec2, step: i32) -> IVec2 {
 }
 
 /// Whether `cell` has faded flat at `texels_per_pixel` (texels one screen
-/// pixel spans, from the unwarped UV derivatives).
+/// pixel spans, from the unwarped UV derivatives). Each cell flattens at its
+/// own hashed point in the fade band, so a pool never flattens on one frame.
+///
+/// Accepted limit: the decision is per fragment with no hysteresis, and a
+/// stateless shader cannot add any. The 3 Hz bound governs the animation clock
+/// at a fixed view. A camera move (dolly, bob) can cross a cell's fade
+/// threshold off its step boundaries, and a cell straddling two pixel quads can
+/// split. Those are view changes, like mip or LOD transitions, and happen only
+/// where texels are about a pixel.
 pub fn faded_flat(cell: IVec2, texels_per_pixel: f32) -> bool {
     let threshold = FLUID_FADE_START_TEXELS_PER_PIXEL
         + (FLUID_FADE_END_TEXELS_PER_PIXEL - FLUID_FADE_START_TEXELS_PER_PIXEL)
@@ -157,7 +155,9 @@ pub fn faded_flat(cell: IVec2, texels_per_pixel: f32) -> bool {
 }
 
 /// The whole-texel offset `cell` displays at `time`: shimmer plus rings, both
-/// keyed on the cell's own step, or zero once faded flat.
+/// keyed on the cell's own step, or zero once faded flat. Offsets are whole
+/// texels on the face texture's own grid, so a fluid keeps the grain a wall at
+/// the same scale has.
 pub fn displayed_offset(cell: IVec2, time: f32, texels_per_pixel: f32) -> IVec2 {
     if faded_flat(cell, texels_per_pixel) {
         return IVec2::ZERO;
@@ -200,6 +200,9 @@ pub fn drift_texels(rate: Vec2, time: f32, dims: Vec2) -> Vec2 {
 
 /// The texel-space sample point for a fragment at unwarped texel UV
 /// `texel_uv`: drift beneath, then the cell offset keyed on the fixed grid.
+/// Three layers add: shimmer and rings per cell, and drift scrolling the whole
+/// face beneath the fixed cell grid ([`drift_scroll_periods`]), with the cell
+/// offset fading to flat as texels shrink below a pixel.
 pub fn warped_texel_uv(
     texel_uv: Vec2,
     drift_rate: Vec2,

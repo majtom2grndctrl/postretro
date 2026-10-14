@@ -1969,7 +1969,7 @@ fn assert_within_two_percent(swimmer: f32, surface: f32) {
     );
 }
 
-// R13: the surface drifts at the speed a swimmer settles at, from the one
+// The surface drifts at the speed a swimmer settles at, from the one
 // steady-state function movement shares.
 #[test]
 fn surface_drift_matches_a_settled_swimmer_in_water_and_sludge() {
@@ -1981,7 +1981,7 @@ fn surface_drift_matches_a_settled_swimmer_in_water_and_sludge() {
     }
 }
 
-// R13: at viscosity × dt >= 1 decay clamps the drift before the tick's push
+// At viscosity × dt >= 1 decay clamps the drift before the tick's push
 // accrues, so the steady state is push × dt, not push / viscosity.
 #[test]
 fn surface_drift_at_viscosity_past_the_tick_rate_is_movements_steady_state() {
@@ -1990,6 +1990,21 @@ fn surface_drift_at_viscosity_past_the_tick_rate_is_movements_steady_state() {
     assert!((surface.x - push.x * DT).abs() < 1.0e-5, "{surface}");
     assert!((surface.x - push.x / 120.0).abs() > 1.0e-3);
     assert_within_two_percent(settled_swimmer_speed(push, 120.0), surface.x);
+}
+
+// A current too weak to outlast the drift stop threshold: the swimmer's decayed
+// drift is zeroed every tick before the push accrues, so it settles at push × dt,
+// not push / viscosity. The surface follows the same exception.
+#[test]
+fn surface_drift_matches_a_swimmer_in_a_current_too_weak_to_outlast_drift_stop() {
+    let push = Vec3::new(0.05, 0.0, 0.0);
+    let surface = super::steady_drift_velocity(push, WATER_VISCOSITY, terminal(), DT);
+    assert!((surface.x - push.x * DT).abs() < 1.0e-7, "{surface}");
+    assert!(
+        (surface.x - push.x / WATER_VISCOSITY).abs() > 1.0e-3,
+        "not the thin-fluid settle: {surface}"
+    );
+    assert_within_two_percent(settled_swimmer_speed(push, WATER_VISCOSITY), surface.x);
 }
 
 #[test]
@@ -2029,7 +2044,7 @@ fn inviscid_surface_drift_is_the_terminal_cap_not_a_division_fault() {
     );
 }
 
-// R11: the fluid-jump check reads the felt push. Under a force-0 down-current
+// The fluid-jump check reads the felt push. Under a force-0 down-current
 // strong enough to block the jump at force 1, the jump decides as in still
 // water.
 #[test]

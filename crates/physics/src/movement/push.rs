@@ -43,10 +43,10 @@ pub(super) fn lifts_off(
 /// After the intent. Called while `velocity` holds locomotion only. The medium
 /// first decays the drift built up so far, then the tick's push accrues:
 /// - **Swimming:** the whole push, all three axes, accrues in the protected
-///   drift layer (`push_velocity`), so a current settles at push / viscosity in
-///   every direction (never past terminal speed, [`cap_swim_drift`]) and swim
-///   steering never fights it. A swimmer resting on the
-///   pool floor takes vertical push too: the layer rejoins before collision,
+///   drift layer (`push_velocity`), so a current settles near push / viscosity
+///   in every direction (exactly: [`steady_drift_velocity`]; never past terminal
+///   speed, [`cap_swim_drift`]) and swim steering never fights it. A swimmer
+///   resting on the pool floor takes vertical push too: the layer rejoins before collision,
 ///   which projects its horizontal part like knockback and leaves its vertical
 ///   part to the fluid ([`project_drift`]), so a downward current presses into
 ///   the floor and an upward one lifts off it ([`release_rising_swimmer`]).
@@ -178,8 +178,9 @@ fn is_swimming(component: &PlayerMovementComponent) -> bool {
 /// The medium a body's drift decays in this tick.
 enum DriftMedium {
     /// Swimming: the fluid's viscosity drags the drift, so a current settles
-    /// near push / viscosity. A swimmer touching the pool floor still counts
-    /// as swimming here: the fluid, not floor friction, is the medium.
+    /// near push / viscosity ([`steady_drift_velocity`]). A swimmer touching
+    /// the pool floor still counts as swimming here: the fluid, not floor
+    /// friction, is the medium.
     Fluid { viscosity: f32 },
     /// Grounded: friction bleeds the drift.
     Ground,
@@ -250,8 +251,8 @@ fn decay_drift(component: &mut PlayerMovementComponent, viscosity: f32, dt: f32)
 /// While swimming the layer's vertical part is the fluid's, not the contact's:
 /// a floor or ceiling never consumes it. The contact still stops total
 /// velocity, so locomotion absorbs the difference, and the current builds
-/// toward its settled push / viscosity against the floor as in open water
-/// (bounded by `cap_swim_drift`). That keeps lift-off tied to the current, not
+/// toward its settled drift ([`steady_drift_velocity`]) against the floor as in
+/// open water (bounded by `cap_swim_drift`). That keeps lift-off tied to the current, not
 /// the tick: a swimmer resting on the pool floor rises once its total vertical
 /// motion, current included, points up ([`release_rising_swimmer`]), so a
 /// current strong enough to outrun the swimmer's sink lifts it as the drift
@@ -315,10 +316,22 @@ pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, pu
 /// cap, so it drifts at terminal velocity along the push, or not at all with
 /// no cap. Fluid surfaces drift at this speed so look and feel agree at any
 /// viscosity (`movement.md` §6).
+///
+/// One exception, from `decay_drift`'s stop threshold: it zeroes the decayed
+/// drift before the push accrues when its squared length is under
+/// `DRIFT_STOP_SPEED_SQ`. After the first tick the drift is `push × dt`, so if
+/// `push × dt × factor` is already under the threshold the swimmer resets every
+/// tick and settles at `push × dt`, not `push × dt / (1 - factor)`. When the
+/// decayed first tick clears the threshold the drift only grows toward the fixed
+/// point, so it never resets and the formula holds.
 pub fn steady_drift_velocity(push: Vec3, viscosity: f32, terminal_velocity: f32, dt: f32) -> Vec3 {
     let factor = (1.0 - viscosity * dt).max(0.0);
     let settled = if factor < 1.0 {
-        push * dt / (1.0 - factor)
+        if (push * dt * factor).length_squared() < DRIFT_STOP_SPEED_SQ {
+            push * dt
+        } else {
+            push * dt / (1.0 - factor)
+        }
     } else if terminal_velocity.is_finite() {
         push.normalize_or_zero() * terminal_velocity
     } else {

@@ -2,7 +2,7 @@
 // in-plane only, and one map per split brush side.
 // See: context/lib/rendering_pipeline.md §7.3a
 
-use glam::{Mat2, Vec2, Vec3};
+use glam::{DMat2, DVec2, Mat2, Vec2, Vec3};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
@@ -35,7 +35,7 @@ fn level_face(corners: &[[f32; 2]], basis: Mat2) -> EnvironmentSurfaceFace {
     }
 }
 
-fn rect(x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<[f32; 2]> {
+fn rect<T: Copy>(x0: T, x1: T, z0: T, z1: T) -> Vec<[T; 2]> {
     vec![[x0, z1], [x1, z1], [x1, z0], [x0, z0]]
 }
 
@@ -125,24 +125,65 @@ fn only_the_in_plane_drift_scrolls_a_face() {
     assert_ne!(wall.scroll_rate(along), Vec2::ZERO);
 }
 
-// R6: every part of one split side scrolls with one map, however thin.
+/// An up-facing level polygon over `corners` (x, z) at `height`, as the
+/// compiler emits one: each vertex's position and texel UV computed in f64
+/// from one rotated projection, then rounded to f32 separately.
+fn compiled_level_face(
+    corners: &[[f64; 2]],
+    height: f64,
+    scale: f64,
+    degrees: f64,
+) -> EnvironmentSurfaceFace {
+    let basis = DMat2::from_angle(degrees.to_radians()) * (f64::from(TEXELS_PER_METER) / scale);
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: corners
+            .iter()
+            .map(|&[x, z]| EnvironmentSurfaceVertex {
+                position: [x as f32, height as f32, z as f32],
+                uv: (basis * DVec2::new(x, z)).as_vec2().to_array(),
+            })
+            .collect(),
+    }
+}
+
 #[test]
 fn every_part_of_a_split_face_drifts_identically_however_thin() {
-    let basis = projection(0.25, 45.0);
-    let parts = maps(vec![
-        level_face(&rect(0.0, 1.0, 0.0, 1.0), basis),
-        // A 1 mm part beside it, offset far from the origin so f32 rounding bites.
-        level_face(&rect(1.0, 1.001, 0.0, 1.0), basis),
-        level_face(&rect(1.001, 2.0, 0.0, 1.0), basis),
-    ]);
     let drift = Vec3::new(3.0, 0.0, -1.5);
-    let rate = parts[0].scroll_rate(drift);
-    for part in &parts[1..] {
-        assert_eq!(part.uv_gradient, parts[0].uv_gradient);
-        assert_eq!(part.scroll_rate(drift), rate);
+    // Hundreds of meters out at fine scales, texel UVs reach ~10^5, where f32
+    // steps by up to 1/64 texel: thin parts miss their side's map by more
+    // than 0.01 texel.
+    for (scale, x0, z0) in [(0.25, 300.37, -420.81), (0.125, 480.19, 350.63)] {
+        let height = 12.7;
+        let piece = |from: f64, to: f64| {
+            compiled_level_face(&rect(x0 + from, x0 + to, z0, z0 + 1.0), height, scale, 45.0)
+        };
+        // One side split into a 1 m part, a 1 mm part, a 0.2 mm part and the rest.
+        let parts = maps(vec![
+            piece(0.0, 1.0),
+            piece(1.0, 1.001),
+            piece(1.001, 1.0012),
+            piece(1.0012, 2.0),
+        ]);
+        let rate = parts[0].scroll_rate(drift);
+        for (index, part) in parts.iter().enumerate().skip(1) {
+            assert_eq!(
+                part.uv_gradient, parts[0].uv_gradient,
+                "scale {scale} at ({x0}, {z0}): part {index} took its own map"
+            );
+            assert_eq!(part.scroll_rate(drift), rate);
+        }
+
+        // A face with another projection keeps its own map, even on the same plane.
+        let separate = maps(vec![
+            piece(0.0, 1.0),
+            compiled_level_face(&rect(x0 + 3.0, x0 + 4.0, z0, z0 + 1.0), height, scale, 0.0),
+        ]);
+        assert_ne!(separate[0].uv_gradient, separate[1].uv_gradient);
     }
 
-    // A face on another plane, or with another projection, keeps its own map.
+    // Near the origin too.
+    let basis = projection(0.25, 45.0);
     let shifted = level_face(&rect(3.0, 4.0, 0.0, 1.0), projection(1.0, 0.0));
     let separate = maps(vec![level_face(&rect(0.0, 1.0, 0.0, 1.0), basis), shifted]);
     assert_ne!(separate[0].uv_gradient, separate[1].uv_gradient);

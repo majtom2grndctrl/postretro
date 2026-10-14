@@ -335,12 +335,23 @@ impl FluidSurfacePass {
         let Some(installed) = self.installed.as_mut() else {
             return;
         };
+        if drifts.len() != installed.face_drift_maps.len() {
+            log::warn!(
+                "[Renderer] Fluid surface drift count {} does not match {} surface faces; \
+                 water holds still",
+                drifts.len(),
+                installed.face_drift_maps.len(),
+            );
+        }
         fill_drift_rates(
             &installed.face_drift_maps,
             drifts,
             &mut installed.drift_rates,
         );
-        queue.write_buffer(
+        // Drift re-resolves at install and commit points, which require an
+        // empty upload batch; a direct write lands now, and nothing else
+        // batches this buffer.
+        queue.direct_write_buffer(
             &installed.drift_buffer,
             0,
             bytemuck::cast_slice(&installed.drift_rates),

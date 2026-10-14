@@ -8,9 +8,11 @@ use postretro_combat_model::FluidMovementTable;
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_render_cpu::fluid_surface::face_normal;
 
-/// How far inside the fluid a face samples its push, meters: past the
-/// compiler's 1 mm flush tolerance, so a current flush with the waterline
-/// drifts the face it covers and a wind resting on the waterline drifts none.
+/// How far inside the fluid a face samples its push, meters, so a current
+/// flush with the waterline drifts the face it covers and a wind resting on
+/// the waterline drifts none. The compiler splits faces at this same depth
+/// (`DRIFT_SAMPLE_DEPTH` in level-compiler `environment_volumes/push_split.rs`);
+/// the two must stay equal.
 pub(crate) const FLUID_DRIFT_SAMPLE_DEPTH: f32 = 0.002;
 
 /// One world drift per surface face of every record, in record order (volume,
@@ -40,7 +42,7 @@ pub(crate) fn resolve_fluid_surface_drift(
             .and_then(|index| fluids.viscosities().get(index).copied());
         for face in &record.surface_faces {
             let drift = match (viscosity, face_normal(face)) {
-                (Some(viscosity), Some(normal)) if !face.vertices.is_empty() => {
+                (Some(viscosity), Some(normal)) => {
                     let centroid = face
                         .vertices
                         .iter()

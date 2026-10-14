@@ -1,5 +1,5 @@
-// Fluid surface data logic: environment-volume surface faces packed into one
-// shared mesh, each frame's visible fluid draws, and per-volume draw slots.
+// Fluid surface data logic: surface faces packed into one shared mesh, per-face
+// drift maps and rates, visible draws, draw slots and the warp's CPU reference.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};

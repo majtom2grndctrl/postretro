@@ -179,6 +179,27 @@ fn bodies_feel_push_times_force_while_particles_follow_the_nominal_push() {
     }
 }
 
+// Production particles call the batch form: every point gets the nominal push,
+// whatever the volume's force.
+#[test]
+fn batched_particle_accelerations_return_the_nominal_push_for_every_point() {
+    use crate::resolve_particle_accelerations;
+    let current = EnvironmentVolume {
+        push: Some(Vec3::new(6.0, 0.0, 2.0)),
+        force: 0.5,
+        ..volume(vec![axis_box(Vec3::splat(-10.0), Vec3::splat(10.0))])
+    };
+    let volumes = EnvironmentVolumes::build(vec![current]);
+    let view = EnvironmentView::new(-9.81, &volumes, &[]);
+    let positions = [Vec3::ZERO, Vec3::new(3.0, -2.0, 5.0), Vec3::splat(9.5)];
+    let mut accelerations = [(0.0, Vec3::ZERO); 3];
+    resolve_particle_accelerations(view, &positions, &mut accelerations);
+    for (&position, &(gravity, push)) in positions.iter().zip(&accelerations) {
+        assert_eq!(gravity, -9.81, "point {position:?}");
+        assert_eq!(push, Vec3::new(6.0, 0.0, 2.0), "point {position:?}");
+    }
+}
+
 // The overlap winner is picked on the nominal fields; its own force scales it.
 // A force-0 winner inside a stronger push leaves the body feeling nothing.
 #[test]

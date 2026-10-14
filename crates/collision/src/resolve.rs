@@ -116,7 +116,9 @@ pub struct ResolvedEnvironment {
 /// Resolve `probe`'s environment. Gravity and push are point rules at
 /// `probe.position`: for each field, the winner among volumes that set it and
 /// contain the point (`EnvironmentVolumes::outranks`); with none, the level
-/// default gravity and zero push. The fluid follows the capsule-segment rule
+/// default gravity and zero push. The returned push is the felt push: the
+/// winner's nominal push times its force (`ResolvedEnvironment::push`). The
+/// fluid follows the capsule-segment rule
 /// (`resolve_fluid`). A non-finite position resolves the level defaults, dry.
 /// Deterministic and allocation-free: the overlap order is total and every
 /// reduction is order-independent, so the result never depends on tree shape
@@ -164,7 +166,8 @@ pub fn resolve_particle_acceleration(view: EnvironmentView<'_>, position: Vec3) 
 }
 
 /// Resolve a batch of independent points, timing the entire query loop once.
-/// `accelerations` must have the same length as `positions`. Empty batches
+/// Each entry is gravity and the NOMINAL push, as
+/// [`resolve_particle_acceleration`] returns. `accelerations` must have the same length as `positions`. Empty batches
 /// perform no query and leave the timing family absent.
 pub fn resolve_particle_accelerations(
     view: EnvironmentView<'_>,

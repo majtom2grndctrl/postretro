@@ -131,12 +131,15 @@ fn parse_push(props: &HashMap<String, String>, entity: &str) -> Result<Vec3> {
 
 /// Optional, default 1. Any finite value >= 0 with no upper cap: 0 makes a
 /// decorative current, and above 1 shoves harder than the current looks.
+/// `-0` reads as 0, so both spellings write and hash the same bits.
 fn parse_force(props: &HashMap<String, String>, entity: &str) -> Result<f32> {
     let Some(raw) = required(props, "force") else {
         return Ok(1.0);
     };
     match raw.parse::<f32>() {
-        Ok(force) if force.is_finite() && force >= 0.0 => Ok(force),
+        Ok(force) if force.is_finite() && force >= 0.0 => {
+            Ok(if force == 0.0 { 0.0 } else { force })
+        }
         _ => anyhow::bail!("{entity} `force` \"{raw}\" is not a finite number >= 0; {FORCE_SHAPE}"),
     }
 }

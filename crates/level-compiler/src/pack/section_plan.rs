@@ -11,6 +11,10 @@ const CELL_RESIDENCY_SET_CONTAINER_VERSION: u16 = 1;
 /// (`ENVIRONMENT_VOLUMES_VERSION`) is the epoch a loader checks.
 const ENVIRONMENT_VOLUMES_CONTAINER_VERSION: u16 = 1;
 
+/// Id 53's PRL table entry version. The payload's own leading version
+/// (`PUSH_FORCES_VERSION`) is the epoch a loader checks.
+const PUSH_FORCES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -427,7 +431,7 @@ pub(super) fn build_finalized_section_plan<'a>(
     if let Some(section) = push_forces {
         sections.push(PlannedSection::new(
             SectionId::PushForces as u32,
-            1,
+            PUSH_FORCES_CONTAINER_VERSION,
             section.byte_len(),
             || Ok(section.to_bytes()),
         ));

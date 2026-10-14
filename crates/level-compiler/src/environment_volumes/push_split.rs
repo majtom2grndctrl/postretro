@@ -4,14 +4,19 @@
 use glam::DVec3;
 
 use crate::geometry_utils::split_polygon;
-use crate::map_data::MapEnvironmentVolume;
+use crate::map_data::{BrushSide, MapEnvironmentVolume};
 use crate::partition::Aabb;
 
 use super::surface::{
-    FLUSH_EPSILON, MIN_PIECE_AREA, PARALLEL_EPSILON, SPLIT_EPSILON, box_touches_plane,
-    distance_range, polygon_area, weld,
+    FLUSH_EPSILON, MIN_PIECE_AREA, SPLIT_EPSILON, box_reaches_plane, distance_range, polygon_area,
+    weld,
 };
-use crate::map_data::BrushSide;
+
+/// How far inside the fluid a face samples its push, meters. Must equal the
+/// runtime's `FLUID_DRIFT_SAMPLE_DEPTH` in
+/// `crates/postretro/src/fluid_presentation/drift.rs`: the split is only
+/// right if it sees each push as that sample does.
+const DRIFT_SAMPLE_DEPTH: f64 = 2e-3;
 
 /// One push brush: its planes in f64 and its bounds.
 struct PushBrush {
@@ -52,12 +57,23 @@ impl PushBrushes {
 
     /// Split each exposed piece of `side` along every push brush over it.
     /// A piece wholly under a push, or wholly clear of it, stays whole.
-    pub(super) fn split(&self, pieces: &mut Vec<Vec<DVec3>>, side: &BrushSide, bounds: &Aabb) {
+    /// `face_bounds` holds the side's own vertices.
+    pub(super) fn split(&self, pieces: &mut Vec<Vec<DVec3>>, side: &BrushSide, face_bounds: &Aabb) {
+        // Every sample point lies on the side's plane moved inward by the
+        // sample depth, inside the face's bounds grown by that depth: a push
+        // missing either holds none of them.
+        let sample_distance = side.distance - DRIFT_SAMPLE_DEPTH;
+        let sample_bounds = Aabb {
+            min: face_bounds.min - DVec3::splat(DRIFT_SAMPLE_DEPTH),
+            max: face_bounds.max + DVec3::splat(DRIFT_SAMPLE_DEPTH),
+        };
         for push in &self.brushes {
             if pieces.is_empty() {
                 return;
             }
-            if !push.bounds.intersects(bounds) || !box_touches_plane(&push.bounds, side) {
+            if !push.bounds.intersects(&sample_bounds)
+                || !box_reaches_plane(&push.bounds, side.normal, sample_distance, FLUSH_EPSILON)
+            {
                 continue;
             }
             let mut kept = Vec::with_capacity(pieces.len());
@@ -78,10 +94,14 @@ impl PushBrushes {
 /// `piece` cut into its part under the closed convex push and the parts
 /// outside it, or `None` when the push covers none of it.
 ///
-/// A face is classified as seen from just inside the fluid, where drift
-/// samples the push. A push plane flush with the face and facing out of the
-/// fluid (a current's top at the waterline) has the face inside it; one facing
-/// into the fluid (a wind's bottom on the waterline) has the face outside it.
+/// A face point is under the push when its drift sample, the point moved
+/// [`DRIFT_SAMPLE_DEPTH`] into the fluid along `-face_normal`, is. For push
+/// plane `(m, d)` that sample is inside when the face point is inside
+/// `(m, d + depth·(m·f))`, so each plane cuts the face shifted by its share of
+/// the sample depth. A plane parallel to the face classifies it whole: a
+/// current's top flush with the waterline, or just under it, has the face
+/// inside it, and a wind's bottom resting on the waterline has it outside.
+/// An oblique plane cuts where the sample crosses it, not where the face does.
 ///
 /// Cuts are area-preserving: a cut that would peel off a sliver under 1 mm²
 /// is skipped, and a part left under it means the push only touches the piece,
@@ -94,14 +114,8 @@ fn cut_by_push(
     let mut outside = Vec::new();
     let mut remainder = piece.to_vec();
     for &(normal, distance) in planes {
+        let distance = distance + DRIFT_SAMPLE_DEPTH * normal.dot(face_normal);
         let (lo, hi) = distance_range(&remainder, normal, distance);
-        let parallel = 1.0 - normal.dot(face_normal).abs() < PARALLEL_EPSILON;
-        if parallel && lo >= -FLUSH_EPSILON && hi <= FLUSH_EPSILON {
-            if normal.dot(face_normal) > 0.0 {
-                continue;
-            }
-            return None;
-        }
         if lo > SPLIT_EPSILON {
             return None;
         }

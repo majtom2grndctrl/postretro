@@ -11,6 +11,7 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
@@ -389,4 +390,42 @@ fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_sect
     for face in &record.surface_faces {
         assert_eq!(face.texture_index as usize, base_names.names.len());
     }
+}
+
+/// A push volume authoring a force other than 1 writes the PushForces section
+/// beside EnvironmentVolumes, one force per record in record order; a map whose
+/// pushes author no force writes none.
+#[test]
+fn an_authored_push_force_writes_the_push_forces_section_in_record_order() {
+    let temp = TempBuildDir::new();
+    let west_push = |field: &str| {
+        format!(
+            "{{\n\"classname\" \"push_volume\"\n\"push\" \"8 0 0\"\n{field}{}\n}}",
+            box_brush([-224, -96, 0], [-160, -32, 64])
+        )
+    };
+
+    let forced = sections(&compile(
+        &temp,
+        "forced",
+        &two_room_map(&[
+            doorway_volume("fluid_volume", "\"fluid\" \"water\""),
+            west_push("\"force\" \"0\"\n"),
+            west_push(""),
+        ]),
+    ));
+    let records = environment(&forced).volumes;
+    let forces = PushForcesSection::from_bytes(section(&forced, SectionId::PushForces))
+        .expect("PushForces decodes");
+    assert_eq!(forces.forces, vec![1.0, 0.0, 1.0]);
+    assert_eq!(forces.forces.len(), records.len(), "one force per record");
+    let pushed: Vec<bool> = records.iter().map(|record| record.push.is_some()).collect();
+    assert_eq!(pushed, [false, true, true], "forces follow record order");
+
+    let unforced = sections(&compile(&temp, "unforced", &two_room_map(&[west_push("")])));
+    assert_eq!(environment(&unforced).volumes.len(), 1);
+    assert!(
+        !unforced.contains_key(&(SectionId::PushForces as u32)),
+        "a push with no authored force writes no PushForces section"
+    );
 }

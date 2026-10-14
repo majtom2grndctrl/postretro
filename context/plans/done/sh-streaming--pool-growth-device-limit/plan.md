@@ -136,7 +136,7 @@ Final commands:
 ```bash
 CARGO_INCREMENTAL=0 cargo fmt --check
 CARGO_INCREMENTAL=0 cargo clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings
-CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo test --workspace --features postretro/dev-tools,postretro/capture -- --test-threads=1
+d
 POSTRETRO_REQUIRE_GPU=1 CARGO_INCREMENTAL=0 cargo test -p postretro-renderer --lib --features dev-tools sh_growth_ -- --nocapture
 ```
 

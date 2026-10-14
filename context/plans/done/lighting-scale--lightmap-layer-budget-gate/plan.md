@@ -1,9 +1,9 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: active
+status: done
 read at: e00493c95
-execution: complete; all 37 acceptance rows and post-merge preflight pass; awaiting owner landing instruction
+execution: complete; all 37 acceptance rows and post-merge preflight pass; owner authorized push and PR
 
 ## Corrections
 - Relevant compiler, format, render-cpu placement and loader portal symbols are unchanged since 45c4fe5. Other renderer changes concern SH streaming and do not alter the cited lightmap boundaries.
@@ -187,7 +187,14 @@ Source: merged09baeb9dd plus the reviewed test-only lint fixes below. No product
 | Default workspace tests | cargo test --no-fail-fast | pass — 11,091 passed, zero failed, 48 ignored, 66 result groups |
 | Development/capture workspace tests | cargo test --workspace --features postretro/dev-tools,postretro/capture --no-fail-fast | pass — 11,242 passed, zero failed, 60 ignored, 69 result groups |
 
-- Default and feature runs overlap; counts are reported separately, not summed. Local socket and renderer access enabled. Logs remain at /private/tmp/postretro-merged-final-*.log.
+- Default and feature runs overlap; counts are reported separately, not summed. Local socket and renderer access enabled. Logs were collected at /private/tmp/postretro-merged-final-*.log and removed during landing after recording these results.
 - Luna/medium fixed seven test-only Clippy findings in two files: removed six effectless struct updates after the working-set field extraction, and used expect_err where Args already implements Debug. All behavioral assertions remain. Integrator reviewed the diff; formatting, strict all-target lint and both complete test suites pass after the fix. No test failure required a behavioral repair.
 - Flag audit: no disposable test-only CLI additions. Keep --working-set-max-size (default16GiB); the retired SH-only working-set flag is removed. Small budget/extreme density were temporary inputs; normal use leaves POSTRETRO_LIGHTMAP_STREAMING unset. No flag cleanup change needed.
 - All37 acceptance rows remain passed. Post-merge final preflight is clean. Awaiting owner landing instruction; no feature push or landing performed.
+
+## Landing checkpoint
+- Owner authorized pushing the feature branch and opening a PR. All37 acceptance rows and post-merge preflight pass; no outstanding proof.
+- Durable compiler contracts already describe the shared budget and bounded stage lifetime. Updated renderer contract to identify the implemented shared level-format placement. Brief moves to context/plans/done/lighting-scale--lightmap-layer-budget-gate. It has no standalone roadmap entry.
+- Retain owner-requested dev-map PRLs. No session worktrees exist. Comparison source/binaries and RSS traces were already removed after recording evidence. Clean only heavily churned crate artifacts before publishing; never bare cargo clean.
+
+- Landing cleanup complete: no session worktrees; removed session-owned bake/preflight temporary evidence after durable capture. Crate-scoped cleanup removed4.3GiB from the active target and183MiB from the lint target for compiler, format, render-cpu, renderer and engine crates. Dev PRLs and source retained.

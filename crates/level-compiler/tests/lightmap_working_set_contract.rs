@@ -1,5 +1,5 @@
 //! Shared CLI working-set budget, from projection through warm memo admission.
-//! See: context/plans/in-progress/lighting-scale--lightmap-layer-budget-gate.
+//! See: context/plans/done/lighting-scale--lightmap-layer-budget-gate.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};

@@ -90,7 +90,7 @@ Runtime-floor fixture 0.0006:
 
 ## Evidence lifecycle
 
-Measurements were collected under `/private/tmp/postretro-lightmap-proof-ztdf8vxi`. Raw traces, logs, comparison binaries and the temporary baseline source archive can be removed after this record is committed. Dev-folder outputs remain for owner inspection; the existing stage cache is untouched.
+Measurements were collected under `/private/tmp/postretro-lightmap-proof-ztdf8vxi`. Raw bake traces, logs, comparison binaries and the temporary baseline source archive were removed after this record was committed. Dev-folder outputs remain for owner inspection; the existing stage cache is untouched.
 
 ## Owner engine observations
 

@@ -12,7 +12,7 @@ In each checkout:
 cargo build --release -p postretro-level-compiler -p postretro-script-compiler
 ```
 
-Owner requested PRLs directly in the main checkout's `content/dev/maps`. Use absolute output paths there, even for the isolated baseline checkout. Keep the current 0.025 output at `stress-warren-hallway-inspection.prl`; name the current comparison `stress-warren-hallway-inspection-0040.prl` and baseline comparison `stress-warren-hallway-inspection-baseline-0040.prl`. Use the main checkout's absolute `baked` path for sidecars so the dev engine reads them normally. Evidence directory for this run: `/private/tmp/postretro-lightmap-proof-ztdf8vxi/evidence`. From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at 0.04:
+Owner requested PRLs directly in the main checkout's `content/dev/maps`. Use absolute output paths there, even for the isolated baseline checkout. Keep the current 0.025 output at `stress-warren-hallway-inspection.prl`; name the current comparison `stress-warren-hallway-inspection-0040.prl` and baseline comparison `stress-warren-hallway-inspection-baseline-0040.prl`. Use the main checkout's absolute `baked` path for sidecars so the dev engine reads them normally. Original evidence directory: `/private/tmp/postretro-lightmap-proof-ztdf8vxi/evidence` (temporary files removed after recording measurement-results.md). From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at 0.04:
 
 ```sh
 RUST_LOG=info target/release/prl-build \

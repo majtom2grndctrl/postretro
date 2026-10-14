@@ -1439,6 +1439,16 @@ export type FluidDescriptor = {
   enterSound: string?,
   --- Optional sound key played when a swim in this fluid ends.
   exitSound: string?,
+  --- Metres of view path into the fluid, seen from outside it, that hide 95% of what lies beyond. Finite and > 0. Omitted: clear. Never applies to the view from inside, which `viewTint` alone covers.
+  fogDistance: number?,
+  --- Murk colour as `[r, g, b]`, in `viewTint`'s rgb space; the engine lights it with the surface's own lighting. Each finite and in [0, 1]. Omitted: `viewTint`'s rgb.
+  fogColor: {number}?,
+  --- Seconds per cycle of an average-length surface wave crest. Finite and >= 6. Omitted: no wave.
+  wavePeriod: number?,
+  --- Peak sideways shift of the surface wave, in texture texels at the face's texture scale; 0 is no wave. Finite and in [0, 16]. Omitted: 8.
+  waveAmplitude: number?,
+  --- Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A.
+  waveLength: number | {number}?,
 }
 
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation and required durable-identity validation succeed.

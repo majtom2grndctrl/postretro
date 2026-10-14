@@ -126,6 +126,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("surfaceOpacity", "f32", "Opacity of the fluid's visible surface faces. Finite and in [0, 1].")
         .field("enterSound?", "String", "Optional sound key played when a swim starts in this fluid.")
         .field("exitSound?", "String", "Optional sound key played when a swim in this fluid ends.")
+        .field("fogDistance?", "f32", "Metres of view path into the fluid, seen from outside it, that hide 95% of what lies beyond. Finite and > 0. Omitted: clear. Never applies to the view from inside, which `viewTint` alone covers.")
+        .field("fogColor?", "[f32; 3]", "Murk colour as `[r, g, b]`, in `viewTint`'s rgb space; the engine lights it with the surface's own lighting. Each finite and in [0, 1]. Omitted: `viewTint`'s rgb.")
+        .field("wavePeriod?", "f32", "Seconds per cycle of an average-length surface wave crest. Finite and >= 6. Omitted: no wave.")
+        .field("waveAmplitude?", "f32", "Peak sideways shift of the surface wave, in texture texels at the face's texture scale; 0 is no wave. Finite and in [0, 16]. Omitted: 8.")
+        .field("waveLength?", "NumberOrRange", "Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A.")
         .finish();
     registry
         .register_type("ModManifest")

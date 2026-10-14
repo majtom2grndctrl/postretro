@@ -236,7 +236,7 @@ impl PreparedCapture {
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         // Capture loads no manifest, so every fluid volume draws at the fixed
-        // capture opacity.
+        // capture opacity, with no fog or wave.
         let mut fluid_collector =
             postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new();
         renderer.set_fluid_surface_draws(fluid_collector.collect(
@@ -245,8 +245,11 @@ impl PreparedCapture {
             |cell| world.cell_bounds(cell as usize),
             eye,
             |volume| {
-                (!world.environment_volumes.volumes[volume].fluid.is_empty())
-                    .then_some(crate::fluid_presentation::CAPTURE_FLUID_SURFACE_OPACITY)
+                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then_some(
+                    postretro_render_cpu::fluid_surface::FluidSurfaceLook::surface_only(
+                        crate::fluid_presentation::CAPTURE_FLUID_SURFACE_OPACITY,
+                    ),
+                )
             },
         ));
         renderer.set_mesh_draws(mesh_collector.instances());

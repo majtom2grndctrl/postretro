@@ -648,9 +648,14 @@ export function sentiment(
  * A map's `fluid_volume` names it through its `fluid` key; declaration order
  * assigns its index. `viscosity` is drag while swimming (1/s, >= 0);
  * `viewTint` is rgb plus strength, `muffle` and `surfaceOpacity` each in
- * [0, 1]; `enterSound` and `exitSound` are optional sound keys. A field out of
- * range, or a repeated name, is rejected with a warning naming the field, and
- * the first declaration stands. Pure: no engine side effects. */
+ * [0, 1]; `enterSound` and `exitSound` are optional sound keys. Optional
+ * presentation: `fogDistance` (metres seen into the fluid from outside, > 0)
+ * and `fogColor` (rgb in `viewTint`'s space; omitted, `viewTint`'s rgb) add
+ * murk; `wavePeriod` (seconds, >= 6) turns on a slow surface wave whose
+ * `waveAmplitude` (texels, 0..16, default 8) and `waveLength` (texels: a
+ * number or `[min, max]`, at most 128, min >= 8 x amplitude) shape it. A field
+ * out of range, or a repeated name, is rejected with a warning naming the
+ * field, and the first declaration stands. Pure: no engine side effects. */
 export function defineFluid(
   desc: import("postretro").FluidDescriptor,
 ): import("postretro").FluidDescriptor {

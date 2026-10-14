@@ -1,5 +1,6 @@
 // Whole-texel fluid motion against its invariants: the 3 Hz flash bound, the
-// shimmer and ring amplitude and fade, and drift scroll rate and wrap.
+// shimmer and ring amplitude and fade, drift scroll rate and wrap, and the
+// declared wave's coherence, travel and wrap.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -41,29 +42,37 @@ fn worst_frame_change_share(
     worst as f32 / cells.len() as f32
 }
 
+// The wave counts texels, never texture periods, so a 64 px and a 128 px
+// texture at one scale take the same offsets.
 #[test]
-fn cell_offsets_are_whole_texels_and_constant_within_a_cell() {
-    let dims = Vec2::splat(64.0);
+fn cell_offsets_are_whole_texels_constant_within_a_cell_and_independent_of_texture_size() {
+    let dev_wave = wave(63.0, 6.0, [48.0, 80.0]);
+    let mut any_wave = false;
     for cell in grid(IVec2::new(-20, -20), 40) {
-        for time in [0.0, 1.3, 7.9, 42.0] {
+        for time in [0.0, 1.3, 7.9, 42.0, 86_000.3] {
+            any_wave |= wave_offset(cell, time, dev_wave) != IVec2::ZERO;
             let corner = cell.as_vec2();
             let mut seen = None;
             for fraction in [Vec2::splat(0.01), Vec2::new(0.5, 0.25), Vec2::splat(0.99)] {
                 let texel_uv = corner + fraction;
-                let offset = warped_texel_uv(texel_uv, Vec2::ZERO, dims, time, 0.1) - texel_uv;
-                let whole = offset.round();
-                assert!(
-                    (offset - whole).abs().max_element() < 1.0e-4,
-                    "offset {offset} is not whole texels"
-                );
-                assert_eq!(
-                    *seen.get_or_insert(whole),
-                    whole,
-                    "offset varies inside {cell}"
-                );
+                for dims in [Vec2::splat(64.0), Vec2::splat(128.0)] {
+                    let offset =
+                        warped_texel_uv(texel_uv, Vec2::ZERO, dims, dev_wave, time, 0.1) - texel_uv;
+                    let whole = offset.round();
+                    assert!(
+                        (offset - whole).abs().max_element() < 1.0e-4,
+                        "offset {offset} is not whole texels"
+                    );
+                    assert_eq!(
+                        *seen.get_or_insert(whole),
+                        whole,
+                        "offset varies inside {cell} or with texture size"
+                    );
+                }
             }
         }
     }
+    assert!(any_wave, "the wave never moved a cell");
 }
 
 // At a fixed texels-per-pixel (the 3 Hz bound governs the animation clock, not
@@ -281,7 +290,14 @@ fn drift_scroll_after_a_day_of_script_time_keeps_whole_texels_and_true_speed() {
         total += step - (step / dims.x).round() * dims.x;
         previous = now;
 
-        let warped = warped_texel_uv(Vec2::new(10.25, 3.5), rate, dims, time, 0.1);
+        let warped = warped_texel_uv(
+            Vec2::new(10.25, 3.5),
+            rate,
+            dims,
+            FluidWaveParams::NONE,
+            time,
+            0.1,
+        );
         assert!((warped - Vec2::new(10.25, 3.5)).abs().max_element() < dims.x);
     }
     let elapsed = time_at(600) - time_at(0);
@@ -307,7 +323,7 @@ fn wrapping_the_drift_scroll_changes_no_cell_state() {
         previous = scroll;
         for cell in grid(IVec2::new(-4, -4), 8) {
             let texel_uv = cell.as_vec2() + 0.5;
-            let warped = warped_texel_uv(texel_uv, rate, dims, time, 0.1);
+            let warped = warped_texel_uv(texel_uv, rate, dims, FluidWaveParams::NONE, time, 0.1);
             let cell_part = warped - texel_uv - drift_texels(rate, time, dims);
             assert_eq!(cell_part, displayed_offset(cell, time, 0.1).as_vec2());
         }
@@ -350,4 +366,406 @@ fn rings_never_reach_their_blocks_edge_cells() {
         }
     }
     assert!(any_ring);
+}
+
+// --- Declared wave -------------------------------------------------------
+
+/// The four coherence settings: each range minimum is exactly 8 × amplitude.
+const COHERENCE_SETTINGS: [(f32, [f32; 2]); 4] = [
+    (16.0, [128.0, 128.0]),
+    (8.0, [64.0, 80.0]),
+    (6.0, [48.0, 80.0]),
+    (1.0, [8.0, 128.0]),
+];
+const DAY: f64 = 86_400.0;
+const WAVE_SALTS: [u32; 2] = [FLUID_SALT_WAVE_U, FLUID_SALT_WAVE_V];
+
+fn wave(period: f32, amplitude: f32, length: [f32; 2]) -> FluidWaveParams {
+    FluidWaveParams {
+        inv_period: 1.0 / period,
+        amplitude,
+        length_min: length[0],
+        length_max: length[1],
+    }
+}
+
+/// The wave's phase at `time`, split as `wave_offset` splits it once per cell.
+fn phase_at(time: f32, wave: FluidWaveParams) -> (i32, f32) {
+    exact_split_product(time, wave.inv_period)
+}
+
+fn mean_length(wave: FluidWaveParams) -> f32 {
+    0.5 * (wave.length_min + wave.length_max)
+}
+
+/// Rounds as the twin does (`floor(x + 0.5)`, which WGSL and Rust agree on).
+fn whole(x: f32) -> i32 {
+    (x + 0.5).floor() as i32
+}
+
+/// A script time on the 1/128 s grid, where f32 holds every value to beyond a
+/// day, so `time + period` is exact.
+fn grid_time(seconds: f64) -> f32 {
+    ((seconds * 128.0).round() / 128.0) as f32
+}
+
+/// The twin's half-arc from its own constants, in f64, on `x` in `[0, 1]`.
+fn half_arc(x: f64) -> f64 {
+    let g = x * (1.0 - x);
+    g * (f64::from(FLUID_WAVE_ARC_LINEAR) + f64::from(FLUID_WAVE_ARC_QUADRATIC) * g)
+}
+
+/// Peak `|dh/dx|` of a unit half-arc, by central differences.
+fn peak_slope(arc: impl Fn(f64) -> f64) -> f64 {
+    const STEPS: usize = 200_000;
+    let dx = 1.0 / STEPS as f64;
+    (0..=STEPS)
+        .map(|i| {
+            let x = i as f64 * dx;
+            let (lo, hi) = ((x - 0.5 * dx).max(0.0), (x + 0.5 * dx).min(1.0));
+            ((arc(hi) - arc(lo)) / (hi - lo)).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The arc's peak slope at the range minimum L = 8A, in texels per cell: a
+/// half-arc spans L/2 cells and peaks at A, so `A · peak · 2 / L = peak / 4`.
+fn slope_at_range_minimum() -> f32 {
+    (peak_slope(half_arc) / 4.0) as f32
+}
+
+#[test]
+fn the_wave_arc_peaks_under_0_8_texel_per_cell_at_8_times_amplitude() {
+    assert_eq!(half_arc(0.0), 0.0);
+    assert_eq!(half_arc(1.0), 0.0);
+    assert!((half_arc(0.5) - 1.0).abs() < 1.0e-12);
+    // Closed form: h' = (5 − 2y²)·y with y = 1 − 2x peaks at y² = 5/6.
+    let closed = (5.0 - 2.0 * 5.0 / 6.0) * (5.0f64 / 6.0).sqrt();
+    assert!((peak_slope(half_arc) - closed).abs() < 1.0e-3);
+    let slope = slope_at_range_minimum();
+    assert!(slope <= 0.8, "peak slope {slope} texel per cell at L = 8A");
+    assert_eq!(slope.floor() as i32 + 1, 1, "the coherence bound");
+    // A two-parabola arc peaks at exactly 1 texel per cell: the fold point.
+    let parabola = peak_slope(|x| 4.0 * x * (1.0 - x)) / 4.0;
+    assert!((parabola - 1.0).abs() < 1.0e-4, "parabola {parabola}");
+
+    // The twin's arc is that shape: positive then negative, zero at each join.
+    for length in [8.0f32, 48.0, 80.0, 128.0] {
+        for i in 0..=64 {
+            let x = i as f32 / 64.0;
+            let first = wave_arc(Vec2::new(0.5 * length * x, length));
+            assert!((f64::from(first) - half_arc(f64::from(x))).abs() < 1.0e-5);
+            if x < 1.0 {
+                let second = wave_arc(Vec2::new(0.5 * length * (1.0 + x), length));
+                assert!((f64::from(second) + half_arc(f64::from(x))).abs() < 1.0e-5);
+            }
+        }
+        for join in [0.0, 0.5 * length, length] {
+            assert_eq!(wave_arc(Vec2::new(join, length)), 0.0);
+        }
+    }
+}
+
+// Coherence (brief Acceptance): the bound derives from the arc's peak slope at
+// the range minimum, plus one texel for rounding. Cross-coupled, a horizontal
+// neighbour shares the `u` shift and a vertical one the `v` shift, so each
+// axis's line carries the grid's steps; the lines run much longer than the grid.
+#[test]
+fn coherence_keeps_adjacent_cells_wave_offsets_within_the_arc_slope_bound() {
+    let slope = slope_at_range_minimum();
+    let bound = slope.floor() as i32 + 1;
+    let times: Vec<f32> = [
+        0.0, 0.25, 3.7, 17.3, 59.9, 600.5, 3_600.125, 43_210.7, 86_399.9,
+    ]
+    .into_iter()
+    .chain((0..24).map(|i| (i as f32 * 3_607.37) % 86_400.0))
+    .collect();
+    for (amplitude, length) in COHERENCE_SETTINGS {
+        assert_eq!(length[0], 8.0 * amplitude);
+        for period in [6.0, 63.0] {
+            let w = wave(period, amplitude, length);
+            let mut widest = 0;
+            for &time in &times {
+                for salt in WAVE_SALTS {
+                    let line: Vec<f32> = (-1024..1024)
+                        .map(|i| wave_value(i as f32 + 0.5, phase_at(time, w), w, salt))
+                        .collect();
+                    for pair in line.windows(2) {
+                        assert!(
+                            (pair[1] - pair[0]).abs() <= slope + 1.0e-4,
+                            "A={amplitude} {length:?}: continuous step {} at t={time}",
+                            pair[1] - pair[0]
+                        );
+                        let step = (whole(pair[1]) - whole(pair[0])).abs();
+                        assert!(step <= bound, "A={amplitude} {length:?}: step {step}");
+                        widest = widest.max(step);
+                    }
+                }
+                for cell in grid(IVec2::new(-16, -16), 32) {
+                    let here = wave_offset(cell, time, w);
+                    for neighbour in [IVec2::X, IVec2::Y] {
+                        let step = (wave_offset(cell + neighbour, time, w) - here)
+                            .abs()
+                            .max_element();
+                        assert!(step <= bound, "{cell} at t={time}: step {step}");
+                    }
+                }
+            }
+            assert_eq!(widest, bound, "A={amplitude} {length:?} never stepped");
+        }
+    }
+}
+
+#[test]
+fn the_wave_is_exactly_zero_without_amplitude_or_period() {
+    let flat = [
+        wave(63.0, 0.0, [64.0, 80.0]),
+        FluidWaveParams {
+            inv_period: 0.0,
+            ..wave(63.0, 8.0, [64.0, 80.0])
+        },
+        FluidWaveParams::NONE,
+    ];
+    for w in flat {
+        for time in [0.0, 5.5, 1_000.25, 86_399.0] {
+            for cell in grid(IVec2::new(-40, -40), 80) {
+                assert_eq!(wave_offset(cell, time, w), IVec2::ZERO);
+                for salt in WAVE_SALTS {
+                    assert_eq!(
+                        wave_value(cell.x as f32 + 0.5, phase_at(time, w), w, salt),
+                        0.0
+                    );
+                }
+            }
+        }
+    }
+}
+
+// The phase splits exactly, so a whole period later the pattern is the same
+// pattern one mean length further on, to a day of script time. t = 49 146.5
+// at period 6 crosses the hash-repeat span's wrap (8192 mean lengths).
+#[test]
+fn one_period_later_the_wave_is_the_same_pattern_one_mean_length_on() {
+    let settings = COHERENCE_SETTINGS.into_iter().chain([(4.0, [37.5, 90.25])]);
+    for (amplitude, length) in settings {
+        for period in [6.0f32, 20.0, 63.0] {
+            let w = wave(period, amplitude, length);
+            let mean = mean_length(w);
+            for seconds in [
+                0.0,
+                1.5,
+                63.0,
+                1_000.25,
+                49_146.5,
+                43_200.7,
+                DAY - f64::from(period) - 0.3,
+            ] {
+                let time = grid_time(seconds);
+                let later = time + period;
+                assert_eq!(f64::from(later), f64::from(time) + f64::from(period));
+                for salt in WAVE_SALTS {
+                    for i in 0..3_000 {
+                        let position = -600.0 + i as f32 * 0.37;
+                        let now = wave_value(position - mean, phase_at(time, w), w, salt);
+                        let then = wave_value(position, phase_at(later, w), w, salt);
+                        assert!(
+                            (now - then).abs() <= 1.0e-3,
+                            "A={amplitude} {length:?} period {period} t={time} at {position}: \
+                             {then} vs {now}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Tracks crests by their travel over long runs, including the last minutes of
+// a day: each keeps its length, sits where the travel puts it, ends where its
+// neighbour starts, and is zero at each arc join.
+#[test]
+fn every_crest_travels_at_mean_length_per_period_and_keeps_its_length() {
+    for (amplitude, length) in COHERENCE_SETTINGS {
+        for period in [6.0f32, 63.0] {
+            let w = wave(period, amplitude, length);
+            let speed = f64::from(mean_length(w)) * f64::from(w.inv_period);
+            for origin in [0.0, 43_200.25, 86_000.5] {
+                let t0 = grid_time(origin);
+                for salt in WAVE_SALTS {
+                    for i in 0..17 {
+                        let probe = -300.0 + i as f32 * 37.0;
+                        let crest = wave_crest(probe, phase_at(t0, w), w, salt);
+                        let crest_length = crest.y;
+                        assert!(
+                            (length[0]..=length[1]).contains(&crest_length),
+                            "crest length {crest_length} outside {length:?}"
+                        );
+                        let start0 = f64::from(probe - crest.x);
+                        for step in 1..=800 {
+                            let time = grid_time(f64::from(t0) + step as f64 * 0.5);
+                            let start = start0 + speed * (f64::from(time) - f64::from(t0));
+                            let middle = (start + 0.5 * f64::from(crest_length)) as f32;
+                            let tracked = wave_crest(middle, phase_at(time, w), w, salt);
+                            assert!(
+                                (tracked.y - crest_length).abs() <= 1.0e-3,
+                                "crest {crest_length} became {} at t={time}",
+                                tracked.y
+                            );
+                            assert!(
+                                (tracked.x - 0.5 * crest_length).abs() <= 1.0e-2,
+                                "crest at t={time} is {} into itself, expected {}",
+                                tracked.x,
+                                0.5 * crest_length
+                            );
+                            let end = (start + f64::from(crest_length)) as f32;
+                            let next = wave_crest(end + 0.05, phase_at(time, w), w, salt);
+                            assert!((next.x - 0.05).abs() <= 1.0e-2, "spacing changed");
+                            assert!((length[0]..=length[1]).contains(&next.y));
+                            for join in [start as f32, middle, end] {
+                                assert!(
+                                    wave_value(join, phase_at(time, w), w, salt).abs() <= 1.0e-2
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// P10: every whole-period boundary to 24 h, frame by frame. At period 6 the run
+// also crosses the hash-repeat span's wrap (t = 49 152 s).
+#[test]
+fn wave_wrap_across_every_period_boundary_to_a_day_never_jumps_or_rehashes_a_crest() {
+    let cells = [
+        IVec2::new(-1_001, 37),
+        IVec2::new(-37, -5),
+        IVec2::ZERO,
+        IVec2::ONE,
+        IVec2::new(17, -300),
+        IVec2::new(63, 64),
+        IVec2::new(200, 999),
+        IVec2::new(513, -2),
+    ];
+    let span_count = |time: f32, w: FluidWaveParams| {
+        exact_split_product(time, w.inv_period).0 & (2 * FLUID_WAVE_PAIRS - 1)
+    };
+    for (amplitude, length) in [(6.0, [48.0, 80.0]), (1.0, [8.0, 128.0])] {
+        for period in [6.0f32, 63.0] {
+            let w = wave(period, amplitude, length);
+            let speed = f64::from(mean_length(w)) * f64::from(w.inv_period);
+            let boundaries = (DAY / f64::from(period)).floor() as i64;
+            let mut crossed_span_wrap = false;
+            for k in 1..=boundaries {
+                let boundary = k as f64 * f64::from(period);
+                let frames: [f32; 5] =
+                    std::array::from_fn(|j| (boundary + (j as f64 - 2.0) / 60.0) as f32);
+                for cell in cells {
+                    let mut previous = wave_offset(cell, frames[0], w);
+                    for &time in &frames[1..] {
+                        let now = wave_offset(cell, time, w);
+                        assert!(
+                            (now - previous).abs().max_element() <= 1,
+                            "{cell} jumped {previous} -> {now} at t={time} (period {period})"
+                        );
+                        previous = now;
+                    }
+                }
+                let (before, after) = (frames[1], frames[3]);
+                crossed_span_wrap |= span_count(after, w) < span_count(before, w);
+                let probe = ((k * 7_919) % 997) as f32 - 498.5;
+                for salt in WAVE_SALTS {
+                    let crest = wave_crest(probe, phase_at(before, w), w, salt);
+                    let start =
+                        f64::from(probe - crest.x) + speed * (f64::from(after) - f64::from(before));
+                    let middle = (start + 0.5 * f64::from(crest.y)) as f32;
+                    let tracked = wave_crest(middle, phase_at(after, w), w, salt);
+                    assert!(
+                        (tracked.y - crest.y).abs() <= 1.0e-3
+                            && (tracked.x - 0.5 * crest.y).abs() <= 1.0e-2,
+                        "crest {} became {tracked} across t={boundary} (period {period})",
+                        crest.y
+                    );
+                }
+            }
+            assert_eq!(
+                crossed_span_wrap,
+                f64::from(period) * f64::from(2 * FLUID_WAVE_PAIRS) <= DAY,
+                "period {period}: hash-span wrap crossing"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_split_product_count_and_fraction_agree_with_f64() {
+    for &(a, b) in &[
+        (86_400.0f32, 1.0f32 / 6.0),
+        (86_400.0, 1.0 / 63.0),
+        (49_152.0, 1.0 / 6.0),
+        (12_345.678, -3.21),
+        (0.5, 0.25),
+        (1.0e6, 0.001),
+        (-7.25, 0.4),
+    ] {
+        let exact = f64::from(a) * f64::from(b);
+        let (count, fraction) = exact_split_product(a, b);
+        assert!((0.0..1.0).contains(&fraction), "fraction {fraction}");
+        let got = f64::from(count) + f64::from(fraction);
+        assert!(
+            (got - exact).abs() < 1.0e-5,
+            "{a} × {b} = {got}, expected {exact}"
+        );
+    }
+}
+
+// The wave adds beside drift in the warped sample; the per-cell displayed
+// offset the flash guards measure never sees it.
+#[test]
+fn the_wave_lands_in_the_warped_sample_but_not_in_the_displayed_offset() {
+    let dims = Vec2::splat(64.0);
+    let drift = Vec2::new(0.3, -0.1);
+    let w = wave(6.0, 6.0, [48.0, 80.0]);
+    let mut any_wave = false;
+    for cell in grid(IVec2::new(-24, -24), 48) {
+        for time in [0.5, 7.1, 300.25] {
+            let texel_uv = cell.as_vec2() + 0.5;
+            let still = warped_texel_uv(texel_uv, drift, dims, FluidWaveParams::NONE, time, 0.1);
+            let waving = warped_texel_uv(texel_uv, drift, dims, w, time, 0.1);
+            assert_eq!(waving - still, wave_offset(cell, time, w).as_vec2());
+            assert_eq!(
+                still - texel_uv - drift_texels(drift, time, dims),
+                displayed_offset(cell, time, 0.1).as_vec2()
+            );
+            any_wave |= waving != still;
+        }
+    }
+    assert!(any_wave, "the wave never moved a cell");
+}
+
+// P6: the wave keeps no state, so the first frame after a reload that changes
+// the period is a fresh evaluation at the new period; nothing eases across.
+#[test]
+fn a_wave_period_change_takes_effect_as_a_fresh_evaluation_on_the_next_frame() {
+    let old = wave(63.0, 8.0, [64.0, 80.0]);
+    let new = wave(20.0, 8.0, [64.0, 80.0]);
+    let reload_frame = 90_000usize;
+    let time_at = |frame: usize| (frame as f64 / 60.0) as f32;
+    let cells = grid(IVec2::new(-32, -32), 64);
+    let shown = |frame: usize| {
+        let params = if frame < reload_frame { old } else { new };
+        cells
+            .iter()
+            .map(|&cell| wave_offset(cell, time_at(frame), params))
+            .collect::<Vec<_>>()
+    };
+    let before = shown(reload_frame - 1);
+    let first = shown(reload_frame);
+    let fresh: Vec<IVec2> = cells
+        .iter()
+        .map(|&cell| wave_offset(cell, time_at(reload_frame), new))
+        .collect();
+    assert_eq!(first, fresh);
+    assert_ne!(before, first, "the reload should jump the pattern once");
 }

@@ -220,6 +220,140 @@ fn window_a_polygon_misses_emits_no_sub_face() {
     assert!((total - 40.5).abs() < 1.0e-3, "{total}");
 }
 
+// Regression: a thin diagonal with an admitted polygon minimum visited
+// 2.4 billion empty grid windows before packing or final admission.
+#[test]
+fn sparse_hundred_million_texel_chart_visits_only_linear_cut_candidates() {
+    use crate::lightmap_bake::working_set::minimum_working_set_bytes;
+    use crate::map_data::MapLightmapScaleRegion;
+
+    let geometry = floor_faces(&[&[[0.0, 0.0], [0.001, 0.0], [1000.0, 1000.0]]]);
+    let region = MapLightmapScaleRegion {
+        min: [-1.0; 3],
+        max: [1001.0; 3],
+        planes: Vec::new(),
+        scale: 4000.0,
+    };
+    let charts = plan_charts(&geometry, 0.04, &[region]).unwrap();
+    let parent = &charts[0];
+    for dimension in [parent.width_texels, parent.height_texels] {
+        assert!(dimension >= 100_000_000);
+    }
+    let minimum = minimum_working_set_bytes(&geometry, &charts, 2048, false);
+    assert!(minimum > 4_000_000_000 && minimum < crate::working_set::DEFAULT_MAX_BYTES);
+    let cuts = plan_face_cuts(&charts, 2048);
+    let cut = &cuts[0];
+    assert!(cut.window_count() > 2_000_000_000);
+    let polygon = fan_polygon(&geometry.geometry.indices, &geometry.geometry.vertices);
+    let axes = cut.u_lines.len() + cut.v_lines.len() - 2;
+    let bound = 8 * axes;
+    let mut previous = None;
+    let candidates = PieceCandidates::new(&polygon, parent, cut)
+        // Fail cheaply even if pruning regresses to the Cartesian product.
+        .take(bound + 1)
+        .inspect(|(_, [u, v])| {
+            let order = (*v, *u);
+            assert!(previous.is_none_or(|previous| previous < order));
+            previous = Some(order);
+        })
+        .count();
+    assert!(candidates >= axes / 2, "the full diagonal is visited");
+    assert!(
+        candidates <= bound,
+        "{candidates} candidates exceed linear bound {bound}"
+    );
+}
+
+/// Compare emitted piece order, chart windows, and serialized vertex bits
+/// against the exhaustive pre-pruning walk, without comparing floats.
+fn assert_candidates_match_full_grid(polygon: &[Vertex], parent: &Chart, cut: &FaceCut) {
+    let emitted = |windows: &mut dyn Iterator<Item = ([Range<u32>; 2], [usize; 2])>| {
+        windows
+            .filter_map(|(window, piece)| {
+                let vertices = clip_to_piece(polygon, parent, cut, piece);
+                (vertices.len() >= 3).then(|| {
+                    let bytes = GeometrySection {
+                        vertices,
+                        indices: Vec::new(),
+                        faces: Vec::new(),
+                    }
+                    .to_bytes();
+                    (piece, window, bytes)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        emitted(&mut PieceCandidates::new(polygon, parent, cut)),
+        emitted(&mut cut.windows()),
+        "pruning preserves every emitted vertex bit and its window order"
+    );
+}
+
+// Regression: pruning from ideal projected edges could drop pieces after
+// first-axis crossings round to f32, especially at large world origins.
+#[test]
+fn cut_candidates_match_full_grid_at_boundaries_and_large_origins() {
+    let polygons: &[&[[f32; 2]]] = &[
+        &[[0.0, 0.0], [32.0, 0.0], [256.0, 256.0]],
+        &[[0.0, 0.0], [256.0, 0.0], [0.0, 256.0]],
+        &[[0.0, 0.0], [256.0, 32.0], [224.0, 256.0], [-32.0, 224.0]],
+    ];
+    for origin in [0.0, 100_000.0, 100_000_000.0] {
+        for polygon in polygons {
+            let translated: Vec<_> = polygon
+                .iter()
+                .map(|[x, z]| [origin + x, origin + z])
+                .collect();
+            let geometry = floor_faces(&[&translated]);
+            let parent = plan_charts(&geometry, 0.7, &[]).unwrap().remove(0);
+            let cut = plan_face_cuts(std::slice::from_ref(&parent), 32).remove(0);
+            let polygon = fan_polygon(&geometry.geometry.indices, &geometry.geometry.vertices);
+            assert_candidates_match_full_grid(&polygon, &parent, &cut);
+        }
+
+        // Exact internal-line contact, then one f32 step to either side.
+        // Offsetting the chart bounds also exercises unclipped outer rows.
+        let polygon: Vec<_> = [[0.0, 0.0], [128.0, 0.0], [128.0, 64.0], [0.0, 64.0]]
+            .map(|[x, z]| vertex(origin + x, origin + z))
+            .into();
+        let mut parent = Chart {
+            origin: Vec3::new(origin, 0.0, origin),
+            u_axis: Vec3::X,
+            v_axis: Vec3::Z,
+            uv_min: [0.0; 2],
+            uv_extent: [128.0; 2],
+            normal: Vec3::Y,
+            width_texels: 128 + PADDING,
+            height_texels: 128 + PADDING,
+            leaf_index: 0,
+            window: None,
+        };
+        let cut = FaceCut {
+            face: 0,
+            u_lines: vec![0, 64, 128],
+            v_lines: vec![0, 64, 128],
+        };
+        let touched: Vec<_> = PieceCandidates::new(&polygon, &parent, &cut)
+            .map(|(_, piece)| piece)
+            .collect();
+        assert!(
+            touched.contains(&[0, 1]) && touched.contains(&[1, 1]),
+            "inclusive boundary rows"
+        );
+        for offset in [
+            0.0,
+            64.0 - f32::from_bits(64.0f32.to_bits() - 1),
+            64.0 - f32::from_bits(64.0f32.to_bits() + 1),
+            64.0,
+            -128.0,
+        ] {
+            parent.uv_min[1] = offset;
+            assert_candidates_match_full_grid(&polygon, &parent, &cut);
+        }
+    }
+}
+
 // P8, P20: no vertex is shared between sibling sub-faces, and a vertex on a
 // cut has bit-identical position and texture UV in both faces sharing it.
 #[test]

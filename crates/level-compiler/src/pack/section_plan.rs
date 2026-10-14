@@ -181,11 +181,11 @@ pub(super) fn build_finalized_section_plan<'a>(
             })
         },
     ));
-    sections.push(PlannedSection::new(
+    sections.push(PlannedSection::with_writer(
         SectionId::Lightmap as u32,
         1,
-        lightmap.byte_len(),
-        || Ok(lightmap.to_bytes()),
+        lightmap.byte_len() as u64,
+        |writer| Ok(lightmap.write_to(writer)?),
     ));
     if let Some(section) = direct_sh_volume {
         let len = section.try_byte_len().map_err(|error| {
@@ -267,11 +267,11 @@ pub(super) fn build_finalized_section_plan<'a>(
             )
             .map_err(|error| anyhow::anyhow!("ShadowmaskAtlas owner table is invalid: {error}"))?;
         }
-        sections.push(PlannedSection::new(
+        sections.push(PlannedSection::with_writer(
             SectionId::ShadowmaskAtlas as u32,
             2,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
+            section.byte_len() as u64,
+            |writer| Ok(section.write_to(writer)?),
         ));
     }
     if let Some(section) = animated_light_chunks {

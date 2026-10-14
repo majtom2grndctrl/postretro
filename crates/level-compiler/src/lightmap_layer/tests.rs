@@ -1705,7 +1705,7 @@ fn section_key(
     uncompressed_irradiance: bool,
 ) -> CacheKey {
     let h = section_input_hash(
-        layer_input_hashes,
+        layer_input_hashes.iter().copied(),
         shared,
         density,
         uncompressed_irradiance,
@@ -1748,12 +1748,24 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
     let at_scale_two = CacheKey::new(
         "lightmap_section",
         LIGHTMAP_SECTION_VERSION,
-        &section_input_hash(&layer_input_hashes, &shared, DENSITY, true, 2),
+        &section_input_hash(
+            layer_input_hashes.iter().copied(),
+            &shared,
+            DENSITY,
+            true,
+            2,
+        ),
     );
     let at_scale_one = CacheKey::new(
         "lightmap_section",
         LIGHTMAP_SECTION_VERSION,
-        &section_input_hash(&layer_input_hashes, &shared, DENSITY, true, 1),
+        &section_input_hash(
+            layer_input_hashes.iter().copied(),
+            &shared,
+            DENSITY,
+            true,
+            1,
+        ),
     );
     assert_ne!(
         at_scale_two.as_filename(),

@@ -69,6 +69,7 @@ pub mod texture_validation;
 pub mod trigger_volumes;
 pub mod tui;
 pub mod visibility;
+mod working_set;
 
 #[cfg(test)]
 mod binary_tests;
@@ -742,9 +743,9 @@ pub struct Args {
     /// missing) and evicts the rest, oldest first, down to this. Defaults
     /// to `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
-    /// Compiler-only limits for the three baked delta sections. The raw-payload
-    /// cap is enforced after compaction; the working-set cap refuses the dense
-    /// pre-bake plan. Neither has a PRL, FGD, loader, or runtime representation.
+    /// Per-stage host-RAM ceiling, shared by the SH-delta and lightmap gates.
+    working_set_max_bytes: u64,
+    /// Compiler-only payload cap for the three baked delta sections.
     delta_section_config: delta_sections::DeltaSectionConfig,
     /// When true, bypass cache reads and writes entirely.
     no_cache: bool,
@@ -824,7 +825,7 @@ fn help_text() -> String {
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    Stage-cache budget: the build-start prune keeps every map's last-build entries and evicts the rest, oldest first, down to this; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
-         --sh-delta-working-set-max-size <SIZE> Peak host-RAM budget for dense ids 27, 41, and 45 before baking; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
+         --working-set-max-size <SIZE> Per-stage host-RAM ceiling for SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
@@ -843,8 +844,7 @@ fn help_text() -> String {
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
         cache_max = size_options::format_size_for_help(cache::DEFAULT_MAX_BYTES),
         delta_max = size_options::format_size_for_help(delta_sections::DEFAULT_MAX_PAYLOAD_BYTES),
-        delta_working_set_max =
-            size_options::format_size_for_help(delta_sections::DEFAULT_MAX_WORKING_SET_BYTES),
+        delta_working_set_max = size_options::format_size_for_help(working_set::DEFAULT_MAX_BYTES),
         jobs = default_jobs(),
         direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE,
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
@@ -895,6 +895,7 @@ where
     let mut baked_root: Option<PathBuf> = None;
     let mut cache_max_bytes = cache::DEFAULT_MAX_BYTES;
     let mut delta_section_config = delta_sections::DeltaSectionConfig::default();
+    let mut working_set_max_bytes = working_set::DEFAULT_MAX_BYTES;
     let mut no_cache = false;
     let mut release = false;
     let mut quality_flag_supplied = false;
@@ -1029,10 +1030,10 @@ where
                 delta_section_config.max_payload_bytes =
                     size_options::parse_size("--sh-delta-max-size", &size_str)?;
             }
-            "--sh-delta-working-set-max-size" => {
-                let size_str = flag_value(&mut args, "--sh-delta-working-set-max-size")?;
-                delta_section_config.max_working_set_bytes =
-                    size_options::parse_size("--sh-delta-working-set-max-size", &size_str)?;
+            "--working-set-max-size" => {
+                let size_str = flag_value(&mut args, "--working-set-max-size")?;
+                working_set_max_bytes =
+                    size_options::parse_size("--working-set-max-size", &size_str)?;
             }
             "--no-cache" => {
                 no_cache = true;
@@ -1097,7 +1098,7 @@ where
                 }
                 sh_density_force_scale = Some(parsed);
             }
-            _ if input.is_none() => {
+            _ if input.is_none() && !arg.starts_with('-') => {
                 input = Some(PathBuf::from(arg));
             }
             _ => {
@@ -1111,7 +1112,7 @@ where
             "usage: prl-build <input.map> [-o <output.prl>] [-v|--verbose] \
              [--format <FORMAT>] [--sh-probe-spacing <METERS>] [--lightmap-density <METERS>] \
              [--sh-density-fidelity <MULTIPLIER>] \
-             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--sh-delta-working-set-max-size <SIZE>] [--no-cache] [--release]\n\
+             [--soft-shadow-samples <N>] [--sdf-voxel-size <METERS>] [--cache-dir <PATH>] [--baked-root <DIR>] [--cache-max-size <SIZE>] [--sh-delta-max-size <SIZE>] [--working-set-max-size <SIZE>] [--no-cache] [--release]\n\
              (run `prl-build --help` for the full flag list)"
         )
     })?;
@@ -1132,6 +1133,7 @@ where
         baked_root,
         cache_max_bytes,
         delta_section_config,
+        working_set_max_bytes,
         no_cache,
         release,
         quality_flag_supplied,
@@ -2219,10 +2221,7 @@ mod tests {
             parsed.delta_section_config.max_payload_bytes,
             delta_sections::DEFAULT_MAX_PAYLOAD_BYTES
         );
-        assert_eq!(
-            parsed.delta_section_config.max_working_set_bytes,
-            delta_sections::DEFAULT_MAX_WORKING_SET_BYTES
-        );
+        assert_eq!(parsed.working_set_max_bytes, working_set::DEFAULT_MAX_BYTES);
         assert_eq!(parsed.jobs, default_jobs());
         assert_eq!(parsed.tui, TuiPreference::Auto);
     }
@@ -2919,66 +2918,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_sh_delta_working_set_max_size_defaults_to_16_gib() {
-        let parsed = parse_args_from(["input.map"].into_iter().map(str::to_owned)).unwrap();
-
-        assert_eq!(
-            parsed.delta_section_config.max_working_set_bytes,
-            16 * 1024 * 1024 * 1024
-        );
-    }
-
-    #[test]
-    fn parse_args_sh_delta_working_set_max_size_accepts_existing_size_syntax() {
-        let parsed = parse_args_from(
-            ["input.map", "--sh-delta-working-set-max-size", "24GiB"]
-                .into_iter()
-                .map(str::to_owned),
-        )
-        .unwrap();
-
-        assert_eq!(
-            parsed.delta_section_config.max_working_set_bytes,
-            24 * 1024 * 1024 * 1024
-        );
-    }
-
-    #[test]
-    fn parse_args_sh_delta_working_set_max_size_requires_a_valid_value() {
-        assert!(
-            parse_args_from(
-                ["input.map", "--sh-delta-working-set-max-size"]
-                    .into_iter()
-                    .map(str::to_owned),
-            )
-            .is_err()
-        );
-        assert!(
-            parse_args_from(
-                ["input.map", "--sh-delta-working-set-max-size", "12XB"]
-                    .into_iter()
-                    .map(str::to_owned),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn parse_args_sh_delta_working_set_max_size_rejects_u64_overflow() {
-        for value in ["18446744073709551616B", "16777216TiB"] {
-            assert!(
-                parse_args_from(
-                    ["input.map", "--sh-delta-working-set-max-size", value]
-                        .into_iter()
-                        .map(str::to_owned),
-                )
-                .is_err(),
-                "{value} must not saturate into an admitted u64 budget",
-            );
-        }
-    }
-
-    #[test]
     fn parse_args_release_flag() {
         let args = vec!["input.map".to_string(), "--release".to_string()];
         let parsed = parse_args_from(args.into_iter()).unwrap();
@@ -3414,3 +3353,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod working_set_cli_tests;

@@ -28,6 +28,7 @@ pub(super) struct AtlasStageInputs<'a> {
     pub(super) static_lights: &'a StaticBakedLights<'a>,
     pub(super) animated_lights: &'a AnimatedBakedLights<'a>,
     pub(super) config: &'a LightmapConfig,
+    pub(super) working_set_max_bytes: u64,
     pub(super) generated_portals: &'a [portals::Portal],
     pub(super) exterior_leaves: &'a HashSet<usize>,
     pub(super) control: &'a BakeControl,
@@ -71,6 +72,8 @@ pub(super) fn prepare_atlas_stage(
         inputs.config.lightmap_density,
         &inputs.map_data.lightmap_scale_regions,
         LIGHTMAP_POOL_LAYER_EDGE,
+        inputs.working_set_max_bytes,
+        inputs.config.uncompressed_irradiance,
     )
     .map_err(prepare_error)?;
     let rebuilt = match &cut.face_remap {

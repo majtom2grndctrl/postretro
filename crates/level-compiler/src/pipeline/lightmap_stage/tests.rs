@@ -406,6 +406,14 @@ fn cold_outputs(
 // lightmap-reuse builds; editing a light outside id 40, or only id-40
 // membership, rebuilds it; a reuse rebuild reads each eligible partition once
 // per layer and bakes none.
+fn metadata_counts(prepared: &PreparedAtlas, lights: &[MapLight]) -> MetadataCounts {
+    MetadataCounts::new(
+        &StaticBakedLights::from_lights(lights),
+        &AlphaLightsNs::from_lights(lights),
+        prepared.charts.len(),
+    )
+}
+
 #[test]
 fn fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes() {
     let args = test_args();
@@ -513,20 +521,14 @@ fn fused_cold_warm_and_lightmap_reuse_paths_match_cold_bytes() {
 
         // Membership alone: the lightmap memo hits and id 42 rebuilds from the
         // cached partitions of every eligible light, each read once per layer,
-        // through one raw fill and no trace.
+        // through per-layer raw fill and no trace.
         let membership_cold = cold_outputs(&lights, &edited_selection, &config);
-        crate::shadowmask_bake::reset_shadowmask_output_allocation_count();
         let selection_logs = LogCapture::start();
         let selection_only =
             fused_outputs(&args, Some(&cache), &lights, &edited_selection, &config);
         assert_eq!(
             selection_only, membership_cold,
             "a membership-only rebuild must equal its cold build"
-        );
-        assert_eq!(
-            crate::shadowmask_bake::shadowmask_output_allocation_count(),
-            1,
-            "a reuse rebuild holds exactly one raw fill"
         );
         selection_logs.assert_logged_once(Level::Info, "[cache] shadowmask_atlas miss");
         selection_logs.assert_logged_once(Level::Info, "[cache] lightmap_section hit");
@@ -827,7 +829,7 @@ fn multi_block_cell_section_bytes_are_identical_with_one_worker_and_many() {
 }
 
 #[test]
-fn predicted_peak_charges_every_bake_layer_one_plane_and_both_sections_twice() {
+fn predicted_peak_charges_one_layer_fill_scratch_and_each_section_once() {
     let mut geometry = quads_in_one_cell(3);
     let lights = vec![point_light(DVec3::new(20.0, 6.0, 6.0), [1.0; 3])];
     let static_lights = StaticBakedLights::from_lights(&lights);
@@ -842,11 +844,8 @@ fn predicted_peak_charges_every_bake_layer_one_plane_and_both_sections_twice() {
     )
     .expect("multi-block fixture must prepare");
     let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
-    let peak = predicted_peak(&prepared, false, 1);
-    assert_eq!(
-        peak.shadowmask_fill,
-        4 * layer_texels * u64::from(prepared.layer_count)
-    );
+    let peak = predicted_peak(&prepared, metadata_counts(&prepared, &lights), false, 1);
+    assert_eq!(peak.shadowmask_fill, 4 * layer_texels);
     assert_eq!(peak.layer_plane, 57 * layer_texels);
     let block_texels: u64 = prepared
         .layout
@@ -854,16 +853,20 @@ fn predicted_peak_charges_every_bake_layer_one_plane_and_both_sections_twice() {
         .iter()
         .map(|b| u64::from(b.width) * u64::from(b.height))
         .sum();
-    // BC6H 1 B + direction 2 B / scale² + shadowmask 2 B per texel, twice.
-    assert_eq!(peak.sections, 2 * (block_texels * 3 + block_texels / 4 * 2));
+    // BC6H 1 B + direction 2 B / scale² + shadowmask 2 B per texel, once each.
+    assert_eq!(peak.sections, block_texels * 3 + block_texels / 4 * 2);
     assert_eq!(peak.shadowmask_face_map, 4 * layer_texels);
     assert_eq!(
         peak.total(),
         peak.shadowmask_fill
+            + peak.shadowmask_encode_scratch
             + peak.shadowmask_face_map
             + peak.layer_plane
             + peak.partitions
             + peak.sections
+            + peak.metadata
+            + peak.cache_metadata
+            + peak.ownership_metadata
     );
 }
 
@@ -878,13 +881,24 @@ fn predicted_peak_charges_window_partitions() {
     let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
     let one_partition = 2 * 8 * layer_texels;
 
-    let one = predicted_peak(&prepared, false, 1);
-    let without_window =
-        one.shadowmask_fill + one.shadowmask_face_map + one.layer_plane + one.sections;
+    let one = predicted_peak(&prepared, metadata_counts(&prepared, &lights), false, 1);
+    let without_window = one.shadowmask_fill
+        + one.shadowmask_encode_scratch
+        + one.shadowmask_face_map
+        + one.layer_plane
+        + one.sections
+        + one.metadata
+        + one.cache_metadata
+        + one.ownership_metadata;
     assert_eq!(one.total(), without_window + one_partition);
     let mut previous = one.total();
     for window in [2, LIGHTMAP_PARTITION_WINDOW, 4 * LIGHTMAP_PARTITION_WINDOW] {
-        let peak = predicted_peak(&prepared, false, window);
+        let peak = predicted_peak(
+            &prepared,
+            metadata_counts(&prepared, &lights),
+            false,
+            window,
+        );
         assert!(peak.total() > previous, "window {window}");
         assert_eq!(peak.partitions, window as u64 * one_partition);
         previous = peak.total();
@@ -1636,3 +1650,13 @@ fn the_estimate_traces_only_cut_faces_and_lights_that_reach_them() {
 }
 
 mod window_tests;
+
+mod cache_tests;
+
+mod budget_regression;
+
+mod raw_fill_tests;
+
+mod budget_gate_tests;
+
+mod metadata_tests;

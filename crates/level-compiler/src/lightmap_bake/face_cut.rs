@@ -1,6 +1,7 @@
 // Oversize-face cut: a face whose chart exceeds one pool layer becomes sub-faces whose charts window its grid.
 // See: context/lib/build_pipeline.md §Compiler pipeline (atlas preparation)
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use glam::{DVec3, Vec3};
@@ -27,15 +28,18 @@ pub(crate) struct FaceCut {
 impl FaceCut {
     /// Windows (in parent-grid texels) in emission order: rows of `v`, then
     /// `u` within a row.
+    #[cfg(test)]
     pub(crate) fn windows(&self) -> impl Iterator<Item = ([Range<u32>; 2], [usize; 2])> + '_ {
-        let u_windows = axis_windows(&self.u_lines);
-        let v_windows = axis_windows(&self.v_lines);
-        v_windows.into_iter().enumerate().flat_map(move |(vi, v)| {
-            u_windows
-                .clone()
-                .into_iter()
-                .enumerate()
-                .map(move |(ui, u)| ([u, v.clone()], [ui, vi]))
+        (0..self.v_lines.len() - 1).flat_map(move |vi| {
+            (0..self.u_lines.len() - 1).map(move |ui| {
+                (
+                    [
+                        axis_window(&self.u_lines, ui),
+                        axis_window(&self.v_lines, vi),
+                    ],
+                    [ui, vi],
+                )
+            })
         })
     }
 
@@ -79,14 +83,17 @@ pub(crate) fn axis_cut_lines(interior: u32, pool_edge: u32) -> Vec<u32> {
 
 /// Each piece's window: its segment widened by the overlap past every inner
 /// cut line.
+#[cfg(test)]
 fn axis_windows(lines: &[u32]) -> Vec<Range<u32>> {
-    let last = *lines.last().expect("a cut axis has two lines");
-    lines
-        .windows(2)
-        .map(|pair| {
-            pair[0].saturating_sub(CUT_OVERLAP_TEXELS)..(pair[1] + CUT_OVERLAP_TEXELS).min(last)
-        })
+    (0..lines.len() - 1)
+        .map(|piece| axis_window(lines, piece))
         .collect()
+}
+
+fn axis_window(lines: &[u32], piece: usize) -> Range<u32> {
+    let last = *lines.last().expect("a cut axis has two lines");
+    lines[piece].saturating_sub(CUT_OVERLAP_TEXELS)
+        ..(lines[piece + 1] + CUT_OVERLAP_TEXELS).min(last)
 }
 
 /// The cut of every face whose own chart exceeds `pool_edge`, in face order.
@@ -116,6 +123,7 @@ pub(crate) fn plan_face_cuts(charts: &[Chart], pool_edge: u32) -> Vec<FaceCut> {
 /// geometry is cut, in time linear in the pieces (not the windows). Every
 /// window counts as if its polygon reached it, so a non-rectangular cut face
 /// counts corners it emits no sub-chart for. Saturates rather than wraps.
+#[cfg(test)]
 pub(crate) fn planned_chart_area(charts: &[Chart], cuts: &[FaceCut]) -> u64 {
     let padding = u64::from(2 * CHART_PADDING_TEXELS);
     let mut cuts = cuts.iter().peekable();
@@ -229,7 +237,7 @@ pub(crate) fn apply_face_cuts(
                 let parent = chart;
                 let polygon = fan_polygon(face_indices, &section.vertices);
                 let mut own = Vec::new();
-                for (window, piece) in cut.windows() {
+                for (window, piece) in PieceCandidates::new(&polygon, parent, cut) {
                     let clipped = clip_to_piece(&polygon, parent, cut, piece);
                     if clipped.len() < 3 {
                         continue;
@@ -310,6 +318,115 @@ fn grid_coord(parent: &Chart, axis: usize, position: [f32; 3]) -> f64 {
     local * interior[axis] / f64::from(parent.uv_extent[axis])
 }
 
+/// Sweep only rows a column's polygon can reach. The first clip is exactly
+/// the one `clip_to_piece` performs, including its f32-rounded crossings.
+/// Taking bounds from that polygon avoids projection-error margins at large
+/// world origins. Inclusive bounds retain boundary-only pieces; the first
+/// and last row still extend beyond the parent grid, just like the clip.
+/// Storage is linear in columns, never in their Cartesian product with rows.
+struct PieceCandidates<'a> {
+    cut: &'a FaceCut,
+    starts: Vec<(usize, usize)>,
+    ends: Vec<(usize, usize)>,
+    start_index: usize,
+    end_index: usize,
+    active: BTreeSet<usize>,
+    row: usize,
+    next_column: usize,
+    row_ready: bool,
+}
+
+impl<'a> PieceCandidates<'a> {
+    fn new(polygon: &[Vertex], parent: &Chart, cut: &'a FaceCut) -> Self {
+        let columns = cut.u_lines.len() - 1;
+        let rows = cut.v_lines.len() - 1;
+        let mut starts = Vec::with_capacity(columns);
+        let mut ends = Vec::with_capacity(columns);
+        for column in 0..columns {
+            let (lo, hi) = piece_bounds(&cut.u_lines, column);
+            let clipped = clip_slab(polygon, parent, 0, lo, hi);
+            if clipped.len() < 3 {
+                continue;
+            }
+            let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+            for vertex in &clipped {
+                let v = grid_coord(parent, 1, vertex.position);
+                min = min.min(v);
+                max = max.max(v);
+            }
+            // Internal cut lines alone bound rows: outer sides never clip.
+            let internal = &cut.v_lines[1..rows];
+            let first = internal.partition_point(|&line| f64::from(line) < min);
+            let end = 1 + internal.partition_point(|&line| f64::from(line) <= max);
+            starts.push((first, column));
+            ends.push((end, column));
+        }
+        starts.sort_unstable();
+        ends.sort_unstable();
+        Self {
+            cut,
+            starts,
+            ends,
+            start_index: 0,
+            end_index: 0,
+            active: BTreeSet::new(),
+            row: 0,
+            next_column: 0,
+            row_ready: false,
+        }
+    }
+}
+
+impl Iterator for PieceCandidates<'_> {
+    type Item = ([Range<u32>; 2], [usize; 2]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.row < self.cut.v_lines.len() - 1 {
+            if !self.row_ready {
+                while let Some(&(row, column)) = self.ends.get(self.end_index) {
+                    if row > self.row {
+                        break;
+                    }
+                    self.active.remove(&column);
+                    self.end_index += 1;
+                }
+                while let Some(&(row, column)) = self.starts.get(self.start_index) {
+                    if row > self.row {
+                        break;
+                    }
+                    self.active.insert(column);
+                    self.start_index += 1;
+                }
+                self.row_ready = true;
+            }
+            if let Some(&column) = self.active.range(self.next_column..).next() {
+                self.next_column = column + 1;
+                return Some((
+                    [
+                        axis_window(&self.cut.u_lines, column),
+                        axis_window(&self.cut.v_lines, self.row),
+                    ],
+                    [column, self.row],
+                ));
+            }
+            self.row += 1;
+            self.next_column = 0;
+            self.row_ready = false;
+        }
+        None
+    }
+}
+
+/// Outer chart edges do not clip the polygon.
+fn piece_bounds(lines: &[u32], piece: usize) -> (Option<f64>, Option<f64>) {
+    let (lo, hi) = (lines[piece], lines[piece + 1]);
+    let last = *lines.last().expect("two lines");
+    (
+        (lo > 0).then_some(f64::from(lo)),
+        (hi < last).then_some(f64::from(hi)),
+    )
+}
+
 /// `polygon` clipped to piece `piece`'s cut-line segments (outer chart
 /// edges never clip). Each axis clips its slab in one pass, so every
 /// crossing comes from an edge of the polygon that axis receives: the face
@@ -323,16 +440,13 @@ fn clip_to_piece(
     piece: [usize; 2],
 ) -> Vec<Vertex> {
     let mut clipped = polygon.to_vec();
-    for axis in 0..2 {
+    for (axis, piece_value) in piece.iter().copied().enumerate() {
         let lines = if axis == 0 {
             &cut.u_lines
         } else {
             &cut.v_lines
         };
-        let (lo, hi) = (lines[piece[axis]], lines[piece[axis] + 1]);
-        let last = *lines.last().expect("two lines");
-        let lo = (lo > 0).then_some(f64::from(lo));
-        let hi = (hi < last).then_some(f64::from(hi));
+        let (lo, hi) = piece_bounds(lines, piece_value);
         clipped = clip_slab(&clipped, parent, axis, lo, hi);
         if clipped.len() < 3 {
             return Vec::new();

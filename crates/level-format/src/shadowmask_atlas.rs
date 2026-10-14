@@ -427,6 +427,16 @@ impl ShadowmaskAtlasSection {
         out
     }
 
+    /// Stream the index followed by each block's two encoded group planes.
+    pub fn write_to(&self, writer: &mut (impl std::io::Write + ?Sized)) -> std::io::Result<()> {
+        writer.write_all(&self.index_bytes())?;
+        for [a, b] in &self.blocks {
+            writer.write_all(a)?;
+            writer.write_all(b)?;
+        }
+        Ok(())
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = self.index_bytes();
         out.reserve_exact(self.byte_len() - out.len());

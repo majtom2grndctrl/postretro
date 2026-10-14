@@ -311,27 +311,42 @@ fn chart_past_the_pool_layer_edge_is_cut_at_its_parents_density() {
     );
 }
 
-/// Without static light no block is emitted, so a layout the runtime could
-/// not hold is no build error: preparation returns the charts with no
+/// Without static light no block is emitted: preparation returns charts with no
 /// placements, keeps every vertex on block 0, and keeps the direction scale
 /// the placeholder id-22 header carries.
 #[test]
-fn no_static_light_layout_past_the_runtime_limits_returns_no_placements() {
+fn no_static_light_layout_returns_no_placements_even_when_oversized() {
     let lights: Vec<MapLight> = Vec::new();
     let static_lights = StaticBakedLights::from_lights(&lights);
-    let mut geo = unit_quad_geometry();
-    let prepared = prepare_atlas(&mut geo, &static_lights, 1.0 / 4096.0, &[])
-        .expect("no static light tolerates an oversize layout");
-    assert_eq!(prepared.charts.len(), 1);
-    assert!(prepared.placements.is_empty());
-    assert!(prepared.layout.blocks.is_empty());
-    assert_eq!(prepared.layout.direction_texel_scale, DIRECTION_TEXEL_SCALE);
-    assert!(
-        geo.geometry
-            .vertices
-            .iter()
-            .all(|vertex| vertex.lightmap_block == 0)
-    );
+    let regions = [scale_region([-1.0; 3], [2.0; 3], 1.0e9)];
+    // Regression: unused density sizing rejected a finite, valid scale whose
+    // chart dimensions exceed u32, despite having no static consumer.
+    assert!(matches!(
+        plan_charts(&unit_quad_geometry(), 0.04, &regions),
+        Err(LightmapBakeError::ChartDimensionOverflow { .. })
+    ));
+    for (density, regions) in [(1.0 / 4096.0, &[][..]), (0.04, &regions[..])] {
+        let mut geo = unit_quad_geometry();
+        geo.geometry.faces[0].leaf_index = 73;
+        let before_vertices = geo.geometry.vertices.clone();
+        let before_indices = geo.geometry.indices.clone();
+        let prepared = prepare_atlas(&mut geo, &static_lights, density, regions)
+            .expect("no static light tolerates an unused oversize layout");
+        assert_eq!(prepared.charts.len(), 1);
+        assert_eq!(prepared.charts[0].leaf_index, 73);
+        assert!(prepared.placements.is_empty());
+        assert!(prepared.cut_parents.is_empty());
+        assert!(prepared.layout.blocks.is_empty());
+        assert_eq!(prepared.layout.direction_texel_scale, DIRECTION_TEXEL_SCALE);
+        assert_eq!(geo.geometry.vertices, before_vertices);
+        assert_eq!(geo.geometry.indices, before_indices);
+        assert!(
+            geo.geometry
+                .vertices
+                .iter()
+                .all(|vertex| vertex.lightmap_block == 0)
+        );
+    }
 }
 
 #[test]
@@ -790,22 +805,14 @@ fn pack_layers_is_deterministic() {
     }
 }
 
-/// Pins the production ceiling: the layer-limit parameter must not have
-/// loosened `pack_layers` itself.
+// Bake layers are compiler planes, independent of the runtime array-layer floor.
 #[test]
-fn pack_layers_overflows_past_max_atlas_layers() {
+fn pack_layers_accepts_more_than_256_bake_layers() {
     let dim = MIN_ATLAS_DIMENSION;
-    let leaves = |count: u32| -> Vec<Chart> {
-        (0..count)
-            .map(|leaf| synthetic_chart_leaf(dim, dim, leaf))
-            .collect()
-    };
-    let full = pack_layers(&leaves(MAX_ATLAS_LAYERS), dim).unwrap();
-    assert_eq!(full.layer_count, MAX_ATLAS_LAYERS);
-    match pack_layers(&leaves(MAX_ATLAS_LAYERS + 1), dim) {
-        Err(LightmapBakeError::LayerOverflow { max, .. }) => assert_eq!(max, MAX_ATLAS_LAYERS),
-        other => panic!("expected LayerOverflow, got {other:?}"),
-    }
+    let charts: Vec<_> = (0..257)
+        .map(|leaf| synthetic_chart_leaf(dim, dim, leaf))
+        .collect();
+    assert_eq!(pack_layers(&charts, dim).unwrap().layer_count, 257);
 }
 
 fn synthetic_chart(w: u32, h: u32) -> Chart {

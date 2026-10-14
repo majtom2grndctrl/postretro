@@ -27,52 +27,52 @@ Developer experiment, observed defect. At 0.025 m/texel, `stress-warren-hallway-
 ## Acceptance
 ### Automated
 **Budget, not count**
-- [ ] A fixture whose blocks pack into more than 256 bake layers compiles (a small test pool edge keeps it cheap). Its planned chart area alone exceeds 256 pool-edge layers, so both the pack and the pre-cut area check would have failed before the change.
-- [ ] A budget exactly at the predicted working set compiles. One byte below refuses before the lightmap stage bakes: before the shadowmask memo probe, the cut-face estimate and any lightmap partition (pin P1). The error names the predicted bytes, the budget, the fully packed layer count and the flag. End to end, the fixture's SH-delta projection sits below its lightmap prediction, so the shared flag reaches the lightmap gate (pin P12).
-- [ ] The gate refuses and permits at the same budget with `--no-cache` and with a warm cache whose lightmap section and shadowmask memos both hit. A warm refusal reads no lightmap or shadowmask cache entry (pin P1).
-- [ ] The SH-delta gate still refuses and permits at its own projection when driven by the shared flag. Permits is read from its admitted line, even where the lightmap gate later refuses (pin P12). The old flag is rejected as unknown. No `sh-delta-working-set-max-size` remains in `crates/` or `context/lib/`, ignored tests included. Grep gate.
-- [ ] Before any face is cut, an area whose minimum cost exceeds the budget refuses by name; one whose minimum cost equals the budget passes to cutting (pin P11).
-- [ ] A face whose cut grid windows mostly miss its polygon is counted by its polygon area: a layout the gate admits is not refused before cutting, though its window area alone would exceed the budget (pin P14).
-- [ ] The pathological scale regions of pin P11 fail by name before face cutting at the default budget, each in under 5 s.
-- [ ] On the over-256 fixture and the synthetic cut fixture, with compressed and uncompressed irradiance, the pre-cut minimum never exceeds the predicted working set (pin P14).
-- [ ] A fused stage with no static lights, or with no placed chart, predicts zero bytes (pin P8).
-- [ ] A map without static lights plans no placements and emits no animated chunks, whatever its chart area. It compiles at any budget its SH-delta projection admits, the lightmap gate never refusing it (pin P8).
-- [ ] A map without static lights but with animated lights compiles without a warning that names its cell blocks or the runtime limits as the reason it has no animated chunks.
+- [x] A fixture whose blocks pack into more than 256 bake layers compiles (a small test pool edge keeps it cheap). Its planned chart area alone exceeds 256 pool-edge layers, so both the pack and the pre-cut area check would have failed before the change.
+- [x] A budget exactly at the predicted working set compiles. One byte below refuses before the lightmap stage bakes: before the shadowmask memo probe, the cut-face estimate and any lightmap partition (pin P1). The error names the predicted bytes, the budget, the fully packed layer count and the flag. End to end, the fixture's SH-delta projection sits below its lightmap prediction, so the shared flag reaches the lightmap gate (pin P12).
+- [x] The gate refuses and permits at the same budget with `--no-cache` and with a warm cache whose lightmap section and shadowmask memos both hit. A warm refusal reads no lightmap or shadowmask cache entry (pin P1).
+- [x] The SH-delta gate still refuses and permits at its own projection when driven by the shared flag. Permits is read from its admitted line, even where the lightmap gate later refuses (pin P12). The old flag is rejected as unknown. No `sh-delta-working-set-max-size` remains in `crates/` or `context/lib/`, ignored tests included. Grep gate.
+- [x] Before any face is cut, an area whose minimum cost exceeds the budget refuses by name; one whose minimum cost equals the budget passes to cutting (pin P11).
+- [x] A face whose cut grid windows mostly miss its polygon is counted by its polygon area: a layout the gate admits is not refused before cutting, though its window area alone would exceed the budget (pin P14).
+- [x] The pathological scale regions of pin P11 fail by name before face cutting at the default budget, each in under 5 s.
+- [x] On the over-256 fixture and the synthetic cut fixture, with compressed and uncompressed irradiance, the pre-cut minimum never exceeds the predicted working set (pin P14).
+- [x] A fused stage with no static lights, or with no placed chart, predicts zero bytes (pin P8).
+- [x] A map without static lights plans no placements and emits no animated chunks, whatever its chart area. It compiles at any budget its SH-delta projection admits, the lightmap gate never refusing it (pin P8).
+- [x] A map without static lights but with animated lights compiles without a warning that names its cell blocks or the runtime limits as the reason it has no animated chunks.
 
 **Runtime floor**
-- [ ] The pool-layer check, given block extents and alignment that place into 257 pool layers at the runtime pool edge, refuses by name for a level that cannot stream and warns by name for one that can, each giving 257 and the floor. At exactly 256 neither fires, on a layout whose bake-layer count exceeds 256.
-- [ ] One cheap compile shows the check runs on the packed layout and reads whether the compiler emitted id 51: under a test floor, a fixture without usable portals refuses and the same fixture with them warns.
-- [ ] On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`.
-- [ ] A warm rebuild that hits the lightmap section memo logs the same pool-layer warning, or refuses with the same error, as the cold build (pin P13).
-- [ ] A level with no static lights whose charts, packed, would need more than 256 pool layers compiles with neither the warning nor the refusal, whether or not it can stream: its id 22 has no blocks.
-- [ ] The residency dry run still labels layouts against a 256-layer runtime floor. The check and the dry-run label read one named constant, and no compiler pack or area check reads it. Grep gate.
-- [ ] `postretro-level-compiler` has no normal dependency on `postretro-render-cpu`; `cargo tree -p postretro-level-compiler -e normal` lists neither it nor `postretro-entities`. Grep gate.
-- [ ] `render-cpu`'s all-resident placement entry point keeps its name and signature, and the existing `render-cpu` lightmap-pool and renderer static-pool planning tests pass unchanged.
+- [x] The pool-layer check, given block extents and alignment that place into 257 pool layers at the runtime pool edge, refuses by name for a level that cannot stream and warns by name for one that can, each giving 257 and the floor. At exactly 256 neither fires, on a layout whose bake-layer count exceeds 256.
+- [x] One cheap compile shows the check runs on the packed layout and reads whether the compiler emitted id 51: under a test floor, a fixture without usable portals refuses and the same fixture with them warns.
+- [x] At direction texel scale 8, a synthetic unaligned placement fixture spanning several pool layers produces the same shared-placement result as its extents rounded up to alignment 8; assert an exact layer count that would differ if alignment were ignored. Separately, on a valid scale-8 id-22 section produced from the same finalized compiler layout, the production compiler pool-layer count equals the renderer's all-resident placement count from that section's decoded index, spanning several pool layers. Both checks are non-ignored.
+- [x] A warm rebuild that hits the lightmap section memo logs the same pool-layer warning, or refuses with the same error, as the cold build (pin P13).
+- [x] A level with no static lights whose charts, packed, would need more than 256 pool layers compiles with neither the warning nor the refusal, whether or not it can stream: its id 22 has no blocks.
+- [x] The residency dry run still labels layouts against a 256-layer runtime floor. The check and the dry-run label read one named constant, and no compiler pack or area check reads it. Grep gate.
+- [x] `postretro-level-compiler` has no normal dependency on `postretro-render-cpu`; `cargo tree -p postretro-level-compiler -e normal` lists neither it nor `postretro-entities`. Grep gate.
+- [x] `render-cpu`'s all-resident placement entry point keeps its name and signature, and the existing `render-cpu` lightmap-pool and renderer static-pool planning tests pass unchanged.
 
 **Per-layer shadowmask fill**
-- [ ] Before the first slice lands, id-22 and id-42 digests are recorded from a cold bake of every `GATE_FIXTURES` map and of the existing synthetic four-layer cut fixture. After the change they match, cold. The cross-layer cut case is that synthetic fixture; nothing joins `GATE_FIXTURES`.
-- [ ] One `#[ignore]` loop over `GATE_FIXTURES` bakes each map once and checks id 22, id 42 and the id-22 cache entry together, a warm rebuild matching cold. No row adds a second `GATE_FIXTURES` loop.
-- [ ] On a fixture of at least three bake layers and no cut face, live raw-fill bytes peak at exactly one bake layer's raw bytes, on the compose pass and on the lightmap-hit, shadowmask-miss pass (pins P2, P7). The pre-change fill peaks at every layer and fails it. The peak is measured across every worker thread the consumer runs on, scoped to one bake.
-- [ ] On a cut fixture, live raw-fill bytes peak at no more than one bake layer plus the raw bytes of the cell blocks holding sub-faces of cuts still open (pins P2, P3, P4, P7). A cut whose sub-faces share one layer adds nothing.
-- [ ] On a one-layer map the first layer is the last: its fill closes once, and its bytes match pre-change.
-- [ ] Owner assignment and drop reports for a cross-layer cut face match pre-change output.
-- [ ] Pins P2–P7 each hold on a synthetic fixture: id 42, owners and drop report match the pre-change digests, and the live raw-fill bound holds.
-- [ ] Live raw-fill bytes sampled at the id-22 cache write are at most one bake layer plus the carry of cuts ending on the last layer (pin P9).
-- [ ] Two prepared atlases that differ only in bake-layer count, with no cut face, predict the same shadowmask term. With cuts, the term grows by the largest set of cell blocks held open by cuts at once. It also charges the per-layer encode scratch, which now runs during the walk.
+- [x] Before the first slice lands, id-22 and id-42 digests are recorded from a cold bake of every `GATE_FIXTURES` map and of the existing synthetic four-layer cut fixture. After the change they match, cold. The cross-layer cut case is that synthetic fixture; nothing joins `GATE_FIXTURES`.
+- [x] One `#[ignore]` loop over `GATE_FIXTURES` bakes each map once and checks id 22, id 42 and the id-22 cache entry together, a warm rebuild matching cold. No row adds a second `GATE_FIXTURES` loop.
+- [x] On a fixture of at least three bake layers and no cut face, live raw-fill bytes peak at exactly one bake layer's raw bytes, on the compose pass and on the lightmap-hit, shadowmask-miss pass (pins P2, P7). The pre-change fill peaks at every layer and fails it. The peak is measured across every worker thread the consumer runs on, scoped to one bake.
+- [x] On a cut fixture, live raw-fill bytes peak at no more than one bake layer plus the raw bytes of the cell blocks holding sub-faces of cuts still open (pins P2, P3, P4, P7). A cut whose sub-faces share one layer adds nothing.
+- [x] On a one-layer map the first layer is the last: its fill closes once, and its bytes match pre-change.
+- [x] Owner assignment and drop reports for a cross-layer cut face match pre-change output.
+- [x] Pins P2–P7 each hold on a synthetic fixture: id 42, owners and drop report match the pre-change digests, and the live raw-fill bound holds.
+- [x] Live raw-fill bytes sampled at the id-22 cache write are at most one bake layer plus the carry of cuts ending on the last layer (pin P9).
+- [x] Two prepared atlases that differ only in bake-layer count, with no cut face, predict the same shadowmask term. With cuts, the term grows by the largest set of cell blocks held open by cuts at once. It also charges the per-layer encode scratch, which now runs during the walk.
 
 **One section copy**
-- [ ] A build on an empty cache writes the id-22 entry through the streamed path once. No single write into the entry is larger than the larger of the index bytes and one block's irradiance plus direction bytes, so a whole-section buffer fails. A `--no-cache` build writes no entry.
-- [ ] The streamed id-22 entry equals the contiguous entry, header included, on a synthetic multi-block section, outside `#[ignore]`.
-- [ ] A cold build writes ids 22 and 42 into the PRL file without a contiguous serialized copy of either section; the file's bytes match the pre-change digests.
-- [ ] The PRL read-back validates ids 22 and 42 without reading either section into one whole buffer.
-- [ ] The predicted working set counts each encoded section once.
+- [x] A build on an empty cache writes the id-22 entry through the streamed path once. No single write into the entry is larger than the larger of the index bytes and one block's irradiance plus direction bytes, so a whole-section buffer fails. A `--no-cache` build writes no entry.
+- [x] The streamed id-22 entry equals the contiguous entry, header included, on a synthetic multi-block section, outside `#[ignore]`.
+- [x] A cold build writes ids 22 and 42 into the PRL file without a contiguous serialized copy of either section; the file's bytes match the pre-change digests.
+- [x] The PRL read-back validates ids 22 and 42 without reading either section into one whole buffer.
+- [x] The predicted working set counts each encoded section once.
 
 ### Manual
 For both peak rows, the lightmap-stage peak is the process RSS high-water mark sampled across the lightmap stage only, not the process peak, which the SH stages set. State machine class, worker count and cache mode. The baseline is the same measurement at the brief's base commit, same machine and flags. Delete outputs and the cache directory after.
-- [ ] Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS.
-- [ ] Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline.
-- [ ] The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error.
-- [ ] A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor.
+- [x] Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS.
+- [x] Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline.
+- [x] The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error.
+- [x] A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor.
 
 ## Path
 - First slice: per-layer fill with the cut-face carry, the riskiest step for byte identity. The walk is already layer-major: uncut faces finish when their layer's last light is consumed; a cut face carries its sub-faces' cross-layer state until the last layer it touches closes (`research.md` §Shadowmask fill lifetime). Seams: `shadowmask_bake.rs::allocate_shadowmask_raw_fill`, `shadowmask_bake/fill.rs::OwnershipFill::finish`, `LayerFaceMap`, `encode.rs::encode_blocks_bc5`. `RAW_FILL_LIVE_BYTES` is thread-local and holds a current value; the peak rows need a cross-worker peak counter.

@@ -1,0 +1,200 @@
+# lighting-scale--lightmap-layer-budget-gate — plan of record
+
+mode: compact
+status: done
+read at: e00493c95
+execution: complete; all 37 acceptance rows and post-merge preflight pass; owner authorized push and PR
+
+## Corrections
+- Relevant compiler, format, render-cpu placement and loader portal symbols are unchanged since 45c4fe5. Other renderer changes concern SH streaming and do not alter the cited lightmap boundaries.
+- Review repair: atlas-only prediction omitted layer/light keys and work lists plus ownership/cache metadata. Derive work pairs and layer hashes lazily; price source-count metadata before admission. Isolate cache live-entry maps per stage so lightmap inserts cannot rehash prior SH records. Journal contents, cache keys, pruning and reports retain their semantics. This adjusts the Path to preserve the working-set Decision.
+- Sparse-cut repair: polygon lower bounds can admit very large sparse grids. Candidate enumeration now uses each column's exact rounded first-axis polygon and an ordered row sweep, preserving final clipping and emission order without enumerating empty Cartesian windows. No additional admission gate.
+- No-static repair: preserve face/leaf placeholders while bypassing unused density sizing; option parsing rejects unknown option-prefixed tokens before positional input.
+- The brief has 33 automated rows and four manual rows; all remain required. Manual proof blocks landing because the brief does not permit landing first.
+
+## Delegated answers
+- Placement worker found AC14 cannot be proved literally: `LightmapHeader::block_alignment` is `lcm(4, direction_texel_scale)` and `LightmapBlockIndex::from_prefix` calls `validate_record`, which rejects nonmultiple extents. At scale 8 no decoded id-22 record can have the requested unaligned block extents. Serialization worker independently confirmed this. No Decision premise was found false.
+
+## AC-to-proof
+
+| AC | Acceptance | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | A fixture whose blocks pack into more than 256 bake layers compiles (a small test pool edge keeps it cheap). Its planned chart area alone exceeds 256 pool-edge layers, so both the pack and the pre-cut area check would have failed before the change. | budget_gate_compiles_over_256_layers_and_pre_cut_area_above_the_retired_cap | focused proof passed | pass |
+| 2 | A budget exactly at the predicted working set compiles. One byte below refuses before the lightmap stage bakes: before the shadowmask memo probe, the cut-face estimate and any lightmap partition (pin P1). The error names the predicted bytes, the budget, the fully packed layer count and the flag. End to end, the fixture's SH-delta projection sits below its lightmap prediction, so the shared flag reaches the lightmap gate (pin P12). | shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary | focused proof passed | pass |
+| 3 | The gate refuses and permits at the same budget with `--no-cache` and with a warm cache whose lightmap section and shadowmask memos both hit. A warm refusal reads no lightmap or shadowmask cache entry (pin P1). | budget_gate_exact_boundary_compiles_but_one_below_reads_no_lighting_memo | focused proof passed | pass |
+| 4 | The SH-delta gate still refuses and permits at its own projection when driven by the shared flag. Permits is read from its admitted line, even where the lightmap gate later refuses (pin P12). The old flag is rejected as unknown. No `sh-delta-working-set-max-size` remains in `crates/` or `context/lib/`, ignored tests included. Grep gate. | working_set_cli_tests (retired flag before/after input and alone) + end-to-end SH gate matrix + retired-name grep | focused proof passed | pass |
+| 5 | Before any face is cut, an area whose minimum cost exceeds the budget refuses by name; one whose minimum cost equals the budget passes to cutting (pin P11). | pre_cut_budget_exact_minimum_passes_and_one_below_refuses_before_cutting | focused proof passed | pass |
+| 6 | A face whose cut grid windows mostly miss its polygon is counted by its polygon area: a layout the gate admits is not refused before cutting, though its window area alone would exceed the budget (pin P14). | pre_cut_sparse_polygon_is_admitted_when_empty_grid_windows_exceed_the_budget + sparse_hundred_million_texel_chart_visits_only_linear_cut_candidates + boundary/large-origin full-grid comparison | focused proof passed | pass |
+| 7 | The pathological scale regions of pin P11 fail by name before face cutting at the default budget, each in under 5 s. | scale_region_past_the_working_set_budget_fails_by_name_before_cutting | focused proof passed | pass |
+| 8 | On the over-256 fixture and the synthetic cut fixture, with compressed and uncompressed irradiance, the pre-cut minimum never exceeds the predicted working set (pin P14). | over-256/cut/sparse lower bounds <= packed prediction, both formats | focused proof passed | pass |
+| 9 | A fused stage with no static lights, or with no placed chart, predicts zero bytes (pin P8). | budget_gate_no_static_or_no_placed_chart_costs_zero | focused proof passed | pass |
+| 10 | A map without static lights plans no placements and emits no animated chunks, whatever its chart area. It compiles at any budget its SH-delta projection admits, the lightmap gate never refusing it (pin P8). | animated_only_map_compiles_at_sh_budget_with_empty_static_lightmap + no-static 257-chart fixture + finite scale1e9 overflow witness | focused proof passed | pass |
+| 11 | A map without static lights but with animated lights compiles without a warning that names its cell blocks or the runtime limits as the reason it has no animated chunks. | animated-only CLI warning assertions | focused proof passed | pass |
+| 12 | The pool-layer check, given block extents and alignment that place into 257 pool layers at the runtime pool edge, refuses by name for a level that cannot stream and warns by name for one that can, each giving 257 and the floor. At exactly 256 neither fires, on a layout whose bake-layer count exceeds 256. | pool_gate_refuses_unstreamable_257_and_warns_streamable_257_by_name + exact256 quiet | focused proof passed | pass |
+| 13 | One cheap compile shows the check runs on the packed layout and reads whether the compiler emitted id 51: under a test floor, a fixture without usable portals refuses and the same fixture with them warns. | packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning | focused proof passed | pass |
+| 14 | At direction texel scale 8, a synthetic unaligned placement fixture spanning several pool layers produces the same shared-placement result as its extents rounded up to alignment 8; assert an exact layer count that would differ if alignment were ignored. Separately, on a valid scale-8 id-22 section produced from the same finalized compiler layout, the production compiler pool-layer count equals the renderer's all-resident placement count from that section's decoded index, spanning several pool layers. Both checks are non-ignored. | scale8_unaligned_extents_match_rounded_placements_and_require_four_layers + production decode parity | focused proof passed | pass |
+| 15 | A warm rebuild that hits the lightmap section memo logs the same pool-layer warning, or refuses with the same error, as the cold build (pin P13). | packed_compile_reads_actual_id51_and_warm_memo_keeps_the_cold_pool_warning (warm hits and refusal precedence) | focused proof passed | pass |
+| 16 | A level with no static lights whose charts, packed, would need more than 256 pool layers compiles with neither the warning nor the refusal, whether or not it can stream: its id 22 has no blocks. | no_static_compile_skips_257_layers_of_charts_with_and_without_actual_id51 | focused proof passed | pass |
+| 17 | The residency dry run still labels layouts against a 256-layer runtime floor. The check and the dry-run label read one named constant, and no compiler pack or area check reads it. Grep gate. | source grep: shared runtime constant only in gate/dry-run/renderer; no pack/area reads | focused proof passed | pass |
+| 18 | `postretro-level-compiler` has no normal dependency on `postretro-render-cpu`; `cargo tree -p postretro-level-compiler -e normal` lists neither it nor `postretro-entities`. Grep gate. | cargo tree -p postretro-level-compiler -e normal excludes render-cpu/entities | focused proof passed | pass |
+| 19 | `render-cpu`'s all-resident placement entry point keeps its name and signature, and the existing `render-cpu` lightmap-pool and renderer static-pool planning tests pass unchanged. | unchanged render-cpu lightmap_pool38 + renderer lightmap17 + device floor1 tests | focused proof passed | pass |
+| 20 | Before the first slice lands, id-22 and id-42 digests are recorded from a cold bake of every `GATE_FIXTURES` map and of the existing synthetic four-layer cut fixture. After the change they match, cold. The cross-layer cut case is that synthetic fixture; nothing joins `GATE_FIXTURES`. | baseline-digests.md + explicit ignored layer_budget_sections_match_pre_change_cold_and_warm | focused proof passed | pass |
+| 21 | One `#[ignore]` loop over `GATE_FIXTURES` bakes each map once and checks id 22, id 42 and the id-22 cache entry together, a warm rebuild matching cold. No row adds a second `GATE_FIXTURES` loop. | single ignored GATE_FIXTURES loop verifies both sections + id22 memo + warm hits | focused proof passed | pass |
+| 22 | On a fixture of at least three bake layers and no cut face, live raw-fill bytes peak at exactly one bake layer's raw bytes, on the compose pass and on the lightmap-hit, shadowmask-miss pass (pins P2, P7). The pre-change fill peaks at every layer and fails it. The peak is measured across every worker thread the consumer runs on, scoped to one bake. | raw_fill_is_one_layer_on_compose_and_lightmap_hit_shadowmask_miss + forced worker migration | focused proof passed | pass |
+| 23 | On a cut fixture, live raw-fill bytes peak at no more than one bake layer plus the raw bytes of the cell blocks holding sub-faces of cuts still open (pins P2, P3, P4, P7). A cut whose sub-faces share one layer adds nothing. | raw-fill compose/reuse + same-layer/cross-layer/shared-block carry tests | focused proof passed | pass |
+| 24 | On a one-layer map the first layer is the last: its fill closes once, and its bytes match pre-change. | layer_budget_synthetic_pins_match_pre_change: one-layer golden and close count1 | focused proof passed | pass |
+| 25 | Owner assignment and drop reports for a cross-layer cut face match pre-change output. | frozen four-layer cut owner table + exact drop-report bytes | focused proof passed | pass |
+| 26 | Pins P2–P7 each hold on a synthetic fixture: id 42, owners and drop report match the pre-change digests, and the live raw-fill bound holds. | synthetic P2-P7 golden/owner/report/peak matrix and reuse test | focused proof passed | pass |
+| 27 | Live raw-fill bytes sampled at the id-22 cache write are at most one bake layer plus the carry of cuts ending on the last layer (pin P9). | raw_fill_is_one_layer_on_compose_and_lightmap_hit_shadowmask_miss: id22 cache-write sample | focused proof passed | pass |
+| 28 | Two prepared atlases that differ only in bake-layer count, with no cut face, predict the same shadowmask term. With cuts, the term grows by the largest set of cell blocks held open by cuts at once. It also charges the per-layer encode scratch, which now runs during the walk. | budget_gate_shadowmask_term_counts_one_layer_plus_cut_carry_and_encode_scratch + shared-block carry intervals | focused proof passed | pass |
+| 29 | A build on an empty cache writes the id-22 entry through the streamed path once. No single write into the entry is larger than the larger of the index bytes and one block's irradiance plus direction bytes, so a whole-section buffer fails. A `--no-cache` build writes no entry. | cold_lightmap_cache_streams_once_warm_and_no_cache_write_nothing | focused proof passed | pass |
+| 30 | The streamed id-22 entry equals the contiguous entry, header included, on a synthetic multi-block section, outside `#[ignore]`. | streamed_lightmap_cache_matches_contiguous_entry_including_header | focused proof passed | pass |
+| 31 | A cold build writes ids 22 and 42 into the PRL file without a contiguous serialized copy of either section; the file's bytes match the pre-change digests. | streamed_lightmap_family_prl_matches_contiguous_container_bytes + frozen section digests | focused proof passed | pass |
+| 32 | The PRL read-back validates ids 22 and 42 without reading either section into one whole buffer. | lightmap_family_readback_scans_bodies_with_fixed_scratch_and_validates_ranges | focused proof passed | pass |
+| 33 | The predicted working set counts each encoded section once. | predicted_peak_charges_one_layer_fill_scratch_and_each_section_once | focused proof passed | pass |
+| 34 | Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS. | Release bake and 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — exit 0; 310 bake / 230 runtime layers; predicted 3,910,553,420 bytes; stage peak 5,668,252 KiB; 1,995.885 s total; SH upstream cost recorded |
+| 35 | Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline. | Same-host release/no-cache 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — current 3,883,364 KiB ≤ baseline 5,501,040 KiB (29.41% lower); zero sampling errors |
+| 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner normal-streaming observation and log search | owner proof passed | owner saw no missing lightmaps; reported the only rejection entry in checked logs was the expected forced-all-resident fixture rejection |
+| 37 | A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor. | Owner forced-all-resident observation and exact renderer log | owner proof passed | owner saw full-bright test-grid fallback; supplied renderer rejection naming 340 array layers for 340 blocks, device limit 256, and neutral-placeholder fallback, matching compiler warning |
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | Capture pre-change cold id-22/id-42 digests for every GATE_FIXTURES map and four-layer cut fixture, then implement per-layer shadowmask close and cut carry with cross-worker scoped memory proof | shadowmask worker + integrating executor | — | done — focused proof passed |
+| 2 | Move all-resident placement below compiler and render-cpu without behavior changes; share named runtime floor and verify placement consumers | placement worker + integrating executor | baseline capture | done — focused proof passed |
+| 3 | Stream id-22 cache write, ids 22/42 PRL writes and read-back; verify exact bytes and bounded writes | serialization worker + integrating executor | baseline capture | done — focused proof passed |
+| 4 | Replace cap and pre-cut area refusal with shared working-set budget; gate cold/warm before memo and bake, price per-layer/carry and one section copy, skip unconsumed no-static layouts; enforce runtime floor from emitted id 51 | integrating executor | 1, 2, 3 | done — focused proof passed |
+| 5 | Focused readiness, review-panel/fix loop, final preflight once, and complete AC evidence table | integrating executor | 4 | done — all automated proofs, review repairs and full preflight pass |
+| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | done — compiler measurements and owner visual/log proofs passed |
+
+## Manual runbook
+- Concrete commands and measurement interval: [manual-runbook.md](./manual-runbook.md).
+- Pin baseline 45c4fe5 and implementation, machine class, worker count, release profile, density, cache mode and exact command. Sample process RSS across the lightmap stage only. Earlier SH stages remain the upstream wall-time and RSS limit; never substitute whole-process peak.
+- Hallway density 0.025, --no-cache: record bake layers, runtime pool layers, predicted stage bytes, sampled stage RSS peak and wall time; compile must succeed.
+- Hallway density 0.04: compare stage peak to the same baseline machine/flags; must not increase.
+- Load 0.025 PRL with streaming: lightmaps render without placeholder error.
+- Load a compiler-warning layout with POSTRETRO_LIGHTMAP_STREAMING=all-resident: placeholder renders and renderer names the same pool-layer count.
+- Retain owner-requested dev-folder outputs for inspection. Remove session measurement traces after recording durable evidence. Outstanding manual rows never become inferred passes.
+
+## Resolved acceptance clarification
+
+Original AC14 read:
+> On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`.
+
+Evidence at e00493c95 (unchanged since the brief reference):
+- `crates/level-format/src/lightmap.rs:105`: `block_alignment` returns `lcm(4, self.direction_texel_scale.max(1))`.
+- `crates/level-format/src/lightmap.rs:251` and `:273`: the prefix decoder derives that alignment and validates every record against it.
+- `crates/level-format/src/lightmap.rs:315`: `validate_record` rejects width or height not divisible by alignment, naming the extent and required multiple.
+- `crates/level-format/src/lightmap.rs:849`: existing `rejects_misaligned_extent` regression enforces this contract.
+
+A scale-8 id-22 section with nonmultiples of 8 cannot decode. Silently rounding the serialized section would test different extents from the literal row. Changing the format or loader would violate the brief's no-format/loader-change Decision.
+
+Initial replacement proposal (superseded by the consensus below):
+> On synthetic placement inputs with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the shared placement produces the same pool-layer count as those extents rounded up to alignment 8. Separately, on a valid scale-8 id-22 section spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the index decoded from that same section. Both checks are non-ignored.
+
+Resolution: the owner explicitly requested an Astra assessment, internal discussion to consensus, and then continuation. Astra independently verified the decoder conflict and agreed that the following clarification preserves the intended rounding and producer/consumer proof without changing any Decision:
+> At direction texel scale 8, a synthetic unaligned placement fixture spanning several pool layers produces the same shared-placement result as its extents rounded up to alignment 8; assert an exact layer count that would differ if alignment were ignored. Separately, on a valid scale-8 id-22 section produced from the same finalized compiler layout, the production compiler pool-layer count equals the renderer's all-resident placement count from that section's decoded index, spanning several pool layers. Both checks are non-ignored.
+
+Consensus adds an adversarial witness: seven full-height blocks of width 681 at edge 2048 (or width 21 at edge 64) need four layers when rounded to alignment 8, versus three without rounding. The decoded parity test must run the production compiler adapter on its finalized layout, construct id 22 through the production section builder from that layout, decode it, and call the unchanged render-cpu placement entry. Calling a shared function twice on decoded extents alone would not prove the seam.
+
+Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `LightmapBlockIndex::from_prefix`, and `place_all_resident`: both halves are achievable. Only AC14 wording changed. All Decisions and other Acceptance rows remain unchanged. Status restored to active; task 1 resumed from pre-change baseline capture. Execution checkpoints below record completion.
+
+## Execution checkpoints
+- Pre-change baseline captured: focused `layer_budget_ -- --ignored --nocapture` ran two tests, both passed. Frozen section/owner/report goldens cover all GATE_FIXTURES, the four-layer cut and six synthetic pin variants.
+- Extracted the unchanged SH-delta projection/gate from oversized pipeline.rs before adding lightmap integration; behavior unchanged, focused retest queued after concurrent edits.
+- Extracted unchanged working-set CLI tests before adding the shared budget field, keeping oversized main.rs from growing.
+- Shared all-resident placement and allocator moved unchanged to level-format; render-cpu reexports preserve the existing surface. Placement/allocator/policy tests remain byte-unchanged; focused verification queued after integration.
+- Review-readiness passed: formatting; compiler and renderer checks; format lightmap/shadowmask tests (31/17); unchanged render-cpu pool tests (38), renderer lightmap tests (17), device floor (1); compiler lightmap-stage (37), shadowmask (32), bake (68), atlas (11), runtime gate (5), runtime-stage sequence (2), working-set/CLI (15), PRL output/readback (22), three end-to-end budget tests and explicit frozen-GATE regression. Filters overlap; counts are not a unique-test total.
+- Retired flag/cap grep clean in crates and context/lib; compiler normal dependency tree excludes render-cpu and entities. Review panel requested four code fixes and one documentation correction before final preflight. The documentation correction is complete; code repairs are in progress.
+
+## Review repair checkpoint
+- Panel findings: eager layer-by-light metadata omitted from admission; sparse faces enumerate empty cut windows; no-static layouts size unused charts; retired option may be parsed as the first positional input. Full findings: [review-report.md](./review-report.md).
+- Astra and integrating executor agreed to derive Cartesian partition pairs lazily, stream cache-key traversals, and conservatively price remaining stage metadata (including existing cache-use bookkeeping) before allocation, identically with and without cache. This preserves empty-pair cache semantics. The estimator Path expands from atlas-only to atlas plus source counts; Decisions and Acceptance stay unchanged.
+- Documentation release lifetime corrected to the last sub-face layer close. Focused retests and final preflight remain pending.
+- Four code repairs complete. Independent metadata repair review is clean; geometry/CLI repair review and dedicated focused test execution are running. Formatting passes.
+- Repair verification passed: compiler check; lightmap stage39 (1 ignored), per-light layer44 (1 ignored), shadowmask32, lightmap bake92 (1 ignored), atlas11, CLI5, cache25 (1 ignored), cache prune14, cross-bake12, end-to-end budget3, explicit ignored frozen cold/warm1. Filters overlap. Both focused static repair reviews found no new consequential defect. Final preflight: formatting passed; lint/test pending. Disk26GiB.
+- Final formatting and strict Clippy passed. Clippy identified two mechanical iteration forms; equivalent iterator/chunk expressions were applied, formatting and lint rerun clean. The full workspace test suite is running for the first final-preflight pass.
+
+## Final verification and landing gates
+- All 37 Acceptance rows pass: 33 automated, two compiler measurements, and two owner visual/log checks. Execution is complete. Awaiting owner instruction to land; no feature push or landing performed.
+- Formatting: pass. Strict Clippy in its dedicated target: pass after two mechanical iteration fixes.
+- Full workspace tests with local sockets enabled and all targets continued: 10,997 passed, two failed, 48 ignored across 66 result groups. Every compiler and renderer target passed on the final run. The GPU staging test failed once under the earlier full run, passed in isolation, and passed in the final full run; no source change was made for it.
+- Initial sandboxed full run could not bind local sockets (65 failures). Reran with socket access; no networking code changed.
+- The full run exposed stale animated-only fixtures and a hypothetical runtime-floor witness relying on the retired no-static placements. Adapted only the fixtures: real static blocks for animated weight tests, independently sized hypothetical charts for the 257-layer witness. Assertions unchanged. Focused animated33/runtime2 passed; final workspace compiler target passed.
+- The last full run found two pre-existing failures in the postretro binary target, both unchanged at claim commit e00493c95: `startup::movement_vault_surface_tests::the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick` expects roll0 but content/dev/scripts/player.ts declares10; `host_activations::conditioned_tests::receive_alternate::receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots` expects (min,full) ticks(12,60) but content/dev/scripts/reference-projectiles.ts declares200/2000ms, yielding(12,120). The vault expectation is resolved by the owner follow-up below. Plasma is also resolved by the later owner follow-up below.
+- Automated preflight, compiler measurements and owner engine checks are clean (later follow-ups). No feature push or landing performed. Wait for the owner to say "land the plane."
+- Disk after final verification:16GiB free; no cleanup threshold crossed.
+
+## Owner follow-up: vault roll expectation
+- Owner directed: "Keep 10° and update the test." Updated the dev vault-camera assertion to roll10.0. Dev content remains at its authored10°.
+- Focused `startup::movement_vault_surface_tests`: three passed, zero failed. This includes the corrected camera assertion and both existing vault surface tests.
+- Full workspace results above remain the last full run; this follow-up uses a focused rerun for the one-line expectation change. The plasma full-charge expectation was subsequently resolved in the owner follow-up below.
+- Rebuild reduced disk below15GiB; cleared only active/workflow Cargo incremental caches. Compiled artifacts and full target directories retained. Free space restored to22GiB.
+
+## Owner follow-up: plasma and verification bakes
+- Owner confirmed plasma content was intentionally updated and requested the tests follow it. Regression now expects min/full ticks12/120, uses half/full-plus-hold timings60/125, checks the late snapshot at122, and follows authored projectile scaling1+2*charge. Production content unchanged.
+- Owner requested verification PRLs directly in content/dev/maps. Retain the newly baked outputs there for visual checks; this supersedes the external-output/cleanup runbook destination for these files.
+- Planned outputs: stress-warren-hallway-inspection.prl at0.025 (replace existing output only on successful atomic publication); stress-warren-hallway-inspection-0040.prl at0.04; stress-warren-hallway-inspection-baseline-0040.prl from45c4fe5 at0.04. Map and generated script are unchanged since45c4fe5.
+- Evidence/monitor working directory: /private/tmp/postretro-lightmap-proof-ztdf8vxi. Both release compiler/script sidecars come from their corresponding source snapshot. Use four workers, default lighting quality/budget and --no-cache for all measurements; sample compiler RSS every100ms only inside the fused lightmap stage.
+- Formatting and strict Clippy passed for plasma repair; full workspace tests running. Bake preparation active; engine visual checks remain owner/manual.
+- Plasma follow-up verified: formatting and strict Clippy pass; full workspace run with local sockets enabled passes10,999 tests, zero failures,48 ignored across66 result groups. Previous vault/plasma preflight blocks resolved. No product changes made for either expectation repair.
+- Measurement host: MacBookPro16,1;32GiB RAM;8 physical/16 logical CPU cores; AMD Radeon Pro5300M Metal (test adapter). Four bake workers. Monitor probe recorded five lightmap samples over0.51s, zero sampling errors, correctly bounded by stage markers.
+- Release tools built: current80ca42a7a (3m40s), baseline45c4fe5 (3m35s). Tool pairs and SHA-256 hashes are captured under the evidence working directory; baseline build target removed immediately after copying comparison binaries. Peak simultaneous baseline build storage was below1GiB; free space stayed above19GiB.
+- Current0.025 bake started, compiler/helper from binaries/current, raw log/status/RSS trace under evidence/current-0025.*; active tool session25674. Output publishes atomically to content/dev/maps/stress-warren-hallway-inspection.prl. Baseline/current0.04 bakes follow sequentially after this run; no concurrent heavy builds during measurements.
+- Current0.025 reached fused stage:310bake layers,2083blocks, predicted3,910,553,420bytes (3729MiB), actual runtime all-resident230layers. Gate admitted at default16GiB. Bake still active; this is not yet a complete AC34 pass.
+- Because230≤256, AC37 needs another warned output. Prepared content/dev/maps/lightmap-runtime-floor-verification.map from unchanged sh-streaming-hinted-door geometry/hints, adding an interior player spawn and one nonanimated static SDF light. Static namespace/real id22 blocks remain; SDF avoids lightmap ray work and id42 but still encodes real layer data. No GATE_FIXTURES change. After active measurement, probe fine density with2GiB to obtain actual pool count before expensive encoding; final output uses default16GiB and --no-cache. This is a runtime rejection fixture, not a replacement hallway workload or memory comparison.
+
+- Current 0.025 completed successfully: AC34 measured pass, 310 bake / 230 runtime layers, predicted 3,910,553,420 bytes, lightmap-stage peak 5,668,252 KiB over 11,044 samples (zero errors), stage 1,104.388 s, total 1,995.885 s. Published PRL 3,347,698,137 bytes. Actual whole-process peak was animated light weight maps, not SH; SH upstream cost is recorded separately in measurement-results.md. Baseline 0.04 is now running sequentially (tool session56724).
+
+- Runtime-floor fixture admission probe: at density0.0006, actual id51 permits streaming; 340 blocks need340 runtime pool layers and compiler warns against the256-layer floor. Intentional2GiB gate then refused predicted5,153,603,458bytes before fused bake. Final bake remains queued with default16GiB. Initial fixture append was silently omitted after a blank line by the map parser; removed that gap, verified player_spawn/light appear in the parse inventory, removed the tiny preliminary placeholder PRL. Final fixture has explicit white color. No production parser change.
+
+- Baseline0.04 completed: exit0;104 bake layers; lightmap-stage peak5,501,040KiB over4,158samples, zero errors; stage415.737s, total1301.234s. Baseline PRL retained in dev maps. Current0.04 started next with matching flags; AC35 remains pending until its result. Disk17GiB.
+
+- Current0.04 completed: exit0;104 bake /101 runtime layers; predicted2,243,828,058bytes; stage peak3,883,364KiB,4,133samples, zero errors; stage413.277s, total1,296.540s. AC35 passes against baseline5,501,040KiB (29.41% lower). Real hallway sections22/42 have identical lengths/versions/SHA-256 across baseline/current outputs. Final runtime-floor bake started next at0.0006 with default16GiB.
+
+- Runtime-floor final bake completed: exit0;340 bake/runtime layers; predicted5,153,603,458bytes; stage peak2,076,020KiB,1,252samples, zero errors; stage125.145s,total127.720s. Published PRL contains340 real id22 blocks and nonempty id51; no id42 (no mask owners). Compiler warning names340 required layers against256 floor. All four requested dev-folder outputs are retained.
+- Verification checkpoint: AC34–35 pass; all33 automated rows pass; AC36–37 remain owner visual proof. Status test-ready. Full plasma/vault preflight remains clean; no product source changed during these bakes. Disk crossed15GB after final output; cleared only active Cargo incremental data, restoring15.176GB free. Existing stage cache untouched.
+
+## Owner follow-up: normal streaming observation
+- Owner ran the first engine check with normal streaming and reported no missing lightmaps. Record the visual portion of AC36 as passed. No placeholder-error log result was supplied; app terminal access returned no attached session, so that part is unconfirmed. AC37 remains outstanding. Status stays test-ready; no landing or feature push.
+
+## Owner follow-up: forced all-resident observation
+- Owner reports effectively full-bright test-grid geometry and a fully dark weapon during the second check. Record AC37 visual portion as passed; exact rejection-log count remains unconfirmed. Asked owner to confirm both outstanding log checks.
+- Dark weapon does not establish absent SH probes. Read actual fixture id34 metadata: grid7×8×14 (784 positions),395 valid probes; id34 is20,764bytes and id35 is14,476bytes. Probe data exists in the PRL; runtime illumination/residency at the weapon is not established by this inspection. No renderer diagnosis or product change inferred.
+
+## Owner follow-up: matching rejection log
+- Owner searched the logs and reported one rejection entry, the expected forced-all-resident fixture rejection. Combined with the earlier normal-streaming observation, AC36 passes.
+- Owner supplied the exact renderer entry at2026-10-14T14:25:30Z: `Lightmap cell blocks rejected: the pool needs 340 array layer(s) for 340 cell block(s), exceeding device maxTextureArrayLayers 256; degrading to the neutral placeholder for this level`. It matches the compiler warning's340-layer count. Combined with the earlier fallback visual observation, AC37 passes.
+- All37 Acceptance rows pass; task6 complete. Execution complete, awaiting owner landing instruction. No new source change requires another preflight; no feature push or landing performed.
+
+## Owner follow-up: post-merge final preflight
+- Owner merged main into the feature branch at09baeb9dd (fluid-surface-motion) and requested final preflight again, with a right-sized assessment/fix agent for failures. Clean working tree at start. Prior37-row acceptance evidence remains recorded; verification of the merged code is running.
+- Formatting passed. Strict default Clippy runs first, then feature/all-target lint and default/full-feature tests sequentially. Development/capture coverage follows the testing guide because merged fluid presentation touches capture code and dependencies of dev-tools. CARGO_INCREMENTAL=0 limits disk growth; no coverage reduction. Test runs allow local sockets.
+- Logs: /private/tmp/postretro-merged-final-{fmt,clippy,feature-clippy,test,feature-test}.log. No feature push or landing performed.
+
+- Default strict Clippy passed. Initial sandbox lint attempt failed only because a dependency download was blocked; reran with network access. All-target dev-tools/capture Clippy found seven mechanical test lints: six redundant DeltaSectionConfig updates and one err().expect() chain. Luna/medium assessed and fixed only the two test files, preserving assertions and behavior; integrating executor reviewed the diff. Formatting and all-target feature lint then passed. Default full tests now running with local sockets.
+- Owner asked about disposable flags: audit found no test-only CLI additions. The permanent --working-set-max-size replaces the removed SH-only flag. Extreme density/small-budget values were temporary invocation inputs; POSTRETRO_LIGHTMAP_STREAMING=all-resident is an existing diagnostic override, unset for normal use. Session RSS tooling was removed after evidence capture.
+
+## Post-merge preflight result
+
+Source: merged09baeb9dd plus the reviewed test-only lint fixes below. No production code changed during this verification.
+
+| Check | Command (CARGO_INCREMENTAL=0 for build/test checks) | Result |
+|---|---|---|
+| Format | cargo fmt --check | pass |
+| Default strict lint | cargo clippy --target-dir target/preflight-clippy -- -D warnings | pass |
+| Feature/all-target strict lint | cargo clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings | pass |
+| Default workspace tests | cargo test --no-fail-fast | pass — 11,091 passed, zero failed, 48 ignored, 66 result groups |
+| Development/capture workspace tests | cargo test --workspace --features postretro/dev-tools,postretro/capture --no-fail-fast | pass — 11,242 passed, zero failed, 60 ignored, 69 result groups |
+
+- Default and feature runs overlap; counts are reported separately, not summed. Local socket and renderer access enabled. Logs were collected at /private/tmp/postretro-merged-final-*.log and removed during landing after recording these results.
+- Luna/medium fixed seven test-only Clippy findings in two files: removed six effectless struct updates after the working-set field extraction, and used expect_err where Args already implements Debug. All behavioral assertions remain. Integrator reviewed the diff; formatting, strict all-target lint and both complete test suites pass after the fix. No test failure required a behavioral repair.
+- Flag audit: no disposable test-only CLI additions. Keep --working-set-max-size (default16GiB); the retired SH-only working-set flag is removed. Small budget/extreme density were temporary inputs; normal use leaves POSTRETRO_LIGHTMAP_STREAMING unset. No flag cleanup change needed.
+- All37 acceptance rows remain passed. Post-merge final preflight is clean. Awaiting owner landing instruction; no feature push or landing performed.
+
+## Landing checkpoint
+- Owner authorized pushing the feature branch and opening a PR. All37 acceptance rows and post-merge preflight pass; no outstanding proof.
+- Durable compiler contracts already describe the shared budget and bounded stage lifetime. Updated renderer contract to identify the implemented shared level-format placement. Brief moves to context/plans/done/lighting-scale--lightmap-layer-budget-gate. It has no standalone roadmap entry.
+- Retain owner-requested dev-map PRLs. No session worktrees exist. Comparison source/binaries and RSS traces were already removed after recording evidence. Clean only heavily churned crate artifacts before publishing; never bare cargo clean.
+
+- Landing cleanup complete: no session worktrees; removed session-owned bake/preflight temporary evidence after durable capture. Crate-scoped cleanup removed4.3GiB from the active target and183MiB from the lint target for compiler, format, render-cpu, renderer and engine crates. Dev PRLs and source retained.

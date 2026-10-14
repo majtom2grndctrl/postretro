@@ -175,16 +175,16 @@ mod tests {
     #[test]
     fn parse_size_rejects_bare_and_unit_scaled_u64_overflow() {
         // Regression: f64-to-u64 conversion saturated these values to u64::MAX.
-        assert!(parse_size("--sh-delta-working-set-max-size", "18446744073709551616B").is_err());
-        assert!(parse_size("--sh-delta-working-set-max-size", "16777216TiB").is_err());
-        assert!(parse_size("--sh-delta-working-set-max-size", "16777216.0TiB").is_err());
-        assert!(parse_size("--sh-delta-working-set-max-size", "18446744073709551615.1B").is_err());
+        assert!(parse_size("--working-set-max-size", "18446744073709551616B").is_err());
+        assert!(parse_size("--working-set-max-size", "16777216TiB").is_err());
+        assert!(parse_size("--working-set-max-size", "16777216.0TiB").is_err());
+        assert!(parse_size("--working-set-max-size", "18446744073709551615.1B").is_err());
     }
 
     #[test]
     fn parse_size_accepts_largest_bare_byte_value() {
         assert_eq!(
-            parse_size("--sh-delta-working-set-max-size", "18446744073709551615B").unwrap(),
+            parse_size("--working-set-max-size", "18446744073709551615B").unwrap(),
             u64::MAX
         );
     }
@@ -192,11 +192,11 @@ mod tests {
     #[test]
     fn parse_size_accepts_largest_decimal_byte_value() {
         assert_eq!(
-            parse_size("--sh-delta-working-set-max-size", "18446744073709551615.0B").unwrap(),
+            parse_size("--working-set-max-size", "18446744073709551615.0B").unwrap(),
             u64::MAX
         );
         assert_eq!(
-            parse_size("--sh-delta-working-set-max-size", "18446744073709551614.9B").unwrap(),
+            parse_size("--working-set-max-size", "18446744073709551614.9B").unwrap(),
             u64::MAX - 1
         );
     }

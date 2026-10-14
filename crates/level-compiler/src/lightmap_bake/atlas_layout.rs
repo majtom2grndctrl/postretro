@@ -9,9 +9,9 @@ use glam::Vec3;
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::block_layout::{BlockLayout, BlockOrdering, pack_cell_blocks_within};
-use super::charts::{Chart, plan_charts};
-use super::face_cut::{CutParent, FaceCut, apply_face_cuts, plan_face_cuts, planned_chart_area};
-use super::{CompositedAtlas, LightmapBakeError, MAX_ATLAS_LAYERS};
+use super::charts::{Chart, empty_chart_for_leaf, plan_charts};
+use super::face_cut::{CutParent, apply_face_cuts, plan_face_cuts};
+use super::{CompositedAtlas, LightmapBakeError};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement};
 use crate::geometry::GeometryResult;
@@ -98,7 +98,15 @@ pub(crate) fn prepare_atlas_within(
     pool_edge: u32,
     control: &BakeControl,
 ) -> Result<PreparedAtlas, LightmapBakeError> {
-    let cut = plan_cut_charts(geom, static_lights, texel_density, scale_regions, pool_edge)?;
+    let cut = plan_cut_charts(
+        geom,
+        static_lights,
+        texel_density,
+        scale_regions,
+        pool_edge,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )?;
     pack_cut_charts(
         geom,
         static_lights,
@@ -126,14 +134,15 @@ pub struct CutCharts {
 /// Plan charts on the uncut geometry and cut every face whose chart exceeds
 /// `pool_edge` into sub-faces whose charts window its grid. A map without
 /// static light cuts nothing: its charts never ship in blocks. Before any
-/// geometry is cut, an atlas whose cut charts could not fit the bake-layer
-/// cap fails by name.
+/// geometry is cut, a minimum irradiance cost above the stage budget fails by name.
 pub fn plan_cut_charts(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
     texel_density: f32,
     scale_regions: &[MapLightmapScaleRegion],
     pool_edge: u32,
+    working_set_max_bytes: u64,
+    uncompressed_irradiance: bool,
 ) -> Result<CutCharts, LightmapBakeError> {
     let uncut = |charts| CutCharts {
         charts,
@@ -145,14 +154,28 @@ pub fn plan_cut_charts(
         return Ok(uncut(Vec::new()));
     }
     if static_lights.is_empty() {
-        return Ok(uncut(plan_charts(geom, texel_density, scale_regions)?));
+        // No consumer reads chart projections without static placements.
+        // Keep the face/leaf correspondence without sizing unused grids.
+        return Ok(uncut(
+            geom.geometry
+                .faces
+                .iter()
+                .map(|face| empty_chart_for_leaf(face.leaf_index))
+                .collect(),
+        ));
     }
 
     // Ensure no vertex index is shared across faces — each face must own its own lightmap UV slot.
     split_shared_vertices(geom);
     let mut charts = plan_charts(geom, texel_density, scale_regions)?;
+    super::working_set::check_minimum_working_set(
+        geom,
+        &charts,
+        pool_edge,
+        working_set_max_bytes,
+        uncompressed_irradiance,
+    )?;
     let cuts = plan_face_cuts(&charts, pool_edge);
-    check_planned_area(&charts, &cuts, pool_edge)?;
     if cuts.is_empty() {
         return Ok(uncut(charts));
     }
@@ -180,24 +203,6 @@ pub fn plan_cut_charts(
     })
 }
 
-/// Fail by name, before cutting, when the cut charts' area alone needs more
-/// bake layers than the compiler allows.
-fn check_planned_area(
-    charts: &[Chart],
-    cuts: &[FaceCut],
-    pool_edge: u32,
-) -> Result<(), LightmapBakeError> {
-    let layer_area = u64::from(pool_edge) * u64::from(pool_edge);
-    let layers = planned_chart_area(charts, cuts).div_ceil(layer_area);
-    if layers > u64::from(MAX_ATLAS_LAYERS) {
-        return Err(LightmapBakeError::LayerOverflow {
-            layer_count: u32::try_from(layers).unwrap_or(u32::MAX),
-            max: MAX_ATLAS_LAYERS,
-        });
-    }
-    Ok(())
-}
-
 /// Atlas preparation's second phase: pack `charts` into cell blocks in
 /// `ordering` and write every vertex's block id and block-local lightmap UV.
 /// `charts` and `cut_parents` come from one [`CutCharts`] and reach the
@@ -205,10 +210,8 @@ fn check_planned_area(
 /// `pool_edge`, which [`plan_cut_charts`] guarantees.
 ///
 /// Without static lights the section has no blocks, so vertices keep block
-/// 0, but placements are still returned for the animated-light passes; when a
-/// chart, the block count or the layer count exceeds the runtime limits,
-/// placements come back empty instead of failing the build. Empty geometry
-/// returns an empty layout without mutating anything.
+/// 0 and no placements are returned: the runtime cannot compose an animated
+/// lightmap without static blocks. Empty geometry returns an empty layout.
 pub fn pack_cut_charts(
     geom: &mut GeometryResult,
     static_lights: &StaticBakedLights<'_>,
@@ -230,30 +233,10 @@ pub fn pack_cut_charts(
     if geom.geometry.vertices.is_empty() || geom.geometry.faces.is_empty() {
         return Ok(unplaced(charts, cut_parents));
     }
-    let fits = |chart: &Chart| chart.width_texels <= pool_edge && chart.height_texels <= pool_edge;
     if static_lights.is_empty() {
-        // The animated-light-chunks builder needs placements even without
-        // static lights; a layout the runtime could not hold just plans no
-        // chunks. The empty layout keeps the direction scale, which the
-        // placeholder id-22 header carries.
-        if !charts.iter().all(fits) {
-            return Ok(unplaced(charts, cut_parents));
-        }
-        return Ok(
-            match pack_cell_blocks_within(&charts, ordering, pool_edge, control) {
-                Ok(pack) => PreparedAtlas {
-                    charts,
-                    placements: pack.placements,
-                    atlas_width: pack.layer_dim,
-                    atlas_height: pack.layer_dim,
-                    layer_count: pack.layer_count,
-                    layout: pack.layout,
-                    cut_parents,
-                },
-                Err(_) => unplaced(charts, cut_parents),
-            },
-        );
+        return Ok(unplaced(charts, cut_parents));
     }
+    let fits = |chart: &Chart| chart.width_texels <= pool_edge && chart.height_texels <= pool_edge;
 
     debug_assert!(charts.iter().all(fits), "the cut bounds every chart");
     let pack = pack_cell_blocks_within(&charts, ordering, pool_edge, control)?;

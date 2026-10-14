@@ -713,7 +713,7 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
         .arg("1.0")
         .arg("--lightmap-density")
         .arg("0.25")
-        .arg("--sh-delta-working-set-max-size")
+        .arg("--working-set-max-size")
         .arg("0")
         .output()
         .expect("spawn current-policy warren projection");

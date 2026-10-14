@@ -29,31 +29,26 @@ use crate::lightmap_layer::{self, SharedAtlas};
 /// eligible light's layer hash.
 pub(crate) fn shadowmask_atlas_input_hash(
     eligible: &[EligibleLight<'_>],
-    layer_input_hashes: &[[u8; 32]],
+    layer_input_hash: &impl Fn(usize, u32) -> [u8; 32],
     face_count: usize,
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
     estimate_params: &[u8],
 ) -> [u8; 32] {
-    debug_assert_eq!(
-        eligible.len().saturating_mul(layer_count as usize),
-        layer_input_hashes.len(),
-        "eligible light/layer hash slices must align"
-    );
     let mut hasher = blake3::Hasher::new();
     hasher.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
     hasher.update(&LIT_TEXEL_FLOOR.to_le_bytes());
     hasher.update(&(face_count as u64).to_le_bytes());
     hasher.update(&(eligible.len() as u32).to_le_bytes());
-    for (light, hashes) in eligible
-        .iter()
-        .zip(layer_input_hashes.chunks(layer_count.max(1) as usize))
-    {
-        hasher.update(&light.spec_index.to_le_bytes());
-        hasher.update(&[u8::from(light.promoted)]);
-        for hash in hashes {
-            hasher.update(hash);
+    // The legacy dense layout has no per-light chunk for a zero-layer atlas.
+    if layer_count > 0 {
+        for light in eligible {
+            hasher.update(&light.spec_index.to_le_bytes());
+            hasher.update(&[u8::from(light.promoted)]);
+            for layer in 0..layer_count {
+                hasher.update(&layer_input_hash(light.source_index, layer));
+            }
         }
     }
     hasher.update(&atlas_width.to_le_bytes());
@@ -195,12 +190,7 @@ pub(super) fn cache_shadowmask_section(
             return writer.write_all(&[0]);
         };
         writer.write_all(&[1])?;
-        writer.write_all(&section.index_bytes())?;
-        for [group_a, group_b] in &section.blocks {
-            writer.write_all(group_a)?;
-            writer.write_all(group_b)?;
-        }
-        Ok(())
+        section.write_to(writer)
     });
 }
 

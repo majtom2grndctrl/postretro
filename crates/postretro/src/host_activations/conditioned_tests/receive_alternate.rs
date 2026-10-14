@@ -536,7 +536,7 @@ impl Fixture {
 fn receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots() {
     // Early, exact minimum, partial, full-plus-hold, and both edges before one
     // fixed command. All timing/scaling uses the shipped dev action program.
-    for elapsed in [0, 11, 12, 30, 65] {
+    for elapsed in [0, 11, 12, 60, 125] {
         let mut fixture = Fixture::with_received_dev_weapon("reference_plasma_bolt");
         let mut capture = ActivationInputCapture::default();
         let start = token(20, ActivationLane::Secondary);
@@ -552,7 +552,7 @@ fn receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across
         .timing
         .charge
         .unwrap();
-        assert_eq!((timing.min_ticks, timing.full_ticks), (12, 60));
+        assert_eq!((timing.min_ticks, timing.full_ticks), (12, 120));
         let before_applies = fixture.receive.as_ref().unwrap().local_applies;
         let mut last_progress = 0.0;
         for offset in 0..elapsed {
@@ -585,7 +585,7 @@ fn receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across
             assert!(fixture.authorized.is_empty());
             assert!(fixture.receive.as_ref().unwrap().declarations.is_empty());
             near(fixture.host_cell(), 100.0);
-            if offset == 2 || offset == 62 {
+            if offset == 2 || offset == 122 {
                 let applies = fixture.receive.as_ref().unwrap().local_applies;
                 let cursor = fixture.local_cursor();
                 let charging_before = charging;
@@ -668,7 +668,7 @@ fn receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across
         let charge = elapsed.min(timing.full_ticks) as f32 / timing.full_ticks as f32;
         let damage = 10.0 * (1.0 + 9.0 * charge);
         let cost = 5.0 * (1.0 + 9.0 * charge);
-        let size = 1.5 * (1.0 + charge);
+        let size = 1.5 * (1.0 + 2.0 * charge);
         let shot_id = fixture.shot_id(start, 0);
         assert_eq!(fixture.snapshot_ticks, [release_tick]);
         assert_eq!(fixture.snapshots.len(), 1);

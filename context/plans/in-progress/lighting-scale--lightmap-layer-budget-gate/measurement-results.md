@@ -1,6 +1,6 @@
 # Dev-map verification measurements
 
-AC34–35 pass. Owner reports normal streaming with no missing lightmaps (AC36 visual portion passed; placeholder-error log check unconfirmed). AC37 remains an owner engine check. All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
+AC34–35 pass. Owner reports normal streaming with no missing lightmaps (AC36 visual portion passed; placeholder-error log check unconfirmed). Owner also reports the full-bright test-grid fallback (AC37 visual portion passed; exact rejection-log count unconfirmed). All four PRLs below were published successfully in `content/dev/maps` and are retained at the owner's request.
 
 ## Conditions
 
@@ -91,3 +91,9 @@ Runtime-floor fixture 0.0006:
 ## Evidence lifecycle
 
 Measurements were collected under `/private/tmp/postretro-lightmap-proof-ztdf8vxi`. Raw traces, logs, comparison binaries and the temporary baseline source archive can be removed after this record is committed. Dev-folder outputs remain for owner inspection; the existing stage cache is untouched.
+
+## Owner engine observations
+
+Owner reports no missing hallway lightmaps under normal streaming, then effectively full-bright test-grid geometry and a fully dark weapon under forced all-resident loading. Both visual portions are recorded as passed. Still awaiting confirmation that normal streaming had no placeholder-lightmap error and forced loading logged340 required layers against256 with neutral-placeholder fallback.
+
+The dark weapon is not proof of missing SH data. Fixture id34 contains a7×8×14 grid (784 positions) with395 valid probe records; id34 is20,764bytes, and id35 is14,476bytes. This metadata read confirms baked data exists, not runtime residency or brightness.

@@ -86,7 +86,7 @@
 - **Player movement / movement states / FPS feel / slide camera dip and FOV** → `movement.md`
 - **Vault / mantle / ledge probe and its cast bound / vault path / leaving water by a ledge / held vault camera pose** → `movement.md` §4 (Vault), §1 · wire and correction band: `networking.md` §Snapshot apply ordering
 - **Fire blocked by movement state / vault fire gate / vault entry cancelling a burst or charge / `charge.interruptedBy` / held presses and releases over a vault** → `movement.md` §4 (Vault, Firing) · host-remote ordering: `networking.md` §Combat authority · charge vocabulary: `entity_model.md` §Components (Weapon vocabulary)
-- **Water / swimming / fluid, gravity and push volumes / push `force` / environment resolution / fluid surfaces, their motion, drift, wave and depth fog / underwater tint and muffle** → `entity_model.md` §7 (Environment Volumes) · `movement.md` §4 (Environment resolution, Swim), §6 (Regional gravity and push, Steady drift) · authoring, face splitting and ids 52/53: `build_pipeline.md` §Custom FGD, §Compiler pipeline, §PRL section IDs · `rendering_pipeline.md` §7.3a, §7.8 · `audio.md` §1 · co-op: `networking.md` §What gates, and what replicates instead
+- **Water / swimming / fluid, gravity and push volumes / push `force` / environment resolution / fluid surfaces, their motion, drift, wave, depth fog and reflections / reflection probes and `reflection_volume` / underwater tint and muffle** → `entity_model.md` §7 (Environment Volumes) · `movement.md` §4 (Environment resolution, Swim), §6 (Regional gravity and push, Steady drift) · authoring, face splitting, probe capture and ids 52–54: `build_pipeline.md` §Custom FGD, §Compiler pipeline, §PRL section IDs · `rendering_pipeline.md` §7.3a, §7.8 · probe records: `resource_management.md` §5 · `audio.md` §1 · co-op: `networking.md` §What gates, and what replicates instead
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
@@ -150,7 +150,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Indirect lighting | SH L2 irradiance volume baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
-| Reflection probes | FGD point entities → baked cubemaps |
+| Reflection probes | prl-build (decided, not yet built): probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time |
 
 Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 

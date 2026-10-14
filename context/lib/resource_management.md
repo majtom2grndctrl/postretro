@@ -88,7 +88,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
 | **Decal selection** | Planned. |
-| **Environment-mapped reflections** | Planned. See §5. |
+| **Environment-mapped reflections** | Fluid surfaces only (§5, decided, not yet built). No material reads probes: the forward pass has no free sampled-texture binding. |
 
 Each behavior is a property of the material enum variant. Which prefixes carry which flags is a content concern — the engine provides the mechanism.
 
@@ -249,26 +249,28 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 
 ---
 
-## 5. Cubemap Handling
+## 5. Reflection Probes
 
-### 5.1 Entity Format
+> **Decided, not yet built.**
 
-`env_cubemap` is a point entity placed in TrenchBroom. It marks a position where a cubemap should be baked. Properties:
+A reflection probe is a compile-time capture of the static world, stored for box-projected lookup. The record is reflector-agnostic: a capture point, a world-space projection box, and one full-sphere octahedral tile at a fixed engine tile size, in the SH atlas's direction mapping and border convention. Water is its only reader (`rendering_pipeline.md` §7.3a); a later glass or polished-stone reader takes its base reflectance from its material.
 
-| Property | Description |
-|----------|-------------|
-| origin | Bake position (inherited from entity placement) |
-| size | Resolution per face in pixels (default: 256) |
+### 5.1 Placement
 
-### 5.2 Bake Pipeline
+- **Derived by default.** prl-build gives a probe to every up-facing fluid face no authored box claims, so existing maps' water reflects after a rebuild. Each face fits a box, clamped to the hull, to what its water sees: a pool sunk below its room's floor fits the room. Faces of one fluid entity at one height whose boxes match share a probe, stored with their union box.
+- **Authored override.** A `reflection_volume` brush's AABB is its projection box and influence region (`build_pipeline.md` §Custom FGD). An up-facing face binds the smallest authored box containing its area centroid, ties going to the earlier box in map entity order. Side and sloped faces bind nothing.
+- **Capture point.** Stored, 2 mm above the lowest water plane its probe binds, so lookups stay in the upper hemisphere. It sits at the horizontal area centroid of that water, moved onto the water when the centroid falls off it. `_capture_offset` shifts an authored point horizontally, clear of a pillar standing in the water.
+- **Drops and cap.** A probe whose point lies in solid, inside any fluid or outside the hull drops with a warning naming the entity, as does an authored box binding no face. A dropped box's faces bind as if it were absent; a dropped derived probe's faces bind nothing. A per-level cap fits the probe array's portable layer limit: authored probes past it refuse the build, and derived probes past it drop, largest bound surface area kept, with one warning.
 
-> **Not yet implemented.** Entity format defined; bake tool deferred.
+### 5.2 Capture
 
-A separate offline tool bakes one cubemap per `env_cubemap` entity position. Baked output lives alongside the map file. See `build_pipeline.md` when this is planned.
+Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do. Load-time GPU capture would be runtime render-to-texture for mirrors (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect. An animated light enters at its curve's cycle mean, a curveless one at its authored colour. No specular, no dynamic lights. The compiler's indirect weight and per-prefix emissive multipliers must equal the renderer's production values; parity tests pin both, and a runtime-tuned dev weight mismatches the bake.
 
-### 5.3 Runtime Consumption
+Each probe also stores its top few animated lights by contribution, each with its reference colour and its share of the capture per direction lobe; the runtime scales the capture by them live (`rendering_pipeline.md` §7.3a). A light's identity is its animated-light roster index, the same in compiler and runtime.
 
-Reflective surfaces (wet floors, chrome, glass) sample from the nearest `env_cubemap` probe by world-space distance.
+### 5.3 Residency
+
+PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL section IDs); absent means no probes. Probes load whole-resident at level install and release at unload, with no streaming.
 
 ---
 
@@ -361,8 +363,7 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 
 - **Import-time model normalization.** Models render at their authored glTF scale — no fit-to-size, unit conversion, or auto-rescale at load. Author geometry at final world size (§7).
 - **WAD file support.** All textures are PNGs. No Quake/Half-Life WAD import or export.
-- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras.
+- **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras. Reflection probes capture at compile time (§5).
 - **GPU asset hot-reload.** Textures and models are loaded once per level. Descriptor tuning may refresh, but visual asset path changes wait for the next level install.
 - **Procedural textures.** No noise-based or shader-generated textures. All surfaces use authored PNGs.
 - **Material texture streaming / virtual textures.** All material textures for a level load upfront, with no partial or on-demand loading. Baked lighting (SH clusters, lightmap and shadowmask cell blocks) does stream; see §8.2.
-- **Cubemap bake tool.** The entity format and runtime consumption path are defined. The offline bake tool is deferred.

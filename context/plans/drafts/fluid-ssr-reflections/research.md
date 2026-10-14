@@ -8,7 +8,7 @@ Read at e8f607b94. Findings that inform the brief without deciding it.
 - `scene_color` is `Rgba16Float`; `COPY_SRC`/`COPY_DST` are added only under `cfg(test)` (`TEST_COPY_USAGE`).
 - Reduced-resolution precedents: SDF shadow (half), fog scatter (`fog_pixel_scale`) and the bloom chain. The brief's quality tiers follow these: the reflection target resolves at scene, half or quarter extent.
 - Budgets (pipeline_budget_tests.rs):
-  - The fluid fragment stage uses 7 sampled textures across groups 0–4 against a requested 16. `fluid-depth-fog-waves` adds scene depth in group 5, making 8.
+  - The fluid fragment stage uses 7 sampled textures across groups 0–4 against a requested 16. `fluid-depth-fog-waves` adds scene depth in group 5, making 8; `reflection-probes` adds its probe array, making 9.
   - Fragment storage is 8/8.
   - `max_bind_groups` is 8.
 - No SSR, Hi-Z or runtime cubemap exists. `env_cubemap` appears only in docs.
@@ -27,6 +27,6 @@ Read at e8f607b94. Findings that inform the brief without deciding it.
 - The earlier in-fluid-pass design needed a full-screen copy because the fluid pass renders into `scene_color`. Resolving into a separate target removes that copy.
 
 ## Existing reflection commitments
-- `resource_management.md` §5 defines `env_cubemap`, with the bake tool deferred, and its feature table marks environment-mapped reflections as Planned. Nothing in `crates/` implements it.
+- `resource_management.md` §5 defines `env_cubemap`, with the bake tool deferred, and its feature table marks environment-mapped reflections as Planned. Nothing in `crates/` implements it. `reflection-probes` supersedes it with compiler-derived probes and a `reflection_volume` brush.
 - `rendering_pipeline.md` §13 excludes image-based specular from the closed world material vocabulary.
 - `index.md` §1.1 admits runtime ray work only against baked structures.

@@ -187,6 +187,14 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 ---
 
+## Fluid Rendering
+
+Water-surface briefs outside a numbered epic.
+
+- [ ] **reflection-probes** — every map's water mirrors its static room from compile-time, box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Builds after `fluid-depth-fog-waves`. Brief: `context/plans/ready/reflection-probes/`.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.
@@ -208,7 +216,6 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Directional fog** — the remaining fog enhancement. Existing fog volumes and portal-aware culling are shipped.
 - **Moving-light shadow-depth invalidation** — re-render a moving light's cached static depth only when its transform changes, so projectile-attached and other moving lights do not redraw the full world every frame. Not sequenced until a moving shadow-caster needs it.
 - **Post-processing** — optional CRT/scanline filter. HDR scene color, additive emissive, tonemapping, and bloom are shipped.
-- **Baked cubemap reflections** — `env_cubemap` point entity baked to a cubemap atlas at compile time.
 
 ### Infrastructure
 
@@ -223,4 +230,4 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 
 ### Dropped
 
-- **Cubemap bake tool** — deferred indefinitely; baked cubemap reflections remain on the speculative list above but the standalone tool is dropped.
+- **Cubemap bake tool** — the standalone offline tool and the `env_cubemap` point entity are dropped; reflection probes capture inside prl-build instead (`reflection-probes`, above).

@@ -55,12 +55,13 @@ Luau manifest validation reject author templates in that namespace before commit
 
 **Mod identity.** Every manifest requires `name`, `id`, and `version`. The id gates multiplayer admission. The version is display-only and never compared. The first committed id and version remain active across staged reloads.
 
-**Fluid declarations.** `ModManifest.fluids` declares the mod's fluids with `defineFluid`, a pure SDK identity helper: `name`, `viscosity` (drag while swimming, 1/s, ≥ 0), `viewTint` (rgb plus strength, each in [0, 1]), `muffle` and `surfaceOpacity` (each in [0, 1]), optional `enterSound` and `exitSound` keys, and the optional fog and wave fields below. A map's `fluid_volume` names a fluid; declaration order assigns its index. Policy is warn-and-drop: a malformed or out-of-range entry, or a later duplicate name, is dropped with a warning naming `fluids[i].<field>`, the first declaration of a name stands, and the rest of the manifest commits. The array holds at most 4,096 slots, holes included; past that the whole field warns once and is ignored. Both runtimes judge each entry through one shared parser. Fluids commit with the manifest and replace on staged reload; a reload that changes the fluid table re-resolves the level's volumes. Fluid declarations stay out of the mod compatibility digest: a client never resolves level fluids against its own registry (`networking.md` §What gates, and what replicates instead), so a differing declaration cannot desync prediction. Every field but `name` and `viscosity` is presentation: it resolves locally by name, stays out of the replicated movement tuning, and never feeds surface drift.
+**Fluid declarations.** `ModManifest.fluids` declares the mod's fluids with `defineFluid`, a pure SDK identity helper: `name`, `viscosity` (drag while swimming, 1/s, ≥ 0), `viewTint` (rgb plus strength, each in [0, 1]), `muffle` and `surfaceOpacity` (each in [0, 1]), optional `enterSound` and `exitSound` keys, and the optional reflectivity, fog and wave fields below. A map's `fluid_volume` names a fluid; declaration order assigns its index. Policy is warn-and-drop: a malformed or out-of-range entry, or a later duplicate name, is dropped with a warning naming `fluids[i].<field>`, the first declaration of a name stands, and the rest of the manifest commits. The array holds at most 4,096 slots, holes included; past that the whole field warns once and is ignored. Both runtimes judge each entry through one shared parser. Fluids commit with the manifest and replace on staged reload; a reload that changes the fluid table re-resolves the level's volumes. Fluid declarations stay out of the mod compatibility digest: a client never resolves level fluids against its own registry (`networking.md` §What gates, and what replicates instead), so a differing declaration cannot desync prediction. Every field but `name` and `viscosity` is presentation: it resolves locally by name, stays out of the replicated movement tuning, and never feeds surface drift.
 
-**Fluid fog and wave fields (decided, not yet built).** Five optional presentation fields declare depth fog seen from outside the fluid and a slow surface wave (`rendering_pipeline.md` §7.3a). Texels count the face's texture texels at its texture scale. TS writes pairs as arrays, Luau as positional tables.
+**Fluid reflectivity, fog and wave fields (decided, not yet built).** Six optional presentation fields declare how strongly the surface reflects, depth fog seen from outside the fluid, and a slow surface wave (`rendering_pipeline.md` §7.3a). Texels count the face's texture texels at its texture scale. TS writes pairs as arrays, Luau as positional tables.
 
 | Field | Meaning | Omitted | Valid |
 |---|---|---|---|
+| `surfaceReflectivity` | Scales the surface's Fresnel base reflectance (0.02 × value): 0 none, 1 water, 50 a mirror at every angle | 1 | Finite, in [0, 50] |
 | `fogDistance` | Metres of view path into the fluid that hide 95% of what lies beyond | Clear: draws as without fog | Finite, > 0 |
 | `fogColor` | Murk rgb, in `viewTint`'s space | `viewTint`'s rgb | Three finite values in [0, 1] |
 | `wavePeriod` | Seconds per cycle of an average-length crest | No wave | Finite, ≥ 6 |
@@ -69,13 +70,16 @@ Luau manifest validation reject author templates in that namespace before commit
 
 Validation follows the fluid policy above: a rule broken drops that fluid with a warning naming the field. Wave rules apply whether or not a period is set. The amplitude range is checked before the length rules, and the 8× rule binds a defaulted amplitude as it does a written one. A defaulted length always passes, so a warning never names a length the author did not write.
 
-**Mod render profile.** `ModManifest.render.bloom` is optional static mod data.
-It accepts `resolution: "half" | "quarter" | "eighth"` and
-`pixelated: boolean`; omitted fields use half and smooth defaults. Malformed
-optional profile fields warn and degrade to those defaults without rejecting an
-otherwise valid manifest. A successful staged mod-init replaces the active
-profile; failed, rejected, and stale attempts preserve it. The profile is not a
-level script, reaction, or player setting.
+**Mod render profile.** `ModManifest.render` is optional static mod data.
+`bloom` accepts `resolution: "half" | "quarter" | "eighth"` and
+`pixelated: boolean`; omitted fields use half and smooth defaults.
+`reflections.style` (decided, not yet built) accepts `"pixel" | "smooth"`,
+default pixel, and sets the look of every fluid reflection layer
+(`rendering_pipeline.md` §7.3a). Malformed optional profile fields warn and
+degrade to those defaults without rejecting an otherwise valid manifest. A
+successful staged mod-init replaces the active profile; failed, rejected, and
+stale attempts preserve it. The profile is not a level script, reaction, or
+player setting.
 
 **Map catalog.** `ModManifest.maps` is the mod's pre-load-discoverable home for per-map metadata. Authors may inline it or build it with `defineMapCatalog(entries)`, another pure SDK identity helper that gives `ModMapEntry[]` type hints without changing the wire shape. Each entry has three required v1 fields plus optional classification: `id` is the stable logical handle used by catalog-driven loads and future references; `path` is authored relative to the content root; `name` is the display name; `tags`, when present, are authoritative classification strings for frontend filtering and reaction composition. Missing or `nil`/`null` tags normalize to an empty list. The engine validates and commits the catalog during mod init into `DataRegistry.maps`; it is engine-global, survives level unload and platform suspend, and is available before any level loads. Catalog id loads resolve `id` through this committed snapshot and carry the resolved entry on the in-flight load. Direct raw-path loads bypass the catalog and synthesize non-catalog metadata (`catalog_id = None`, name from file stem, empty tags). A `path` written as a string literal is also what packaging can see — an assembled one ships no level and reports none (`build_pipeline.md` §Shipped level set).
 

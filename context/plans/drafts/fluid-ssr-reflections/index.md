@@ -1,12 +1,12 @@
 # fluid-ssr-reflections
 
-Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pipeline.md` §7.3a, §7.5, §8, §10, §13 · `player_options.md` §4 · `resource_management.md` §5 · read at e8f607b94 · builds after `fluid-surface-motion` and `fluid-depth-fog-waves`
+Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pipeline.md` §7.3a, §7.5, §8, §10, §13 · `player_options.md` §4 · `resource_management.md` §5 · read at e8f607b94 · builds after `fluid-surface-motion`, `fluid-depth-fog-waves` and `reflection-probes`
 
 ## Problem
 The owner requested a capability: fluid surfaces reflect nothing, so water reads as a flat tinted sheet. Players will see the walls, lights and movers around a pool mirrored in its surface. A game author chooses whether reflections are pixelated or smooth as part of the game's art style. A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
 
 ## Decisions
-- **Screen-space reflections, not the documented baked cubemaps.** `index.md` §3 and `resource_management.md` §5 plan `env_cubemap` probes, but neither the bake tool nor the runtime exists. Cubemaps do not move with movers or dynamic lights, and they reflect a probe position rather than the pool's own view. SSR reflects exactly what surrounds a pool on screen. Cubemaps stay open as a later off-screen fallback. At promotion, the docs record SSR as the fluid reflection path.
+- **Screen-space reflections over the baked probe term.** `reflection-probes` gives water a box-projected reflection of its static room (`rendering_pipeline.md` §7.3a), but its probes do not hold movers, characters or dynamic lights. SSR reflects exactly what surrounds a pool on screen and composites over the probe term. At promotion, the docs record SSR as the dynamic fluid reflection layer.
 - **`index.md` §1.1 is amended, and this brief is its first approved exception.** The rule becomes a strong preference for tracing baked structures at runtime. An exception needs owner approval and a use case with no reasonable workaround within pre-RTX constraints. Fluid SSR qualifies:
   - Mirroring nearby walls, lights and movers has no baked equivalent that moves with the scene.
   - The march reads scene depth, which fog and forward already sample, so it adds no acceleration structure.
@@ -16,14 +16,14 @@ The owner requested a capability: fluid surfaces reflect nothing, so water reads
   The amendment lands at promotion. `ssr-decals` would need its own approval.
 - **`surfaceReflectivity` widens fluid presentation, not the world material inventory.** `rendering_pipeline.md` §13 closes the authored material vocabulary and excludes image-based specular on world materials. This field is a fluid descriptor value beside `surfaceOpacity`, and no world material gains a reflection input.
 - **The reflection resolves into its own target at the quality tier's resolution, before the fluid pass.** A reflection pass draws the frame's visible fluid faces into that target. It reads opaque scene color and scene depth directly: at that point neither is attached, and scene color holds exactly the opaque scene. No full-screen copy exists. The fluid pass samples the target at its own screen position under smooth style. Under pixel style it samples at the projected centre of its water texel cell, so a reduced tier never lays a screen-locked grid over the water's blocks. Fragment storage is at its 8/8 ceiling (§10), so the fluid pass takes the target through a sampled texture and a uniform only. Both join group 5, the fluid scene-inputs group `fluid-depth-fog-waves` opens for scene depth. The target lives with the scene targets and rebuilds with them on an extent or tier change. It exists only while a level with fluid surfaces is installed and reflections are not Off, which keeps §7.3a's rule that a level without surfaces allocates nothing.
-- **What reflects.** Only a fluid face seen from its upward side reflects; side faces and any face seen from underwater do not. Reflections show what the opaque scene held when the reflection pass ran, so smoke, fog, billboards, projectile bodies, the viewmodel and other fluid surfaces never appear. These are accepted limits. A ray that misses fades out (Fresnel × hit confidence × screen-edge fade). There is no off-screen fallback.
-- **The reflection sits on the surface, above the fog.** The fluid composite is surface over depth fog over scene (`fluid-depth-fog-waves`). The reflection, weighted by Fresnel × reflectivity, adds onto the surface term after the fog layer resolves, so neither fog transmittance nor fog color dims it.
-- **The author owns the style.** `render.reflections.style` is `"pixel"` or `"smooth"`, default `"pixel"`. Pixel snaps each ray's origin and perturbation to the water texel cells `fluid-surface-motion` introduces, so the reflection breaks into blocks that move with the water. Smooth marches per reflection-target pixel. The player never chooses the style. This matches bloom (`render.bloom.pixelated`) and fog (§7.5), where the author owns the look and the player owns cost.
+- **What reflects.** Only a fluid face seen from its upward side reflects; side faces and any face seen from underwater do not. Reflections show what the opaque scene held when the reflection pass ran, so smoke, fog, billboards, projectile bodies, the viewmodel and other fluid surfaces never appear. These are accepted limits. A ray that misses fades (hit confidence × screen-edge fade) to the probe term rather than going dark; a face bound to no probe fades to no reflection.
+- **The reflection sits on the surface, above the fog.** The fluid composite is surface over depth fog over scene (`fluid-depth-fog-waves`). The reflection takes the probe term's Fresnel weight, and `reflection-probes` settles the composite for both layers: `F·R + (1−F)·(surface over fog over scene)` at coverage `F + (1−F)·a`, so neither opacity nor fog dims it.
+- **The author owns the style.** `render.reflections.style`, defined by `reflection-probes`, is `"pixel"` or `"smooth"`, default `"pixel"`, and governs both layers. Pixel snaps each ray's origin and perturbation to the water texel cells `fluid-surface-motion` introduces, so the reflection breaks into blocks that move with the water. Smooth marches per reflection-target pixel. The player never chooses the style. This matches bloom (`render.bloom.pixelated`) and fog (§7.5), where the author owns the look and the player owns cost.
 - **The player owns cost: `reflection_quality` = off / low / medium / high, default high.** The owner chose this four-tier ladder; first-slice measurements tune what each tier costs, not whether it exists. It is a standalone graphics option on the `surface_depth_quality` path (`player_options.md` §4): persisted, slot-exposed and applied live. High resolves at scene extent; medium at half; low at quarter. Off records no reflection pass, and its picture is the water without reflection.
   - The step budget scales with resolution, so a ray reaches equally far at every tier.
   - This ladder diverges on purpose from the Surface Depth ruling against tiers. That ruling rejected a tier that changed the shape of the effect at grazing angles. A lower tier here changes only the resolution of the whole reflection.
   - No umbrella quality preset is added.
-- **Per-fluid reflectivity: `surfaceReflectivity`, 0..1, default 0.4.** Water reflects without authoring. The dev content's `sludge` sets it low. Existing mods' water gains reflections on upgrade, which is accepted before 1.0. It is local presentation like `surfaceOpacity`, so peers may differ and co-op compatibility is unaffected (`scripting.md` §2). It takes a spare float in the per-volume params row that `fluid-depth-fog-waves` widens to three `vec4`. A volume at 0 draws no reflection fragments. An invalid value rejects that fluid declaration with a warning, as every other fluid field does (`scripting.md` §2).
+- **Per-fluid reflectivity: `surfaceReflectivity`, defined by `reflection-probes`.** It scales Fresnel base reflectance, 0..=50, default 1 = water (`scripting.md` §2); this brief's former raw 0..1 weight with default 0.4 is superseded. The dev content's `sludge` sets it low. A volume at 0 draws no reflection fragments.
 - **Non-goals.**
   - Temporal reuse: a reflection updated below frame rate lags a turning camera without reprojection, and `motion-reprojection-layer` owns that facility.
   - SSR on non-fluid surfaces: `ssr-decals` stays separate and may reuse the march snippet.
@@ -46,12 +46,12 @@ export default defineMod({
       viewTint: [0.1, 0.3, 0.4, 0.35],
       muffle: 0.8,
       surfaceOpacity: 0.6,
-      surfaceReflectivity: 0.4, // optional; 0..=1, defaults to 0.4
+      surfaceReflectivity: 1, // optional; 0..=50, default 1 (water); defined by reflection-probes
     }),
   ],
 });
 ```
-The Luau mirror ships with the same names (`reflections = { style = "smooth" }`, `surfaceReflectivity = 0.4`).
+The Luau mirror ships with the same names (`reflections = { style = "smooth" }`, `surfaceReflectivity = 1`).
 
 ## Acceptance
 ### Automated
@@ -66,12 +66,9 @@ The Luau mirror ships with the same names (`reflections = { style = "smooth" }`,
   - omitted resolves to pixel;
   - `"smooth"` resolves to smooth;
   - an unknown string or wrong type warns and resolves to pixel without rejecting the manifest.
-- [ ] The Scripting surface example parses in TS and its Luau mirror. `surfaceReflectivity`:
-  - omitted resolves to 0.4;
-  - 0 and 1 are accepted;
-  - −0.1, 1.1 and NaN reject that fluid declaration with a warning naming the field, and the rest of the manifest is kept.
+- [ ] The Scripting surface example parses in TS and its Luau mirror. `surfaceReflectivity` parsing is `reflection-probes`' acceptance.
 - [ ] The player setting carries no style value, so the player cannot select smooth under a pixel game.
-- [ ] Pipeline budget tests pass. Fluid fragment storage stays at 8. Sampled textures, 8 before the reflection target joins group 5, stay within the requested 16.
+- [ ] Pipeline budget tests pass. Fluid fragment storage stays at 8. Sampled textures, 9 before the reflection target joins group 5 (`reflection-probes` adds the probe array), stay within the requested 16.
 - [ ] The DX12 FXC shader test compiles the reflection and fluid shaders (Windows, ignored-gated run).
 
 ### Manual
@@ -107,7 +104,6 @@ The Luau mirror ships with the same names (`reflections = { style = "smooth" }`,
 | Fluid reflectivity | field on `FluidDescriptor` | n/a | `surfaceReflectivity` | `surfaceReflectivity` | n/a |
 
 ## Open questions
-- Whether surface opacity dims the reflection. It adds onto the surface term after the fog layer resolves, so a low-opacity surface could carry a full-strength reflection — owner: this brief's drafting session — **blocks build**
 - Whether pixel-style reflection blocks follow the wave-displaced cells (`fluid-depth-fog-waves`) or the unwarped texel grid — owner: this brief's drafting session — **blocks build**
 - How the reflection target binds in the shared fluid group 5, which `fluid-depth-fog-waves` builds at init and rebuilds only with the scene targets, while the target exists only on a fluid level with reflections not Off: a placeholder binding, or a group-5 rebuild on install and tier change — **blocks build**
 - Whether low may also update at half frame rate — **delegated**: only if a capture of a fast camera turn shows no visible lag. Otherwise tiers vary resolution alone, and the plan of record says which.

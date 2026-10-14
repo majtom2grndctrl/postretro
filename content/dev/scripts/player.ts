@@ -184,7 +184,7 @@ export const playerEntity = defineEntity({
         // out over the last 20% as the pawn moves onto the top.
         vault: {
           pitch: -38.5, // degrees; + looks up
-          roll: 0,
+          roll: 10,
           fov: -30, // horizontal degrees added to the base FOV
           easeIn: 0.33, // share of durationMs spent easing in
           easeOut: 0.33, // share spent easing back at the end

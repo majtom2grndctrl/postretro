@@ -299,6 +299,19 @@ Manual acceptance is complete. Full frame-timing attribution or a repeatable mat
 
 Owner authorized “land the plane” and requested a PR on 2026-10-13. Automated A1–A26 and manual M1 pass. Durable renderer and Settling contracts now describe shipped behavior; all acceptance boxes are complete. Brief moved to `done/`. Roadmap contains no entry for this brief.
 
-Current remote main merges cleanly with the tested feature branch; no source integration changes were needed. Final edits only close documentation and acceptance state. Cargo format and diff checks cover these edits; completed full preflight and required-GPU results above remain the implementation proof.
+At initial PR creation, remote main merged cleanly with the tested feature branch; no source integration changes were needed. Final edits only close documentation and acceptance state. Cargo format and diff checks cover these edits; completed full preflight and required-GPU results above remain the implementation proof.
 
 Landing cleanup removes the session comparison bundle and dedicated Clippy target, cleans the heavily changed app/renderer packages from the primary target, and removes session-owned temporary tools and diagnostics. The comparison worktree was already archived cleanly with its baseline commit preserved on remote main. Preserve all owner walk logs and the separate local edit in this plan. Publish the feature branch and open a PR; do not merge it automatically. After owner reports merge, follow the build-brief merged cleanup procedure.
+
+## Main integration — 2026-10-13
+
+Owner requested merging latest main into PR #592 after initial publication. Merge commit `704e9eb45` incorporates `origin/main` at `0d87efad3` (55 incoming commits). No conflicts: Cargo.lock retained main’s physics `proptest` dependency and this feature’s test dependencies; rendering docs retained both independent edits. No SH implementation changes were needed. All six owner log files and the separate local plan edit were preserved.
+
+Merged-tree checks passed:
+
+- `cargo fmt --check` and `git diff --check`.
+- `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo clippy --locked --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings`: pass, 14m 37s cold rebuild.
+- `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo test --locked --workspace --features postretro/dev-tools,postretro/capture -- --test-threads=1`: 11,119 passed (11,117 unit/integration + 2 doc), zero failed, 59 ignored in the merged tree. Test compilation took 20m 27s.
+- `POSTRETRO_REQUIRE_GPU=1 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 cargo test --locked --workspace --features postretro/dev-tools,postretro/capture sh_growth_ -- --nocapture --test-threads=1`: 10 matched/passed, zero failed/ignored/skipped, AMD Radeon Pro 5300M / Metal. Workspace selection reuses the same verified test artifacts; only the renderer target matches this filter.
+
+PR #592: https://github.com/majtom2grndctrl/postretro/pull/592. Publish the merge and this verification record together. Keep the rebuilt lint/test caches warm while the PR is open; about 23 GiB remains free.

@@ -10,7 +10,7 @@ use postretro_foundation::data_descriptors::{FluidDescriptor, FluidRegistry};
 
 /// Keys a fluid entry may carry. Anything else rejects the entry, so a
 /// misspelled optional sound is loud.
-const FLUID_KEYS: [&str; 7] = [
+const FLUID_KEYS: [&str; 12] = [
     "name",
     "viscosity",
     "viewTint",
@@ -18,6 +18,11 @@ const FLUID_KEYS: [&str; 7] = [
     "surfaceOpacity",
     "enterSound",
     "exitSound",
+    "fogDistance",
+    "fogColor",
+    "wavePeriod",
+    "waveAmplitude",
+    "waveLength",
 ];
 
 /// A `fluids` array holds at most this many slots, holes included. Past it the
@@ -72,12 +77,73 @@ impl EntryPath {
             Some(_) => Err(shape(format!("`{}` must be a string", self.field(field)))),
         }
     }
+
+    fn optional_number(
+        &self,
+        entry: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<Option<f32>, DescriptorError> {
+        match entry.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => self.number(value, field).map(Some),
+        }
+    }
+
+    /// An optional `[r, g, b]`: exactly three numbers.
+    fn optional_rgb(
+        &self,
+        entry: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<Option<[f32; 3]>, DescriptorError> {
+        let components = match entry.get(field) {
+            None | Some(serde_json::Value::Null) => return Ok(None),
+            Some(serde_json::Value::Array(components)) if components.len() == 3 => components,
+            Some(_) => {
+                return Err(shape(format!(
+                    "`{}` must be an array of 3 numbers",
+                    self.field(field)
+                )));
+            }
+        };
+        let mut rgb = [0.0; 3];
+        for (slot, component) in rgb.iter_mut().zip(components) {
+            *slot = self.number(component, field)?;
+        }
+        Ok(Some(rgb))
+    }
+
+    /// An optional range: one number `L`, meaning `[L, L]`, or a `[min, max]`
+    /// pair. Order is judged by validation, not here.
+    fn optional_number_or_pair(
+        &self,
+        entry: &serde_json::Map<String, serde_json::Value>,
+        field: &str,
+    ) -> Result<Option<[f32; 2]>, DescriptorError> {
+        match entry.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Array(pair)) if pair.len() == 2 => Ok(Some([
+                self.number(&pair[0], field)?,
+                self.number(&pair[1], field)?,
+            ])),
+            Some(value @ serde_json::Value::Number(_)) => {
+                let length = self.number(value, field)?;
+                Ok(Some([length, length]))
+            }
+            Some(_) => Err(shape(format!(
+                "`{}` must be a number or an array of 2 numbers [min, max]",
+                self.field(field)
+            ))),
+        }
+    }
 }
 
 /// Parse one converted entry's shape. Ranges are checked by the registry.
 /// Diagnostics name the field as `fluids[index].<field>`; `index` counts
 /// entries from 0 in both runtimes. A hole (`null`, `undefined` or `nil`) is a
-/// malformed entry like any other non-object.
+/// malformed entry like any other non-object. An omitted `waveAmplitude` and
+/// `waveLength` resolve to their defaults here, so validation judges the
+/// resolved values; an omitted `fogColor` stays `None` and resolves against
+/// `viewTint` where it is read (`FluidDescriptor::resolved_fog_color`).
 fn fluid_from_json(
     index: usize,
     entry: serde_json::Value,
@@ -109,6 +175,12 @@ fn fluid_from_json(
     for (slot, component) in view_tint.iter_mut().zip(tint) {
         *slot = path.number(component, "viewTint")?;
     }
+    let wave_amplitude = path
+        .optional_number(&entry, "waveAmplitude")?
+        .unwrap_or(FluidDescriptor::DEFAULT_WAVE_AMPLITUDE);
+    let wave_length = path
+        .optional_number_or_pair(&entry, "waveLength")?
+        .unwrap_or_else(|| FluidDescriptor::default_wave_length(wave_amplitude));
     Ok(FluidDescriptor {
         name,
         viscosity: path.number(path.required(&entry, "viscosity")?, "viscosity")?,
@@ -117,6 +189,11 @@ fn fluid_from_json(
         surface_opacity: path.number(path.required(&entry, "surfaceOpacity")?, "surfaceOpacity")?,
         enter_sound: path.optional_string(&entry, "enterSound")?,
         exit_sound: path.optional_string(&entry, "exitSound")?,
+        fog_distance: path.optional_number(&entry, "fogDistance")?,
+        fog_color: path.optional_rgb(&entry, "fogColor")?,
+        wave_period: path.optional_number(&entry, "wavePeriod")?,
+        wave_amplitude,
+        wave_length,
     })
 }
 

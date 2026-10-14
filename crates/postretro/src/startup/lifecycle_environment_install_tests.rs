@@ -271,6 +271,11 @@ fn fluid(name: &str) -> postretro_foundation::FluidDescriptor {
         surface_opacity: 0.6,
         enter_sound: None,
         exit_sound: None,
+        fog_distance: None,
+        fog_color: None,
+        wave_period: None,
+        wave_amplitude: 8.0,
+        wave_length: [64.0, 80.0],
     }
 }
 

@@ -2951,6 +2951,34 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
 | `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
 | `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
+| `fogDistance` | metres | above `0`, optional | How far you see into the fluid from outside it: at this depth of view 95% of what lies beyond is hidden. Leave it out for a clear fluid. Never applies to the view from inside, which `viewTint` alone covers. |
+| `fogColor` | `[r, g, b]` | each `0`–`1`, optional | The murk's colour, picked like `viewTint`'s rgb; the engine lights it with the surface's own lighting. Leave it out to use `viewTint`'s rgb. |
+| `wavePeriod` | seconds | `≥ 6`, optional | Turns on a slow surface wave: seconds per cycle of an average crest. Leave it out for no wave. |
+| `waveAmplitude` | texels | `0`–`16`, optional | How far the wave shifts the surface texture sideways at its peak. `0` is no wave; leave it out for `8`. |
+| `waveLength` | texels: a number or `[min, max]` | up to `128`, optional | Crest to crest. One number `L` means every crest is `L` long; a `[min, max]` range gives each crest its own length within it. The minimum must be at least 8 × `waveAmplitude`, the default `8` included. Leave it out for `[48, 80]`, or `8 × waveAmplitude` if that is longer. |
+
+The wave fields count the face's texture texels at its texture scale, so
+swapping a 64 px texture for a 128 px one keeps the wave's size, and a face at a
+finer scale carries a finer wave. The surface stays flat: the wave slides the
+texture's pixels sideways in whole-texel steps. In Luau a range is a table:
+`waveLength = { 48, 80 }`.
+
+```typescript
+defineFluid({
+  name: "canal",
+  viscosity: 2.0,
+  viewTint: [0.1, 0.3, 0.4, 0.35],
+  muffle: 0.8,
+  surfaceOpacity: 0.75,
+  fogDistance: 1.0, // walls show near the surface; the floor 1 m down is hidden
+  fogColor: [0.08, 0.2, 0.16],
+  wavePeriod: 63,
+  waveAmplitude: 6,
+  waveLength: [48, 80],
+}),
+```
+
+A `surfaceOpacity` of `0` with a `fogDistance` draws the murk alone.
 
 A field out of range, an unknown field, or a second fluid with a name already
 declared rejects that one declaration, with a warning naming the field. The
@@ -2961,9 +2989,10 @@ value that is not an array, declares no fluids, with one warning. A
 warning.
 
 **In co-op,** everyone swims by the host's fluids: the host's `viscosity`
-drives movement on every machine. The tint, muffle, surface opacity and sounds
-come from each machine's own declaration of that name, the way sound keys do,
-so a player whose mod lacks the fluid still swims in it but sees no tint.
+drives movement on every machine. The tint, muffle, surface opacity, fog, wave
+and sounds come from each machine's own declaration of that name, the way sound
+keys do, so a player whose mod lacks the fluid still swims in it but sees no
+tint.
 Fluid declarations do not affect who can join.
 
 ### `movement.swim`

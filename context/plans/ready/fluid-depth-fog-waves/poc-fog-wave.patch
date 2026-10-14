@@ -1,0 +1,218 @@
+diff --git a/crates/renderer/src/render/fluid_surface.rs b/crates/renderer/src/render/fluid_surface.rs
+index 3b5c92cef..39c423989 100644
+--- a/crates/renderer/src/render/fluid_surface.rs
++++ b/crates/renderer/src/render/fluid_surface.rs
+@@ -20,7 +20,7 @@ pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
+ /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
+ /// 2 lighting, 3 SH volume, 4 per-volume parameters.
+ #[cfg(any(test, debug_assertions))]
+-pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 5;
++pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 6;
+ 
+ const SHADER_SOURCE: &str = concat!(
+     include_str!("../shaders/fluid_surface.wgsl"),
+@@ -53,6 +53,21 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
+     }]
+ }
+ 
++/// EXPERIMENT: group 5, the scene depth the fluid fogs against. The pass
++/// opens its depth attachment read-only, so the same texture samples here.
++pub(crate) fn fluid_scene_depth_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
++    [wgpu::BindGroupLayoutEntry {
++        binding: 0,
++        visibility: wgpu::ShaderStages::FRAGMENT,
++        ty: wgpu::BindingType::Texture {
++            sample_type: wgpu::TextureSampleType::Depth,
++            view_dimension: wgpu::TextureViewDimension::D2,
++            multisampled: false,
++        },
++        count: None,
++    }]
++}
++
+ /// Every BGL entry set the fluid pipeline layout composes, in group order.
+ /// GPU-free, so the budget tests and the init-time debug assert derive the
+ /// per-stage inventory from the same builders the layout is created from.
+@@ -65,6 +80,7 @@ pub(crate) fn fluid_pipeline_bind_group_layout_entries()
+         lighting_bind_group_layout_entries().to_vec(),
+         sh_volume::sh_bind_group_layout_entries(),
+         fluid_params_bind_group_layout_entries().to_vec(),
++        fluid_scene_depth_bind_group_layout_entries().to_vec(),
+     ]
+ }
+ 
+@@ -166,6 +182,7 @@ struct InstalledFluidSurfaces {
+ pub(crate) struct FluidSurfacePass {
+     pipeline: wgpu::RenderPipeline,
+     params_bind_group_layout: wgpu::BindGroupLayout,
++    scene_depth_bind_group_layout: wgpu::BindGroupLayout,
+     /// `None` until a level with drawable fluid surfaces installs: a level
+     /// without them allocates nothing and never opens the pass.
+     installed: Option<InstalledFluidSurfaces>,
+@@ -191,6 +208,11 @@ impl FluidSurfacePass {
+                 label: Some("Fluid Surface Params BGL (group 4)"),
+                 entries: &fluid_params_bind_group_layout_entries(),
+             });
++        let scene_depth_bind_group_layout =
++            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++                label: Some("Fluid Surface Scene Depth BGL (group 5)"),
++                entries: &fluid_scene_depth_bind_group_layout_entries(),
++            });
+         // Same group order as `fluid_pipeline_bind_group_layout_entries`.
+         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+             label: Some("Fluid Surface Pipeline Layout"),
+@@ -200,6 +222,7 @@ impl FluidSurfacePass {
+                 Some(lighting_bgl),
+                 Some(sh_bgl),
+                 Some(&params_bind_group_layout),
++                Some(&scene_depth_bind_group_layout),
+             ],
+             immediate_size: 0,
+         });
+@@ -242,10 +265,28 @@ impl FluidSurfacePass {
+         Self {
+             pipeline,
+             params_bind_group_layout,
++            scene_depth_bind_group_layout,
+             installed: None,
+         }
+     }
+ 
++    /// EXPERIMENT: this frame's group-5 bind group over the scene depth view.
++    /// Built per frame so a resized depth texture needs no rebind plumbing.
++    pub fn scene_depth_bind_group(
++        &self,
++        device: &wgpu::Device,
++        depth_view: &wgpu::TextureView,
++    ) -> wgpu::BindGroup {
++        device.create_bind_group(&wgpu::BindGroupDescriptor {
++            label: Some("Fluid Surface Scene Depth BG"),
++            layout: &self.scene_depth_bind_group_layout,
++            entries: &[wgpu::BindGroupEntry {
++                binding: 0,
++                resource: wgpu::BindingResource::TextureView(depth_view),
++            }],
++        })
++    }
++
+     /// Drop the installed level's fluid geometry. Level install and unload
+     /// both start here.
+     pub fn clear(&mut self) {
+diff --git a/crates/renderer/src/render/renderer_render_frame.rs b/crates/renderer/src/render/renderer_render_frame.rs
+index 4fe2cb949..7c84de1e8 100644
+--- a/crates/renderer/src/render/renderer_render_frame.rs
++++ b/crates/renderer/src/render/renderer_render_frame.rs
+@@ -657,6 +657,10 @@ impl Renderer {
+                 .frame_timing
+                 .as_ref()
+                 .map(|t| t.render_pass_writes(TIMING_PAIR_FLUID_SURFACE));
++            let fluid_depth_bind_group = self
++                .full()
++                .fluid_surface
++                .scene_depth_bind_group(&self.device, &self.full().depth_view);
+             let mut fluid_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                 label: Some("Fluid Surface Pass"),
+                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+@@ -668,12 +672,10 @@ impl Renderer {
+                         store: wgpu::StoreOp::Store,
+                     },
+                 })],
++                // EXPERIMENT: read-only depth, so group 5 can sample it.
+                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                     view: &self.full().depth_view,
+-                    depth_ops: Some(wgpu::Operations {
+-                        load: wgpu::LoadOp::Load,
+-                        store: wgpu::StoreOp::Store,
+-                    }),
++                    depth_ops: None,
+                     stencil_ops: None,
+                 }),
+                 timestamp_writes: fluid_ts,
+@@ -682,6 +684,7 @@ impl Renderer {
+             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
+             fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
+             fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
++            fluid_pass.set_bind_group(5, &fluid_depth_bind_group, &[]);
+             self.full()
+                 .fluid_surface
+                 .record_draws(&mut fluid_pass, &self.full().gpu_textures);
+diff --git a/crates/renderer/src/shaders/fluid_surface.wgsl b/crates/renderer/src/shaders/fluid_surface.wgsl
+index 6208696b1..280735b20 100644
+--- a/crates/renderer/src/shaders/fluid_surface.wgsl
++++ b/crates/renderer/src/shaders/fluid_surface.wgsl
+@@ -118,6 +118,26 @@ struct VertexInput {
+     @location(3) drift_rate: vec2<f32>,
+ };
+ 
++// --- Group 5 (EXPERIMENT): scene depth, sampled under a read-only attachment ---
++@group(5) @binding(0) var scene_depth: texture_depth_2d;
++
++// EXPERIMENT: murky depth fog under the surface, seen from outside the volume.
++// Extinction is per meter of view ray below the surface: 3/m leaves ~5% of the
++// scene visible through 1 m of water. The albedo is linear, lit like the face.
++const FLUID_FOG_EXTINCTION: f32 = 3.0;
++const FLUID_FOG_ALBEDO: vec3<f32> = vec3<f32>(0.04, 0.055, 0.048);
++
++// Distance the view ray travels past the surface fragment to the opaque scene.
++// The ray cam + s * (frag - cam) is linear in clip space, so solving its NDC
++// depth for the scene depth gives s with no inverse matrix; s = 1 is the face.
++fn fluid_underwater_path(frag: vec3<f32>, depth: f32) -> f32 {
++    let c0 = uniforms.view_proj * vec4<f32>(uniforms.camera_position, 1.0);
++    let c1 = uniforms.view_proj * vec4<f32>(frag, 1.0);
++    let denom = (c1.z - c0.z) - depth * (c1.w - c0.w);
++    let s = select(1.0e4, (depth * c0.w - c0.z) / denom, abs(denom) > 1.0e-8);
++    return clamp(s - 1.0, 0.0, 1.0e4) * length(frag - uniforms.camera_position);
++}
++
+ struct VertexOutput {
+     @builtin(position) clip_position: vec4<f32>,
+     @location(0) uv: vec2<f32>,
+@@ -271,13 +291,27 @@ fn fluid_drift_scroll(rate: vec2<f32>, time: f32) -> vec2<f32> {
+ 
+ // The warped sample UV. Cells are floored from the UNWARPED texel UV, so
+ // shimmer and rings stay on the fixed grid while the drift scrolls beneath.
++// EXPERIMENT: main's Quake turbulent warp (amplitude and frequency in tile
++// units) at 10% of its speed, evaluated once per texel cell and rounded to
++// whole texels, so cells shift as blocks and texel edges stay straight.
++const FLUID_WAVE_AMPLITUDE: f32 = 0.125;
++const FLUID_WAVE_FREQUENCY: f32 = 8.0;
++const FLUID_WAVE_SPEED: f32 = 0.1;
++
++fn fluid_wave_offset(cell: vec2<i32>, dims: vec2<f32>, time: f32) -> vec2<f32> {
++    let cell_uv = (vec2<f32>(cell) + vec2<f32>(0.5)) / dims;
++    let phase = cell_uv.yx * FLUID_WAVE_FREQUENCY + vec2<f32>(time * FLUID_WAVE_SPEED);
++    return round(FLUID_WAVE_AMPLITUDE * dims * sin(phase));
++}
++
+ fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, time: f32,
+                  texels_per_pixel: f32) -> vec2<f32> {
+     let texel_uv = uv * dims;
+     let cell = vec2<i32>(floor(texel_uv));
+     let drift_texels = floor(drift_scroll * dims);
+     let cell_texels = vec2<f32>(fluid_displayed_offset(cell, time, texels_per_pixel));
+-    return (texel_uv + drift_texels + cell_texels) / dims;
++    let wave_texels = fluid_wave_offset(cell, dims, time);
++    return (texel_uv + drift_texels + cell_texels + wave_texels) / dims;
+ }
+ 
+ // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
+@@ -452,5 +486,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+             * material.emissive_strength;
+     }
+     let opacity = clamp(fluid_volumes.slots[in.slot].x, 0.0, 1.0);
+-    return vec4<f32>(rgb, albedo.a * opacity);
++    var alpha = albedo.a * opacity;
++    // EXPERIMENT: seen from outside (the face's outward normal toward the
++    // camera), the scene behind is under water. Composite surface over fog
++    // over scene in one straight-alpha output.
++    if dot(in.world_normal, V) > 0.0 {
++        let depth = textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0);
++        let path = fluid_underwater_path(in.world_position, depth);
++        let transmit = exp(-FLUID_FOG_EXTINCTION * path);
++        let fog_rgb = lighting * FLUID_FOG_ALBEDO;
++        let total = 1.0 - (1.0 - alpha) * transmit;
++        rgb = (rgb * alpha + fog_rgb * (1.0 - alpha) * (1.0 - transmit)) / max(total, 1.0e-4);
++        alpha = total;
++    }
++    return vec4<f32>(rgb, alpha);
+ }

@@ -8,7 +8,7 @@ Read at e8f607b94. Findings that inform the brief without deciding it.
 - `scene_color` is `Rgba16Float`; `COPY_SRC`/`COPY_DST` are added only under `cfg(test)` (`TEST_COPY_USAGE`).
 - Reduced-resolution precedents: SDF shadow (half), fog scatter (`fog_pixel_scale`) and the bloom chain. The brief's quality tiers follow these: the reflection target resolves at scene, half or quarter extent.
 - Budgets (pipeline_budget_tests.rs):
-  - The fluid fragment stage uses 7 sampled textures across groups 0–4 against a requested 16.
+  - The fluid fragment stage uses 7 sampled textures across groups 0–4 against a requested 16. `fluid-depth-fog-waves` adds scene depth in group 5, making 8.
   - Fragment storage is 8/8.
   - `max_bind_groups` is 8.
 - No SSR, Hi-Z or runtime cubemap exists. `env_cubemap` appears only in docs.

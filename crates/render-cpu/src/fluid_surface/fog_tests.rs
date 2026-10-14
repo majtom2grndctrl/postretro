@@ -186,6 +186,42 @@ fn a_face_seen_from_inside_or_without_fog_outputs_the_surface_unchanged() {
     assert_ne!(fog_fragment(rgb, alpha, &murky), rgb.extend(alpha));
 }
 
+// The shader normalizes the interpolated outward normal before the outside
+// gate and the proximity read it, and so does the reference: any length gives
+// the unit normal's output.
+#[test]
+fn the_fog_fragment_normalizes_the_interpolated_outward_normal() {
+    // Half a band above the plane, where proximity scales with the normal's
+    // length unless it is normalized.
+    let cam = camera(
+        Vec3::new(0.0, 0.5 * FLUID_FOG_BAND, 0.0),
+        Vec3::new(0.0, -1.0, -4.0),
+    );
+    let frag = cam.eye + cam.forward * (-cam.eye.y / cam.forward.y);
+    let depth = ndc_depth(cam.view_proj, frag + cam.forward * 0.75);
+    let rgb = Vec3::new(0.2, 0.5, 0.7);
+    let unit = murky_fragment(&cam, frag, Vec3::Y, depth);
+    assert_close(
+        fog_proximity(cam.eye, frag, Vec3::Y),
+        0.5,
+        1.0e-5,
+        "half a band",
+    );
+    let expected = fog_fragment(rgb, 0.4, &unit);
+    assert_ne!(expected, rgb.extend(0.4), "the unit normal draws murk");
+    for length in [0.25, 0.9, 3.0] {
+        let scaled = FluidFogFragment {
+            outward: Vec3::Y * length,
+            ..unit
+        };
+        assert_vec4_close(
+            fog_fragment(rgb, 0.4, &scaled),
+            expected,
+            "outward normal of length {length}",
+        );
+    }
+}
+
 #[test]
 fn proximity_ramps_linearly_over_one_band_above_the_plane_and_is_zero_below() {
     let frag = Vec3::new(3.0, 1.0, -2.0);

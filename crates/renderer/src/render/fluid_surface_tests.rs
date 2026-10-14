@@ -27,6 +27,23 @@ fn struct_span(module: &naga::Module, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("fluid shader should declare struct {name}"))
 }
 
+/// Each member of struct `name`, with its byte offset.
+fn struct_member_offsets(module: &naga::Module, name: &str) -> Vec<(String, u32)> {
+    module
+        .types
+        .iter()
+        .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
+            (Some(ty_name), naga::TypeInner::Struct { members, .. }) if ty_name == name => Some(
+                members
+                    .iter()
+                    .map(|member| (member.name.clone().unwrap_or_default(), member.offset))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("fluid shader should declare struct {name}"))
+}
+
 /// The text of `fn name` up to its closing brace.
 fn wgsl_fn<'a>(source: &'a str, name: &str) -> &'a str {
     let start = source
@@ -115,6 +132,28 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         std::mem::size_of::<postretro_render_cpu::fluid_surface::FluidParamsRow>(),
         FLUID_PARAMS_STRIDE
     );
+    // Member for member: swapping two vec4 on one side keeps the stride but
+    // feeds the shader the wrong row.
+    {
+        use postretro_render_cpu::fluid_surface::FluidParamsRow;
+        assert_eq!(
+            struct_member_offsets(&module, "FluidVolumeRow"),
+            [
+                (
+                    "surface".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, surface) as u32
+                ),
+                (
+                    "fog_albedo".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, fog_albedo) as u32
+                ),
+                (
+                    "wave".to_owned(),
+                    std::mem::offset_of!(FluidParamsRow, wave) as u32
+                ),
+            ]
+        );
+    }
     assert_eq!(
         struct_span(&module, "FluidSceneInputs") as u64,
         FLUID_SCENE_UNIFORM_BYTES
@@ -729,12 +768,11 @@ fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
         ),
         (
             "fluid_wave_crest",
-            "fnfluid_wave_crest(position:f32,time:f32,wave:vec4<f32>,salt:u32)->vec2<f32>{\
-             letsplit=fluid_exact_split_product(time,wave.x);\
-             letcount=split.count&(2*FLUID_WAVE_PAIRS-1);\
+            "fnfluid_wave_crest(position:f32,phase:FluidSplit,wave:vec4<f32>,salt:u32)->vec2<f32>{\
+             letcount=phase.count&(2*FLUID_WAVE_PAIRS-1);\
              letpairs=count>>1u;letparity=f32(count&1);\
              letpair_length=wave.z+wave.w;\
-             letpair_position=position/pair_length-(parity+split.fraction)*0.5;\
+             letpair_position=position/pair_length-(parity+phase.fraction)*0.5;\
              letwhole=floor(pair_position);letpair=(i32(whole)-pairs)&(FLUID_WAVE_PAIRS-1);\
              letinto_pair=(pair_position-whole)*pair_length;\
              letd=(2.0*fluid_hash_unit(fluid_hash_u32(bitcast<u32>(pair)^salt))-1.0)\
@@ -754,16 +792,17 @@ fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
             // A real guard: an unwritten or no-wave row has zero lengths, and
             // the crest divides by their sum.
             "fluid_wave_value",
-            "fnfluid_wave_value(position:f32,time:f32,wave:vec4<f32>,salt:u32)->f32{\
+            "fnfluid_wave_value(position:f32,phase:FluidSplit,wave:vec4<f32>,salt:u32)->f32{\
              ifwave.y==0.0||wave.x==0.0{return0.0;}\
-             returnwave.y*fluid_wave_arc(fluid_wave_crest(position,time,wave,salt));}",
+             returnwave.y*fluid_wave_arc(fluid_wave_crest(position,phase,wave,salt));}",
         ),
         (
             "fluid_wave_offset",
             "fnfluid_wave_offset(cell:vec2<i32>,time:f32,wave:vec4<f32>)->vec2<i32>{\
+             letphase=fluid_exact_split_product(time,wave.x);\
              letshift=vec2<f32>(\
-             fluid_wave_value(f32(cell.y)+0.5,time,wave,FLUID_SALT_WAVE_U),\
-             fluid_wave_value(f32(cell.x)+0.5,time,wave,FLUID_SALT_WAVE_V),);\
+             fluid_wave_value(f32(cell.y)+0.5,phase,wave,FLUID_SALT_WAVE_U),\
+             fluid_wave_value(f32(cell.x)+0.5,phase,wave,FLUID_SALT_WAVE_V),);\
              returnvec2<i32>(floor(shift+vec2<f32>(0.5)));}",
         ),
     ];
@@ -778,7 +817,7 @@ fn fluid_wave_wgsl_bodies_match_the_cpu_twin() {
 fn fluid_wave_cpu_twin_bodies_are_pinned() {
     let source = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
     let function = |name: &str| code_only(wgsl_fn(source, name));
-    let pinned: [(&str, &str); 6] = [
+    let pinned: [(&str, &str); 7] = [
         (
             "exact_split_product",
             "fnexact_split_product(a:f32,b:f32)->(i32,f32){\
@@ -793,8 +832,8 @@ fn fluid_wave_cpu_twin_bodies_are_pinned() {
         ),
         (
             "wave_crest",
-            "fnwave_crest(position:f32,time:f32,wave:FluidWaveParams,salt:u32)->Vec2{\
-             let(count,fraction)=exact_split_product(time,wave.inv_period);\
+            "fnwave_crest(position:f32,phase:(i32,f32),wave:FluidWaveParams,salt:u32)->Vec2{\
+             let(count,fraction)=phase;\
              letcount=count&(2*FLUID_WAVE_PAIRS-1);letpairs=count>>1;\
              letparity=(count&1)asf32;letpair_length=wave.length_min+wave.length_max;\
              letpair_position=position/pair_length-(parity+fraction)*0.5;\
@@ -816,17 +855,24 @@ fn fluid_wave_cpu_twin_bodies_are_pinned() {
         ),
         (
             "wave_value",
-            "fnwave_value(position:f32,time:f32,wave:FluidWaveParams,salt:u32)->f32{\
+            "fnwave_value(position:f32,phase:(i32,f32),wave:FluidWaveParams,salt:u32)->f32{\
              ifwave.amplitude==0.0||wave.inv_period==0.0{return0.0;}\
-             wave.amplitude*wave_arc(wave_crest(position,time,wave,salt))}",
+             wave.amplitude*wave_arc(wave_crest(position,phase,wave,salt))}",
         ),
         (
             "wave_offset",
             "fnwave_offset(cell:IVec2,time:f32,wave:FluidWaveParams)->IVec2{\
+             letphase=exact_split_product(time,wave.inv_period);\
              letshift=Vec2::new(\
-             wave_value(cell.yasf32+0.5,time,wave,FLUID_SALT_WAVE_U),\
-             wave_value(cell.xasf32+0.5,time,wave,FLUID_SALT_WAVE_V),);\
+             wave_value(cell.yasf32+0.5,phase,wave,FLUID_SALT_WAVE_U),\
+             wave_value(cell.xasf32+0.5,phase,wave,FLUID_SALT_WAVE_V),);\
              (shift+0.5).floor().as_ivec2()}",
+        ),
+        (
+            // `fluid_warp_uv` inlines this as `floor(drift_scroll * dims)`.
+            "drift_texels",
+            "fndrift_texels(rate:Vec2,time:f32,dims:Vec2)->Vec2{\
+             (drift_scroll_periods(rate,time)*dims).floor()}",
         ),
         (
             "warped_texel_uv",
@@ -992,12 +1038,13 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         cpu,
         "fnfog_fragment(rgb:Vec3,alpha:f32,fragment:&FluidFogFragment)->Vec4{\
          letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
-         if!(fragment.extinction>0.0&&fog_seen_from_outside(fragment.outward,view)){\
+         letoutward=fragment.outward.normalize();\
+         if!(fragment.extinction>0.0&&fog_seen_from_outside(outward,view)){\
          returnrgb.extend(alpha);}\
          letpath=fog_path(fragment.view_proj,fragment.camera,fragment.world_position,\
          fragment.scene_depth,);\
          lettransmittance=fog_transmittance(fragment.extinction,path);\
-         letproximity=fog_proximity(fragment.camera,fragment.world_position,fragment.outward);\
+         letproximity=fog_proximity(fragment.camera,fragment.world_position,outward);\
          letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
          fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
     );

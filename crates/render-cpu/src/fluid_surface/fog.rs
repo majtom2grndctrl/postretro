@@ -3,20 +3,27 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
-// The shader mirrors each constant and function below;
-// `render/fluid_surface_tests.rs` pins them against it.
+// The shader mirrors each function below, `fog_fragment` inlined as
+// `fs_main`'s tail, and each constant but the two packing-only extinction
+// constants; `render/fluid_surface_tests.rs` pins them against it.
 
 /// Extinction per unit of `1 / fogDistance`: transmittance at a path of one
 /// `fogDistance` is `exp(-3)` ≈ 0.05, so `fogDistance` is the path that hides
 /// 95%. Packed CPU-side as `3 / fogDistance`; the shader never reads it.
 pub const FLUID_FOG_EXTINCTION_PER_DISTANCE: f32 = 3.0;
+/// Ceiling on the packed extinction, so the shader's `-extinction * path`
+/// stays finite: the longest path is [`FLUID_FOG_PATH_MAX`] camera distances,
+/// about 1e4 × the 4096 m far clip ≈ 4e7 m, and 1e30 × 4e7 is far below
+/// `f32::MAX`. Still total murk past about 1e-27 m. Packing-only.
+pub const FLUID_FOG_EXTINCTION_MAX: f32 = 1.0e30;
 /// Height, metres, above a face's plane along its outward normal over which
 /// its fog ramps from none to full. Equal to the eye tint's hysteresis band
 /// (`EYE_FLUID_MARGIN` in postretro's `fluid_presentation`), so an eye bobbing
 /// at a plane never flips between murk and clear before the tint takes over.
 pub const FLUID_FOG_BAND: f32 = 0.08;
 /// Longest fog path, in units of the face's camera distance: the clamp on
-/// the ray parameter and the answer when the ray never meets the depth.
+/// `s − 1`, the ray's parameter past the face, and the answer for `s` when the
+/// ray never meets the depth.
 pub const FLUID_FOG_PATH_MAX: f32 = 1.0e4;
 /// Below this the view ray runs parallel to the depth's iso-surface in clip
 /// space and the solve has no answer.
@@ -84,7 +91,8 @@ pub struct FluidFogFragment {
     pub view_proj: Mat4,
     pub camera: Vec3,
     pub world_position: Vec3,
-    /// The interpolated outward face normal.
+    /// The interpolated outward face normal, any length; normalized as the
+    /// shader does.
     pub outward: Vec3,
     /// The scene depth at the fragment's pixel.
     pub scene_depth: f32,
@@ -103,7 +111,8 @@ pub struct FluidFogFragment {
 /// inside, else composited over its fog.
 pub fn fog_fragment(rgb: Vec3, alpha: f32, fragment: &FluidFogFragment) -> Vec4 {
     let view = (fragment.camera - fragment.world_position).normalize_or_zero();
-    if !(fragment.extinction > 0.0 && fog_seen_from_outside(fragment.outward, view)) {
+    let outward = fragment.outward.normalize();
+    if !(fragment.extinction > 0.0 && fog_seen_from_outside(outward, view)) {
         return rgb.extend(alpha);
     }
     let path = fog_path(
@@ -113,7 +122,7 @@ pub fn fog_fragment(rgb: Vec3, alpha: f32, fragment: &FluidFogFragment) -> Vec4 
         fragment.scene_depth,
     );
     let transmittance = fog_transmittance(fragment.extinction, path);
-    let proximity = fog_proximity(fragment.camera, fragment.world_position, fragment.outward);
+    let proximity = fog_proximity(fragment.camera, fragment.world_position, outward);
     let fog_opacity = fog_layer_opacity(fragment.weight, proximity, transmittance);
     fog_composite(
         rgb,

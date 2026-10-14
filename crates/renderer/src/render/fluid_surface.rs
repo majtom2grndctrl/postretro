@@ -84,7 +84,8 @@ pub(crate) fn fluid_pipeline_stage_count(count: fn(&[wgpu::BindGroupLayoutEntry]
         .sum()
 }
 
-/// Straight alpha over the scene at the fluid's surface opacity.
+/// Straight alpha over the scene. The fragment's alpha is the composite's
+/// coverage, surface over fog, so murk alone still hides the scene.
 pub(crate) fn fluid_blend_state() -> wgpu::BlendState {
     wgpu::BlendState {
         color: wgpu::BlendComponent {

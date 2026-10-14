@@ -652,6 +652,9 @@ impl Renderer {
         // its own visible draws, never on the smoke pass's particle gate.
         if render_world && self.full().fluid_surface.has_draws() {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
+            // Only a drawing frame reads the weight. It is stored every frame
+            // and uploads here lazily, only when it changed; the batched write
+            // copies ahead of this frame's submission.
             {
                 let Self { queue, full, .. } = self;
                 let full = full

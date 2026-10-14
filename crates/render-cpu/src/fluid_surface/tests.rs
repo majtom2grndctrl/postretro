@@ -763,9 +763,13 @@ fn packing_zeroes_the_wave_without_a_period_or_amplitude_and_the_fog_without_a_d
 
 // The smallest positive `fogDistance` validates, but `3 / distance` overflows
 // to +inf there, and the shader's `exp(-inf * 0)` on a zero path is NaN. The
-// packed extinction stays finite, and on a zero path still shows the scene.
+// packed extinction stays finite, on a zero path still shows the scene, and
+// times the longest path the shader can solve (`FLUID_FOG_PATH_MAX` camera
+// distances, a far-clip corner's distance generously rounded up) still
+// does not overflow, so the transmittance there is exactly 0.
 #[test]
 fn packing_keeps_the_extinction_finite_for_the_smallest_positive_fog_distance() {
+    let longest_path = fog::FLUID_FOG_PATH_MAX * 8_192.0;
     for distance in [f32::from_bits(1), f32::MIN_POSITIVE, 1.0e-38] {
         let row = FluidSurfaceLook {
             fog_distance: Some(distance),
@@ -779,7 +783,40 @@ fn packing_keeps_the_extinction_finite_for_the_smallest_positive_fog_distance() 
         );
         assert_eq!(fog::fog_transmittance(extinction, 0.0), 1.0);
         assert_eq!(fog::fog_transmittance(extinction, 1.0e-3), 0.0);
+        assert!(
+            (extinction * longest_path).is_finite(),
+            "fogDistance {distance:e}: {extinction} × {longest_path} overflows"
+        );
+        assert_eq!(fog::fog_transmittance(extinction, longest_path), 0.0);
     }
+}
+
+// A period so small its reciprocal overflows to +inf would turn the shader's
+// phase split to NaN; it packs no wave, as an omitted period does.
+#[test]
+fn packing_drops_a_wave_whose_period_reciprocal_overflows() {
+    for period in [f32::from_bits(1), 1.0e-39] {
+        assert!(!(1.0 / period).is_finite());
+        let row = FluidSurfaceLook {
+            wave_period: Some(period),
+            ..water_look()
+        }
+        .pack();
+        assert_eq!(row.wave, [0.0; 4], "wavePeriod {period:e} packs no wave");
+        for time in [0.0, 17.5, 86_399.0] {
+            assert_eq!(
+                motion::wave_offset(IVec2::new(-37, 91), time, row.wave()),
+                IVec2::ZERO
+            );
+        }
+    }
+    // The smallest normal period's reciprocal is finite and still packs.
+    let tiny = FluidSurfaceLook {
+        wave_period: Some(f32::MIN_POSITIVE),
+        ..water_look()
+    }
+    .pack();
+    assert!(tiny.wave[0].is_finite() && tiny.wave[1] == 8.0);
 }
 
 // Pin P6: a reload that changes `wavePeriod` 63 → 20 draws, on its first
@@ -870,6 +907,46 @@ fn a_reload_reuploads_exactly_the_changed_fluids_slots_and_nothing_when_unchange
         slots.set_draws(&frame(changed));
         assert!(slots.take_dirty().is_none());
     }
+}
+
+// The upload is one contiguous range, so a change to a fluid whose slots
+// straddle another's rewrites the one between: water at slots 0 and 2, sludge
+// at 1. The range runs from water's first changed slot to its last, and every
+// row in it is the current row for its slot. Sludge's row goes up again with
+// its identical bytes, never stale or mixed with water's.
+#[test]
+fn an_interleaved_change_uploads_one_range_whose_every_row_is_current() {
+    // Slots follow wet volume order: water 0 → slot 0, sludge 1 → slot 1,
+    // water 2 → slot 2.
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let frame = |water: FluidSurfaceLook| [draw(1, sludge_look()), draw(2, water), draw(0, water)];
+    slots.set_draws(&frame(water_look()));
+    assert_eq!(slots.take_dirty().map(|(range, _)| range), Some(0..3));
+    slots.set_draws(&frame(water_look()));
+    assert!(slots.take_dirty().is_none());
+
+    let changed = FluidSurfaceLook {
+        fog_distance: Some(3.0),
+        ..water_look()
+    };
+    slots.set_draws(&frame(changed));
+    let (range, rows) = slots.take_dirty().expect("the changed fluid uploads");
+    assert_eq!(range, 0..3, "from water's first changed slot to its last");
+    let current = [changed.pack(), sludge_look().pack(), changed.pack()];
+    assert_eq!(rows, current);
+    assert_eq!(
+        bytemuck::cast_slice::<FluidParamsRow, u8>(&rows[1..2]),
+        bytemuck::bytes_of(&sludge_look().pack()),
+        "sludge's row goes up with its identical bytes"
+    );
+    slots.set_draws(&frame(changed));
+    assert!(slots.take_dirty().is_none());
 }
 
 // A fogged fluid at surface opacity 0 draws its fog alone; with fog omitted it

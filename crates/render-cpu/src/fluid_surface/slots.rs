@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 
-use super::fog::FLUID_FOG_EXTINCTION_PER_DISTANCE;
+use super::fog::{FLUID_FOG_EXTINCTION_MAX, FLUID_FOG_EXTINCTION_PER_DISTANCE};
 use super::motion::FluidWaveParams;
 use super::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceDraw, FluidSurfaceVolume};
 
@@ -61,9 +61,10 @@ impl FluidSurfaceLook {
         let extinction = match self.fog_distance {
             // Validation admits the smallest positive distance, whose quotient
             // overflows to +inf; the shader's `exp(-inf * 0)` on a zero path
-            // is NaN. The largest finite extinction is still total murk.
+            // is NaN. The cap keeps `extinction * path` finite at the longest
+            // path and is still total murk.
             Some(distance) if distance.is_finite() && distance > 0.0 => {
-                (FLUID_FOG_EXTINCTION_PER_DISTANCE / distance).min(f32::MAX)
+                (FLUID_FOG_EXTINCTION_PER_DISTANCE / distance).min(FLUID_FOG_EXTINCTION_MAX)
             }
             _ => 0.0,
         };
@@ -75,23 +76,23 @@ impl FluidSurfaceLook {
             }
         });
         let [length_min, length_max] = self.wave_length;
-        // Pin P3: a declared amplitude with no period packs no wave, never a
-        // frozen displacement; an unusable range packs none either, as the
-        // shader divides by the pair length.
-        let wave = match self.wave_period {
-            Some(period)
-                if period.is_finite()
-                    && period > 0.0
-                    && self.wave_amplitude.is_finite()
-                    && self.wave_amplitude > 0.0
-                    && length_min.is_finite()
-                    && length_max.is_finite()
-                    && length_min > 0.0
-                    && length_max >= length_min =>
-            {
-                [1.0 / period, self.wave_amplitude, length_min, length_max]
-            }
-            _ => [0.0; 4],
+        // A declared amplitude with no period packs no wave, never a frozen
+        // displacement; an unusable range packs none either, as the shader
+        // divides by the pair length. The reciprocal itself must be finite: a
+        // subnormal period's overflows, and the phase split turns inf to NaN.
+        let inv_period = self.wave_period.map_or(0.0, |period| 1.0 / period);
+        let wave = if inv_period.is_finite()
+            && inv_period > 0.0
+            && self.wave_amplitude.is_finite()
+            && self.wave_amplitude > 0.0
+            && length_min.is_finite()
+            && length_max.is_finite()
+            && length_min > 0.0
+            && length_max >= length_min
+        {
+            [inv_period, self.wave_amplitude, length_min, length_max]
+        } else {
+            [0.0; 4]
         };
         FluidParamsRow {
             surface: [opacity, extinction, 0.0, 0.0],

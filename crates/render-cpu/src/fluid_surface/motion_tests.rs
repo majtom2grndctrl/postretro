@@ -389,6 +389,11 @@ fn wave(period: f32, amplitude: f32, length: [f32; 2]) -> FluidWaveParams {
     }
 }
 
+/// The wave's phase at `time`, split as `wave_offset` splits it once per cell.
+fn phase_at(time: f32, wave: FluidWaveParams) -> (i32, f32) {
+    exact_split_product(time, wave.inv_period)
+}
+
 fn mean_length(wave: FluidWaveParams) -> f32 {
     0.5 * (wave.length_min + wave.length_max)
 }
@@ -483,7 +488,7 @@ fn coherence_keeps_adjacent_cells_wave_offsets_within_the_arc_slope_bound() {
             for &time in &times {
                 for salt in WAVE_SALTS {
                     let line: Vec<f32> = (-1024..1024)
-                        .map(|i| wave_value(i as f32 + 0.5, time, w, salt))
+                        .map(|i| wave_value(i as f32 + 0.5, phase_at(time, w), w, salt))
                         .collect();
                     for pair in line.windows(2) {
                         assert!(
@@ -526,7 +531,10 @@ fn the_wave_is_exactly_zero_without_amplitude_or_period() {
             for cell in grid(IVec2::new(-40, -40), 80) {
                 assert_eq!(wave_offset(cell, time, w), IVec2::ZERO);
                 for salt in WAVE_SALTS {
-                    assert_eq!(wave_value(cell.x as f32 + 0.5, time, w, salt), 0.0);
+                    assert_eq!(
+                        wave_value(cell.x as f32 + 0.5, phase_at(time, w), w, salt),
+                        0.0
+                    );
                 }
             }
         }
@@ -558,8 +566,8 @@ fn one_period_later_the_wave_is_the_same_pattern_one_mean_length_on() {
                 for salt in WAVE_SALTS {
                     for i in 0..3_000 {
                         let position = -600.0 + i as f32 * 0.37;
-                        let now = wave_value(position - mean, time, w, salt);
-                        let then = wave_value(position, later, w, salt);
+                        let now = wave_value(position - mean, phase_at(time, w), w, salt);
+                        let then = wave_value(position, phase_at(later, w), w, salt);
                         assert!(
                             (now - then).abs() <= 1.0e-3,
                             "A={amplitude} {length:?} period {period} t={time} at {position}: \
@@ -586,7 +594,7 @@ fn every_crest_travels_at_mean_length_per_period_and_keeps_its_length() {
                 for salt in WAVE_SALTS {
                     for i in 0..17 {
                         let probe = -300.0 + i as f32 * 37.0;
-                        let crest = wave_crest(probe, t0, w, salt);
+                        let crest = wave_crest(probe, phase_at(t0, w), w, salt);
                         let crest_length = crest.y;
                         assert!(
                             (length[0]..=length[1]).contains(&crest_length),
@@ -597,7 +605,7 @@ fn every_crest_travels_at_mean_length_per_period_and_keeps_its_length() {
                             let time = grid_time(f64::from(t0) + step as f64 * 0.5);
                             let start = start0 + speed * (f64::from(time) - f64::from(t0));
                             let middle = (start + 0.5 * f64::from(crest_length)) as f32;
-                            let tracked = wave_crest(middle, time, w, salt);
+                            let tracked = wave_crest(middle, phase_at(time, w), w, salt);
                             assert!(
                                 (tracked.y - crest_length).abs() <= 1.0e-3,
                                 "crest {crest_length} became {} at t={time}",
@@ -610,11 +618,13 @@ fn every_crest_travels_at_mean_length_per_period_and_keeps_its_length() {
                                 0.5 * crest_length
                             );
                             let end = (start + f64::from(crest_length)) as f32;
-                            let next = wave_crest(end + 0.05, time, w, salt);
+                            let next = wave_crest(end + 0.05, phase_at(time, w), w, salt);
                             assert!((next.x - 0.05).abs() <= 1.0e-2, "spacing changed");
                             assert!((length[0]..=length[1]).contains(&next.y));
                             for join in [start as f32, middle, end] {
-                                assert!(wave_value(join, time, w, salt).abs() <= 1.0e-2);
+                                assert!(
+                                    wave_value(join, phase_at(time, w), w, salt).abs() <= 1.0e-2
+                                );
                             }
                         }
                     }
@@ -666,11 +676,11 @@ fn wave_wrap_across_every_period_boundary_to_a_day_never_jumps_or_rehashes_a_cre
                 crossed_span_wrap |= span_count(after, w) < span_count(before, w);
                 let probe = ((k * 7_919) % 997) as f32 - 498.5;
                 for salt in WAVE_SALTS {
-                    let crest = wave_crest(probe, before, w, salt);
+                    let crest = wave_crest(probe, phase_at(before, w), w, salt);
                     let start =
                         f64::from(probe - crest.x) + speed * (f64::from(after) - f64::from(before));
                     let middle = (start + 0.5 * f64::from(crest.y)) as f32;
-                    let tracked = wave_crest(middle, after, w, salt);
+                    let tracked = wave_crest(middle, phase_at(after, w), w, salt);
                     assert!(
                         (tracked.y - crest.y).abs() <= 1.0e-3
                             && (tracked.x - 0.5 * crest.y).abs() <= 1.0e-2,

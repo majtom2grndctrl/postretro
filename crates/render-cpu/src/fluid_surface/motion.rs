@@ -44,8 +44,8 @@ pub const FLUID_SALT_DROP: u32 = 0x1656_67B1;
 pub const FLUID_SALT_WAVE_U: u32 = 0x4C95_7F2D;
 pub const FLUID_SALT_WAVE_V: u32 = 0x5851_F42D;
 /// Crest pairs per hash-repeat span: a power of two, so a pair hashes on
-/// `pair & (FLUID_WAVE_PAIRS − 1)` and the phase count wraps by masking. At
-/// the shortest pair (16 texels) the layout repeats every 65 536 texels.
+/// `pair & (FLUID_WAVE_PAIRS − 1)` and the phase count wraps by masking. The
+/// layout repeats every 4096 pairs: 65 536 texels at a 16-texel pair.
 pub const FLUID_WAVE_PAIRS: i32 = 4096;
 /// Half-arc `h(x) = g · (LINEAR + QUADRATIC · g)`, `g = x(1 − x)`: zero at
 /// both ends, 1 at the middle, peak slope ≈ 3.043 per unit arc (a parabola's
@@ -250,19 +250,20 @@ impl FluidWaveParams {
     };
 }
 
-/// The crest at `position` (texels along the wave's axis) at `time`: `x` is
+/// The crest at `position` (texels along the wave's axis) at `phase`: `x` is
 /// the distance into the crest, `y` its length. Crests come in pairs spanning
 /// exactly two mean lengths, the first `mean + d` and the second `mean − d`,
 /// with `d` hashed per pair, so every crest lies in the length range and a
 /// pair is found in O(1). The layout translates by one mean length per period.
 ///
-/// The phase, in mean lengths, splits exactly into a whole count and a
-/// fraction ([`exact_split_product`]). The count wraps over whole hash-repeat
-/// spans and splits into pairs and a parity, so pair indices stay integers and
-/// every f32 here stays small at any script time. Wrapping over whole spans,
-/// never one period, keeps every crest's hashed length across the wrap.
-pub fn wave_crest(position: f32, time: f32, wave: FluidWaveParams, salt: u32) -> Vec2 {
-    let (count, fraction) = exact_split_product(time, wave.inv_period);
+/// `phase` is the time in mean lengths, `time · inv_period`, split exactly
+/// into a whole count and a fraction ([`exact_split_product`]). The count
+/// wraps over whole hash-repeat spans and splits into pairs and a parity, so
+/// pair indices stay integers and every f32 here stays small at any script
+/// time. Wrapping over whole spans, never one period, keeps every crest's
+/// hashed length across the wrap.
+pub fn wave_crest(position: f32, phase: (i32, f32), wave: FluidWaveParams, salt: u32) -> Vec2 {
+    let (count, fraction) = phase;
     let count = count & (2 * FLUID_WAVE_PAIRS - 1);
     let pairs = count >> 1;
     let parity = (count & 1) as f32;
@@ -294,23 +295,25 @@ pub fn wave_arc(crest: Vec2) -> f32 {
     if second { -h } else { h }
 }
 
-/// The wave's continuous shift, in texels, at `position` along its axis,
-/// before rounding. Exactly zero with no amplitude or no period.
-pub fn wave_value(position: f32, time: f32, wave: FluidWaveParams, salt: u32) -> f32 {
+/// The wave's continuous shift, in texels, at `position` along its axis and
+/// `phase` ([`wave_crest`]), before rounding. Exactly zero with no amplitude
+/// or no period: a real guard, as the crest divides by the pair length.
+pub fn wave_value(position: f32, phase: (i32, f32), wave: FluidWaveParams, salt: u32) -> f32 {
     if wave.amplitude == 0.0 || wave.inv_period == 0.0 {
         return 0.0;
     }
-    wave.amplitude * wave_arc(wave_crest(position, time, wave, salt))
+    wave.amplitude * wave_arc(wave_crest(position, phase, wave, salt))
 }
 
 /// The wave's whole-texel offset for `cell` at `time`: the `u` shift keyed on
 /// the cell's `v`, the `v` shift on its `u`, each sampled at the cell centre
-/// on the fixed grid. Texels count, not texture periods, so the offset is the
-/// same whatever the texture's size.
+/// on the fixed grid from one phase split. Texels count, not texture periods,
+/// so the offset is the same whatever the texture's size.
 pub fn wave_offset(cell: IVec2, time: f32, wave: FluidWaveParams) -> IVec2 {
+    let phase = exact_split_product(time, wave.inv_period);
     let shift = Vec2::new(
-        wave_value(cell.y as f32 + 0.5, time, wave, FLUID_SALT_WAVE_U),
-        wave_value(cell.x as f32 + 0.5, time, wave, FLUID_SALT_WAVE_V),
+        wave_value(cell.y as f32 + 0.5, phase, wave, FLUID_SALT_WAVE_U),
+        wave_value(cell.x as f32 + 0.5, phase, wave, FLUID_SALT_WAVE_V),
     );
     (shift + 0.5).floor().as_ivec2()
 }

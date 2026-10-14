@@ -321,14 +321,14 @@ fn fluid_exact_split_product(a: f32, b: f32) -> FluidSplit {
 // The crest at `position` texels along the wave's axis: x = distance into it,
 // y = its length. Crests come in hashed pairs spanning two mean lengths; the
 // phase count wraps over whole hash-repeat spans, so every crest keeps its
-// length across the wrap. `wave` is the row's (1/period, amplitude, min, max).
-fn fluid_wave_crest(position: f32, time: f32, wave: vec4<f32>, salt: u32) -> vec2<f32> {
-    let split = fluid_exact_split_product(time, wave.x);
-    let count = split.count & (2 * FLUID_WAVE_PAIRS - 1);
+// length across the wrap. `phase` is time * (1/period), split once per cell;
+// `wave` is the row's (1/period, amplitude, min, max).
+fn fluid_wave_crest(position: f32, phase: FluidSplit, wave: vec4<f32>, salt: u32) -> vec2<f32> {
+    let count = phase.count & (2 * FLUID_WAVE_PAIRS - 1);
     let pairs = count >> 1u;
     let parity = f32(count & 1);
     let pair_length = wave.z + wave.w;
-    let pair_position = position / pair_length - (parity + split.fraction) * 0.5;
+    let pair_position = position / pair_length - (parity + phase.fraction) * 0.5;
     let whole = floor(pair_position);
     let pair = (i32(whole) - pairs) & (FLUID_WAVE_PAIRS - 1);
     let into_pair = (pair_position - whole) * pair_length;
@@ -352,18 +352,20 @@ fn fluid_wave_arc(crest: vec2<f32>) -> f32 {
 
 // A real guard, not a select: a no-wave or unwritten row has zero lengths,
 // and the crest divides by their sum.
-fn fluid_wave_value(position: f32, time: f32, wave: vec4<f32>, salt: u32) -> f32 {
+fn fluid_wave_value(position: f32, phase: FluidSplit, wave: vec4<f32>, salt: u32) -> f32 {
     if wave.y == 0.0 || wave.x == 0.0 {
         return 0.0;
     }
-    return wave.y * fluid_wave_arc(fluid_wave_crest(position, time, wave, salt));
+    return wave.y * fluid_wave_arc(fluid_wave_crest(position, phase, wave, salt));
 }
 
-// Whole-texel wave offset for a cell: u keyed on the cell's v, v on its u.
+// Whole-texel wave offset for a cell: u keyed on the cell's v, v on its u,
+// both from one phase split.
 fn fluid_wave_offset(cell: vec2<i32>, time: f32, wave: vec4<f32>) -> vec2<i32> {
+    let phase = fluid_exact_split_product(time, wave.x);
     let shift = vec2<f32>(
-        fluid_wave_value(f32(cell.y) + 0.5, time, wave, FLUID_SALT_WAVE_U),
-        fluid_wave_value(f32(cell.x) + 0.5, time, wave, FLUID_SALT_WAVE_V),
+        fluid_wave_value(f32(cell.y) + 0.5, phase, wave, FLUID_SALT_WAVE_U),
+        fluid_wave_value(f32(cell.x) + 0.5, phase, wave, FLUID_SALT_WAVE_V),
     );
     return vec2<i32>(floor(shift + vec2<f32>(0.5)));
 }
@@ -381,8 +383,9 @@ fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, wave: 
     return (texel_uv + drift_texels + wave_texels + cell_texels) / dims;
 }
 
-// Depth fog. Mirrors `postretro_render_cpu::fluid_surface::fog`; every body and
-// constant is pinned to it.
+// Depth fog. Mirrors `postretro_render_cpu::fluid_surface::fog`: each fog
+// function and constant here is pinned to it, and `fs_main`'s tail inlines its
+// `fog_fragment`. The extinction constants are CPU-only, used in packing.
 const FLUID_FOG_BAND: f32 = 0.08;
 const FLUID_FOG_PATH_MAX: f32 = 1.0e4;
 const FLUID_FOG_DENOM_EPSILON: f32 = 1.0e-8;

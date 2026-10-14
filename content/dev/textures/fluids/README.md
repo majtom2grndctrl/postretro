@@ -12,7 +12,7 @@ sampling.
 | `fluids/water_128` | 128×128 | Water at twice the extent from its own seed: caustic cells keep the same texel size, while the swell and warp scale with the texture. |
 | `fluids/water_neon_64` | 64×64 | Cyberpunk canal water: violet body, magenta-to-cyan caustic web. |
 | `fluids/sludge_64` | 64×64 | Murky olive-brown ooze with oily contour sheen and pale bubble rims. |
-| `fluids/lava_64` | 64×64 | Dark cooled crust plates split by glowing orange-yellow cracks, a few hot bubbles. |
+| `fluids/lava_64` | 64×64 | Dark cooled crust plates split by glowing orange-yellow cracks, a few hot bubbles. Has an `_e` emissive sibling. |
 | `fluids/slime_64` | 64×64 | Toxic green gel with glowing lumps and pale bubble rings. |
 
 All are 8-bit RGBA PNGs with opaque alpha, with no `_n` or `_s` siblings and no

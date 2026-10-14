@@ -3,7 +3,8 @@
 Generate the dev mod's tileable fluid surface textures.
 
 Writes `<out>/<name>.png` for each fluid in FLUIDS: water_64, water_128,
-water_neon_64, sludge_64, lava_64, slime_64.
+water_neon_64, sludge_64, lava_64, slime_64. Fluids listed in EMISSIVE also get
+an `<name>_e.png` sibling: the glowing texels of the diffuse, black elsewhere.
 Every texture is built on a periodic domain (wrapping value noise, wrapping
 Worley cells, toroidal bubble distances, a 4x4 ordered dither), so it tiles
 seamlessly and can scroll or shimmer without seams. Each one is quantized to a
@@ -168,6 +169,21 @@ def render(size, palette, field, dither=0.6, overrides=None):
     return img
 
 
+def emissive_from(img, palette, ramp):
+    """Build an `_e` image from a palette-quantized diffuse.
+
+    `ramp[i]` scales palette entry `i`'s color; 0 leaves the texel black. The
+    result shares the diffuse's texel grid, so the glow moves with it exactly.
+    """
+    index_of = {color: i for i, color in enumerate(palette)}
+    out = Image(img.size)
+    for y, row in enumerate(img.pixels):
+        out.pixels[y] = [
+            tuple(round(c * ramp[index_of[texel]]) for c in texel) for texel in row
+        ]
+    return out
+
+
 def scatter_bubbles(rng, count, radii, size):
     """Bubble centers on texel centers, with whole-texel radii drawn from `radii`."""
     return [(rng.randrange(size), rng.randrange(size), rng.choice(radii))
@@ -320,6 +336,12 @@ FLUIDS = {
     "slime_64": lambda: slime(64, 4401),
 }
 
+# Fluid name -> (palette, per-index emissive scale). Lava glows only in its
+# molten cracks and bubbles (orange and up), with a short ramp into the crust.
+EMISSIVE = {
+    "lava_64": (LAVA, [0, 0, 0, 0, 0, 0, 0, 0.25, 0.5, 0.8, 1, 1, 1]),
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
@@ -336,6 +358,13 @@ def main():
         if args.preview:
             (args.preview / f"{name}_tiled.png").write_bytes(img.tiled_preview().png())
         print(f"wrote {name}.png ({img.size}x{img.size})")
+        if name in EMISSIVE:
+            emissive = emissive_from(img, *EMISSIVE[name])
+            (args.out / f"{name}_e.png").write_bytes(emissive.png())
+            if args.preview:
+                (args.preview / f"{name}_e_tiled.png").write_bytes(
+                    emissive.tiled_preview().png())
+            print(f"wrote {name}_e.png ({img.size}x{img.size})")
 
 
 if __name__ == "__main__":

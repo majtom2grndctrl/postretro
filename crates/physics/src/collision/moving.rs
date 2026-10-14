@@ -125,7 +125,12 @@ impl<'a> CombinedCollisionWorld<'a> {
 pub struct MoverCollider {
     pub(crate) mover_id: u32,
     local_mesh: TriMesh,
+    /// Farthest vertex from the mover origin: the radius rotation sweeps about.
     local_radius: f32,
+    /// Mesh-centred bounding sphere for the query broad phase. The authored
+    /// origin can sit far from the geometry, so `local_radius` is too loose here.
+    bound_center: Vec3,
+    bound_radius: f32,
 }
 
 impl MoverCollider {
@@ -144,12 +149,23 @@ impl MoverCollider {
             .iter()
             .map(|vertex| vertex.length())
             .fold(0.0_f32, f32::max);
+        let (min, max) = vertices.iter().fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(min, max), vertex| (min.min(*vertex), max.max(*vertex)),
+        );
+        let bound_center = (min + max) * 0.5;
+        let bound_radius = vertices
+            .iter()
+            .map(|vertex| vertex.distance(bound_center))
+            .fold(0.0_f32, f32::max);
         let local_mesh = TriMesh::new(vertices.to_vec(), triangles.to_vec())
             .map_err(CollisionMeshError::from_parry)?;
         Ok(Self {
             mover_id,
             local_mesh,
             local_radius,
+            bound_center,
+            bound_radius,
         })
     }
 
@@ -188,14 +204,42 @@ pub(crate) fn cast_capsule_combined_parry(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
+    cast_capsule_combined_with::<true>(static_world, movers, poses, pos, capsule, dir, max_toi)
+}
+
+/// `BROAD_PHASE = false` is the exhaustive reference the equivalence tests hold
+/// the culled query to; production always culls.
+fn cast_capsule_combined_with<const BROAD_PHASE: bool>(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
     let mut nearest =
         cast_capsule_parry(static_world, pos, capsule, dir, max_toi).map(static_shape_hit);
+    let (capsule_center, capsule_radius) = capsule_bounding_sphere(capsule);
+    let sweep_start = pos + capsule_center;
+    let sweep_motion = dir * max_toi;
 
     for mover in movers {
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
         let mover_pose = transform_pose(pose.transform);
+        if BROAD_PHASE
+            && !mover_bound_may_reach_segment(
+                mover,
+                &mover_pose,
+                sweep_start,
+                sweep_motion,
+                capsule_radius + SKIN_DISTANCE,
+            )
+        {
+            continue;
+        }
         let options = ShapeCastOptions {
             max_time_of_impact: inclusive_query_limit(max_toi),
             target_distance: SKIN_DISTANCE,
@@ -238,14 +282,31 @@ pub(crate) fn cast_ray_combined_parry(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
+    cast_ray_combined_with::<true>(static_world, movers, poses, origin, dir, max_toi)
+}
+
+fn cast_ray_combined_with<const BROAD_PHASE: bool>(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    origin: Vec3,
+    dir: Vec3,
+    max_toi: f32,
+) -> Option<CombinedCastHit> {
     let mut nearest = cast_ray_parry(static_world, origin, dir, max_toi).map(static_ray_hit);
     let ray = Ray::new(origin, dir);
+    let ray_motion = dir * max_toi;
 
     for mover in movers {
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
         let mover_pose = transform_pose(pose.transform);
+        if BROAD_PHASE
+            && !mover_bound_may_reach_segment(mover, &mover_pose, origin, ray_motion, 0.0)
+        {
+            continue;
+        }
         let hit = mover
             .local_mesh
             .cast_ray_and_get_normal(&mover_pose, &ray, inclusive_query_limit(max_toi), true)
@@ -263,14 +324,36 @@ pub(crate) fn deepest_mover_penetration(
     pos: Vec3,
     capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
+    deepest_mover_penetration_with::<true>(movers, poses, pos, capsule)
+}
+
+fn deepest_mover_penetration_with<const BROAD_PHASE: bool>(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+) -> Option<MoverPenetration> {
     let capsule_pose = Pose::from_translation(pos);
     let mut deepest: Option<MoverPenetration> = None;
+    let (capsule_center, capsule_radius) = capsule_bounding_sphere(capsule);
+    let capsule_center = pos + capsule_center;
 
     for mover in movers {
         let Some(pose) = poses.pose(mover.mover_id) else {
             continue;
         };
         let mover_pose = transform_pose(pose.transform);
+        if BROAD_PHASE
+            && !mover_bound_may_reach_segment(
+                mover,
+                &mover_pose,
+                capsule_center,
+                Vec3::ZERO,
+                capsule_radius + SKIN_DISTANCE,
+            )
+        {
+            continue;
+        }
         let Ok(Some(contact)) = contact(
             &capsule_pose,
             capsule,
@@ -303,7 +386,7 @@ pub(crate) fn deepest_mover_push_penetration(
     pos: Vec3,
     capsule: &ParryCapsule,
 ) -> Option<MoverPenetration> {
-    deepest_mover_push_penetration_inner(movers, poses, pos, capsule, None)
+    deepest_mover_push_penetration_inner::<true>(movers, poses, pos, capsule, None)
 }
 
 pub(crate) fn deepest_mover_push_penetration_excluding_swept(
@@ -313,10 +396,16 @@ pub(crate) fn deepest_mover_push_penetration_excluding_swept(
     capsule: &ParryCapsule,
     excluded_mover_id: u32,
 ) -> Option<MoverPenetration> {
-    deepest_mover_push_penetration_inner(movers, poses, pos, capsule, Some(excluded_mover_id))
+    deepest_mover_push_penetration_inner::<true>(
+        movers,
+        poses,
+        pos,
+        capsule,
+        Some(excluded_mover_id),
+    )
 }
 
-fn deepest_mover_push_penetration_inner(
+fn deepest_mover_push_penetration_inner<const BROAD_PHASE: bool>(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),
     pos: Vec3,
@@ -324,7 +413,7 @@ fn deepest_mover_push_penetration_inner(
     excluded_swept_mover_id: Option<u32>,
 ) -> Option<MoverPenetration> {
     let capsule_pose = Pose::from_translation(pos);
-    let mut deepest = deepest_mover_penetration(movers, poses, pos, capsule);
+    let mut deepest = deepest_mover_penetration_with::<BROAD_PHASE>(movers, poses, pos, capsule);
 
     for mover in movers {
         if excluded_swept_mover_id == Some(mover.mover_id) {
@@ -363,14 +452,8 @@ fn mover_swept_sphere_may_reach_capsule(
 ) -> bool {
     let scale = pose.transform.scale.abs().max_element();
     let mover_radius = mover.local_radius * scale;
-    let capsule_center_local = capsule.center();
+    let (capsule_center_local, capsule_radius) = capsule_bounding_sphere(capsule);
     let capsule_center = capsule_position + capsule_center_local;
-    let capsule_radius = capsule
-        .segment
-        .a
-        .distance(capsule_center_local)
-        .max(capsule.segment.b.distance(capsule_center_local))
-        + capsule.radius;
     let end = pose.transform.position;
     let start = end - pose.tick_delta;
     if !mover_radius.is_finite()
@@ -392,6 +475,74 @@ fn mover_swept_sphere_may_reach_capsule(
     };
     let reach = mover_radius + capsule_radius + SKIN_DISTANCE;
     capsule_center.distance_squared(closest) <= reach * reach
+}
+
+/// Local centre and radius of a sphere enclosing the capsule.
+fn capsule_bounding_sphere(capsule: &ParryCapsule) -> (Vec3, f32) {
+    let center = capsule.center();
+    let radius = capsule
+        .segment
+        .a
+        .distance(center)
+        .max(capsule.segment.b.distance(center))
+        + capsule.radius;
+    (center, radius)
+}
+
+/// Absolute slack on the query broad phase, so f32 rounding in the sphere test
+/// can never reject a contact parry's narrow phase would report.
+const BROAD_PHASE_MARGIN: f32 = 0.01;
+/// Slack that grows with coordinate magnitude, for queries far from the origin.
+const BROAD_PHASE_RELATIVE_MARGIN: f32 = 1.0e-5;
+
+/// Conservative broad phase ahead of each per-mover narrow phase. The query
+/// sweeps a sphere of `query_radius` from `start` along `motion`; the mover's
+/// mesh-centred bounding sphere encloses every triangle at any rotation, so a
+/// reject can never drop a contact. parry's own BVH root test already rejects
+/// far movers, but only after the dispatch and swept-AABB setup this skips.
+/// Non-finite inputs, and finite ones that overflow here, fall through to the
+/// narrow phase.
+fn mover_bound_may_reach_segment(
+    mover: &MoverCollider,
+    mover_pose: &Pose,
+    start: Vec3,
+    motion: Vec3,
+    query_radius: f32,
+) -> bool {
+    let center = *mover_pose * mover.bound_center;
+    let end = start + motion;
+    if !center.is_finite() || !start.is_finite() || !end.is_finite() || !query_radius.is_finite() {
+        return true;
+    }
+    let motion_len_sq = motion.length_squared();
+    let closest = if motion_len_sq > 0.0 {
+        // A huge finite `max_toi` overflows the projection: an infinite length
+        // pins `t` to the start, and an infinite dot product makes it NaN,
+        // which `clamp` passes through. Either rejects a mover the narrow
+        // phase hits.
+        let t = (center - start).dot(motion) / motion_len_sq;
+        if !motion_len_sq.is_finite() || !t.is_finite() {
+            return true;
+        }
+        start + motion * t.clamp(0.0, 1.0)
+    } else {
+        start
+    };
+    // Rounding scales with every coordinate the narrow phase touches: the
+    // query, the mover translation, and mesh vertices authored far from the
+    // mover origin.
+    let magnitude = center
+        .abs()
+        .max_element()
+        .max(start.abs().max_element())
+        .max(end.abs().max_element())
+        .max(mover_pose.translation.abs().max_element())
+        .max(mover.bound_center.abs().max_element() + mover.bound_radius);
+    let reach = mover.bound_radius
+        + query_radius
+        + BROAD_PHASE_MARGIN
+        + magnitude * BROAD_PHASE_RELATIVE_MARGIN;
+    center.distance_squared(closest) <= reach * reach
 }
 
 fn sweep_mover_against_capsule(
@@ -733,6 +884,10 @@ fn swept_push_normal(normal: Vec3, delta: Vec3) -> Vec3 {
     }
     normal.normalize_or_zero()
 }
+
+#[cfg(test)]
+#[path = "moving_broad_phase_tests.rs"]
+mod broad_phase_tests;
 
 #[cfg(test)]
 mod tests {

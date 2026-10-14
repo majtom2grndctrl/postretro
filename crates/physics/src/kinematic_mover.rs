@@ -300,13 +300,37 @@ pub fn advance_mover_phase_one_tick(
     advance_mover_phase_one_tick_with_arrivals(mover, transform, tick_dt).0
 }
 
+/// [`advance_mover_phase_one_tick`] for hot loops: the tick's translation legs
+/// land in the caller's scratch, cleared first, so stepping allocates nothing
+/// once the scratch has grown.
+pub fn advance_mover_phase_one_tick_reusing_legs(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+    translation_legs: &mut Vec<MoverTranslationLeg>,
+) -> MoverPose {
+    translation_legs.clear();
+    advance_mover_phase_one_tick_into(mover, transform, tick_dt, translation_legs).0
+}
+
 fn advance_mover_phase_one_tick_with_arrivals(
     mover: &mut KinematicMoverComponent,
     transform: &mut Transform,
     tick_dt: f32,
 ) -> (MoverPose, MoverEndpointArrivals, Vec<MoverTranslationLeg>) {
-    let mut endpoint_arrivals = MoverEndpointArrivals::default();
     let mut translation_legs = Vec::new();
+    let (pose, endpoint_arrivals) =
+        advance_mover_phase_one_tick_into(mover, transform, tick_dt, &mut translation_legs);
+    (pose, endpoint_arrivals, translation_legs)
+}
+
+fn advance_mover_phase_one_tick_into(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+    translation_legs: &mut Vec<MoverTranslationLeg>,
+) -> (MoverPose, MoverEndpointArrivals) {
+    let mut endpoint_arrivals = MoverEndpointArrivals::default();
     // Completion and restart own stale-hold cleanup across every peer. A client
     // only reconciles the host's phase, so it must never retain a completed hold.
     if mover.completed {
@@ -316,18 +340,12 @@ fn advance_mover_phase_one_tick_with_arrivals(
         return (
             blocked_mover_pose(mover, transform, tick_dt),
             endpoint_arrivals,
-            translation_legs,
         );
     }
     let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
-    let end_position = advance_mover(
-        mover,
-        tick_dt,
-        &mut endpoint_arrivals,
-        &mut translation_legs,
-    );
+    let end_position = advance_mover(mover, tick_dt, &mut endpoint_arrivals, translation_legs);
     transform.position = end_position;
     if mover.completed {
         mover.blocked = false;
@@ -348,7 +366,7 @@ fn advance_mover_phase_one_tick_with_arrivals(
         carry_yaw: mover.carry_yaw,
         tick_dt,
     };
-    (pose, endpoint_arrivals, translation_legs)
+    (pose, endpoint_arrivals)
 }
 
 /// Publish a zero-motion tick while a host-authoritative stop hold is active.

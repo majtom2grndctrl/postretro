@@ -1,8 +1,10 @@
 // Game: Postretro
 // Format: Standard
 // E24 environment-volume playtest: pools, a floating fluid block, a low-gravity
-// room, an updraft, a wind corridor with a calm pocket, a current and a sludge
-// pool. See e24-environment-test.README.md for what each area tests.
+// room, an updraft, a wind corridor with a calm pocket, a current, a sludge
+// pool and an east wing of fluid-surface motion (pools split under partial
+// pushes, a bending river). See e24-environment-test.README.md for what each
+// area tests.
 // Axis-aligned box brushes; 1 map unit = 0.0254 m. Floor at z 0,
 // pits floor at z -112, fluid surfaces at z -16, ceiling at z 512.
 // Fluids `water` and `sludge` are declared in content/dev/start-script.ts.
@@ -37,12 +39,36 @@
 ( 0 -16 -112 ) ( 0 1040 512 ) ( 0 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 {
-( 1536 1040 -112 ) ( 1536 -16 512 ) ( 1536 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 -112 ) ( 1536 -16 512 ) ( 1536 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 1536 -16 -112 ) ( 1552 -16 512 ) ( 1552 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 1536 -16 -112 ) ( 1552 1040 -112 ) ( 1536 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 1536 1040 512 ) ( 1552 -16 512 ) ( 1536 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 -16 -112 ) ( 1552 640 -112 ) ( 1536 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 512 ) ( 1552 -16 512 ) ( 1536 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 640 -112 ) ( 1536 640 512 ) ( 1536 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 -112 ) ( 1552 640 512 ) ( 1552 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1536 1040 -112 ) ( 1536 736 512 ) ( 1536 736 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 736 -112 ) ( 1552 736 512 ) ( 1552 736 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 736 -112 ) ( 1552 1040 -112 ) ( 1536 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 1040 512 ) ( 1552 736 512 ) ( 1536 736 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 1552 1040 -112 ) ( 1536 1040 512 ) ( 1536 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
-( 1552 -16 -112 ) ( 1552 1040 512 ) ( 1552 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 736 -112 ) ( 1552 1040 512 ) ( 1552 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1536 736 128 ) ( 1536 640 512 ) ( 1536 640 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 128 ) ( 1552 640 512 ) ( 1552 640 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 128 ) ( 1552 736 128 ) ( 1536 736 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 736 512 ) ( 1552 640 512 ) ( 1536 640 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 736 128 ) ( 1536 736 512 ) ( 1536 736 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 640 128 ) ( 1552 736 512 ) ( 1552 736 128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1536 736 -112 ) ( 1536 640 0 ) ( 1536 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 -112 ) ( 1552 640 0 ) ( 1552 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 640 -112 ) ( 1552 736 -112 ) ( 1536 736 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1536 736 0 ) ( 1552 640 0 ) ( 1536 640 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 736 -112 ) ( 1536 736 0 ) ( 1536 736 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 640 -112 ) ( 1552 736 0 ) ( 1552 736 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
 {
 ( 0 0 -112 ) ( 0 -16 512 ) ( 0 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
@@ -299,6 +325,256 @@
 ( 1216 800 0 ) ( 320 800 512 ) ( 320 800 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 ( 1216 784 0 ) ( 1216 800 512 ) ( 1216 800 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
 }
+// Fluid-motion wing (east): shell, floor fill around six pools, a doorway from the north hall.
+{
+( 1552 1040 -128 ) ( 1552 -16 -112 ) ( 1552 -16 -128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 -128 ) ( 2592 -16 -112 ) ( 2592 -16 -128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 -128 ) ( 2592 1040 -128 ) ( 1552 1040 -128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1040 -112 ) ( 2592 -16 -112 ) ( 1552 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 1040 -128 ) ( 1552 1040 -112 ) ( 1552 1040 -128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 -16 -128 ) ( 2592 1040 -112 ) ( 2592 1040 -128 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1552 1040 512 ) ( 1552 -16 528 ) ( 1552 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 512 ) ( 2592 -16 528 ) ( 2592 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 512 ) ( 2592 1040 512 ) ( 1552 1040 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1040 528 ) ( 2592 -16 528 ) ( 1552 -16 528 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 1040 512 ) ( 1552 1040 528 ) ( 1552 1040 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 -16 512 ) ( 2592 1040 528 ) ( 2592 1040 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2576 1040 -112 ) ( 2576 -16 512 ) ( 2576 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 -16 -112 ) ( 2592 -16 512 ) ( 2592 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 -16 -112 ) ( 2592 1040 -112 ) ( 2576 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 1040 512 ) ( 2592 -16 512 ) ( 2576 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 1040 -112 ) ( 2576 1040 512 ) ( 2576 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2592 -16 -112 ) ( 2592 1040 512 ) ( 2592 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1552 0 -112 ) ( 1552 -16 512 ) ( 1552 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 -112 ) ( 2576 -16 512 ) ( 2576 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 -16 -112 ) ( 2576 0 -112 ) ( 1552 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 0 512 ) ( 2576 -16 512 ) ( 1552 -16 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 0 -112 ) ( 1552 0 512 ) ( 1552 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 -16 -112 ) ( 2576 0 512 ) ( 2576 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1552 1040 -112 ) ( 1552 1024 512 ) ( 1552 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1024 -112 ) ( 2576 1024 512 ) ( 2576 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1024 -112 ) ( 2576 1040 -112 ) ( 1552 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1040 512 ) ( 2576 1024 512 ) ( 1552 1024 512 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 1040 -112 ) ( 1552 1040 512 ) ( 1552 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2576 1024 -112 ) ( 2576 1040 512 ) ( 2576 1040 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1552 1024 -112 ) ( 1552 0 0 ) ( 1552 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 0 -112 ) ( 1616 0 0 ) ( 1616 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 0 -112 ) ( 1616 1024 -112 ) ( 1552 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1552 1024 0 ) ( 1616 0 0 ) ( 1552 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 1024 -112 ) ( 1552 1024 0 ) ( 1552 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 0 -112 ) ( 1616 1024 0 ) ( 1616 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1616 64 -112 ) ( 1616 0 0 ) ( 1616 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 0 -112 ) ( 1872 0 0 ) ( 1872 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 0 -112 ) ( 1872 64 -112 ) ( 1616 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 64 0 ) ( 1872 0 0 ) ( 1616 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 64 -112 ) ( 1616 64 0 ) ( 1616 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 0 -112 ) ( 1872 64 0 ) ( 1872 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1616 448 -112 ) ( 1616 320 0 ) ( 1616 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 320 -112 ) ( 1872 320 0 ) ( 1872 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 320 -112 ) ( 1872 448 -112 ) ( 1616 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 448 0 ) ( 1872 320 0 ) ( 1616 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 448 -112 ) ( 1616 448 0 ) ( 1616 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 320 -112 ) ( 1872 448 0 ) ( 1872 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1616 768 -112 ) ( 1616 640 0 ) ( 1616 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 640 -112 ) ( 1872 640 0 ) ( 1872 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 640 -112 ) ( 1872 768 -112 ) ( 1616 768 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 768 0 ) ( 1872 640 0 ) ( 1616 640 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 768 -112 ) ( 1616 768 0 ) ( 1616 768 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 640 -112 ) ( 1872 768 0 ) ( 1872 768 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1616 1024 -112 ) ( 1616 960 0 ) ( 1616 960 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 960 -112 ) ( 1872 960 0 ) ( 1872 960 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 960 -112 ) ( 1872 1024 -112 ) ( 1616 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1616 1024 0 ) ( 1872 960 0 ) ( 1616 960 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 1024 -112 ) ( 1616 1024 0 ) ( 1616 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 960 -112 ) ( 1872 1024 0 ) ( 1872 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1872 448 -112 ) ( 1872 0 0 ) ( 1872 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 0 -112 ) ( 1936 0 0 ) ( 1936 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 0 -112 ) ( 1936 448 -112 ) ( 1872 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 448 0 ) ( 1936 0 0 ) ( 1872 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 448 -112 ) ( 1872 448 0 ) ( 1872 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 0 -112 ) ( 1936 448 0 ) ( 1936 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1872 1024 -112 ) ( 1872 640 0 ) ( 1872 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 640 -112 ) ( 1936 640 0 ) ( 1936 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 640 -112 ) ( 1936 1024 -112 ) ( 1872 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1872 1024 0 ) ( 1936 640 0 ) ( 1872 640 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 1024 -112 ) ( 1872 1024 0 ) ( 1872 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 640 -112 ) ( 1936 1024 0 ) ( 1936 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1936 64 -112 ) ( 1936 0 0 ) ( 1936 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 0 -112 ) ( 2000 0 0 ) ( 2000 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 0 -112 ) ( 2000 64 -112 ) ( 1936 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 64 0 ) ( 2000 0 0 ) ( 1936 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 64 -112 ) ( 1936 64 0 ) ( 1936 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 0 -112 ) ( 2000 64 0 ) ( 2000 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1936 448 -112 ) ( 1936 320 0 ) ( 1936 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 320 -112 ) ( 2000 320 0 ) ( 2000 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 320 -112 ) ( 2000 448 -112 ) ( 1936 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 448 0 ) ( 2000 320 0 ) ( 1936 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 448 -112 ) ( 1936 448 0 ) ( 1936 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 320 -112 ) ( 2000 448 0 ) ( 2000 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1936 1024 -112 ) ( 1936 640 0 ) ( 1936 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 640 -112 ) ( 2000 640 0 ) ( 2000 640 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 640 -112 ) ( 2000 1024 -112 ) ( 1936 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1936 1024 0 ) ( 2000 640 0 ) ( 1936 640 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 1024 -112 ) ( 1936 1024 0 ) ( 1936 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 640 -112 ) ( 2000 1024 0 ) ( 2000 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2000 64 -112 ) ( 2000 0 0 ) ( 2000 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 0 -112 ) ( 2064 0 0 ) ( 2064 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 0 -112 ) ( 2064 64 -112 ) ( 2000 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 64 0 ) ( 2064 0 0 ) ( 2000 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 64 -112 ) ( 2000 64 0 ) ( 2000 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 0 -112 ) ( 2064 64 0 ) ( 2064 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2000 1024 -112 ) ( 2000 320 0 ) ( 2000 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 320 -112 ) ( 2064 320 0 ) ( 2064 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 320 -112 ) ( 2064 1024 -112 ) ( 2000 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 1024 0 ) ( 2064 320 0 ) ( 2000 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 1024 -112 ) ( 2000 1024 0 ) ( 2000 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 320 -112 ) ( 2064 1024 0 ) ( 2064 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2064 64 -112 ) ( 2064 0 0 ) ( 2064 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 0 -112 ) ( 2192 0 0 ) ( 2192 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 0 -112 ) ( 2192 64 -112 ) ( 2064 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 64 0 ) ( 2192 0 0 ) ( 2064 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 64 -112 ) ( 2064 64 0 ) ( 2064 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 0 -112 ) ( 2192 64 0 ) ( 2192 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2064 448 -112 ) ( 2064 320 0 ) ( 2064 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 320 -112 ) ( 2192 320 0 ) ( 2192 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 320 -112 ) ( 2192 448 -112 ) ( 2064 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 448 0 ) ( 2192 320 0 ) ( 2064 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 448 -112 ) ( 2064 448 0 ) ( 2064 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 320 -112 ) ( 2192 448 0 ) ( 2192 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2064 1024 -112 ) ( 2064 576 0 ) ( 2064 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 576 -112 ) ( 2192 576 0 ) ( 2192 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 576 -112 ) ( 2192 1024 -112 ) ( 2064 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 1024 0 ) ( 2192 576 0 ) ( 2064 576 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 1024 -112 ) ( 2064 1024 0 ) ( 2064 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 576 -112 ) ( 2192 1024 0 ) ( 2192 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2192 448 -112 ) ( 2192 0 0 ) ( 2192 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2192 0 -112 ) ( 2256 0 0 ) ( 2256 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2192 0 -112 ) ( 2256 448 -112 ) ( 2192 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2192 448 0 ) ( 2256 0 0 ) ( 2192 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 448 -112 ) ( 2192 448 0 ) ( 2192 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 0 -112 ) ( 2256 448 0 ) ( 2256 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+{
+( 2192 1024 -112 ) ( 2192 576 0 ) ( 2192 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 576 -112 ) ( 2256 576 0 ) ( 2256 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 576 -112 ) ( 2256 1024 -112 ) ( 2192 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2192 1024 0 ) ( 2256 576 0 ) ( 2192 576 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2256 1024 -112 ) ( 2192 1024 0 ) ( 2192 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2256 576 -112 ) ( 2256 1024 0 ) ( 2256 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2256 64 -112 ) ( 2256 0 0 ) ( 2256 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 0 -112 ) ( 2384 0 0 ) ( 2384 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 0 -112 ) ( 2384 64 -112 ) ( 2256 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 64 0 ) ( 2384 0 0 ) ( 2256 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 64 -112 ) ( 2256 64 0 ) ( 2256 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 0 -112 ) ( 2384 64 0 ) ( 2384 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+{
+( 2256 448 -112 ) ( 2256 320 0 ) ( 2256 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 320 -112 ) ( 2384 320 0 ) ( 2384 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 320 -112 ) ( 2384 448 -112 ) ( 2256 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2256 448 0 ) ( 2384 320 0 ) ( 2256 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 448 -112 ) ( 2256 448 0 ) ( 2256 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 320 -112 ) ( 2384 448 0 ) ( 2384 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+{
+( 2256 1024 -112 ) ( 2256 576 0 ) ( 2256 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2256 576 -112 ) ( 2384 576 0 ) ( 2384 576 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2256 576 -112 ) ( 2384 1024 -112 ) ( 2256 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2256 1024 0 ) ( 2384 576 0 ) ( 2256 576 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2384 1024 -112 ) ( 2256 1024 0 ) ( 2256 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2384 576 -112 ) ( 2384 1024 0 ) ( 2384 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2384 64 -112 ) ( 2384 0 0 ) ( 2384 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 0 -112 ) ( 2512 0 0 ) ( 2512 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 0 -112 ) ( 2512 64 -112 ) ( 2384 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 64 0 ) ( 2512 0 0 ) ( 2384 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 64 -112 ) ( 2384 64 0 ) ( 2384 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 0 -112 ) ( 2512 64 0 ) ( 2512 64 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+{
+( 2384 448 -112 ) ( 2384 320 0 ) ( 2384 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 320 -112 ) ( 2512 320 0 ) ( 2512 320 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 320 -112 ) ( 2512 448 -112 ) ( 2384 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2384 448 0 ) ( 2512 320 0 ) ( 2384 320 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 448 -112 ) ( 2384 448 0 ) ( 2384 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 320 -112 ) ( 2512 448 0 ) ( 2512 448 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+{
+( 2384 1024 -112 ) ( 2384 960 0 ) ( 2384 960 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2384 960 -112 ) ( 2512 960 0 ) ( 2512 960 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2384 960 -112 ) ( 2512 1024 -112 ) ( 2384 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2384 1024 0 ) ( 2512 960 0 ) ( 2384 960 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2512 1024 -112 ) ( 2384 1024 0 ) ( 2384 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2512 960 -112 ) ( 2512 1024 0 ) ( 2512 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2512 1024 -112 ) ( 2512 0 0 ) ( 2512 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 0 -112 ) ( 2576 0 0 ) ( 2576 0 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 0 -112 ) ( 2576 1024 -112 ) ( 2512 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2512 1024 0 ) ( 2576 0 0 ) ( 2512 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2576 1024 -112 ) ( 2512 1024 0 ) ( 2512 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+( 2576 0 -112 ) ( 2576 1024 0 ) ( 2576 1024 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 0.25 0.25
+}
+// Grain markers: a low wall beside the scale-1 still pool and one at scale 0.25 beside the fine pool.
+{
+( 1616 352 0 ) ( 1616 336 64 ) ( 1616 336 0 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+( 1616 336 0 ) ( 1872 336 64 ) ( 1872 336 0 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+( 1616 336 0 ) ( 1872 352 0 ) ( 1616 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+( 1616 352 64 ) ( 1872 336 64 ) ( 1616 336 64 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+( 1872 352 0 ) ( 1616 352 64 ) ( 1616 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+( 1872 336 0 ) ( 1872 352 64 ) ( 1872 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 1 1
+}
+{
+( 2256 352 0 ) ( 2256 336 64 ) ( 2256 336 0 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+( 2256 336 0 ) ( 2512 336 64 ) ( 2512 336 0 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+( 2256 336 0 ) ( 2512 352 0 ) ( 2256 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+( 2256 352 64 ) ( 2512 336 64 ) ( 2256 336 64 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+( 2512 352 0 ) ( 2256 352 64 ) ( 2256 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+( 2512 336 0 ) ( 2512 352 64 ) ( 2512 352 0 ) 50-free-textures/concrete_pavement_044 0 0 0 0.25 0.25
+}
 }
 // Pool: one fluid_volume with two brushes. Their shared face at x 256 draws no surface; faces against the pit walls and floor draw none either.
 {
@@ -505,6 +781,190 @@
 {
 "classname" "light"
 "origin" "560 900 448"
+"light" "300"
+"_falloff_range" "768"
+"_color" "255 236 214"
+}
+// Fluid-motion wing: a still pool (shimmer and rings) beside a current pool (drift north).
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1616 320 -112 ) ( 1616 64 -16 ) ( 1616 64 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 64 -112 ) ( 1872 64 -16 ) ( 1872 64 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 64 -112 ) ( 1872 320 -112 ) ( 1616 320 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 320 -16 ) ( 1872 64 -16 ) ( 1616 64 -16 ) fluids/water_64 0 0 0 1 1
+( 1872 320 -112 ) ( 1616 320 -16 ) ( 1616 320 -112 ) fluids/water_64 0 0 0 1 1
+( 1872 64 -112 ) ( 1872 320 -16 ) ( 1872 320 -112 ) fluids/water_64 0 0 0 1 1
+}
+}
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1936 320 -112 ) ( 1936 64 -16 ) ( 1936 64 -112 ) fluids/water_64 0 0 0 1 1
+( 1936 64 -112 ) ( 2192 64 -16 ) ( 2192 64 -112 ) fluids/water_64 0 0 0 1 1
+( 1936 64 -112 ) ( 2192 320 -112 ) ( 1936 320 -112 ) fluids/water_64 0 0 0 1 1
+( 1936 320 -16 ) ( 2192 64 -16 ) ( 1936 64 -16 ) fluids/water_64 0 0 0 1 1
+( 2192 320 -112 ) ( 1936 320 -16 ) ( 1936 320 -112 ) fluids/water_64 0 0 0 1 1
+( 2192 64 -112 ) ( 2192 320 -16 ) ( 2192 320 -112 ) fluids/water_64 0 0 0 1 1
+}
+}
+{
+"classname" "push_volume"
+"push" "0 6 0"
+{
+( 1936 320 -112 ) ( 1936 64 -16 ) ( 1936 64 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1936 64 -112 ) ( 2192 64 -16 ) ( 2192 64 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1936 64 -112 ) ( 2192 320 -112 ) ( 1936 320 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1936 320 -16 ) ( 2192 64 -16 ) ( 1936 64 -16 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2192 320 -112 ) ( 1936 320 -16 ) ( 1936 320 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2192 64 -112 ) ( 2192 320 -16 ) ( 2192 320 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// Fine still pool: the same water at texture scale 0.25, four times finer grain.
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 2256 320 -112 ) ( 2256 64 -16 ) ( 2256 64 -112 ) fluids/water_64 0 0 0 0.25 0.25
+( 2256 64 -112 ) ( 2512 64 -16 ) ( 2512 64 -112 ) fluids/water_64 0 0 0 0.25 0.25
+( 2256 64 -112 ) ( 2512 320 -112 ) ( 2256 320 -112 ) fluids/water_64 0 0 0 0.25 0.25
+( 2256 320 -16 ) ( 2512 64 -16 ) ( 2256 64 -16 ) fluids/water_64 0 0 0 0.25 0.25
+( 2512 320 -112 ) ( 2256 320 -16 ) ( 2256 320 -112 ) fluids/water_64 0 0 0 0.25 0.25
+( 2512 64 -112 ) ( 2512 320 -16 ) ( 2512 320 -112 ) fluids/water_64 0 0 0 0.25 0.25
+}
+}
+// Two-brush pool under a partial push: the push covers the west brush and half of the east brush's top face, which the compiler splits at x 1904.
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1616 640 -112 ) ( 1616 448 -16 ) ( 1616 448 -112 ) fluids/water_128 0 0 0 1 1
+( 1616 448 -112 ) ( 1808 448 -16 ) ( 1808 448 -112 ) fluids/water_128 0 0 0 1 1
+( 1616 448 -112 ) ( 1808 640 -112 ) ( 1616 640 -112 ) fluids/water_128 0 0 0 1 1
+( 1616 640 -16 ) ( 1808 448 -16 ) ( 1616 448 -16 ) fluids/water_128 0 0 0 1 1
+( 1808 640 -112 ) ( 1616 640 -16 ) ( 1616 640 -112 ) fluids/water_128 0 0 0 1 1
+( 1808 448 -112 ) ( 1808 640 -16 ) ( 1808 640 -112 ) fluids/water_128 0 0 0 1 1
+}
+{
+( 1808 640 -112 ) ( 1808 448 -16 ) ( 1808 448 -112 ) fluids/water_128 0 0 0 1 1
+( 1808 448 -112 ) ( 2000 448 -16 ) ( 2000 448 -112 ) fluids/water_128 0 0 0 1 1
+( 1808 448 -112 ) ( 2000 640 -112 ) ( 1808 640 -112 ) fluids/water_128 0 0 0 1 1
+( 1808 640 -16 ) ( 2000 448 -16 ) ( 1808 448 -16 ) fluids/water_128 0 0 0 1 1
+( 2000 640 -112 ) ( 1808 640 -16 ) ( 1808 640 -112 ) fluids/water_128 0 0 0 1 1
+( 2000 448 -112 ) ( 2000 640 -16 ) ( 2000 640 -112 ) fluids/water_128 0 0 0 1 1
+}
+}
+{
+"classname" "push_volume"
+"push" "6 0 0"
+{
+( 1616 640 -112 ) ( 1616 448 -16 ) ( 1616 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 448 -112 ) ( 1904 448 -16 ) ( 1904 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 448 -112 ) ( 1904 640 -112 ) ( 1616 640 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 640 -16 ) ( 1904 448 -16 ) ( 1616 448 -16 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1904 640 -112 ) ( 1616 640 -16 ) ( 1616 640 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1904 448 -112 ) ( 1904 640 -16 ) ( 1904 640 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// Force-0 bending river: one fluid_volume, two push brushes (east, then north). It drifts along each bend and pushes nothing.
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 2064 576 -112 ) ( 2064 448 -16 ) ( 2064 448 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2064 448 -112 ) ( 2512 448 -16 ) ( 2512 448 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2064 448 -112 ) ( 2512 576 -112 ) ( 2064 576 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2064 576 -16 ) ( 2512 448 -16 ) ( 2064 448 -16 ) fluids/water_neon_64 0 0 0 1 1
+( 2512 576 -112 ) ( 2064 576 -16 ) ( 2064 576 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2512 448 -112 ) ( 2512 576 -16 ) ( 2512 576 -112 ) fluids/water_neon_64 0 0 0 1 1
+}
+{
+( 2384 960 -112 ) ( 2384 576 -16 ) ( 2384 576 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2384 576 -112 ) ( 2512 576 -16 ) ( 2512 576 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2384 576 -112 ) ( 2512 960 -112 ) ( 2384 960 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2384 960 -16 ) ( 2512 576 -16 ) ( 2384 576 -16 ) fluids/water_neon_64 0 0 0 1 1
+( 2512 960 -112 ) ( 2384 960 -16 ) ( 2384 960 -112 ) fluids/water_neon_64 0 0 0 1 1
+( 2512 576 -112 ) ( 2512 960 -16 ) ( 2512 960 -112 ) fluids/water_neon_64 0 0 0 1 1
+}
+}
+{
+"classname" "push_volume"
+"push" "6 0 0"
+"force" "0"
+{
+( 2064 576 -112 ) ( 2064 448 -16 ) ( 2064 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 448 -112 ) ( 2384 448 -16 ) ( 2384 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 448 -112 ) ( 2384 576 -112 ) ( 2064 576 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 576 -16 ) ( 2384 448 -16 ) ( 2064 448 -16 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2384 576 -112 ) ( 2064 576 -16 ) ( 2064 576 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2384 448 -112 ) ( 2384 576 -16 ) ( 2384 576 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+{
+"classname" "push_volume"
+"push" "0 6 0"
+"force" "0"
+{
+( 2384 960 -112 ) ( 2384 448 -16 ) ( 2384 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2384 448 -112 ) ( 2512 448 -16 ) ( 2512 448 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2384 448 -112 ) ( 2512 960 -112 ) ( 2384 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2384 960 -16 ) ( 2512 448 -16 ) ( 2384 448 -16 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2512 960 -112 ) ( 2384 960 -16 ) ( 2384 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2512 448 -112 ) ( 2512 960 -16 ) ( 2512 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// Force-3 trap: the surface drifts gently south, but the current shoves three times as hard.
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1616 960 -112 ) ( 1616 768 -16 ) ( 1616 768 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 768 -112 ) ( 1872 768 -16 ) ( 1872 768 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 768 -112 ) ( 1872 960 -112 ) ( 1616 960 -112 ) fluids/water_64 0 0 0 1 1
+( 1616 960 -16 ) ( 1872 768 -16 ) ( 1616 768 -16 ) fluids/water_64 0 0 0 1 1
+( 1872 960 -112 ) ( 1616 960 -16 ) ( 1616 960 -112 ) fluids/water_64 0 0 0 1 1
+( 1872 768 -112 ) ( 1872 960 -16 ) ( 1872 960 -112 ) fluids/water_64 0 0 0 1 1
+}
+}
+{
+"classname" "push_volume"
+"push" "0 -3 0"
+"force" "3"
+{
+( 1616 960 -112 ) ( 1616 768 -16 ) ( 1616 768 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 768 -112 ) ( 1872 768 -16 ) ( 1872 768 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 768 -112 ) ( 1872 960 -112 ) ( 1616 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1616 960 -16 ) ( 1872 768 -16 ) ( 1616 768 -16 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1872 960 -112 ) ( 1616 960 -16 ) ( 1616 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1872 768 -112 ) ( 1872 960 -16 ) ( 1872 960 -112 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+{
+"classname" "light"
+"origin" "1808 256 448"
+"light" "300"
+"_falloff_range" "768"
+"_color" "255 236 214"
+}
+{
+"classname" "light"
+"origin" "2320 256 448"
+"light" "300"
+"_falloff_range" "768"
+"_color" "255 236 214"
+}
+{
+"classname" "light"
+"origin" "1808 768 448"
+"light" "300"
+"_falloff_range" "768"
+"_color" "255 236 214"
+}
+{
+"classname" "light"
+"origin" "2320 768 448"
 "light" "300"
 "_falloff_range" "768"
 "_color" "255 236 214"

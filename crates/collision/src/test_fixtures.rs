@@ -31,6 +31,7 @@ pub(crate) fn volume(brushes: Vec<ConvexLeaf>) -> EnvironmentVolume {
         priority: 0,
         gravity: None,
         push: None,
+        force: 1.0,
         fluid: None,
         brushes,
     }

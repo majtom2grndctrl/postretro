@@ -1,6 +1,8 @@
-// Canonical environment volumes → PRL EnvironmentVolumes section (id 52).
+// Canonical environment volumes → PRL EnvironmentVolumes section (id 52) and its
+// optional PushForces sibling (id 53).
 // See: context/lib/build_pipeline.md §PRL section IDs
 
+mod push_split;
 mod solid_index;
 mod surface;
 #[cfg(test)]
@@ -13,11 +15,13 @@ use postretro_level_format::environment_volumes::{
     EnvironmentBrush, EnvironmentPlane, EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
     EnvironmentVolumeRecord, EnvironmentVolumesSection,
 };
+use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::geometry::brush_side_texel_uv;
 use crate::map_data::{BrushVolume, MapEnvironmentVolume};
 
+use push_split::PushBrushes;
 use surface::{SolidWorld, SurfacePiece, fluid_surface_pieces};
 
 /// Encode the always-present section: the level default gravity plus every
@@ -28,6 +32,9 @@ use surface::{SolidWorld, SurfacePiece, fluid_surface_pieces};
 /// texture the world already uses keeps its index, and a fluid-only texture
 /// appends after every world entry, so no world index moves. Call this once
 /// every other texture user has interned its names.
+///
+/// Each face is split along every push brush over it, so a current drifts
+/// exactly the part of the surface its push covers.
 pub fn encode_environment_volumes_section(
     volumes: &[MapEnvironmentVolume],
     level_gravity: f32,
@@ -37,6 +44,7 @@ pub fn encode_environment_volumes_section(
     let started = Instant::now();
     let has_fluid = volumes.iter().any(|volume| volume.fluid.is_some());
     let solid = has_fluid.then(|| SolidWorld::new(solid_world));
+    let pushes = PushBrushes::new(if has_fluid { volumes } else { &[] });
     let mut textures = TextureTable::new(texture_names);
     let mut face_count = 0usize;
 
@@ -44,7 +52,7 @@ pub fn encode_environment_volumes_section(
         .iter()
         .map(|volume| {
             let surface_faces: Vec<EnvironmentSurfaceFace> = match &solid {
-                Some(solid) => fluid_surface_pieces(volume, solid)
+                Some(solid) => fluid_surface_pieces(volume, solid, &pushes)
                     .iter()
                     .map(|piece| surface_face(piece, &mut textures))
                     .collect(),
@@ -89,6 +97,18 @@ pub fn encode_environment_volumes_section(
         level_gravity,
         volumes: records,
     }
+}
+
+/// The optional PushForces section (id 53): one force per record, in record
+/// order, written only when some push volume authors a force other than 1.
+/// A record without push carries 1.
+pub fn encode_push_forces_section(volumes: &[MapEnvironmentVolume]) -> Option<PushForcesSection> {
+    volumes
+        .iter()
+        .any(|volume| volume.force != 1.0)
+        .then(|| PushForcesSection {
+            forces: volumes.iter().map(|volume| volume.force).collect(),
+        })
 }
 
 /// Engine-space positions and texel-space UVs from the side's own projection,

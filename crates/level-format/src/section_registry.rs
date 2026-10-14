@@ -229,6 +229,12 @@ pub enum SectionId {
     /// (gravity, push, fluid) as convex brush leaves. Always emitted.
     /// See `environment_volumes::EnvironmentVolumesSection`.
     EnvironmentVolumes = 52,
+
+    /// Optional per-environment-volume current force, one `f32` per
+    /// EnvironmentVolumes record in record order. Written only when some push
+    /// volume authors a force other than 1; absence means every force is 1.
+    /// See `push_forces::PushForcesSection`.
+    PushForces = 53,
 }
 
 impl SectionId {
@@ -274,6 +280,7 @@ impl SectionId {
             50 => Some(Self::ClusterShPayloads),
             51 => Some(Self::CellResidencySet),
             52 => Some(Self::EnvironmentVolumes),
+            53 => Some(Self::PushForces),
             _ => None,
         }
     }
@@ -326,6 +333,7 @@ mod tests {
             SectionId::ClusterShPayloads,
             SectionId::CellResidencySet,
             SectionId::EnvironmentVolumes,
+            SectionId::PushForces,
         ];
 
         for section_id in registered {
@@ -333,6 +341,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(53), None);
+        assert_eq!(SectionId::from_u32(54), None);
     }
 }

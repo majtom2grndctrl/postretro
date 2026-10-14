@@ -191,3 +191,38 @@ fn fluid_surface_draws_read_each_volumes_own_opacity_slot() {
         "volume 2 is half transparent, got {right}"
     );
 }
+
+// A mid-level drift re-resolve rewrites only the drift buffer. The next
+// frame still draws at the same opacity, and a later frame with unchanged
+// opacities uploads no parameter rows.
+#[test]
+fn fluid_drift_re_resolve_keeps_draws_and_uploads_no_parameter_rows() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.install_fluid_surfaces(&[full_screen_fluid()]);
+    let draws = [FluidSurfaceDraw {
+        volume_index: 0,
+        surface_opacity: 0.5,
+    }];
+    renderer.set_fluid_surface_draws(&draws);
+    let before = capture_mean_red(&mut renderer);
+    assert_eq!(renderer.full().fluid_surface.param_uploads(), Some(1));
+
+    renderer.set_fluid_surface_drift(&[Vec3::new(3.0, 0.0, 0.0)]);
+    renderer.set_fluid_surface_draws(&draws);
+    let after = capture_mean_red(&mut renderer);
+    renderer.set_fluid_surface_draws(&draws);
+    let later = capture_mean_red(&mut renderer);
+
+    eprintln!("[FluidSurfaceProof] re-resolve: before={before} after={after} later={later}");
+    assert!(
+        (after - before).abs() < 2.0 && (later - before).abs() < 2.0,
+        "the pool keeps its opacity across a re-resolve: {before} → {after} → {later}"
+    );
+    assert_eq!(
+        renderer.full().fluid_surface.param_uploads(),
+        Some(1),
+        "unchanged opacities upload no parameter rows"
+    );
+}

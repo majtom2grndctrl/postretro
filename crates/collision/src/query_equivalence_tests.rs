@@ -149,6 +149,22 @@ fn reference_plane_depth(volumes: &EnvironmentVolumes, fluid: u16, point: Vec3) 
         .reduce(f32::max)
 }
 
+/// The push winner's nominal push and its force; zero push and force 1 with no
+/// containing push volume.
+fn reference_nominal_push(volumes: &EnvironmentVolumes, point: Vec3) -> (Vec3, f32) {
+    reference_winner(
+        volumes,
+        reference_containing(volumes, point, ContentsMask::PUSH)
+            .into_iter()
+            .filter(|&i| volumes.volume(i).unwrap().push.is_some()),
+    )
+    .map(|i| {
+        let volume = volumes.volume(i).unwrap();
+        (volume.push.unwrap(), volume.force)
+    })
+    .unwrap_or((Vec3::ZERO, 1.0))
+}
+
 fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> ResolvedEnvironment {
     let at_point = |mask: ContentsMask, has: fn(&EnvironmentVolume) -> bool| {
         reference_winner(
@@ -161,9 +177,9 @@ fn reference_resolve(volumes: &EnvironmentVolumes, probe: &BodyProbe) -> Resolve
     let gravity = at_point(ContentsMask::GRAVITY, |v| v.gravity.is_some())
         .and_then(|i| volumes.volume(i).unwrap().gravity)
         .unwrap_or(LEVEL_GRAVITY);
-    let push = at_point(ContentsMask::PUSH, |v| v.push.is_some())
-        .and_then(|i| volumes.volume(i).unwrap().push)
-        .unwrap_or(Vec3::ZERO);
+    // The body feels the push winner's nominal push times that winner's force.
+    let (nominal_push, force) = reference_nominal_push(volumes, probe.position);
+    let push = nominal_push * force;
 
     let reach = probe.half_height + probe.radius;
     let feet = Vec3::new(probe.position.x, probe.position.y - reach, probe.position.z);
@@ -355,13 +371,15 @@ fn environment_volume() -> impl Strategy<Value = EnvironmentVolume> {
         proptest::option::of(-4i32..=4),
         proptest::option::of(small_vector()),
         proptest::option::of(0u16..3),
+        prop_oneof![Just(0.0f32), Just(0.5), Just(1.0), Just(3.0)],
     )
         .prop_map(
-            |(brushes, priority, gravity, push, fluid)| EnvironmentVolume {
+            |(brushes, priority, gravity, push, fluid, force)| EnvironmentVolume {
                 source_entity: 0,
                 priority,
                 gravity: gravity.map(|g| g as f32),
                 push,
+                force,
                 fluid,
                 brushes,
             },
@@ -502,7 +520,8 @@ fn tree_queries_match_brute_force_scan_over_random_overlapping_volumes() {
                 prop_assert_eq!(resolve_gravity(view, point), reference_point.gravity);
                 let (gravity, push) = resolve_particle_acceleration(view, point);
                 prop_assert_eq!(gravity, reference_point.gravity);
-                prop_assert_eq!(push, reference_point.push);
+                // Particles read the nominal push; only bodies scale by force.
+                prop_assert_eq!(push, reference_nominal_push(&volumes, point).0);
                 let eye = fluid_at_eye(view, point);
                 let reference_eye = reference_winner(
                     &volumes,
@@ -595,6 +614,7 @@ fn resolve_matches_brute_force_when_the_segment_meets_more_fluid_brushes_than_it
                 priority: 0,
                 gravity: None,
                 push: None,
+                force: 1.0,
                 fluid: Some(u16::from(layer % 3 == 2)),
                 brushes: vec![axis_box(
                     Vec3::new(-1.0, y, -1.0),

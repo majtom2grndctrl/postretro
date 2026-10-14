@@ -33,6 +33,7 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::map_entity::MapEntitySection;
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
@@ -149,6 +150,7 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
+    pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     /// CellResidencySet (id 51), or `None` when the level has no usable portals.
@@ -193,6 +195,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        push_forces,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
@@ -239,6 +242,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        push_forces,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,

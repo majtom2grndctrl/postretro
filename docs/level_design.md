@@ -284,11 +284,12 @@ Each brush is one convex piece of the volume. One entity may own several brushes
 | `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
 | `gravity` | `gravity_volume` | float | **required** | Gravity inside the volume, in **m/s²**, signed like worldspawn `initialGravity`: negative pulls down. `-20.32` is the level default, `-6` is low gravity, `0` is weightless, and a positive value pulls up. It replaces the level's gravity inside the volume. A script's `setGravity` changes the level's gravity everywhere else, never inside a gravity volume, and `getGravity` returns the level's gravity even inside one. |
 | `push` | `push_volume` | three floats | **required** | An acceleration in **m/s²**, in map axes (X, Y, Z, with Z up, as TrenchBroom shows them). `0 0 25` is an updraft, `8 0 0` a wind toward +X, `0 6 0` a current toward +Y. A push never changes which way is down. |
+| `force` | `push_volume` | float | `1` | How hard the push shoves the player, who feels `push` × `force`. `push` keeps its direction and look: a current's surface drifts, and particles flow, the same at any force. `0` makes a decorative current that pushes nothing; above `1` shoves harder than it looks. Any finite number from `0` up. |
 | `priority` | all three | integer | `0` | Which volume wins where volumes that set the same key overlap. Higher wins. |
 
 `gravity` and `push` are in metres per second squared, not map units. The level default is −20.32 m/s², about twice Earth's 9.81: shooter jumps use exaggerated gravity so they land quickly.
 
-A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, or a volume entity with no brush fails the build, and the error names the entity.
+A blank `fluid`, `gravity` or `push`, a `gravity` with more than one number, a `push` without exactly three numbers, a negative, infinite or non-numeric `force`, or a volume entity with no brush fails the build, and the error names the entity.
 
 ### How overlapping volumes combine
 
@@ -302,24 +303,24 @@ Where no volume sets a key, the level's own value applies: worldspawn `initialGr
 
 Because each key resolves separately, volumes that set different keys combine. A water pool inside a low-gravity room is wet, and it has low gravity. Gravity and push apply at the player's position. A fluid applies wherever it covers part of the player's body from feet to head, and how deep the player is counts only the winning fluid's brushes.
 
-Push is one winner, never a sum. That gives you two patterns:
+Push is one winner, never a sum, and `force` goes with its winning push: where volumes overlap, the player feels the winning volume's `push` × its own `force`, never a mix of two volumes. That gives you two patterns:
 
 - **A calm pocket.** Put a `push_volume` with `push` `0 0 0` inside a wind, at a higher `priority`. Nothing pushes inside the pocket.
 - **Lift and drift together.** A shaft that should both lift and drift sideways is one `push_volume` carrying the combined vector, such as `4 0 15`.
 
-A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push.
+A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push, and the fluid's surface drifts with it, at the speed the push alone carries a swimmer at `force` 1. A bending river is one `fluid_volume` under several `push_volume` entities, one per stretch: a push is one vector per entity, so each stretch needs its own, and the surface drifts along each, exactly where its push is. The surface drifts only where the push holds the water 2 mm below the surface: a current must reach within 2 mm of the waterline, and a push from above must dip at least 2 mm into the water. A current sunk wholly beneath the waterline carries swimmers but leaves the surface still, and a push whose bottom rests on the waterline, such as a wind over the water, moves no water. A vertical push (an updraft or a down-current) has nothing along a level surface, so the surface looks still from above.
 
 ### What the player feels
 
 - **Fluids.** A player whose descriptor has a `movement.swim` block swims once deep enough, and can jump out from the surface. A player without one walks along the bottom.
 - **Gravity.** The player falls, jumps and swims under the volume's gravity. Leaving the volume brings the level's gravity back at once.
-- **Push.** A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
+- **Push.** The player feels `push` × `force`: `force` `0` pushes nothing, and the lift-off and the steady drift scale with it. The terminal speed below is the player's own and does not change with `force`. A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
 
 Enemies take only a volume's gravity, and only when it pulls down: in a volume whose gravity pulls up, an enemy behaves as if weightless. Enemies ignore push, do not swim, and walk along the bottom of a fluid. Projectiles are not affected by any volume.
 
 ### Fluid surfaces
 
-The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent, warped, and visible from both above and below.
+The compiler draws a fluid's surface from its brush faces, using each face's texture. The surface is translucent and visible from both above and below. It moves in whole texels on its texture's own grid, so a fluid has the grain of a wall at the same texture scale: still water shimmers and rings, and a current drifts the way it pushes. Scale the texture down for finer water.
 
 - A face flush against solid world draws nothing, so a pool sunk into the floor shows only its top. A face partly against solid world draws only its open part.
 - A face shared by two brushes of the same `fluid_volume` draws nothing.

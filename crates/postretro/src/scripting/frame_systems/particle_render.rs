@@ -356,6 +356,7 @@ mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
+            environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

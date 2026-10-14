@@ -298,3 +298,88 @@ fn environment_section_always_carries_the_level_gravity() {
         "a fluid box in open space draws every face"
     );
 }
+
+#[test]
+fn push_force_defaults_to_one_and_accepts_any_finite_non_negative_value() {
+    for properties in [
+        "\"push\" \"8 0 0\"",
+        "\"push\" \"8 0 0\"\n\"force\" \"\"",
+        "\"push\" \"8 0 0\"\n\"force\" \"  \"",
+    ] {
+        let volume = one_volume("push_volume", properties).unwrap();
+        assert_eq!(volume.force, 1.0, "{properties}");
+    }
+    for (authored, expected) in [
+        ("0", 0.0f32),
+        ("-0", 0.0),
+        ("0.5", 0.5),
+        ("3", 3.0),
+        (" 250 ", 250.0),
+    ] {
+        let volume = one_volume(
+            "push_volume",
+            &format!("\"push\" \"8 0 0\"\n\"force\" \"{authored}\""),
+        )
+        .unwrap_or_else(|error| panic!("force \"{authored}\" must compile: {error:#}"));
+        // Bits, not `==`: -0 equals 0 but writes and hashes differently.
+        assert_eq!(
+            volume.force.to_bits(),
+            expected.to_bits(),
+            "force \"{authored}\""
+        );
+        assert_eq!(volume.push, Some(Vec3::new(0.0, 0.0, -8.0)));
+    }
+}
+
+#[test]
+fn push_force_rejects_negative_non_numeric_and_non_finite_values_naming_the_entity() {
+    for bad in ["-0.5", "strong", "inf", "NaN", "1 2"] {
+        assert_fails_naming_entity(
+            "push_volume",
+            &format!("\"push\" \"8 0 0\"\n\"force\" \"{bad}\""),
+            "`force`",
+        );
+    }
+}
+
+#[test]
+fn force_on_other_environment_volumes_is_ignored() {
+    let fluid = one_volume("fluid_volume", "\"fluid\" \"water\"\n\"force\" \"3\"").unwrap();
+    assert_eq!(fluid.force, 1.0);
+}
+
+// A force section exists only when some push volume authors a force other
+// than 1; a push-only map emits none.
+#[test]
+fn push_force_section_is_written_only_for_an_authored_force_other_than_one() {
+    let push = |properties: &str| {
+        volume_entity(
+            "push_volume",
+            properties,
+            &[box_brush([0, 0, 0], [32, 32, 64], "volume_tex")],
+        )
+    };
+    let fluid = volume_entity(
+        "fluid_volume",
+        "\"fluid\" \"water\"",
+        &[box_brush([-64, -64, 0], [-32, -32, 64], "water_tex")],
+    );
+    let encode = |entities: &[String]| {
+        let map = parse_inline_map(&volume_map(entities)).unwrap();
+        crate::environment_volumes::encode_push_forces_section(&map.environment_volumes)
+    };
+    assert_eq!(encode(&[]), None);
+    assert_eq!(encode(&[push("\"push\" \"8 0 0\"")]), None);
+    assert_eq!(
+        encode(&[push("\"push\" \"8 0 0\"\n\"force\" \"1\""), fluid.clone()]),
+        None
+    );
+
+    let section = encode(&[
+        fluid,
+        push("\"push\" \"8 0 0\"\n\"force\" \"0\""),
+        push("\"push\" \"0 8 0\""),
+    ])
+    .expect("an authored force writes the section");
+    assert_eq!(section.forces, vec![1.0, 0.0, 1.0]);
+}

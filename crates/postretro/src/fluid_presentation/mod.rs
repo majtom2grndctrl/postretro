@@ -1,7 +1,8 @@
 // Local fluid presentation at the App: the camera eye's view tint and world
-// muffle, and the per-frame fluid surface draws.
+// muffle, the per-frame fluid surface draws, and the surfaces' current drift.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
+mod drift;
 mod eye;
 
 #[cfg(test)]
@@ -65,6 +66,82 @@ pub(crate) fn collect_fluid_surface_draws<'c>(
 }
 
 impl App {
+    /// Re-resolve every installed fluid surface face's drift and hand it to the
+    /// renderer. Drift is the steady state a swimmer settles at under the
+    /// nominal push over the face, from the values prediction uses: the active
+    /// fluid table's viscosities and the local player's terminal velocity.
+    /// Called at level install, after the boot pawn spawns, and on every
+    /// fluid-table or tuning refresh (`refresh_environment_fluids`). Only the
+    /// renderer's drift buffer changes, so no draw or opacity row is touched.
+    pub(crate) fn resolve_fluid_surface_drift(&mut self) {
+        self.fluid_surface_drift = match self.level.as_ref() {
+            Some(world) => drift::resolve_fluid_surface_drift(
+                &world.environment_volumes.volumes,
+                &self.environment_volumes,
+                &self.environment_fluids,
+                self.drift_terminal_velocity(),
+                crate::frame_timing::TICK_DURATION.as_secs_f32(),
+            ),
+            None => Vec::new(),
+        };
+        if let Some(renderer) = self.renderer.as_mut()
+            && renderer.is_full_ready()
+        {
+            renderer.set_fluid_surface_drift(&self.fluid_surface_drift);
+        }
+    }
+
+    /// The terminal velocity that caps the local player's drift layer. A
+    /// connected client reads its installed tuning payload, which arrives with
+    /// the host's fluid table; host and offline read the local pawn's live
+    /// `PlayerMovementComponent`, the value movement caps against, and fall back
+    /// to the player descriptor (the pawn's class, else `player`) while no pawn
+    /// carries one. With no movement tuning at all no swimmer exists to agree
+    /// with, and drift takes no cap.
+    ///
+    /// Drift re-resolves only on install and on a fluid-table or tuning
+    /// refresh, so a mid-level local pawn respawn or class change keeps the
+    /// previous cap until the next refresh (no such path exists today).
+    fn drift_terminal_velocity(&self) -> f32 {
+        let Some(session) = self.session.as_ref() else {
+            return f32::INFINITY;
+        };
+        if let Some(endpoint @ crate::netcode::NetEndpoint::Client { .. }) =
+            session.net_endpoint.as_ref()
+        {
+            return endpoint
+                .client_movement_tuning()
+                .map_or(f32::INFINITY, |movement| movement.fall.terminal_velocity);
+        }
+        let registry = session.scripting.script_ctx.registry.borrow();
+        let pawn = registry.local_player_pawn();
+        if let Some(movement) = pawn.and_then(|pawn| {
+            registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                .ok()
+        }) {
+            return movement.fall.terminal_velocity;
+        }
+        let class = pawn
+            .and_then(|pawn| {
+                registry
+                    .get_component::<postretro_entities::provenance::DescriptorProvenance>(pawn)
+                    .ok()
+                    .map(|provenance| provenance.canonical_name.clone())
+            })
+            .unwrap_or_else(|| "player".to_string());
+        session
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow()
+            .entities
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class.as_str()))
+            .and_then(|descriptor| descriptor.movement.as_ref())
+            .map_or(f32::INFINITY, |movement| movement.fall.terminal_velocity)
+    }
+
     /// Advance the camera eye's fluid presentation by one presented frame.
     /// Runs once per rendered frame on the effective render eye, after the
     /// frame eye is assembled and before the audio step.

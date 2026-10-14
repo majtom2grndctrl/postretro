@@ -89,6 +89,7 @@ fn fluid_box(min: Vec3, max: Vec3, gravity: Option<f32>) -> EnvironmentVolume {
         priority: 0,
         gravity,
         push: None,
+        force: 1.0,
         fluid: Some(0),
         brushes: vec![box_leaf(min, max)],
     }
@@ -1930,4 +1931,189 @@ fn upward_current_stronger_than_gravity_leaves_a_floor_swimmer_whose_total_sinks
         "the shove decays at ground drag, not as a launch: {:?}",
         component.knockback_velocity
     );
+}
+
+/// Speed along x a swimmer released without input settles at in a current
+/// `push` through fluid of `viscosity`, after ten seconds of ticks.
+fn settled_swimmer_speed(push: Vec3, viscosity: f32) -> f32 {
+    let min = Vec3::new(-5000.0, -200.0, -5000.0);
+    let max = Vec3::new(5000.0, 0.0, 5000.0);
+    let volumes =
+        EnvironmentVolumes::build(vec![fluid_box(min, max, None), push_box(min, max, push)]);
+    let viscosities = [viscosity];
+    let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &viscosities);
+    let mut component = swimming(&swim_descriptor());
+    let mut position = Vec3::new(0.0, -100.0, 0.0);
+    for _ in 0..600 {
+        step(
+            &mut component,
+            &CollisionWorld::new(),
+            view,
+            &idle_input(),
+            &mut position,
+        );
+    }
+    assert_eq!(component.movement_state.kind(), MovementStateKind::Swim);
+    component.velocity.x
+}
+
+fn terminal() -> f32 {
+    swim_descriptor().fall.terminal_velocity
+}
+
+#[track_caller]
+fn assert_within_two_percent(swimmer: f32, surface: f32) {
+    assert!(
+        (swimmer - surface).abs() <= 0.02 * surface.abs(),
+        "swimmer settles at {swimmer} m/s, the surface drifts at {surface} m/s"
+    );
+}
+
+// The surface drifts at the speed a swimmer settles at, from the one
+// steady-state function movement shares.
+#[test]
+fn surface_drift_matches_a_settled_swimmer_in_water_and_sludge() {
+    let push = Vec3::new(6.0, 0.0, 0.0);
+    for viscosity in [2.0, 6.0] {
+        let surface = super::steady_drift_velocity(push, viscosity, terminal(), DT);
+        assert!((surface.x - push.x / viscosity).abs() < 1.0e-3, "{surface}");
+        assert_within_two_percent(settled_swimmer_speed(push, viscosity), surface.x);
+    }
+}
+
+// At viscosity × dt >= 1 decay clamps the drift before the tick's push
+// accrues, so the steady state is push × dt, not push / viscosity.
+#[test]
+fn surface_drift_at_viscosity_past_the_tick_rate_is_movements_steady_state() {
+    let push = Vec3::new(6.0, 0.0, 0.0);
+    let surface = super::steady_drift_velocity(push, 120.0, terminal(), DT);
+    assert!((surface.x - push.x * DT).abs() < 1.0e-5, "{surface}");
+    assert!((surface.x - push.x / 120.0).abs() > 1.0e-3);
+    assert_within_two_percent(settled_swimmer_speed(push, 120.0), surface.x);
+}
+
+// A current too weak to outlast the drift stop threshold: the swimmer's decayed
+// drift is zeroed every tick before the push accrues, so it settles at push × dt,
+// not push / viscosity. The surface follows the same exception.
+#[test]
+fn surface_drift_matches_a_swimmer_in_a_current_too_weak_to_outlast_drift_stop() {
+    let push = Vec3::new(0.05, 0.0, 0.0);
+    let surface = super::steady_drift_velocity(push, WATER_VISCOSITY, terminal(), DT);
+    assert!((surface.x - push.x * DT).abs() < 1.0e-7, "{surface}");
+    assert!(
+        (surface.x - push.x / WATER_VISCOSITY).abs() > 1.0e-3,
+        "not the thin-fluid settle: {surface}"
+    );
+    assert_within_two_percent(settled_swimmer_speed(push, WATER_VISCOSITY), surface.x);
+}
+
+#[test]
+fn surface_drift_caps_at_terminal_velocity_as_a_swimmer_does() {
+    let push = Vec3::new(10.0 * terminal(), 0.0, 0.0);
+    let surface = super::steady_drift_velocity(push, WATER_VISCOSITY, terminal(), DT);
+    assert!((surface.length() - terminal()).abs() < 1.0e-3, "{surface}");
+    assert_within_two_percent(settled_swimmer_speed(push, WATER_VISCOSITY), surface.x);
+}
+
+#[test]
+fn currents_of_different_strength_below_the_cap_drift_at_different_speeds() {
+    let slow =
+        super::steady_drift_velocity(Vec3::new(2.0, 0.0, 0.0), WATER_VISCOSITY, terminal(), DT);
+    let fast =
+        super::steady_drift_velocity(Vec3::new(6.0, 0.0, 0.0), WATER_VISCOSITY, terminal(), DT);
+    assert!(fast.x > slow.x + 1.0, "{slow} vs {fast}");
+}
+
+#[test]
+fn inviscid_surface_drift_is_the_terminal_cap_not_a_division_fault() {
+    let push = Vec3::new(3.0, 0.0, 4.0);
+    let surface = super::steady_drift_velocity(push, 0.0, terminal(), DT);
+    assert!(surface.is_finite());
+    assert!(
+        (surface - push.normalize() * terminal()).length() < 1.0e-4,
+        "{surface}"
+    );
+    // No cap and no drag has no steady state: the surface stays still.
+    assert_eq!(
+        super::steady_drift_velocity(push, 0.0, f32::INFINITY, DT),
+        Vec3::ZERO
+    );
+    assert_eq!(
+        super::steady_drift_velocity(Vec3::ZERO, 0.0, terminal(), DT),
+        Vec3::ZERO
+    );
+}
+
+// The fluid-jump check reads the felt push. Under a force-0 down-current
+// strong enough to block the jump at force 1, the jump decides as in still
+// water.
+#[test]
+fn fluid_jump_under_a_force_zero_down_current_decides_as_in_still_water() {
+    let world = CollisionWorld::new();
+    let water = fluid_box(
+        Vec3::new(-50.0, -200.0, -50.0),
+        Vec3::new(50.0, 0.0, 50.0),
+        None,
+    );
+    let downdraft = |force: f32| {
+        let mut volume = push_box(
+            Vec3::new(-50.0, 0.0, -50.0),
+            Vec3::new(50.0, 10.0, 50.0),
+            Vec3::new(0.0, -80.0, 0.0),
+        );
+        volume.force = force;
+        volume
+    };
+    let blocking = EnvironmentVolumes::build(vec![water.clone(), downdraft(1.0)]);
+    assert!(!holds_jump_at_the_surface(
+        &world,
+        water_view(&blocking),
+        0.45,
+        1
+    ));
+    let decorative = EnvironmentVolumes::build(vec![water.clone(), downdraft(0.0)]);
+    let calm = EnvironmentVolumes::build(vec![water]);
+    assert_eq!(
+        holds_jump_at_the_surface(&world, water_view(&decorative), 0.45, 1),
+        holds_jump_at_the_surface(&world, water_view(&calm), 0.45, 1),
+    );
+    assert!(holds_jump_at_the_surface(
+        &world,
+        water_view(&decorative),
+        0.45,
+        1
+    ));
+}
+
+// A force-0 current carries no swimmer; force 0.5 and 3 scale its settled
+// drift, while the surface keeps drifting at the nominal steady state.
+#[test]
+fn force_scales_the_drift_a_swimmer_settles_at() {
+    let push = Vec3::new(6.0, 0.0, 0.0);
+    let settle = |force: f32| {
+        let min = Vec3::new(-5000.0, -200.0, -5000.0);
+        let max = Vec3::new(5000.0, 0.0, 5000.0);
+        let mut current = push_box(min, max, push);
+        current.force = force;
+        let volumes = EnvironmentVolumes::build(vec![fluid_box(min, max, None), current]);
+        let viscosities = [WATER_VISCOSITY];
+        let view = EnvironmentView::new(LEVEL_GRAVITY, &volumes, &viscosities);
+        let mut component = swimming(&swim_descriptor());
+        let mut position = Vec3::new(0.0, -100.0, 0.0);
+        for _ in 0..600 {
+            step(
+                &mut component,
+                &CollisionWorld::new(),
+                view,
+                &idle_input(),
+                &mut position,
+            );
+        }
+        component.velocity.x
+    };
+    let nominal = super::steady_drift_velocity(push, WATER_VISCOSITY, terminal(), DT).x;
+    assert!(settle(0.0).abs() < 1.0e-4);
+    for force in [0.5, 3.0] {
+        assert_within_two_percent(settle(force), force * nominal);
+    }
 }

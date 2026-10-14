@@ -41,6 +41,7 @@ pub mod octahedral;
 pub mod portals;
 pub mod prm;
 pub mod prm_accounting;
+pub mod push_forces;
 pub mod sdf_atlas;
 pub mod sh_reconstruct;
 pub mod sh_volume;

@@ -18,8 +18,12 @@ pub struct EnvironmentVolume {
     pub priority: i32,
     /// Signed vertical acceleration, m/s², like the level default.
     pub gravity: Option<f32>,
-    /// Acceleration in engine axes, m/s².
+    /// Acceleration in engine axes, m/s²: the nominal current, its direction
+    /// and look. Particles follow it as authored.
     pub push: Option<Vec3>,
+    /// How hard the push shoves a body: bodies feel `push × force`. Finite and
+    /// ≥ 0, 1 for a volume without push. 0 makes a decorative current.
+    pub force: f32,
     /// Resolved fluid index.
     pub fluid: Option<u16>,
     pub brushes: Vec<ConvexLeaf>,
@@ -218,7 +222,8 @@ impl EnvironmentVolumes {
         });
     }
 
-    pub(crate) fn acceleration(&self, point: Vec3, level_gravity: f32) -> (f32, Vec3) {
+    /// Point gravity, and the winning push with its force (1 with no push).
+    pub(crate) fn acceleration(&self, point: Vec3, level_gravity: f32) -> (f32, Vec3, f32) {
         self.acceleration_index
             .resolve(&self.volumes, point, level_gravity)
     }

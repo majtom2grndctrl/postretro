@@ -131,6 +131,7 @@ pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWo
     }
 
     hash_environment_volumes(&mut hasher, &world.environment_volumes);
+    hash_push_forces(&mut hasher, world);
 
     *hasher.finalize().as_bytes()
 }
@@ -180,6 +181,20 @@ fn hash_environment_volumes(hasher: &mut blake3::Hasher, section: &EnvironmentVo
                 hash_vec3(hasher, Vec3::from(*normal));
                 hash_f32(hasher, *distance);
             }
+        }
+    }
+}
+
+/// Push forces ride a sibling section the record destructure above cannot see,
+/// so they are hashed here, explicitly. Only forces other than 1 enter, keyed
+/// by record index: a map whose every force is 1 hashes the same with or
+/// without a PushForces section, as before force existed.
+fn hash_push_forces(hasher: &mut blake3::Hasher, world: &LevelWorld) {
+    for index in 0..world.environment_volumes.volumes.len() {
+        let force = world.push_force(index);
+        if force != 1.0 {
+            hash_len(hasher, index);
+            hash_f32(hasher, force);
         }
     }
 }
@@ -998,6 +1013,33 @@ pub(crate) mod tests {
         let mut removed = environment_world();
         removed.environment_volumes.volumes.pop();
         assert_ne!(digest, level_content_digest(&geometry, &removed));
+    }
+
+    #[test]
+    fn level_content_digest_changes_with_push_force_and_ignores_an_all_one_section() {
+        let geometry = KinematicGeometry::default();
+        let base = environment_world();
+        let digest = level_content_digest(&geometry, &base);
+
+        let mut halved = environment_world();
+        halved.environment_push_forces = vec![1.0, 0.5];
+        let mut decorative = environment_world();
+        decorative.environment_push_forces = vec![1.0, 0.0];
+        assert_ne!(digest, level_content_digest(&geometry, &halved));
+        assert_ne!(digest, level_content_digest(&geometry, &decorative));
+        assert_ne!(
+            level_content_digest(&geometry, &halved),
+            level_content_digest(&geometry, &decorative),
+            "two maps differing only in force hash differently"
+        );
+
+        let mut all_one = environment_world();
+        all_one.environment_push_forces = vec![1.0, 1.0];
+        assert_eq!(
+            digest,
+            level_content_digest(&geometry, &all_one),
+            "an all-1 force section hashes as no section"
+        );
     }
 
     #[test]

@@ -11,6 +11,10 @@ const CELL_RESIDENCY_SET_CONTAINER_VERSION: u16 = 1;
 /// (`ENVIRONMENT_VOLUMES_VERSION`) is the epoch a loader checks.
 const ENVIRONMENT_VOLUMES_CONTAINER_VERSION: u16 = 1;
 
+/// Id 53's PRL table entry version. The payload's own leading version
+/// (`PUSH_FORCES_VERSION`) is the epoch a loader checks.
+const PUSH_FORCES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -50,6 +54,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
+    pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
@@ -93,6 +98,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        push_forces,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
@@ -422,6 +428,14 @@ pub(super) fn build_finalized_section_plan<'a>(
         environment_volumes.byte_len(),
         || Ok(environment_volumes.to_bytes()),
     ));
+    if let Some(section) = push_forces {
+        sections.push(PlannedSection::new(
+            SectionId::PushForces as u32,
+            PUSH_FORCES_CONTAINER_VERSION,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
     if let Some(section) = cell_draw_index {
         sections.push(PlannedSection::new(
             SectionId::CellDrawIndex as u32,

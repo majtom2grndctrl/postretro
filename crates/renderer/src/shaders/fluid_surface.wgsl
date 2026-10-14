@@ -1,4 +1,4 @@
-// Fluid surface pass: translucent, two-sided, turbulently warped fluid faces,
+// Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
 // lit per fragment by baked SH indirect, baked direct SH, and dynamic lights.
 // See: context/lib/rendering_pipeline.md §7.3a
 
@@ -113,6 +113,9 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // Second vertex buffer: the face's drift in texture periods per second,
+    // rewritten in place whenever drift re-resolves.
+    @location(3) drift_rate: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -121,6 +124,8 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) world_position: vec3<f32>,
     @location(3) @interpolate(flat) slot: u32,
+    // The face's drift scroll this frame, texture periods in [-0.5, 0.5).
+    @location(4) @interpolate(flat) drift_scroll: vec2<f32>,
 };
 
 @vertex
@@ -131,17 +136,148 @@ fn vs_main(in: VertexInput, @builtin(instance_index) slot: u32) -> VertexOutput 
     out.world_normal = in.normal;
     out.world_position = in.position;
     out.slot = slot;
+    out.drift_scroll = fluid_drift_scroll(in.drift_rate, uniforms.time);
     return out;
 }
 
-// Quake's turbulent warp in texture-tile units: each axis shifts by a sine of
-// the other, 8 texels of a 64-texel tile at 0.125 rad per texel, 1 rad/s.
-const FLUID_WARP_AMPLITUDE: f32 = 0.125;
-const FLUID_WARP_FREQUENCY: f32 = 8.0;
-const FLUID_WARP_SPEED: f32 = 1.0;
+// Whole-texel fluid motion on the face texture's own grid. Mirrors
+// `postretro_render_cpu::fluid_surface::motion`; every constant is pinned to it.
+const FLUID_MOTION_STEP_HZ: f32 = 2.5;
+const FLUID_SHIMMER_AMPLITUDE: i32 = 1;
+const FLUID_RING_AMPLITUDE: i32 = 1;
+const FLUID_RING_BLOCK_SHIFT: i32 = 5;
+const FLUID_RING_LIFETIME_STEPS: i32 = 5;
+const FLUID_RING_MARGIN: i32 = 9;
+const FLUID_RING_STEP_TEXELS: f32 = 2.0;
+const FLUID_FADE_START_TEXELS_PER_PIXEL: f32 = 0.75;
+const FLUID_FADE_END_TEXELS_PER_PIXEL: f32 = 1.5;
+const FLUID_SALT_CELL: u32 = 0x9E3779B9u;
+const FLUID_SALT_SHIMMER: u32 = 0x85EBCA6Bu;
+const FLUID_SALT_FADE: u32 = 0xC2B2AE35u;
+const FLUID_SALT_BLOCK: u32 = 0x27D4EB2Fu;
+const FLUID_SALT_DROP: u32 = 0x165667B1u;
+const FLUID_HASH_MUL_A: u32 = 0x7FEB352Du;
+const FLUID_HASH_MUL_B: u32 = 0x846CA68Bu;
 
-fn fluid_warp_uv(uv: vec2<f32>, time: f32) -> vec2<f32> {
-    return uv + FLUID_WARP_AMPLITUDE * sin(uv.yx * FLUID_WARP_FREQUENCY + vec2<f32>(time * FLUID_WARP_SPEED));
+fn fluid_hash_u32(value: u32) -> u32 {
+    var x = value;
+    x = x ^ (x >> 16u);
+    x = x * FLUID_HASH_MUL_A;
+    x = x ^ (x >> 15u);
+    x = x * FLUID_HASH_MUL_B;
+    x = x ^ (x >> 16u);
+    return x;
+}
+
+fn fluid_hash3(a: u32, b: u32, c: u32) -> u32 {
+    return fluid_hash_u32(a ^ fluid_hash_u32(b ^ fluid_hash_u32(c)));
+}
+
+fn fluid_hash_unit(h: u32) -> f32 {
+    return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// The cell's seed: its phase, and the root of its other draws.
+fn fluid_cell_seed(cell: vec2<i32>) -> u32 {
+    return fluid_hash3(bitcast<u32>(cell.x), bitcast<u32>(cell.y), FLUID_SALT_CELL);
+}
+
+// Floor division for a positive divisor.
+fn fluid_floor_div(a: i32, b: i32) -> i32 {
+    let q = a / b;
+    return select(q, q - 1, (a % b) != 0 && a < 0);
+}
+
+fn fluid_cell_step(seed: u32, time: f32) -> i32 {
+    return i32(floor(time * FLUID_MOTION_STEP_HZ + fluid_hash_unit(seed)));
+}
+
+// Four-step cycle 0, +d, 0, -d along the cell's fixed direction: zero mean.
+fn fluid_shimmer_offset(seed: u32, step: i32) -> vec2<i32> {
+    let position = step & 3;
+    if (position & 1) == 0 {
+        return vec2<i32>(0);
+    }
+    let h = fluid_hash_u32(seed ^ FLUID_SALT_SHIMMER);
+    let direction = (h >> 8u) % 9u;
+    let d = vec2<i32>(i32(direction % 3u) - 1, i32(direction / 3u) - 1);
+    return select(-d, d, position == 1);
+}
+
+// The ring of the cell's block drop, if it reaches the cell. Drops land at
+// least FLUID_RING_MARGIN texels inside their block, so no ring leaves it.
+fn fluid_ring_offset(cell: vec2<i32>, step: i32) -> vec2<i32> {
+    let block_shift = u32(FLUID_RING_BLOCK_SHIFT);
+    let block = cell >> vec2<u32>(block_shift);
+    let seed = fluid_hash3(bitcast<u32>(block.x), bitcast<u32>(block.y), FLUID_SALT_BLOCK);
+    let shifted = step + i32(seed % u32(FLUID_RING_LIFETIME_STEPS));
+    let epoch = fluid_floor_div(shifted, FLUID_RING_LIFETIME_STEPS);
+    let age = shifted - epoch * FLUID_RING_LIFETIME_STEPS;
+    if age == 0 {
+        return vec2<i32>(0);
+    }
+    let position = fluid_hash_u32(seed ^ fluid_hash_u32(bitcast<u32>(epoch) ^ FLUID_SALT_DROP));
+    let span = u32((1 << block_shift) - 2 * FLUID_RING_MARGIN);
+    let center = (block << vec2<u32>(block_shift))
+        + vec2<i32>(FLUID_RING_MARGIN)
+        + vec2<i32>(i32(position % span), i32((position >> 16u) % span));
+    let diff = vec2<f32>(cell - center);
+    let distance_sq = dot(diff, diff);
+    let radius = f32(age) * FLUID_RING_STEP_TEXELS;
+    // |distance - radius| < 0.5, without a square root off the ring.
+    if distance_sq <= (radius - 0.5) * (radius - 0.5) || distance_sq >= (radius + 0.5) * (radius + 0.5) {
+        return vec2<i32>(0);
+    }
+    return vec2<i32>(floor(diff / sqrt(distance_sq) + 0.5));
+}
+
+fn fluid_faded_flat(seed: u32, texels_per_pixel: f32) -> bool {
+    let threshold = FLUID_FADE_START_TEXELS_PER_PIXEL
+        + (FLUID_FADE_END_TEXELS_PER_PIXEL - FLUID_FADE_START_TEXELS_PER_PIXEL)
+            * fluid_hash_unit(fluid_hash_u32(seed ^ FLUID_SALT_FADE));
+    return texels_per_pixel > threshold;
+}
+
+fn fluid_displayed_offset(cell: vec2<i32>, time: f32, texels_per_pixel: f32) -> vec2<i32> {
+    let seed = fluid_cell_seed(cell);
+    if fluid_faded_flat(seed, texels_per_pixel) {
+        return vec2<i32>(0);
+    }
+    let step = fluid_cell_step(seed, time);
+    return fluid_shimmer_offset(seed, step) + fluid_ring_offset(cell, step);
+}
+
+// fract(a * b) without the product's rounding: 12-bit halves multiply exactly,
+// so a day of script time still scrolls on speed.
+fn fluid_high_half(x: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(x) & 0xFFFFF000u);
+}
+
+fn fluid_exact_fract_product(a: f32, b: f32) -> f32 {
+    let a_hi = fluid_high_half(a);
+    let b_hi = fluid_high_half(b);
+    let a_lo = a - a_hi;
+    let b_lo = b - b_hi;
+    return fract(fract(a_hi * b_hi) + fract(a_hi * b_lo) + fract(a_lo * b_hi) + fract(a_lo * b_lo));
+}
+
+fn fluid_drift_scroll(rate: vec2<f32>, time: f32) -> vec2<f32> {
+    let periods = vec2<f32>(
+        fluid_exact_fract_product(time, rate.x),
+        fluid_exact_fract_product(time, rate.y),
+    ) + vec2<f32>(0.5);
+    return periods - floor(periods) - vec2<f32>(0.5);
+}
+
+// The warped sample UV. Cells are floored from the UNWARPED texel UV, so
+// shimmer and rings stay on the fixed grid while the drift scrolls beneath.
+fn fluid_warp_uv(uv: vec2<f32>, drift_scroll: vec2<f32>, dims: vec2<f32>, time: f32,
+                 texels_per_pixel: f32) -> vec2<f32> {
+    let texel_uv = uv * dims;
+    let cell = vec2<i32>(floor(texel_uv));
+    let drift_texels = floor(drift_scroll * dims);
+    let cell_texels = vec2<f32>(fluid_displayed_offset(cell, time, texels_per_pixel));
+    return (texel_uv + drift_texels + cell_texels) / dims;
 }
 
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
@@ -262,7 +398,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Derivatives in uniform control flow, from the unwarped UV.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
-    let uv = fluid_warp_uv(in.uv, uniforms.time);
+    let dims = vec2<f32>(textureDimensions(base_texture, 0));
+    let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
+    let uv = fluid_warp_uv(in.uv, in.drift_scroll, dims, uniforms.time, texels_per_pixel);
     let albedo = sample_post_retro(base_texture, aniso_sampler, uv, ddx, ddy);
 
     // Two-sided: shade the side the camera sees. For a planar face this is

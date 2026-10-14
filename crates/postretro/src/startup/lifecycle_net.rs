@@ -181,6 +181,8 @@ impl App {
         // No volume of this level may resolve after it unloads; the next install
         // supplies its own set.
         self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();
+        // Nor may its surfaces' drift.
+        self.fluid_surface_drift.clear();
         // Nor may its fluid tint or muffle.
         self.clear_fluid_eye_presentation();
         // The registry is cleared below, retiring the chase agent's entity slot;

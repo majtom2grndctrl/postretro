@@ -158,7 +158,7 @@ fn the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick() {
         view_feel.vault,
         Some(postretro_foundation::VaultViewParams {
             pitch: -38.5,
-            roll: 0.0,
+            roll: 10.0,
             fov: -30.0,
             ease_in: 0.33,
             ease_out: 0.33,

@@ -61,6 +61,11 @@ impl fmt::Display for FluidFieldError {
     }
 }
 
+/// A finite value in `[0, 1]`.
+fn unit(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
 impl FluidDescriptor {
     /// `waveAmplitude` when omitted, in texels.
     pub const DEFAULT_WAVE_AMPLITUDE: f32 = 8.0;
@@ -95,9 +100,6 @@ impl FluidDescriptor {
     /// reported as the amplitude; the 8× length rule binds a defaulted
     /// amplitude as it does a written one.
     pub fn validate(&self) -> Result<(), FluidFieldError> {
-        fn unit(value: f32) -> bool {
-            value.is_finite() && (0.0..=1.0).contains(&value)
-        }
         if self.name.is_empty() {
             return Err(FluidFieldError {
                 field: "name",
@@ -151,9 +153,6 @@ impl FluidDescriptor {
     }
 
     fn validate_fog_and_wave(&self) -> Result<(), FluidFieldError> {
-        fn unit(value: f32) -> bool {
-            value.is_finite() && (0.0..=1.0).contains(&value)
-        }
         if let Some(distance) = self.fog_distance
             && !(distance.is_finite() && distance > 0.0)
         {
@@ -460,7 +459,7 @@ mod tests {
         }
     }
 
-    // Pin P5: the amplitude range is judged before the length, so a defaulted
+    // The amplitude range is judged before the length, so a defaulted
     // length never takes the blame for an out-of-range amplitude.
     #[test]
     fn fluid_validation_reports_amplitude_before_a_defaulted_length() {
@@ -473,6 +472,41 @@ mod tests {
                 fluid.validate().map_err(|error| error.field),
                 Err("waveAmplitude"),
                 "amplitude {amplitude}, period {period:?}"
+            );
+        }
+    }
+
+    // The requirement strings are authored text; the checks use the
+    // constants. Each string must carry the constant it describes.
+    #[test]
+    fn fluid_requirement_strings_name_the_constants_the_checks_use() {
+        type Edit = fn(&mut FluidDescriptor);
+        let cases: [(Edit, String); 4] = [
+            (
+                |fluid| fluid.wave_period = Some(FluidDescriptor::MIN_WAVE_PERIOD - 0.5),
+                format!(">= {}", FluidDescriptor::MIN_WAVE_PERIOD),
+            ),
+            (
+                |fluid| fluid.wave_amplitude = FluidDescriptor::MAX_WAVE_AMPLITUDE + 0.5,
+                format!("[0, {}]", FluidDescriptor::MAX_WAVE_AMPLITUDE),
+            ),
+            (
+                |fluid| fluid.wave_length = [64.0, FluidDescriptor::MAX_WAVE_LENGTH + 0.5],
+                format!("<= {}", FluidDescriptor::MAX_WAVE_LENGTH),
+            ),
+            (
+                |fluid| fluid.wave_length = [63.0, 80.0],
+                format!("{} x", FluidDescriptor::WAVE_LENGTH_PER_AMPLITUDE),
+            ),
+        ];
+        for (edit, expected) in cases {
+            let mut fluid = water();
+            edit(&mut fluid);
+            let error = fluid.validate().expect_err("out of range");
+            assert!(
+                error.requirement.contains(&expected),
+                "`{}` should contain `{expected}`",
+                error.requirement
             );
         }
     }

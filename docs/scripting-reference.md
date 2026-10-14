@@ -2955,13 +2955,13 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `fogColor` | `[r, g, b]` | each `0`–`1`, optional | The murk's colour, picked like `viewTint`'s rgb; the engine lights it with the surface's own lighting. Leave it out to use `viewTint`'s rgb. |
 | `wavePeriod` | seconds | `≥ 6`, optional | Turns on a slow surface wave: seconds per cycle of an average crest. Leave it out for no wave. |
 | `waveAmplitude` | texels | `0`–`16`, optional | How far the wave shifts the surface texture sideways at its peak. `0` is no wave; leave it out for `8`. |
-| `waveLength` | texels: a number or `[min, max]` | up to `128`, optional | Crest to crest. One number `L` means every crest is `L` long; a `[min, max]` range gives each crest its own length within it. The minimum must be at least 8 × `waveAmplitude`, the default `8` included. Leave it out for `[48, 80]`, or `8 × waveAmplitude` if that is longer. |
+| `waveLength` | texels: a number or `[min, max]` | above `0`, min ≤ max, max ≤ `128`, min ≥ 8 × `waveAmplitude`; optional | Crest to crest. One number `L` means every crest is `L` long; a `[min, max]` range gives each crest its own length within it. The minimum must be at least 8 × `waveAmplitude`, the default `8` included. Leave it out for `[64, 80]` at the default amplitude; in general `[max(48, 8A), max(80, 8A)]` for amplitude `A`. |
 
 The wave fields count the face's texture texels at its texture scale, so
 swapping a 64 px texture for a 128 px one keeps the wave's size, and a face at a
 finer scale carries a finer wave. The surface stays flat: the wave slides the
-texture's pixels sideways in whole-texel steps. In Luau a range is a table:
-`waveLength = { 48, 80 }`.
+texture's pixels sideways in whole-texel steps. In Luau a range is a positional table:
+`waveLength = { 48, 80 }`; a keyed `{ min = 48, max = 80 }` is rejected.
 
 ```typescript
 defineFluid({

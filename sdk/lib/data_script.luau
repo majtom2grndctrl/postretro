@@ -874,8 +874,8 @@ end
 --- fluid from outside, > 0) and `fogColor` (rgb in `viewTint`'s space;
 --- omitted, `viewTint`'s rgb) add murk; `wavePeriod` (seconds, >= 6) turns on
 --- a slow surface wave whose `waveAmplitude` (texels, 0..16, default 8) and
---- `waveLength` (texels: a number or `{ min, max }`, at most 128, min >= 8 x
---- amplitude) shape it. A field out of range, or a repeated name, is rejected
+--- `waveLength` (texels: a number or positional `{ min, max }`, e.g.
+--- `{ 48, 80 }`; at most 128, min >= 8 x amplitude) shape it. A field out of range, or a repeated name, is rejected
 --- with a warning naming the field, and the first declaration stands. Pure.
 function DataScriptSdk.defineFluid(desc: FluidDescriptor): FluidDescriptor
   return desc

@@ -1,5 +1,6 @@
-// Local fluid presentation at the App: the camera eye's view tint and world
-// muffle, the per-frame fluid surface draws, and the surfaces' current drift.
+// Local fluid presentation at the App: the camera eye's view tint, fog weight
+// and world muffle, the per-frame fluid surface draws with their full look
+// (opacity, depth fog, wave), and the surfaces' current drift.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
 mod drift;
@@ -51,7 +52,7 @@ pub(crate) fn surface_look(fluid: &FluidDescriptor) -> FluidSurfaceLook {
         fog_distance: fluid.fog_distance,
         // Resolved, never the raw field: an omitted `fogColor` follows the
         // fluid's `viewTint`, so a reload that changes only the tint changes
-        // the packed murk too (pin P2).
+        // the packed murk too.
         fog_color: fluid.resolved_fog_color(),
         wave_period: fluid.wave_period,
         wave_amplitude: fluid.wave_amplitude,
@@ -87,7 +88,8 @@ impl App {
     /// fluid table's viscosities and the local player's terminal velocity.
     /// Called at level install, after the boot pawn spawns, and on every
     /// fluid-table or tuning refresh (`refresh_environment_fluids`). Only the
-    /// renderer's drift buffer changes, so no draw or opacity row is touched.
+    /// renderer's drift buffer changes, so no draw or per-volume parameter row
+    /// is touched.
     pub(crate) fn resolve_fluid_surface_drift(&mut self) {
         self.fluid_surface_drift = match self.level.as_ref() {
             Some(world) => drift::resolve_fluid_surface_drift(

@@ -299,3 +299,37 @@ fn an_unsplit_face_under_part_of_a_push_drifts_whole_by_its_sample_point() {
         Vec3::ZERO,
     );
 }
+
+// The fog and wave fields are local presentation: surface drift resolves from
+// the movement tuning and never reads them.
+#[test]
+fn surface_drift_resolve_reads_no_fog_or_wave_field() {
+    let source = include_str!("drift.rs");
+    // Tests may build full descriptors; only the shipped code counts, and doc
+    // comments may name the fields in words.
+    let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let code: String = shipped
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("fn resolve_fluid_surface_drift"),
+        "positive control: the scan reads the shipped drift slice"
+    );
+    for field in [
+        "fog_distance",
+        "fog_color",
+        "resolved_fog_color",
+        "wave_period",
+        "wave_amplitude",
+        "wave_length",
+        "fogDistance",
+        "fogColor",
+        "wavePeriod",
+        "waveAmplitude",
+        "waveLength",
+    ] {
+        assert!(!code.contains(field), "drift.rs reads `{field}`");
+    }
+}

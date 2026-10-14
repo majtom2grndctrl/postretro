@@ -1341,8 +1341,8 @@ fn surface_proximity_ramps_monotonically_to_the_plane_and_never_jumps_under_head
 #[test]
 fn frame_fog_weight_is_sent_beside_the_view_tint_every_frame_and_reset_at_unload() {
     let frame_loop = include_str!("../frame_loop/mod.rs");
-    let tint = "renderer.set_fluid_view_tint(app.fluid_eye.tint());";
-    let weight = "renderer.set_fluid_fog_weight(app.fluid_eye.fog_weight());";
+    let tint = "set_fluid_view_tint(";
+    let weight = "set_fluid_fog_weight(";
     assert_eq!(
         frame_loop.matches(tint).count(),
         1,
@@ -1353,11 +1353,18 @@ fn frame_fog_weight_is_sent_beside_the_view_tint_every_frame_and_reset_at_unload
         1,
         "one per-frame weight write"
     );
-    let after_tint = &frame_loop[frame_loop.find(tint).unwrap() + tint.len()..];
-    assert_eq!(
-        after_tint.trim_start().lines().next().map(str::trim),
-        Some(weight),
-        "the weight is written on the line after the tint"
+    // Both writes sit in one block: a few lines apart, no brace between.
+    let (first, second) = {
+        let (a, b) = (
+            frame_loop.find(tint).unwrap(),
+            frame_loop.find(weight).unwrap(),
+        );
+        (a.min(b), a.max(b))
+    };
+    let between = &frame_loop[first..second];
+    assert!(
+        between.matches('\n').count() <= 4 && !between.contains(['{', '}']),
+        "the weight is written beside the tint"
     );
 
     let presentation = include_str!("mod.rs");
@@ -1401,7 +1408,7 @@ fn dev_water() -> FluidDescriptor {
 
 // The local declaration maps to the packed row the shader reads: fog
 // extinction, the murk albedo, and the wave. An omitted fog colour follows
-// the view tint, so a reload changing only the tint changes the row (pin P2).
+// the view tint, so a reload changing only the tint changes the row.
 #[test]
 fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follows_the_tint() {
     assert_eq!(

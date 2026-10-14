@@ -1,6 +1,7 @@
-// Camera-eye fluid trigger: the eye-depth hysteresis band and the ramp that
-// drive the fluid view tint and the world-sound muffle.
-// See: context/lib/rendering_pipeline.md §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
+// Camera-eye fluid trigger: the eye-depth hysteresis band, containment, and
+// the ramp that drive the fluid view tint, the eye fog weight, and the
+// world-sound muffle.
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
 use glam::Vec3;
 use postretro_collision::{EnvironmentView, EyeFluid, fluid_at_eye, fluid_volume_plane_depth};

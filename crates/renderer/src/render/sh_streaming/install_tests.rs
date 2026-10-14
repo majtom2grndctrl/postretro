@@ -26,6 +26,7 @@ pub(super) struct SyntheticMap {
     /// compiler emits for a covered brick no light reaches. Every other row
     /// carries one entry.
     empty_rows: BTreeSet<(u32, u32)>,
+    density_levels: Vec<u8>,
     /// Sparse rows (every family) owned by a cluster other than the one
     /// owning the brick's base probes, so evicting that owner leaves the row
     /// resident through its base: a partial eviction.
@@ -50,6 +51,7 @@ impl SyntheticMap {
             clusters,
             sparse_sections: &SPARSE_SECTIONS,
             empty_rows: BTreeSet::new(),
+            density_levels: Vec::new(),
             sparse_owner_overrides: BTreeMap::new(),
         }
     }
@@ -64,6 +66,12 @@ impl SyntheticMap {
     pub(super) fn with_empty_rows(mut self, section_id: u32, rows: &[u32]) -> Self {
         self.empty_rows
             .extend(rows.iter().map(|&row| (section_id, row)));
+        self
+    }
+
+    pub(super) fn with_density_levels(mut self, levels: &[u8]) -> Self {
+        assert_eq!(levels.len(), self.cluster_count() as usize);
+        self.density_levels = levels.to_vec();
         self
     }
 
@@ -242,15 +250,28 @@ impl SyntheticMap {
             tiles_per_layer: 1,
             atlas_tiles_per_row: 1,
             irradiance_format: 0,
-            probes: vec![
-                OctahedralShProbe {
-                    validity: 1,
-                    density_level: 0,
-                    node_scale: 0,
-                    ..Default::default()
-                };
-                self.grid.iter().product::<u32>() as usize
-            ],
+            probes: (0..self.grid.iter().product::<u32>())
+                .map(|dense| {
+                    let xyz = [
+                        dense % self.grid[0],
+                        dense / self.grid[0] % self.grid[1],
+                        dense / (self.grid[0] * self.grid[1]),
+                    ];
+                    let c = [0, 1, 2].map(|axis| xyz[axis] / 4 / self.cluster_bricks[axis]);
+                    let cluster =
+                        c[0] + c[1] * self.clusters[0] + c[2] * self.clusters[0] * self.clusters[1];
+                    OctahedralShProbe {
+                        validity: 1,
+                        density_level: self
+                            .density_levels
+                            .get(cluster as usize)
+                            .copied()
+                            .unwrap_or(0),
+                        node_scale: 0,
+                        ..Default::default()
+                    }
+                })
+                .collect(),
             animation_descriptors: Vec::new(),
             slot_for_map_light: Vec::new(),
         }

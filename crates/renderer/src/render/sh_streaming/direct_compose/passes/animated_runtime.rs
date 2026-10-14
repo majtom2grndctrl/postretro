@@ -47,8 +47,9 @@ impl StreamingAnimatedPass {
     pub(in crate::render::sh_streaming::direct_compose) fn validate_sparse_rows(
         &self,
         rows: &[DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.validate_rows(rows)
+        self.sparse.validate_rows(rows, capacity)
     }
 
     pub(in crate::render::sh_streaming::direct_compose) fn clear_row_pair(

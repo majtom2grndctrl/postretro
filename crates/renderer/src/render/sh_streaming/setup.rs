@@ -251,6 +251,35 @@ impl ShResidencyState {
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
     ) -> Result<(), ShResidencyDrainError> {
+        let limits = device.limits();
+        self.initialize_gpu_with_limits(
+            device,
+            queue,
+            manifest.base(),
+            manifest.sources(),
+            probe_occlusion_enabled,
+            sh,
+            uniform_bind_group_layout,
+            selection_weights,
+            &limits,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn initialize_gpu_with_limits(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        base: &postretro_level_loader::ShStreamBaseMetadata,
+        sources: &postretro_level_loader::ShStreamSourceMetadata,
+        probe_occlusion_enabled: bool,
+        sh: &mut crate::render::sh_volume::ShVolumeResources,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        selection_weights: &wgpu::Buffer,
+        limits: &wgpu::Limits,
+        extra_floor_charge: u64,
+    ) -> Result<(), ShResidencyDrainError> {
         let mut minimum_slots = 1u32;
         for nodes in self.nodes_by_owner.values() {
             let slots = nodes.iter().try_fold(0u32, |total, node| {
@@ -272,27 +301,25 @@ impl ShResidencyState {
                 .ok_or(ShResidencyDrainError::SlotOverflow)?;
             Ok::<_, ShResidencyDrainError>(total.max(end))
         })?;
-        let fixed_metadata_bytes = gpu::initial_fixed_metadata_bytes(
-            manifest.base(),
-            manifest.sources(),
-            &device.limits(),
-            sh,
-        )?;
+        let fixed_metadata_bytes = gpu::initial_fixed_metadata_bytes(base, sources, limits, sh)?;
         let initial_floor = plan_initial_pool_floor(
-            manifest.base(),
-            manifest.sources(),
+            base,
+            sources,
             minimum_slots,
             whole_dense_slots,
             &self.sparse_capacity_floors,
-            fixed_metadata_bytes,
+            fixed_metadata_bytes
+                .checked_add(extra_floor_charge)
+                .ok_or(ShResidencyDrainError::SlotOverflow)?,
             sh.billboard_direct_scatter.capacity_bytes(),
-            &device.limits(),
+            limits,
         )?;
         self.gpu = Some(StreamingGpuPools::new(
             device,
+            limits,
             queue,
-            manifest.base(),
-            manifest.sources(),
+            base,
+            sources,
             initial_floor,
             probe_occlusion_enabled,
             sh,

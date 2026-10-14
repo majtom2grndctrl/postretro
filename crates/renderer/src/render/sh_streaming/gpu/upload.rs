@@ -168,6 +168,21 @@ impl StreamingGpuPools {
         block: &[u8],
         local_to_live_slot: &[SlotRun],
     ) -> Result<(), ShResidencyDrainError> {
+        self.validate_isolated_tiles_for_capacity(
+            expected_format,
+            block,
+            local_to_live_slot,
+            self.shape.slots,
+        )
+    }
+
+    pub(in crate::render::sh_streaming) fn validate_isolated_tiles_for_capacity(
+        &self,
+        expected_format: wgpu::TextureFormat,
+        block: &[u8],
+        local_to_live_slot: &[SlotRun],
+        slot_capacity: u32,
+    ) -> Result<(), ShResidencyDrainError> {
         if block.len() < 20 {
             return Err(ShResidencyDrainError::MalformedChunk {
                 cluster_id: 0,
@@ -233,7 +248,7 @@ impl StreamingGpuPools {
                 || run
                     .live
                     .checked_add(run.len)
-                    .is_none_or(|end| end > self.shape.slots)
+                    .is_none_or(|end| end > slot_capacity)
         }) {
             return Err(ShResidencyDrainError::SlotOverflow);
         }
@@ -424,14 +439,19 @@ impl StreamingGpuPools {
         self.indirect_compose.upload_sparse_rows(uploads, rows)
     }
 
-    pub(in crate::render::sh_streaming) fn validate_indirect_sparse_row(
+    pub(in crate::render::sh_streaming) fn validate_indirect_sparse_row_for_capacity(
         &self,
         entry_start: u32,
         tile_f16_start: u32,
         row: &super::super::ParsedSparseRow,
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
-        self.indirect_compose
-            .validate_sparse_row(entry_start, tile_f16_start, row)
+        self.indirect_compose.validate_sparse_row_for_capacity(
+            entry_start,
+            tile_f16_start,
+            row,
+            capacity,
+        )
     }
 
     pub(in crate::render::sh_streaming) fn upload_direct_sparse_rows(
@@ -448,17 +468,18 @@ impl StreamingGpuPools {
             .upload_sparse_rows(uploads, section_id, rows)
     }
 
-    pub(in crate::render::sh_streaming) fn validate_direct_sparse_rows(
+    pub(in crate::render::sh_streaming) fn validate_direct_sparse_rows_for_capacity(
         &self,
         section_id: u32,
         rows: &[super::super::direct_compose::DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
         self.direct_compose
             .as_ref()
             .ok_or(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed direct sparse validation requested without a direct compose pool",
             })?
-            .validate_sparse_rows(section_id, rows)
+            .validate_sparse_rows_for_capacity(section_id, rows, capacity)
     }
 
     pub(in crate::render::sh_streaming) fn clear_indirect_sparse_row(

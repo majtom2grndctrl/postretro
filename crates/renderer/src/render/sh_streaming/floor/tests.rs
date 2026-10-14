@@ -155,7 +155,7 @@ fn floor_charges_every_coupled_direct_dense_texture() {
     let expected_dense_bytes = 100_u64 * 1_664;
     let expected_sparse_bytes = 2 * sparse_capacity_bytes((1, 2)).unwrap();
     assert_eq!(plan.dense_slots, 100);
-    assert_eq!(plan.dense_group_minimum_bytes, 4 * 1_664);
+    assert_eq!(plan.dense_group_minimum_bytes, 100 * 1_664);
     assert_eq!(
         plan.sparse_group_minimum_bytes[&41],
         sparse_capacity_bytes((1, 2)).unwrap()
@@ -370,7 +370,7 @@ fn impossible_streamed_pool_growth_is_a_named_gpu_capacity_error() {
         ..wgpu::Limits::default()
     };
     assert_eq!(
-        atlas_capacity_slots(1, &limits),
+        AtlasShape::for_slots(1, 1, &limits),
         Err(ShResidencyDrainError::GpuCapacity {
             reason: "adapter cannot allocate an 8x8 streamed SH cell",
         })

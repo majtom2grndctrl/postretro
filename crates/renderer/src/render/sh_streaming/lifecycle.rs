@@ -108,6 +108,9 @@ impl ShResidencyState {
                     Err(error) if error.is_retryable_retirement_pressure() => {
                         outcome.deferred.push(prepared);
                     }
+                    Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => {
+                        outcome.refused.push(cluster_id);
+                    }
                     Err(error) => return Err(error),
                 }
             }

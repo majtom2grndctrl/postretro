@@ -79,6 +79,7 @@ impl StreamingDirectCompose {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,
@@ -99,6 +100,7 @@ impl StreamingDirectCompose {
         };
         let promotion = StreamingPromotionPass::new(
             device,
+            limits,
             base,
             sources.direct_delta.as_ref(),
             shape,
@@ -111,6 +113,7 @@ impl StreamingDirectCompose {
         let animated = match sources.animated_direct_delta.as_ref() {
             Some(source) => Some(StreamingAnimatedPass::new(
                 device,
+                limits,
                 base,
                 source,
                 shape,
@@ -192,6 +195,7 @@ impl StreamingDirectCompose {
     pub(super) fn build_sparse_replacement(
         &self,
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,
@@ -215,6 +219,7 @@ impl StreamingDirectCompose {
                 };
                 let replacement = StreamingPromotionPass::new(
                     device,
+                    limits,
                     base,
                     sources.direct_delta.as_ref(),
                     shape,
@@ -237,6 +242,7 @@ impl StreamingDirectCompose {
                 )?;
                 let replacement = StreamingAnimatedPass::new(
                     device,
+                    limits,
                     base,
                     source,
                     shape,
@@ -310,13 +316,14 @@ impl StreamingDirectCompose {
 
     /// Preflight an entire owned family before the GPU owner queues any row.
     /// This makes a multi-family install atomic at the renderer boundary.
-    pub(super) fn validate_sparse_rows(
+    pub(super) fn validate_sparse_rows_for_capacity(
         &self,
         section_id: u32,
         rows: &[DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
         match section_id {
-            41 => self.promotion.validate_sparse_rows(rows),
+            41 => self.promotion.validate_sparse_rows(rows, capacity),
             45 => self
                 .animated
                 .as_ref()
@@ -324,12 +331,12 @@ impl StreamingDirectCompose {
                     cluster_id: 0,
                     reason: "id-45 rows supplied without an animated direct compose pass",
                 })?
-                .validate_sparse_rows(rows),
+                .validate_sparse_rows(rows, capacity),
             _ => Err(unsupported_sparse_section(section_id)),
         }
     }
 
-    /// Upload rows after `validate_sparse_rows` has accepted every direct
+    /// Upload rows after capacity validation has accepted every direct
     /// family in the install. Each pool queues entry/tile payload writes before
     /// publishing its `(start,end)` CSR pair.
     pub(super) fn upload_sparse_rows(

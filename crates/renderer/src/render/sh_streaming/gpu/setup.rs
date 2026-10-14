@@ -10,6 +10,7 @@ impl StreamingGpuPools {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::render::sh_streaming) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         queue: &wgpu::Queue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
@@ -19,16 +20,21 @@ impl StreamingGpuPools {
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
     ) -> Result<Self, ShResidencyDrainError> {
-        let shape = AtlasShape::for_slots(initial_floor.dense_slots.max(1), &device.limits())?;
+        let shape = AtlasShape::for_slots(
+            initial_floor.dense_slots.max(1),
+            initial_floor.whole_dense_slots,
+            limits,
+        )?;
         preflight_initial_resource_limits(
             base,
             sources,
             shape,
             &initial_floor.sparse_capacities,
-            &device.limits(),
+            limits,
         )?;
         Self::new_with_shape(
             device,
+            limits,
             queue,
             base,
             sources,
@@ -47,6 +53,7 @@ impl StreamingGpuPools {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::render::sh_streaming::gpu) fn new_with_shape(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         queue: &wgpu::Queue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
@@ -190,9 +197,9 @@ impl StreamingGpuPools {
             height: base.grid_dimensions[1].max(1),
             depth_or_array_layers: base.grid_dimensions[2].max(1),
         };
-        if depth_extent.width > device.limits().max_texture_dimension_3d
-            || depth_extent.height > device.limits().max_texture_dimension_3d
-            || depth_extent.depth_or_array_layers > device.limits().max_texture_dimension_3d
+        if depth_extent.width > limits.max_texture_dimension_3d
+            || depth_extent.height > limits.max_texture_dimension_3d
+            || depth_extent.depth_or_array_layers > limits.max_texture_dimension_3d
         {
             return Err(ShResidencyDrainError::GpuCapacity {
                 reason: "streamed SH depth-moment grid exceeds adapter 3D texture limits",
@@ -259,6 +266,7 @@ impl StreamingGpuPools {
         });
         let indirect_compose = StreamingIndirectCompose::new(
             device,
+            limits,
             base,
             sources,
             shape,
@@ -272,6 +280,7 @@ impl StreamingGpuPools {
         let direct_compose = if direct_compose_required {
             Some(StreamingDirectCompose::new(
                 device,
+                limits,
                 base,
                 sources,
                 shape,
@@ -422,8 +431,25 @@ impl StreamingGpuPools {
         // ledger rows and must not be charged again in the live streaming
         // summary.
 
+        let dense_capacity_bytes = active_capacity_bytes
+            .checked_sub(indirect_compose.active_pool_bytes())
+            .and_then(|bytes| {
+                bytes.checked_sub(
+                    direct_compose
+                        .as_ref()
+                        .map_or(0, StreamingDirectCompose::active_capacity_bytes),
+                )
+            })
+            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        log::info!(
+            "[Renderer] streamed SH initial dense pool: bytes={dense_capacity_bytes} tiles_per_layer={} layers={} slots={}",
+            shape.tiles_per_layer,
+            shape.layers,
+            shape.slots
+        );
         Ok(Self {
             shape,
+            limits: limits.clone(),
             base_format,
             direct_format,
             base: base_texture,

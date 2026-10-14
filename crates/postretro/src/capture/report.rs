@@ -502,12 +502,13 @@ struct ShStreamingLifecycleSummaryJson {
     failed_clusters: u64,
     misses: u64,
     /// `misses` by cause: outside reach, trimmed by pressure, read in flight,
-    /// held by the drain budget, awaiting compose, failed.
+    /// held by the drain budget, awaiting compose, failed, device limited.
     miss_outside_reach: u64,
     miss_trimmed_by_pressure: u64,
     miss_read_in_flight: u64,
     miss_held_by_drain_budget: u64,
     miss_awaiting_compose: u64,
+    miss_device_limited: u64,
     miss_failed: u64,
     rereads: u64,
     installs: u64,
@@ -587,6 +588,7 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             miss_read_in_flight: summary.miss_buckets.read_in_flight,
             miss_held_by_drain_budget: summary.miss_buckets.held_by_drain_budget,
             miss_awaiting_compose: summary.miss_buckets.awaiting_compose,
+            miss_device_limited: summary.miss_buckets.device_limited,
             miss_failed: summary.miss_buckets.failed,
             rereads: summary.rereads,
             installs: summary.installs,
@@ -1099,6 +1101,10 @@ mod tests {
             sampleable_clusters: 5,
             failed_clusters: 6,
             misses: 7,
+            miss_buckets: postretro_renderer::ShMissBuckets {
+                device_limited: 7,
+                ..Default::default()
+            },
             installs: 8,
             evictions: 9,
             retries: 10,
@@ -1158,6 +1164,7 @@ mod tests {
         assert_eq!(lifecycle["ready_high_water_upper_bound_bytes"], 6);
         assert_eq!(lifecycle["permits_in_use"], 2);
         assert_eq!(lifecycle["sampleable_clusters"], 5);
+        assert_eq!(lifecycle["miss_device_limited"], 7);
         assert_eq!(lifecycle["retries"], 10);
         assert_eq!(lifecycle["lead_clusters"], 8);
         assert_eq!(lifecycle["reads_issued"], 11);

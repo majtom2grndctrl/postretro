@@ -1,0 +1,57 @@
+--- a/crates/renderer/src/render/sh_streaming/gpu/setup.rs
++++ b/crates/renderer/src/render/sh_streaming/gpu/setup.rs
+@@ -422,6 +422,22 @@
+         // ledger rows and must not be charged again in the live streaming
+         // summary.
+ 
++        let dense_capacity_bytes = active_capacity_bytes
++            .checked_sub(indirect_compose.active_pool_bytes())
++            .and_then(|bytes| {
++                bytes.checked_sub(
++                    direct_compose
++                        .as_ref()
++                        .map_or(0, StreamingDirectCompose::active_capacity_bytes),
++                )
++            })
++            .ok_or(ShResidencyDrainError::SlotOverflow)?;
++        log::info!(
++            "[Renderer] streamed SH initial dense pool: bytes={dense_capacity_bytes} tiles_per_layer={} layers={} slots={}",
++            shape.tiles_per_layer,
++            shape.layers,
++            shape.slots
++        );
+         Ok(Self {
+             shape,
+             base_format,
+--- a/crates/renderer/src/render/sh_streaming/install.rs
++++ b/crates/renderer/src/render/sh_streaming/install.rs
+@@ -31,6 +31,8 @@
+         prepared: &PreparedShCluster,
+     ) -> Result<(), ShResidencyDrainError> {
+         let cluster_id = prepared.chunk.cluster_id;
++        let trace_started = log::log_enabled!(log::Level::Trace).then(std::time::Instant::now);
++        let mut upload_copy_regions = 0;
+         if self.gpu.is_some() && gpu.is_none() {
+             return Err(ShResidencyDrainError::GpuCapacity {
+                 reason: "streamed install requires device handles while GPU pools exist",
+@@ -83,6 +85,7 @@
+                 self.begin_uploads(prepared.chunk.bytes.len() + prepared.chunk.bytes.len() / 8);
+             let staged_result =
+                 self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged);
++            upload_copy_regions = uploads.copy_count();
+             self.submit_uploads(uploads, gpu.device, gpu.queue);
+             staged_result?;
+         }
+@@ -106,6 +109,12 @@
+             },
+         );
+         self.pending_promotion.insert(cluster_id);
++        if let Some(started) = trace_started {
++            log::trace!(
++                "[Renderer] streamed SH install: cluster={cluster_id} upload_copy_regions={upload_copy_regions} install_cpu_micros={}",
++                started.elapsed().as_micros()
++            );
++        }
+         Ok(())
+     }
+ 

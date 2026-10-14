@@ -28,7 +28,10 @@ impl ShResidencyController {
                 .targets
                 .iter()
                 .copied()
-                .filter(|&cluster_id| self.pressure_evictable_optional(cluster_id))
+                .filter(|&cluster_id| {
+                    self.pressure_evictable_optional(cluster_id)
+                        && !self.is_failed_device_limit(cluster_id)
+                })
                 .min_by(|left, right| self.compare_pressure_keys(*left, *right))
             else {
                 break;
@@ -65,6 +68,14 @@ impl ShResidencyController {
         let protected = self.non_evictable_target_bytes()?;
         self.set_non_evictable_overshoot(protected.saturating_sub(nominal));
         Ok(())
+    }
+
+    fn is_failed_device_limit(&self, cluster_id: u32) -> bool {
+        let state = &self.states[cluster_id as usize];
+        state.state == ClusterResidencyState::Failed
+            && state
+                .failure
+                .is_some_and(|failure| matches!(failure.cause, FailureCause::DeviceLimit { .. }))
     }
 
     fn non_evictable_target_bytes(&self) -> Result<u64, ShResidencyControllerError> {

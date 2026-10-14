@@ -42,6 +42,8 @@ dev-tools = [
 ]
 
 [dev-dependencies]
+blake3.workspace = true
+tempfile.workspace = true
 postretro-sim = { workspace = true, features = ["test-support"] }
 syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }

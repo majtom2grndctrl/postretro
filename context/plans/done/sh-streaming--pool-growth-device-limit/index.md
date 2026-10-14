@@ -2,6 +2,8 @@
 
 Brief · compact · reads: `context/lib/rendering_pipeline.md` §4 (Cluster SH residency), §10, `context/lib/boot_sequence.md` §1 (Settling), `context/plans/large-map-spatial-residency.md` §Residency budget tiers · read at 6078fff · evidence: `research.md`
 
+Completed: 2026-10-13. Automated A1–A26 and manual M1 passed; proof and measurements in `plan.md`.
+
 ## Problem
 
 The owner asked whether a map that is valid in TrenchBroom can fail to run. Through streamed SH
@@ -91,11 +93,11 @@ headroom.
 Pins are in `research.md` §Ordering pins.
 
 ### Automated
-- [ ] Through the production load path, with the floor's pool budget forced to zero, a fixture
+- [x] Through the production load path, with the floor's pool budget forced to zero, a fixture
   whose whole dense set exceeds the layer limit times its largest writer closure grows until
   every cluster is resident at once, with no refusal. The test asserts that precondition, so it
   fails if layer size still follows the initial share.
-- [ ] At load, tiles per layer equal the larger of today's floor-share layer and the whole-level
+- [x] At load, tiles per layer equal the larger of today's floor-share layer and the whole-level
   minimum (whole dense set times the headroom divided by the layer limit, rounded up), so the
   layer limit's worth of layers holds the whole level times the headroom. On a fixture where
   today's layer is larger, geometry is unchanged from the pre-change build; on one where the
@@ -105,94 +107,94 @@ Pins are in `research.md` §Ordering pins.
   every case, and at zero share, the planner's padded slot count, charged floor bytes and
   largest-closure dense minimum equal the GPU atlas's for the same level and limits, from the
   one geometry rule.
-- [ ] Atlas width, height and tiles per layer are identical across every growth in a session, the
+- [x] Atlas width, height and tiles per layer are identical across every growth in a session, the
   clamped growth to the limit included.
-- [ ] A dense pool at 200 layers, limit 256, needing 201 grows to 256 and installs. One needing
+- [x] A dense pool at 200 layers, limit 256, needing 201 grows to 256 and installs. One needing
   257 is refused without growing. Below the limit, growth is unchanged: 100 layers needing 101
   grow to 200.
-- [ ] A sparse family whose doubled buffer would pass the binding limit, but whose needed size
+- [x] A sparse family whose doubled buffer would pass the binding limit, but whose needed size
   fits, grows to the limit and installs. One whose needed size exceeds its tightest buffer is
   refused.
-- [ ] A growth whose needed size exceeds the limit while that family still retires a previous
+- [x] A growth whose needed size exceeds the limit while that family still retires a previous
   generation is refused as device-limited, in the dense atlas and in every sparse family. One
   that fits but waits on retirement defers as retirement pressure (P4).
-- [ ] A cluster whose dense growth fits but whose sparse growth is refused keeps the grown atlas,
+- [x] A cluster whose dense growth fits but whose sparse growth is refused keeps the grown atlas,
   is refused, and leaves the pool sampling correctly. A later cluster in that drain that needs
   further dense growth within the limit defers as retirement pressure; one whose need exceeds the
   limit is refused (P4). When one sparse family of several is refused,
   none of them grows (P3, P9).
-- [ ] In the same drain, a cluster that fits installs while another is refused, in either order,
+- [x] In the same drain, a cluster that fits installs while another is refused, in either order,
   and the refused cluster leaves no address behind (P1).
-- [ ] With the limit lowered, a renderer drain whose demand exceeds it returns a device-limit
+- [x] With the limit lowered, a renderer drain whose demand exceeds it returns a device-limit
   refusal, not an error. Fed that outcome, the controller marks the cluster failed and releases
   its payload, ready bytes and permit once. The permit count afterwards equals reads in flight
   plus ready clusters, and the ready-byte ledger equals the ready clusters' charges (P5).
-- [ ] A visible episode that begins while a cluster, or an owner in its closure, is failed by a
+- [x] A visible episode that begins while a cluster, or an owner in its closure, is failed by a
   device-limit refusal counts one miss in the device-limit bucket. A cluster refused partway
   through a visible episode that already counted a miss counts nothing more, and that miss keeps
   its earlier bucket; the bucket total still equals the miss count (P10).
-- [ ] A cluster refused in the reveal frame's own drain keeps the miss the reveal frame counted for
+- [x] A cluster refused in the reveal frame's own drain keeps the miss the reveal frame counted for
   it, adds no second miss, and logs the level's device-limit warning only if none was logged
   before (P11).
-- [ ] A refused visible cluster that leaves view and returns within the hysteresis window stays
+- [x] A refused visible cluster that leaves view and returns within the hysteresis window stays
   failed. One that left its targets and re-enters on a later horizon change is requested again
   in that frame's request pass when a permit for its class is free and pressure does not trim it
   in that drain. A cluster refused, retried and refused again is retried again on its next leave
   and re-entry, any number of times (P12, P14).
-- [ ] A cluster refused, retried, whose re-read then fails the loader's hash check is read once more
+- [x] A cluster refused, retried, whose re-read then fails the loader's hash check is read once more
   on its next leave and re-entry; if that read fails again, it is not read again. A cluster whose
   read failed, was retried and was then refused, retried and failed its read again is not read
   again. In both sequences, every refusal along the way is retried on leave and re-entry (P14,
   P17).
-- [ ] With the camera changing the horizon every frame for several seconds, under floor-budget
+- [x] With the camera changing the horizon every frame for several seconds, under floor-budget
   pressure, each of these refused clusters is read again at most once per 2 s: one inside the
   horizon, one targeted only as a seam-warm neighbour whose near side flickers in and out of view,
   and an owner targeted only through a dependent that pressure suppresses. A cluster Failed by a
   refusal is never a trim candidate, and the trim skip adds no refused optional cluster to the
   overshoot gauge (P19).
-- [ ] A refused cluster that stays targeted is not read again when a later drain evicts other
+- [x] A refused cluster that stays targeted is not read again when a later drain evicts other
   clusters and frees room; only leaving and re-entering its targets reads it again (P16).
-- [ ] While an owner is failed by a refusal, none of its dependents is requested, holds a permit or
+- [x] While an owner is failed by a refusal, none of its dependents is requested, holds a permit or
   holds ready bytes (P13). When a closure holds both a read-failed and a device-limit-failed
   owner, the episode's one miss lands in the device-limit bucket whatever the owners' order.
-- [ ] Two clusters refused in one level log exactly one device-limit warning between them, naming
+- [x] Two clusters refused in one level log exactly one device-limit warning between them, naming
   the first, and no per-cluster read-failure warning. A cluster refused and retried whose re-read
   then fails the loader's hash check still logs its read-failure warning once. The settle-timeout
   warning, when the level times out, is separate and unchanged.
-- [ ] A level whose mandatory cluster is refused during Settling stays unsettled until the timeout
+- [x] A level whose mandatory cluster is refused during Settling stays unsettled until the timeout
   reveals it into Running; a refused optional cluster does not hold Settling. The session never
   ends. One device-limit warning is logged per level, across Settling, reveal and SH session
   replacement; the next level's first refusal warns again (P6, P7, P15).
-- [ ] With the floor budget covering every target, the refused cluster included, so that pressure
+- [x] With the floor budget covering every target, the refused cluster included, so that pressure
   trims nothing, and with a pinned cluster, a lead cluster, a visible cluster's owner and an
   optional resident loaded, and a refused visible cluster that would fit if any one of them left,
   the controller's batches after the refusal request none of them for eviction (P18), and a renderer drain that refuses
   a cluster evicts nothing the batch did not request. All four stay sampleable.
-- [ ] Regression guards: a chunk that passes the loader's hash and body checks but disagrees with
+- [x] Regression guards: a chunk that passes the loader's hash and body checks but disagrees with
   renderer metadata still ends the session with its named error, and a retirement-pressure
   deferral behaves as before.
-- [ ] A capacity-class error that is a broken contract rather than a device limit, such as an
+- [x] A capacity-class error that is a broken contract rather than a device limit, such as an
   install reaching the pools without device handles or a post-growth undersized pool, still
   ends the session, as do identity, generation and slot-address-overflow violations.
-- [ ] An outcome that names a cluster as both refused and accepted, dropped or deferred, refuses a
+- [x] An outcome that names a cluster as both refused and accepted, dropped or deferred, refuses a
   cluster twice, refuses a cluster the drain did not carry, or omits a drained cluster from every
   list is rejected as invalid before any state changes.
-- [ ] The pool-floor planner holds no tiles-per-layer derivation of its own: a search of the SH
+- [x] The pool-floor planner holds no tiles-per-layer derivation of its own: a search of the SH
   floor planner finds no row, layer or tiles-per-layer computation, and its slot count comes from
   the atlas's geometry rule.
-- [ ] A seeded churn walk at the whole-level-minimum geometry, with a fixed seed set, a fixed step
+- [x] A seeded churn walk at the whole-level-minimum geometry, with a fixed seed set, a fixed step
   count, cluster sizes drawn from a named fixture level, random eviction order, and live demand
   that reaches the whole dense set on every seed, is never refused at the chosen headroom. The plan of record reports the
   largest factor that was refused.
-- [ ] Test seam: SH state reads the device's limits once, at load; the load-time geometry rule, the
+- [x] Test seam: SH state reads the device's limits once, at load; the load-time geometry rule, the
   floor planner, every dense and sparse growth check and every sparse replacement validation use
   them, so a test override below the device's grant governs all of them. None of these reads the
   device's limits directly.
-- [ ] The final gate runs the refusal and growth tests with a GPU required, and they report as
+- [x] The final gate runs the refusal and growth tests with a GPU required, and they report as
   run, not skipped. Their lowered limits sit at or below the test device's own grants.
 
 ### Manual
-- [ ] At default limits, campaign-test and the stress-warren hallway log no device-limit warning.
+- [x] At default limits, campaign-test and the stress-warren hallway log no device-limit warning.
   Report their initial dense atlas bytes, tiles per layer, pool growth counts, upload copy regions
   per install and install CPU time against the pre-change build.
 

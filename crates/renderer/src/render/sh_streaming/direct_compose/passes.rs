@@ -65,6 +65,7 @@ impl StreamingPromotionPass {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         source: Option<&ShStreamSparseMetadata>,
         shape: AtlasShape,
@@ -76,6 +77,7 @@ impl StreamingPromotionPass {
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
+            limits,
             base,
             source,
             shape,
@@ -143,7 +145,6 @@ impl StreamingPromotionPass {
             debug_override.size(),
         ])?;
         let active_capacity_bytes = sparse.active_capacity_bytes();
-        let limits = device.limits();
         Ok(Self {
             pipeline,
             bind_group_layout: bgl,
@@ -245,8 +246,9 @@ impl StreamingPromotionPass {
     pub(super) fn validate_sparse_rows(
         &self,
         rows: &[DirectSparseRowUpload<'_>],
+        capacity: (u32, u32),
     ) -> Result<(), ShResidencyDrainError> {
-        self.sparse.validate_rows(rows)
+        self.sparse.validate_rows(rows, capacity)
     }
 
     pub(super) fn clear_row_pair(
@@ -358,6 +360,7 @@ impl StreamingAnimatedPass {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
+        limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
         source: &ShStreamSparseMetadata,
         shape: AtlasShape,
@@ -370,6 +373,7 @@ impl StreamingAnimatedPass {
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
+            limits,
             base,
             Some(source),
             shape,
@@ -447,7 +451,6 @@ impl StreamingAnimatedPass {
             light_scale.size(),
         ])?;
         let active_capacity_bytes = sparse.active_capacity_bytes();
-        let limits = device.limits();
         Ok(Self {
             pipeline,
             bind_group_layout: bgl,

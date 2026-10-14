@@ -16,6 +16,7 @@ impl super::super::Session {
         let Some(streaming) = self.sh_streaming.as_mut() else {
             if outcome.accepted.is_empty()
                 && outcome.dropped.is_empty()
+                && outcome.refused.is_empty()
                 && outcome.deferred.is_empty()
                 && outcome.evicted.is_empty()
             {

@@ -1018,6 +1018,7 @@ mod tests {
             outcome: ShDrainOutcome {
                 accepted: vec![4],
                 dropped: vec![9],
+                refused: vec![12],
                 deferred: Vec::new(),
                 evicted: Vec::new(),
             },
@@ -1028,6 +1029,7 @@ mod tests {
 
         assert_eq!(result.outcome.accepted, vec![4]);
         assert_eq!(result.outcome.dropped, vec![9]);
+        assert_eq!(result.outcome.refused, vec![12]);
         assert!(!result.compose_submitted);
         assert!(result.frame.is_err());
     }

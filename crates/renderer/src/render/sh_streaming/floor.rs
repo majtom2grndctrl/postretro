@@ -10,7 +10,7 @@ use postretro_level_loader::{
     ShStreamBaseMetadata, ShStreamSourceMetadata, ShStreamSparseMetadata,
 };
 
-use super::ShResidencyDrainError;
+use super::{AtlasShape, ShResidencyDrainError};
 
 mod validation;
 
@@ -20,7 +20,6 @@ use validation::{validate_fixed_storage_bindings, validate_sparse_caps};
 /// billboard scatter, and the initial active pool generation.
 pub(crate) const DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES: u64 = 256 * 1024 * 1024;
 
-const PHYSICAL_TILE_DIMENSION: u32 = 8;
 const DENSE_COMPOSED_CELL_BYTES: u64 = 8 * 8 * 8;
 const SPARSE_ENTRY_BYTES: u64 = 8;
 const SPARSE_F16_WORD_BYTES: u64 = 4;
@@ -34,6 +33,7 @@ const SPARSE_F16_WORD_BYTES: u64 = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InitialPoolFloor {
     pub(crate) dense_slots: u32,
+    pub(crate) whole_dense_slots: u32,
     pub(crate) sparse_capacities: BTreeMap<u32, (u32, u32)>,
     /// Exact physical backing needed for the largest canonical dense writer,
     /// including atlas-layer padding across the coupled id-34/id-35 group.
@@ -100,9 +100,6 @@ pub(crate) fn plan_initial_pool_floor(
     let minimum_dense_slots = normalized_dense_minimum(minimum_dense_slots, whole_dense_slots)?;
     let mut sparse = sparse_plans(sources, minimum_sparse)?;
     validate_sparse_caps(&sparse, limits)?;
-    let dense_group_minimum_bytes = u64::from(atlas_capacity_slots(minimum_dense_slots, limits)?)
-        .checked_mul(dense_slot_bytes)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
     let sparse_group_minimum_bytes = sparse
         .iter()
         .map(|(&section_id, plan)| Ok((section_id, sparse_capacity_bytes(plan.minimum)?)))
@@ -150,7 +147,11 @@ pub(crate) fn plan_initial_pool_floor(
     }
 
     validate_sparse_caps(&sparse, limits)?;
-    let dense_physical_slots = atlas_capacity_slots(dense_slots, limits)?;
+    let shape = AtlasShape::for_slots(dense_slots, whole_dense_slots, limits)?;
+    let dense_physical_slots = shape.slots;
+    let dense_group_minimum_bytes = u64::from(shape.capacity_for_slots(minimum_dense_slots)?)
+        .checked_mul(dense_slot_bytes)
+        .ok_or(ShResidencyDrainError::SlotOverflow)?;
     let active_capacity_bytes = active_capacity_bytes(
         dense_physical_slots,
         dense_slot_bytes,
@@ -163,6 +164,7 @@ pub(crate) fn plan_initial_pool_floor(
 
     Ok(InitialPoolFloor {
         dense_slots,
+        whole_dense_slots,
         sparse_capacities: sparse
             .into_iter()
             .map(|(section_id, plan)| (section_id, plan.capacity))
@@ -435,45 +437,6 @@ fn active_capacity_bytes(
             .checked_add(plan.capacity_bytes()?)
             .ok_or(ShResidencyDrainError::SlotOverflow)
     })
-}
-
-/// Mirrors `AtlasShape::for_slots` without exposing renderer GPU shape state
-/// to this pure planner. It returns final-layer-padded physical slots.
-fn atlas_capacity_slots(slots: u32, limits: &wgpu::Limits) -> Result<u32, ShResidencyDrainError> {
-    let maximum = limits.max_texture_dimension_2d / PHYSICAL_TILE_DIMENSION;
-    if maximum == 0 || slots == 0 {
-        return Err(ShResidencyDrainError::GpuCapacity {
-            reason: "adapter cannot allocate an 8x8 streamed SH cell",
-        });
-    }
-    let tiles_per_row = ceil_sqrt(slots).min(maximum).max(1);
-    let rows = slots.div_ceil(tiles_per_row).min(maximum).max(1);
-    let tiles_per_layer = tiles_per_row
-        .checked_mul(rows)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let layers = slots.div_ceil(tiles_per_layer);
-    if layers == 0 || layers > limits.max_texture_array_layers {
-        return Err(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed SH pool needs unsupported array layers",
-        });
-    }
-    tiles_per_layer
-        .checked_mul(layers)
-        .ok_or(ShResidencyDrainError::SlotOverflow)
-}
-
-fn ceil_sqrt(value: u32) -> u32 {
-    let mut low = 1_u32;
-    let mut high = 65_536_u32;
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if u64::from(middle) * u64::from(middle) >= u64::from(value) {
-            high = middle;
-        } else {
-            low = middle + 1;
-        }
-    }
-    low
 }
 
 fn checked_cell_count(dimensions: [u32; 3]) -> Result<u32, ShResidencyDrainError> {

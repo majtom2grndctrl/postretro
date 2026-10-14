@@ -12,16 +12,17 @@ In each checkout:
 cargo build --release -p postretro-level-compiler -p postretro-script-compiler
 ```
 
-Create a session-owned output directory outside the checkout and retain its absolute path as `proof_root`. From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at 0.04:
+Owner requested PRLs directly in the main checkout's `content/dev/maps`. Use absolute output paths there, even for the isolated baseline checkout. Keep the current 0.025 output at `stress-warren-hallway-inspection.prl`; name the current comparison `stress-warren-hallway-inspection-0040.prl` and baseline comparison `stress-warren-hallway-inspection-baseline-0040.prl`. Use the main checkout's absolute `baked` path for sidecars so the dev engine reads them normally. Evidence directory for this run: `/private/tmp/postretro-lightmap-proof-ztdf8vxi/evidence`. From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at0.04:
 
 ```sh
 RUST_LOG=info target/release/prl-build \
   content/dev/maps/stress-warren-hallway-inspection.map \
   --lightmap-density 0.025 --no-cache --no-tui -j 4 -v \
-  --baked-root "$proof_root/baked" -o "$proof_root/hallway-0025.prl"
+  --baked-root /Users/dhiester/Projects/Personal/postretro/baked \
+  -o /Users/dhiester/Projects/Personal/postretro/content/dev/maps/stress-warren-hallway-inspection.prl
 ```
 
-For 0.04, replace the density and output filename (`hallway-0040.prl`). Give baseline and implementation separate output directories. Keep default soft-shadow samples, probe spacing and working-set budget on both; do not override an upstream limit to claim the target run passed.
+For0.04, replace the density and use the named current/baseline comparison filename above. Keep default soft-shadow samples, probe spacing and working-set budget on both; do not override an upstream limit to claim the target run passed.
 
 Sample the compiler PID's RSS at 100 ms intervals, starting at the plain reporter's `Lightmap bake...` marker and ending at `fused lightmap/shadowmask stage returned`. Record the maximum sample, sample count and stage elapsed time. This is the process RSS high-water sample **within the lightmap stage**, including earlier outputs still resident. A whole-process peak from `time -l` cannot substitute: earlier SH stages set it.
 
@@ -34,7 +35,7 @@ From the implementation checkout, normal streaming:
 ```sh
 env -u POSTRETRO_LIGHTMAP_STREAMING RUST_LOG=info \
   cargo run -p xtask -- run --features dev-tools -- \
-  "$proof_root/hallway-0025.prl" --mod dev --baked-root "$proof_root/baked"
+  content/dev/maps/stress-warren-hallway-inspection.prl --mod dev --baked-root baked
 ```
 
 Confirm lightmaps render and no neutral-placeholder rejection appears. Record the observation and any capture.
@@ -44,9 +45,9 @@ If the 0.025 compile warned that its all-resident pool exceeds the runtime floor
 ```sh
 RUST_LOG=info POSTRETRO_LIGHTMAP_STREAMING=all-resident \
   cargo run -p xtask -- run --features dev-tools -- \
-  "$proof_root/hallway-0025.prl" --mod dev --baked-root "$proof_root/baked"
+  content/dev/maps/stress-warren-hallway-inspection.prl --mod dev --baked-root baked
 ```
 
 Confirm the placeholder renders, and the renderer rejection names exactly the pool-layer count in the compiler warning. If this map did not warn, use a fixture whose runtime pool count exceeds 256; a bake-layer count alone is insufficient.
 
-Delete the session-owned outputs, caches, measurement traces and temporary checkout/target after recording the evidence. Keep source checkouts and unrelated artifacts intact.
+Retain the requested dev-folder PRLs for owner inspection. After recording the evidence, remove the session measurement traces and temporary baseline source/target; keep source checkouts, dev outputs and unrelated artifacts intact.

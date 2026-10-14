@@ -1,7 +1,7 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: test-ready
+status: active
 read at: e00493c95
 
 ## Corrections
@@ -63,8 +63,8 @@ read at: e00493c95
 | 2 | Move all-resident placement below compiler and render-cpu without behavior changes; share named runtime floor and verify placement consumers | placement worker + integrating executor | baseline capture | done — focused proof passed |
 | 3 | Stream id-22 cache write, ids 22/42 PRL writes and read-back; verify exact bytes and bounded writes | serialization worker + integrating executor | baseline capture | done — focused proof passed |
 | 4 | Replace cap and pre-cut area refusal with shared working-set budget; gate cold/warm before memo and bake, price per-layer/carry and one section copy, skip unconsumed no-static layouts; enforce runtime floor from emitted id 51 | integrating executor | 1, 2, 3 | done — focused proof passed |
-| 5 | Focused readiness, review-panel/fix loop, final preflight once, and complete AC evidence table | integrating executor | 4 | in progress — feature proofs pass; vault follow-up passes; remaining plasma expectation still blocks full preflight |
-| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | pending |
+| 5 | Focused readiness, review-panel/fix loop, final preflight once, and complete AC evidence table | integrating executor | 4 | done — all automated proofs, review repairs and full preflight pass |
+| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | in progress — owner authorized dev-folder verification bakes |
 
 ## Manual runbook
 - Concrete commands and measurement interval: [manual-runbook.md](./manual-runbook.md).
@@ -129,3 +129,12 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Focused `startup::movement_vault_surface_tests`: three passed, zero failed. This includes the corrected camera assertion and both existing vault surface tests.
 - Full workspace results above remain the last full run; this follow-up uses a focused rerun for the one-line expectation change. The plasma full-charge expectation is still unresolved.
 - Rebuild reduced disk below15GiB; cleared only active/workflow Cargo incremental caches. Compiled artifacts and full target directories retained. Free space restored to22GiB.
+
+## Owner follow-up: plasma and verification bakes
+- Owner confirmed plasma content was intentionally updated and requested the tests follow it. Regression now expects min/full ticks12/120, uses half/full-plus-hold timings60/125, checks the late snapshot at122, and follows authored projectile scaling1+2*charge. Production content unchanged.
+- Owner requested verification PRLs directly in content/dev/maps. Retain the newly baked outputs there for visual checks; this supersedes the external-output/cleanup runbook destination for these files.
+- Planned outputs: stress-warren-hallway-inspection.prl at0.025 (replace existing output only on successful atomic publication); stress-warren-hallway-inspection-0040.prl at0.04; stress-warren-hallway-inspection-baseline-0040.prl from45c4fe5 at0.04. Map and generated script are unchanged since45c4fe5.
+- Evidence/monitor working directory: /private/tmp/postretro-lightmap-proof-ztdf8vxi. Both release compiler/script sidecars come from their corresponding source snapshot. Use four workers, default lighting quality/budget and --no-cache for all measurements; sample compiler RSS every100ms only inside the fused lightmap stage.
+- Formatting and strict Clippy passed for plasma repair; full workspace tests running. Bake preparation active; engine visual checks remain owner/manual.
+- Plasma follow-up verified: formatting and strict Clippy pass; full workspace run with local sockets enabled passes10,999 tests, zero failures,48 ignored across66 result groups. Previous vault/plasma preflight blocks resolved. No product changes made for either expectation repair.
+- Measurement host: MacBookPro16,1;32GiB RAM;8 physical/16 logical CPU cores; AMD Radeon Pro5300M Metal (test adapter). Four bake workers. Monitor probe recorded five lightmap samples over0.51s, zero sampling errors, correctly bounded by stage markers.

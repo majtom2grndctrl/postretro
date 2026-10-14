@@ -1054,7 +1054,15 @@ fn the_memo_key_covers_spec_indices_promotion_faces_and_estimate_parameters() {
     let light = light_over(0, 1.0);
     let hashes = [[1u8; 32], [2u8; 32]];
     let key = |eligible: &[EligibleLight<'_>], faces: usize, estimate: &[u8]| {
-        shadowmask_atlas_input_hash(eligible, &hashes, faces, 8, 8, 2, estimate)
+        shadowmask_atlas_input_hash(
+            eligible,
+            &|_, layer| hashes[layer as usize],
+            faces,
+            8,
+            8,
+            2,
+            estimate,
+        )
     };
     let base = [eligible(&light, 0, false)];
     let reference = key(&base, 4, &[]);
@@ -1089,7 +1097,7 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     let _ = take_raw_fill_live_bytes_at_cache_write();
     let mut plan = prepare_fused_shadowmask(
         vec![eligible(&light, 0, false)],
-        &[[3u8; 32]],
+        &|_, _| [3u8; 32],
         1,
         1,
         &shared,
@@ -1118,7 +1126,7 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     reset_shadowmask_output_allocation_count();
     let plan = prepare_fused_shadowmask(
         vec![eligible(&light, 0, false)],
-        &[[3u8; 32]],
+        &|_, _| [3u8; 32],
         1,
         1,
         &shared,
@@ -1400,3 +1408,5 @@ fn estimate_parameters_carry_stride_mode_and_cut_map() {
     moved.own[0][0] = 0..5;
     assert_ne!(params, estimate::estimate_params(&[moved]));
 }
+
+mod layer_budget_regression;

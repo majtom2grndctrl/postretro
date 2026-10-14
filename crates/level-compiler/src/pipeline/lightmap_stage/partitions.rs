@@ -20,37 +20,89 @@ use super::PartitionHooks;
 use super::PartitionWindow;
 use super::window::PartitionSource;
 
-/// Every (layer, light) partition key, layer-major in global light order. The
-/// atlas fingerprint is hashed once and each light's prefix once; lights hash
-/// in parallel, each as one governed item.
+/// Layer-major Cartesian work, indexed without a layer-by-light allocation.
+/// The shadowmask-only pass borrows an ascending subset of light positions.
+#[derive(Clone, Copy)]
+pub(super) struct LayerItems<'a> {
+    layers: u32,
+    lights: usize,
+    selected: Option<&'a [usize]>,
+}
+
+impl<'a> LayerItems<'a> {
+    pub(super) fn all(layers: u32, lights: usize) -> Self {
+        Self {
+            layers,
+            lights,
+            selected: None,
+        }
+    }
+
+    pub(super) fn selected(layers: u32, selected: &'a [usize]) -> Self {
+        Self {
+            layers,
+            lights: selected.len(),
+            selected: Some(selected),
+        }
+    }
+
+    pub(super) fn len(self) -> usize {
+        (self.layers as usize)
+            .checked_mul(self.lights)
+            .expect("admitted partition count fits address space")
+    }
+
+    pub(super) fn get(self, item: usize) -> (u32, usize) {
+        assert!(item < self.len());
+        let light = item % self.lights;
+        (
+            (item / self.lights) as u32,
+            self.selected.map_or(light, |selected| selected[light]),
+        )
+    }
+}
+
+/// One prefix per light; layer hashes are finalized only as each consumer
+/// needs them. Prefix construction also bounds concurrent geometry-hash scratch
+/// by the partition window, independently of the Rayon pool's worker count.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn layer_key_hashes(
+pub(super) fn layer_key_prefixes(
     layer_lights: &[&StaticBakedEntry<'_>],
     shared: &SharedAtlas<'_>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     density: f32,
     area_sample_count: u32,
-    layer_count: u32,
+    window: usize,
     control: &BakeControl,
-) -> Vec<[u8; 32]> {
+) -> Vec<blake3::Hasher> {
     use rayon::prelude::*;
     let context =
         lightmap_layer::LayerKeyContext::new(shared, geometry, density, area_sample_count);
-    let prefixes: Vec<blake3::Hasher> = layer_lights
-        .par_iter()
-        .map(|entry| {
-            let _permit = control.governor().enter();
-            context.light_prefix(entry.light, primitives, geometry)
-        })
-        .collect();
-    (0..layer_count)
-        .flat_map(|layer| {
-            prefixes
-                .iter()
-                .map(move |prefix| lightmap_layer::LayerKeyContext::layer_hash(prefix, layer))
-        })
-        .collect()
+    let mut prefixes = Vec::with_capacity(layer_lights.len());
+    for lights in layer_lights.chunks(window.max(1)) {
+        let mut batch: Vec<_> = lights
+            .par_iter()
+            .map(|entry| {
+                let _permit = control.governor().enter();
+                context.light_prefix(entry.light, primitives, geometry)
+            })
+            .collect();
+        prefixes.append(&mut batch);
+    }
+    prefixes
+}
+
+/// Exact legacy layer-major hash order, with no hash matrix.
+pub(super) fn layer_hashes(
+    prefixes: &[blake3::Hasher],
+    layer_count: u32,
+) -> impl ExactSizeIterator<Item = [u8; 32]> + '_ {
+    let items = LayerItems::all(layer_count, prefixes.len());
+    (0..items.len()).map(move |item| {
+        let (layer, light) = items.get(item);
+        lightmap_layer::LayerKeyContext::layer_hash(&prefixes[light], layer)
+    })
 }
 
 /// World bounds of a chart's texel centres, padded by
@@ -112,8 +164,8 @@ pub(super) struct LayerPartitions<'a> {
     primitives: &'a [BvhPrimitive],
     shared: &'a SharedAtlas<'a>,
     layer_lights: &'a [&'a StaticBakedEntry<'a>],
-    layer_input_hashes: &'a [[u8; 32]],
-    items: &'a [(u32, usize)],
+    layer_prefixes: &'a [blake3::Hasher],
+    items: LayerItems<'a>,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
     /// Padded world bounds of each chart's texels; `None` for a chart with no
@@ -134,8 +186,8 @@ impl<'a> LayerPartitions<'a> {
         primitives: &'a [BvhPrimitive],
         shared: &'a SharedAtlas<'a>,
         layer_lights: &'a [&'a StaticBakedEntry<'a>],
-        layer_input_hashes: &'a [[u8; 32]],
-        items: &'a [(u32, usize)],
+        layer_prefixes: &'a [blake3::Hasher],
+        items: LayerItems<'a>,
         #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
     ) -> Self {
         let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
@@ -152,7 +204,7 @@ impl<'a> LayerPartitions<'a> {
             primitives,
             shared,
             layer_lights,
-            layer_input_hashes,
+            layer_prefixes,
             items,
             layer_charts,
             chart_bounds,
@@ -162,16 +214,20 @@ impl<'a> LayerPartitions<'a> {
     }
 
     fn key(&self, item: usize) -> CacheKey {
-        let (layer, light) = self.items[item];
-        let hash = &self.layer_input_hashes[layer as usize * self.layer_lights.len() + light];
-        CacheKey::new("lightmap_layer", lightmap_layer::LAYER_FORMAT_VERSION, hash)
+        let (layer, light) = self.items.get(item);
+        let hash = lightmap_layer::LayerKeyContext::layer_hash(&self.layer_prefixes[light], layer);
+        CacheKey::new(
+            "lightmap_layer",
+            lightmap_layer::LAYER_FORMAT_VERSION,
+            &hash,
+        )
     }
 }
 
 impl PartitionSource for LayerPartitions<'_> {
     fn load(&self, item: usize) -> Option<lightmap_layer::LightmapLayer> {
         let cache = self.cache?;
-        let (target_layer, _light) = self.items[item];
+        let (target_layer, _light) = self.items.get(item);
         #[cfg(test)]
         if let Some(hook) = &self.hooks.before_get {
             hook(_light, target_layer);
@@ -208,7 +264,7 @@ impl PartitionSource for LayerPartitions<'_> {
     }
 
     fn plan_charts(&self, item: usize) -> Vec<usize> {
-        let (layer, light) = self.items[item];
+        let (layer, light) = self.items.get(item);
         let layer_charts = &self.layer_charts[layer as usize];
         let light = self.layer_lights[light].light;
         let reached: Vec<usize> = layer_charts
@@ -222,7 +278,7 @@ impl PartitionSource for LayerPartitions<'_> {
     }
 
     fn bake_chart(&self, item: usize, chart: usize) -> Vec<lightmap_layer::LayerTexel> {
-        let (_layer, light) = self.items[item];
+        let (_layer, light) = self.items.get(item);
         #[cfg(test)]
         if let Some(hook) = &self.hooks.before_chart {
             hook(light, _layer, chart);
@@ -244,7 +300,7 @@ impl PartitionSource for LayerPartitions<'_> {
         item: usize,
         mut texels: Vec<lightmap_layer::LayerTexel>,
     ) -> lightmap_layer::LightmapLayer {
-        let (target_layer, _light) = self.items[item];
+        let (target_layer, _light) = self.items.get(item);
         texels.sort_unstable_by_key(|texel| texel.idx);
         let partition = lightmap_layer::LightmapLayer {
             atlas_width: self.shared.atlas_width,

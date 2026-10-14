@@ -12,7 +12,7 @@ use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
 use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
 use super::charts::Chart;
 use super::encode::normalized_direction_texel_scale;
-use super::{LightmapBakeError, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS};
+use super::{LightmapBakeError, MAX_ATLAS_DIMENSION};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::ChartPlacement;
 
@@ -228,7 +228,7 @@ pub(crate) fn pack_cell_blocks_within(
 
     let extents: Vec<(u32, u32)> = packed.iter().map(|(_, _, b)| (b.width, b.height)).collect();
     let singles: Vec<Vec<usize>> = (0..packed.len()).map(|i| vec![i]).collect();
-    let layers = pack_groups_into_layers(&extents, &singles, MAX_ATLAS_DIMENSION, MAX_ATLAS_LAYERS)
+    let layers = pack_groups_into_layers(&extents, &singles, MAX_ATLAS_DIMENSION, u32::MAX)
         .map_err(|error| match error {
             GroupPackError::LayerOverflow { layer_count, max } => {
                 LightmapBakeError::LayerOverflow { layer_count, max }

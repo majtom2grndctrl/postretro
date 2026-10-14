@@ -24,9 +24,10 @@ use crate::{
 mod animated_atlas_stage;
 mod atlas_stage;
 mod cell_partition;
-mod finalized_publication;
 mod delta_working_set;
+mod finalized_publication;
 use delta_working_set::*;
+mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod sdf_stage;
 mod stage_registry;
@@ -793,7 +794,7 @@ fn run_after_parsing(
             },
         ],
         subblock_f16_len,
-        args.delta_section_config.max_working_set_bytes,
+        args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     ) {
         Ok(projection) => projection,
@@ -1492,6 +1493,7 @@ fn run_after_parsing(
             static_lights: &static_baked_lights,
             animated_lights: &animated_baked_lights,
             config: &lightmap_config,
+            working_set_max_bytes: args.working_set_max_bytes,
             generated_portals: &generated_portals,
             exterior_leaves: &exterior_leaves,
             control: &atlas_control,
@@ -1511,6 +1513,11 @@ fn run_after_parsing(
     if args.verbose {
         lightmap_stage::log_predicted_peak(
             &prepared_atlas,
+            lightmap_stage::MetadataCounts::new(
+                &static_baked_lights,
+                &alpha_lights_ns,
+                bvh_primitives.len(),
+            ),
             lightmap_config.uncompressed_irradiance,
         );
     }
@@ -1543,6 +1550,17 @@ fn run_after_parsing(
         stage_start,
         cell_residency_set_section.is_some(),
     );
+
+    let runtime_pool_layers = lightmap_pool_gate::gate_runtime_pool(
+        &prepared_atlas,
+        !static_baked_lights.is_empty(),
+        cell_residency_set_section.is_some(),
+    )?;
+    if args.verbose {
+        log::info!(
+            "[Compiler] Lightmap runtime all-resident pool: {runtime_pool_layers} pool layers"
+        );
+    }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
     let lightmap_progress = StageProgress::indeterminate();

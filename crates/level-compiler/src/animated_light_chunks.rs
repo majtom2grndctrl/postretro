@@ -23,10 +23,8 @@ const MAX_OVERFLOW_LOG_LINES: u64 = 8;
 /// unplaced. Each chunk is baked into a weight map at its chart's placement,
 /// so without placements there is nowhere to bake one: the map gets no chunks.
 ///
-/// Placements are missing only on a map without static light whose cell
-/// blocks the runtime could not hold. Its id 22 is a placeholder, and the
-/// runtime leaves animated light inactive over a placeholder, so skipping
-/// the bake matches what such a map renders when its blocks do pack.
+/// Without static light, id 22 has no blocks and the runtime cannot compose
+/// animated lightmaps, so atlas preparation supplies no placements.
 pub fn build_placed_animated_light_chunks(
     bvh_section: &BvhSection,
     animated_lights: &AnimatedBakedLights<'_>,
@@ -37,9 +35,8 @@ pub fn build_placed_animated_light_chunks(
 ) -> (AnimatedLightChunksSection, Vec<(u32, u32)>) {
     if face_placements.len() != face_charts.len() {
         if !animated_lights.is_empty() {
-            log::warn!(
-                "[AnimatedLightChunks] no lightmap chart placements (no static light, and cell \
-                 blocks past the runtime limits); baking no animated-light weight maps"
+            log::info!(
+                "[AnimatedLightChunks] no static lightmap placements; baking no animated-light weight maps"
             );
         }
         return (
@@ -705,8 +702,7 @@ mod tests {
         assert_eq!(ranges[0], (0, 1));
     }
 
-    /// Charts atlas preparation left unplaced (no static light, blocks past
-    /// the runtime limits) plan no chunks, so the weight-map bake never
+    /// Charts left unplaced without static light plan no chunks, so the weight-map bake never
     /// indexes a missing placement; placed charts plan as before.
     #[test]
     fn unplaced_charts_plan_no_animated_chunks() {

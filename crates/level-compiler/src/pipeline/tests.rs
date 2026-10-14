@@ -7,6 +7,8 @@ use glam::DVec3;
 use log::Level;
 use postretro_test_log_capture::LogCapture;
 
+mod lightmap_runtime_floor;
+
 #[test]
 fn direct_delta_plan_bake_csr_divergence_is_caught() {
     let plan = DeltaCsrPlan::from_csr(vec![0, 1, 2], vec![3, 7]);

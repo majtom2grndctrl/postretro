@@ -1,11 +1,11 @@
 // Group-cohesive multi-layer MaxRects packing: cell blocks into bake layers, charts for the dry run.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+#[cfg(test)]
+use super::LightmapBakeError;
 use super::MIN_ATLAS_DIMENSION;
 #[cfg(test)]
 use super::charts::Chart;
-#[cfg(test)]
-use super::{LightmapBakeError, MAX_ATLAS_LAYERS};
 use crate::chart_raster::ChartPlacement;
 
 /// Result of multi-bin atlas packing. All layers share one `(atlas_width,
@@ -35,8 +35,7 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// `max_dim` bounds each layer's width and height (the dry run passes
 /// [`MAX_ATLAS_DIMENSION`]; tests pass a small value). Every chart's largest
 /// side must be `≤ max_dim`, or its leaf cannot be placed and
-/// [`LightmapBakeError::LeafTooLarge`] is returned. The number of layers is capped at [`MAX_ATLAS_LAYERS`]; exceeding
-/// it yields [`LightmapBakeError::LayerOverflow`].
+/// [`LightmapBakeError::LeafTooLarge`] is returned. Bake-layer count is unbounded.
 ///
 /// Leaf cohesion is a hard invariant: all charts of one BVH leaf land on a
 /// single layer (a leaf is the runtime draw/visibility unit, so straddling a
@@ -53,11 +52,10 @@ fn round_atlas_dim(raw: u32, max_dim: u32) -> u32 {
 /// this chart-level packer remains for the residency dry run and tests.
 #[cfg(test)]
 pub(crate) fn pack_layers(charts: &[Chart], max_dim: u32) -> Result<PackOutput, LightmapBakeError> {
-    pack_layers_with_layer_limit(charts, max_dim, MAX_ATLAS_LAYERS)
+    pack_layers_with_layer_limit(charts, max_dim, u32::MAX)
 }
 
-/// [`pack_layers`] with an explicit layer ceiling in place of
-/// [`MAX_ATLAS_LAYERS`]. Only tests and the dry run call this; production
+/// [`pack_layers`] with an explicit test-only layer ceiling. Production
 /// packs cell blocks (`block_layout::pack_cell_blocks_within`). The dry run raises
 /// the ceiling so a small capped layer size can be measured even when its
 /// layer count would exceed the runtime floor.

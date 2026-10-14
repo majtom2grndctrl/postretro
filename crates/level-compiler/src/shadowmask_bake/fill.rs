@@ -16,7 +16,9 @@ use crate::lightmap_layer::{LightmapLayer, SharedAtlas, for_each_light_layer_cha
 
 use super::SHADOWMASK_FILL_CHECKPOINT_TEXELS;
 use super::eligibility::EligibleLight;
-use super::encode::encode_blocks_bc5;
+use super::raw::{RawFillBuffer, RawFillProbe};
+
+mod layers;
 use super::ownership::{
     Admission, Candidate, DropSite, FaceChannels, LIT_TEXEL_FLOOR, OwnerDrop, OwnerReport,
 };
@@ -72,6 +74,7 @@ struct CutOwners {
     own: Vec<[Range<u32>; 2]>,
     channels: FaceChannels,
     exact: BTreeMap<u16, u32>,
+    last_layer: u32,
 }
 
 pub(super) struct OwnershipFill<'a> {
@@ -81,11 +84,19 @@ pub(super) struct OwnershipFill<'a> {
     plane: usize,
     /// Cell blocks the encoder slices out of the bake layers, in block order.
     blocks: Vec<CellBlock>,
-    /// Layer-major, four channels per texel, 0 = occluded. An owned channel
-    /// reads occluded on every chart-interior texel its owner wrote nothing
-    /// to; `finish` then fills each owned channel's padding from its owner's
-    /// own edge values.
-    data: RawFillBuffer,
+    /// Exactly one working layer, allocated only when its first item arrives.
+    data: Option<RawFillBuffer>,
+    layer: Option<u32>,
+    next_layer: u32,
+    carry: Vec<Option<RawFillBuffer>>,
+    hold_until: Vec<u32>,
+    encoded: Vec<[Vec<u8>; 2]>,
+    owners: Vec<FaceOwners>,
+    any_owner: bool,
+    peak_cut_demand: u32,
+    pub(super) probe: RawFillProbe,
+    #[cfg(test)]
+    raw_snapshot: Vec<u8>,
     /// One per chart: the id-17 face order. A cut face's sub-faces use
     /// `cuts` instead.
     faces: Vec<FaceChannels>,
@@ -122,21 +133,41 @@ impl<'a> OwnershipFill<'a> {
                     own: cut.own.clone(),
                     channels,
                     exact: BTreeMap::new(),
+                    last_layer: cut
+                        .faces
+                        .clone()
+                        .map(|face| shared.placements[face].layer)
+                        .max()
+                        .unwrap_or(0),
                 }
             })
             .collect();
         let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
-        let data_len = plane
-            .checked_mul(layer_count as usize)
-            .and_then(|texels| texels.checked_mul(SHADOWMASK_OWNER_CHANNELS))
-            .expect("shadowmask atlas byte count exceeds addressable memory");
+        let probe = RawFillProbe::default();
+        #[cfg(test)]
+        super::register_raw_fill_probe(&probe);
         Self {
             width: shared.atlas_width,
             height: shared.atlas_height,
             layer_count,
             plane,
             blocks: shared.layout.blocks.clone(),
-            data: super::allocate_shadowmask_raw_fill(data_len),
+            data: None,
+            layer: None,
+            next_layer: 0,
+            carry: (0..shared.layout.blocks.len()).map(|_| None).collect(),
+            hold_until: super::carry::block_hold_until(
+                shared.placements,
+                shared.layout,
+                cut_parents,
+            ),
+            encoded: vec![[Vec::new(), Vec::new()]; shared.layout.blocks.len()],
+            owners: vec![NO_FACE_OWNERS; shared.charts.len()],
+            any_owner: false,
+            peak_cut_demand: 0,
+            probe,
+            #[cfg(test)]
+            raw_snapshot: vec![0; plane * layer_count as usize * SHADOWMASK_OWNER_CHANNELS],
             faces: vec![FaceChannels::default(); shared.charts.len()],
             cuts,
             cut_of,
@@ -158,6 +189,7 @@ impl<'a> OwnershipFill<'a> {
         partition: &LightmapLayer,
         shared: &SharedAtlas<'_>,
     ) {
+        self.advance_layer(partition.target_layer, shared);
         self.face_map.ensure(partition.target_layer, shared);
         let mut sums: BTreeMap<usize, (u32, f64)> = BTreeMap::new();
         for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
@@ -216,9 +248,6 @@ impl<'a> OwnershipFill<'a> {
         if held.is_empty() && !owns_a_cut {
             return;
         }
-        let layer_offset = (partition.target_layer as usize)
-            .checked_mul(self.plane)
-            .expect("shadowmask layer offset exceeds addressable memory");
         for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
             self.checkpoint();
             for texel in chunk {
@@ -235,64 +264,22 @@ impl<'a> OwnershipFill<'a> {
                 let Some(visibility) = quantize_visibility(texel.raw_visibility) else {
                     continue;
                 };
-                let offset =
-                    (layer_offset + texel.idx as usize) * SHADOWMASK_OWNER_CHANNELS + channel;
-                self.data[offset] = visibility;
+                let offset = texel.idx as usize * SHADOWMASK_OWNER_CHANNELS + channel;
+                self.data.as_mut().expect("the partition's layer is open")[offset] = visibility;
             }
         }
     }
 
-    /// Order every face's owners ascending, moving their mask values with them,
-    /// fill each owned channel's chart padding from its own owner's edge, then
-    /// encode. No face owned means no section.
+    /// Close the last working layer after id 22 has been written. A section
+    /// is present only if any face admitted an owner over the completed walk.
     pub(super) fn finish(
         mut self,
         shared: &SharedAtlas<'_>,
     ) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
-        let mut owners: Vec<FaceOwners> = vec![NO_FACE_OWNERS; self.faces.len()];
-        let mut any_owner = false;
-        for (face, owner) in owners.iter_mut().enumerate() {
-            if self.cut_of[face].is_some() {
-                continue;
-            }
-            let (entry, source) = self.faces[face].ascending_order();
-            if entry != NO_FACE_OWNERS {
-                any_owner = true;
-                self.reorder_channels(face, source, shared);
-                let owned = source.map(|channel| channel.is_some());
-                self.dilate_owned_padding(face, owned, shared);
-            }
-            *owner = entry;
-        }
-        let mut peak_cut_demand = 0;
-        for c in 0..self.cuts.len() {
-            self.release_owners_that_baked_nothing(c, shared);
-            let cut = &self.cuts[c];
-            let (entry, source) = cut.channels.ascending_order();
-            peak_cut_demand = peak_cut_demand.max(cut.exact.len() as u32);
-            let site = DropSite::CutFace {
-                parent: cut.parent,
-                first_face: cut.faces.start as u32,
-                last_face: cut.faces.end as u32 - 1,
-            };
-            for (&spec_index, &lit_texels) in &cut.exact {
-                if lit_texels >= LIT_TEXEL_FLOOR && cut.channels.channel_of(spec_index).is_none() {
-                    self.drops.push(OwnerDrop {
-                        site,
-                        spec_index,
-                        lit_texels,
-                    });
-                }
-            }
-            if entry != NO_FACE_OWNERS {
-                any_owner = true;
-                let owned = source.map(|channel| channel.is_some());
-                for face in self.cuts[c].faces.clone() {
-                    self.reorder_channels(face, source, shared);
-                    self.dilate_owned_padding(face, owned, shared);
-                    owners[face] = entry;
-                }
-            }
+        while self.next_layer < self.layer_count {
+            let layer = self.next_layer;
+            self.advance_layer(layer, shared);
+            self.close_layer(shared);
         }
         let mut drops = std::mem::take(&mut self.drops);
         drops.sort_unstable();
@@ -303,29 +290,21 @@ impl<'a> OwnershipFill<'a> {
                 .map(FaceChannels::candidates)
                 .max()
                 .unwrap_or(0)
-                .max(peak_cut_demand),
+                .max(self.peak_cut_demand),
             drops,
         };
-        let Self {
-            width,
-            height,
-            layer_count,
-            blocks,
-            data: raw,
-            face_map,
-            ..
-        } = self;
-        drop(face_map);
-        if !any_owner {
+        if !self.any_owner {
             return (None, report);
         }
-        // Test-only full copy of the raw fill for exact-value assertions. It
-        // is not a `RawFillBuffer`, so the residency counters never see it.
         #[cfg(test)]
-        super::record_raw_fill(&raw);
-        let blocks = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
-        drop(raw);
-        (Some(ShadowmaskAtlasSection { owners, blocks }), report)
+        super::record_raw_fill(&self.raw_snapshot);
+        (
+            Some(ShadowmaskAtlasSection {
+                owners: self.owners,
+                blocks: self.encoded,
+            }),
+            report,
+        )
     }
 
     /// Whether bake-layer texel `idx` of sub-face `face` lies in that sub-face's
@@ -381,30 +360,55 @@ impl<'a> OwnershipFill<'a> {
         }
     }
 
-    /// Every texel a bilinear tap on `face` can reach: its whole padded chart.
+    /// Address a chart in the working layer, or in its retained cell block.
+    fn face_rect(&self, face: usize, shared: &SharedAtlas<'_>) -> (usize, usize, usize) {
+        let placement = shared.placements[face];
+        if self.layer == Some(placement.layer) {
+            (
+                self.width as usize,
+                placement.x as usize,
+                placement.y as usize,
+            )
+        } else {
+            let block = &self.blocks[shared.layout.chart_blocks[face] as usize];
+            (
+                block.width as usize,
+                (placement.x - block.x) as usize,
+                (placement.y - block.y) as usize,
+            )
+        }
+    }
+
+    fn face_data_mut(&mut self, face: usize, shared: &SharedAtlas<'_>) -> &mut [u8] {
+        if self.layer == Some(shared.placements[face].layer) {
+            self.data.as_mut().expect("the working layer is open")
+        } else {
+            self.carry[shared.layout.chart_blocks[face] as usize]
+                .as_mut()
+                .expect("an unfinished cut retains its block")
+        }
+    }
+
     fn padded_rect_offsets(
         &self,
         face: usize,
         shared: &SharedAtlas<'_>,
     ) -> impl Iterator<Item = usize> + use<> {
         let chart = &shared.charts[face];
-        let placement = shared.placements[face];
-        let (width, plane) = (self.width as usize, self.plane);
+        let (width, x, y) = self.face_rect(face, shared);
         let (chart_w, chart_h) = (chart.width_texels as usize, chart.height_texels as usize);
         (0..chart_h).flat_map(move |row| {
-            let start = placement.layer as usize * plane
-                + (placement.y as usize + row) * width
-                + placement.x as usize;
+            let start = (y + row) * width + x;
             (start..start + chart_w).map(|texel| texel * SHADOWMASK_OWNER_CHANNELS)
         })
     }
 
     /// An evicted owner's values leave with it.
     fn zero_channel(&mut self, face: usize, channel: usize, shared: &SharedAtlas<'_>) {
-        // The offsets capture neither `self` nor `shared` (`use<>`), so the
-        // writes can run straight off the iterator with no buffered copy.
-        for base in self.padded_rect_offsets(face, shared) {
-            self.data[base + channel] = 0;
+        let offsets = self.padded_rect_offsets(face, shared);
+        let data = self.face_data_mut(face, shared);
+        for base in offsets {
+            data[base + channel] = 0;
         }
     }
 
@@ -421,11 +425,13 @@ impl<'a> OwnershipFill<'a> {
         {
             return;
         }
-        for base in self.padded_rect_offsets(face, shared) {
+        let offsets = self.padded_rect_offsets(face, shared);
+        let data = self.face_data_mut(face, shared);
+        for base in offsets {
             let held: [u8; SHADOWMASK_OWNER_CHANNELS] =
-                std::array::from_fn(|channel| self.data[base + channel]);
+                std::array::from_fn(|channel| data[base + channel]);
             for (position, channel) in source.iter().enumerate() {
-                self.data[base + position] = channel.map_or(0, |channel| held[channel]);
+                data[base + position] = channel.map_or(0, |channel| held[channel]);
             }
         }
     }
@@ -455,7 +461,8 @@ impl<'a> OwnershipFill<'a> {
         if !owned.contains(&true) || chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
             return;
         }
-        let placement = shared.placements[face];
+        let (atlas_width, placement_x, placement_y) = self.face_rect(face, shared);
+        let data = self.face_data_mut(face, shared);
         let padding = i64::from(CHART_PADDING_TEXELS);
         // Inclusive interior bounds in padded-rect coordinates.
         let (x_lo, x_hi) = (padding, i64::from(chart.width_texels) - padding - 1);
@@ -464,15 +471,10 @@ impl<'a> OwnershipFill<'a> {
         // Chebyshev distance from the interior: 0 inside, ring `n` in padding.
         let ring_of =
             move |x: i64, y: i64| (x_lo - x).max(x - x_hi).max(y_lo - y).max(y - y_hi).max(0);
-        let layer_start = placement.layer as usize * self.plane;
-        let atlas_width = self.width as usize;
         // Only called for texels of ring `CHART_PADDING_TEXELS` or less, which
         // all lie inside the padded rect, so both coordinates are non-negative.
         let offset = move |x: i64, y: i64| {
-            (layer_start
-                + (placement.y as usize + y as usize) * atlas_width
-                + placement.x as usize
-                + x as usize)
+            ((placement_y + y as usize) * atlas_width + placement_x + x as usize)
                 * SHADOWMASK_OWNER_CHANNELS
         };
         for ring in 1..=padding {
@@ -489,7 +491,7 @@ impl<'a> OwnershipFill<'a> {
                         }
                         let base = offset(nx, ny);
                         for (position, sum) in sums.iter_mut().enumerate() {
-                            *sum += u32::from(self.data[base + position]);
+                            *sum += u32::from(data[base + position]);
                         }
                         covered += 1;
                     }
@@ -499,7 +501,7 @@ impl<'a> OwnershipFill<'a> {
                 let base = offset(x, y);
                 for (position, &sum) in sums.iter().enumerate() {
                     if owned[position] {
-                        self.data[base + position] = ((sum + covered / 2) / covered) as u8;
+                        data[base + position] = ((sum + covered / 2) / covered) as u8;
                     }
                 }
             }
@@ -525,41 +527,6 @@ fn texel_world_position(shared: &SharedAtlas<'_>, face: usize, idx: u32) -> glam
     let tx = (atlas_x - placement.x - CHART_PADDING_TEXELS) as i32;
     let ty = (atlas_y - placement.y - CHART_PADDING_TEXELS) as i32;
     chart_texel_world_position(&shared.charts[face], tx, ty)
-}
-
-/// The raw fill buffer. Test builds count its live bytes when it is dropped,
-/// so the compile-time bound observes the release itself.
-pub(super) struct RawFillBuffer {
-    bytes: Vec<u8>,
-}
-
-impl RawFillBuffer {
-    pub(super) fn new(bytes: Vec<u8>) -> Self {
-        #[cfg(test)]
-        super::raw_fill_live_bytes_add(bytes.len());
-        Self { bytes }
-    }
-}
-
-impl std::ops::Deref for RawFillBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
-impl std::ops::DerefMut for RawFillBuffer {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes
-    }
-}
-
-#[cfg(test)]
-impl Drop for RawFillBuffer {
-    fn drop(&mut self) {
-        super::raw_fill_live_bytes_sub(self.bytes.len());
-    }
 }
 
 pub(super) fn texel_plane_len(width: u32, height: u32) -> usize {

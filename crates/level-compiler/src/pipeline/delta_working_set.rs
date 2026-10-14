@@ -117,7 +117,10 @@ pub(super) fn delta_working_set_copy_chain_factor(retains_analysis_clone: bool) 
     }
 }
 
-pub(super) fn retains_sh_analyze_dense_deltas(sh_analyze: bool, sh_coarsening_enabled: bool) -> bool {
+pub(super) fn retains_sh_analyze_dense_deltas(
+    sh_analyze: bool,
+    sh_coarsening_enabled: bool,
+) -> bool {
     sh_analyze && sh_coarsening_enabled
 }
 
@@ -225,7 +228,10 @@ pub(super) fn gate_delta_working_set(
     }
 }
 
-pub(super) fn log_delta_working_set_projection(projection: &DeltaWorkingSetProjection, verbose: bool) {
+pub(super) fn log_delta_working_set_projection(
+    projection: &DeltaWorkingSetProjection,
+    verbose: bool,
+) {
     log::info!(
         "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, admitted",
         projection.estimated_peak_bytes,
@@ -255,4 +261,3 @@ pub(super) fn log_delta_working_set_projection(projection: &DeltaWorkingSetProje
         }
     }
 }
-

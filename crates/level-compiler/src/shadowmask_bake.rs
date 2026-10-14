@@ -16,20 +16,27 @@ use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{self, CutParent};
 use crate::lightmap_layer::{self, LightmapLayer, SharedAtlas};
 
+mod carry;
 mod eligibility;
 mod encode;
 mod estimate;
 mod fill;
 mod memo;
+mod metadata;
 mod ownership;
+mod raw;
 
+pub(crate) use carry::{encode_scratch_bytes, maximum_cut_carry_bytes};
 pub(crate) use eligibility::{
     EligibleLight, MAX_STATIC_SPEC_LIGHTS, owner_eligible_lights, static_spec_light_count,
 };
 use fill::*;
 pub(crate) use memo::shadowmask_atlas_input_hash;
 use memo::{cache_shadowmask_section, read_shadowmask_memo};
+pub(crate) use metadata::metadata_bytes;
 pub(crate) use ownership::{OwnerReport, log_owner_report};
+use raw::RawFillBuffer;
+pub(crate) use raw::RawFillProbe;
 
 /// What the cut-face estimate traced on a miss; zero on a memo hit or with no
 /// cut face.
@@ -129,13 +136,28 @@ impl FusedShadowmaskPlan<'_> {
         let Some(fill) = self.fill.as_mut() else {
             return;
         };
+        let started = Instant::now();
+        // Every item advances the layer, including a source that cannot own.
+        fill.advance_layer(partition.target_layer, shared);
         let Some(light) = self.eligible_by_source.get(&source_index) else {
+            self.work_elapsed += started.elapsed();
             return;
         };
-        let started = Instant::now();
         fill.consume(light, partition, shared);
         self.control.advance(1);
         self.work_elapsed += started.elapsed();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_raw_fill_probe(&mut self, probe: Option<RawFillProbe>) {
+        if let (Some(fill), Some(probe)) = (&mut self.fill, probe) {
+            fill.set_raw_fill_probe(probe);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_fill_live_bytes(&self) -> usize {
+        self.fill.as_ref().map_or(0, |fill| fill.probe.live())
     }
 
     pub(crate) fn finish(mut self, shared: &SharedAtlas<'_>) -> FusedShadowmaskOutput {
@@ -183,12 +205,12 @@ pub(crate) struct EstimateScene<'a> {
 /// fused walk ranks partitions into. A miss traces the cut-face estimate here,
 /// after the memo probe and before the walk; nothing else is traced.
 ///
-/// `eligible_layer_hashes` holds each eligible light's `layer_count` layer
-/// hashes in ascending layer order, light-major, and is empty without a cache.
+/// `layer_input_hash` derives a partition hash from its source index and layer.
+/// It is called only when caching, without retaining a light-by-layer matrix.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_fused_shadowmask<'a>(
     eligible: Vec<EligibleLight<'a>>,
-    eligible_layer_hashes: &[[u8; 32]],
+    layer_input_hash: &impl Fn(usize, u32) -> [u8; 32],
     static_spec_light_count: usize,
     layer_count: u32,
     shared: &SharedAtlas<'_>,
@@ -224,7 +246,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     let section_key = cache.map(|_| {
         let input_hash = shadowmask_atlas_input_hash(
             &eligible,
-            eligible_layer_hashes,
+            layer_input_hash,
             shared.charts.len(),
             shared.atlas_width,
             shared.atlas_height,
@@ -253,12 +275,14 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             log::info!("[cache] shadowmask_atlas hit");
             // The memo stands in for the eligible partitions it summarizes;
             // the next prune must keep them as the fallback for a light edit.
-            for hash in eligible_layer_hashes {
-                cache.mark_used(&CacheKey::new(
-                    "lightmap_layer",
-                    lightmap_layer::LAYER_FORMAT_VERSION,
-                    hash,
-                ));
+            for light in &eligible {
+                for layer in 0..layer_count {
+                    cache.mark_used(&CacheKey::new(
+                        "lightmap_layer",
+                        lightmap_layer::LAYER_FORMAT_VERSION,
+                        &layer_input_hash(light.source_index, layer),
+                    ));
+                }
             }
             control.governor().checkpoint();
             control.advance(total);
@@ -306,7 +330,7 @@ thread_local! {
     static LAST_RAW_FILL: std::cell::RefCell<Option<Vec<u8>>> = const {
         std::cell::RefCell::new(None)
     };
-    static RAW_FILL_LIVE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static LAST_RAW_FILL_PROBE: std::cell::RefCell<RawFillProbe> = std::cell::RefCell::new(RawFillProbe::default());
     static RAW_FILL_LIVE_BYTES_AT_CACHE_WRITE: std::cell::Cell<Option<usize>> = const {
         std::cell::Cell::new(None)
     };
@@ -370,25 +394,20 @@ pub(crate) fn take_last_raw_fill() -> Vec<u8> {
 /// Allocates the pre-encode raw fill, initialized occluded: an owned channel
 /// reads zero on every chart-interior texel its owner wrote nothing to, and
 /// its padding later repeats that interior's edge.
-fn allocate_shadowmask_raw_fill(data_len: usize) -> RawFillBuffer {
+fn allocate_shadowmask_raw_fill(data_len: usize, probe: &RawFillProbe) -> RawFillBuffer {
     #[cfg(test)]
     SHADOWMASK_OUTPUT_ALLOCATION_COUNT.with(|count| count.set(count.get() + 1));
-    RawFillBuffer::new(vec![0; data_len])
+    RawFillBuffer::new(vec![0; data_len], probe)
 }
 
 #[cfg(test)]
-fn raw_fill_live_bytes_add(bytes: usize) {
-    RAW_FILL_LIVE_BYTES.with(|live| live.set(live.get() + bytes));
-}
-
-#[cfg(test)]
-fn raw_fill_live_bytes_sub(bytes: usize) {
-    RAW_FILL_LIVE_BYTES.with(|live| live.set(live.get() - bytes));
+fn register_raw_fill_probe(probe: &RawFillProbe) {
+    LAST_RAW_FILL_PROBE.with(|last| *last.borrow_mut() = probe.clone());
 }
 
 #[cfg(test)]
 fn raw_fill_live_bytes() -> usize {
-    RAW_FILL_LIVE_BYTES.with(std::cell::Cell::get)
+    LAST_RAW_FILL_PROBE.with(|last| last.borrow().live())
 }
 
 #[cfg(test)]

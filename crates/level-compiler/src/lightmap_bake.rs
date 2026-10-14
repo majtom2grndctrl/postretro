@@ -22,6 +22,9 @@ mod charts;
 mod encode;
 mod face_cut;
 mod reference;
+mod working_set;
+#[cfg(test)]
+pub(crate) use working_set::minimum_working_set_bytes;
 
 #[cfg(test)]
 pub(crate) use atlas_layout::prepare_atlas_within;
@@ -44,6 +47,8 @@ pub(crate) use cell_blocks::{
 pub use charts::{Chart, ChartWindow};
 pub(crate) use encode::{BlockSectionBuilder, copy_unit_rect, irradiance_format};
 pub use face_cut::CutParent;
+#[cfg(test)]
+pub(crate) use face_cut::{plan_face_cuts, planned_chart_area};
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
 
@@ -78,11 +83,6 @@ pub(crate) const MIN_ATLAS_DIMENSION: u32 = 64;
 /// derives from it.
 pub(crate) const MAX_ATLAS_DIMENSION: u32 = 8192;
 
-/// Most internal bake layers. Each layer is a unit of the per-light cache
-/// partition and of the one-plane bake working set; past this the packer
-/// errors so the caller can coarsen density or split the map.
-pub(crate) const MAX_ATLAS_LAYERS: u32 = 256;
-
 /// Shadow ray self-intersection offset. `pub(crate)` so the animated weight-map baker uses the
 /// same value — both bakers must agree or chunk boundaries show seams.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
@@ -100,6 +100,10 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 /// Errors surfaced from the lightmap bake stage. Caller can retry at a coarser texel density.
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {
+    #[error(
+        "lightmap pre-cut working-set lower bound {minimum} bytes exceeds budget {budget} bytes (--working-set-max-size), refused before face cutting"
+    )]
+    WorkingSetMinimumExceeded { minimum: u64, budget: u64 },
     #[error(
         "lightmap atlas layer overflow: the charts need {layer_count} bake layers but the \
          compiler allows at most {max}; raise `--lightmap-density` (or `_lightmap_density`), \
@@ -230,10 +234,8 @@ pub struct CompositedAtlas {
 
 /// Total texel count for a `layer_count`-layer atlas of `atlas_w × atlas_h`.
 ///
-/// Promotes each dimension to `usize` *before* multiplying: at the cap
-/// (`MAX_ATLAS_DIMENSION² × MAX_ATLAS_LAYERS` ≈ 1.7e10) the product overflows
-/// `u32`, and a `u32` multiply would wrap to a too-small value — under-sizing
-/// the atlas buffers so later layer-major writes land out of bounds.
+/// Promotes each dimension to `usize` before multiplying: multi-layer atlases
+/// can exceed u32 texels, so a u32 product could under-size their buffers.
 fn composited_atlas_texel_count(atlas_w: u32, atlas_h: u32, layer_count: u32) -> usize {
     atlas_w as usize * atlas_h as usize * layer_count as usize
 }
@@ -297,6 +299,8 @@ pub fn bake_lightmap_controlled(
         config.lightmap_density,
         inputs.scale_regions,
         LIGHTMAP_POOL_LAYER_EDGE,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        config.uncompressed_irradiance,
     )?;
     // The caller's BVH indexes the geometry as it stood before this call; a
     // cut rewrites the index buffer under it. The compiler pipeline cuts in

@@ -107,8 +107,16 @@ fn cut_and_rebuild(
 ) {
     let lights = lit();
     let static_lights = StaticBakedLights::from_lights(&lights);
-    let cut = lightmap_bake::plan_cut_charts(geometry, &static_lights, 0.1, &[], pool_edge)
-        .expect("fixture charts plan");
+    let cut = lightmap_bake::plan_cut_charts(
+        geometry,
+        &static_lights,
+        0.1,
+        &[],
+        pool_edge,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )
+    .expect("fixture charts plan");
     let rebuilt = cut
         .face_remap
         .as_ref()
@@ -273,8 +281,16 @@ fn map_without_static_lights_cuts_nothing() {
     let (mut geometry, _) = three_leaf_fixture();
     let before = geometry.geometry.vertices.clone();
     let static_lights = StaticBakedLights::from_lights(&[]);
-    let cut =
-        lightmap_bake::plan_cut_charts(&mut geometry, &static_lights, 0.1, &[], 64).expect("plans");
+    let cut = lightmap_bake::plan_cut_charts(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        64,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )
+    .expect("plans");
     assert!(cut.face_remap.is_none() && cut.pre_cut.is_none());
     assert_eq!(cut.charts.len(), 3);
     assert_eq!(geometry.geometry.vertices, before);
@@ -298,11 +314,11 @@ fn map_without_static_lights_cuts_nothing() {
     );
 }
 
-// P11: a scale region extreme enough to need more bake layers than allowed
+// P11: a scale region whose minimum irradiance cost exceeds the stage budget
 // fails by name before anything is cut — promptly, even when the region's
-// faces would cut into millions of pieces and their area overflows a u64.
+// faces would cut into millions of pieces.
 #[test]
-fn scale_region_past_the_bake_layer_cap_fails_by_name_before_cutting() {
+fn scale_region_past_the_working_set_budget_fails_by_name_before_cutting() {
     for scale in [2000.0, 1.0e6, 1.0e7] {
         let (mut geometry, _) = three_leaf_fixture();
         let before = geometry.geometry.vertices.len();
@@ -321,15 +337,20 @@ fn scale_region_past_the_bake_layer_cap_fails_by_name_before_cutting() {
             0.1,
             std::slice::from_ref(&region),
             2048,
+            crate::working_set::DEFAULT_MAX_BYTES,
+            false,
         ) {
             Err(error) => error,
-            Ok(_) => panic!("scale {scale}: the region must overflow the bake layers"),
+            Ok(_) => panic!("scale {scale}: the region must exceed the working-set budget"),
         };
         assert!(
-            matches!(error, crate::lightmap_bake::LightmapBakeError::LayerOverflow { max, .. } if max == crate::lightmap_bake::MAX_ATLAS_LAYERS),
+            matches!(error, crate::lightmap_bake::LightmapBakeError::WorkingSetMinimumExceeded { budget, .. } if budget == crate::working_set::DEFAULT_MAX_BYTES),
             "scale {scale}: {error}"
         );
-        assert!(error.to_string().contains("layer overflow"), "{error}");
+        assert!(
+            error.to_string().contains("working-set lower bound"),
+            "{error}"
+        );
         assert!(
             geometry.face_index_ranges.len() == 3 && geometry.geometry.vertices.len() >= before
         );
@@ -633,10 +654,18 @@ fn animated_reach_past_the_block_cap_fails_by_name_at_atlas_preparation() {
     let (mut geometry, _) = three_leaf_fixture();
     let lights = lit();
     let static_lights = StaticBakedLights::from_lights(&lights);
-    let chart = lightmap_bake::plan_cut_charts(&mut geometry, &static_lights, 0.1, &[], 2048)
-        .unwrap()
-        .charts
-        .remove(0);
+    let chart = lightmap_bake::plan_cut_charts(
+        &mut geometry,
+        &static_lights,
+        0.1,
+        &[],
+        2048,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )
+    .unwrap()
+    .charts
+    .remove(0);
     let mut animated = lights[0].clone();
     animated.animation = Some(LightAnimation {
         period: 1.0,
@@ -799,3 +828,5 @@ fn face_cut_bvh_leaves_keep_each_cell_one_contiguous_index_range() {
     );
     assert_cell_major_leaf_ranges(bvh_leaves, geometry.geometry.indices.len());
 }
+
+mod working_set_tests;

@@ -1,18 +1,13 @@
 # reflection-probes — plan of record
 
 mode: resumable
-status: blocked
+status: proposed
 read at: 41f21c8ae
 branch: feature/reflection-probes
 
-## Block
+## Resolved blocks
 
-Two adapter-backed Acceptance rows cannot pass as worded. `capture_frame_indirect` resolves through the window's soft-knee tonemap (`screen_effects.wgsl` `soft_knee_tonemap`, identity below a 0.98 peak) and sRGB-encodes (`renderer_capture.rs:221`), and the existing fluid GPU tests say so (`fluid_surface_frame_test.rs:222`, `:298`). Linear 0.5 reads ≈188, not 128. Proposed wording, same meaning (owner to approve or amend):
-
-- **Row 33** (first adapter-backed row), was "…reads F·R + (1−F)·(surface over clear) within 2/255 at a fixed grazing view; at reflectivity 0 it reads today's value." → "…reads the capture's encoding (soft-knee tonemap, then sRGB) of F·R + (1−F)·(surface over clear) within 2/255 at a fixed grazing view; at reflectivity 0 it reads the encoding of today's value."
-- **Row 35** (third adapter-backed row), was "An unbound, unlit fluid face at opacity 0.5 over a white clear reads 128 ± 1 red, and a lit unbound face matches today's straight-alpha value within 1/255." → "An unbound, unlit fluid face at opacity 0.5 over a white clear reads 188 ± 1 red (linear 0.5, below the tonemap knee, sRGB-encoded), and a lit unbound face reads the capture's encoding of today's straight-alpha value within 1/255."
-
-On approval: apply the wording to `index.md`, set `status: proposed` → owner skim → `approved`.
+- 2026-10-14 — rows 33 and 35 restated (owner-approved): capture-path GPU rows compare against the capture's encoding (soft-knee tonemap, then sRGB), since `capture_frame_indirect` tonemaps and sRGB-encodes; linear 0.5 reads 188 ± 1. Applied to `index.md`.
 
 ## Corrections
 
@@ -107,9 +102,9 @@ Runtime (CPU references pinned to shader bodies)
 Adapter-backed
 | AC | Proof | Status |
 |---|---|---|
-| 33 Uniform-R probe at grazing view | `fluid_surface_frame_test.rs` | **needs restatement** (see Block) |
+| 33 Uniform-R probe at grazing view, capture-encoded | `fluid_surface_frame_test.rs` | achievable as restated |
 | 34 Two probes + unbound face in one draw | `fluid_surface_frame_test.rs` | achievable as stated |
-| 35 Unbound face 128 ± 1; lit face within 1/255 | `fluid_surface_frame_test.rs` | **needs restatement** (see Block) |
+| 35 Unbound face 188 ± 1; lit face capture-encoded within 1/255 | `fluid_surface_frame_test.rs` | achievable as restated |
 | 36 Level change P11 | `fluid_surface_frame_test.rs` | achievable as stated |
 
 Manual (owner, in-engine)

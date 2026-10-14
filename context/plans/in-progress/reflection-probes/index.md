@@ -84,9 +84,9 @@ Runtime, CPU references pinned to the shader bodies
 - [ ] Grep gate on the fluid shader and pass: no previous-frame or history binding and no precomputed intersection buffer. Source scan: the probe layer index derives from the face's binding input alone, and no lookup-direction value reaches it.
 - [ ] The DX12 FXC test compiles the fluid shader (Windows, ignored-gated run).
 Adapter-backed: each row's run log shows the GPU case ran, not skipped
-- [ ] A full-screen fluid face bound to a probe whose capture is a uniform colour R, with no animated lights (P3), reads F·R + (1−F)·(surface over clear) within 2/255 at a fixed grazing view; at reflectivity 0 it reads today's value.
+- [ ] A full-screen fluid face bound to a probe whose capture is a uniform colour R, with no animated lights (P3), reads the capture's encoding (soft-knee tonemap, then sRGB) of F·R + (1−F)·(surface over clear) within 2/255 at a fixed grazing view; at reflectivity 0 it reads the encoding of today's value.
 - [ ] Two faces in one draw, bound to two probes with distinct uniform captures, each read their own probe's colour; a third face in that draw bound to no probe reads today's value.
-- [ ] An unbound, unlit fluid face at opacity 0.5 over a white clear reads 128 ± 1 red, and a lit unbound face matches today's straight-alpha value within 1/255.
+- [ ] An unbound, unlit fluid face at opacity 0.5 over a white clear reads 188 ± 1 red (linear 0.5, below the tonemap knee, sRGB-encoded), and a lit unbound face reads the capture's encoding of today's straight-alpha value within 1/255.
 - [ ] Level change (P11).
 ### Manual
 On a test map with a pool at floor level, a neon sign, an animated light, an `_shadow_type sdf` light, and a two-room canal:

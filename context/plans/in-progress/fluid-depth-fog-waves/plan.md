@@ -11,6 +11,8 @@ read at: afb4acaa4
 - Packed extinction is capped at `FLUID_FOG_EXTINCTION_MAX` (1e30), not `f32::MAX`, so `extinction × path` stays finite for any fog path; a period whose reciprocal overflows packs no wave.
 - Params window at stride 48: 1365 slots fill 65 520 B, not a 256 multiple. `FLUID_SLOTS_PER_WINDOW` becomes 1360 (65 280 B = 255 × 256), so every window's dynamic offset is a multiple of 256 (pin P1).
 
+- Owner-directed dev tuning (2026-10-14, after first in-engine look): dev water `fogDistance` 1.0 → 3.0 and `wavePeriod` 63 → 31.5 (crests travel twice as fast). Manual rows M1 and M3 read against these values: the floor hides about 3 m down, and the no-jump watch spans two 31.5 s periods.
+
 ## Delegated answers
 - Wave distance fade — **no fade.** Adjacent cells' wave offsets differ by at most one texel (the 8× rule), so at distance the wave is a slow, sub-pixel-smooth displacement that mip filtering already integrates; nothing new aliases. A per-cell hashed fade (shimmer's scheme) would tear a multi-texel wave at each faded/unfaded boundary, and a per-pixel amplitude fade reintroduces per-pixel motion off the cell grid. The owner's "distant pool shows no wave crawl or seam" manual row is the check.
 - `fogColor` scale — **0.25**, linear. `viewTint` mixes after tonemap in linear (`apply_fluid_tint`), so a plain scale maps it to a pre-tonemap albedo. Dev water `fogColor: [0.16, 0.22, 0.19]` → albedo (0.04, 0.055, 0.0475), the prototype's murk.

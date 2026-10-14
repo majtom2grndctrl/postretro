@@ -197,9 +197,9 @@ export default defineMod({
       viewTint: [0.1, 0.3, 0.4, 0.35], // rgb + strength, each 0..=1
       muffle: 0.8, // 0 = none, 1 = maximum low-pass
       surfaceOpacity: 0.75, // 0..=1
-      fogDistance: 1.0, // metres seen into it from outside; omitted = clear
+      fogDistance: 3.0, // metres seen into it from outside; omitted = clear
       fogColor: [0.16, 0.22, 0.19], // murk rgb, viewTint's space; omitted = viewTint rgb
-      wavePeriod: 63, // seconds per crest cycle; omitted = no wave (amplitude 8, length [64, 80] by default)
+      wavePeriod: 31.5, // seconds per crest cycle; omitted = no wave (amplitude 8, length [64, 80] by default)
       enterSound: "fixtures/land",
       exitSound: "fixtures/jump",
     }),

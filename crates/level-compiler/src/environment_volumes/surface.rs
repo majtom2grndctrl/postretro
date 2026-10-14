@@ -1,6 +1,5 @@
-// Fluid surface faces: each fluid brush side minus solid world and sibling
-// brushes, split along the push brushes over it, closing T-junctions in
-// volumes a push cut.
+// Fluid surface faces: each brush side minus solid world and siblings, split
+// along push brushes, with T-junctions closed where a push cut.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
@@ -182,10 +181,10 @@ pub(super) fn fluid_surface_pieces<'a>(
 /// meeting a straight edge rasterizes as gaps and double blends along the
 /// seam. The inserted vertex is the neighbour's own position, so both sides
 /// of the seam share it; it is collinear, so the piece keeps its shape,
-/// winding and vertex order. The renderer triangulates by clipping
-/// non-zero-area ears, which keeps every vertex and edge, so the seam's edges
-/// belong to real triangles. A piece with no vertex on its edges is left
-/// exactly as it was.
+/// winding and vertex order. The renderer fans a face that holds such a
+/// vertex from an added centroid, so every inserted vertex stays a triangle
+/// corner and the seam's edges belong to real triangles. A piece with no
+/// vertex on its edges is left exactly as it was.
 fn close_t_junctions(pieces: &mut [SurfacePiece<'_>]) {
     if pieces.len() < 2 {
         return;

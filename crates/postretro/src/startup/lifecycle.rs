@@ -694,6 +694,8 @@ impl App {
                     // The level stays installed, so its collision does too.
                     self.collision_world = static_collision;
                     self.level = Some(world);
+                    // Keeps the App's drift current for tests and later
+                    // refreshes; there is no renderer to hand it to.
                     self.resolve_fluid_surface_drift();
                     return Ok(());
                 }

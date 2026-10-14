@@ -1,6 +1,6 @@
 // Co-op swim parity through the loopback harness: swim edges, the fluid jump and
 // its latch, low-gravity crossings, and push-force currents, none needing correction.
-// See: context/lib/networking.md · context/lib/movement.md §4 (Swim)
+// See: context/lib/networking.md · context/lib/movement.md §4 (Swim), §6 (Regional gravity and push)
 
 #![cfg(test)]
 

@@ -1,4 +1,4 @@
-// Push volumes in player movement: lift-off, the protected drift layer, its medium decay and terminal speed along the push.
+// Push volumes in player movement: lift-off, the protected drift layer, its medium decay, terminal speed along the push, and the steady-state drift fluid surfaces mirror.
 // See: context/lib/movement.md §6 (Regional gravity and push)
 
 use glam::{Vec2, Vec3};

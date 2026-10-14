@@ -37,29 +37,29 @@ The owner's in-engine `POSTRETRO_GPU_TIMING=1` read remains manual.
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| A1 shader mirrors CPU reference; `fs_main` samples at warped UV | `fluid_motion_shader_constants_match_the_cpu_reference`, `fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv` (renderer) | achievable as stated |
-| A2 textual: no `sin(`/`cos(`; cells floored from unwarped UV; offsets floored before moving the sample | `fluid_surface_wgsl_*` textual tests on comment-stripped source (renderer) | achievable as stated |
-| A3 shimmer/rings vs GPU-free reference (whole texels, step boundaries ≤ 3 Hz, ≤ 10 % cells per frame incl. negative coords, zero-mean, amplitude caps, fade, fade sweep, ring determinism/variation/no tile repeat) | `render-cpu::fluid_surface::motion` tests | achievable as stated |
-| A4 drift scroll direction/speed at scale 1, 0.25, 45°; reversal; 24 h f32; wrap leaves cells unchanged | `render-cpu::fluid_surface` drift tests over the CPU mirror of the vertex wrap | achievable as stated |
-| A5 install drift resolve per face (cover, outside touch, two pushes, vertical faces, e24 channel 3 m/s +Y) | `postretro::fluid_surface_drift` tests; e24 row compiles the fixture map | achievable as stated |
-| A6 face splitting (half cover, flush-from-below vs above, whole cover, overlap, touches/slivers/area sum, thin parts) | `level-compiler` surface split tests (+ drift identity in `render-cpu`) | achievable as stated |
-| A7 drift speed (water/sludge swimmer within 2 %, viscosity 120 steady state, terminal cap, two strengths, zero viscosity) | `physics::movement::push` steady-state tests with a swimmer harness | achievable as stated |
-| A8 re-resolve (viscosity-only, capture zero drift at capture opacity, client before tuning / after demotion, mid-level re-resolve uploads no rows) | `postretro` environment-install/drift tests; render-cpu slot test | achievable as stated |
-| A9 `force` (default 1, force 0 drift/feel/particle, 0.5 and 3, force-0 updraft and fluid jump, host/prediction/replay under 0.5, bad values fail naming entity) | compiler parse tests, collision/physics/particle tests, netcode predict-reconcile harness | achievable as stated |
-| A10 digest | `runtime_movers` digest tests | achievable as stated |
-| A11 force section (absent, pre-change map, round trip, validation, env bytes identical) | level-format + level-loader + compiler tests | achievable as stated |
-| A12 no reduce-motion/accessibility/render-profile input (grep gate) | textual test on `fluid_surface.wgsl` and the drift module | achievable as stated |
-| A13 fluid/mover Post Retro parity test unchanged | `fluid_post_retro_sampling_matches_the_mover_shader` | achievable as stated |
-| A14 pipeline budget tests; no binding added | existing budget tests | achievable as stated |
-| A15 DX12 FXC shader test on the 1660 Super, no skip line | existing on-demand FXC test, run here | achievable as stated |
-| M1 still pool vs current; carried at surface speed | owner, in-engine | manual |
-| M2 force-0 river, force-3 pool, bending river | owner, in-engine | manual |
-| M3 grain matches walls at 1 and 0.25; no border smear; distant calm | owner, in-engine | manual |
-| M4 view-filling still pool reads gentle | owner, in-engine | manual |
-| M5 side face through glass drifts without tearing | owner, in-engine | manual |
-| M6 GPU timing fluid pass before/after | executor runs `POSTRETRO_GPU_TIMING=1` on the 1660 Super and records here; owner confirms view | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| A1 shader mirrors CPU reference; `fs_main` samples at warped UV | `fluid_motion_shader_constants_match_the_cpu_reference`, `fluid_fs_main_samples_albedo_and_emissive_at_the_warped_uv` (renderer) | achievable as stated | pass — constants pinned, CPU and WGSL motion bodies pinned, fs_main warped-UV and fade-input pins |
+| A2 textual: no `sin(`/`cos(`; cells floored from unwarped UV; offsets floored before moving the sample | `fluid_surface_wgsl_*` textual tests on comment-stripped source (renderer) | achievable as stated | pass |
+| A3 shimmer/rings vs GPU-free reference (whole texels, step boundaries ≤ 3 Hz, ≤ 10 % cells per frame incl. negative coords, zero-mean, amplitude caps, fade, fade sweep, ring determinism/variation/no tile repeat) | `render-cpu::fluid_surface::motion` tests | achievable as stated | pass — render-cpu motion tests (3 Hz bound at a fixed view; see fade clarification) |
+| A4 drift scroll direction/speed at scale 1, 0.25, 45°; reversal; 24 h f32; wrap leaves cells unchanged | `render-cpu::fluid_surface` drift tests over the CPU mirror of the vertex wrap | achievable as stated | pass — incl. scale 0.125/0.25, 45°, 24 h f32 and wrap |
+| A5 install drift resolve per face (cover, outside touch, two pushes, vertical faces, e24 channel 3 m/s +Y) | `postretro::fluid_surface_drift` tests; e24 row compiles the fixture map | achievable as stated | pass — per-face resolve tests; e24 channel proven in two halves (every channel face samples `0 6 0`; push 6 ÷ water 2 = 3 m/s) |
+| A6 face splitting (half cover, flush-from-below vs above, whole cover, overlap, touches/slivers/area sum, thin parts) | `level-compiler` surface split tests (+ drift identity in `render-cpu`) | achievable as stated | pass — split tests incl. 2 mm sample-depth bands, overlap, touches, slivers, thin parts identical far from the origin |
+| A7 drift speed (water/sludge swimmer within 2 %, viscosity 120 steady state, terminal cap, two strengths, zero viscosity) | `physics::movement::push` steady-state tests with a swimmer harness | achievable as stated | pass — water/sludge within 2 %, viscosity 120, terminal cap, two strengths, inviscid, drift-stop from rest |
+| A8 re-resolve (viscosity-only, capture zero drift at capture opacity, client before tuning / after demotion, mid-level re-resolve uploads no rows) | `postretro` environment-install/drift tests; render-cpu slot test | achievable as stated | pass — host viscosity-only reload, staged reload of terminal velocity, client before/after tuning and demotion, capture still at capture opacity, GPU frame test (opacity held, 1 parameter upload) |
+| A9 `force` (default 1, force 0 drift/feel/particle, 0.5 and 3, force-0 updraft and fluid jump, host/prediction/replay under 0.5, bad values fail naming entity) | compiler parse tests, collision/physics/particle tests, netcode predict-reconcile harness | achievable as stated | pass — parse incl. -0, felt/nominal collision, force-0 updraft and fluid jump, 0.5/3 scaling, netcode half-force settled drift |
+| A10 digest | `runtime_movers` digest tests | achievable as stated | pass |
+| A11 force section (absent, pre-change map, round trip, validation, env bytes identical) | level-format + level-loader + compiler tests | achievable as stated | pass — absent/pre-change map, round trip, every validation case, -0 canonicalized, bytes identical without a partial push (T-junction closing gated on a push cut), section 53 through a real compile |
+| A12 no reduce-motion/accessibility/render-profile input (grep gate) | textual test on `fluid_surface.wgsl` and the drift module | achievable as stated | pass |
+| A13 fluid/mover Post Retro parity test unchanged | `fluid_post_retro_sampling_matches_the_mover_shader` | achievable as stated | pass (unchanged) |
+| A14 pipeline budget tests; no binding added | existing budget tests | achievable as stated | pass — no binding added; drift rides a second vertex buffer |
+| A15 DX12 FXC shader test on the 1660 Super, no skip line | existing on-demand FXC test, run here | achievable as stated | pass — `dx12_fxc_compiles_every_full_init_pipeline` on the 1660 Super after the final shader, no skip line |
+| M1 still pool vs current; carried at surface speed | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M2 force-0 river, force-3 pool, bending river | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M3 grain matches walls at 1 and 0.25; no border smear; distant calm | owner, in-engine | manual | outstanding (owner, in-engine); capture showed whole-texel steps with crisp cell borders |
+| M4 view-filling still pool reads gentle | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M5 side face through glass drifts without tearing | owner, in-engine | manual | outstanding (owner, in-engine); the e24 wing has no glass-sided pool, so this needs a map with one |
+| M6 GPU timing fluid pass before/after | executor runs `POSTRETRO_GPU_TIMING=1` on the 1660 Super and records here; owner confirms view | manual | recorded: 3.73 ms before → 3.77 ms after (GPU timing section); owner confirms the in-engine view |
 
 ## Tasks
 
@@ -71,9 +71,14 @@ The owner's in-engine `POSTRETRO_GPU_TIMING=1` read remains manual.
 | 4 | Compiler face split along push brushes | integrating executor | — | done: surface_tests split rows + e24 fixture test |
 | 5 | Drift: second vertex buffer, face map clusters, app resolve at install and every refresh, shader scroll; tests | integrating executor | 1, 3, 4 | done: render-cpu drift tests, postretro drift + install tests |
 | 6 | Fixture map: still/current pools, partial push, force-0 bending river, force-3 trap, scale 1/0.25 beside walls | integrating executor | 2, 4 | done: e24 east wing (six pools) with fluids/ textures |
-| 7 | GPU timing before/after, preflight, review loop | integrating executor | 1–6 | in progress: see Review loop |
+| 7 | GPU timing before/after, preflight, review loop | integrating executor | 1–6 | done: review loop stopped at round 4 (0 code blockers); preflight below |
+
+## Preflight
+- `cargo fmt --check`, `cargo clippy -D warnings` (workspace, all targets; plain and `postretro/dev-tools`), `cargo check --release`, `crate-graph --check`: pass.
+- `cargo test --workspace`: 1757 passed, 2 failed; `cargo test -p postretro --features dev-tools`: 1788 passed, 2 failed. Both failures are main's: `the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick` (vault roll 10 vs 0) and `receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots` (charge 120 vs 60) assert old values that main commit 7ef2ff8fb ("Minor look and feel adjustments") retuned in `content/dev/scripts` without updating them; this branch touches none of those files. Expected to reproduce on main; not verified there.
 
 ## Review loop
 - Round 1 (10 lenses, 3 slices + seam): 2 🔴 — drift write batched at install/commit points (debug panic on any water map load or reload), missing `load-prl` cfg on a loader initializer. 🟡: compiler/runtime classification band, absolute face-map fit tolerance far from the origin, split T-junctions, fade per fragment (clarified above), test gaps (adapter force, terminal-velocity source, section 53 through a real compile, netcode half force), doc and comment drift. All fixed; focused gate green (14 runs).
-- Round 2 (7 lenses, after merging origin/main at 434af2571): 2 🔴 — the new direct drift write was unclassified in the renderer's upload-ownership scanner (`renderer_direct_uploads_and_submissions_have_lifecycle_owners` would fail; round 1's gate missed it), and T-junction closing changed environment-volume bytes for burial-only maps (Acceptance row). 🟡: fan triangulation could not close multi-insert T-junctions (now ear clipping), sample-depth constants pinned by test, every WGSL motion body pinned, staged-reload terminal-velocity test, doc fixes (terminal speed does not scale with force; a push must reach the waterline to drift the surface). All fixed; focused gate green (15 runs, incl. the uploads family).
+- Round 2 (7 lenses, after merging origin/main at 434af2571): 2 🔴 — the new direct drift write was unclassified in the renderer's upload-ownership scanner (`renderer_direct_uploads_and_submissions_have_lifecycle_owners` would fail; round 1's gate missed it), and T-junction closing changed environment-volume bytes for burial-only maps (Acceptance row). 🟡: fan triangulation could not close multi-insert T-junctions (ear clipping; replaced in round 3), sample-depth constants pinned by test, every WGSL motion body pinned, staged-reload terminal-velocity test, doc fixes (terminal speed does not scale with force; a push must reach the waterline to drift the surface). All fixed; focused gate green (15 runs, incl. the uploads family).
 - Round 3 (6 lenses): 1 🔴 — the round-2 ear clipper used a relative collinear tolerance against the compiler's absolute vertex spacing, so a face wider than ~1 m with vertices under ~1 mm apart could stall and drop up to half its area (any map; a regression from main's fan). Replaced with main's fan for ordinary faces and a centroid fan for faces with collinear or duplicate vertices. 🟡: T-junction check across a two-brush pool, CPU motion bodies pinned beside the WGSL, fade input pinned, direct-write rationale covers tuning refreshes, docs (push entities per stretch, waterline rule from either side). Focused gate green (9 runs).
+- Round 4 (4 lenses): 0 🔴 code findings — loop stops (2, 2, 1, 0). One comment-drift 🔴 (a compiler doc still named ear clipping) and 🟢 nits fixed mechanically. Noted, not acted on: a 0.1 mm band where a push plane 2.0–2.1 mm under the waterline splits a face whose parts both stay still (harmless; `SPLIT_EPSILON`); a finite but enormous `force` (≈1e38) overflows the felt push to infinity, which the Decision's "no upper cap" admits; the e24 3 m/s row is proven in two halves (compiled channel faces sample the push; drift resolve gives 6 ÷ 2 = 3 m/s), not by one end-to-end test.

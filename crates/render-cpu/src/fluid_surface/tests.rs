@@ -94,11 +94,7 @@ fn assert_tiles_face_without_t_junctions(face: &EnvironmentSurfaceFace) -> Fluid
         );
         assert_eq!(centroid.normal, mesh.vertices[0].normal);
     }
-    let triangles: Vec<[u32; 3]> = mesh
-        .indices
-        .chunks_exact(3)
-        .map(|t| [t[0], t[1], t[2]])
-        .collect();
+    let triangles: Vec<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
     assert_eq!(mesh.indices.len(), triangles.len() * 3);
 
     for &[a, b, c] in &triangles {
@@ -219,9 +215,9 @@ fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
     assert_eq!(mesh.indices.len(), 5 * 3);
 }
 
-// Regression: an ear clipper with a tolerance relative to face size found no
-// ear beside vertices nearer than it, and dropped up to half of a large face.
-// The compiler's vertex spacing is absolute, down to 0.1 mm.
+// The collinear tolerance is absolute, because the compiler's vertex spacing
+// is absolute down to 0.1 mm: large faces whose vertices sit closer than any
+// tolerance relative to face size still tile whole.
 #[test]
 fn packing_tiles_large_faces_whose_vertices_sit_half_a_millimeter_apart() {
     let corner_insert = level_face(&[

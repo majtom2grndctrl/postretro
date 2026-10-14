@@ -1,4 +1,5 @@
-// Co-op swim parity through the loopback harness: swim entry and exit, the fluid jump and its latch, and fluid crossings into low gravity, all predicted with no correction.
+// Co-op swim parity through the loopback harness: swim edges, the fluid jump and
+// its latch, low-gravity crossings, and push-force currents, none needing correction.
 // See: context/lib/networking.md · context/lib/movement.md §4 (Swim)
 
 #![cfg(test)]

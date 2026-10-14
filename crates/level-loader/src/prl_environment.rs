@@ -71,5 +71,11 @@ pub(crate) fn decode_push_forces(
         section.forces.iter().filter(|force| **force != 1.0).count(),
         section.forces.len(),
     );
-    Ok(section.forces)
+    // `-0.0` passes the `>= 0` check and behaves as 0, but the digest hashes its
+    // bits apart from `+0.0`; the compiler never writes it, a hand-edited PRL can.
+    Ok(section
+        .forces
+        .into_iter()
+        .map(|force| if force == 0.0 { 0.0 } else { force })
+        .collect())
 }

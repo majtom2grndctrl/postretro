@@ -559,7 +559,7 @@ fn upward_level_gravity_keeps_grounded_player_grounded_until_it_jumps() {
     }
 }
 
-// R11: lift-off reads the felt push. A force-0 updraft far stronger than
+// Lift-off reads the felt push. A force-0 updraft far stronger than
 // gravity never lifts a grounded player.
 #[test]
 fn force_zero_updraft_never_lifts_a_grounded_player() {

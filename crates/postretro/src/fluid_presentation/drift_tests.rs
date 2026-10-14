@@ -250,6 +250,38 @@ fn frame_capture_installs_fluid_surfaces_still_at_the_capture_opacity() {
     assert!(!prepared.contains("resolve_fluid_surface_drift"));
 }
 
+// The compiler splits faces at the depth the runtime samples them, so the two
+// constants must stay equal; a one-sided edit would desynchronise the split
+// from the sample. The compiler is a bin target this crate cannot import, so
+// read its source and parse the literal.
+#[test]
+fn the_runtime_and_compiler_drift_sample_depths_are_equal() {
+    let source = include_str!("../../../level-compiler/src/environment_volumes/push_split.rs");
+    let declaration = source
+        .lines()
+        .find(|line| {
+            line.split_whitespace()
+                .collect::<Vec<_>>()
+                .starts_with(&["const", "DRIFT_SAMPLE_DEPTH:"])
+        })
+        .expect("the compiler declares `const DRIFT_SAMPLE_DEPTH`");
+    let literal = declaration
+        .split_once('=')
+        .expect("the declaration assigns a literal")
+        .1
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    let compiler_depth: f64 = literal
+        .parse()
+        .unwrap_or_else(|error| panic!("compiler depth literal `{literal}`: {error}"));
+    assert!(
+        (compiler_depth - f64::from(super::FLUID_DRIFT_SAMPLE_DEPTH)).abs() < 1.0e-9,
+        "compiler splits at {compiler_depth} m, runtime samples at {} m",
+        super::FLUID_DRIFT_SAMPLE_DEPTH
+    );
+}
+
 // A map built before the compiler split faces along pushes carries one
 // face under part of a push. It drifts whole when its sample point lies under
 // the push, and stays still when it does not.

@@ -303,20 +303,18 @@ Where no volume sets a key, the level's own value applies: worldspawn `initialGr
 
 Because each key resolves separately, volumes that set different keys combine. A water pool inside a low-gravity room is wet, and it has low gravity. Gravity and push apply at the player's position. A fluid applies wherever it covers part of the player's body from feet to head, and how deep the player is counts only the winning fluid's brushes.
 
-Push is one winner, never a sum. That gives you two patterns:
-
-`force` goes with its winning push: where volumes overlap, the player feels the winning volume's `push` × its own `force`, never a mix of two volumes.
+Push is one winner, never a sum, and `force` goes with its winning push: where volumes overlap, the player feels the winning volume's `push` × its own `force`, never a mix of two volumes. That gives you two patterns:
 
 - **A calm pocket.** Put a `push_volume` with `push` `0 0 0` inside a wind, at a higher `priority`. Nothing pushes inside the pocket.
 - **Lift and drift together.** A shaft that should both lift and drift sideways is one `push_volume` carrying the combined vector, such as `4 0 15`.
 
-A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push, and the fluid's surface drifts with it, at the speed the push alone carries a swimmer at `force` 1. A bending river is one `fluid_volume` under several `push_volume` brushes, one per stretch: the surface drifts along each, exactly where its push is. A push whose bottom rests on the waterline, such as a wind over the water, moves no water.
+A brush that needs several keys is several entities on the same brush shape. A current is a `fluid_volume` with a matching `push_volume` on top of it; a swimmer in it drifts with the push, and the fluid's surface drifts with it, at the speed the push alone carries a swimmer at `force` 1. A bending river is one `fluid_volume` under several `push_volume` brushes, one per stretch: the surface drifts along each, exactly where its push is. A push must reach the waterline, within 2 mm of it, to move the surface: a current sunk wholly beneath the waterline carries swimmers but leaves the surface still, and a push whose bottom rests on the waterline, such as a wind over the water, moves no water. A vertical push (an updraft or a down-current) has nothing along a level surface, so the surface looks still from above.
 
 ### What the player feels
 
 - **Fluids.** A player whose descriptor has a `movement.swim` block swims once deep enough, and can jump out from the surface. A player without one walks along the bottom.
 - **Gravity.** The player falls, jumps and swims under the volume's gravity. Leaving the volume brings the level's gravity back at once.
-- **Push.** The player feels `push` × `force`: `force` `0` pushes nothing, and the lift-off, the steady drift and the terminal speed below all scale with it. A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
+- **Push.** The player feels `push` × `force`: `force` `0` pushes nothing, and the lift-off and the steady drift scale with it. The terminal speed below is the player's own and does not change with `force`. A sideways push makes a standing player drift at a steady speed, and walls stop the drift. Airborne, the drift carries on after leaving the volume until you land. An upward push stronger than gravity lifts a standing player off the ground, and the rise levels off at the player's terminal fall speed. A weaker upward push only makes jumps floatier.
 
 Enemies take only a volume's gravity, and only when it pulls down: in a volume whose gravity pulls up, an enemy behaves as if weightless. Enemies ignore push, do not swim, and walk along the bottom of a fluid. Projectiles are not affected by any volume.
 

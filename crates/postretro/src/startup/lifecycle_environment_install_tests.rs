@@ -358,17 +358,25 @@ fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
         "dry before the reload"
     );
 
+    commit_staged_manifest(&mut app, mod_root.path());
+
+    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
+}
+
+/// Queue a staged manifest build of the start script under `mod_root` and poll
+/// until it commits, the route a host's manifest reload takes.
+fn commit_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
     let generation = app
         .session
         .as_mut()
         .expect("test app session installed")
         .scripting
         .script_runtime
-        .enqueue_staged_manifest_build(mod_root.path())
+        .enqueue_staged_manifest_build(mod_root)
         .expect("staged build queued")
         .expect("debug builds stage manifest reloads");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while script_runtime_committed(&app) != Some(generation) {
+    while script_runtime_committed(app) != Some(generation) {
         assert!(
             std::time::Instant::now() < deadline,
             "the staged manifest never committed"
@@ -376,8 +384,6 @@ fn a_host_manifest_reload_that_adds_a_fluid_makes_its_volume_no_longer_dry() {
         std::thread::sleep(std::time::Duration::from_millis(5));
         app.poll_staged_manifest_results();
     }
-
-    assert_eq!(resolve_at(&app, SUBMERGED).fluid, Some(1));
 }
 
 fn script_runtime_committed(app: &App) -> Option<u64> {
@@ -1184,6 +1190,90 @@ fn a_hosts_drift_caps_at_the_local_pawns_live_terminal_velocity() {
     // No descriptor named `swimmer` is registered, so only the pawn's own
     // component can supply this cap.
     app.resolve_fluid_surface_drift();
+    assert_drift(&app, 1.5);
+}
+
+/// A start-script manifest declaring `water` (viscosity 2) and a `player`
+/// descriptor whose movement caps falling at `terminal_velocity`.
+fn manifest_with_player_terminal_velocity(terminal_velocity: f32) -> String {
+    format!(
+        "globalThis.__postretroModManifest = {{ name: 'Fluids', id: 'fluids', version: '1', \
+         fluids: [{{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, surfaceOpacity: 0.6 }}], \
+         entities: [{{ canonicalName: 'player', components: {{ movement: {{ \
+         capsule: {{ radius: 0.4, halfHeight: 0.8, eyeHeight: 0.5 }}, \
+         ground: {{ speed: {{ walk: 7, run: 11, crouch: 3 }}, accel: 10, stepHeight: 0.3, maxSlope: 45 }}, \
+         air: {{ forwardSteer: 0, accel: 0.7, maxControlSpeed: 0.5, bunnyHop: false, jumps: 0, jumpVelocity: 5.5, jumpCeiling: 0 }}, \
+         fall: {{ terminalVelocity: {terminal_velocity} }} }} }} }}] }};"
+    )
+}
+
+// A host manifest reload that changes only the player's terminal velocity
+// re-resolves drift, through the production route: the commit refreshes the
+// live pawn's movement component from the new descriptor, then the fluid refresh
+// reads that component's cap.
+#[test]
+fn a_host_manifest_reload_that_changes_the_player_terminal_velocity_re_resolves_drift() {
+    use postretro_entities::provenance::{DescriptorComponentKind, DescriptorProvenance};
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let start_script = mod_root.path().join("start-script.js");
+    let mut app = test_app();
+    declare_fluids(&app, &["water"]);
+    app.install_level_payload(level_with_current(6.0), PathBuf::from("baked"))
+        .expect("fixture installs");
+    // push 6 ÷ water viscosity 2, no cap yet.
+    assert_drift(&app, 3.0);
+
+    // The first reload registers the player descriptor; a refresh needs a prior
+    // descriptor snapshot to diff against. Its cap sits above the drift.
+    std::fs::write(&start_script, manifest_with_player_terminal_velocity(40.0))
+        .expect("first manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert_drift(&app, 3.0);
+
+    // The local pawn spawns as the descriptor's, owning its movement, high
+    // enough above the floor that a refreshed capsule cannot embed it.
+    spawn_local_pawn(&app, "player", None);
+    {
+        let ctx = script_ctx(&app);
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        registry
+            .set_component(
+                pawn,
+                postretro_entities::Transform {
+                    position: Vec3::new(2.0, 6.0, 2.0),
+                    ..Default::default()
+                },
+            )
+            .expect("transform");
+        let mut provenance = registry
+            .get_component::<DescriptorProvenance>(pawn)
+            .expect("provenance")
+            .clone();
+        provenance
+            .owned_components
+            .insert(DescriptorComponentKind::Movement);
+        registry
+            .set_component(pawn, provenance)
+            .expect("provenance");
+    }
+
+    std::fs::write(&start_script, manifest_with_player_terminal_velocity(1.5))
+        .expect("reloaded manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+
+    let ctx = script_ctx(&app);
+    let live_cap = {
+        let registry = ctx.registry.borrow();
+        let pawn = registry.local_player_pawn().expect("local pawn");
+        registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .expect("movement")
+            .fall
+            .terminal_velocity
+    };
+    assert_eq!(live_cap, 1.5, "the reload refreshed the pawn's movement");
+    // push 6 ÷ water viscosity 2 would settle at 3; the reloaded cap holds it.
     assert_drift(&app, 1.5);
 }
 

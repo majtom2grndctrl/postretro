@@ -2041,11 +2041,11 @@ fn run_after_parsing(
     // order is not load-bearing for its cache.
     animated_atlas_stage::stamp_animated_blocks(&mut geo_result, animated_face_blocks.as_ref());
 
+    let push_forces_section =
+        environment_volumes::encode_push_forces_section(&map_data.environment_volumes);
     // Fluid surfaces intern their textures here, after geometry and movers and
     // just before the mip bake reads the table: a fluid-only texture appends
     // past every world entry, and no earlier stage's cache key sees it.
-    let push_forces_section =
-        environment_volumes::encode_push_forces_section(&map_data.environment_volumes);
     let environment_volumes_section = environment_volumes::encode_environment_volumes_section(
         &map_data.environment_volumes,
         map_data.initial_gravity,

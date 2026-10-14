@@ -1,5 +1,8 @@
 //! Fluid surface contracts: buried, flush and sibling-shared faces draw nothing;
-//! partly buried faces keep only their exposed part.
+//! partly buried faces keep only their exposed part. Faces split along push
+//! brushes where their 2 mm drift sample enters the push; a volume a push cut
+//! has no T-junction, and one no push cut keeps its subtraction output. The
+//! e24 fixture's pools sample the pushes over them.
 
 use glam::DVec3;
 use postretro_level_format::environment_volumes::{
@@ -686,8 +689,7 @@ fn an_inset_current_flush_with_the_waterline_leaves_no_t_junction() {
 }
 
 // The sunk push splits the sides under it at the waterline but leaves the top
-// whole: the top gains the corners the split sides leave on its edges, and
-// starts its fan where no triangle collapses onto those edges.
+// whole: the top gains the corners the split sides leave on its edges.
 #[test]
 fn a_whole_top_gains_the_corners_its_split_sides_leave_on_its_edges() {
     let wind = box_brush_at([0.0, 0.0, 64.0 - 0.5 * MM], [64.0, 64.0, 128.0], "push_tex");
@@ -707,13 +709,70 @@ fn a_whole_top_gains_the_corners_its_split_sides_leave_on_its_edges() {
             "{corner} missing from {top:?}"
         );
     }
-    // The renderer fans each face from its first vertex.
-    for i in 1..top.len() - 1 {
-        let twice = (top[i] - top[0]).cross(top[i + 1] - top[0]).length();
-        assert!(twice > 1.0, "fan triangle {i} collapses: {top:?}");
-    }
     assert_eq!(t_junctions(record), Vec::<DVec3>::new());
     assert_parts_wholly_under_or_clear(&section, record);
+}
+
+/// Every face of `record` is a quad with each vertex on a corner of its own
+/// bounds: subtraction's output, with no vertex inserted on an edge.
+#[track_caller]
+fn assert_subtraction_quads(record: &EnvironmentVolumeRecord) {
+    for face in &record.surface_faces {
+        let points: Vec<DVec3> = face.vertices.iter().map(|v| quake(v.position)).collect();
+        assert_eq!(points.len(), 4, "a vertex was inserted: {points:?}");
+        let (mut min, mut max) = (points[0], points[0]);
+        for &point in &points {
+            (min, max) = (min.min(point), max.max(point));
+        }
+        for point in &points {
+            for axis in 0..3 {
+                let at = |bound: f64| (point[axis] - bound).abs() < 1e-2;
+                assert!(
+                    at(min[axis]) || at(max[axis]),
+                    "{point} is not a corner of {points:?}"
+                );
+            }
+        }
+    }
+}
+
+// Burial and unequal siblings leave corners on neighbouring edges, but no push
+// cuts these volumes, so each face keeps exactly what subtraction produced and
+// the section's bytes do not depend on push splitting.
+#[test]
+fn volumes_no_push_cuts_keep_their_subtraction_output_with_no_inserted_vertex() {
+    // The wall covers the fluid's -x face only below z = 64.
+    let wall = box_brush([-32, -128, -128], [0, 128, 64], "world_tex");
+    let (_, buried) = compile(
+        &[wall],
+        &[fluid(&[box_brush([0, -32, 32], [64, 32, 96], "water_tex")])],
+    );
+    // Two brushes sharing a top plane, the east one twice as wide.
+    let (_, siblings) = compile(
+        &distant_world(),
+        &[fluid(&[
+            box_brush([0, 0, 0], [64, 64, 64], "water_tex"),
+            box_brush([64, 0, 0], [128, 128, 64], "water_tex"),
+        ])],
+    );
+    assert_areas(
+        &siblings.volumes[0],
+        &[
+            ("+x", 128.0 * 64.0),
+            ("-x", 2.0 * 64.0 * 64.0),
+            ("+y", 2.0 * 64.0 * 64.0),
+            ("-y", 2.0 * 64.0 * 64.0),
+            ("+z", 3.0 * 64.0 * 64.0),
+            ("-z", 3.0 * 64.0 * 64.0),
+        ],
+    );
+    for record in [&buried.volumes[0], &siblings.volumes[0]] {
+        assert!(
+            !t_junctions(record).is_empty(),
+            "the fixture leaves a corner on a neighbouring edge"
+        );
+        assert_subtraction_quads(record);
+    }
 }
 
 // A map with pushes and no fluid has no surface faces to split.
@@ -926,4 +985,14 @@ fn e24_fixture_current_and_wing_pools_sample_the_pushes_over_them() {
         2,
         "the river drifts along both legs: {directions:?}"
     );
+    // The legs share the plane y 576 over x 2384..2512.
+    for face in &river.surface_faces {
+        let points: Vec<DVec3> = face.vertices.iter().map(|v| quake(v.position)).collect();
+        let centroid_x = points.iter().map(|p| p.x).sum::<f64>() / points.len() as f64;
+        let on_shared_plane = points.iter().all(|p| (p.y - 576.0).abs() < 1e-2);
+        assert!(
+            !(on_shared_plane && centroid_x > 2384.0),
+            "a surface is drawn between the river's brushes: {points:?}"
+        );
+    }
 }

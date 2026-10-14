@@ -43,8 +43,85 @@ fn dry_volume() -> EnvironmentVolumeRecord {
     }
 }
 
+/// A level face through `points` (in-plane `[u, v]`, wound counter-clockwise
+/// with v up), facing +Y.
+fn level_face(points: &[[f32; 2]]) -> EnvironmentSurfaceFace {
+    EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: points
+            .iter()
+            .map(|&[u, v]| vertex([u, 0.0, -v], [0.0, 0.0]))
+            .collect(),
+    }
+}
+
+fn triangle_area(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    (b - a).cross(c - a).length() * 0.5
+}
+
+/// Asserts the mesh's triangles tile the single convex face it holds with no
+/// T-junction: every triangle has area, every face vertex is a corner, every
+/// face edge segment borders exactly one triangle, no triangle edge passes
+/// through a face vertex, and the triangles' areas sum to the face's.
+fn assert_tiles_face_without_t_junctions(mesh: &FluidSurfaceMesh) {
+    let n = mesh.vertices.len();
+    let position = |i: u32| Vec3::from(mesh.vertices[i as usize].position);
+    let triangles: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    assert_eq!(mesh.indices.len(), triangles.len() * 3);
+
+    for &[a, b, c] in &triangles {
+        let area = triangle_area(position(a), position(b), position(c));
+        assert!(area > 1.0e-3, "triangle {a} {b} {c} has area {area}");
+    }
+    for vertex in 0..n as u32 {
+        assert!(
+            mesh.indices.contains(&vertex),
+            "vertex {vertex} is no triangle corner"
+        );
+    }
+    for edge in 0..n as u32 {
+        let next = (edge + 1) % n as u32;
+        let bordering = triangles
+            .iter()
+            .filter(|t| t.contains(&edge) && t.contains(&next))
+            .count();
+        assert_eq!(bordering, 1, "edge {edge}-{next}");
+    }
+    for t in &triangles {
+        for side in 0..3 {
+            let (p, q) = (position(t[side]), position(t[(side + 1) % 3]));
+            for vertex in (0..n as u32).filter(|v| !t.contains(v)) {
+                let w = position(vertex);
+                let along = (w - p).dot(q - p) / (q - p).length_squared();
+                let off_line = (w - p).cross(q - p).length() / (q - p).length();
+                assert!(
+                    off_line > 1.0e-3 || along <= 0.0 || along >= 1.0,
+                    "triangle edge {}-{} spans vertex {vertex}",
+                    t[side],
+                    t[(side + 1) % 3]
+                );
+            }
+        }
+    }
+    let face_area: f32 = (1..n as u32 - 1)
+        .map(|i| triangle_area(position(0), position(i), position(i + 1)))
+        .sum();
+    let tiled_area: f32 = triangles
+        .iter()
+        .map(|&[a, b, c]| triangle_area(position(a), position(b), position(c)))
+        .sum();
+    assert!(
+        (face_area - tiled_area).abs() <= face_area * 1.0e-5,
+        "face {face_area}, triangles {tiled_area}"
+    );
+}
+
 #[test]
-fn packing_fan_triangulates_each_face_into_vertex_count_minus_two_triangles() {
+fn packing_triangulates_a_strictly_convex_face_into_vertex_count_minus_two_triangles() {
     let pentagon = EnvironmentSurfaceFace {
         texture_index: 0,
         vertices: vec![
@@ -55,6 +132,9 @@ fn packing_fan_triangulates_each_face_into_vertex_count_minus_two_triangles() {
             vertex([-1.0, 1.0, 0.0], [0.0, 0.0]),
         ],
     };
+    let only_pentagon = pack_fluid_surfaces(&[volume(vec![pentagon.clone()])], &[], 1);
+    assert_tiles_face_without_t_junctions(&only_pentagon);
+
     let mesh = pack_fluid_surfaces(
         &[volume(vec![top_face(0, [0.0; 3], 1.0), pentagon])],
         &[[64, 32]],
@@ -63,14 +143,53 @@ fn packing_fan_triangulates_each_face_into_vertex_count_minus_two_triangles() {
     assert_eq!(mesh.vertices.len(), 4 + 5);
     // 2 triangles for the square, 3 for the pentagon.
     assert_eq!(mesh.indices.len(), (2 + 3) * 3);
-    // Fans share the face's first vertex.
+    // Without collinear vertices, each face is the fan from its first vertex.
     assert_eq!(&mesh.indices[0..6], &[0, 1, 2, 0, 2, 3]);
     assert_eq!(&mesh.indices[6..15], &[4, 5, 6, 4, 6, 7, 4, 7, 8]);
-    assert!(
-        mesh.indices
-            .iter()
-            .all(|&i| (i as usize) < mesh.vertices.len())
-    );
+}
+
+// Regression: a fan from vertex 0 collapsed beside collinear T-junction
+// vertices and spanned an edge across them, so translucent seams cracked.
+#[test]
+fn packing_keeps_collinear_vertices_on_opposite_edges_as_triangle_corners() {
+    let face = level_face(&[
+        [0.0, 0.0],
+        [32.0, 0.0],
+        [48.0, 0.0],
+        [128.0, 0.0],
+        [128.0, 64.0],
+        [48.0, 64.0],
+        [32.0, 64.0],
+        [0.0, 64.0],
+    ]);
+    let mesh = pack_fluid_surfaces(&[volume(vec![face])], &[], 1);
+    assert_eq!(mesh.vertices.len(), 8);
+    assert_eq!(mesh.vertices[0].normal, [0.0, 1.0, 0.0]);
+    assert_tiles_face_without_t_junctions(&mesh);
+    assert_eq!(mesh.indices.len(), 6 * 3);
+    assert_eq!(mesh.volumes[0].material_ranges[0].index_count, 6 * 3);
+}
+
+#[test]
+fn packing_keeps_a_single_collinear_vertex_as_a_triangle_corner() {
+    // A triangle with one collinear vertex on its closing edge: clipping the
+    // corner opposite it would leave a chord through it.
+    let closing_edge = level_face(&[[0.0, 0.0], [64.0, 0.0], [32.0, 64.0], [16.0, 32.0]]);
+    let mesh = pack_fluid_surfaces(&[volume(vec![closing_edge])], &[], 1);
+    assert_tiles_face_without_t_junctions(&mesh);
+    assert_eq!(mesh.indices.len(), 2 * 3);
+
+    // A quad with one collinear vertex beside the first corner.
+    let first_edge = level_face(&[
+        [0.0, 0.0],
+        [20.0, 0.0],
+        [64.0, 0.0],
+        [64.0, 32.0],
+        [0.0, 32.0],
+    ]);
+    let mesh = pack_fluid_surfaces(&[volume(vec![first_edge])], &[], 1);
+    assert_tiles_face_without_t_junctions(&mesh);
+    assert_eq!(mesh.indices.len(), 3 * 3);
 }
 
 #[test]

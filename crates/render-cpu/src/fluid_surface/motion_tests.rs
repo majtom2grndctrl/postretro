@@ -1,3 +1,7 @@
+// Whole-texel fluid motion against its invariants: the 3 Hz flash bound, the
+// shimmer and ring amplitude and fade, and drift scroll rate and wrap.
+// See: context/lib/rendering_pipeline.md §7.3a
+
 use super::*;
 
 const FRAME: f32 = 1.0 / 60.0;

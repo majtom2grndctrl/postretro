@@ -1,4 +1,5 @@
-// Fluid surface faces: each fluid brush side minus solid world and sibling brushes.
+// Fluid surface faces: each fluid brush side minus solid world and sibling
+// brushes, split along the push brushes over it with its seams T-junction free.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
@@ -105,8 +106,9 @@ impl<'a> SolidWorld<'a> {
 }
 
 /// Exposed surface pieces of one volume, in brush then side order, each cut
-/// along every push brush over it, with no T-junction between them. A dry
-/// volume, or a fluid volume whose brushes carry no sides, has none.
+/// along every push brush over it. A volume a push cut has no T-junction
+/// between its pieces. A dry volume, or a fluid volume whose brushes carry no
+/// sides, has none.
 pub(super) fn fluid_surface_pieces<'a>(
     volume: &'a MapEnvironmentVolume,
     solid: &SolidWorld<'_>,
@@ -118,6 +120,7 @@ pub(super) fn fluid_surface_pieces<'a>(
     let brushes: Vec<FluidBrush<'a>> = volume.brushes.iter().map(FluidBrush::new).collect();
     let mut candidates = Vec::new();
     let mut pieces = Vec::new();
+    let mut push_cut = false;
     for (own, brush) in brushes.iter().enumerate() {
         for side in brush.sides {
             let mut exposed = vec![side.vertices.clone()];
@@ -149,7 +152,9 @@ pub(super) fn fluid_surface_pieces<'a>(
                 };
                 subtract_remover(&mut exposed, side, &remover);
             }
-            pushes.split(&mut exposed, side, &face_bounds);
+            // After burial, so only exposed area is cut and buried area never
+            // splits.
+            push_cut |= pushes.split(&mut exposed, side, &face_bounds);
 
             pieces.extend(
                 exposed
@@ -158,7 +163,12 @@ pub(super) fn fluid_surface_pieces<'a>(
             );
         }
     }
-    close_t_junctions(&mut pieces);
+    // Only where a push cut: a volume no push cut keeps its subtraction output
+    // exactly, so its encoded bytes do not depend on push splitting. Burial's
+    // own T-junctions stay open there.
+    if push_cut {
+        close_t_junctions(&mut pieces);
+    }
     pieces
 }
 
@@ -167,13 +177,14 @@ pub(super) fn fluid_surface_pieces<'a>(
 ///
 /// Cuts leave one piece's corner on a neighbour's edge: along a split line on
 /// one side, or along the edge where a split side meets another side. Each
-/// face draws as its own triangle fan of a translucent surface, so a corner
+/// face draws as its own triangles of a translucent surface, so a corner
 /// meeting a straight edge rasterizes as gaps and double blends along the
 /// seam. The inserted vertex is the neighbour's own position, so both sides
-/// of the seam share it; it is collinear, so the piece keeps its shape and
-/// winding. A piece that gains vertices starts its fan where the fewest fan
-/// triangles collapse, so the seam's edges belong to real triangles. A piece
-/// with no vertex on its edges is left exactly as it was.
+/// of the seam share it; it is collinear, so the piece keeps its shape,
+/// winding and vertex order. The renderer triangulates by clipping
+/// non-zero-area ears, which keeps every vertex and edge, so the seam's edges
+/// belong to real triangles. A piece with no vertex on its edges is left
+/// exactly as it was.
 fn close_t_junctions(pieces: &mut [SurfacePiece<'_>]) {
     if pieces.len() < 2 {
         return;
@@ -216,8 +227,6 @@ fn close_t_junctions(pieces: &mut [SurfacePiece<'_>]) {
                 }
             }
         }
-        let start = fan_start(&vertices);
-        vertices.rotate_left(start);
         piece.vertices = vertices;
     }
 }
@@ -239,28 +248,6 @@ fn edge_holding(polygon: &[DVec3], vertex: DVec3) -> Option<(usize, f64)> {
         let on_line = vertex.distance(start + direction * along) <= T_JUNCTION_EPSILON;
         (on_line && along > 0.0 && along < 1.0).then_some((edge, along))
     })
-}
-
-/// The vertex to start the piece's triangle fan at: the one whose fan holds
-/// the fewest collapsed triangles, the first such on a tie. A fan from a
-/// corner with a collinear vertex on one of its own edges collapses there, and
-/// the edge then belongs only to a triangle with no area.
-fn fan_start(polygon: &[DVec3]) -> usize {
-    let count = polygon.len();
-    let collapsed = |start: usize| {
-        let apex = polygon[start];
-        (1..count.saturating_sub(1))
-            .filter(|&i| {
-                let b = polygon[(start + i) % count];
-                let c = polygon[(start + i + 1) % count];
-                // The apex's distance from the line through b and c.
-                (b - apex).cross(c - apex).length() <= T_JUNCTION_EPSILON * b.distance(c)
-            })
-            .count()
-    };
-    (0..count)
-        .min_by_key(|&start| collapsed(start))
-        .unwrap_or(0)
 }
 
 /// Replace every piece with its part outside `remover`.

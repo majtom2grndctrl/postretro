@@ -145,8 +145,9 @@ impl App {
     /// arrives. Source-agnostic: a host manifest reload, a client's tuning
     /// install or a client's demotion all land here. A viscosity-only change
     /// replaces the table without a rebuild. No level leaves only the table
-    /// updated. Every call re-resolves the fluid surfaces' drift, after any
-    /// rebuild, since a viscosity or a terminal velocity alone changes it.
+    /// updated and the drift cleared. Every call re-resolves the fluid surfaces'
+    /// drift, after any rebuild, since a viscosity or a terminal velocity alone
+    /// changes it.
     ///
     /// A renamed table moves fluid indices, so every swimming pawn's fluid is
     /// remapped by name first: its exit edge then names the fluid it is in.

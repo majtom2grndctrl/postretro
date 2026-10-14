@@ -55,10 +55,16 @@ impl PushBrushes {
         Self { brushes }
     }
 
-    /// Split each exposed piece of `side` along every push brush over it.
-    /// A piece wholly under a push, or wholly clear of it, stays whole.
-    /// `face_bounds` holds the side's own vertices.
-    pub(super) fn split(&self, pieces: &mut Vec<Vec<DVec3>>, side: &BrushSide, face_bounds: &Aabb) {
+    /// Split each exposed piece of `side` along every push brush over it, and
+    /// report whether any piece was cut. A piece wholly under a push, or
+    /// wholly clear of it, stays whole and untouched. `face_bounds` is the
+    /// side's vertex bounds grown by [`FLUSH_EPSILON`].
+    pub(super) fn split(
+        &self,
+        pieces: &mut Vec<Vec<DVec3>>,
+        side: &BrushSide,
+        face_bounds: &Aabb,
+    ) -> bool {
         // Every sample point lies on the side's plane moved inward by the
         // sample depth, inside the face's bounds grown by that depth: a push
         // missing either holds none of them.
@@ -67,10 +73,13 @@ impl PushBrushes {
             min: face_bounds.min - DVec3::splat(DRIFT_SAMPLE_DEPTH),
             max: face_bounds.max + DVec3::splat(DRIFT_SAMPLE_DEPTH),
         };
+        let mut cut = false;
         for push in &self.brushes {
             if pieces.is_empty() {
-                return;
+                break;
             }
+            // The box tests only cull, and `cut_by_push` decides; the plane
+            // test takes the tolerance removers reach a face's plane with.
             if !push.bounds.intersects(&sample_bounds)
                 || !box_reaches_plane(&push.bounds, side.normal, sample_distance, FLUSH_EPSILON)
             {
@@ -80,6 +89,7 @@ impl PushBrushes {
             for piece in pieces.drain(..) {
                 match cut_by_push(&piece, side.normal, &push.planes) {
                     Some((inside, outside)) if !outside.is_empty() => {
+                        cut = true;
                         kept.push(inside);
                         kept.extend(outside);
                     }
@@ -88,6 +98,7 @@ impl PushBrushes {
             }
             *pieces = kept;
         }
+        cut
     }
 }
 
@@ -132,8 +143,8 @@ fn cut_by_push(
                 outside.push(front);
                 remainder = back;
             }
-            // A sliver in front: keep it with the remainder rather than
-            // dropping its area.
+            // A sliver in front: `remainder` is left untouched, so the sliver
+            // stays with it rather than dropping its area.
             _ => {}
         }
     }

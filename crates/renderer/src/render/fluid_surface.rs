@@ -252,8 +252,9 @@ impl FluidSurfacePass {
         self.installed = None;
     }
 
-    /// Upload every drawable surface face of `volumes`, fan-triangulated into
-    /// one shared buffer with per-volume material ranges. UVs normalize by
+    /// Upload every drawable surface face of `volumes`, triangulated by
+    /// `pack_fluid_surfaces` into one shared buffer with per-volume material
+    /// ranges. UVs normalize by
     /// `texture_dimensions` (indexed by texture index); faces whose texture is
     /// past `material_count` draw with the placeholder material.
     pub fn install(

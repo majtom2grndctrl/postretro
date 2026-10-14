@@ -98,6 +98,10 @@ impl App {
     /// to the player descriptor (the pawn's class, else `player`) while no pawn
     /// carries one. With no movement tuning at all no swimmer exists to agree
     /// with, and drift takes no cap.
+    ///
+    /// Drift re-resolves only on install and on a fluid-table or tuning
+    /// refresh, so a mid-level local pawn respawn or class change keeps the
+    /// previous cap until the next refresh (no such path exists today).
     fn drift_terminal_velocity(&self) -> f32 {
         let Some(session) = self.session.as_ref() else {
             return f32::INFINITY;

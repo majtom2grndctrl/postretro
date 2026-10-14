@@ -209,17 +209,16 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     assert!(!gate.contains("particle_collections"), "{gate}");
 }
 
-/// The literal of `const name: ty = literal;` in the fluid shader.
+/// The literal of `const name: ty = literal;` in the fluid shader's code, so a
+/// commented-out declaration cannot shadow the live one.
 fn shader_const(name: &str, ty: &str) -> String {
-    let source = include_str!("../shaders/fluid_surface.wgsl");
-    let needle = format!("const {name}: {ty} = ");
-    let at = source
+    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    let needle = format!("const{name}:{ty}=");
+    let at = code
         .find(&needle)
         .unwrap_or_else(|| panic!("fluid_surface.wgsl must declare {name}: {ty}"));
-    let rest = &source[at + needle.len()..];
-    rest[..rest.find(';').expect("const terminates")]
-        .trim()
-        .to_owned()
+    let rest = &code[at + needle.len()..];
+    rest[..rest.find(';').expect("const terminates")].to_owned()
 }
 
 fn shader_f32(name: &str) -> f32 {
@@ -314,7 +313,7 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
         "fluid_surface.wgsl must not call cos"
     );
 
-    // R10: cells floor the UNWARPED texel UV, before any scroll joins it.
+    // Cells floor the UNWARPED texel UV, before any scroll joins it.
     let warp = code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
         "fluid_warp_uv",
@@ -383,10 +382,8 @@ fn fluid_drift_rides_a_second_vertex_buffer_at_location_three() {
     assert!(code_only(source).contains("@location(3)drift_rate:vec2<f32>,"));
 }
 
-// Regression: `set_drift` once wrote the drift buffer through the batched
-// `UploadQueue::write_buffer`. Level install and render-profile commit call it
-// and then `UploadQueue::assert_empty`, so a debug build panicked with
-// "pending renderer uploads". The drift buffer is only ever written directly.
+// Install and render-profile commit assert an empty upload batch, so the drift
+// buffer is written directly; a batched write there panics debug builds.
 #[test]
 fn fluid_drift_writes_directly_so_install_and_commit_points_stay_unbatched() {
     let source = include_str!("fluid_surface.rs");
@@ -444,4 +441,107 @@ fn fluid_drift_scroll_wgsl_matches_the_cpu_mirror() {
     assert!(source.contains("0xFFFFF000u"));
     let mirror = include_str!("../../../render-cpu/src/fluid_surface/motion.rs");
     assert!(code_only(mirror).contains("x.to_bits()&0xFFFF_F000"));
+}
+
+// The hash, shimmer, ring and fade functions are the CPU reference's
+// `motion.rs` in WGSL. The constants alone cannot catch a changed shift amount
+// or direction table, so each body is pinned as exact comment-free text.
+#[test]
+fn fluid_motion_wgsl_bodies_match_the_cpu_reference() {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let function = |name: &str| code_only(wgsl_fn(source, name));
+    assert_eq!(
+        function("fluid_hash_u32"),
+        "fnfluid_hash_u32(value:u32)->u32{\
+         varx=value;\
+         x=x^(x>>16u);\
+         x=x*FLUID_HASH_MUL_A;\
+         x=x^(x>>15u);\
+         x=x*FLUID_HASH_MUL_B;\
+         x=x^(x>>16u);\
+         returnx;}"
+    );
+    assert_eq!(
+        function("fluid_hash3"),
+        "fnfluid_hash3(a:u32,b:u32,c:u32)->u32{\
+         returnfluid_hash_u32(a^fluid_hash_u32(b^fluid_hash_u32(c)));}"
+    );
+    assert_eq!(
+        function("fluid_hash_unit"),
+        "fnfluid_hash_unit(h:u32)->f32{returnf32(h>>8u)*(1.0/16777216.0);}"
+    );
+    assert_eq!(
+        function("fluid_cell_seed"),
+        "fnfluid_cell_seed(cell:vec2<i32>)->u32{\
+         returnfluid_hash3(bitcast<u32>(cell.x),bitcast<u32>(cell.y),FLUID_SALT_CELL);}"
+    );
+    assert_eq!(
+        function("fluid_floor_div"),
+        "fnfluid_floor_div(a:i32,b:i32)->i32{\
+         letq=a/b;\
+         returnselect(q,q-1,(a%b)!=0&&a<0);}"
+    );
+    assert_eq!(
+        function("fluid_cell_step"),
+        "fnfluid_cell_step(seed:u32,time:f32)->i32{\
+         returni32(floor(time*FLUID_MOTION_STEP_HZ+fluid_hash_unit(seed)));}"
+    );
+    assert_eq!(
+        function("fluid_shimmer_offset"),
+        "fnfluid_shimmer_offset(seed:u32,step:i32)->vec2<i32>{\
+         letposition=step&3;\
+         if(position&1)==0{returnvec2<i32>(0);}\
+         leth=fluid_hash_u32(seed^FLUID_SALT_SHIMMER);\
+         letdirection=(h>>8u)%9u;\
+         letd=vec2<i32>(i32(direction%3u)-1,i32(direction/3u)-1);\
+         returnselect(-d,d,position==1);}"
+    );
+    assert_eq!(
+        function("fluid_ring_offset"),
+        "fnfluid_ring_offset(cell:vec2<i32>,step:i32)->vec2<i32>{\
+         letblock_shift=u32(FLUID_RING_BLOCK_SHIFT);\
+         letblock=cell>>vec2<u32>(block_shift);\
+         letseed=fluid_hash3(bitcast<u32>(block.x),bitcast<u32>(block.y),FLUID_SALT_BLOCK);\
+         letshifted=step+i32(seed%u32(FLUID_RING_LIFETIME_STEPS));\
+         letepoch=fluid_floor_div(shifted,FLUID_RING_LIFETIME_STEPS);\
+         letage=shifted-epoch*FLUID_RING_LIFETIME_STEPS;\
+         ifage==0{returnvec2<i32>(0);}\
+         letposition=fluid_hash_u32(seed^fluid_hash_u32(bitcast<u32>(epoch)^FLUID_SALT_DROP));\
+         letspan=u32((1<<block_shift)-2*FLUID_RING_MARGIN);\
+         letcenter=(block<<vec2<u32>(block_shift))\
+         +vec2<i32>(FLUID_RING_MARGIN)\
+         +vec2<i32>(i32(position%span),i32((position>>16u)%span));\
+         letdiff=vec2<f32>(cell-center);\
+         letdistance_sq=dot(diff,diff);\
+         letradius=f32(age)*FLUID_RING_STEP_TEXELS;\
+         ifdistance_sq<=(radius-0.5)*(radius-0.5)||distance_sq>=(radius+0.5)*(radius+0.5){\
+         returnvec2<i32>(0);}\
+         returnvec2<i32>(floor(diff/sqrt(distance_sq)+0.5));}"
+    );
+    assert_eq!(
+        function("fluid_faded_flat"),
+        "fnfluid_faded_flat(seed:u32,texels_per_pixel:f32)->bool{\
+         letthreshold=FLUID_FADE_START_TEXELS_PER_PIXEL\
+         +(FLUID_FADE_END_TEXELS_PER_PIXEL-FLUID_FADE_START_TEXELS_PER_PIXEL)\
+         *fluid_hash_unit(fluid_hash_u32(seed^FLUID_SALT_FADE));\
+         returntexels_per_pixel>threshold;}"
+    );
+    assert_eq!(
+        function("fluid_displayed_offset"),
+        "fnfluid_displayed_offset(cell:vec2<i32>,time:f32,texels_per_pixel:f32)->vec2<i32>{\
+         letseed=fluid_cell_seed(cell);\
+         iffluid_faded_flat(seed,texels_per_pixel){returnvec2<i32>(0);}\
+         letstep=fluid_cell_step(seed,time);\
+         returnfluid_shimmer_offset(seed,step)+fluid_ring_offset(cell,step);}"
+    );
+    assert_eq!(
+        function("fluid_warp_uv"),
+        "fnfluid_warp_uv(uv:vec2<f32>,drift_scroll:vec2<f32>,dims:vec2<f32>,\
+         time:f32,texels_per_pixel:f32)->vec2<f32>{\
+         lettexel_uv=uv*dims;\
+         letcell=vec2<i32>(floor(texel_uv));\
+         letdrift_texels=floor(drift_scroll*dims);\
+         letcell_texels=vec2<f32>(fluid_displayed_offset(cell,time,texels_per_pixel));\
+         return(texel_uv+drift_texels+cell_texels)/dims;}"
+    );
 }

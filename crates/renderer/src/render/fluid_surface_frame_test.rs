@@ -192,7 +192,7 @@ fn fluid_surface_draws_read_each_volumes_own_opacity_slot() {
     );
 }
 
-// R14: a mid-level drift re-resolve rewrites only the drift buffer. The next
+// A mid-level drift re-resolve rewrites only the drift buffer. The next
 // frame still draws at the same opacity, and a later frame with unchanged
 // opacities uploads no parameter rows.
 #[test]

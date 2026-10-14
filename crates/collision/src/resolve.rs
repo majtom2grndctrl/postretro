@@ -118,11 +118,11 @@ pub struct ResolvedEnvironment {
 /// contain the point (`EnvironmentVolumes::outranks`); with none, the level
 /// default gravity and zero push. The returned push is the felt push: the
 /// winner's nominal push times its force (`ResolvedEnvironment::push`). The
-/// fluid follows the capsule-segment rule
-/// (`resolve_fluid`). A non-finite position resolves the level defaults, dry.
-/// Deterministic and allocation-free: the overlap order is total and every
-/// reduction is order-independent, so the result never depends on tree shape
-/// or visit order.
+/// fluid follows the capsule-segment rule (`resolve_fluid`). A non-finite
+/// position resolves the level defaults, dry. Deterministic and
+/// allocation-free: the overlap order is total and every reduction is
+/// order-independent, so the result never depends on tree shape or visit
+/// order.
 pub fn resolve_environment(view: EnvironmentView<'_>, probe: &BodyProbe) -> ResolvedEnvironment {
     timed(view.timer, QueryFamily::BodyResolve, || {
         resolve_environment_untimed(view, probe)
@@ -155,7 +155,7 @@ fn resolve_environment_untimed(
     }
 }
 
-/// Point gravity and the NOMINAL push under the full resolve's per-field
+/// Point gravity and the nominal push under the full resolve's per-field
 /// overlap rule: a current's direction and look, unscaled by its force, so a
 /// decorative (force 0) river still carries foam. Anonymous particles read
 /// neither fluids nor capsule immersion; fluid surface drift reads this too.
@@ -166,9 +166,10 @@ pub fn resolve_particle_acceleration(view: EnvironmentView<'_>, position: Vec3) 
 }
 
 /// Resolve a batch of independent points, timing the entire query loop once.
-/// Each entry is gravity and the NOMINAL push, as
-/// [`resolve_particle_acceleration`] returns. `accelerations` must have the same length as `positions`. Empty batches
-/// perform no query and leave the timing family absent.
+/// Each entry is gravity and the nominal push, as
+/// [`resolve_particle_acceleration`] returns. `accelerations` must have the
+/// same length as `positions`. Empty batches perform no query and leave the
+/// timing family absent.
 pub fn resolve_particle_accelerations(
     view: EnvironmentView<'_>,
     positions: &[Vec3],

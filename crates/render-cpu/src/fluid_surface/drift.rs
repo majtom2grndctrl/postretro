@@ -10,8 +10,9 @@ use postretro_level_format::environment_volumes::{
 use super::face_normal;
 
 /// A face vertex lies on a map's plane within this distance, meters, plus its
-/// rounding allowance: the compiler's 1 mm flush tolerance, far above f32
-/// position rounding (about 0.03 mm at 500 m).
+/// rounding allowance. 1 mm is far above f32 position rounding (about 0.03 mm
+/// at 500 m) and far below any real separation between parallel planes. The
+/// rounding allowance scales with the positions' magnitude (`Rounding`).
 const PLANE_TOLERANCE: f64 = 1.0e-3;
 /// A face vertex fits a map's UVs within this many texels, plus its rounding
 /// allowance.

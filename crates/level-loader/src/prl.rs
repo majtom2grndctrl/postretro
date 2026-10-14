@@ -2809,6 +2809,21 @@ mod tests {
         assert_eq!(world.push_force(2), 1.0);
     }
 
+    // A hand-edited `-0.0` force loads as `+0.0` bits, so the digest sees one zero.
+    #[test]
+    fn load_prl_canonicalizes_a_negative_zero_force() {
+        use postretro_level_format::push_forces::PushForcesSection;
+        let section = PushForcesSection {
+            forces: vec![1.0, -0.0, 1.0],
+        };
+        let world = load_with_push_forces(
+            Some(push_forces_blob(section.to_bytes())),
+            "postretro_test_push_forces_negative_zero.prl",
+        )
+        .expect("a PRL with a -0.0 force loads");
+        assert_eq!(world.push_force(1).to_bits(), 0.0f32.to_bits());
+    }
+
     #[test]
     fn load_prl_rejects_a_malformed_or_mismatched_push_force_section() {
         use postretro_level_format::push_forces::PushForcesSection;

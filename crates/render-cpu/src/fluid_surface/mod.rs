@@ -5,7 +5,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
 use postretro_level_format::environment_volumes::{
-    EnvironmentSurfaceFace, EnvironmentVolumeRecord,
+    EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
 use postretro_level_format::geometry::NO_TEXTURE;
 
@@ -155,9 +155,86 @@ fn normalized_uv(
     (Vec2::from(texel_uv) / uv_scale(texture_index, texture_dimensions)).to_array()
 }
 
-/// Fan-triangulate every drawable surface face into one shared mesh. Each
-/// volume's faces are grouped by material, so a volume draws one range per
-/// material. Volumes without drawable faces get no slot.
+/// A vertex nearer than this fraction of its face's extent to the line
+/// through its ring neighbours is collinear: 0.1 mm on a 1 m face, the
+/// compiler's T-junction tolerance at that scale. Erring large is safe:
+/// skipping a near-flat corner as an ear costs nothing, while clipping a
+/// collinear vertex leaves a chord across it.
+const COLLINEAR_TOLERANCE: f32 = 1.0e-4;
+
+/// Triangulate one convex face by clipping ears with area, appending indices
+/// offset by `base`. The compiler inserts collinear vertices on face edges to
+/// close T-junctions between a volume's pieces. A fan from one apex collapses
+/// beside them and spans an edge across them; here every vertex stays a corner
+/// of a real triangle and every edge segment borders exactly one. A face with
+/// no collinear vertex yields the fan from its first vertex, `n - 2`
+/// triangles. A degenerate remainder draws nothing more.
+fn triangulate_convex_face(
+    vertices: &[EnvironmentSurfaceVertex],
+    normal: Vec3,
+    base: u32,
+    ring: &mut Vec<u32>,
+    indices: &mut Vec<u32>,
+) {
+    let position = |vertex: u32| Vec3::from(vertices[vertex as usize].position);
+    let origin = position(0);
+    let extent = vertices
+        .iter()
+        .map(|vertex| Vec3::from(vertex.position).distance(origin))
+        .fold(0.0, f32::max);
+    let tolerance = COLLINEAR_TOLERANCE * extent;
+    // Distance of `p` from the line through `a` and `c`, positive where the
+    // winding turns convexly at `p` between them.
+    let height = |a: Vec3, p: Vec3, c: Vec3| {
+        let chord = c - a;
+        let length = chord.length();
+        if length > 0.0 {
+            (p - a).cross(chord).dot(normal) / length
+        } else {
+            0.0
+        }
+    };
+
+    ring.clear();
+    ring.extend(0..vertices.len() as u32);
+    while ring.len() > 3 {
+        let count = ring.len();
+        // Scanning from the second vertex makes a face without collinear
+        // vertices clip into the fan from its first.
+        let ear = (1..=count).map(|k| k % count).find(|&k| {
+            let prev = (k + count - 1) % count;
+            let next = (k + 1) % count;
+            let a = position(ring[prev]);
+            let c = position(ring[next]);
+            // Clipping the one corner beside a collinear run would leave a
+            // chord spanning the run's vertices; clip its neighbour instead.
+            height(a, position(ring[k]), c) > tolerance
+                && ring.iter().enumerate().any(|(j, &vertex)| {
+                    j != k
+                        && j != prev
+                        && j != next
+                        && height(a, position(vertex), c).abs() > tolerance
+                })
+        });
+        let Some(k) = ear else {
+            return;
+        };
+        let prev = ring[(k + count - 1) % count];
+        let next = ring[(k + 1) % count];
+        indices.extend_from_slice(&[base + prev, base + ring[k], base + next]);
+        ring.remove(k);
+    }
+    if let [a, p, c] = ring[..]
+        && height(position(a), position(p), position(c)) > tolerance
+    {
+        indices.extend_from_slice(&[base + a, base + p, base + c]);
+    }
+}
+
+/// Triangulate every drawable surface face into one shared mesh, clipping
+/// ears so the collinear vertices that close T-junctions stay triangle
+/// corners. Each volume's faces are grouped by material, so a volume draws
+/// one range per material. Volumes without drawable faces get no slot.
 pub fn pack_fluid_surfaces(
     volumes: &[EnvironmentVolumeRecord],
     texture_dimensions: &[[u32; 2]],
@@ -166,6 +243,7 @@ pub fn pack_fluid_surfaces(
     let mut mesh = FluidSurfaceMesh::default();
     let mut faces: Vec<(usize, Vec3, usize)> = Vec::new();
     let mut vertex_starts: Vec<Option<u32>> = Vec::new();
+    let mut ring: Vec<u32> = Vec::new();
     for (volume_index, volume) in volumes.iter().enumerate() {
         faces.clear();
         faces.extend(
@@ -211,10 +289,7 @@ pub fn pack_fluid_surfaces(
                     uv: normalized_uv(vertex.uv, face.texture_index, texture_dimensions),
                 });
             }
-            for i in 1..face.vertices.len() as u32 - 1 {
-                mesh.indices
-                    .extend_from_slice(&[base, base + i, base + i + 1]);
-            }
+            triangulate_convex_face(&face.vertices, normal, base, &mut ring, &mut mesh.indices);
             let index_count = mesh.indices.len() as u32 - index_start;
             match ranges.last_mut() {
                 Some(last) if last.material_index == material => last.index_count += index_count,

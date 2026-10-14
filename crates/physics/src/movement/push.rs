@@ -315,15 +315,18 @@ pub(super) fn clamp_speed_along_push(component: &mut PlayerMovementComponent, pu
 /// before the tick's push accrues. An inviscid fluid never settles below the
 /// cap, so it drifts at terminal velocity along the push, or not at all with
 /// no cap. Fluid surfaces drift at this speed so look and feel agree at any
-/// viscosity (`movement.md` §6).
+/// viscosity (`rendering_pipeline.md` §7.3a).
 ///
 /// One exception, from `decay_drift`'s stop threshold: it zeroes the decayed
 /// drift before the push accrues when its squared length is under
-/// `DRIFT_STOP_SPEED_SQ`. After the first tick the drift is `push × dt`, so if
-/// `push × dt × factor` is already under the threshold the swimmer resets every
-/// tick and settles at `push × dt`, not `push × dt / (1 - factor)`. When the
-/// decayed first tick clears the threshold the drift only grows toward the fixed
-/// point, so it never resets and the formula holds.
+/// `DRIFT_STOP_SPEED_SQ`. For a swimmer entering from rest the drift after the
+/// first tick is `push × dt`, so if `push × dt × factor` is already under the
+/// threshold the swimmer resets every tick and settles at `push × dt`, not
+/// `push × dt / (1 - factor)`. When the decayed first tick clears the threshold
+/// the drift only grows toward the fixed point, so it never resets and the
+/// formula holds. A swimmer already drifting faster decays toward
+/// `push × dt / (1 - factor)` without resetting; the surface uses the
+/// from-rest value.
 pub fn steady_drift_velocity(push: Vec3, viscosity: f32, terminal_velocity: f32, dt: f32) -> Vec3 {
     let factor = (1.0 - viscosity * dt).max(0.0);
     let settled = if factor < 1.0 {

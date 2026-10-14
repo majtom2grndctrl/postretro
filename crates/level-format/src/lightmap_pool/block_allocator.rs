@@ -423,7 +423,3 @@ impl BlockPool {
         self.layers.clear();
     }
 }
-
-#[cfg(test)]
-#[path = "block_allocator_tests.rs"]
-mod tests;

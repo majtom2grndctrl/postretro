@@ -99,3 +99,4 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Pre-change baseline captured: focused `layer_budget_ -- --ignored --nocapture` ran two tests, both passed. Frozen section/owner/report goldens cover all GATE_FIXTURES, the four-layer cut and six synthetic pin variants.
 - Extracted the unchanged SH-delta projection/gate from oversized pipeline.rs before adding lightmap integration; behavior unchanged, focused retest queued after concurrent edits.
 - Extracted unchanged working-set CLI tests before adding the shared budget field, keeping oversized main.rs from growing.
+- Shared all-resident placement and allocator moved unchanged to level-format; render-cpu reexports preserve the existing surface. Placement/allocator/policy tests remain byte-unchanged; focused verification queued after integration.

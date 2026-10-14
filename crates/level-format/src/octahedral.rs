@@ -289,8 +289,12 @@ pub fn irradiance_interior_texel_direction(
 }
 
 /// Source interior texel for a tile texel, including the 1-texel octahedral
-/// wrap border. Interior texels map to themselves; border texels copy the
-/// opposite interior edge with the orthogonal coordinate reversed.
+/// wrap border. Interior texels map to themselves. On the octahedral square
+/// the neighbour across an edge is the same edge mirrored about its midpoint
+/// (`(1, y)` and `(1, −y)` decode to one direction), so an edge border texel
+/// copies its own interior edge with the orthogonal coordinate reversed. A
+/// corner wraps across both edges, landing on the diagonally opposite
+/// interior corner; every corner is −Z.
 pub fn irradiance_tile_source_texel(
     tile_x: u32,
     tile_y: u32,
@@ -312,20 +316,19 @@ pub fn irradiance_tile_source_texel(
     }
 
     if ix < 0 && (0..n).contains(&iy) {
-        return [(n - 1) as u32, (n - 1 - iy) as u32];
-    }
-    if ix >= n && (0..n).contains(&iy) {
         return [0, (n - 1 - iy) as u32];
     }
-    if iy < 0 && (0..n).contains(&ix) {
-        return [(n - 1 - ix) as u32, (n - 1) as u32];
+    if ix >= n && (0..n).contains(&iy) {
+        return [(n - 1) as u32, (n - 1 - iy) as u32];
     }
-    if iy >= n && (0..n).contains(&ix) {
+    if iy < 0 && (0..n).contains(&ix) {
         return [(n - 1 - ix) as u32, 0];
     }
+    if iy >= n && (0..n).contains(&ix) {
+        return [(n - 1 - ix) as u32, (n - 1) as u32];
+    }
 
-    // Corners are adjacent to two wrapped edges. Pick the diagonally wrapped
-    // interior corner; this matches the edge reversal convention above.
+    // A corner mirrors across both edges in turn.
     let sx = if ix < 0 { n - 1 } else { 0 };
     let sy = if iy < 0 { n - 1 } else { 0 };
     [sx as u32, sy as u32]
@@ -615,14 +618,14 @@ mod tests {
         let n = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         assert_eq!(irradiance_tile_source_texel(1, 1, n, border), [0, 0]);
         assert_eq!(irradiance_tile_source_texel(4, 4, n, border), [3, 3]);
-        assert_eq!(irradiance_tile_source_texel(0, 1, n, border), [3, 3]);
-        assert_eq!(irradiance_tile_source_texel(0, 4, n, border), [3, 0]);
-        assert_eq!(irradiance_tile_source_texel(5, 1, n, border), [0, 3]);
-        assert_eq!(irradiance_tile_source_texel(5, 4, n, border), [0, 0]);
-        assert_eq!(irradiance_tile_source_texel(1, 0, n, border), [3, 3]);
-        assert_eq!(irradiance_tile_source_texel(4, 0, n, border), [0, 3]);
-        assert_eq!(irradiance_tile_source_texel(1, 5, n, border), [3, 0]);
-        assert_eq!(irradiance_tile_source_texel(4, 5, n, border), [0, 0]);
+        assert_eq!(irradiance_tile_source_texel(0, 1, n, border), [0, 3]);
+        assert_eq!(irradiance_tile_source_texel(0, 4, n, border), [0, 0]);
+        assert_eq!(irradiance_tile_source_texel(5, 1, n, border), [3, 3]);
+        assert_eq!(irradiance_tile_source_texel(5, 4, n, border), [3, 0]);
+        assert_eq!(irradiance_tile_source_texel(1, 0, n, border), [3, 0]);
+        assert_eq!(irradiance_tile_source_texel(4, 0, n, border), [0, 0]);
+        assert_eq!(irradiance_tile_source_texel(1, 5, n, border), [3, 3]);
+        assert_eq!(irradiance_tile_source_texel(4, 5, n, border), [0, 3]);
         assert_eq!(irradiance_tile_source_texel(0, 0, n, border), [3, 3]);
         assert_eq!(irradiance_tile_source_texel(5, 0, n, border), [0, 3]);
         assert_eq!(irradiance_tile_source_texel(0, 5, n, border), [3, 0]);
@@ -639,13 +642,13 @@ mod tests {
                     let expected = match (in_x, in_y) {
                         // Interior maps to itself after subtracting the border.
                         (true, true) => [tx - border, ty - border],
-                        // Edges copy the opposite edge, orthogonal axis reversed.
+                        // Edges mirror their own edge, orthogonal axis reversed.
                         (false, true) => {
-                            let sx = if tx < border { last } else { 0 };
+                            let sx = if tx < border { 0 } else { last };
                             [sx, last - (ty - border)]
                         }
                         (true, false) => {
-                            let sy = if ty < border { last } else { 0 };
+                            let sy = if ty < border { 0 } else { last };
                             [last - (tx - border), sy]
                         }
                         // Corners use the diagonally wrapped interior corner.
@@ -658,6 +661,43 @@ mod tests {
                         irradiance_tile_source_texel(tx, ty, n, border),
                         expected,
                         "tile {n}: texel ({tx}, {ty})",
+                    );
+                }
+            }
+        }
+    }
+
+    // Regression: edge border texels copied the opposite edge, so a bilinear
+    // tap at a cardinal horizon blended in the antipodal horizon.
+    #[test]
+    fn irradiance_tile_edge_borders_continue_the_sphere_across_the_seam() {
+        let border = DEFAULT_IRRADIANCE_TILE_BORDER;
+        for n in SHARED_MAPPING_TILE_DIMENSIONS {
+            let m = n - 2 * border;
+            // A border texel holds a direction within a couple of texel widths
+            // of the interior texel beside it, as a seamless sphere would.
+            let texel_angle = std::f32::consts::PI / m as f32;
+            for i in 0..m {
+                let t = border + i;
+                let edges = [
+                    ([0, t], [border, t]),
+                    ([n - 1, t], [n - 1 - border, t]),
+                    ([t, 0], [t, border]),
+                    ([t, n - 1], [t, n - 1 - border]),
+                ];
+                for (outer, inner) in edges {
+                    let source = irradiance_tile_source_texel(outer[0], outer[1], n, border);
+                    let held = irradiance_interior_texel_direction(source[0], source[1], n, border);
+                    let beside = irradiance_interior_texel_direction(
+                        inner[0] - border,
+                        inner[1] - border,
+                        n,
+                        border,
+                    );
+                    let angle = angular_error(held, beside);
+                    assert!(
+                        angle <= 2.0 * texel_angle,
+                        "tile {n}: border {outer:?} holds {held:?}, {angle} rad from its neighbour {beside:?}",
                     );
                 }
             }

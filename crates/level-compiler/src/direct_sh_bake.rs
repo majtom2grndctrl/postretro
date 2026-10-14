@@ -72,7 +72,7 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// assembly, the reach cull, atlas packing, or cached section payload layout).
 /// Versions independently from the indirect SH stages and from the
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
-pub const DIRECT_SH_STAGE_VERSION: u32 = 4;
+pub const DIRECT_SH_STAGE_VERSION: u32 = 5;
 
 /// Dormant cache stage id for raw entity-shadow direct-delta
 /// `(affinity cell, light)` sub-blocks: the stage bakes uncached. Kept so its

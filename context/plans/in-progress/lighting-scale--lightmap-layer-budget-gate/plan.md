@@ -1,7 +1,7 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: e00493c95
 
 ## Corrections
@@ -9,7 +9,7 @@ read at: e00493c95
 - The brief has 33 automated rows and four manual rows; all remain required. Manual proof blocks landing because the brief does not permit landing first.
 
 ## Delegated answers
-- None; there are no open questions. Implementation ownership is bounded below; the integrating executor owns gates, shared integration, plan, verification and commits.
+- Placement worker found AC14 cannot be proved literally: `LightmapHeader::block_alignment` is `lcm(4, direction_texel_scale)` and `LightmapBlockIndex::from_prefix` calls `validate_record`, which rejects nonmultiple extents. At scale 8 no decoded id-22 record can have the requested unaligned block extents. Serialization worker independently confirmed this. No Decision premise was found false.
 
 ## AC-to-proof
 
@@ -28,7 +28,7 @@ read at: e00493c95
 | 11 | A map without static lights but with animated lights compiles without a warning that names its cell blocks or the runtime limits as the reason it has no animated chunks. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 12 | The pool-layer check, given block extents and alignment that place into 257 pool layers at the runtime pool edge, refuses by name for a level that cannot stream and warns by name for one that can, each giving 257 and the floor. At exactly 256 neither fires, on a layout whose bake-layer count exceeds 256. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 13 | One cheap compile shows the check runs on the packed layout and reads whether the compiler emitted id 51: under a test floor, a fixture without usable portals refuses and the same fixture with them warns. | Focused compiler/format/placement regression; final preflight | achievable as stated |
-| 14 | On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`. | Focused compiler/format/placement regression; final preflight | achievable as stated |
+| 14 | On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`. | Blocked: format decoder rejects the required synthetic section | needs restatement |
 | 15 | A warm rebuild that hits the lightmap section memo logs the same pool-layer warning, or refuses with the same error, as the cold build (pin P13). | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 16 | A level with no static lights whose charts, packed, would need more than 256 pool layers compiles with neither the warning nor the refusal, whether or not it can stream: its id 22 has no blocks. | Focused compiler/format/placement regression; final preflight | achievable as stated |
 | 17 | The residency dry run still labels layouts against a 256-layer runtime floor. The check and the dry-run label read one named constant, and no compiler pack or area check reads it. Grep gate. | Focused compiler/format/placement regression; final preflight | achievable as stated |
@@ -71,3 +71,21 @@ read at: e00493c95
 - Load 0.025 PRL with streaming: lightmaps render without placeholder error.
 - Load a compiler-warning layout with POSTRETRO_LIGHTMAP_STREAMING=all-resident: placeholder renders and renderer names the same pool-layer count.
 - Delete session outputs and cache after measurements. Outstanding manual rows never become inferred passes.
+
+## Blocking acceptance clarification
+
+AC14 currently reads:
+> On a synthetic layout with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the id-22 index decoded from the same section. Not `#[ignore]`.
+
+Evidence at e00493c95 (unchanged since the brief reference):
+- `crates/level-format/src/lightmap.rs:105`: `block_alignment` returns `lcm(4, self.direction_texel_scale.max(1))`.
+- `crates/level-format/src/lightmap.rs:251` and `:273`: the prefix decoder derives that alignment and validates every record against it.
+- `crates/level-format/src/lightmap.rs:315`: `validate_record` rejects width or height not divisible by alignment, naming the extent and required multiple.
+- `crates/level-format/src/lightmap.rs:849`: existing `rejects_misaligned_extent` regression enforces this contract.
+
+A scale-8 id-22 section with nonmultiples of 8 cannot decode. Silently rounding the serialized section would test different extents from the literal row. Changing the format or loader would violate the brief's no-format/loader-change Decision.
+
+Proposed replacement (owner approval required):
+> On synthetic placement inputs with direction texel scale 8 and block extents that are not multiples of 8, spanning several pool layers, the shared placement produces the same pool-layer count as those extents rounded up to alignment 8. Separately, on a valid scale-8 id-22 section spanning several pool layers, the compiler's pool-layer count equals the renderer's all-resident placement run on the index decoded from that same section. Both checks are non-ignored.
+
+Resume: after the owner approves wording, update only AC14 as authorized, re-run its feasibility check, restore `status: active`, and resume task 1 from baseline capture. No baseline digests were captured and no implementation has landed. The baseline test build was interrupted before tests ran; temporary harness edits are removed. All other Acceptance rows and Decisions remain unchanged.

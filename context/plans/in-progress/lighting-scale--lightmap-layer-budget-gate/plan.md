@@ -1,7 +1,7 @@
 # lighting-scale--lightmap-layer-budget-gate — plan of record
 
 mode: compact
-status: active
+status: test-ready
 read at: e00493c95
 
 ## Corrections
@@ -51,8 +51,8 @@ read at: e00493c95
 | 31 | A cold build writes ids 22 and 42 into the PRL file without a contiguous serialized copy of either section; the file's bytes match the pre-change digests. | streamed_lightmap_family_prl_matches_contiguous_container_bytes + frozen section digests | focused proof passed | pass |
 | 32 | The PRL read-back validates ids 22 and 42 without reading either section into one whole buffer. | lightmap_family_readback_scans_bodies_with_fixed_scratch_and_validates_ranges | focused proof passed | pass |
 | 33 | The predicted working set counts each encoded section once. | predicted_peak_charges_one_layer_fill_scratch_and_each_section_once | focused proof passed | pass |
-| 34 | Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
-| 35 | Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
+| 34 | Hallway map at 0.025, `--no-cache`, release profile: the compile succeeds. Record bake-layer count, runtime pool-layer count, predicted and measured lightmap-stage peak, and wall time. Name the SH stages as the upstream limit on total wall time and RSS. | Release bake and 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — exit 0; 310 bake / 230 runtime layers; predicted 3,910,553,420 bytes; stage peak 5,668,252 KiB; 1,995.885 s total; SH upstream cost recorded |
+| 35 | Hallway map at 0.04: measured lightmap-stage peak no higher than the baseline. | Same-host release/no-cache 100 ms compiler RSS sampling; measurement-results.md | measured proof passed | pass — current 3,883,364 KiB ≤ baseline 5,501,040 KiB (29.41% lower); zero sampling errors |
 | 36 | The 0.025 output loads in the engine with lightmap streaming on. Lightmaps render, with no placeholder-lightmap error. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
 | 37 | A compile that warned, loaded with `POSTRETRO_LIGHTMAP_STREAMING=all-resident`: the placeholder renders and the renderer's rejection names the pool-layer count the warning gave. Use the hallway at 0.025 if it warns, else a fixture past the floor. | Owner/manual stage RSS or engine run; see runbook below | manual | outstanding manual proof |
 ## Tasks
@@ -64,7 +64,7 @@ read at: e00493c95
 | 3 | Stream id-22 cache write, ids 22/42 PRL writes and read-back; verify exact bytes and bounded writes | serialization worker + integrating executor | baseline capture | done — focused proof passed |
 | 4 | Replace cap and pre-cut area refusal with shared working-set budget; gate cold/warm before memo and bake, price per-layer/carry and one section copy, skip unconsumed no-static layouts; enforce runtime floor from emitted id 51 | integrating executor | 1, 2, 3 | done — focused proof passed |
 | 5 | Focused readiness, review-panel/fix loop, final preflight once, and complete AC evidence table | integrating executor | 4 | done — all automated proofs, review repairs and full preflight pass |
-| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | in progress — owner authorized dev-folder verification bakes |
+| 6 | Manual hallway release-stage RSS/compile and engine loading proofs | integrating executor / owner | 5 | compiler measurements complete — owner visual AC36–37 outstanding |
 
 ## Manual runbook
 - Concrete commands and measurement interval: [manual-runbook.md](./manual-runbook.md).
@@ -73,7 +73,7 @@ read at: e00493c95
 - Hallway density 0.04: compare stage peak to the same baseline machine/flags; must not increase.
 - Load 0.025 PRL with streaming: lightmaps render without placeholder error.
 - Load a compiler-warning layout with POSTRETRO_LIGHTMAP_STREAMING=all-resident: placeholder renders and renderer names the same pool-layer count.
-- Delete session outputs and cache after measurements. Outstanding manual rows never become inferred passes.
+- Retain owner-requested dev-folder outputs for inspection. Remove session measurement traces after recording durable evidence. Outstanding manual rows never become inferred passes.
 
 ## Resolved acceptance clarification
 
@@ -115,19 +115,19 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Final formatting and strict Clippy passed. Clippy identified two mechanical iteration forms; equivalent iterator/chunk expressions were applied, formatting and lint rerun clean. The full workspace test suite is running for the first final-preflight pass.
 
 ## Final verification and landing gates
-- All 33 automated Acceptance rows pass. Four manual rows remain outstanding; see manual-runbook.md. Status test-ready records this external-proof checkpoint, not landing approval.
+- All 33 automated Acceptance rows and measured compiler rows34–35 pass. Engine visual rows36–37 remain outstanding; see manual-runbook.md and measurement-results.md. Status test-ready records this external-proof checkpoint, not landing approval.
 - Formatting: pass. Strict Clippy in its dedicated target: pass after two mechanical iteration fixes.
 - Full workspace tests with local sockets enabled and all targets continued: 10,997 passed, two failed, 48 ignored across 66 result groups. Every compiler and renderer target passed on the final run. The GPU staging test failed once under the earlier full run, passed in isolation, and passed in the final full run; no source change was made for it.
 - Initial sandboxed full run could not bind local sockets (65 failures). Reran with socket access; no networking code changed.
 - The full run exposed stale animated-only fixtures and a hypothetical runtime-floor witness relying on the retired no-static placements. Adapted only the fixtures: real static blocks for animated weight tests, independently sized hypothetical charts for the 257-layer witness. Assertions unchanged. Focused animated33/runtime2 passed; final workspace compiler target passed.
-- The last full run found two pre-existing failures in the postretro binary target, both unchanged at claim commit e00493c95: `startup::movement_vault_surface_tests::the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick` expects roll0 but content/dev/scripts/player.ts declares10; `host_activations::conditioned_tests::receive_alternate::receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots` expects (min,full) ticks(12,60) but content/dev/scripts/reference-projectiles.ts declares200/2000ms, yielding(12,120). The vault expectation is resolved by the owner follow-up below. Plasma still needs owner direction before changing unrelated content or expectations.
-- Landing remains blocked by the unresolved plasma expectation and manual AC34–37. No feature push or landing performed. After the blocking results arrive, rerun the required failed gate and wait for the owner to say "land the plane."
+- The last full run found two pre-existing failures in the postretro binary target, both unchanged at claim commit e00493c95: `startup::movement_vault_surface_tests::the_dev_player_holds_a_vault_camera_pose_instead_of_a_vault_kick` expects roll0 but content/dev/scripts/player.ts declares10; `host_activations::conditioned_tests::receive_alternate::receive_shipped_plasma_secondary_keeps_charge_hud_and_original_release_across_snapshots` expects (min,full) ticks(12,60) but content/dev/scripts/reference-projectiles.ts declares200/2000ms, yielding(12,120). The vault expectation is resolved by the owner follow-up below. Plasma is also resolved by the later owner follow-up below.
+- Automated preflight and compiler measurements are clean (later owner follow-up); landing still needs engine AC36–37. No feature push or landing performed. After the blocking results arrive, wait for the owner to say "land the plane."
 - Disk after final verification:16GiB free; no cleanup threshold crossed.
 
 ## Owner follow-up: vault roll expectation
 - Owner directed: "Keep 10° and update the test." Updated the dev vault-camera assertion to roll10.0. Dev content remains at its authored10°.
 - Focused `startup::movement_vault_surface_tests`: three passed, zero failed. This includes the corrected camera assertion and both existing vault surface tests.
-- Full workspace results above remain the last full run; this follow-up uses a focused rerun for the one-line expectation change. The plasma full-charge expectation is still unresolved.
+- Full workspace results above remain the last full run; this follow-up uses a focused rerun for the one-line expectation change. The plasma full-charge expectation was subsequently resolved in the owner follow-up below.
 - Rebuild reduced disk below15GiB; cleared only active/workflow Cargo incremental caches. Compiled artifacts and full target directories retained. Free space restored to22GiB.
 
 ## Owner follow-up: plasma and verification bakes
@@ -138,3 +138,18 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Formatting and strict Clippy passed for plasma repair; full workspace tests running. Bake preparation active; engine visual checks remain owner/manual.
 - Plasma follow-up verified: formatting and strict Clippy pass; full workspace run with local sockets enabled passes10,999 tests, zero failures,48 ignored across66 result groups. Previous vault/plasma preflight blocks resolved. No product changes made for either expectation repair.
 - Measurement host: MacBookPro16,1;32GiB RAM;8 physical/16 logical CPU cores; AMD Radeon Pro5300M Metal (test adapter). Four bake workers. Monitor probe recorded five lightmap samples over0.51s, zero sampling errors, correctly bounded by stage markers.
+- Release tools built: current80ca42a7a (3m40s), baseline45c4fe5 (3m35s). Tool pairs and SHA-256 hashes are captured under the evidence working directory; baseline build target removed immediately after copying comparison binaries. Peak simultaneous baseline build storage was below1GiB; free space stayed above19GiB.
+- Current0.025 bake started, compiler/helper from binaries/current, raw log/status/RSS trace under evidence/current-0025.*; active tool session25674. Output publishes atomically to content/dev/maps/stress-warren-hallway-inspection.prl. Baseline/current0.04 bakes follow sequentially after this run; no concurrent heavy builds during measurements.
+- Current0.025 reached fused stage:310bake layers,2083blocks, predicted3,910,553,420bytes (3729MiB), actual runtime all-resident230layers. Gate admitted at default16GiB. Bake still active; this is not yet a complete AC34 pass.
+- Because230≤256, AC37 needs another warned output. Prepared content/dev/maps/lightmap-runtime-floor-verification.map from unchanged sh-streaming-hinted-door geometry/hints, adding an interior player spawn and one nonanimated static SDF light. Static namespace/real id22 blocks remain; SDF avoids lightmap ray work and id42 but still encodes real layer data. No GATE_FIXTURES change. After active measurement, probe fine density with2GiB to obtain actual pool count before expensive encoding; final output uses default16GiB and --no-cache. This is a runtime rejection fixture, not a replacement hallway workload or memory comparison.
+
+- Current 0.025 completed successfully: AC34 measured pass, 310 bake / 230 runtime layers, predicted 3,910,553,420 bytes, lightmap-stage peak 5,668,252 KiB over 11,044 samples (zero errors), stage 1,104.388 s, total 1,995.885 s. Published PRL 3,347,698,137 bytes. Actual whole-process peak was animated light weight maps, not SH; SH upstream cost is recorded separately in measurement-results.md. Baseline 0.04 is now running sequentially (tool session56724).
+
+- Runtime-floor fixture admission probe: at density0.0006, actual id51 permits streaming; 340 blocks need340 runtime pool layers and compiler warns against the256-layer floor. Intentional2GiB gate then refused predicted5,153,603,458bytes before fused bake. Final bake remains queued with default16GiB. Initial fixture append was silently omitted after a blank line by the map parser; removed that gap, verified player_spawn/light appear in the parse inventory, removed the tiny preliminary placeholder PRL. Final fixture has explicit white color. No production parser change.
+
+- Baseline0.04 completed: exit0;104 bake layers; lightmap-stage peak5,501,040KiB over4,158samples, zero errors; stage415.737s, total1301.234s. Baseline PRL retained in dev maps. Current0.04 started next with matching flags; AC35 remains pending until its result. Disk17GiB.
+
+- Current0.04 completed: exit0;104 bake /101 runtime layers; predicted2,243,828,058bytes; stage peak3,883,364KiB,4,133samples, zero errors; stage413.277s, total1,296.540s. AC35 passes against baseline5,501,040KiB (29.41% lower). Real hallway sections22/42 have identical lengths/versions/SHA-256 across baseline/current outputs. Final runtime-floor bake started next at0.0006 with default16GiB.
+
+- Runtime-floor final bake completed: exit0;340 bake/runtime layers; predicted5,153,603,458bytes; stage peak2,076,020KiB,1,252samples, zero errors; stage125.145s,total127.720s. Published PRL contains340 real id22 blocks and nonempty id51; no id42 (no mask owners). Compiler warning names340 required layers against256 floor. All four requested dev-folder outputs are retained.
+- Verification checkpoint: AC34–35 pass; all33 automated rows pass; AC36–37 remain owner visual proof. Status test-ready. Full plasma/vault preflight remains clean; no product source changed during these bakes. Disk crossed15GB after final output; cleared only active Cargo incremental data, restoring15.176GB free. Existing stage cache untouched.

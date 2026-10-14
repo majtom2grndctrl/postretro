@@ -1,6 +1,6 @@
 # External acceptance runbook
 
-Rows 34–37 block landing. Record results in plan.md; do not infer a visual or RSS pass from unit tests.
+Compiler measurements 34–35 pass. Engine observations 36–37 still block landing. Record results in plan.md; do not infer a visual or RSS pass from unit tests.
 
 ## Compiler measurements (34–35)
 
@@ -12,7 +12,7 @@ In each checkout:
 cargo build --release -p postretro-level-compiler -p postretro-script-compiler
 ```
 
-Owner requested PRLs directly in the main checkout's `content/dev/maps`. Use absolute output paths there, even for the isolated baseline checkout. Keep the current 0.025 output at `stress-warren-hallway-inspection.prl`; name the current comparison `stress-warren-hallway-inspection-0040.prl` and baseline comparison `stress-warren-hallway-inspection-baseline-0040.prl`. Use the main checkout's absolute `baked` path for sidecars so the dev engine reads them normally. Evidence directory for this run: `/private/tmp/postretro-lightmap-proof-ztdf8vxi/evidence`. From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at0.04:
+Owner requested PRLs directly in the main checkout's `content/dev/maps`. Use absolute output paths there, even for the isolated baseline checkout. Keep the current 0.025 output at `stress-warren-hallway-inspection.prl`; name the current comparison `stress-warren-hallway-inspection-0040.prl` and baseline comparison `stress-warren-hallway-inspection-baseline-0040.prl`. Use the main checkout's absolute `baked` path for sidecars so the dev engine reads them normally. Evidence directory for this run: `/private/tmp/postretro-lightmap-proof-ztdf8vxi/evidence`. From the implementation checkout, run at both 0.025 and 0.04; from baseline, run at 0.04:
 
 ```sh
 RUST_LOG=info target/release/prl-build \
@@ -22,11 +22,13 @@ RUST_LOG=info target/release/prl-build \
   -o /Users/dhiester/Projects/Personal/postretro/content/dev/maps/stress-warren-hallway-inspection.prl
 ```
 
-For0.04, replace the density and use the named current/baseline comparison filename above. Keep default soft-shadow samples, probe spacing and working-set budget on both; do not override an upstream limit to claim the target run passed.
+For 0.04, replace the density and use the named current/baseline comparison filename above. Keep default soft-shadow samples, probe spacing and working-set budget on both; do not override an upstream limit to claim the target run passed.
 
-Sample the compiler PID's RSS at 100 ms intervals, starting at the plain reporter's `Lightmap bake...` marker and ending at `fused lightmap/shadowmask stage returned`. Record the maximum sample, sample count and stage elapsed time. This is the process RSS high-water sample **within the lightmap stage**, including earlier outputs still resident. A whole-process peak from `time -l` cannot substitute: earlier SH stages set it.
+Sample the compiler PID's RSS at 100 ms intervals, starting at the plain reporter's `Lightmap bake...` marker and ending at `fused lightmap/shadowmask stage returned`. Record the maximum sample, sample count and stage elapsed time. This is the process RSS high-water sample **within the lightmap stage**, including earlier outputs still resident. A whole-process peak from `time -l` cannot substitute: another stage may set it. The completed 0.025 run peaked during animated light weight maps.
 
-Record for implementation 0.025: successful exit, packed bake layers, runtime pool layers (verbose `Lightmap runtime all-resident pool` line), exact predicted bytes (admission line), sampled stage peak and total wall time. Name SH/delta stages as the upstream limit on total wall time and process RSS. For 0.04, the implementation stage peak must not exceed the same measurement at baseline.
+Completed results: [measurement-results.md](./measurement-results.md).
+
+Record for implementation 0.025: successful exit, packed bake layers, runtime pool layers (verbose `Lightmap runtime all-resident pool` line), exact predicted bytes (admission line), sampled stage peak and total wall time. Record SH/delta upstream cost separately from the actual whole-process peak. For 0.04, the implementation stage peak must not exceed the same measurement at baseline.
 
 ## Engine observations (36–37)
 
@@ -40,14 +42,14 @@ env -u POSTRETRO_LIGHTMAP_STREAMING RUST_LOG=info \
 
 Confirm lightmaps render and no neutral-placeholder rejection appears. Record the observation and any capture.
 
-If the 0.025 compile warned that its all-resident pool exceeds the runtime floor, load the same output with:
+The completed 0.025 hallway uses 230 runtime layers and does not warn. For AC37, use `lightmap-runtime-floor-verification.prl`, baked from the adjacent map at density 0.0006. Its successful final bake reports 340 runtime pool layers and the expected warning.
 
 ```sh
 RUST_LOG=info POSTRETRO_LIGHTMAP_STREAMING=all-resident \
   cargo run -p xtask -- run --features dev-tools -- \
-  content/dev/maps/stress-warren-hallway-inspection.prl --mod dev --baked-root baked
+  content/dev/maps/lightmap-runtime-floor-verification.prl --mod dev --baked-root baked
 ```
 
-Confirm the placeholder renders, and the renderer rejection names exactly the pool-layer count in the compiler warning. If this map did not warn, use a fixture whose runtime pool count exceeds 256; a bake-layer count alone is insufficient.
+Confirm the level renders with the neutral placeholder bound. The renderer must log `Lightmap cell blocks rejected`, name 340 required pool layers against the 256-layer device limit, and say it is degrading to the neutral placeholder. Record the observation and any capture. SDF direct lighting can remain visible, so brightness alone does not prove the placeholder path; include the rejection log and lightmap memory meter when available.
 
 Retain the requested dev-folder PRLs for owner inspection. After recording the evidence, remove the session measurement traces and temporary baseline source/target; keep source checkouts, dev outputs and unrelated artifacts intact.

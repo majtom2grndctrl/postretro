@@ -1,7 +1,7 @@
 # fluid-depth-fog-waves — plan of record
 
 mode: compact
-status: active (results reported; awaiting owner)
+status: landed
 read at: afb4acaa4
 
 ## Corrections
@@ -66,12 +66,12 @@ read at: afb4acaa4
 | A34 Fluid pass opens depth read-only | renderer source-scan test | achievable as stated | pass |
 | A35 Group 5 lifecycle; resize readback; no per-frame creation (P4) | offscreen extent GPU test + source scan | achievable as stated | pass |
 | A36 DX12 FXC compiles fluid shader | ignored-gated FXC test, run on Windows | achievable as stated | pass |
-| M1 From above: walls near surface, floor hidden ~1 m; sludge; no-fog fluid unchanged | owner, in-engine | manual | outstanding (owner) |
-| M2 Dive: unchanged tint; treading no flicker; fade on exit | owner, in-engine | manual | outstanding (owner) |
-| M3 Wave: whole-texel sway, varied crests, world size, scale-0.25, no jump over two periods | owner, in-engine | manual | outstanding (owner) |
-| M4 Distant pool: no crawl or seam | owner, in-engine | manual | outstanding (owner) |
-| M5 Resize keeps fog correct | owner, in-engine | manual | outstanding (owner) |
-| M6 GPU timing before/after (1660 Super, RDNA1 Mac) | owner, in-engine; report here | manual | outstanding (owner) |
+| M1 From above: walls near surface, floor hidden ~1 m; sludge; no-fog fluid unchanged | owner, in-engine | manual | pass (owner, in-engine) |
+| M2 Dive: unchanged tint; treading no flicker; fade on exit | owner, in-engine | manual | pass (owner, in-engine: exit fade) |
+| M3 Wave: whole-texel sway, varied crests, world size, scale-0.25, no jump over two periods | owner, in-engine | manual | pass (owner, in-engine) |
+| M4 Distant pool: no crawl or seam | owner, in-engine | manual | accepted at owner sign-off; not separately reported |
+| M5 Resize keeps fog correct | owner, in-engine | manual | accepted at owner sign-off; not separately reported |
+| M6 GPU timing before/after (1660 Super, RDNA1 Mac) | owner, in-engine; report here | manual | outstanding: not measured before landing |
 
 ## Tasks
 
@@ -94,5 +94,11 @@ read at: afb4acaa4
 - Left for landing: flip the "decided, not yet built" markers in `rendering_pipeline.md` §7.3a/§7.8/§10 and `scripting.md` §2, and amend §7.3a **State** (output alpha is surface-over-fog coverage, not opacity × albedo alpha).
 
 ## Owner questions (Decision-level findings, not acted on)
+
+Resolved 2026-10-14: the owner accepted both as known limits after viewing e24 in-engine ("won't prioritize fixing them at this time"); `rendering_pipeline.md` §7.3a Accepted limits records them. The owner signed off on the feature after in-engine review of dev water, the campaign-test pond, and the e24 fixtures, including the exit fade.
 1. **Bob flicker on other faces before the tint triggers.** The frame weight is 0 when contained, else 1 − ramp, so an eye treading ±0.05 m across a plane it entered without diving (ramp still 0) toggles the weight 0 ↔ 1 at bob rate. The bobbed face hides it (its proximity is 0 at the plane), but every other outside face in view with proximity > 0 — a split pool's seam face, a lower pool, a neighbouring fluid's side — flips between murk and clear. The code follows the Decision word for word. Recommended: make the eye gate continuous — weight = (1 − ramp) × clamp(h / band, 0, 1), where h is the eye's height above the fluid surface directly beneath it (0 when contained, 1 when no fluid lies within a band below) — and add a second-face bob test.
 2. **Back faces over murk.** Within a volume, faces draw in a fixed order. On a floating or open-sided volume, a face seen from inside (no fog) can draw after the fogged front face and lay its unfogged surface over the murk. Walled pools emit no back faces and are exact. Recommended: when fog is set, scale an inside-facing fragment's alpha by (1 − frame weight) — from outside it sits behind the front face's murk; underwater (weight 0) it draws as today. Alternative: accept it as a limit beside "a side face with open air behind it over-fogs".
+
+## Landing
+- Also on this branch at the owner's request: a walk-in pond with a 30 m deep pit and an alcove spotlight in campaign-test's spawn room, and dev water tuned to 3 m fog and a 7.875 s wave period.
+- Context contracts flipped from decided to built: `rendering_pipeline.md` §7.3a (State, Wave, Depth fog, accepted limits), §7.8, §10; `scripting.md` §2.

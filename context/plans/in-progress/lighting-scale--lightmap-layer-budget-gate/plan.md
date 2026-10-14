@@ -3,7 +3,7 @@
 mode: compact
 status: active
 read at: e00493c95
-execution: complete; all 37 acceptance rows pass; awaiting owner landing instruction
+execution: complete; all 37 acceptance rows and post-merge preflight pass; awaiting owner landing instruction
 
 ## Corrections
 - Relevant compiler, format, render-cpu placement and loader portal symbols are unchanged since 45c4fe5. Other renderer changes concern SH streaming and do not alter the cited lightmap boundaries.
@@ -166,3 +166,28 @@ Feasibility rechecked against `BlockSectionBuilder::{new,push_layer,finish}`, `L
 - Owner searched the logs and reported one rejection entry, the expected forced-all-resident fixture rejection. Combined with the earlier normal-streaming observation, AC36 passes.
 - Owner supplied the exact renderer entry at2026-10-14T14:25:30Z: `Lightmap cell blocks rejected: the pool needs 340 array layer(s) for 340 cell block(s), exceeding device maxTextureArrayLayers 256; degrading to the neutral placeholder for this level`. It matches the compiler warning's340-layer count. Combined with the earlier fallback visual observation, AC37 passes.
 - All37 Acceptance rows pass; task6 complete. Execution complete, awaiting owner landing instruction. No new source change requires another preflight; no feature push or landing performed.
+
+## Owner follow-up: post-merge final preflight
+- Owner merged main into the feature branch at09baeb9dd (fluid-surface-motion) and requested final preflight again, with a right-sized assessment/fix agent for failures. Clean working tree at start. Prior37-row acceptance evidence remains recorded; verification of the merged code is running.
+- Formatting passed. Strict default Clippy runs first, then feature/all-target lint and default/full-feature tests sequentially. Development/capture coverage follows the testing guide because merged fluid presentation touches capture code and dependencies of dev-tools. CARGO_INCREMENTAL=0 limits disk growth; no coverage reduction. Test runs allow local sockets.
+- Logs: /private/tmp/postretro-merged-final-{fmt,clippy,feature-clippy,test,feature-test}.log. No feature push or landing performed.
+
+- Default strict Clippy passed. Initial sandbox lint attempt failed only because a dependency download was blocked; reran with network access. All-target dev-tools/capture Clippy found seven mechanical test lints: six redundant DeltaSectionConfig updates and one err().expect() chain. Luna/medium assessed and fixed only the two test files, preserving assertions and behavior; integrating executor reviewed the diff. Formatting and all-target feature lint then passed. Default full tests now running with local sockets.
+- Owner asked about disposable flags: audit found no test-only CLI additions. The permanent --working-set-max-size replaces the removed SH-only flag. Extreme density/small-budget values were temporary invocation inputs; POSTRETRO_LIGHTMAP_STREAMING=all-resident is an existing diagnostic override, unset for normal use. Session RSS tooling was removed after evidence capture.
+
+## Post-merge preflight result
+
+Source: merged09baeb9dd plus the reviewed test-only lint fixes below. No production code changed during this verification.
+
+| Check | Command (CARGO_INCREMENTAL=0 for build/test checks) | Result |
+|---|---|---|
+| Format | cargo fmt --check | pass |
+| Default strict lint | cargo clippy --target-dir target/preflight-clippy -- -D warnings | pass |
+| Feature/all-target strict lint | cargo clippy --workspace --all-targets --features postretro/dev-tools,postretro/capture --target-dir target/preflight-clippy -- -D warnings | pass |
+| Default workspace tests | cargo test --no-fail-fast | pass — 11,091 passed, zero failed, 48 ignored, 66 result groups |
+| Development/capture workspace tests | cargo test --workspace --features postretro/dev-tools,postretro/capture --no-fail-fast | pass — 11,242 passed, zero failed, 60 ignored, 69 result groups |
+
+- Default and feature runs overlap; counts are reported separately, not summed. Local socket and renderer access enabled. Logs remain at /private/tmp/postretro-merged-final-*.log.
+- Luna/medium fixed seven test-only Clippy findings in two files: removed six effectless struct updates after the working-set field extraction, and used expect_err where Args already implements Debug. All behavioral assertions remain. Integrator reviewed the diff; formatting, strict all-target lint and both complete test suites pass after the fix. No test failure required a behavioral repair.
+- Flag audit: no disposable test-only CLI additions. Keep --working-set-max-size (default16GiB); the retired SH-only working-set flag is removed. Small budget/extreme density were temporary inputs; normal use leaves POSTRETRO_LIGHTMAP_STREAMING unset. No flag cleanup change needed.
+- All37 acceptance rows remain passed. Post-merge final preflight is clean. Awaiting owner landing instruction; no feature push or landing performed.

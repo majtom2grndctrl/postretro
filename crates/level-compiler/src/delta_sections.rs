@@ -1231,7 +1231,6 @@ mod tests {
     fn post_bake_handoff_preserves_sections_and_owns_the_cap() {
         let config = DeltaSectionConfig {
             max_payload_bytes: 123,
-            ..DeltaSectionConfig::default()
         };
         let indirect = empty_indirect();
         let entity_shadow_lights = EntityShadowLightsSection {
@@ -1379,7 +1378,6 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: payload_bytes(&nonzero) - 1,
-                ..DeltaSectionConfig::default()
             },
             Some(indirect(vec![0], nonzero)),
             None,
@@ -1521,7 +1519,6 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
-                ..DeltaSectionConfig::default()
             },
             None,
             None,
@@ -1603,7 +1600,6 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
-                ..DeltaSectionConfig::default()
             },
             None,
             None,
@@ -1652,7 +1648,6 @@ mod tests {
         let mut sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
-                ..DeltaSectionConfig::default()
             },
             Some(indirect_section),
             None,
@@ -2103,7 +2098,6 @@ mod tests {
         let sections = PostBakeDeltaSections::new(
             DeltaSectionConfig {
                 max_payload_bytes: compacted_bytes - 1,
-                ..DeltaSectionConfig::default()
             },
             Some(compacted),
             None,

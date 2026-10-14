@@ -67,8 +67,7 @@ fn retired_delta_only_working_set_flag_is_unknown() {
         vec![retired.as_str()],
     ] {
         let error = parse_args_from(args.into_iter().map(str::to_owned))
-            .err()
-            .expect("retired flag must be rejected");
+            .expect_err("retired flag must be rejected");
         assert_eq!(error.to_string(), format!("unexpected argument: {retired}"));
     }
 }

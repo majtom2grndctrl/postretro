@@ -1051,7 +1051,7 @@ fn a_viscosity_only_host_reload_re_resolves_fluid_surface_drift() {
     script_ctx(&app).data_registry.borrow_mut().replace_fluids(
         postretro_foundation::FluidRegistry::from_declarations(
             "test",
-            [Ok(fluid_with("water", 6.0, [0.1, 0.3, 0.4, 0.35]))].into_iter(),
+            [Ok(fluid_with("water", 6.0, [0.1, 0.3, 0.4, 0.35]))],
         ),
     );
     let capture = postretro_test_log_capture::LogCapture::start();

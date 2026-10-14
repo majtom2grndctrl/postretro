@@ -232,3 +232,33 @@ fn force_never_changes_the_drift() {
         );
     }
 }
+
+// Frame capture loads no fluid table, so it resolves no drift: its surfaces
+// install with the renderer's zeroed drift buffer and draw still, at the fixed
+// capture opacity.
+#[test]
+fn frame_capture_installs_fluid_surfaces_still_at_the_capture_opacity() {
+    let prepared = include_str!("../capture/prepared.rs");
+    assert!(prepared.contains("renderer.install_fluid_surfaces("));
+    assert!(prepared.contains("CAPTURE_FLUID_SURFACE_OPACITY"));
+    assert!(!prepared.contains("set_fluid_surface_drift"));
+    assert!(!prepared.contains("resolve_fluid_surface_drift"));
+}
+
+// R12: a map built before the compiler split faces along pushes carries one
+// face under part of a push. It drifts whole when its sample point lies under
+// the push, and stays still when it does not.
+#[test]
+fn an_unsplit_face_under_part_of_a_push_drifts_whole_by_its_sample_point() {
+    let records = [fluid_record("water", vec![top_face(0.0, 2.0)])];
+    let covering_centre = current(Vec3::new(6.0, 0.0, 0.0), 0.0, 1.5);
+    assert_near(
+        drifts(&records, vec![covering_centre], &water_table())[0],
+        Vec3::new(3.0, 0.0, 0.0),
+    );
+    let missing_centre = current(Vec3::new(6.0, 0.0, 0.0), 0.0, 0.5);
+    assert_near(
+        drifts(&records, vec![missing_centre], &water_table())[0],
+        Vec3::ZERO,
+    );
+}

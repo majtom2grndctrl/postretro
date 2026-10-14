@@ -235,6 +235,13 @@ pub enum SectionId {
     /// volume authors a force other than 1; absence means every force is 1.
     /// See `push_forces::PushForcesSection`.
     PushForces = 53,
+
+    /// Optional compile-time reflection probes: box, capture point and
+    /// per-light shares per probe, (volume, face) bindings into
+    /// EnvironmentVolumes, and one octahedral capture tile per probe. Absent
+    /// means no probes.
+    /// See `reflection_probes::ReflectionProbesSection`.
+    ReflectionProbes = 54,
 }
 
 impl SectionId {
@@ -281,6 +288,7 @@ impl SectionId {
             51 => Some(Self::CellResidencySet),
             52 => Some(Self::EnvironmentVolumes),
             53 => Some(Self::PushForces),
+            54 => Some(Self::ReflectionProbes),
             _ => None,
         }
     }
@@ -334,6 +342,7 @@ mod tests {
             SectionId::CellResidencySet,
             SectionId::EnvironmentVolumes,
             SectionId::PushForces,
+            SectionId::ReflectionProbes,
         ];
 
         for section_id in registered {
@@ -341,6 +350,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(54), None);
+        assert_eq!(SectionId::from_u32(55), None);
     }
 }

@@ -53,8 +53,14 @@
 //! internal value. Comparing in internal space is equivalent to comparing in
 //! output-f16 space because the finalize step is a monotonic linear scale.
 //! No cluster-fit refinement; the round-trip tolerance gates the result.
+//!
+//! The CPU decoder ([`decode_bc6h_block`], [`decode_bc6h_rgb_to_f32_rgba`])
+//! reproduces that hardware decode for Mode 11 and refuses every other mode:
+//! it reads only what this encoder writes, such as id 22 lightmap texels a
+//! later compiler stage shades with.
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
+use thiserror::Error;
 
 /// BC6H 4-bit index weight table. Hardware uses these to interpolate between
 /// endpoints `unq0`/`unq1`: `weight w / 64` applied as
@@ -300,53 +306,124 @@ fn write_bits(bits: &mut u128, cursor: &mut u32, value: u128, count: u32) {
 #[cfg(test)]
 pub(crate) const BC6H_ROUNDTRIP_TOLERANCE_REL: f32 = 0.08;
 
-/// Decode one BC6H Mode 11 block (16 bytes) back to 16 RGB f16 texels using
-/// the same hardware interpolation the encoder targets. Exposed at
-/// module scope (gated on `#[cfg(test)]`) so other crate tests (the
-/// determinism gate in `lightmap_bake.rs`) can decode bake output without
-/// duplicating the bit-unpack — lives here, not in production, because the
-/// runtime decode is the GPU's job.
-#[cfg(test)]
-pub(crate) fn decode_bc6h_block_for_tests(block: &[u8; 16]) -> [[u16; 3]; 16] {
+/// The 5-bit mode field of the one BC6H mode this module encodes ("Mode 11").
+const MODE_11_BITS: u8 = 0b00011;
+
+/// A BC6H payload the CPU decoder cannot reproduce. The bytes come from disk
+/// (lightmap section id 22), so a malformed or foreign payload is an error to
+/// surface, not a panic.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum Bc6hDecodeError {
+    #[error(
+        "BC6H block uses mode bits {mode_bits:#07b}; only Mode 11 (0b00011), \
+         the mode prl-build encodes, decodes on the CPU"
+    )]
+    UnsupportedMode { mode_bits: u8 },
+    #[error(
+        "BC6H payload for {width}×{height} texels must be {expected} bytes \
+         (16 per 4×4 block), found {actual}"
+    )]
+    PayloadLength {
+        width: u32,
+        height: u32,
+        expected: usize,
+        actual: usize,
+    },
+}
+
+/// Decode a `Bc6hRgbUfloat` payload written by
+/// [`encode_bc6h_rgb_from_f32_rgba`] back to row-major RGBA f32 (A = 1.0, as
+/// hardware returns for BC6H), reproducing hardware decode bit for bit.
+///
+/// Blocks are row-major, `ceil(width/4)·ceil(height/4)` of them; texels a
+/// partial edge block covers past `width`/`height` are dropped. Every block
+/// must be Mode 11 — the only mode the encoder emits — or the decode fails.
+#[cfg_attr(not(test), allow(dead_code))] // Production reader: the reflection-probe capture stage.
+pub fn decode_bc6h_rgb_to_f32_rgba(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, Bc6hDecodeError> {
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    let expected = blocks_x * blocks_y * 16;
+    if bytes.len() != expected {
+        return Err(Bc6hDecodeError::PayloadLength {
+            width,
+            height,
+            expected,
+            actual: bytes.len(),
+        });
+    }
+
+    let (width, height) = (width as usize, height as usize);
+    let mut out = vec![0.0f32; width * height * 4];
+    for (block_index, block) in bytes.as_chunks::<16>().0.iter().enumerate() {
+        let texels = decode_bc6h_block(block)?;
+        let bx = (block_index % blocks_x) * 4;
+        let by = (block_index / blocks_x) * 4;
+        for (k, texel) in texels.iter().enumerate() {
+            let (px, py) = (bx + k % 4, by + k / 4);
+            if px >= width || py >= height {
+                continue;
+            }
+            let base = (py * width + px) * 4;
+            out[base..base + 3].copy_from_slice(texel);
+            out[base + 3] = 1.0;
+        }
+    }
+    Ok(out)
+}
+
+/// Decode one 16-byte BC6H Mode 11 block to its 16 RGB texels, row-major
+/// within the block (texel `k` sits at `(k % 4, k / 4)`). Exact to hardware:
+/// `unq` endpoints, the 4-bit weight table, then the UFloat finalize to f16.
+/// The capture stage samples one lightmap texel per hit through this, so a
+/// single-texel read never decodes a whole block row.
+#[cfg_attr(not(test), allow(dead_code))] // Production reader: the reflection-probe capture stage.
+pub fn decode_bc6h_block(block: &[u8; 16]) -> Result<[[f32; 3]; 16], Bc6hDecodeError> {
     let bits = u128::from_le_bytes(*block);
     let mut cursor = 0u32;
-    let mode = read_bits_inline(bits, &mut cursor, 5);
-    assert_eq!(mode, 0b00011, "test decoder only handles Mode 11");
+    // Two-bit modes (low bits 0b00 / 0b01) read as their 5-bit prefix here
+    // too; none of them is Mode 11, so one compare rejects every other mode.
+    let mode_bits = read_bits(bits, &mut cursor, 5) as u8;
+    if mode_bits != MODE_11_BITS {
+        return Err(Bc6hDecodeError::UnsupportedMode { mode_bits });
+    }
     let mut ep0 = [0u16; 3];
     let mut ep1 = [0u16; 3];
     for slot in &mut ep0 {
-        *slot = read_bits_inline(bits, &mut cursor, 10) as u16;
+        *slot = read_bits(bits, &mut cursor, 10) as u16;
     }
     for slot in &mut ep1 {
-        *slot = read_bits_inline(bits, &mut cursor, 10) as u16;
+        *slot = read_bits(bits, &mut cursor, 10) as u16;
     }
     let mut indices = [0u8; 16];
-    indices[0] = read_bits_inline(bits, &mut cursor, 3) as u8;
+    indices[0] = read_bits(bits, &mut cursor, 3) as u8;
     for slot in indices.iter_mut().skip(1) {
-        *slot = read_bits_inline(bits, &mut cursor, 4) as u8;
+        *slot = read_bits(bits, &mut cursor, 4) as u8;
     }
     let palette = build_internal_palette(ep0, ep1);
-    let mut out = [[0u16; 3]; 16];
-    for (i, texel_out) in out.iter_mut().enumerate() {
-        let idx = indices[i] as usize;
+    let mut out = [[0.0f32; 3]; 16];
+    for (texel_out, &idx) in out.iter_mut().zip(indices.iter()) {
         for (c, channel_out) in texel_out.iter_mut().enumerate() {
-            *channel_out = ((palette[c][idx] * 31) >> 6) as u16;
+            // UFloat finalize: at most (0xffff · 31) >> 6 = 0x7bff, the largest
+            // finite f16, so the decode never yields infinity or NaN.
+            let half = ((palette[c][idx as usize] * 31) >> 6) as u16;
+            *channel_out = f16_bits_to_f32(half);
         }
     }
-    out
+    Ok(out)
 }
 
-#[cfg(test)]
-fn read_bits_inline(bits: u128, cursor: &mut u32, count: u32) -> u128 {
+fn read_bits(bits: u128, cursor: &mut u32, count: u32) -> u128 {
     let value = (bits >> *cursor) & ((1u128 << count) - 1);
     *cursor += count;
     value
 }
 
-/// Half-float bit pattern → f32. Sufficient to convert decoded f16 samples
-/// back into a relative-error comparison space. Pub(crate) for the same
-/// reason as `decode_bc6h_block_for_tests`.
-#[cfg(test)]
+/// Half-float bit pattern → f32, exact for every f16 value. The decoder's
+/// finalize step and the tests' raw-f16 lightmap reads share it.
 pub(crate) fn f16_bits_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 0x1) as u32;
     let exp = ((h >> 10) & 0x1f) as u32;
@@ -376,85 +453,75 @@ pub(crate) fn f16_bits_to_f32(h: u16) -> f32 {
 mod tests {
     use super::*;
 
-    /// Module-local alias preserved so the existing tests below read as
-    /// originally written; delegates to the shared crate-test helper.
-    fn decode_bc6h_block(block: &[u8; 16]) -> [[u16; 3]; 16] {
-        super::decode_bc6h_block_for_tests(block)
-    }
-
-    fn f16_to_f32(h: u16) -> f32 {
-        super::f16_bits_to_f32(h)
-    }
-
-    /// Synthetic HDR gradient: smooth low-frequency irradiance, the case the
-    /// bake actually produces. Per-texel variation is held under ~0.15 units
-    /// (the rate real lightmap content varies at the default 0.04 m/texel
-    /// density), so the 16-step single-mode quantizer can resolve each 4×4
-    /// block within the frozen tolerance. Encoded to BC6H and decoded through
-    /// the hardware-matching reference decoder, every texel must reproduce
-    /// within `BC6H_ROUNDTRIP_TOLERANCE_REL`.
-    #[test]
-    fn bc6h_roundtrip_within_frozen_relative_tolerance() {
-        let w = 16u32;
-        let h = 16u32;
+    /// Color-correlated HDR penumbra: RGB share an intensity ramp tinted by
+    /// fixed scaling factors — the same shape a single static light's
+    /// soft-shadow ramp produces in irradiance space. Per-texel variation is
+    /// held under ~0.15 units (the rate real lightmap content varies at the
+    /// default 0.04 m/texel density), so per-block [min, max] stays under ~0.6
+    /// units and the channels co-vary, letting the single-mode encoder's
+    /// shared-selector picks resolve each block within tolerance. (Synthetic
+    /// per-channel independent gradients would push higher error because the
+    /// 16 shared selectors can't simultaneously approximate diverging
+    /// per-channel fractions — a known limitation of the no-partition mode
+    /// and exactly why BC6H also defines 2-partition modes. Real irradiance
+    /// does not exercise that case.) `scale(y)` multiplies each row.
+    fn penumbra_gradient(w: u32, h: u32, scale: impl Fn(u32) -> f32) -> Vec<f32> {
         let mut rgba = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
             for x in 0..w {
-                // Color-correlated HDR penumbra: RGB share an intensity
-                // ramp tinted by fixed scaling factors — the same shape a
-                // single static light's soft-shadow ramp produces in
-                // irradiance space. Per-block [min, max] stays under ~0.6
-                // units, and the channels co-vary so the single-mode
-                // encoder's shared-selector picks resolve each block within
-                // tolerance. (Synthetic per-channel independent gradients
-                // would push higher error because the 16 shared selectors
-                // can't simultaneously approximate diverging per-channel
-                // fractions — a known limitation of the no-partition mode
-                // and exactly why BC6H also defines 2-partition modes.
-                // Real irradiance does not exercise that case.)
-                let intensity = 0.5 + (x as f32) * 0.1 + (y as f32) * 0.05;
-                let r = intensity * 1.0;
-                let g = intensity * 0.85;
-                let b = intensity * 1.2;
-                rgba.push(r);
-                rgba.push(g);
-                rgba.push(b);
-                rgba.push(1.0);
+                let intensity = (0.5 + (x as f32) * 0.1 + (y as f32) * 0.05) * scale(y);
+                rgba.extend_from_slice(&[intensity * 1.0, intensity * 0.85, intensity * 1.2, 1.0]);
             }
         }
+        rgba
+    }
 
-        let blocks = encode_bc6h_rgb_from_f32_rgba(&rgba, w, h);
+    /// Encode then decode through the production decoder; every RGB channel
+    /// must reproduce within `BC6H_ROUNDTRIP_TOLERANCE_REL` and A reads 1.0.
+    fn assert_roundtrip_within_frozen_tolerance(rgba: &[f32], w: u32, h: u32) {
+        let blocks = encode_bc6h_rgb_from_f32_rgba(rgba, w, h);
         assert_eq!(blocks.len(), ((w / 4) * (h / 4) * 16) as usize);
-
-        let blocks_x = w / 4;
-        let blocks_y = h / 4;
-        for by in 0..blocks_y {
-            for bx in 0..blocks_x {
-                let block_idx = (by * blocks_x + bx) as usize;
-                let block: [u8; 16] = blocks[block_idx * 16..block_idx * 16 + 16]
-                    .try_into()
-                    .unwrap();
-                let decoded = decode_bc6h_block(&block);
-                for ty in 0..4 {
-                    for tx in 0..4 {
-                        let px = bx * 4 + tx;
-                        let py = by * 4 + ty;
-                        let in_base = ((py * w + px) * 4) as usize;
-                        let texel_idx = (ty * 4 + tx) as usize;
-                        for c in 0..3 {
-                            let original = rgba[in_base + c].max(0.0);
-                            let decoded_f = f16_to_f32(decoded[texel_idx][c]);
-                            let denom = original.abs().max(1.0e-3);
-                            let rel = (decoded_f - original).abs() / denom;
-                            assert!(
-                                rel <= BC6H_ROUNDTRIP_TOLERANCE_REL,
-                                "texel ({px}, {py}) c{c}: relative error {rel} > tolerance {BC6H_ROUNDTRIP_TOLERANCE_REL} (orig {original}, decoded {decoded_f})",
-                            );
-                        }
-                    }
+        let decoded = decode_bc6h_rgb_to_f32_rgba(&blocks, w, h).expect("encoder emits Mode 11");
+        assert_eq!(decoded.len(), rgba.len());
+        for py in 0..h {
+            for px in 0..w {
+                let base = ((py * w + px) * 4) as usize;
+                for c in 0..3 {
+                    let original = rgba[base + c].max(0.0);
+                    let decoded_f = decoded[base + c];
+                    let denom = original.abs().max(1.0e-3);
+                    let rel = (decoded_f - original).abs() / denom;
+                    assert!(
+                        rel <= BC6H_ROUNDTRIP_TOLERANCE_REL,
+                        "texel ({px}, {py}) c{c}: relative error {rel} > tolerance {BC6H_ROUNDTRIP_TOLERANCE_REL} (orig {original}, decoded {decoded_f})",
+                    );
                 }
+                assert_eq!(decoded[base + 3], 1.0, "texel ({px}, {py}) alpha");
             }
         }
+    }
+
+    /// Synthetic HDR gradient: smooth low-frequency irradiance, the case the
+    /// bake actually produces. Encoded to BC6H and decoded through the
+    /// production hardware-matching decoder, every texel must reproduce
+    /// within `BC6H_ROUNDTRIP_TOLERANCE_REL`.
+    #[test]
+    fn bc6h_roundtrip_within_frozen_relative_tolerance() {
+        let (w, h) = (16, 16);
+        assert_roundtrip_within_frozen_tolerance(&penumbra_gradient(w, h, |_| 1.0), w, h);
+    }
+
+    /// The same penumbra at irradiance far above 1.0: each 4×4 block row is
+    /// scaled by a power of two up to 4096 (peak ≈ 13.5k, under f16's 65504),
+    /// so every block exercises a higher f16 exponent range. A power-of-two
+    /// scale shifts f16 exponents only, so the frozen tolerance carries over
+    /// unchanged (measured peak equals the unscaled gradient's ~0.055).
+    #[test]
+    fn bc6h_roundtrip_reproduces_hdr_irradiance_within_frozen_tolerance() {
+        const ROW_SCALES: [f32; 4] = [1.0, 16.0, 256.0, 4096.0];
+        let (w, h) = (16, 16);
+        let rgba = penumbra_gradient(w, h, |y| ROW_SCALES[(y / 4) as usize]);
+        assert_roundtrip_within_frozen_tolerance(&rgba, w, h);
     }
 
     /// A constant-value block must reproduce its input within the tolerance.
@@ -471,15 +538,59 @@ mod tests {
         }
         let blocks = encode_bc6h_rgb_from_f32_rgba(&rgba, 4, 4);
         let block: [u8; 16] = blocks[..16].try_into().unwrap();
-        let decoded = decode_bc6h_block(&block);
-        for t in decoded.iter() {
-            let r = f16_to_f32(t[0]);
-            let g = f16_to_f32(t[1]);
-            let b = f16_to_f32(t[2]);
+        let decoded = decode_bc6h_block(&block).expect("encoder emits Mode 11");
+        for &[r, g, b] in decoded.iter() {
             assert!((r - 1.5).abs() / 1.5 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
             assert!((g - 0.75).abs() / 0.75 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
             assert!((b - 2.25).abs() / 2.25 <= BC6H_ROUNDTRIP_TOLERANCE_REL);
         }
+    }
+
+    /// Lightmap bytes come from disk; a block in any mode the encoder never
+    /// writes is refused, by the block decoder and by the payload decoder.
+    /// Covers a two-bit mode (Mode 1, low bits 0b00) and a five-bit mode
+    /// (Mode 12, 0b00111) beside the supported 0b00011.
+    #[test]
+    fn bc6h_decode_refuses_blocks_outside_mode_11() {
+        let mode_1 = [0u8; 16];
+        let mut mode_12 = [0u8; 16];
+        mode_12[0] = 0b00111;
+        assert_eq!(
+            decode_bc6h_block(&mode_1),
+            Err(Bc6hDecodeError::UnsupportedMode { mode_bits: 0b00000 })
+        );
+        assert_eq!(
+            decode_bc6h_block(&mode_12),
+            Err(Bc6hDecodeError::UnsupportedMode { mode_bits: 0b00111 })
+        );
+
+        // One foreign block among valid ones fails the whole payload.
+        let rgba = vec![0.5_f32; 8 * 4 * 4];
+        let mut payload = encode_bc6h_rgb_from_f32_rgba(&rgba, 8, 4);
+        assert!(decode_bc6h_rgb_to_f32_rgba(&payload, 8, 4).is_ok());
+        payload[16..32].copy_from_slice(&mode_12);
+        assert_eq!(
+            decode_bc6h_rgb_to_f32_rgba(&payload, 8, 4),
+            Err(Bc6hDecodeError::UnsupportedMode { mode_bits: 0b00111 })
+        );
+    }
+
+    /// A payload whose length disagrees with its stated extent (truncated on
+    /// disk, or paired with the wrong block's dimensions) is refused rather
+    /// than read short or past its end.
+    #[test]
+    fn bc6h_decode_refuses_payload_length_mismatch() {
+        let rgba = vec![0.5_f32; 8 * 8 * 4];
+        let payload = encode_bc6h_rgb_from_f32_rgba(&rgba, 8, 8);
+        assert_eq!(
+            decode_bc6h_rgb_to_f32_rgba(&payload[..48], 8, 8),
+            Err(Bc6hDecodeError::PayloadLength {
+                width: 8,
+                height: 8,
+                expected: 64,
+                actual: 48,
+            })
+        );
     }
 
     /// Anchors the `unq` spec formula at a representative table of inputs:

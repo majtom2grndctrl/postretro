@@ -331,15 +331,38 @@ pub fn irradiance_tile_source_texel(
     [sx as u32, sy as u32]
 }
 
-/// Unquantized octahedral UV in `[0, 1]^2` for a unit direction. This is the
-/// exact Rust mirror of `oct_encode_unquantized` in `sh_sample.wgsl`: same L1
-/// projection, same lower-hemisphere fold, same `p * 0.5 + 0.5` remap. It is
-/// the inverse of [`decode_unquantized`] (after the `[-1,1] ↔ [0,1]` remap).
-/// `octahedral_oct_uv_matches_wgsl_reference` pins it against hand-checked
-/// reference values so a drift on either side fails CI. Test-only: the runtime
-/// encodes via [`encode`]; this is the unquantized form the WGSL sampler uses.
-#[cfg(test)]
-fn encode_unquantized_uv(x: f32, y: f32, z: f32) -> [f32; 2] {
+/// Tile-local continuous texel coordinate for a direction in an octahedral
+/// tile: `border + uv * interior`, where `uv` is [`encode_unquantized_uv`].
+///
+/// The inverse companion of [`irradiance_interior_texel_direction`]: interior
+/// texel `(ix, iy)` spans `[border + ix, border + ix + 1)` on each axis, so its
+/// centre direction maps back to `border + ix + 0.5`. This is the coordinate
+/// `sample_probe_atlas_slot` in `sh_sample.wgsl` computes before adding the
+/// tile origin; any CPU consumer of an octahedral tile (SH atlas or reflection
+/// probe capture) goes through it so one mapping serves both. A coordinate
+/// within half a texel of the interior edge reaches into the 1-texel border
+/// under bilinear filtering; [`irradiance_tile_source_texel`] fills it.
+pub fn irradiance_tile_texel_coord(dir: [f32; 3], tile_dimension: u32, border: u32) -> [f32; 2] {
+    let interior = tile_dimension
+        .checked_sub(border * 2)
+        .expect("tile border must leave an interior");
+    assert!(interior > 0, "tile border must leave an interior");
+    let uv = encode_unquantized_uv(dir[0], dir[1], dir[2]);
+    [
+        border as f32 + uv[0] * interior as f32,
+        border as f32 + uv[1] * interior as f32,
+    ]
+}
+
+/// Unquantized octahedral UV in `[0, 1]^2` for a non-zero direction. This is
+/// the exact Rust mirror of `oct_encode_unquantized` in `sh_sample.wgsl`: same
+/// L1 projection, same lower-hemisphere fold, same `p * 0.5 + 0.5` remap. It
+/// is the inverse of [`decode_unquantized`] (after the `[-1,1] ↔ [0,1]`
+/// remap). `octahedral_oct_uv_matches_wgsl_reference` pins it against
+/// hand-checked reference values so a drift on either side fails CI. [`encode`]
+/// is the quantized form stored in vertex and lightmap data; this is the form
+/// the WGSL sampler and the CPU tile consumers use.
+pub fn encode_unquantized_uv(x: f32, y: f32, z: f32) -> [f32; 2] {
     let inv_l1 = 1.0 / (x.abs() + y.abs() + z.abs());
     let mut ox = x * inv_l1;
     let mut oy = y * inv_l1;
@@ -579,16 +602,19 @@ mod tests {
         }
     }
 
+    /// Tile sizes the shared octahedral mapping serves: the SH atlas tile and
+    /// the reflection-probe capture tile. Both use the 1-texel border.
+    const SHARED_MAPPING_TILE_DIMENSIONS: [u32; 2] = [DEFAULT_IRRADIANCE_TILE_DIMENSION, 128];
+
     #[test]
     fn irradiance_tile_border_copies_across_octahedral_wrap() {
-        let n = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         let border = DEFAULT_IRRADIANCE_TILE_BORDER;
 
-        // Interior maps to itself after subtracting the border.
+        // Literal pins at the SH atlas tile (n = 6, interior 4), so the stored
+        // atlas bytes cannot move under a refactor of the general rule below.
+        let n = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         assert_eq!(irradiance_tile_source_texel(1, 1, n, border), [0, 0]);
         assert_eq!(irradiance_tile_source_texel(4, 4, n, border), [3, 3]);
-
-        // Edges copy the opposite edge with the orthogonal axis reversed.
         assert_eq!(irradiance_tile_source_texel(0, 1, n, border), [3, 3]);
         assert_eq!(irradiance_tile_source_texel(0, 4, n, border), [3, 0]);
         assert_eq!(irradiance_tile_source_texel(5, 1, n, border), [0, 3]);
@@ -597,12 +623,71 @@ mod tests {
         assert_eq!(irradiance_tile_source_texel(4, 0, n, border), [0, 3]);
         assert_eq!(irradiance_tile_source_texel(1, 5, n, border), [3, 0]);
         assert_eq!(irradiance_tile_source_texel(4, 5, n, border), [0, 0]);
-
-        // Corners use the diagonally wrapped interior corner.
         assert_eq!(irradiance_tile_source_texel(0, 0, n, border), [3, 3]);
         assert_eq!(irradiance_tile_source_texel(5, 0, n, border), [0, 3]);
         assert_eq!(irradiance_tile_source_texel(0, 5, n, border), [3, 0]);
         assert_eq!(irradiance_tile_source_texel(5, 5, n, border), [0, 0]);
+
+        // The same convention holds at every shared tile size, every texel.
+        for n in SHARED_MAPPING_TILE_DIMENSIONS {
+            let m = n - 2 * border;
+            let last = m - 1;
+            for ty in 0..n {
+                for tx in 0..n {
+                    let in_x = (border..border + m).contains(&tx);
+                    let in_y = (border..border + m).contains(&ty);
+                    let expected = match (in_x, in_y) {
+                        // Interior maps to itself after subtracting the border.
+                        (true, true) => [tx - border, ty - border],
+                        // Edges copy the opposite edge, orthogonal axis reversed.
+                        (false, true) => {
+                            let sx = if tx < border { last } else { 0 };
+                            [sx, last - (ty - border)]
+                        }
+                        (true, false) => {
+                            let sy = if ty < border { last } else { 0 };
+                            [last - (tx - border), sy]
+                        }
+                        // Corners use the diagonally wrapped interior corner.
+                        (false, false) => [
+                            if tx < border { last } else { 0 },
+                            if ty < border { last } else { 0 },
+                        ],
+                    };
+                    assert_eq!(
+                        irradiance_tile_source_texel(tx, ty, n, border),
+                        expected,
+                        "tile {n}: texel ({tx}, {ty})",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn irradiance_tile_texel_coord_round_trips_every_interior_texel_center() {
+        let border = DEFAULT_IRRADIANCE_TILE_BORDER;
+        for n in SHARED_MAPPING_TILE_DIMENSIONS {
+            let m = n - 2 * border;
+            for iy in 0..m {
+                for ix in 0..m {
+                    let dir = irradiance_interior_texel_direction(ix, iy, n, border);
+                    let coord = irradiance_tile_texel_coord(dir, n, border);
+                    let center = [(border + ix) as f32 + 0.5, (border + iy) as f32 + 0.5];
+                    assert!(
+                        (coord[0] - center[0]).abs() < 1e-3 && (coord[1] - center[1]).abs() < 1e-3,
+                        "tile {n}: interior ({ix}, {iy}) direction {dir:?} mapped to {coord:?}, \
+                         expected texel centre {center:?}",
+                    );
+                    // The same texel, by truncation, as a nearest fetch picks.
+                    assert_eq!(
+                        [coord[0] as u32, coord[1] as u32],
+                        [border + ix, border + iy],
+                        "tile {n}: interior ({ix}, {iy})",
+                    );
+                }
+            }
+        }
     }
 
     /// Rust ↔ WGSL octahedral mapping parity.
@@ -617,12 +702,12 @@ mod tests {
     /// `oct_encode_unquantized` prompts the human/agent to resync the shader.
     ///
     /// Reference set exercises the seam/fold: all six axes plus a
-    /// lower-hemisphere diagonal where the `z < 0` fold applies.
+    /// lower-hemisphere diagonal where the `z < 0` fold applies. The interior
+    /// coordinate is checked at every shared tile size: the SH atlas tile (6)
+    /// and the reflection-probe capture tile (128), both with border 1.
     #[test]
     fn octahedral_oct_uv_matches_wgsl_reference() {
         const EPS: f32 = 1e-5;
-        // tile_dimension 6, border 1 -> interior 4 (the runtime-supported tile).
-        const INTERIOR: f32 = 4.0;
 
         // (direction, expected octahedral UV in [0,1]^2).
         let l = 1.0 / 2.0_f32.sqrt(); // 1/sqrt(2)
@@ -648,38 +733,60 @@ mod tests {
                 "octahedral UV for {dir:?} was {uv:?}, expected {expected_uv:?}",
             );
 
-            // Interior-space coordinate the WGSL sampler derives (`oct * interior`).
-            let interior_coord = [uv[0] * INTERIOR, uv[1] * INTERIOR];
             // Encoding then decoding the UV must return the same unit direction
             // (sign-not-zero handling and the fold are self-inverse here).
             let decoded = decode_unquantized(uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0);
             assert!(
                 angular_error(dir, decoded) < MAX_ANGULAR_ERROR,
-                "decode of UV {uv:?} (interior coord {interior_coord:?}) was {decoded:?}, \
-                 expected {dir:?}",
+                "decode of UV {uv:?} was {decoded:?}, expected {dir:?}",
             );
+
+            // Tile-local coordinate the WGSL sampler derives
+            // (`border + oct * interior`), at every shared tile size.
+            for n in SHARED_MAPPING_TILE_DIMENSIONS {
+                let border = DEFAULT_IRRADIANCE_TILE_BORDER;
+                let interior = (n - 2 * border) as f32;
+                let coord = irradiance_tile_texel_coord(dir, n, border);
+                let expected = [
+                    border as f32 + expected_uv[0] * interior,
+                    border as f32 + expected_uv[1] * interior,
+                ];
+                assert!(
+                    (coord[0] - expected[0]).abs() < EPS * interior
+                        && (coord[1] - expected[1]).abs() < EPS * interior,
+                    "tile {n}: texel coordinate for {dir:?} was {coord:?}, expected {expected:?}",
+                );
+            }
         }
 
         // Pin the interior-texel inverse used by the baker / diagnostics:
-        // `irradiance_interior_texel_direction(i, j, 6, 1)` samples interior
-        // texel centers at UV `(i + 0.5) / 4`. Texel (0,0) is the lower-left
-        // octahedral center; texel (3,3) the upper-right.
-        let center_00 = irradiance_interior_texel_direction(0, 0, 6, 1);
-        let center_33 = irradiance_interior_texel_direction(3, 3, 6, 1);
-        // UV (0.125, 0.125) -> oct (-0.75, -0.75), z = 1 - 1.5 < 0 -> folds.
-        let expect_00 = decode_unquantized(0.125 * 2.0 - 1.0, 0.125 * 2.0 - 1.0);
-        let expect_33 = decode_unquantized(0.875 * 2.0 - 1.0, 0.875 * 2.0 - 1.0);
-        assert!(angular_error(center_00, expect_00) < MAX_ANGULAR_ERROR);
-        assert!(angular_error(center_33, expect_33) < MAX_ANGULAR_ERROR);
+        // `irradiance_interior_texel_direction(i, j, n, 1)` samples interior
+        // texel centers at UV `(i + 0.5) / interior`. Texel (0,0) is the
+        // lower-left octahedral center; texel (last, last) the upper-right.
+        // At n = 6: UV (0.125, 0.125) -> oct (-0.75, -0.75), z = 1 - 1.5 < 0 -> folds.
+        for n in SHARED_MAPPING_TILE_DIMENSIONS {
+            let interior = n - 2;
+            let last = interior - 1;
+            let lo = 0.5 / interior as f32;
+            let hi = (last as f32 + 0.5) / interior as f32;
+            let center_first = irradiance_interior_texel_direction(0, 0, n, 1);
+            let center_last = irradiance_interior_texel_direction(last, last, n, 1);
+            let expect_first = decode_unquantized(lo * 2.0 - 1.0, lo * 2.0 - 1.0);
+            let expect_last = decode_unquantized(hi * 2.0 - 1.0, hi * 2.0 - 1.0);
+            assert!(angular_error(center_first, expect_first) < MAX_ANGULAR_ERROR);
+            assert!(angular_error(center_last, expect_last) < MAX_ANGULAR_ERROR);
+        }
     }
 
     #[test]
     fn irradiance_interior_texel_direction_uses_unit_vectors() {
-        for y in 0..4 {
-            for x in 0..4 {
-                let d = irradiance_interior_texel_direction(x, y, 6, 1);
-                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                assert!((len - 1.0).abs() < 1e-5);
+        for n in SHARED_MAPPING_TILE_DIMENSIONS {
+            for y in 0..n - 2 {
+                for x in 0..n - 2 {
+                    let d = irradiance_interior_texel_direction(x, y, n, 1);
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    assert!((len - 1.0).abs() < 1e-5);
+                }
             }
         }
     }

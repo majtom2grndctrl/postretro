@@ -52,6 +52,8 @@ use postretro_level_format::map_entity::MapEntityRecord;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::navmesh::NavMeshSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -734,6 +736,11 @@ pub struct LevelWorld {
     /// which means every force is 1; read through [`LevelWorld::push_force`].
     #[cfg(feature = "load-prl")]
     pub environment_push_forces: Vec<f32>,
+    /// Compile-time reflection probes (PRL section 54), validated at load
+    /// against `environment_volumes` and the animated-light roster. `None`
+    /// when the level has no probes.
+    #[cfg(feature = "load-prl")]
+    pub reflection_probes: Option<ReflectionProbesSection>,
     /// `masks[C]` has bit `i` set when fog volume `i` overlaps cell `C`.
     /// `None` only when the map has no canonical fog volumes.
     #[cfg(feature = "load-prl")]
@@ -890,6 +897,8 @@ impl LevelWorld {
             environment_volumes: EnvironmentVolumesSection::default(),
             #[cfg(feature = "load-prl")]
             environment_push_forces: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            reflection_probes: None,
             #[cfg(feature = "load-prl")]
             fog_cell_masks: None,
             #[cfg(feature = "load-prl")]
@@ -1336,6 +1345,10 @@ mod tests {
     use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, NO_TEXTURE};
     use postretro_level_format::navmesh::{NAVMESH_VERSION, NavRegion};
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT, REFLECTION_PROBE_NO_LIGHT,
+        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+    };
     use postretro_render_data::geometry::BvhLeaf;
     use postretro_test_log_capture::LogCapture;
 
@@ -1988,6 +2001,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
             environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2092,6 +2106,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
             environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2150,6 +2165,7 @@ mod tests {
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
             environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
@@ -2778,6 +2794,174 @@ mod tests {
             section_id: SectionId::PushForces as u32,
             version: 1,
             data,
+        }
+    }
+
+    fn reflection_probe_environment() -> EnvironmentVolumesSection {
+        use postretro_level_format::environment_volumes::{
+            EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+        };
+        let mut environment = push_and_fluid_environment();
+        let vertex = |x: f32, z: f32| EnvironmentSurfaceVertex {
+            position: [x, 1.0, z],
+            uv: [x, z],
+        };
+        environment.volumes[0].surface_faces = vec![EnvironmentSurfaceFace {
+            texture_index: 0,
+            vertices: vec![vertex(0.0, 0.0), vertex(0.0, 1.0), vertex(1.0, 1.0)],
+        }];
+        environment
+    }
+
+    fn reflection_probes_section(
+        binding: ReflectionProbeBinding,
+        roster_index: u32,
+    ) -> ReflectionProbesSection {
+        let mut lights = [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE];
+        if roster_index != REFLECTION_PROBE_NO_LIGHT {
+            lights[0] = ReflectionProbeLightShare {
+                roster_index,
+                reference: [1.0; 3],
+                shares: [[0.5; 3]; REFLECTION_PROBE_LOBE_COUNT],
+            };
+        }
+        ReflectionProbesSection {
+            tile_dimension: 4,
+            tile_border: 1,
+            atlas_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
+            probes: vec![ReflectionProbeRecord {
+                source_entity: 1,
+                box_min: [0.0; 3],
+                box_max: [1.0, 2.0, 1.0],
+                capture_point: [0.5, 1.002, 0.5],
+                layer: 0,
+                lights,
+            }],
+            bindings: vec![binding],
+            tiles: vec![0; 16],
+        }
+    }
+
+    fn load_with_reflection_probes(
+        probes: Option<&ReflectionProbesSection>,
+        name: &str,
+    ) -> Result<LevelWorld, PrlLoadError> {
+        let mut sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            environment_volumes_blob(&reflection_probe_environment()),
+        ];
+        sections.extend(probes.map(|section| prl_format::SectionBlob {
+            section_id: SectionId::ReflectionProbes as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }));
+        let tmp = write_prl_fixture(sections, name);
+        let world = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        world
+    }
+
+    const FIRST_FACE: ReflectionProbeBinding = ReflectionProbeBinding {
+        volume: 0,
+        face: 0,
+        probe: 0,
+    };
+
+    fn reflection_probe_refusal(section: &ReflectionProbesSection, name: &str) -> String {
+        match load_with_reflection_probes(Some(section), name) {
+            Err(PrlLoadError::SectionValidation { section, message }) => {
+                assert_eq!(section, "ReflectionProbes");
+                message
+            }
+            other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
+        }
+    }
+
+    // A map built before section 54 existed, or one with no reflecting water,
+    // loads with no probes.
+    #[test]
+    fn load_prl_without_a_reflection_probe_section_has_no_probes() {
+        let world = load_with_reflection_probes(None, "postretro_test_no_reflection_probes.prl")
+            .expect("a PRL without probes loads");
+        assert!(world.reflection_probes.is_none());
+    }
+
+    #[test]
+    fn load_prl_keeps_a_valid_reflection_probe_section_with_a_reserved_share_entry() {
+        let section = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT);
+        let world =
+            load_with_reflection_probes(Some(&section), "postretro_test_reflection_probes.prl")
+                .expect("a valid probe section loads");
+        assert_eq!(world.reflection_probes, Some(section));
+    }
+
+    #[test]
+    fn load_prl_refuses_a_reflection_probe_binding_past_the_volumes_or_faces() {
+        let volume = reflection_probes_section(
+            ReflectionProbeBinding {
+                volume: 3,
+                ..FIRST_FACE
+            },
+            REFLECTION_PROBE_NO_LIGHT,
+        );
+        let message = reflection_probe_refusal(&volume, "postretro_test_probe_volume_past.prl");
+        assert!(
+            message.contains("volume 3, past the 3 environment volumes"),
+            "{message}"
+        );
+
+        let face = reflection_probes_section(
+            ReflectionProbeBinding {
+                face: 1,
+                ..FIRST_FACE
+            },
+            REFLECTION_PROBE_NO_LIGHT,
+        );
+        let message = reflection_probe_refusal(&face, "postretro_test_probe_face_past.prl");
+        assert!(
+            message.contains("volume 0 face 1, past its 1 surface faces"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn load_prl_refuses_a_reflection_probe_share_past_the_animated_light_roster() {
+        let section = reflection_probes_section(FIRST_FACE, 0);
+        let message = reflection_probe_refusal(&section, "postretro_test_probe_roster_past.prl");
+        assert!(
+            message.contains("animated light 0, past the 0-light roster"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn load_prl_refuses_a_reflection_probe_section_of_a_later_version() {
+        let mut bytes = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT).to_bytes();
+        bytes[0..2].copy_from_slice(&2u16.to_le_bytes());
+        let mut sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+            environment_volumes_blob(&reflection_probe_environment()),
+        ];
+        sections.push(prl_format::SectionBlob {
+            section_id: SectionId::ReflectionProbes as u32,
+            version: 1,
+            data: bytes,
+        });
+        let tmp = write_prl_fixture(sections, "postretro_test_probe_later_version.prl");
+        let result = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        match result {
+            Err(PrlLoadError::SectionValidation { section, message }) => {
+                assert_eq!(section, "ReflectionProbes");
+                assert!(message.contains("unsupported version 2"), "{message}");
+            }
+            other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
         }
     }
 

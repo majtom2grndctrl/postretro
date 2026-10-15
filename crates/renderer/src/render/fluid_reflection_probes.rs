@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::reflection_probes::{
-    ReflectionProbesSection, reflection_probe_tile_bytes,
+    ReflectionProbesSection, reflection_probe_distance_tile_bytes, reflection_probe_tile_bytes,
 };
 use postretro_render_cpu::fluid_surface::FluidFaceDriftMap;
 use postretro_render_cpu::fluid_surface::reflection::{
@@ -62,6 +62,8 @@ pub(crate) fn installable_probe_section(
         probe_array_format(section).is_some()
             && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
                 .is_some_and(|bytes| bytes * section.probes.len() == section.tiles.len())
+            && reflection_probe_distance_tile_bytes(section.distance_format, section.tile_dimension)
+                .is_some_and(|bytes| bytes * section.probes.len() == section.distances.len())
     })
 }
 

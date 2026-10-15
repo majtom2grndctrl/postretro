@@ -1350,6 +1350,9 @@ fn level_with_reflecting_pool() -> LevelWorld {
             probe: 0,
         }],
         tiles: vec![0; 16],
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(1, 4),
     });
     world
 }

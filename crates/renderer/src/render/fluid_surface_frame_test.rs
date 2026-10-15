@@ -307,6 +307,12 @@ fn uniform_probe_section(
             .iter()
             .flat_map(|&rgb| uniform_rgba16f_tile(dimension, rgb))
             .collect(),
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            layers.len(),
+            dimension,
+        ),
     }
 }
 
@@ -1224,6 +1230,11 @@ fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
                 probe: 0,
             }],
             tiles: uniform_rgba16f_tile(dimension, [0, green, 0]),
+            distance_format:
+                postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+            distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+                1, dimension,
+            ),
         }
     };
     let half_share = ReflectionProbeLightShare {
@@ -1384,6 +1395,11 @@ fn pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel() {
             probe: 0,
         }],
         tiles: gradient_rgba16f_tile(dimension),
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            1, dimension,
+        ),
     };
     // A mirror (reflectivity 50) at zero opacity: the output is the
     // reflection alone.

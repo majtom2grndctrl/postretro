@@ -88,6 +88,12 @@ fn section(
         tile_border: REFLECTION_PROBE_TILE_BORDER,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
         tiles: vec![0; tile * probes.len()],
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            probes.len(),
+            REFLECTION_PROBE_TILE_DIMENSION,
+        ),
         probes,
         bindings,
     }

@@ -1,12 +1,13 @@
 // ReflectionProbes PRL section (ID 54): compile-time box-projected probes,
-// their per-light shares, the fluid faces they bind, and their capture tiles.
+// their per-light shares, the fluid faces they bind, and their capture and
+// distance tiles.
 // See: context/lib/resource_management.md §5 · build_pipeline.md §PRL section IDs
 
 use crate::FormatError;
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::prm::PORTABLE_MAX_TEXTURE_ARRAY_LAYERS;
 
-pub const REFLECTION_PROBES_VERSION: u16 = 1;
+pub const REFLECTION_PROBES_VERSION: u16 = 2;
 
 /// Engine capture tile edge in texels, border included. Carried in the header,
 /// so a later authored size is additive.
@@ -23,6 +24,11 @@ pub const REFLECTION_PROBE_LOBE_COUNT: usize = 5;
 pub const MAX_REFLECTION_PROBES: usize = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as usize;
 /// Share entry roster index marking an unused entry; it names no light.
 pub const REFLECTION_PROBE_NO_LIGHT: u32 = u32::MAX;
+/// Distance format tag, the only value: little-endian f16 per texel holding
+/// the mean over its supersamples of 1/|hit − capture point|₁, 0 where the
+/// ray hit nothing. Inverse L1 reconstructs planes exactly under bilinear
+/// filtering within an octant, and 0 is the natural "no surface" sentinel.
+pub const REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1: u32 = 0;
 
 /// Blend weights of the five share lobes for a lookup `direction`, in lobe
 /// order: up (+Y), +X, −X, +Z, −Z. The compiler weights each captured texel's
@@ -64,7 +70,7 @@ pub fn reflection_probe_lobe_weights(direction: [f32; 3]) -> [f32; REFLECTION_PR
 /// for an absurd texture before the payload length check could catch it.
 const MAX_TILE_DIMENSION: u32 = 1024;
 
-const HEADER_SIZE: usize = 2 + 4 * 7;
+const HEADER_SIZE: usize = 2 + 4 * 8;
 const SHARE_ENTRY_SIZE: usize = 4 + 12 + REFLECTION_PROBE_LOBE_COUNT * 12;
 const PROBE_SIZE: usize = 4 + 12 * 3 + 4 + REFLECTION_PROBE_LIGHTS_PER_PROBE * SHARE_ENTRY_SIZE;
 const BINDING_SIZE: usize = 12;
@@ -73,14 +79,17 @@ const BINDING_SIZE: usize = 12;
 /// probes.
 ///
 /// On-disk layout (little-endian):
-///   u16  version (1)
-///   u32  tile dimension, u32 tile border, u32 atlas format tag (id 22's tags)
+///   u16  version (2)
+///   u32  tile dimension, u32 tile border, u32 atlas format tag (id 22's tags),
+///   u32  distance format tag (`REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1`)
 ///   u32  lights per probe K, u32 lobe count, u32 probe count, u32 binding count
 ///   probe × count: u32 source entity, f32×3 box min, f32×3 box max,
 ///     f32×3 capture point, u32 layer, then K share entries:
 ///     u32 roster index, f32×3 RGB reference, f32×3 share × lobe count
 ///   binding × count: u32 volume, u32 face, u32 probe
 ///   tiles, layer-major, each in the atlas format
+///   distance tiles, layer-major, one per probe at the tile dimension and
+///     border, little-endian f16
 ///
 /// Bindings ascend strictly by (volume, face), so a face binds at most once
 /// and the order is canonical. Cross-section references (volume and face
@@ -98,6 +107,11 @@ pub struct ReflectionProbesSection {
     pub bindings: Vec<ReflectionProbeBinding>,
     /// One tile per probe, layer-major.
     pub tiles: Vec<u8>,
+    /// `REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1`.
+    pub distance_format: u32,
+    /// One distance tile per probe, layer-major, in the colour tile's mapping
+    /// and border.
+    pub distances: Vec<u8>,
 }
 
 /// One probe. Reflector-agnostic: nothing here is water-specific.
@@ -163,12 +177,32 @@ pub fn reflection_probe_tile_bytes(format: u32, dimension: u32) -> Option<usize>
     }
 }
 
+/// Bytes of one distance tile of `dimension` texels square in `format`, or
+/// `None` for an unknown format.
+pub fn reflection_probe_distance_tile_bytes(format: u32, dimension: u32) -> Option<usize> {
+    let dimension = dimension as usize;
+    match format {
+        REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1 => Some(dimension * dimension * 2),
+        _ => None,
+    }
+}
+
+/// A distance payload of `probe_count` tiles that see no surface: every
+/// lookup falls back to the box hit.
+pub fn reflection_probe_zero_distances(probe_count: usize, dimension: u32) -> Vec<u8> {
+    let bytes =
+        reflection_probe_distance_tile_bytes(REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, dimension)
+            .expect("the f16 inverse-L1 format is known");
+    vec![0; probe_count * bytes]
+}
+
 impl ReflectionProbesSection {
     pub fn byte_len(&self) -> usize {
         HEADER_SIZE
             + self.probes.len() * PROBE_SIZE
             + self.bindings.len() * BINDING_SIZE
             + self.tiles.len()
+            + self.distances.len()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -177,6 +211,7 @@ impl ReflectionProbesSection {
         u32_out(&mut out, self.tile_dimension);
         u32_out(&mut out, self.tile_border);
         u32_out(&mut out, self.atlas_format);
+        u32_out(&mut out, self.distance_format);
         count(&mut out, REFLECTION_PROBE_LIGHTS_PER_PROBE);
         count(&mut out, REFLECTION_PROBE_LOBE_COUNT);
         count(&mut out, self.probes.len());
@@ -201,12 +236,14 @@ impl ReflectionProbesSection {
             u32_out(&mut out, binding.probe);
         }
         out.extend_from_slice(&self.tiles);
+        out.extend_from_slice(&self.distances);
         out
     }
 
-    /// Decode untrusted section bytes: a later version, a malformed header, a
-    /// binding past the probe count, a face bound twice, or a tile payload of
-    /// the wrong length is refused. Every count is bounded by the bytes left
+    /// Decode untrusted section bytes: another version, a malformed header, a
+    /// binding past the probe count, a face bound twice, a tile or distance
+    /// payload of the wrong length, or a negative or non-finite distance is
+    /// refused. Every count is bounded by the bytes left
     /// before anything is allocated.
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut r = Reader { data, offset: 0 };
@@ -219,6 +256,7 @@ impl ReflectionProbesSection {
         let tile_dimension = r.u32("tile dimension")?;
         let tile_border = r.u32("tile border")?;
         let atlas_format = r.u32("atlas format")?;
+        let distance_format = r.u32("distance format")?;
         let lights_per_probe = r.u32("lights per probe")? as usize;
         let lobe_count = r.u32("lobe count")? as usize;
         if tile_dimension < 4 || tile_dimension % 4 != 0 || tile_dimension > MAX_TILE_DIMENSION {
@@ -233,6 +271,11 @@ impl ReflectionProbesSection {
         }
         let Some(tile_bytes) = reflection_probe_tile_bytes(atlas_format, tile_dimension) else {
             return invalid(format!("unknown atlas format {atlas_format}"));
+        };
+        let Some(distance_tile_bytes) =
+            reflection_probe_distance_tile_bytes(distance_format, tile_dimension)
+        else {
+            return invalid(format!("unknown distance format {distance_format}"));
         };
         if lights_per_probe != REFLECTION_PROBE_LIGHTS_PER_PROBE
             || lobe_count != REFLECTION_PROBE_LOBE_COUNT
@@ -303,6 +346,16 @@ impl ReflectionProbesSection {
 
         let tiles_len = probe_count * tile_bytes;
         let tiles = r.take(tiles_len, "tile payload")?.to_vec();
+        let distances = r
+            .take(probe_count * distance_tile_bytes, "distance payload")?
+            .to_vec();
+        if let Some(texel) = distances.chunks_exact(2).position(|bits| {
+            !f16_bits_are_finite_non_negative(u16::from_le_bytes([bits[0], bits[1]]))
+        }) {
+            return invalid(format!(
+                "distance payload holds a negative or non-finite value at texel {texel}"
+            ));
+        }
         if r.offset != data.len() {
             return invalid(format!(
                 "trailing bytes: expected {}, got {}",
@@ -317,6 +370,8 @@ impl ReflectionProbesSection {
             probes,
             bindings,
             tiles,
+            distance_format,
+            distances,
         })
     }
 
@@ -326,6 +381,18 @@ impl ReflectionProbesSection {
             .expect("a decoded or compiled section has a known atlas format");
         &self.tiles[layer * bytes..(layer + 1) * bytes]
     }
+
+    /// One probe's distance tile bytes (little-endian f16).
+    pub fn distance_tile(&self, layer: usize) -> &[u8] {
+        let bytes = reflection_probe_distance_tile_bytes(self.distance_format, self.tile_dimension)
+            .expect("a decoded or compiled section has a known distance format");
+        &self.distances[layer * bytes..(layer + 1) * bytes]
+    }
+}
+
+/// Sign bit clear and exponent not all ones: a finite f16 at or above zero.
+fn f16_bits_are_finite_non_negative(bits: u16) -> bool {
+    bits & 0x8000 == 0 && bits & 0x7C00 != 0x7C00
 }
 
 fn read_probe(r: &mut Reader<'_>, p: usize) -> crate::Result<ReflectionProbeRecord> {

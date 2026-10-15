@@ -2839,6 +2839,11 @@ mod tests {
             }],
             bindings: vec![binding],
             tiles: vec![0; 16],
+            distance_format:
+                postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+            distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+                1, 4,
+            ),
         }
     }
 
@@ -2940,7 +2945,7 @@ mod tests {
     #[test]
     fn load_prl_refuses_a_reflection_probe_section_of_a_later_version() {
         let mut bytes = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT).to_bytes();
-        bytes[0..2].copy_from_slice(&2u16.to_le_bytes());
+        bytes[0..2].copy_from_slice(&3u16.to_le_bytes());
         let mut sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -2959,7 +2964,7 @@ mod tests {
         match result {
             Err(PrlLoadError::SectionValidation { section, message }) => {
                 assert_eq!(section, "ReflectionProbes");
-                assert!(message.contains("unsupported version 2"), "{message}");
+                assert!(message.contains("unsupported version 3"), "{message}");
             }
             other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
         }

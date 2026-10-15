@@ -53,6 +53,8 @@ fn section() -> ReflectionProbesSection {
             },
         ],
         tiles: (0..2 * tile).map(|i| (i % 251) as u8).collect(),
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(2, REFLECTION_PROBE_TILE_DIMENSION),
     }
 }
 
@@ -113,7 +115,7 @@ fn a_later_version_is_refused_naming_the_section() {
         .expect_err("later version is refused")
         .to_string();
     assert!(message.contains("reflection probes"), "{message}");
-    assert!(message.contains("unsupported version 2"), "{message}");
+    assert!(message.contains("unsupported version 3"), "{message}");
 }
 
 #[test]
@@ -158,8 +160,8 @@ fn malformed_headers_are_refused() {
     assert!(refusal(&format).contains("unknown atlas format 9"));
 
     let mut bytes = section().to_bytes();
-    // K sits after version, dimension, border and format.
-    bytes[14..18].copy_from_slice(&5u32.to_le_bytes());
+    // K sits after version, dimension, border, atlas and distance formats.
+    bytes[18..22].copy_from_slice(&5u32.to_le_bytes());
     let message = ReflectionProbesSection::from_bytes(&bytes)
         .expect_err("another K is refused")
         .to_string();
@@ -194,9 +196,60 @@ fn malformed_probes_are_refused() {
 }
 
 #[test]
-fn a_tile_payload_of_the_wrong_length_is_refused() {
+fn distance_tiles_round_trip_beside_the_colour_tiles() {
+    let mut section = section();
+    let texels = (REFLECTION_PROBE_TILE_DIMENSION * REFLECTION_PROBE_TILE_DIMENSION) as usize;
+    // f16 bits from 0 (no surface) up through ordinary positive values.
+    section.distances = (0..2 * texels)
+        .flat_map(|i| ((i % 0x3C00) as u16).to_le_bytes())
+        .collect();
+    let decoded = ReflectionProbesSection::from_bytes(&section.to_bytes())
+        .expect("a section with distances decodes");
+    assert_eq!(decoded, section);
+    assert_eq!(
+        decoded.distance_tile(1),
+        &section.distances[2 * texels..4 * texels]
+    );
+}
+
+#[test]
+fn a_version_one_section_is_refused() {
+    let mut bytes = section().to_bytes();
+    bytes[0..2].copy_from_slice(&1u16.to_le_bytes());
+    let message = ReflectionProbesSection::from_bytes(&bytes)
+        .expect_err("version 1 predates distance tiles")
+        .to_string();
+    assert!(message.contains("unsupported version 1"), "{message}");
+}
+
+#[test]
+fn malformed_distance_payloads_are_refused() {
+    let mut format = section();
+    format.distance_format = 7;
+    assert!(refusal(&format).contains("unknown distance format 7"));
+
+    let mut negative = section();
+    negative.distances[2..4].copy_from_slice(&0xBC00u16.to_le_bytes());
+    assert!(refusal(&negative).contains("negative or non-finite value at texel 1"));
+
+    let mut infinite = section();
+    infinite.distances[0..2].copy_from_slice(&0x7C00u16.to_le_bytes());
+    assert!(refusal(&infinite).contains("negative or non-finite value at texel 0"));
+
     let mut short = section().to_bytes();
-    short.pop();
+    short.truncate(short.len() - 2);
+    let message = ReflectionProbesSection::from_bytes(&short)
+        .expect_err("a short distance payload is refused")
+        .to_string();
+    assert!(message.contains("truncated distance payload"), "{message}");
+}
+
+#[test]
+fn a_tile_payload_of_the_wrong_length_is_refused() {
+    // Cut inside the colour tiles, ahead of the distance payload.
+    let full = section();
+    let mut short = full.to_bytes();
+    short.truncate(short.len() - full.distances.len() - 1);
     let message = ReflectionProbesSection::from_bytes(&short)
         .expect_err("short payload is refused")
         .to_string();

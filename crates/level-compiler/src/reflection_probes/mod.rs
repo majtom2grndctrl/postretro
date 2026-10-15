@@ -278,6 +278,12 @@ fn capture_section(
             .collect(),
         bindings: bindings(probes),
         tiles: tiles.concat(),
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            probes.len(),
+            REFLECTION_PROBE_TILE_DIMENSION,
+        ),
     };
     Ok((section, shares.iter().map(|share| share.report).collect()))
 }

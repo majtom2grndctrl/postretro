@@ -525,6 +525,11 @@ fn capture_is_byte_identical_across_worker_counts() {
     let one = run(1);
     let four = run(4);
     assert_eq!(one.probes.len(), 2);
+    // The distance tiles are part of the identity: both are real payloads.
+    for layer in 0..2 {
+        assert!(one.distance_tile(layer).iter().any(|&b| b != 0));
+    }
+    assert_eq!(one.distances, four.distances);
     assert_eq!(one.to_bytes(), four.to_bytes());
     assert_eq!(one.to_bytes(), run(1).to_bytes());
     // Lights 2 and 3 tie; the lower roster index takes the fourth entry.

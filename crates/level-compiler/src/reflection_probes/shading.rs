@@ -75,8 +75,9 @@ pub(crate) struct ShadeScratch {
 impl CaptureScene<'_> {
     /// Radiance arriving at `origin` from unit `direction`, split as the
     /// capture composes it: the returned static radiance, and in
-    /// `scratch.animated` each animated light's unit-radiance contribution.
-    /// Black with no animated terms on a miss. `sample_angle` is the angular
+    /// `scratch.animated` each animated light's unit-radiance contribution;
+    /// beside it the hit's distance along `direction`. Black with no animated
+    /// terms and no distance on a miss. `sample_angle` is the angular
     /// width one sample stands for, which picks the texture mip a pixel of
     /// that footprint would read.
     ///
@@ -96,13 +97,13 @@ impl CaptureScene<'_> {
         direction: Vec3,
         sample_angle: f32,
         scratch: &mut ShadeScratch,
-    ) -> anyhow::Result<Vec3> {
+    ) -> anyhow::Result<(Vec3, Option<f32>)> {
         scratch.animated.clear();
         let Some(hit) = self
             .tracer
             .closest_hit(origin, direction, self.max_distance)
         else {
-            return Ok(Vec3::ZERO);
+            return Ok((Vec3::ZERO, None));
         };
         let surface = self.tracer.surface(&hit, origin, direction);
         let footprint_texels = hit.distance * sample_angle * surface.texel_density;
@@ -142,7 +143,10 @@ impl CaptureScene<'_> {
                 &mut scratch.animated,
             );
         }
-        Ok(shade(material.albedo, direct, indirect, material.emissive))
+        Ok((
+            shade(material.albedo, direct, indirect, material.emissive),
+            Some(hit.distance),
+        ))
     }
 }
 

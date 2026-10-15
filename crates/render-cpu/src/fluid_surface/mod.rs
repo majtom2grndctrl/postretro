@@ -16,6 +16,7 @@ mod drift;
 pub mod fog;
 pub mod motion;
 pub mod reflection;
+pub mod reflection_search;
 pub mod reflection_style;
 mod slots;
 

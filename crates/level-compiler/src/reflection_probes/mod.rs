@@ -1,6 +1,6 @@
 //! Reflection-probe capture stage (PRL id 54): place authored and derived
 //! probes over up-facing fluid faces, capture each probe's static world into
-//! an octahedral tile.
+//! an octahedral colour tile and a distance tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
 mod animated_direct;
@@ -8,6 +8,7 @@ mod authored;
 mod box_fit;
 mod capture;
 mod capture_point;
+mod capture_visibility;
 mod delta_sample;
 mod derived;
 mod hit;
@@ -23,6 +24,8 @@ mod stage_key;
 
 #[cfg(test)]
 mod capture_tests;
+#[cfg(test)]
+mod distance_tests;
 #[cfg(test)]
 mod placement_test_fixtures;
 #[cfg(test)]
@@ -43,7 +46,8 @@ use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use postretro_level_format::reflection_probes::{
-    MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
+    MAX_REFLECTION_PROBES, REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
     REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
 };
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
@@ -58,8 +62,9 @@ use crate::partition::BspTree;
 
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
-use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_tile};
+use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
 use capture_point::PointClassifier;
+use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
@@ -77,7 +82,8 @@ const STAGE_ID: &str = "reflection_probes";
 /// Bump when capture shading, sampling or the payload changes. Placement
 /// enters the key as its output, so a placement change re-keys by itself.
 /// 3: animated direct and indirect at reference, sdf lights, light share.
-const STAGE_VERSION: u32 = 3;
+/// 4: the distance tile (mean inverse L1 hit distance per texel).
+const STAGE_VERSION: u32 = 4;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -175,6 +181,7 @@ pub(crate) fn bake_or_load_reflection_probes(
     {
         log::info!("[cache] reflection_probes hit");
         log_probes(&section, &reports);
+        warn_hidden_water(&section, &probes, inputs.environment_volumes);
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
@@ -214,13 +221,14 @@ pub(crate) fn bake_or_load_reflection_probes(
         cache.put(&key, &cache_payload(&section, &reports));
     }
     log_probes(&section, &reports);
+    warn_hidden_water(&section, &probes, inputs.environment_volumes);
     Ok(Some(section))
 }
 
-/// Capture every probe's tile and light share. Work items are tile rows, so
-/// one probe spreads across workers; rows land in item order and each
-/// probe's share sums merge in row order, so the bytes never depend on the
-/// worker count.
+/// Capture every probe's colour and distance tiles and light share. Work
+/// items are tile rows, so one probe spreads across workers; rows land in
+/// item order and each probe's share sums merge in row order, so the bytes
+/// never depend on the worker count.
 fn capture_section(
     scene: &CaptureScene<'_>,
     probes: &[PlacedProbe],
@@ -246,6 +254,13 @@ fn capture_section(
         .map(|rows| {
             let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
             encode_tile(&texels)
+        })
+        .collect();
+    let distances: Vec<u8> = rows
+        .chunks(rows_per_tile)
+        .flat_map(|rows| {
+            let texels: Vec<&[f32]> = rows.iter().map(|r| r.distances.as_slice()).collect();
+            encode_distance_tile(&texels)
         })
         .collect();
     let shares: Vec<_> = rows
@@ -278,12 +293,8 @@ fn capture_section(
             .collect(),
         bindings: bindings(probes),
         tiles: tiles.concat(),
-        distance_format:
-            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
-            probes.len(),
-            REFLECTION_PROBE_TILE_DIMENSION,
-        ),
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances,
     };
     Ok((section, shares.iter().map(|share| share.report).collect()))
 }

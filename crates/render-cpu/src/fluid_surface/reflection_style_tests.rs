@@ -23,6 +23,12 @@ const TILE_TEXEL: f32 = 1.0 / 128.0;
 /// Below the fade threshold's floor (0.75), so no cell flattens.
 const NEAR_FOOTPRINT: f32 = 0.5;
 
+/// A distance tile holding no surface: every search ends at the box hit,
+/// plain box projection.
+fn no_surface(_layer: u32, _uv: Vec2) -> f32 {
+    0.0
+}
+
 /// A room-sized probe over the pool, capture point 2 mm above the water.
 fn room_probe() -> ReflectionProbeRecord {
     ReflectionProbeRecord {
@@ -91,6 +97,7 @@ fn sampled(fragment: &FluidReflectionFragment) -> (Vec2, Vec4) {
             seen.set(Some(uv));
             Vec3::new(uv.x * 4.0, uv.y * 4.0, 1.0)
         },
+        no_surface,
     );
     (
         seen.get().expect("a bound face seen from above samples"),

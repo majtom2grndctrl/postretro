@@ -1,7 +1,8 @@
-// Reflection-probe tile capture: trace a full-sphere octahedral tile from a capture point.
+// Reflection-probe tile capture: trace a full-sphere octahedral colour and distance tile from a capture point.
 // See: context/lib/resource_management.md §5.2 · build_pipeline.md §PRL section IDs (id 54)
 
 use glam::Vec3;
+use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::octahedral::irradiance_tile_source_texel;
 use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION,
@@ -34,18 +35,40 @@ pub(crate) fn sample_angle() -> f32 {
     (4.0 * std::f32::consts::PI / samples).sqrt()
 }
 
-/// One interior row of a tile: each texel's mean captured radiance over its
-/// supersamples, and the row's light-share sums.
+/// Largest finite f16. A stored inverse distance clamps to it, so a hit
+/// within 1.5e-5 m of the capture point never encodes as infinity, which the
+/// section decoder refuses.
+const F16_MAX: f32 = 65504.0;
+
+/// One interior row of a tile: each texel's mean captured radiance and mean
+/// inverse L1 distance over its supersamples, and the row's light-share sums.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RowCapture {
     pub texels: Vec<Vec3>,
+    /// Per texel, the mean over its supersamples of `1 / |hit − capture
+    /// point|₁`, a miss counting 0.
+    pub distances: Vec<f32>,
     pub shares: ShareSums,
+}
+
+/// One supersample's stored distance quantity: `1 / |hit − capture point|₁`
+/// for a hit `distance` along unit `direction` (the L1 length of `t·d` is
+/// `t·|d|₁`), 0 for a miss. Inverse L1 is affine across an octahedral octant
+/// on a plane, so the mean over symmetric supersamples and the runtime's
+/// bilinear filter both reproduce a wall exactly.
+pub(crate) fn inverse_l1_distance(distance: Option<f32>, direction: Vec3) -> f32 {
+    match distance {
+        Some(t) => (1.0 / (t * direction.abs().element_sum())).min(F16_MAX),
+        None => 0.0,
+    }
 }
 
 /// Capture one interior row. Each supersample's radiance is the static
 /// result plus every animated light's unit term at its reference value
 /// (`references`, by roster index), and the same sample, weighted by the
-/// solid angle it stands for, feeds the share sums.
+/// solid angle it stands for, feeds the share sums. The same ray's hit
+/// distance feeds the distance tile, summed in the fixed supersample order so
+/// the bytes never depend on the worker count.
 pub(crate) fn capture_row(
     scene: &CaptureScene<'_>,
     capture_point: Vec3,
@@ -58,15 +81,19 @@ pub(crate) fn capture_row(
     let mut scratch = ShadeScratch::default();
     let mut out = RowCapture {
         texels: Vec::with_capacity(TILE_INTERIOR as usize),
+        distances: Vec::with_capacity(TILE_INTERIOR as usize),
         shares: ShareSums::default(),
     };
     for column in 0..TILE_INTERIOR {
         let mut sum = Vec3::ZERO;
+        let mut inverse_distance = 0.0;
         for [dx, dy] in SUPERSAMPLE_OFFSETS {
             let u = (column as f32 + 0.5 + dx) / interior;
             let v = (row as f32 + 0.5 + dy) / interior;
             let direction = octahedral_direction(u, v);
-            let static_radiance = scene.radiance(capture_point, direction, angle, &mut scratch)?;
+            let (static_radiance, distance) =
+                scene.radiance(capture_point, direction, angle, &mut scratch)?;
+            inverse_distance += inverse_l1_distance(distance, direction);
             let animated = scratch.animated.lights();
             let capture = animated
                 .iter()
@@ -84,6 +111,7 @@ pub(crate) fn capture_row(
             sum += capture;
         }
         out.texels.push(sum / samples as f32);
+        out.distances.push(inverse_distance / samples as f32);
     }
     Ok(out)
 }
@@ -95,19 +123,36 @@ pub(crate) fn encode_tile(rows: &[&[Vec3]]) -> Vec<u8> {
     encode_bc6h_rgb_from_f32_rgba(&bordered_rgba(rows), dimension, dimension)
 }
 
+/// Assemble interior distance rows into the bordered distance tile as
+/// little-endian f16, by the colour tile's wrap rule.
+pub(crate) fn encode_distance_tile(rows: &[&[f32]]) -> Vec<u8> {
+    bordered(rows)
+        .into_iter()
+        .flat_map(|w| f32_to_f16_bits(w).to_le_bytes())
+        .collect()
+}
+
 /// The tile as row-major RGBA f32, border included.
 fn bordered_rgba(rows: &[&[Vec3]]) -> Vec<f32> {
+    bordered(rows)
+        .into_iter()
+        .flat_map(|texel| [texel.x, texel.y, texel.z, 1.0])
+        .collect()
+}
+
+/// Every tile texel, row-major, border included: each copies its interior
+/// source by the SH atlas's wrap rule.
+fn bordered<T: Copy>(rows: &[&[T]]) -> Vec<T> {
     let dimension = REFLECTION_PROBE_TILE_DIMENSION;
-    let mut rgba = Vec::with_capacity((dimension * dimension * 4) as usize);
+    let mut tile = Vec::with_capacity((dimension * dimension) as usize);
     for y in 0..dimension {
         for x in 0..dimension {
             let [ix, iy] =
                 irradiance_tile_source_texel(x, y, dimension, REFLECTION_PROBE_TILE_BORDER);
-            let texel = rows[iy as usize][ix as usize];
-            rgba.extend_from_slice(&[texel.x, texel.y, texel.z, 1.0]);
+            tile.push(rows[iy as usize][ix as usize]);
         }
     }
-    rgba
+    tile
 }
 
 /// Unit direction at octahedral `(u, v)` in `[0, 1]²`: the inverse of
@@ -195,5 +240,34 @@ mod tests {
             encode_tile(&rows).len(),
             (dimension / 4 * dimension / 4 * 16) as usize
         );
+
+        // The distance tile borders by the same rule, as little-endian f16.
+        let distance_rows: Vec<Vec<f32>> = (0..TILE_INTERIOR)
+            .map(|y| (0..TILE_INTERIOR).map(|x| (y * 200 + x) as f32).collect())
+            .collect();
+        let distance_rows: Vec<&[f32]> = distance_rows.iter().map(Vec::as_slice).collect();
+        let bytes = encode_distance_tile(&distance_rows);
+        assert_eq!(bytes.len(), (dimension * dimension * 2) as usize);
+        let at = |x: u32, y: u32| {
+            let i = ((y * dimension + x) * 2) as usize;
+            u16::from_le_bytes([bytes[i], bytes[i + 1]])
+        };
+        let f16 = |value: f32| f32_to_f16_bits(value);
+        assert_eq!(at(1, 1), f16(0.0));
+        assert_eq!(at(0, 10), f16(116.0 * 200.0));
+        assert_eq!(at(0, 3), f16(123.0 * 200.0));
+        assert_eq!(at(10, 0), f16(116.0));
+        assert_eq!(at(0, 0), at(126, 126));
+    }
+
+    #[test]
+    fn inverse_l1_distance_is_the_reciprocal_l1_length_of_the_hit_offset() {
+        let direction = Vec3::new(0.6, -0.8, 0.0);
+        // Hit 2 m along: offset (1.2, -1.6, 0), L1 2.8.
+        let w = inverse_l1_distance(Some(2.0), direction);
+        assert!((w - 1.0 / 2.8).abs() < 1e-6, "{w}");
+        assert_eq!(inverse_l1_distance(None, direction), 0.0);
+        // A hit on the capture point stays finite in f16.
+        assert_eq!(inverse_l1_distance(Some(0.0), direction), 65504.0);
     }
 }

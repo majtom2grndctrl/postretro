@@ -22,6 +22,12 @@ const TILE: [u32; 2] = [
 ];
 const NO_LIGHTS: &FluidReflectionLights<'static> = &FluidReflectionLights::NONE;
 
+/// A distance tile holding no surface: every search ends at the box hit,
+/// plain box projection.
+fn no_surface(_layer: u32, _uv: Vec2) -> f32 {
+    0.0
+}
+
 fn assert_close(actual: f32, expected: f32, tolerance: f32, what: &str) {
     assert!(
         (actual - expected).abs() <= tolerance,
@@ -335,6 +341,7 @@ fn the_fragment_reference_samples_toward_the_box_hit_from_the_capture_point() {
                 seen.set(Some((layer, uv)));
                 Vec3::ONE
             },
+            no_surface,
         );
         let (layer, uv) = seen.get().expect("a bound face seen from above samples");
         assert_eq!(layer, 0);
@@ -437,7 +444,7 @@ fn reflectivity_zero_returns_the_surface_unchanged() {
         ..pool_fragment(camera, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &off, &probes, TILE, NO_LIGHTS, red),
+        reflection_fragment(surface, &off, &probes, TILE, NO_LIGHTS, red, no_surface),
         surface
     );
     let on = reflection_fragment(
@@ -447,6 +454,7 @@ fn reflectivity_zero_returns_the_surface_unchanged() {
         TILE,
         NO_LIGHTS,
         red,
+        no_surface,
     );
     assert_ne!(on, surface);
 }
@@ -472,7 +480,8 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
             &probes,
             TILE,
             NO_LIGHTS,
-            red
+            red,
+            no_surface
         ),
         surface,
         "from below: today's value"
@@ -484,6 +493,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         TILE,
         NO_LIGHTS,
         red,
+        no_surface,
     );
     assert!(
         reflected.x > surface.x && reflected.w > surface.w,
@@ -496,7 +506,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &flipped, &probes, TILE, NO_LIGHTS, red),
+        reflection_fragment(surface, &flipped, &probes, TILE, NO_LIGHTS, red, no_surface),
         surface
     );
     // A face bound to no probe renders as today.
@@ -505,7 +515,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &unbound, &probes, TILE, NO_LIGHTS, red),
+        reflection_fragment(surface, &unbound, &probes, TILE, NO_LIGHTS, red, no_surface),
         surface
     );
 }
@@ -546,7 +556,15 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         // With fog: surface over fog over scene, then the reflection over it.
         let fogged = fog_fragment(rgb, alpha, &fog);
         assert!(fogged.w >= alpha && fogged.w > 0.0, "fog adds coverage");
-        let out = reflection_fragment(fogged, &frag, &probes, TILE, NO_LIGHTS, |_, _| reflection);
+        let out = reflection_fragment(
+            fogged,
+            &frag,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            |_, _| reflection,
+            no_surface,
+        );
         let expected = reflection * f + over(fogged, scene) * (1.0 - f);
         assert_vec_close(over(out, scene), expected, 1.0e-5, "fogged composite");
         assert_close(out.w, f + (1.0 - f) * fogged.w, 1.0e-6, "fogged coverage");
@@ -558,7 +576,15 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         };
         let surface = fog_fragment(rgb, alpha, &clear);
         assert_eq!(surface, rgb.extend(alpha));
-        let out = reflection_fragment(surface, &frag, &probes, TILE, NO_LIGHTS, |_, _| reflection);
+        let out = reflection_fragment(
+            surface,
+            &frag,
+            &probes,
+            TILE,
+            NO_LIGHTS,
+            |_, _| reflection,
+            no_surface,
+        );
         let expected = reflection * f + (rgb * alpha + scene * (1.0 - alpha)) * (1.0 - f);
         assert_vec_close(over(out, scene), expected, 1.0e-5, "clear composite");
         assert_close(out.w, f + (1.0 - f) * alpha, 1.0e-6, "clear coverage");
@@ -595,7 +621,15 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
     for mask in [all, all | 0x80] {
         assert!(reflection_mask_on(mask));
         assert_ne!(
-            reflection_fragment(surface, &with_mask(mask), &probes, TILE, NO_LIGHTS, red),
+            reflection_fragment(
+                surface,
+                &with_mask(mask),
+                &probes,
+                TILE,
+                NO_LIGHTS,
+                red,
+                no_surface
+            ),
             surface
         );
     }
@@ -603,7 +637,15 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
         let mask = all & !term.bits();
         assert!(!reflection_mask_on(mask), "{}", term.label());
         assert_eq!(
-            reflection_fragment(surface, &with_mask(mask), &probes, TILE, NO_LIGHTS, red),
+            reflection_fragment(
+                surface,
+                &with_mask(mask),
+                &probes,
+                TILE,
+                NO_LIGHTS,
+                red,
+                no_surface
+            ),
             surface,
             "{} off",
             term.label()
@@ -966,6 +1008,7 @@ fn two_fragments_of_one_probe_read_one_ratio_for_one_direction() {
             TILE,
             &frame,
             |_, _| capture,
+            no_surface,
         )
     };
     let wall = Vec3::new(1.0, 2.0, 4.0);

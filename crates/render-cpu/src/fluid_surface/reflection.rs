@@ -1,6 +1,6 @@
 // Fluid reflection probes: the probe table's GPU layout, the per-vertex probe
 // index, and the GPU-free CPU reference for `fluid_surface.wgsl`'s probe term,
-// its live-lighting ratio included.
+// its live-lighting ratio included (the distance search is `reflection_search`).
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};
@@ -14,6 +14,7 @@ use postretro_level_format::reflection_probes::{
 };
 
 use super::FluidFaceDriftMap;
+use super::reflection_search::reflection_search;
 use super::reflection_style::{FluidTexelAxes, reflection_point};
 use crate::frame_uniforms::LightTermMask;
 use crate::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
@@ -295,9 +296,10 @@ pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3)
     origin + ray * t
 }
 
-/// The tile lookup direction: from the capture point to the box hit, clamped
-/// to the horizon when the hit lies below the capture point. A hit on the
-/// capture point itself has no direction and takes the reflected ray's.
+/// The tile lookup direction: from the capture point to the reflected
+/// point (the distance search's hit, or the box hit), clamped to the horizon
+/// when it lies below the capture point. A point on the capture point itself
+/// has no direction and takes the reflected ray's.
 pub fn reflection_lookup(hit: Vec3, capture_point: Vec3, ray: Vec3) -> Vec3 {
     let toward = hit - capture_point;
     let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
@@ -461,12 +463,14 @@ pub struct FluidReflectionFragment {
 
 /// The fragment's output as `fs_main`'s tail computes it from `surface`
 /// (the fog reference's output): unchanged when the gate is off, else the
-/// probe's capture, sampled toward the box hit from the capture point and
-/// scaled by the live-lighting ratio toward that same direction, composited
-/// over it. The reflection starts from the style's point (the fragment, or
-/// its texel cell's centre about the cell's tilted normal) and sees the eye
-/// from there, so every fragment of a pixel-style cell reads one sample at
-/// one weight. `sample(layer, uv)` reads the tile at level 0. The layer comes
+/// probe's capture, sampled toward the distance search's lookup and scaled
+/// by the live-lighting ratio toward that same direction, composited over it
+/// at the Fresnel weight times the search's (0 deep in the capture shadow).
+/// The reflection starts from the style's point (the fragment, or its texel
+/// cell's centre about the cell's tilted normal) and sees the eye from
+/// there, so every fragment of a pixel-style cell reads one search, one
+/// sample and one weight. `sample(layer, uv)` reads the colour tile and
+/// `distance(layer, uv)` the distance tile, both at level 0. The layer comes
 /// from the face's probe index alone.
 pub fn reflection_fragment(
     surface: Vec4,
@@ -475,6 +479,7 @@ pub fn reflection_fragment(
     tile: [u32; 2],
     lights: &FluidReflectionLights<'_>,
     sample: impl Fn(u32, Vec2) -> Vec3,
+    distance: impl Fn(u32, Vec2) -> f32,
 ) -> Vec4 {
     let view = (fragment.camera - fragment.world_position).normalize_or_zero();
     let outward = fragment.outward.normalize();
@@ -499,16 +504,20 @@ pub fn reflection_fragment(
     let view = (fragment.camera - point.position).normalize_or_zero();
     let probe = &probes[fragment.probe as usize];
     let ray = reflection_mirror(view, point.normal);
-    let hit = reflection_box_hit(
+    let search = reflection_search(
         point.position,
         ray,
         Vec3::from(probe.box_min),
         Vec3::from(probe.box_max),
+        Vec3::from(probe.capture_point),
+        tile,
+        |uv| distance(probe.layer, uv),
     );
-    let lookup = reflection_lookup(hit, Vec3::from(probe.capture_point), ray);
-    let capture = sample(probe.layer, reflection_tile_uv(lookup, tile[0], tile[1]))
-        * reflection_ratio(&FluidProbeGpu::pack(probe).lights, lookup, lights);
-    let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity);
+    let capture = sample(
+        probe.layer,
+        reflection_tile_uv(search.lookup, tile[0], tile[1]),
+    ) * reflection_ratio(&FluidProbeGpu::pack(probe).lights, search.lookup, lights);
+    let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * search.weight;
     reflection_composite(surface, capture, fresnel)
 }
 

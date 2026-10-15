@@ -21,8 +21,10 @@ use postretro_render_cpu::fluid_surface::reflection_style::{
     FLUID_REFLECTION_STYLE_SMOOTH, FluidReflectionStyle, FluidTexelAxes,
 };
 use postretro_render_cpu::fluid_surface::{
-    FLUID_PARAMS_WINDOW_BYTES, FLUID_SLOTS_PER_WINDOW, FluidSurfaceLook, slot_window,
+    FLUID_PARAMS_WINDOW_BYTES, FLUID_SLOTS_PER_WINDOW, FluidShaderVariant, FluidSurfaceLook,
+    slot_window,
 };
+use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::render_extent::{Extent, RenderResolutionPolicy};
 use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, build_animation_buffers_from_descriptors,
@@ -951,6 +953,125 @@ fn probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads
 
     renderer.release_level_resources();
     assert_eq!(renderer.full().fluid_surface.probe_array_layers(), None);
+}
+
+// Two fluid pipelines, one frame. Three volumes draw in the order
+// unbound-by-reflectivity, reflecting, unbound, so the pass switches from the
+// reflection-free pipeline to the reflecting one and back: volume 1 binds the
+// probe at reflectivity 0, volume 0 binds it at reflectivity 1, volume 2
+// binds nothing. The reflecting volume reads its probe's composite within
+// 2/255; both others are byte-equal to the frame drawn with no section 54.
+// Under an isolating mask (specular off) every draw takes the reflection-free
+// pipeline and the whole frame is byte-equal to the no-section frame.
+#[test]
+fn a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let volumes = [
+        fluid_quad(-1.0, -0.5),
+        fluid_quad(-0.5, 0.0),
+        fluid_quad(0.0, 1.0),
+    ];
+    let green = [0, 0x4000, 0];
+    let mut section = uniform_probe_section(8, &[0], &[green], &[(0, 0)]);
+    section.bindings.push(ReflectionProbeBinding {
+        volume: 1,
+        face: 0,
+        probe: 0,
+    });
+    let colours = [f16_rgb(green)];
+    let reference = ReferenceProbes {
+        section: &section,
+        layer_colours: &colours,
+        reflectivity: 1.0,
+    };
+    let bound = |reflectivity: f32| FluidSurfaceLook {
+        surface_reflectivity: reflectivity,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let probed = [
+        look_draw(1, bound(0.0)),
+        look_draw(0, bound(1.0)),
+        look_draw(2, FluidSurfaceLook::surface_only(0.5)),
+    ];
+    let unprobed = [
+        look_draw(1, FluidSurfaceLook::surface_only(0.5)),
+        look_draw(0, FluidSurfaceLook::surface_only(0.5)),
+        look_draw(2, FluidSurfaceLook::surface_only(0.5)),
+    ];
+    let mut isolating = LightTermMask::ALL;
+    isolating.set_enabled(LightTermMask::SPECULAR, false);
+
+    for mask in [LightTermMask::ALL, isolating] {
+        renderer.set_light_term_mask(mask);
+        renderer.install_fluid_surfaces(&volumes, None);
+        renderer.set_fluid_surface_draws(&unprobed);
+        let today = capture_from(&mut renderer, GRAZING);
+
+        renderer.install_fluid_surfaces(&volumes, Some(&section));
+        renderer.set_fluid_surface_draws(&probed);
+        let pixels = capture_from(&mut renderer, GRAZING);
+        let variants = renderer.full().fluid_surface.frame_variants(mask);
+        let today_at = |column: u32, row: u32| {
+            let at = ((row * SIDE + column) * 4) as usize;
+            [today[at], today[at + 1], today[at + 2]]
+        };
+        let (free, free_at) = worst_deviation(&pixels, 4..SIDE, today_at);
+        let centre = |column: u32| {
+            let at = ((SIDE / 2 * SIDE + column) * 4) as usize;
+            [pixels[at], pixels[at + 1], pixels[at + 2]]
+        };
+        if mask == LightTermMask::ALL {
+            assert_eq!(
+                variants,
+                [
+                    FluidShaderVariant::ReflectionFree,
+                    FluidShaderVariant::Reflecting,
+                    FluidShaderVariant::ReflectionFree,
+                ]
+            );
+            let (reflecting, reflecting_at) = worst_deviation(&pixels, 0..4, |column, row| {
+                expected_pixel(GRAZING, column, row, UNLIT_HALF, 0, &reference)
+            });
+            eprintln!(
+                "[FluidSurfaceProof] two-pipeline GPU case ran: variants {variants:?}, \
+                 reflecting {:?} worst {reflecting} at {reflecting_at:?}, reflection-free {:?} \
+                 {:?} off the no-section frame by {free} at {free_at:?}",
+                centre(1),
+                centre(5),
+                centre(12)
+            );
+            assert!(reflecting <= 2, "the reflecting volume reads its probe");
+            assert!(
+                centre(1)[1] > centre(1)[0] + 20,
+                "the probe term shows: {:?}",
+                centre(1)
+            );
+        } else {
+            assert!(
+                variants
+                    .iter()
+                    .all(|&variant| variant == FluidShaderVariant::ReflectionFree),
+                "{variants:?}"
+            );
+            eprintln!(
+                "[FluidSurfaceProof] two-pipeline GPU case ran: mask {:#x}, variants \
+                 {variants:?}, frame equal to the no-section frame: {}",
+                mask.bits(),
+                pixels == today
+            );
+            assert!(
+                pixels == today,
+                "an isolating mask draws every volume as today"
+            );
+        }
+        assert_eq!(free, 0, "reflection-free volumes read today's value");
+    }
+    renderer.set_light_term_mask(LightTermMask::ALL);
+    renderer.release_level_resources();
 }
 
 // Pin P11, level change with probes bound. Level A (section 54, three 16²

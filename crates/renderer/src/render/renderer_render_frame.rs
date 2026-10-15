@@ -691,9 +691,12 @@ impl Renderer {
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
             fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
-            self.full()
-                .fluid_surface
-                .record_draws(&mut fluid_pass, &self.full().gpu_textures);
+            // The frame's group-0 mask picks each draw's shader variant.
+            self.full().fluid_surface.record_draws(
+                &mut fluid_pass,
+                &self.full().gpu_textures,
+                frame_light_term_mask,
+            );
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.

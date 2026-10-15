@@ -82,13 +82,304 @@ fn fluid_shader_passes_naga_validation() {
     validated_module();
 }
 
+/// The module one stage of `variant`'s pipeline compiles: the shader with
+/// that pipeline's override constants applied, as wgpu applies them, compacted
+/// to `entry_point`. The vertex stage sets no constant, as the pipeline does.
+fn variant_stage_module(
+    variant: FluidShaderVariant,
+    stage: naga::ShaderStage,
+    entry_point: &str,
+) -> naga::Module {
+    let module = validated_module();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("fluid surface shader must pass naga validation");
+    let mut constants = naga::back::PipelineConstants::default();
+    if stage == naga::ShaderStage::Fragment {
+        for (name, value) in fluid_variant_constants(variant) {
+            constants.insert(name.to_owned(), value);
+        }
+    }
+    let (processed, _) = naga::back::pipeline_constants::process_overrides(
+        &module,
+        &info,
+        Some((stage, entry_point)),
+        &constants,
+    )
+    .unwrap_or_else(|error| panic!("{variant:?} {entry_point} overrides apply: {error}"));
+    processed.into_owned()
+}
+
+/// What one function can reach when it runs: the functions it calls and the
+/// globals it reads directly, following a branch whose condition folded to a
+/// constant only on its taken side and stopping a block at a return.
+#[derive(Default)]
+struct ReachedCode {
+    calls: Vec<naga::Handle<naga::Function>>,
+    globals: Vec<naga::Handle<naga::GlobalVariable>>,
+}
+
+fn folded_bool(
+    module: &naga::Module,
+    function: &naga::Function,
+    expr: naga::Handle<naga::Expression>,
+) -> Option<bool> {
+    match function.expressions[expr] {
+        naga::Expression::Literal(naga::Literal::Bool(value)) => Some(value),
+        naga::Expression::Constant(constant) => {
+            match module.global_expressions[module.constants[constant].init] {
+                naga::Expression::Literal(naga::Literal::Bool(value)) => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Walk `block`; returns whether it always ends in a return or kill.
+fn reach_block(
+    module: &naga::Module,
+    function: &naga::Function,
+    block: &naga::Block,
+    reached: &mut ReachedCode,
+) -> bool {
+    let global_of = |expr: naga::Handle<naga::Expression>| match function.expressions[expr] {
+        naga::Expression::GlobalVariable(global) => Some(global),
+        _ => None,
+    };
+    for statement in block.iter() {
+        match statement {
+            naga::Statement::Emit(range) => {
+                for expr in range.clone() {
+                    let operands: &[naga::Handle<naga::Expression>] = match &function.expressions
+                        [expr]
+                    {
+                        naga::Expression::Load { pointer } => &[*pointer],
+                        naga::Expression::Access { base, .. }
+                        | naga::Expression::AccessIndex { base, .. } => &[*base],
+                        naga::Expression::ImageSample { image, sampler, .. } => &[*image, *sampler],
+                        naga::Expression::ImageLoad { image, .. }
+                        | naga::Expression::ImageQuery { image, .. } => &[*image],
+                        naga::Expression::ArrayLength(array) => &[*array],
+                        _ => &[],
+                    };
+                    reached
+                        .globals
+                        .extend(operands.iter().filter_map(|&operand| global_of(operand)));
+                }
+            }
+            naga::Statement::Call {
+                function: callee,
+                arguments,
+                ..
+            } => {
+                reached.calls.push(*callee);
+                reached
+                    .globals
+                    .extend(arguments.iter().filter_map(|&argument| global_of(argument)));
+            }
+            naga::Statement::Block(inner) => {
+                if reach_block(module, function, inner, reached) {
+                    return true;
+                }
+            }
+            naga::Statement::If {
+                condition,
+                accept,
+                reject,
+            } => {
+                let ends = match folded_bool(module, function, *condition) {
+                    Some(true) => reach_block(module, function, accept, reached),
+                    Some(false) => reach_block(module, function, reject, reached),
+                    None => {
+                        let accept_ends = reach_block(module, function, accept, reached);
+                        reach_block(module, function, reject, reached) && accept_ends
+                    }
+                };
+                if ends {
+                    return true;
+                }
+            }
+            naga::Statement::Switch { cases, .. } => {
+                for case in cases {
+                    reach_block(module, function, &case.body, reached);
+                }
+            }
+            naga::Statement::Loop {
+                body, continuing, ..
+            } => {
+                reach_block(module, function, body, reached);
+                reach_block(module, function, continuing, reached);
+            }
+            naga::Statement::Return { .. } | naga::Statement::Kill => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Names of every function and global `entry_point` reaches in `module`,
+/// callees included.
+fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<String>) {
+    let entry = module
+        .entry_points
+        .iter()
+        .find(|entry| entry.name == entry_point)
+        .unwrap_or_else(|| panic!("module keeps {entry_point}"));
+    let mut reached = ReachedCode::default();
+    reach_block(module, &entry.function, &entry.function.body, &mut reached);
+    let mut walked = Vec::new();
+    while let Some(callee) = reached
+        .calls
+        .iter()
+        .copied()
+        .find(|callee| !walked.contains(callee))
+    {
+        walked.push(callee);
+        let function = &module.functions[callee];
+        reach_block(module, function, &function.body, &mut reached);
+    }
+    let functions = walked
+        .iter()
+        .map(|&callee| module.functions[callee].name.clone().unwrap_or_default())
+        .collect();
+    let globals = reached
+        .globals
+        .iter()
+        .map(|&global| {
+            module.global_variables[global]
+                .name
+                .clone()
+                .unwrap_or_default()
+        })
+        .collect();
+    (functions, globals)
+}
+
+// Two fluid pipelines: the reflection-free variant's fragment stage reaches
+// no reflection function and reads neither the probe array nor the probe
+// table; everything up to the surface it returns stays (lighting, fog, the
+// warp). The reflecting variant reaches the probe term, so the walk is not
+// vacuous. Each variant's override is the shader's own `FLUID_REFLECTIONS`,
+// default true, set per pipeline.
+#[test]
+fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
+    let source = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    assert!(
+        source.contains("overrideFLUID_REFLECTIONS:bool=true;"),
+        "the shader declares the variant override"
+    );
+    assert_eq!(FLUID_REFLECTIONS_OVERRIDE, "FLUID_REFLECTIONS");
+    for variant in FluidShaderVariant::ALL {
+        assert_eq!(FluidShaderVariant::ALL[variant as usize], variant);
+        assert_eq!(
+            fluid_variant_constants(variant),
+            [(
+                "FLUID_REFLECTIONS",
+                if variant.reflections() { 1.0 } else { 0.0 }
+            )]
+        );
+    }
+
+    let reflection_free = variant_stage_module(
+        FluidShaderVariant::ReflectionFree,
+        naga::ShaderStage::Fragment,
+        "fs_main",
+    );
+    let (functions, globals) = reached_names(&reflection_free, "fs_main");
+    for kept in [
+        "fluid_warp_uv",
+        "fluid_sample_sh",
+        "fluid_light",
+        "fluid_fog_composite",
+    ] {
+        assert!(
+            functions.iter().any(|name| name == kept),
+            "reaches {kept}: {functions:?}"
+        );
+    }
+    let reflecting_functions: Vec<_> = functions
+        .iter()
+        .filter(|name| name.starts_with("fluid_reflection_"))
+        .collect();
+    assert!(
+        reflecting_functions.is_empty(),
+        "the reflection-free variant calls {reflecting_functions:?}"
+    );
+    for probe_global in ["fluid_probes", "fluid_probe_array"] {
+        assert!(
+            !globals.iter().any(|name| name == probe_global),
+            "the reflection-free variant reads {probe_global}: {globals:?}"
+        );
+    }
+
+    let reflecting = variant_stage_module(
+        FluidShaderVariant::Reflecting,
+        naga::ShaderStage::Fragment,
+        "fs_main",
+    );
+    let (functions, globals) = reached_names(&reflecting, "fs_main");
+    for reached in [
+        "fluid_reflection_gate",
+        "fluid_reflection_sample",
+        "fluid_reflection_ratio",
+    ] {
+        assert!(
+            functions.iter().any(|name| name == reached),
+            "reaches {reached}: {functions:?}"
+        );
+    }
+    for probe_global in ["fluid_probes", "fluid_probe_array", "anim_descriptors"] {
+        assert!(
+            globals.iter().any(|name| name == probe_global),
+            "the reflecting variant reads {probe_global}: {globals:?}"
+        );
+    }
+}
+
 // Every resource the shader binds must exist in the layout the pipeline is
 // built from, visible to the fragment stage that reads it. A mismatch would
 // only surface as a pipeline-creation panic on a real GPU.
+//
+// Both pipelines: each variant's vertex and fragment stage, as its override
+// constants compile them, binds only what the one shared layout holds.
 #[test]
 fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
-    let module = validated_module();
     let groups = fluid_pipeline_bind_group_layout_entries();
+    for variant in FluidShaderVariant::ALL {
+        for (stage, visibility, entry_point) in [
+            (
+                naga::ShaderStage::Vertex,
+                wgpu::ShaderStages::VERTEX,
+                "vs_main",
+            ),
+            (
+                naga::ShaderStage::Fragment,
+                wgpu::ShaderStages::FRAGMENT,
+                "fs_main",
+            ),
+        ] {
+            let module = variant_stage_module(variant, stage, entry_point);
+            let bound = assert_bindings_in_layout(&module, &groups, visibility);
+            assert!(bound >= 1, "{variant:?} {entry_point} binds nothing");
+        }
+    }
+    // The whole module, every stage's bindings at once, is fragment-visible.
+    let bound =
+        assert_bindings_in_layout(&validated_module(), &groups, wgpu::ShaderStages::FRAGMENT);
+    assert!(bound >= 14, "expected the full binding set, saw {bound}");
+}
+
+/// Every binding `module` declares is in `groups`, visible to `stage`;
+/// returns how many there are.
+fn assert_bindings_in_layout(
+    module: &naga::Module,
+    groups: &[Vec<wgpu::BindGroupLayoutEntry>],
+    stage: wgpu::ShaderStages,
+) -> usize {
     let mut bound = 0;
     for (_, global) in module.global_variables.iter() {
         let Some(binding) = &global.binding else {
@@ -108,13 +399,13 @@ fn fluid_shader_bindings_are_present_in_the_pipeline_layout() {
                 )
             });
         assert!(
-            entry.visibility.contains(wgpu::ShaderStages::FRAGMENT),
-            "@group({}) @binding({}) must be fragment-visible",
+            entry.visibility.contains(stage),
+            "@group({}) @binding({}) must be visible to {stage:?}",
             binding.group,
             binding.binding
         );
     }
-    assert!(bound >= 14, "expected the full binding set, saw {bound}");
+    bound
 }
 
 #[test]
@@ -1189,6 +1480,7 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
         "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog_weight,proximity,transmittance);",
         "surface=fluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
+        "if!FLUID_REFLECTIONS{returnsurface;}",
         "letreflectivity=row.surface.z;",
         "if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
          returnsurface;}",
@@ -2135,9 +2427,24 @@ fn fluid_pass_block() -> &'static str {
         .expect("fluid pass gate");
     let end = start
         + frame[start..]
-            .find(".record_draws(&mut fluid_pass")
+            .find("fluid_surface.record_draws(")
             .expect("fluid draws");
     &frame[start..end]
+}
+
+// Two fluid pipelines: the frame's fluid draws pick their shader variants by
+// the mask the frame's group-0 uniform carries, the one the reflecting
+// variant's per-fragment gate reads, never the live UI mask.
+#[test]
+fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
+    let frame = code_only(include_str!("renderer_render_frame.rs"));
+    let snapshot = frame
+        .find("letframe_light_term_mask=self.frame_light_term_mask();")
+        .expect("the frame snapshots its mask");
+    let record = frame
+        .find("fluid_surface.record_draws(&mutfluid_pass,&self.full().gpu_textures,frame_light_term_mask,);")
+        .expect("the fluid pass records with the frame's mask");
+    assert!(snapshot < record, "the mask is snapshotted before the pass");
 }
 
 // The pass opens depth read-only so group 5 can load the same texture; it

@@ -1165,6 +1165,100 @@ fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects
     assert!(draws.is_empty(), "{draws:?}");
 }
 
+// Two fluid pipelines: a draw takes the reflecting shader variant only when
+// its volume has a probe-bound face, its reflectivity is above 0, and the
+// frame's lighting mask holds every bit of `LightTermMask::ALL`; every other
+// draw takes the reflection-free variant. Opacity and fog never choose it.
+#[test]
+fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every_term() {
+    use crate::frame_uniforms::LightTermMask;
+    let all = LightTermMask::ALL.bits();
+    // Every isolating mask: each term off alone, and every term off.
+    let mut masks: Vec<(u32, bool)> = vec![(all, true), (all | 0x80, true), (0, false)];
+    for term in LightTermMask::ALL_TERMS {
+        let mut mask = LightTermMask::ALL;
+        mask.set_enabled(term, false);
+        masks.push((mask.bits(), false));
+    }
+    assert!(masks.contains(&(0x13F, false)), "specular off isolates");
+
+    for has_bound_face in [false, true] {
+        for reflectivity in [0.0, 0.001, 1.0, 50.0] {
+            for opacity in [0.0, 0.6] {
+                for fog_distance in [None, Some(4.0)] {
+                    let row = FluidSurfaceLook {
+                        surface_reflectivity: reflectivity,
+                        has_bound_face,
+                        fog_distance,
+                        ..FluidSurfaceLook::surface_only(opacity)
+                    }
+                    .pack();
+                    for &(mask, every_term) in &masks {
+                        let expected = if has_bound_face && reflectivity > 0.0 && every_term {
+                            FluidShaderVariant::Reflecting
+                        } else {
+                            FluidShaderVariant::ReflectionFree
+                        };
+                        assert_eq!(
+                            row.shader_variant(mask),
+                            expected,
+                            "bound {has_bound_face}, reflectivity {reflectivity}, opacity \
+                             {opacity}, fog {fog_distance:?}, mask {mask:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(FluidShaderVariant::Reflecting.reflections());
+    assert!(!FluidShaderVariant::ReflectionFree.reflections());
+}
+
+// The frame's draws carry their variants in the collector's far-to-near
+// order, so the pass switches pipeline only where neighbours differ; an
+// isolating mask turns every draw reflection-free.
+#[test]
+fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        volume(vec![top_face(0, [2.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [4.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[[64, 32]], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let reflecting = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.6)
+    };
+    let unbound = FluidSurfaceLook::surface_only(0.6);
+    slots.set_draws(&[
+        draw(2, unbound),
+        draw(0, reflecting),
+        draw(
+            1,
+            FluidSurfaceLook {
+                surface_reflectivity: 0.0,
+                ..reflecting
+            },
+        ),
+    ]);
+    let all = crate::frame_uniforms::LightTermMask::ALL.bits();
+    let variants: Vec<_> = slots.frame_draws(all).collect();
+    assert_eq!(
+        variants,
+        [
+            (2, FluidShaderVariant::ReflectionFree),
+            (0, FluidShaderVariant::Reflecting),
+            (1, FluidShaderVariant::ReflectionFree),
+        ]
+    );
+    assert!(
+        slots
+            .frame_draws(0x13F)
+            .all(|(_, variant)| variant == FluidShaderVariant::ReflectionFree)
+    );
+}
+
 // Steady-state collection reuses its buffers: later frames of the same view
 // keep the first frame's draw allocation.
 #[test]

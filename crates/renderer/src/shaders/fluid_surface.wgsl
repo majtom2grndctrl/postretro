@@ -469,6 +469,12 @@ fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opaci
     return vec4<f32>(out, total);
 }
 
+// Set per pipeline (render-cpu `FluidShaderVariant`). The pass builds this
+// shader twice over one layout: false for draws that cannot reflect, so their
+// fragments compile with no reflection code at all (its mere presence slows
+// the always-run lighting on some drivers), true for the rest.
+override FLUID_REFLECTIONS: bool = true;
+
 // Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
 // each function and constant here is pinned to it, and `fs_main`'s tail
 // inlines its `reflection_fragment` after the fog composite.
@@ -926,6 +932,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let proximity = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
         let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog_weight, proximity, transmittance);
         surface = fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
+    }
+    // The reflection-free variant ends here; the block below folds away.
+    if !FLUID_REFLECTIONS {
+        return surface;
     }
     // A probe-bound face seen from above under the all-terms mask mirrors its
     // probe over that at union coverage; every other fragment is unchanged.

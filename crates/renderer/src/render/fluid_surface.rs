@@ -10,9 +10,11 @@ use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::{
     FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
-    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidSurfaceDraw,
-    FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces, slot_window,
+    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidShaderVariant,
+    FluidSurfaceDraw, FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces,
+    slot_window,
 };
+use postretro_render_cpu::frame_uniforms::LightTermMask;
 
 use super::fluid_reflection_probes::{
     FluidProbeResources, create_probe_index_buffer, fluid_probe_bind_group_layout_entries,
@@ -48,6 +50,17 @@ const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
 );
+
+/// The shader's pipeline-overridable constant that selects its variant.
+pub(crate) const FLUID_REFLECTIONS_OVERRIDE: &str = "FLUID_REFLECTIONS";
+
+/// The fragment stage's override values for `variant`.
+pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static str, f64); 1] {
+    [(
+        FLUID_REFLECTIONS_OVERRIDE,
+        if variant.reflections() { 1.0 } else { 0.0 },
+    )]
+}
 
 /// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
 /// rows selected by a dynamic offset, then the reflection probe array and
@@ -201,7 +214,10 @@ struct InstalledFluidSurfaces {
 }
 
 pub(crate) struct FluidSurfacePass {
-    pipeline: wgpu::RenderPipeline,
+    /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
+    /// order, over one layout: the reflection-free variant and the
+    /// reflecting one. Each draw takes its row's variant.
+    pipelines: [wgpu::RenderPipeline; 2],
     params_bind_group_layout: wgpu::BindGroupLayout,
     /// Group 5. Built at full init, level or not, and rebuilt only by the
     /// scene-target rebuild; level install and clear never touch it.
@@ -212,7 +228,8 @@ pub(crate) struct FluidSurfacePass {
 }
 
 impl FluidSurfacePass {
-    /// Build the pipeline over the renderer-owned shared layouts: camera
+    /// Build both shader-variant pipelines over the renderer-owned shared
+    /// layouts: camera
     /// (group 0), world material (1), lighting (2) and SH volume (3), and
     /// group 5 over the current scene depth.
     pub fn new(
@@ -247,49 +264,11 @@ impl FluidSurfacePass {
             ],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Fluid Surface Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &VERTEX_ATTRIBUTES,
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: FLUID_DRIFT_RATE_STRIDE as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &DRIFT_ATTRIBUTES,
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: FLUID_PROBE_INDEX_STRIDE as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &PROBE_INDEX_ATTRIBUTES,
-                    }),
-                ],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: fluid_primitive_state(),
-            depth_stencil: Some(fluid_depth_stencil_state(depth_format)),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_COLOR_FORMAT,
-                    blend: Some(fluid_blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
+        let pipelines = FluidShaderVariant::ALL.map(|variant| {
+            create_fluid_pipeline(device, &pipeline_layout, &shader, depth_format, variant)
         });
         Self {
-            pipeline,
+            pipelines,
             params_bind_group_layout,
             scene_inputs,
             installed: None,
@@ -517,14 +496,21 @@ impl FluidSurfacePass {
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
     /// binds 1, 4 and the scene inputs built with the scene targets (5).
-    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
+    /// Each draw takes its row's shader variant under `light_term_mask`, the
+    /// frame's group-0 mask; the pipeline is set only where it changes
+    /// between consecutive draws.
+    pub fn record_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        materials: &[GpuTexture],
+        light_term_mask: LightTermMask,
+    ) {
         let Some(installed) = self.installed.as_ref() else {
             return;
         };
         if !installed.slots.has_draws() {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(
             FLUID_SCENE_INPUTS_GROUP,
             self.scene_inputs.bind_group(),
@@ -535,9 +521,14 @@ impl FluidSurfacePass {
         pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
+        let mut bound_variant = None;
         let mut bound_window = None;
         let mut bound_material = None;
-        for &slot in installed.slots.frame_slots() {
+        for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits()) {
+            if bound_variant != Some(variant) {
+                pass.set_pipeline(self.pipeline(variant));
+                bound_variant = Some(variant);
+            }
             let (window, element) = slot_window(slot);
             if bound_window != Some(window) {
                 let offset = u64::from(window) * FLUID_PARAMS_WINDOW_BYTES;
@@ -565,6 +556,85 @@ impl FluidSurfacePass {
             }
         }
     }
+}
+
+impl FluidSurfacePass {
+    fn pipeline(&self, variant: FluidShaderVariant) -> &wgpu::RenderPipeline {
+        &self.pipelines[variant as usize]
+    }
+
+    /// The variant each of this frame's draws takes, in draw order: what
+    /// `record_draws` binds.
+    #[cfg(test)]
+    pub(crate) fn frame_variants(&self, light_term_mask: LightTermMask) -> Vec<FluidShaderVariant> {
+        self.installed.as_ref().map_or_else(Vec::new, |installed| {
+            installed
+                .slots
+                .frame_draws(light_term_mask.bits())
+                .map(|(_, variant)| variant)
+                .collect()
+        })
+    }
+}
+
+/// One fluid pipeline: `variant` sets the shader's `FLUID_REFLECTIONS`
+/// override in the fragment stage. Everything else is shared, so both
+/// variants draw under one layout, vertex layout, blend and depth state.
+fn create_fluid_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    depth_format: wgpu::TextureFormat,
+    variant: FluidShaderVariant,
+) -> wgpu::RenderPipeline {
+    let constants = fluid_variant_constants(variant);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(match variant {
+            FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
+            FluidShaderVariant::Reflecting => "Fluid Surface Pipeline (reflecting)",
+        }),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: FLUID_SURFACE_VERTEX_STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &VERTEX_ATTRIBUTES,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: FLUID_DRIFT_RATE_STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &DRIFT_ATTRIBUTES,
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: FLUID_PROBE_INDEX_STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &PROBE_INDEX_ATTRIBUTES,
+                }),
+            ],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: fluid_primitive_state(),
+        depth_stencil: Some(fluid_depth_stencil_state(depth_format)),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_COLOR_FORMAT,
+                blend: Some(fluid_blend_state()),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 impl Renderer {

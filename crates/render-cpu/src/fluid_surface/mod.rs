@@ -22,7 +22,8 @@ mod slots;
 pub use cull::FluidSurfaceRenderCollector;
 pub use drift::{FluidFaceDriftMap, fill_drift_rates};
 pub use slots::{
-    FLUID_FOG_COLOR_SCALE, FluidParamsRow, FluidSurfaceLook, FluidSurfaceSlots, slot_window,
+    FLUID_FOG_COLOR_SCALE, FluidParamsRow, FluidShaderVariant, FluidSurfaceLook, FluidSurfaceSlots,
+    slot_window,
 };
 
 /// One fluid surface vertex: world position, the face's outward normal, and

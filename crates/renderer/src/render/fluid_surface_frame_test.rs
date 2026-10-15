@@ -6,6 +6,11 @@ use glam::{Mat4, Vec3};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
+use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+    ReflectionProbeRecord, ReflectionProbesSection,
+};
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::fluid_surface::{
     FLUID_PARAMS_WINDOW_BYTES, FLUID_SLOTS_PER_WINDOW, FluidSurfaceLook, slot_window,
@@ -86,6 +91,13 @@ fn full_screen_fluid_from_inside() -> EnvironmentVolumeRecord {
 
 /// One captured frame's RGBA8 pixels at the renderer's capture extent.
 fn capture(renderer: &mut Renderer) -> Vec<u8> {
+    capture_from(renderer, Vec3::new(0.0, 0.0, -1.0))
+}
+
+/// [`capture`] with the shading camera at `camera`; the identity
+/// view-projection still frames the quads, so only lighting, fog and
+/// reflection see the move.
+fn capture_from(renderer: &mut Renderer, camera: Vec3) -> Vec<u8> {
     renderer
         .capture_frame_indirect(
             CameraCullVisibility {
@@ -102,7 +114,7 @@ fn capture(renderer: &mut Renderer) -> Vec<u8> {
             },
             None,
             Mat4::IDENTITY,
-            Vec3::new(0.0, 0.0, -1.0),
+            camera,
             &[],
             &[],
             1.0,
@@ -144,7 +156,7 @@ fn fluid_surface_blends_over_the_scene_at_its_surface_opacity() {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    renderer.install_fluid_surfaces(&[full_screen_fluid()]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
 
     renderer.set_fluid_surface_draws(&[]);
     let clear = capture_mean_red(&mut renderer);
@@ -191,7 +203,7 @@ fn fluid_surface_draws_read_each_volumes_own_opacity_slot() {
         surface_faces: Vec::new(),
         ..fluid_quad(0.0, 1.0)
     };
-    renderer.install_fluid_surfaces(&[fluid_quad(-1.0, 0.0), dry, fluid_quad(0.0, 1.0)]);
+    renderer.install_fluid_surfaces(&[fluid_quad(-1.0, 0.0), dry, fluid_quad(0.0, 1.0)], None);
     renderer.set_fluid_surface_draws(&[clear_draw(2, 0.5), clear_draw(0, 1.0)]);
     let (left, right) = capture_mean_red_halves(&mut renderer);
     eprintln!("[FluidSurfaceProof] per-volume opacity: left={left} right={right}");
@@ -222,7 +234,7 @@ fn fluid_surface_draws_across_two_params_windows_read_their_own_rows() {
     // What each opacity reads as on the right half from a one-window level
     // (the capture tonemaps, so 0.5 is not mid-grey).
     let mut reference = |opacity: f32| {
-        renderer.install_fluid_surfaces(&[fluid_quad(-1.0, 0.0), fluid_quad(0.0, 1.0)]);
+        renderer.install_fluid_surfaces(&[fluid_quad(-1.0, 0.0), fluid_quad(0.0, 1.0)], None);
         renderer.set_fluid_surface_draws(&[clear_draw(1, opacity)]);
         capture_mean_red_halves(&mut renderer).1
     };
@@ -241,7 +253,7 @@ fn fluid_surface_draws_across_two_params_windows_read_their_own_rows() {
             _ => fluid_quad(3.0, 3.5),
         })
         .collect();
-    renderer.install_fluid_surfaces(&volumes);
+    renderer.install_fluid_surfaces(&volumes, None);
     // Slot 0 and the second window's second slot carry other opacities, so a
     // draw that read the wrong window or element would show.
     renderer.set_fluid_surface_draws(&[
@@ -283,7 +295,7 @@ fn fluid_depth_fog_draws_from_outside_and_scales_with_the_eye_weight() {
         fog_color: [0.5, 0.5, 0.5],
         ..FluidSurfaceLook::surface_only(0.0)
     };
-    renderer.install_fluid_surfaces(&[full_screen_fluid()]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
     renderer.set_fluid_surface_draws(&[look_draw(0, murk)]);
     let full = capture_mean_red(&mut renderer);
 
@@ -307,7 +319,7 @@ fn fluid_depth_fog_draws_from_outside_and_scales_with_the_eye_weight() {
 
     // Seen from inside, the same fluid draws no fog whatever the weight.
     renderer.set_fluid_fog_weight(1.0);
-    renderer.install_fluid_surfaces(&[full_screen_fluid_from_inside()]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid_from_inside()], None);
     renderer.set_fluid_surface_draws(&[look_draw(0, murk)]);
     let inside = capture_mean_red(&mut renderer);
     eprintln!("[FluidSurfaceProof] depth fog seen from inside: {inside}");
@@ -322,7 +334,7 @@ fn fluid_drift_re_resolve_keeps_draws_and_uploads_no_parameter_rows() {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    renderer.install_fluid_surfaces(&[full_screen_fluid()]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
     let draws = [clear_draw(0, 0.5)];
     renderer.set_fluid_surface_draws(&draws);
     let before = capture_mean_red(&mut renderer);
@@ -376,7 +388,7 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
         "resize without a level"
     );
 
-    renderer.install_fluid_surfaces(&[full_screen_fluid()]);
+    renderer.install_fluid_surfaces(&[full_screen_fluid()], None);
     assert_eq!(
         scene_inputs_extent(&renderer).1,
         built + 1,
@@ -431,4 +443,123 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
         scene.height,
         built + 3
     );
+}
+
+/// Mean RGB of one captured frame over its left and right halves.
+fn mean_rgb_halves(pixels: &[u8]) -> ([f32; 3], [f32; 3]) {
+    let (mut left, mut right) = ([0u32; 3], [0u32; 3]);
+    for (index, px) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        let half = if (index as u32 % SIDE) < SIDE / 2 {
+            &mut left
+        } else {
+            &mut right
+        };
+        for channel in 0..3 {
+            half[channel] += u32::from(px[channel]);
+        }
+    }
+    let count = (pixels.len() / 8) as f32;
+    (
+        left.map(|sum| sum as f32 / count),
+        right.map(|sum| sum as f32 / count),
+    )
+}
+
+/// One RGBA16F probe tile `dimension`² of the uniform linear colour `rgb`.
+fn uniform_rgba16f_tile(dimension: u32, rgb: [u16; 3]) -> Vec<u8> {
+    let texel = [rgb[0], rgb[1], rgb[2], 0x3C00];
+    (0..dimension * dimension)
+        .flat_map(|_| texel.iter().flat_map(|half| half.to_le_bytes()))
+        .collect()
+}
+
+// First-slice proof on an adapter: one volume, two faces in one draw. The
+// left face binds a probe whose capture is uniform green; seen at a grazing
+// view it shows the green. The right face binds nothing and reads exactly
+// today's value: the same frame drawn with no section 54. The probe array is
+// level-scoped: a level without the section binds the 1-layer dummy, and
+// unload drops it.
+#[test]
+fn a_probe_bound_face_reflects_its_capture_and_an_unbound_face_in_the_draw_reads_today() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let mut pool = fluid_quad(-1.0, 0.0);
+    pool.surface_faces
+        .extend(fluid_quad(0.0, 1.0).surface_faces);
+    // f16 1.0 = 0x3C00: linear (0, 1, 0).
+    let dimension = 8;
+    let probes = ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-8.0; 3],
+            box_max: [8.0; 3],
+            capture_point: [0.0, 0.0, 0.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: uniform_rgba16f_tile(dimension, [0, 0x3C00, 0]),
+    };
+    // An unlit face at opacity 0.5, reflecting as water; the shading camera
+    // sits high off the faces' outward (−Z) side, about 72° from the normal.
+    let look = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let grazing = Vec3::new(0.0, 3.0, -0.5);
+
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
+    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(1));
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let (today_left, today_right) = mean_rgb_halves(&capture_from(&mut renderer, grazing));
+
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
+    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(1));
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let (left, right) = mean_rgb_halves(&capture_from(&mut renderer, grazing));
+    eprintln!(
+        "[FluidSurfaceProof] probe GPU case ran: bound left={left:?} (today {today_left:?}), \
+         unbound right={right:?} (today {today_right:?})"
+    );
+    // Today's value is grey: black at half opacity over the white clear.
+    assert!(
+        (today_left[0] - today_left[1]).abs() < 1.0,
+        "{today_left:?}"
+    );
+    for channel in 0..3 {
+        assert!(
+            (right[channel] - today_right[channel]).abs() <= 0.5,
+            "the unbound face reads today's value: {right:?} vs {today_right:?}"
+        );
+    }
+    assert!(
+        left[1] > today_left[1] + 10.0 && left[1] > left[0] + 20.0 && left[1] > left[2] + 20.0,
+        "the bound face shows the green capture: {left:?} vs today {today_left:?}"
+    );
+
+    // The same face seen from inside its volume (from +Z) reflects nothing.
+    let below = Vec3::new(0.0, 3.0, 1.5);
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let (today_below, _) = mean_rgb_halves(&capture_from(&mut renderer, below));
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let (left_below, _) = mean_rgb_halves(&capture_from(&mut renderer, below));
+    for channel in 0..3 {
+        assert!(
+            (left_below[channel] - today_below[channel]).abs() <= 0.5,
+            "from below the bound face reads today's value: {left_below:?} vs {today_below:?}"
+        );
+    }
+
+    renderer.release_level_resources();
+    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), None);
 }

@@ -49,7 +49,8 @@ impl FluidSurfaceRenderCollector {
     /// Collect this frame's fluid draws. A volume draws when its surface
     /// bounds touch a visible cell's bounds (`DrawAll` draws every volume) and
     /// `look(volume_index)` names a look that shows something: a visible
-    /// surface opacity, or depth fog, which draws on its own at opacity 0.
+    /// surface opacity, or depth fog or a probe-bound face's reflection, each
+    /// of which draws on its own at opacity 0.
     /// `None` means the client lacks the fluid or the volume is dry, and draws
     /// nothing. Draws come back far to near, the order alpha blending needs.
     pub fn collect<C, L>(

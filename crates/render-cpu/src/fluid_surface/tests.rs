@@ -676,6 +676,8 @@ fn water_look() -> FluidSurfaceLook {
         wave_period: Some(63.0),
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
+        has_bound_face: false,
     }
 }
 
@@ -706,16 +708,47 @@ fn packing_lays_out_opacity_fog_and_wave_rows_with_spare_floats() {
         }
     );
 
-    // At least one float stays unused for any look (SSR's reflectivity).
-    for look in [
-        water_look(),
-        sludge_look(),
-        FluidSurfaceLook::surface_only(1.0),
+    // Reflectivity rides `surface.z`, packed only for a volume with a bound
+    // face; `surface.w` and `fog_albedo.w` stay spare for screen-space
+    // reflections whatever the look.
+    let bound = |look: FluidSurfaceLook| FluidSurfaceLook {
+        has_bound_face: true,
+        ..look
+    };
+    for (look, reflectivity) in [
+        (water_look(), 0.0),
+        (sludge_look(), 0.0),
+        (FluidSurfaceLook::surface_only(1.0), 0.0),
+        (bound(water_look()), 1.0),
+        (bound(sludge_look()), 1.0),
+        (
+            FluidSurfaceLook {
+                surface_reflectivity: 10.0,
+                ..bound(FluidSurfaceLook::surface_only(1.0))
+            },
+            10.0,
+        ),
     ] {
         let row = look.pack();
+        assert_eq!(row.surface[2], reflectivity, "{look:?}");
+        assert_eq!(row.reflectivity(), reflectivity);
+        assert_eq!([row.surface[3], row.fog_albedo[3]], [0.0; 2], "{look:?}");
+    }
+    // Out-of-range and non-finite reflectivities pack inside 0..=50.
+    for (declared, packed) in [
+        (60.0, 50.0),
+        (-1.0, 0.0),
+        (f32::NAN, 0.0),
+        (f32::INFINITY, 0.0),
+    ] {
+        let look = FluidSurfaceLook {
+            surface_reflectivity: declared,
+            ..bound(water_look())
+        };
         assert_eq!(
-            [row.surface[2], row.surface[3], row.fog_albedo[3]],
-            [0.0; 3]
+            look.pack().reflectivity(),
+            packed,
+            "reflectivity {declared}"
         );
     }
     assert_eq!(std::mem::size_of::<FluidParamsRow>(), FLUID_PARAMS_STRIDE);
@@ -987,6 +1020,61 @@ fn collector_keeps_a_zero_opacity_fluid_only_when_it_has_fog() {
         },
     );
     assert!(draws.is_empty());
+}
+
+// Pins P2 and P23 (zero-opacity draw set): a fog-free fluid at surface
+// opacity 0 that reflects (reflectivity > 0) draws its reflection alone when
+// its volume has a probe-bound face; with no bound face, or at reflectivity
+// 0, it collects no draw, as before reflections.
+#[test]
+fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects() {
+    let volumes = two_pools();
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let clear = FluidSurfaceLook::surface_only(0.0);
+    assert_eq!(clear.surface_reflectivity, 1.0);
+    // Only volume 2 binds a probe.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |volume| {
+            Some(FluidSurfaceLook {
+                has_bound_face: volume == 2,
+                ..clear
+            })
+        },
+    );
+    assert_eq!(volume_indices(draws), [2]);
+    assert_eq!(draws[0].params.opacity(), 0.0);
+    assert_eq!(draws[0].params.fog_extinction(), 0.0);
+    assert_eq!(draws[0].params.reflectivity(), 1.0);
+
+    // P23: reflectivity > 0 with no bound face anywhere draws nothing.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| Some(clear),
+    );
+    assert!(draws.is_empty(), "{draws:?}");
+
+    // P2: a bound face at reflectivity 0 and no fog draws nothing.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| {
+            Some(FluidSurfaceLook {
+                surface_reflectivity: 0.0,
+                has_bound_face: true,
+                ..clear
+            })
+        },
+    );
+    assert!(draws.is_empty(), "{draws:?}");
 }
 
 // Steady-state collection reuses its buffers: later frames of the same view

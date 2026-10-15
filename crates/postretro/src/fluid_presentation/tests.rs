@@ -687,7 +687,10 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
         &VisibleCells::DrawAll,
         |_| None,
         Vec3::ZERO,
-        |v| local_fluid_presentation(&volumes, &host_table, &local, v).map(surface_look),
+        |v| {
+            local_fluid_presentation(&volumes, &host_table, &local, v)
+                .map(|fluid| surface_look(fluid, false))
+        },
     );
     assert_eq!(draws.len(), 1);
     assert_eq!(draws[0].volume_index, 0);
@@ -1412,7 +1415,7 @@ fn dev_water() -> FluidDescriptor {
 #[test]
 fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follows_the_tint() {
     assert_eq!(
-        surface_look(&dev_water()),
+        surface_look(&dev_water(), false),
         FluidSurfaceLook {
             surface_opacity: 0.75,
             fog_distance: Some(3.0),
@@ -1420,9 +1423,11 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
             wave_period: Some(7.875),
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
+            has_bound_face: false,
         }
     );
-    let row = surface_look(&dev_water()).pack();
+    let row = surface_look(&dev_water(), false).pack();
     assert_eq!(row.surface, [0.75, 1.0, 0.0, 0.0]);
     for (packed, colour) in row.fog_albedo.iter().zip([0.16, 0.22, 0.19]) {
         assert!(
@@ -1438,7 +1443,7 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
         fog_color: None,
         ..dev_water()
     };
-    let look = surface_look(&clear);
+    let look = surface_look(&clear, false);
     assert_eq!(look.fog_color, [0.1, 0.3, 0.4], "fogColor follows viewTint");
     let row = look.pack();
     assert_eq!(row.fog_extinction(), 0.0);
@@ -1447,7 +1452,7 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
         view_tint: [0.5, 0.1, 0.2, 0.35],
         ..clear.clone()
     };
-    let changed = surface_look(&retinted).pack();
+    let changed = surface_look(&retinted, false).pack();
     assert_ne!(
         changed, row,
         "a tint-only reload re-uploads the fluid's slots"
@@ -1463,8 +1468,8 @@ fn dev_waters_declaration_packs_its_fog_and_wave_and_an_omitted_fog_colour_follo
         ..dev_water()
     };
     assert_eq!(
-        surface_look(&declared).pack(),
-        surface_look(&dev_water()).pack()
+        surface_look(&declared, false).pack(),
+        surface_look(&dev_water(), false).pack()
     );
 }
 
@@ -1502,6 +1507,68 @@ fn a_zero_opacity_fluid_draws_only_when_it_declares_fog() {
         if let Some(draw) = draws.first() {
             assert_eq!(draw.params.opacity(), 0.0);
             assert_eq!(draw.params.fog_extinction(), 3.0);
+        }
+    }
+}
+
+// Pins P2 and P23 through the App's look: a fog-free fluid at `surfaceOpacity`
+// 0 draws its reflection alone once its volume has a face the level's
+// section 54 binds to a probe, and draws nothing while no face binds.
+#[test]
+fn a_zero_opacity_fog_free_fluid_draws_only_where_a_face_binds_a_probe() {
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        ReflectionProbeRecord, ReflectionProbesSection,
+    };
+    let probes = ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 1,
+            box_min: [0.0; 3],
+            box_max: [5.0; 3],
+            capture_point: [0.5, 1.002, 0.5],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        // Only volume 1's face binds.
+        bindings: vec![ReflectionProbeBinding {
+            volume: 1,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; 16],
+    };
+    for (section, expected) in [(None, Vec::<u32>::new()), (Some(probes), vec![1])] {
+        let mut app = test_app();
+        script_ctx(&app).data_registry.borrow_mut().fluids =
+            FluidRegistry::from_declarations("test", [Ok(descriptor("water", 0.0))]);
+        let mut world = level_world("pool", 1);
+        world.environment_volumes = EnvironmentVolumesSection {
+            level_gravity: LEVEL_GRAVITY,
+            volumes: vec![fluid_record("water", 0.0), fluid_record("water", 4.0)],
+        };
+        world.reflection_probes = section;
+        install_environment(&mut app, world);
+        let local = script_ctx(&app).data_registry.borrow().fluids.clone();
+        let draws = collect_fluid_surface_draws(
+            &mut app.fluid_surface_render,
+            app.level.as_ref().expect("installed"),
+            &VisibleCells::DrawAll,
+            Vec3::ZERO,
+            &app.environment_volumes,
+            &app.environment_fluids,
+            &local,
+        )
+        .to_vec();
+        let volumes: Vec<u32> = draws.iter().map(|draw| draw.volume_index).collect();
+        assert_eq!(volumes, expected, "{draws:?}");
+        for draw in &draws {
+            assert_eq!(draw.params.opacity(), 0.0);
+            assert_eq!(draw.params.fog_extinction(), 0.0);
+            assert_eq!(draw.params.reflectivity(), 1.0);
         }
     }
 }

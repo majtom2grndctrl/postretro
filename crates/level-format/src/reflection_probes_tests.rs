@@ -210,12 +210,8 @@ fn a_tile_payload_of_the_wrong_length_is_refused() {
     assert!(message.contains("trailing bytes"), "{message}");
 }
 
-// Constant assertions: the cap fits the portable array-layer floor, and the
-// fluid shader's share table at the cap fits one 64 KiB uniform binding. The
-// shader packs each entry as a vec4 (RGB reference, roster index) plus the
-// lobes' RGB shares as unorm10×3, one u32 per lobe, padded to whole vec4s.
-const SHARE_ENTRY_GPU_BYTES: usize = 16 + REFLECTION_PROBE_LOBE_COUNT.div_ceil(4) * 16;
-const SHARE_TABLE_GPU_BYTES: usize =
-    MAX_REFLECTION_PROBES * REFLECTION_PROBE_LIGHTS_PER_PROBE * SHARE_ENTRY_GPU_BYTES;
+// Constant assertion: the cap fits the portable array-layer floor. The share
+// table's GPU layout lives with the fluid pass in render-cpu
+// (`fluid_surface::reflection`), which asserts its real size at this cap fits
+// one 64 KiB uniform binding.
 const _: () = assert!(MAX_REFLECTION_PROBES <= 256);
-const _: () = assert!(SHARE_TABLE_GPU_BYTES <= 64 * 1024);

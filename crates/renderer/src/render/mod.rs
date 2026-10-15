@@ -15,6 +15,7 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_reflection_probes;
 mod fluid_scene_inputs;
 mod fluid_surface;
 mod fog_pass;

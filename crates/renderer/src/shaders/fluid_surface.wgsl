@@ -1,5 +1,6 @@
 // Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
-// lit per fragment by baked SH indirect, baked direct SH, and dynamic lights.
+// lit per fragment by baked SH indirect, baked direct SH, and dynamic lights,
+// and mirroring their room through box-projected reflection probes.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---
@@ -105,7 +106,8 @@ struct AnimationDescriptor {
 // Mirrors render-cpu `FluidParamsRow`, packed CPU-side. The window rides a
 // dynamic offset; the draw's instance index picks the slot inside it.
 struct FluidVolumeRow {
-    // x = surface opacity, y = fog extinction (3 / fogDistance, 0 = no fog), zw spare.
+    // x = surface opacity, y = fog extinction (3 / fogDistance, 0 = no fog),
+    // z = reflectivity (0 for a volume with no probe-bound face), w spare.
     surface: vec4<f32>,
     // rgb = fog albedo (fogColor scaled), w spare.
     fog_albedo: vec4<f32>,
@@ -116,6 +118,33 @@ struct FluidVolumeParams {
     slots: array<FluidVolumeRow, 1360>,
 };
 @group(4) @binding(0) var<uniform> fluid_volumes: FluidVolumeParams;
+
+// The level's reflection probes: one capture tile per array layer, sampled at
+// level 0 through the SH atlas's linear-clamp sampler, and the share table,
+// written once at install. Mirrors render-cpu `fluid_surface::reflection`'s
+// `FluidProbeLightGpu`, `FluidProbeGpu` and table header.
+struct FluidProbeLight {
+    reference: vec3<f32>,
+    roster_index: u32,
+    // One unorm10x3 RGB share per lobe, red lowest; the tail pads.
+    shares: array<vec4<u32>, 2>,
+};
+struct FluidProbe {
+    box_min: vec3<f32>,
+    _pad0: u32,
+    box_max: vec3<f32>,
+    _pad1: u32,
+    capture_point: vec3<f32>,
+    layer: u32,
+    lights: array<FluidProbeLight, 4>,
+};
+struct FluidProbeTable {
+    // x = tile dimension, y = tile border, z = probe count, w spare.
+    tile: vec4<u32>,
+    probes: array<FluidProbe, 256>,
+};
+@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;
+@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;
 
 // --- Group 5: fluid scene inputs, rebuilt only with the scene targets ---
 // Scene depth, loaded under the pass's read-only depth attachment.
@@ -133,6 +162,9 @@ struct VertexInput {
     // Second vertex buffer: the face's drift in texture periods per second,
     // rewritten in place whenever drift re-resolves.
     @location(3) drift_rate: vec2<f32>,
+    // Third vertex buffer: the face's reflection probe, written at install;
+    // FLUID_REFLECTION_NO_PROBE for a face no binding names.
+    @location(4) probe: u32,
 };
 
 struct VertexOutput {
@@ -143,6 +175,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) slot: u32,
     // The face's drift scroll this frame, texture periods in [-0.5, 0.5).
     @location(4) @interpolate(flat) drift_scroll: vec2<f32>,
+    @location(5) @interpolate(flat) probe: u32,
 };
 
 @vertex
@@ -154,6 +187,7 @@ fn vs_main(in: VertexInput, @builtin(instance_index) slot: u32) -> VertexOutput 
     out.world_position = in.position;
     out.slot = slot;
     out.drift_scroll = fluid_drift_scroll(in.drift_rate, uniforms.time);
+    out.probe = in.probe;
     return out;
 }
 
@@ -428,6 +462,101 @@ fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opaci
     return vec4<f32>(out, total);
 }
 
+// Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
+// each function and constant here is pinned to it, and `fs_main`'s tail
+// inlines its `reflection_fragment` after the fog composite.
+const FLUID_REFLECTION_BASE_F0: f32 = 0.02;
+const FLUID_REFLECTION_NO_PROBE: u32 = 0xFFFFFFFFu;
+const FLUID_REFLECTION_ALL_TERMS: u32 = 0x17Fu;
+const FLUID_REFLECTION_DIRECTION_EPSILON: f32 = 1.0e-6;
+const FLUID_REFLECTION_COVERAGE_EPSILON: f32 = 1.0e-4;
+
+// The capture bakes every lighting term together, so any isolating mask
+// omits the probe term.
+fn fluid_reflection_mask_on(mask: u32) -> bool {
+    return (mask & FLUID_REFLECTION_ALL_TERMS) == FLUID_REFLECTION_ALL_TERMS;
+}
+
+// From the face's up side, by the interpolated outward normal, never the
+// viewer-flipped shading normal.
+fn fluid_reflection_seen_from_above(outward: vec3<f32>, view: vec3<f32>) -> bool {
+    return dot(outward, view) > 0.0;
+}
+
+fn fluid_reflection_gate(probe: u32, outward: vec3<f32>, view: vec3<f32>, mask: u32,
+                         reflectivity: f32) -> bool {
+    return probe != FLUID_REFLECTION_NO_PROBE
+        && reflectivity > 0.0
+        && fluid_reflection_seen_from_above(outward, view)
+        && fluid_reflection_mask_on(mask);
+}
+
+fn fluid_reflection_mirror(view: vec3<f32>, outward: vec3<f32>) -> vec3<f32> {
+    return outward * (2.0 * dot(view, outward)) - view;
+}
+
+// The runtime slab test: where the reflected ray leaves the projection box. A
+// component near zero is nudged off it rather than divided by.
+fn fluid_reflection_box_hit(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>,
+                            box_max: vec3<f32>) -> vec3<f32> {
+    let nudged = select(vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON),
+        vec3<f32>(-FLUID_REFLECTION_DIRECTION_EPSILON), ray < vec3<f32>(0.0));
+    let safe = select(ray, nudged, abs(ray) < vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON));
+    let t0 = (box_min - origin) / safe;
+    let t1 = (box_max - origin) / safe;
+    let far = max(t0, t1);
+    let t = max(min(far.x, min(far.y, far.z)), 0.0);
+    return origin + ray * t;
+}
+
+// From the capture point to the hit, clamped to the horizon below it.
+fn fluid_reflection_lookup(hit: vec3<f32>, capture_point: vec3<f32>, ray: vec3<f32>) -> vec3<f32> {
+    let toward = hit - capture_point;
+    let level = vec3<f32>(toward.x, max(toward.y, 0.0), toward.z);
+    return select(level, vec3<f32>(ray.x, max(ray.y, 0.0), ray.z),
+        dot(level, level) < FLUID_REFLECTION_DIRECTION_EPSILON);
+}
+
+// The SH atlas's octahedral mapping and border convention over one tile.
+fn fluid_reflection_tile_uv(direction: vec3<f32>, tile_dimension: u32, tile_border: u32) -> vec2<f32> {
+    let dimension = f32(tile_dimension);
+    let border = f32(tile_border);
+    let interior = dimension - 2.0 * border;
+    return (vec2<f32>(border) + oct_encode_unquantized(direction) * interior) / dimension;
+}
+
+// Schlick with base reflectance 0.02 x reflectivity, topping at 1.
+fn fluid_reflection_fresnel(cos_theta: f32, reflectivity: f32) -> f32 {
+    let f0 = min(FLUID_REFLECTION_BASE_F0 * reflectivity, 1.0);
+    let m = 1.0 - clamp(cos_theta, 0.0, 1.0);
+    let m2 = m * m;
+    return f0 + (1.0 - f0) * (m2 * m2 * m);
+}
+
+// The reflection over the straight-alpha surface (over fog) at union
+// coverage, still straight alpha: opacity never dims the reflection.
+fn fluid_reflection_composite(surface: vec4<f32>, reflection: vec3<f32>, fresnel: f32) -> vec4<f32> {
+    let coverage = fresnel + (1.0 - fresnel) * surface.a;
+    let rgb = (reflection * fresnel + surface.rgb * ((1.0 - fresnel) * surface.a))
+        / max(coverage, FLUID_REFLECTION_COVERAGE_EPSILON);
+    return vec4<f32>(rgb, coverage);
+}
+
+// The probe's capture toward the box hit from its capture point. The layer
+// comes from the face's probe index alone; the lookup only picks the texel.
+// It draws at the capture's reference state for now: the live-light ratio of
+// rendering_pipeline.md §7.3a multiplies in here (reflection-probes task 6).
+fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
+                           outward: vec3<f32>) -> vec3<f32> {
+    let ray = fluid_reflection_mirror(view, outward);
+    let hit = fluid_reflection_box_hit(world_position, ray, fluid_probes.probes[probe].box_min,
+        fluid_probes.probes[probe].box_max);
+    let lookup = fluid_reflection_lookup(hit, fluid_probes.probes[probe].capture_point, ray);
+    let uv = fluid_reflection_tile_uv(lookup, fluid_probes.tile.x, fluid_probes.tile.y);
+    let layer = fluid_probes.probes[probe].layer;
+    return textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb;
+}
+
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
 // test). The seam width and mip footprint come from the UNWARPED derivatives:
 // the warp shifts the sample point, it does not change the pixel footprint.
@@ -606,7 +735,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = albedo.a * opacity;
     // Seen from outside a fogged fluid, the scene behind the face lies under
     // it: composite surface over fog over scene in one output. Clear fluids
-    // and faces seen from inside output exactly the surface.
+    // and faces seen from inside keep exactly the surface.
+    var surface = vec4<f32>(rgb, alpha);
     let extinction = row.surface.y;
     if extinction > 0.0 && fluid_fog_seen_from_outside(outward, V) {
         let depth = textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0);
@@ -615,7 +745,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let transmittance = fluid_fog_transmittance(extinction, path);
         let proximity = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
         let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog.x, proximity, transmittance);
-        return fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
+        surface = fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
     }
-    return vec4<f32>(rgb, alpha);
+    // A probe-bound face seen from above under the all-terms mask mirrors its
+    // probe over that at union coverage; every other fragment is unchanged.
+    let reflectivity = row.surface.z;
+    if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
+        return surface;
+    }
+    let reflection = fluid_reflection_sample(in.probe, in.world_position, V, outward);
+    let fresnel = fluid_reflection_fresnel(dot(V, outward), reflectivity);
+    return fluid_reflection_composite(surface, reflection, fresnel);
 }

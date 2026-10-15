@@ -2,6 +2,7 @@
 // See: context/lib/testing_guide.md
 
 use super::*;
+use postretro_render_cpu::fluid_surface::reflection::FLUID_PROBE_TABLE_BYTES;
 use postretro_render_cpu::fluid_surface::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceVertex};
 
 fn validated_module() -> naga::Module {
@@ -162,7 +163,7 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let param_entry = &fluid_params_bind_group_layout_entries()[0];
+    let [param_entry, probe_array, probe_table] = fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -171,6 +172,100 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
             ..
         }
     ));
+    // The probe array and the share table: one sampled texture and one
+    // non-dynamic uniform, level-scoped like the params window.
+    assert_eq!(probe_array.binding, 1);
+    assert!(matches!(
+        probe_array.ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        }
+    ));
+    assert_eq!(probe_table.binding, 2);
+    assert!(matches!(
+        probe_table.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(size),
+        } if size.get() == FLUID_PROBE_TABLE_BYTES as u64
+    ));
+    for entry in [&probe_array, &probe_table] {
+        assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
+    }
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    assert!(source.contains("@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;"));
+    assert!(source.contains("@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;"));
+
+    // The share table is the CPU layout member for member, at the cap.
+    {
+        use postretro_render_cpu::fluid_surface::reflection::{
+            FLUID_PROBE_LIGHT_STRIDE, FLUID_PROBE_STRIDE, FluidProbeGpu, FluidProbeLightGpu,
+            FluidProbeTableHeader,
+        };
+        assert_eq!(
+            struct_span(&module, "FluidProbeTable") as usize,
+            FLUID_PROBE_TABLE_BYTES
+        );
+        assert_eq!(
+            struct_span(&module, "FluidProbe") as usize,
+            FLUID_PROBE_STRIDE
+        );
+        assert_eq!(
+            struct_span(&module, "FluidProbeLight") as usize,
+            FLUID_PROBE_LIGHT_STRIDE
+        );
+        let offsets = |members: &[(&str, usize)]| -> Vec<(String, u32)> {
+            members
+                .iter()
+                .map(|&(name, offset)| (name.to_owned(), offset as u32))
+                .collect()
+        };
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbeTable"),
+            offsets(&[
+                ("tile", 0),
+                ("probes", std::mem::size_of::<FluidProbeTableHeader>()),
+            ])
+        );
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbe"),
+            offsets(&[
+                ("box_min", std::mem::offset_of!(FluidProbeGpu, box_min)),
+                ("_pad0", 12),
+                ("box_max", std::mem::offset_of!(FluidProbeGpu, box_max)),
+                ("_pad1", 28),
+                (
+                    "capture_point",
+                    std::mem::offset_of!(FluidProbeGpu, capture_point)
+                ),
+                ("layer", std::mem::offset_of!(FluidProbeGpu, layer)),
+                ("lights", std::mem::offset_of!(FluidProbeGpu, lights)),
+            ])
+        );
+        assert_eq!(
+            struct_member_offsets(&module, "FluidProbeLight"),
+            offsets(&[
+                (
+                    "reference",
+                    std::mem::offset_of!(FluidProbeLightGpu, reference)
+                ),
+                (
+                    "roster_index",
+                    std::mem::offset_of!(FluidProbeLightGpu, roster_index)
+                ),
+                ("shares", std::mem::offset_of!(FluidProbeLightGpu, shares)),
+            ])
+        );
+        assert_eq!(
+            std::mem::offset_of!(FluidProbeTableHeader, tile_dimension),
+            0
+        );
+        assert_eq!(std::mem::offset_of!(FluidProbeTableHeader, tile_border), 4);
+        assert_eq!(std::mem::offset_of!(FluidProbeTableHeader, probe_count), 8);
+    }
 
     // Vertex attributes sit at the CPU struct's field offsets.
     let offsets: Vec<u64> = VERTEX_ATTRIBUTES.iter().map(|a| a.offset).collect();
@@ -453,6 +548,35 @@ fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
             assert!(!code.contains(forbidden), "fluid warp reads `{forbidden}`");
         }
     }
+}
+
+#[test]
+fn fluid_probe_index_rides_a_third_vertex_buffer_at_location_four_read_flat() {
+    use postretro_render_cpu::fluid_surface::FLUID_PROBE_INDEX_STRIDE;
+    assert_eq!(PROBE_INDEX_ATTRIBUTES.len(), 1);
+    assert_eq!(PROBE_INDEX_ATTRIBUTES[0].shader_location, 4);
+    assert_eq!(PROBE_INDEX_ATTRIBUTES[0].format, wgpu::VertexFormat::Uint32);
+    assert_eq!(FLUID_PROBE_INDEX_STRIDE, std::mem::size_of::<u32>());
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let code = code_only(source);
+    assert!(code.contains("@location(4)probe:u32,"));
+    assert!(code.contains("@location(5)@interpolate(flat)probe:u32,"));
+    assert!(code_only(wgsl_fn(source, "vs_main")).contains("out.probe=in.probe;"));
+    // Written once at install and bound beside the drift buffer; nothing
+    // rewrites it.
+    let pass = include_str!("fluid_surface.rs");
+    assert!(
+        code_only(wgsl_fn(pass, "record_draws"))
+            .contains("pass.set_vertex_buffer(2,installed.probe_index_buffer.slice(..));")
+    );
+    assert!(!code_only(pass).contains("probe_index_buffer,0,"));
+    let probes = include_str!("fluid_reflection_probes.rs");
+    let create = code_only(wgsl_fn(probes, "create_probe_index_buffer"));
+    assert!(
+        create.contains("usage:wgpu::BufferUsages::VERTEX,"),
+        "{create}"
+    );
+    assert!(!create.contains("COPY_DST"));
 }
 
 #[test]
@@ -988,11 +1112,14 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
     }
 }
 
-// `fs_main`'s tail is the CPU reference's `fog_fragment`: no fog or an inside
-// view returns the surface unchanged; otherwise one depth load, then path,
-// transmittance, proximity, layer and composite. The outside gate and the
-// proximity read the interpolated outward normal, never the viewer-flipped
-// shading normal `n`, which always faces the camera.
+// `fs_main`'s tail is the CPU references' `fog_fragment` then
+// `reflection_fragment`: no fog or an inside view keeps the surface;
+// otherwise one depth load, then path, transmittance, proximity, layer and
+// composite. The reflection gate then returns that unchanged, or wraps it in
+// the probe's union composite, for the fog branch and the clear path alike.
+// The outside gate, the proximity and the reflection read the interpolated
+// outward normal, never the viewer-flipped shading normal `n`, which always
+// faces the camera.
 #[test]
 fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
     let fragment = code_only(wgsl_fn(
@@ -1003,6 +1130,7 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         "letoutward=normalize(in.world_normal);",
         "varn=outward;",
         "letalpha=albedo.a*opacity;",
+        "varsurface=vec4<f32>(rgb,alpha);",
         "letextinction=row.surface.y;",
         "ifextinction>0.0&&fluid_fog_seen_from_outside(outward,V){",
         "letdepth=textureLoad(scene_depth,vec2<i32>(in.clip_position.xy),0);",
@@ -1011,8 +1139,13 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         "lettransmittance=fluid_fog_transmittance(extinction,path);",
         "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
         "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog.x,proximity,transmittance);",
-        "returnfluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
-        "returnvec4<f32>(rgb,alpha);}",
+        "surface=fluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
+        "letreflectivity=row.surface.z;",
+        "if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
+         returnsurface;}",
+        "letreflection=fluid_reflection_sample(in.probe,in.world_position,V,outward);",
+        "letfresnel=fluid_reflection_fresnel(dot(V,outward),reflectivity);",
+        "returnfluid_reflection_composite(surface,reflection,fresnel);}",
     ];
     let mut at = 0;
     for line in tail {
@@ -1026,6 +1159,9 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         "fluid_fog_seen_from_outside(n,",
         "in.world_position,n)",
         "normalize(n)",
+        "fluid_reflection_gate(in.probe,n,",
+        ",V,n)",
+        "dot(V,n)",
     ] {
         assert!(!fragment.contains(flipped), "fog reads `{flipped}`");
     }
@@ -1047,6 +1183,203 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letproximity=fog_proximity(fragment.camera,fragment.world_position,outward);\
          letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
          fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
+    );
+}
+
+#[test]
+fn fluid_reflection_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection as r;
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_BASE_F0"),
+        r::FLUID_REFLECTION_BASE_F0
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_NO_PROBE"),
+        r::FLUID_REFLECTION_NO_PROBE
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_ALL_TERMS"),
+        postretro_render_cpu::frame_uniforms::LightTermMask::ALL.bits()
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_ALL_TERMS"),
+        r::FLUID_REFLECTION_ALL_TERMS
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_DIRECTION_EPSILON"),
+        r::FLUID_REFLECTION_DIRECTION_EPSILON
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_COVERAGE_EPSILON"),
+        r::FLUID_REFLECTION_COVERAGE_EPSILON
+    );
+}
+
+// The mask, underside and probe gates, the mirror, the slab test, the
+// lookup's horizon clamp, the tile UV, Fresnel and the union composite are the
+// CPU reflection reference in WGSL, pinned on both sides. The sample chain is
+// the reference's `reflection_fragment` body: the layer is read from the
+// probe table by the face's probe index, and the tile is sampled at level 0
+// through the SH atlas sampler.
+#[test]
+fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
+    let pinned: [(&str, &str, &str, &str); 9] = [
+        (
+            "fluid_reflection_mask_on",
+            "fnfluid_reflection_mask_on(mask:u32)->bool{\
+             return(mask&FLUID_REFLECTION_ALL_TERMS)==FLUID_REFLECTION_ALL_TERMS;}",
+            "reflection_mask_on",
+            "fnreflection_mask_on(mask:u32)->bool{\
+             (mask&FLUID_REFLECTION_ALL_TERMS)==FLUID_REFLECTION_ALL_TERMS}",
+        ),
+        (
+            "fluid_reflection_seen_from_above",
+            "fnfluid_reflection_seen_from_above(outward:vec3<f32>,view:vec3<f32>)->bool{\
+             returndot(outward,view)>0.0;}",
+            "reflection_seen_from_above",
+            "fnreflection_seen_from_above(outward:Vec3,view:Vec3)->bool{outward.dot(view)>0.0}",
+        ),
+        (
+            "fluid_reflection_gate",
+            "fnfluid_reflection_gate(probe:u32,outward:vec3<f32>,view:vec3<f32>,mask:u32,\
+             reflectivity:f32)->bool{\
+             returnprobe!=FLUID_REFLECTION_NO_PROBE&&reflectivity>0.0\
+             &&fluid_reflection_seen_from_above(outward,view)&&fluid_reflection_mask_on(mask);}",
+            "reflection_gate",
+            "fnreflection_gate(probe:u32,outward:Vec3,view:Vec3,mask:u32,reflectivity:f32,)->bool{\
+             probe!=FLUID_REFLECTION_NO_PROBE&&reflectivity>0.0\
+             &&reflection_seen_from_above(outward,view)&&reflection_mask_on(mask)}",
+        ),
+        (
+            "fluid_reflection_mirror",
+            "fnfluid_reflection_mirror(view:vec3<f32>,outward:vec3<f32>)->vec3<f32>{\
+             returnoutward*(2.0*dot(view,outward))-view;}",
+            "reflection_mirror",
+            "fnreflection_mirror(view:Vec3,outward:Vec3)->Vec3{outward*(2.0*view.dot(outward))-view}",
+        ),
+        (
+            "fluid_reflection_box_hit",
+            "fnfluid_reflection_box_hit(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
+             box_max:vec3<f32>)->vec3<f32>{\
+             letnudged=select(vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON),\
+             vec3<f32>(-FLUID_REFLECTION_DIRECTION_EPSILON),ray<vec3<f32>(0.0));\
+             letsafe=select(ray,nudged,abs(ray)<vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON));\
+             lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
+             letfar=max(t0,t1);\
+             lett=max(min(far.x,min(far.y,far.z)),0.0);\
+             returnorigin+ray*t;}",
+            "reflection_box_hit",
+            "fnreflection_box_hit(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3)->Vec3{\
+             letnudged=Vec3::select(ray.cmplt(Vec3::ZERO),\
+             Vec3::splat(-FLUID_REFLECTION_DIRECTION_EPSILON),\
+             Vec3::splat(FLUID_REFLECTION_DIRECTION_EPSILON),);\
+             letsafe=Vec3::select(ray.abs().cmplt(Vec3::splat(FLUID_REFLECTION_DIRECTION_EPSILON)),\
+             nudged,ray,);\
+             lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
+             letfar=t0.max(t1);\
+             lett=far.x.min(far.y.min(far.z)).max(0.0);\
+             origin+ray*t}",
+        ),
+        (
+            "fluid_reflection_lookup",
+            "fnfluid_reflection_lookup(hit:vec3<f32>,capture_point:vec3<f32>,ray:vec3<f32>)\
+             ->vec3<f32>{\
+             lettoward=hit-capture_point;\
+             letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
+             returnselect(level,vec3<f32>(ray.x,max(ray.y,0.0),ray.z),\
+             dot(level,level)<FLUID_REFLECTION_DIRECTION_EPSILON);}",
+            "reflection_lookup",
+            "fnreflection_lookup(hit:Vec3,capture_point:Vec3,ray:Vec3)->Vec3{\
+             lettoward=hit-capture_point;\
+             letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
+             iflevel.dot(level)<FLUID_REFLECTION_DIRECTION_EPSILON{\
+             Vec3::new(ray.x,ray.y.max(0.0),ray.z)}else{level}}",
+        ),
+        (
+            "fluid_reflection_tile_uv",
+            "fnfluid_reflection_tile_uv(direction:vec3<f32>,tile_dimension:u32,tile_border:u32)\
+             ->vec2<f32>{\
+             letdimension=f32(tile_dimension);letborder=f32(tile_border);\
+             letinterior=dimension-2.0*border;\
+             return(vec2<f32>(border)+oct_encode_unquantized(direction)*interior)/dimension;}",
+            "reflection_tile_uv",
+            "fnreflection_tile_uv(direction:Vec3,tile_dimension:u32,tile_border:u32)->Vec2{\
+             letdimension=tile_dimensionasf32;letborder=tile_borderasf32;\
+             letinterior=dimension-2.0*border;\
+             letoct=Vec2::from(encode_unquantized_uv(direction.x,direction.y,direction.z));\
+             (Vec2::splat(border)+oct*interior)/dimension}",
+        ),
+        (
+            "fluid_reflection_fresnel",
+            "fnfluid_reflection_fresnel(cos_theta:f32,reflectivity:f32)->f32{\
+             letf0=min(FLUID_REFLECTION_BASE_F0*reflectivity,1.0);\
+             letm=1.0-clamp(cos_theta,0.0,1.0);letm2=m*m;\
+             returnf0+(1.0-f0)*(m2*m2*m);}",
+            "reflection_fresnel",
+            "fnreflection_fresnel(cos_theta:f32,reflectivity:f32)->f32{\
+             letf0=(FLUID_REFLECTION_BASE_F0*reflectivity).min(1.0);\
+             letm=1.0-cos_theta.clamp(0.0,1.0);letm2=m*m;\
+             f0+(1.0-f0)*(m2*m2*m)}",
+        ),
+        (
+            "fluid_reflection_composite",
+            "fnfluid_reflection_composite(surface:vec4<f32>,reflection:vec3<f32>,fresnel:f32)\
+             ->vec4<f32>{\
+             letcoverage=fresnel+(1.0-fresnel)*surface.a;\
+             letrgb=(reflection*fresnel+surface.rgb*((1.0-fresnel)*surface.a))\
+             /max(coverage,FLUID_REFLECTION_COVERAGE_EPSILON);\
+             returnvec4<f32>(rgb,coverage);}",
+            "reflection_composite",
+            "fnreflection_composite(surface:Vec4,reflection:Vec3,fresnel:f32)->Vec4{\
+             letcoverage=fresnel+(1.0-fresnel)*surface.w;\
+             letrgb=(reflection*fresnel+surface.truncate()*((1.0-fresnel)*surface.w))\
+             /coverage.max(FLUID_REFLECTION_COVERAGE_EPSILON);\
+             rgb.extend(coverage)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_sample")),
+        "fnfluid_reflection_sample(probe:u32,world_position:vec3<f32>,view:vec3<f32>,\
+         outward:vec3<f32>)->vec3<f32>{\
+         letray=fluid_reflection_mirror(view,outward);\
+         lethit=fluid_reflection_box_hit(world_position,ray,fluid_probes.probes[probe].box_min,\
+         fluid_probes.probes[probe].box_max);\
+         letlookup=fluid_reflection_lookup(hit,fluid_probes.probes[probe].capture_point,ray);\
+         letuv=fluid_reflection_tile_uv(lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
+         letlayer=fluid_probes.probes[probe].layer;\
+         returntextureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_fragment")),
+        "fnreflection_fragment(surface:Vec4,fragment:&FluidReflectionFragment,\
+         probes:&[ReflectionProbeRecord],tile:[u32;2],sample:implFn(u32,Vec2)->Vec3,)->Vec4{\
+         letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
+         letoutward=fragment.outward.normalize();\
+         if!reflection_gate(fragment.probe,outward,view,fragment.light_term_mask,\
+         fragment.reflectivity,){returnsurface;}\
+         letprobe=&probes[fragment.probeasusize];\
+         letray=reflection_mirror(view,outward);\
+         lethit=reflection_box_hit(fragment.world_position,ray,Vec3::from(probe.box_min),\
+         Vec3::from(probe.box_max),);\
+         letlookup=reflection_lookup(hit,Vec3::from(probe.capture_point),ray);\
+         letcapture=sample(probe.layer,reflection_tile_uv(lookup,tile[0],tile[1]));\
+         letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity);\
+         reflection_composite(surface,capture,fresnel)}"
     );
 }
 

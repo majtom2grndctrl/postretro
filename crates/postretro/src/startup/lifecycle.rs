@@ -726,7 +726,10 @@ impl App {
             self.level_timings.record("geometry_upload");
             // Fluid surfaces after textures (their UVs normalize by the
             // installed dimensions) and geometry (which drops the last level's).
-            renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
+            renderer.install_fluid_surfaces(
+                &world.environment_volumes.volumes,
+                world.reflection_probes.as_ref(),
+            );
 
             // Reseed the SH diagnostic per-light visibility bitmap to match the
             // freshly-installed level's animated-light count. Reset `seeded` so the

@@ -1,6 +1,7 @@
 // Fluid surface data logic: surface faces packed into one shared mesh, per-face
-// drift maps and rates, visible draws, draw slots and their parameter rows, and
-// the warp's and depth fog's CPU references.
+// drift maps and rates, visible draws, draw slots and their parameter rows, the
+// reflection probe table, and the warp's, depth fog's and reflection's CPU
+// references.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};
@@ -14,6 +15,7 @@ mod cull;
 mod drift;
 pub mod fog;
 pub mod motion;
+pub mod reflection;
 mod slots;
 
 pub use cull::FluidSurfaceRenderCollector;
@@ -42,6 +44,10 @@ const _: () = assert!(std::mem::size_of::<FluidSurfaceVertex>() == FLUID_SURFACE
 /// Byte stride of one per-vertex drift rate (`[f32; 2]`, texture periods per
 /// second) in the second vertex buffer, which drift re-resolves rewrite.
 pub const FLUID_DRIFT_RATE_STRIDE: usize = 8;
+
+/// Byte stride of one per-vertex probe index (`u32`) in the third vertex
+/// buffer, written once at install (`reflection::fill_probe_indices`).
+pub const FLUID_PROBE_INDEX_STRIDE: usize = 4;
 
 /// Per-volume parameters are three `vec4<f32>` per draw slot ([`FluidParamsRow`]).
 pub const FLUID_PARAMS_STRIDE: usize = 48;

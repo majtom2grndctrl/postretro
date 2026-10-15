@@ -7,10 +7,16 @@ use std::num::NonZeroU64;
 use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::{
     FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
-    FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidSurfaceDraw, FluidSurfaceSlots,
-    FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces, slot_window,
+    FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidSurfaceDraw,
+    FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates, pack_fluid_surfaces, slot_window,
+};
+
+use super::fluid_reflection_probes::{
+    FluidProbeResources, create_probe_index_buffer, fluid_probe_bind_group_layout_entries,
+    installable_probe_section,
 };
 
 #[cfg(test)]
@@ -43,20 +49,26 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
 );
 
-/// Group 4: one uniform window (at most 64 KiB) of per-volume rows, selected
-/// by a dynamic offset. Textures, samplers and uniforms only: the shared groups
+/// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
+/// rows selected by a dynamic offset, then the reflection probe array and
+/// share table. Textures, samplers and uniforms only: the shared groups
 /// already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
-    [wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
-            min_binding_size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
+    let [probe_array, probe_table] = fluid_probe_bind_group_layout_entries();
+    [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+            },
+            count: None,
         },
-        count: None,
-    }]
+        probe_array,
+        probe_table,
+    ]
 }
 
 /// Every BGL entry set the fluid pipeline layout composes, in group order.
@@ -151,6 +163,15 @@ const DRIFT_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
     format: wgpu::VertexFormat::Float32x2,
 }];
 
+/// The third vertex buffer: the face's reflection probe index, written once
+/// at install. Bindings are per face and rows per volume, so the index rides
+/// the vertex stream, never a row.
+const PROBE_INDEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
+    offset: 0,
+    shader_location: 4,
+    format: wgpu::VertexFormat::Uint32,
+}];
+
 /// One installed level's fluid geometry and per-volume parameter buffer.
 struct InstalledFluidSurfaces {
     vertex_buffer: wgpu::Buffer,
@@ -161,8 +182,15 @@ struct InstalledFluidSurfaces {
     face_drift_maps: Vec<Option<FluidFaceDriftMap>>,
     /// Reused per re-resolve.
     drift_rates: Vec<[f32; 2]>,
+    /// One probe index per vertex; the no-probe value for faces no binding
+    /// names, every face of a level without probes included.
+    probe_index_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
+    /// The level's probe array and share table, or their dummies. Held so
+    /// they drop with the level; the frame reaches them only through
+    /// `params_bind_group`.
+    _probes: FluidProbeResources,
     params_bind_group: wgpu::BindGroup,
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
@@ -236,6 +264,11 @@ impl FluidSurfacePass {
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &DRIFT_ATTRIBUTES,
                     }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: FLUID_PROBE_INDEX_STRIDE as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &PROBE_INDEX_ATTRIBUTES,
+                    }),
                 ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
@@ -295,11 +328,15 @@ impl FluidSurfacePass {
     /// `pack_fluid_surfaces` into one shared buffer with per-volume material
     /// ranges. UVs normalize by `texture_dimensions` (indexed by texture
     /// index); faces whose texture is past `material_count` draw with the
-    /// placeholder material.
+    /// placeholder material. `reflection_probes` (section 54) uploads whole
+    /// with the surfaces, and its bindings write each face's probe index; a
+    /// level without it binds dummies.
     pub fn install(
         &mut self,
         device: &wgpu::Device,
+        queue: &crate::render::uploads::UploadQueue,
         volumes: &[EnvironmentVolumeRecord],
+        reflection_probes: Option<&ReflectionProbesSection>,
         texture_dimensions: &[[u32; 2]],
         material_count: usize,
     ) {
@@ -308,6 +345,16 @@ impl FluidSurfacePass {
         if mesh.indices.is_empty() {
             return;
         }
+        let reflection_probes = installable_probe_section(reflection_probes);
+        let probe_index_buffer = create_probe_index_buffer(
+            device,
+            volumes,
+            &mesh.face_drift_maps,
+            mesh.vertices.len(),
+            reflection_probes,
+        );
+        // An install-time upload takes the raw queue, as the SH atlases do.
+        let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
@@ -332,17 +379,22 @@ impl FluidSurfacePass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let [probe_array, probe_table] = probes.bind_group_entries();
         let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
             layout: &self.params_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &params_buffer,
-                    offset: 0,
-                    size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &params_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+                    }),
+                },
+                probe_array,
+                probe_table,
+            ],
         });
         log::info!(
             "[Renderer] Fluid surfaces installed: {} volumes, {} triangles",
@@ -354,8 +406,10 @@ impl FluidSurfacePass {
             drift_buffer,
             drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
             face_drift_maps: mesh.face_drift_maps,
+            probe_index_buffer,
             index_buffer,
             params_buffer,
+            _probes: probes,
             params_bind_group,
             volumes: mesh.volumes,
             slots,
@@ -397,6 +451,14 @@ impl FluidSurfacePass {
             0,
             bytemuck::cast_slice(&installed.drift_rates),
         );
+    }
+
+    /// Layers of the installed probe array: 1 for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_array_layers(&self) -> Option<u32> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed._probes.array_layers())
     }
 
     /// Parameter-row uploads since install.
@@ -454,6 +516,7 @@ impl FluidSurfacePass {
         );
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
+        pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         let mut bound_window = None;
@@ -489,21 +552,37 @@ impl FluidSurfacePass {
 }
 
 impl Renderer {
-    /// Install the level's fluid surfaces. Call after `install_textures` and
-    /// `install_level_geometry` (which drops the previous level's): UVs
-    /// normalize by the installed diffuse dimensions, as
-    /// `normalize_world_uvs` does for world faces. Volumes without surface
-    /// faces allocate nothing; a level without any never opens the pass.
-    pub fn install_fluid_surfaces(&mut self, volumes: &[EnvironmentVolumeRecord]) {
-        let Self { device, full, .. } = self;
+    /// Install the level's fluid surfaces and their reflection probes. Call
+    /// after `install_textures` and `install_level_geometry` (which drops the
+    /// previous level's): UVs normalize by the installed diffuse dimensions,
+    /// as `normalize_world_uvs` does for world faces. Volumes without surface
+    /// faces allocate nothing, probes included; a level without any never
+    /// opens the pass. `reflection_probes` is the level's section 54.
+    pub fn install_fluid_surfaces(
+        &mut self,
+        volumes: &[EnvironmentVolumeRecord],
+        reflection_probes: Option<&ReflectionProbesSection>,
+    ) {
+        let Self {
+            device,
+            queue,
+            full,
+            ..
+        } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         let texture_dimensions =
             super::renderer_models::loaded_texture_dimensions(&full.loaded_textures);
         let material_count = full.gpu_textures.len();
-        full.fluid_surface
-            .install(device, volumes, &texture_dimensions, material_count);
+        full.fluid_surface.install(
+            device,
+            queue,
+            volumes,
+            reflection_probes,
+            &texture_dimensions,
+            material_count,
+        );
     }
 
     /// Every installed fluid face's world drift, one per surface face of every

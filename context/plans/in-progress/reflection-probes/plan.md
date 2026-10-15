@@ -7,6 +7,10 @@ branch: feature/reflection-probes
 
 ## Resolved blocks
 
+- 2026-10-14 — rows 33 and 35 restated (owner-approved): capture-path GPU rows compare against the capture's encoding (soft-knee tonemap, then sRGB), since `capture_frame_indirect` tonemaps and sRGB-encodes; linear 0.5 reads 188 ± 1. Applied to `index.md`.
+
+- 2026-10-15 — **distance-correction amendment** (owner-approved after the play test): probes gain a separate R16Float distance tile per probe; the fluid search corrects box projection against it; water the capture point cannot see draws no probe term (Capture shadow Decision). Changes Decisions Technique, Storage, Runtime placement, adds Capture shadow and a Non-goal; restates Acceptance rows 1, 2, 16, 17, 30, 33 and Manual 38; adds rows A1–A6 below; section 54 → internal version 2. Wording applied to `index.md` from `distance-proposal.md` §6. The owner runs the Tencent WO2026113651A1 claims check before shipping.
+
 - 2026-10-15 — A3 and A4 restated (owner-approved, after 11c showed the distance proposal's model sampled the tile over 128 texels instead of the 126-texel interior, making its predictions optimistic): A3's coping bound is half a capture texel (0.6°; measured 0.55 / 0.54 / 0.38°); A4's capture-facing clause covers the base-attachment set (fragments on the capture point's sight line to the face, at least a capture texel inside its edges), since the first sphere step can step over a thin pillar elsewhere. Applied to `index.md`.
 
 ## Corrections

@@ -7,7 +7,8 @@ use postretro_level_format::reflection_probes::{
     REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION,
 };
 
-use super::shading::CaptureScene;
+use super::shading::{CaptureScene, ShadeScratch};
+use super::share::{ShareSums, sample_solid_angle};
 use crate::bc6h::encode_bc6h_rgb_from_f32_rgba;
 
 /// Interior texels per tile edge: the tile minus its wrap border.
@@ -33,37 +34,69 @@ pub(crate) fn sample_angle() -> f32 {
     (4.0 * std::f32::consts::PI / samples).sqrt()
 }
 
-/// One interior row of a tile: the mean radiance of each texel's supersamples.
+/// One interior row of a tile: each texel's mean captured radiance over its
+/// supersamples, and the row's light-share sums.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RowCapture {
+    pub texels: Vec<Vec3>,
+    pub shares: ShareSums,
+}
+
+/// Capture one interior row. Each supersample's radiance is the static
+/// result plus every animated light's unit term at its reference value
+/// (`references`, by roster index), and the same sample, weighted by the
+/// solid angle it stands for, feeds the share sums.
 pub(crate) fn capture_row(
     scene: &CaptureScene<'_>,
     capture_point: Vec3,
     row: u32,
-) -> anyhow::Result<Vec<Vec3>> {
+    references: &[[f32; 3]],
+) -> anyhow::Result<RowCapture> {
     let angle = sample_angle();
     let interior = TILE_INTERIOR as f32;
-    let mut out = Vec::with_capacity(TILE_INTERIOR as usize);
+    let samples = SUPERSAMPLE_OFFSETS.len();
+    let mut scratch = ShadeScratch::default();
+    let mut out = RowCapture {
+        texels: Vec::with_capacity(TILE_INTERIOR as usize),
+        shares: ShareSums::default(),
+    };
     for column in 0..TILE_INTERIOR {
         let mut sum = Vec3::ZERO;
         for [dx, dy] in SUPERSAMPLE_OFFSETS {
             let u = (column as f32 + 0.5 + dx) / interior;
             let v = (row as f32 + 0.5 + dy) / interior;
             let direction = octahedral_direction(u, v);
-            sum += scene.radiance(capture_point, direction, angle)?;
+            let static_radiance = scene.radiance(capture_point, direction, angle, &mut scratch)?;
+            let animated = scratch.animated.lights();
+            let capture = animated
+                .iter()
+                .fold(static_radiance, |acc, &(light, unit)| {
+                    acc + unit
+                        * Vec3::from(references.get(light as usize).copied().unwrap_or([0.0; 3]))
+                });
+            out.shares.add(
+                direction,
+                sample_solid_angle(u, v, TILE_INTERIOR, samples),
+                capture,
+                animated,
+                references,
+            );
+            sum += capture;
         }
-        out.push(sum / SUPERSAMPLE_OFFSETS.len() as f32);
+        out.texels.push(sum / samples as f32);
     }
     Ok(out)
 }
 
 /// Assemble interior rows into the bordered tile and encode it BC6H. Border
 /// texels copy their interior source by the SH atlas's wrap rule.
-pub(crate) fn encode_tile(rows: &[Vec<Vec3>]) -> Vec<u8> {
+pub(crate) fn encode_tile(rows: &[&[Vec3]]) -> Vec<u8> {
     let dimension = REFLECTION_PROBE_TILE_DIMENSION;
     encode_bc6h_rgb_from_f32_rgba(&bordered_rgba(rows), dimension, dimension)
 }
 
 /// The tile as row-major RGBA f32, border included.
-fn bordered_rgba(rows: &[Vec<Vec3>]) -> Vec<f32> {
+fn bordered_rgba(rows: &[&[Vec3]]) -> Vec<f32> {
     let dimension = REFLECTION_PROBE_TILE_DIMENSION;
     let mut rgba = Vec::with_capacity((dimension * dimension * 4) as usize);
     for y in 0..dimension {
@@ -142,6 +175,7 @@ mod tests {
                     .collect()
             })
             .collect();
+        let rows: Vec<&[Vec3]> = rows.iter().map(Vec::as_slice).collect();
         let rgba = bordered_rgba(&rows);
         let dimension = REFLECTION_PROBE_TILE_DIMENSION;
         let at = |x: u32, y: u32| {

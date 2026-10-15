@@ -24,6 +24,42 @@ pub const MAX_REFLECTION_PROBES: usize = PORTABLE_MAX_TEXTURE_ARRAY_LAYERS as us
 /// Share entry roster index marking an unused entry; it names no light.
 pub const REFLECTION_PROBE_NO_LIGHT: u32 = u32::MAX;
 
+/// Blend weights of the five share lobes for a lookup `direction`, in lobe
+/// order: up (+Y), +X, −X, +Z, −Z. The compiler weights each captured texel's
+/// light into the lobes by this, and the fluid shader and render-cpu blend
+/// the stored shares by the same function, so the two agree exactly.
+///
+/// Each lobe is its clamped cosine squared, `max(d · axis, 0)²`, and the
+/// downward part `max(−y, 0)²` is split evenly over the four horizontal lobes.
+/// For a unit `d` the six clamped squares are `x² + y² + z² = 1`, so the
+/// weights sum to 1 by construction; the final divide only removes rounding
+/// and a non-unit input's length. Exponent 2 is the trig-free choice: each
+/// term is C¹ across its axis plane, so the blended ratio has no crease at a
+/// lobe edge (P7), and a lobe still holds half its weight 45° off its axis.
+/// Straight down gives each horizontal lobe ¼, the limit of every nearby
+/// direction. A zero or non-finite direction falls back to the up lobe, so
+/// the result is never NaN.
+pub fn reflection_probe_lobe_weights(direction: [f32; 3]) -> [f32; REFLECTION_PROBE_LOBE_COUNT] {
+    let [x, y, z] = direction;
+    let pos = |v: f32| {
+        let c = v.max(0.0);
+        c * c
+    };
+    let down = pos(-y) * 0.25;
+    let weights = [
+        pos(y),
+        pos(x) + down,
+        pos(-x) + down,
+        pos(z) + down,
+        pos(-z) + down,
+    ];
+    let sum: f32 = weights.iter().sum();
+    if !(sum.is_finite() && sum > 0.0) {
+        return [1.0, 0.0, 0.0, 0.0, 0.0];
+    }
+    weights.map(|w| w / sum)
+}
+
 /// Largest tile edge a decoder accepts; past it a corrupt header would ask
 /// for an absurd texture before the payload length check could catch it.
 const MAX_TILE_DIMENSION: u32 = 1024;

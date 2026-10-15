@@ -215,3 +215,96 @@ fn a_tile_payload_of_the_wrong_length_is_refused() {
 // (`fluid_surface::reflection`), which asserts its real size at this cap fits
 // one 64 KiB uniform binding.
 const _: () = assert!(MAX_REFLECTION_PROBES <= 256);
+
+fn unit(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    v.map(|c| c / len)
+}
+
+#[test]
+fn lobe_weights_sum_to_one_and_peak_on_their_axes() {
+    let axes = [
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+    for (lobe, axis) in axes.iter().enumerate() {
+        let weights = reflection_probe_lobe_weights(*axis);
+        for (other, w) in weights.iter().enumerate() {
+            let expected = if other == lobe { 1.0 } else { 0.0 };
+            assert!((w - expected).abs() < 1e-6, "lobe {lobe}: {weights:?}");
+        }
+    }
+    for step in 0..2000 {
+        let t = step as f32 * 0.0137;
+        let d = unit([t.sin() * 1.3, (t * 0.7).cos(), (t * 1.9).sin() - 0.2]);
+        let weights = reflection_probe_lobe_weights(d);
+        let sum: f32 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "{d:?}: {weights:?}");
+        assert!(
+            weights.iter().all(|w| (0.0..=1.0).contains(w)),
+            "{weights:?}"
+        );
+    }
+}
+
+/// Half weight 45° off an axis: the pinned exponent is 2.
+#[test]
+fn lobe_weights_split_evenly_between_neighbouring_axes() {
+    let w = reflection_probe_lobe_weights(unit([1.0, 1.0, 0.0]));
+    assert!(
+        (w[0] - 0.5).abs() < 1e-6 && (w[1] - 0.5).abs() < 1e-6,
+        "{w:?}"
+    );
+}
+
+#[test]
+fn straight_down_gives_the_horizontal_lobes_equal_weight_and_its_neighbours_agree() {
+    let down = reflection_probe_lobe_weights([0.0, -1.0, 0.0]);
+    assert_eq!(down, [0.0, 0.25, 0.25, 0.25, 0.25]);
+    // Continuity at the pole: a direction a hair off straight down reads
+    // almost the same weights, whichever way it leans.
+    for lean in [[1e-3, 0.0], [-1e-3, 0.0], [0.0, 1e-3], [7e-4, -7e-4]] {
+        let near = reflection_probe_lobe_weights(unit([lean[0], -1.0, lean[1]]));
+        for (a, b) in near.iter().zip(&down) {
+            assert!((a - b).abs() < 1e-5, "{near:?}");
+        }
+    }
+}
+
+/// P7's premise: adjacent directions read adjacent weights everywhere,
+/// across every lobe edge and the horizon.
+#[test]
+fn lobe_weights_are_continuous_across_lobe_edges() {
+    let step = 1e-3f32;
+    for i in 0..4000 {
+        let theta = i as f32 * std::f32::consts::TAU / 4000.0;
+        for elevation in [-0.9f32, -0.3, 0.0, 0.2, 0.7, 1.4] {
+            let at = |t: f32, e: f32| [e.cos() * t.cos(), e.sin(), e.cos() * t.sin()];
+            let a = reflection_probe_lobe_weights(at(theta, elevation));
+            let b = reflection_probe_lobe_weights(at(theta + step, elevation));
+            let c = reflection_probe_lobe_weights(at(theta, elevation + step));
+            for lobe in 0..REFLECTION_PROBE_LOBE_COUNT {
+                assert!(
+                    (a[lobe] - b[lobe]).abs() < 4.0 * step,
+                    "{theta} {elevation}"
+                );
+                assert!(
+                    (a[lobe] - c[lobe]).abs() < 4.0 * step,
+                    "{theta} {elevation}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn lobe_weights_never_return_nan() {
+    for d in [[0.0; 3], [f32::NAN; 3], [f32::INFINITY, 0.0, 0.0]] {
+        let w = reflection_probe_lobe_weights(d);
+        assert!(w.iter().all(|v| v.is_finite()), "{d:?}: {w:?}");
+        assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{d:?}: {w:?}");
+    }
+}

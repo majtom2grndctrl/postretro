@@ -69,7 +69,27 @@ impl<'a> ShVolumeSampler<'a> {
 
     /// Irradiance for a surface at `position` with unit `normal` (shading,
     /// offset and geometric normal alike: the capture reads no normal map).
+    #[cfg(test)]
     pub(crate) fn indirect(&self, position: Vec3, normal: Vec3) -> Vec3 {
+        self.indirect_and_slots(position, normal, None)
+    }
+
+    /// [`Self::indirect`], also listing every stored slot the sample read with
+    /// its final linear weight (corner weight over the corner sum, times an L1
+    /// node corner's share). The composed atlas the runtime samples adds each
+    /// animated light's delta into these same slots, so a light's indirect at
+    /// this point is the same weighted sum over its delta texels at
+    /// [`Self::tile_taps`]. Only the base sample is clamped at zero; bounce
+    /// deltas are never negative, so the clamp is linear over them.
+    pub(crate) fn indirect_and_slots(
+        &self,
+        position: Vec3,
+        normal: Vec3,
+        mut slots: Option<&mut Vec<(u32, f32)>>,
+    ) -> Vec3 {
+        if let Some(slots) = slots.as_deref_mut() {
+            slots.clear();
+        }
         if self.indirection.is_empty() {
             return Vec3::ZERO;
         }
@@ -86,14 +106,17 @@ impl<'a> ShVolumeSampler<'a> {
 
         let mut sum = Vec3::ZERO;
         let mut weight_sum = 0.0;
-        for corner in 0..8u32 {
+        // Each corner's weight and the slots its sample read, for `slots`.
+        let mut corners = [CornerRead::default(); 8];
+        for (corner, read) in corners.iter_mut().enumerate() {
+            let corner = corner as u32;
             let offset = UVec3::new(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
             let idx = (gi + offset).min(dims - UVec3::ONE);
             let probe = (idx.x + idx.y * dims.x + idx.z * dims.x * dims.y) as usize;
             let indirection = self.indirection[probe];
             let sample = match indirection {
-                Some(ind) => self.sample_resolved(idx, ind, normal),
-                None => Vec4::ZERO,
+                Some(ind) => self.sample_resolved(idx, ind, normal, read),
+                None => Vec3::ZERO,
             };
             let weight = self.probe_weight(
                 probe,
@@ -104,11 +127,22 @@ impl<'a> ShVolumeSampler<'a> {
                 normal,
                 indirection.is_some(),
             );
-            sum += weight * sample.truncate().max(Vec3::ZERO);
+            read.weight = weight;
+            sum += weight * sample.max(Vec3::ZERO);
             weight_sum += weight;
         }
         if weight_sum < SH_WEIGHT_EPSILON {
             return Vec3::ZERO;
+        }
+        if let Some(slots) = slots {
+            for read in &corners {
+                for &(slot, share) in &read.slots[..read.count] {
+                    let w = read.weight / weight_sum * share;
+                    if w > 0.0 {
+                        slots.push((slot, w));
+                    }
+                }
+            }
         }
         sum / weight_sum
     }
@@ -161,21 +195,40 @@ impl<'a> ShVolumeSampler<'a> {
         visibility.clamp(SH_DEPTH_MIN_VISIBILITY, 1.0)
     }
 
-    fn sample_resolved(&self, idx: UVec3, ind: ProbeIndirection, dir: Vec3) -> Vec4 {
+    /// One corner's sample, recording each stored slot it read with its
+    /// share of the corner.
+    fn sample_resolved(
+        &self,
+        idx: UVec3,
+        ind: ProbeIndirection,
+        dir: Vec3,
+        read: &mut CornerRead,
+    ) -> Vec3 {
         match ind.level {
-            Level::L1 => self.sample_l1(idx, ind, dir),
-            Level::L0 | Level::L2 => self.sample_slot(ind.slot, dir),
+            Level::L1 => self.sample_l1(idx, ind, dir, read),
+            Level::L0 | Level::L2 => {
+                read.slots[0] = (ind.slot, 1.0);
+                read.count = 1;
+                self.sample_slot(ind.slot, dir).truncate()
+            }
         }
     }
 
     /// `sample_l1_probe_atlas`: the probe's value reconstructed from its
     /// node's eight stored corners, present corners only.
-    fn sample_l1(&self, idx: UVec3, ind: ProbeIndirection, dir: Vec3) -> Vec4 {
+    fn sample_l1(
+        &self,
+        idx: UVec3,
+        ind: ProbeIndirection,
+        dir: Vec3,
+        read: &mut CornerRead,
+    ) -> Vec3 {
         let edge = u32::from(AFFINITY_FACTOR) << ind.scale;
         let local = idx - (idx / edge) * edge;
         let fraction = local.as_vec3() / (edge - 1) as f32;
         let mut sum = Vec3::ZERO;
         let mut weight_sum = 0.0;
+        read.count = 0;
         for corner in 0..8u32 {
             let high =
                 UVec3::new(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1).cmpne(UVec3::ZERO);
@@ -188,11 +241,19 @@ impl<'a> ShVolumeSampler<'a> {
             let present = weight * sample.w;
             sum += present * sample.truncate().max(Vec3::ZERO);
             weight_sum += present;
+            if present > 0.0 {
+                read.slots[read.count] = (ind.slot + corner, present);
+                read.count += 1;
+            }
         }
         if weight_sum < SH_WEIGHT_EPSILON {
-            return Vec4::ZERO;
+            read.count = 0;
+            return Vec3::ZERO;
         }
-        (sum / weight_sum).extend(1.0)
+        for entry in &mut read.slots[..read.count] {
+            entry.1 /= weight_sum;
+        }
+        sum / weight_sum
     }
 
     /// `sample_probe_atlas_slot`: one bilinear tap at the direction's
@@ -200,22 +261,8 @@ impl<'a> ShVolumeSampler<'a> {
     fn sample_slot(&self, slot: u32, dir: Vec3) -> Vec4 {
         let s = self.section;
         let tile = s.tile_dimension as usize;
-        let interior = s.tile_dimension.saturating_sub(2 * s.tile_border).max(1) as f32;
-        let dir = dir.normalize_or_zero();
-        let oct = encode_unquantized_uv(dir.x, dir.y, dir.z);
-        let border = s.tile_border as f32;
-        let texel = [border + oct[0] * interior, border + oct[1] * interior];
         let [layer, tile_x, tile_y] =
             irradiance_array_tile_location(slot as usize, s.tiles_per_layer, s.atlas_tiles_per_row);
-        let mut taps = [[0usize; 2]; 2];
-        let mut fraction = [0.0f32; 2];
-        for axis in 0..2 {
-            let p = texel[axis] - 0.5;
-            let lo = p.floor();
-            let lo_i = (lo.max(0.0) as usize).min(tile - 1);
-            taps[axis] = [lo_i, (lo_i + 1).min(tile - 1)];
-            fraction[axis] = p - lo;
-        }
         let width = s.atlas_dimensions[0] as usize;
         let layer_texels = width * s.atlas_dimensions[1] as usize;
         let fetch = |x: usize, y: usize| {
@@ -232,11 +279,129 @@ impl<'a> ShVolumeSampler<'a> {
             };
             Vec4::new(channel(0), channel(1), channel(2), channel(3))
         };
-        let [fx, fy] = fraction;
-        let top = fetch(taps[0][0], taps[1][0]).lerp(fetch(taps[0][1], taps[1][0]), fx);
-        let bottom = fetch(taps[0][0], taps[1][1]).lerp(fetch(taps[0][1], taps[1][1]), fx);
+        let ([x0, x1], [y0, y1], [fx, fy]) = self.bilinear(dir);
+        let top = fetch(x0, y0).lerp(fetch(x1, y0), fx);
+        let bottom = fetch(x0, y1).lerp(fetch(x1, y1), fx);
         top.lerp(bottom, fy)
     }
+
+    /// The bilinear footprint of direction `dir` inside any tile: the two
+    /// columns, the two rows and the fractions between them. Every slot's
+    /// tile has one layout, so one footprint serves every slot of a sample.
+    fn bilinear(&self, dir: Vec3) -> ([usize; 2], [usize; 2], [f32; 2]) {
+        let s = self.section;
+        let tile = s.tile_dimension as usize;
+        let interior = s.tile_dimension.saturating_sub(2 * s.tile_border).max(1) as f32;
+        let dir = dir.normalize_or_zero();
+        let oct = encode_unquantized_uv(dir.x, dir.y, dir.z);
+        let border = s.tile_border as f32;
+        let texel = [border + oct[0] * interior, border + oct[1] * interior];
+        let mut taps = [[0usize; 2]; 2];
+        let mut fraction = [0.0f32; 2];
+        for axis in 0..2 {
+            let p = texel[axis] - 0.5;
+            let lo = p.floor();
+            let lo_i = (lo.max(0.0) as usize).min(tile - 1);
+            taps[axis] = [lo_i, (lo_i + 1).min(tile - 1)];
+            fraction[axis] = p - lo;
+        }
+        (taps[0], taps[1], fraction)
+    }
+
+    /// [`Self::bilinear`] as four tile-local `(x, y, weight)` taps.
+    pub(crate) fn tile_taps(&self, dir: Vec3) -> [(usize, usize, f32); 4] {
+        let ([x0, x1], [y0, y1], [fx, fy]) = self.bilinear(dir);
+        [
+            (x0, y0, (1.0 - fx) * (1.0 - fy)),
+            (x1, y0, fx * (1.0 - fy)),
+            (x0, y1, (1.0 - fx) * fy),
+            (x1, y1, fx * fy),
+        ]
+    }
+
+    /// Who writes each stored slot of the composed atlas, as `sh_compose.wgsl`
+    /// assigns them: the affinity cell (4³ brick) and local probe whose
+    /// invocation adds every animated delta into that slot. An L0 brick's valid
+    /// probes write their own slots; an L1 node's origin brick writes its eight
+    /// corner slots from its own corner locals; an L2 node's origin brick
+    /// writes its one slot from local 0. Indexed by slot.
+    pub(crate) fn slot_writers(&self) -> Vec<Option<(u32, u8)>> {
+        let mut writers: Vec<Option<(u32, u8)>> = Vec::new();
+        if self.indirection.is_empty() {
+            return writers;
+        }
+        let grid = UVec3::from(self.section.grid_dimensions);
+        let factor = u32::from(AFFINITY_FACTOR);
+        let affinity = (grid + UVec3::splat(factor - 1)) / factor;
+        let probe_index = |p: UVec3| (p.x + p.y * grid.x + p.z * grid.x * grid.y) as usize;
+        let local_coord =
+            |l: u32| UVec3::new(l % factor, (l / factor) % factor, l / (factor * factor));
+        let mut write = |slot: u32, cell: u32, local: u32| {
+            let slot = slot as usize;
+            if writers.len() <= slot {
+                writers.resize(slot + 1, None);
+            }
+            writers[slot] = Some((cell, local as u8));
+        };
+        let locals = factor * factor * factor;
+        for bz in 0..affinity.z {
+            for by in 0..affinity.y {
+                for bx in 0..affinity.x {
+                    let brick = UVec3::new(bx, by, bz);
+                    let cell = bx + by * affinity.x + bz * affinity.x * affinity.y;
+                    let in_grid = |l: u32| {
+                        let p = brick * factor + local_coord(l);
+                        p.cmplt(grid).all().then_some(p)
+                    };
+                    // The brick's indirection is its first valid probe's.
+                    let Some(brick_ind) = (0..locals)
+                        .filter_map(in_grid)
+                        .find_map(|p| self.indirection[probe_index(p)])
+                    else {
+                        continue;
+                    };
+                    let node_edge = 1u32 << brick_ind.scale;
+                    let origin_writer = brick == (brick / node_edge) * node_edge;
+                    for local in 0..locals {
+                        let Some(p) = in_grid(local) else { continue };
+                        let c = local_coord(local);
+                        match brick_ind.level {
+                            Level::L0 => {
+                                if let Some(ind) = self.indirection[probe_index(p)] {
+                                    write(ind.slot, cell, local);
+                                }
+                            }
+                            Level::L1 => {
+                                let corner =
+                                    c.cmpeq(UVec3::ZERO) | c.cmpeq(UVec3::splat(factor - 1));
+                                if corner.all() && origin_writer {
+                                    let shared = c / (factor - 1);
+                                    let slot =
+                                        brick_ind.slot + shared.x + shared.y * 2 + shared.z * 4;
+                                    write(slot, cell, local);
+                                }
+                            }
+                            Level::L2 => {
+                                if local == 0 && origin_writer {
+                                    write(brick_ind.slot, cell, local);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        writers
+    }
+}
+
+/// One SH corner's sample: its probe weight and the stored slots it read,
+/// each with its share of the corner.
+#[derive(Debug, Clone, Copy, Default)]
+struct CornerRead {
+    weight: f32,
+    slots: [(u32, f32); 8],
+    count: usize,
 }
 
 /// Per-probe indirection from id-34 metadata and its brick-major stored-tile

@@ -1856,9 +1856,11 @@ fn run_after_parsing(
         true,
     );
 
-    // Reflection probes read the encoded id 52 and id 22, the packed base SH
-    // and the baked `.prm` sidecars, with the BVH still in scope; the BSP and
-    // its exterior leaves drop capture points in solid or outside the hull.
+    // Reflection probes read the encoded id 52 and id 22, the packed base SH,
+    // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),
+    // the runtime lights (id 18) and their chunk windows (id 23), and the
+    // baked `.prm` sidecars, with the BVH still in scope; the BSP and its
+    // exterior leaves drop capture points in solid or outside the hull.
     let stage_start = begin_stage(reporter.as_ref(), StageId::ReflectionProbes);
     let reflection_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ReflectionProbes, reflection_progress.clone());
@@ -1874,6 +1876,10 @@ fn run_after_parsing(
             exterior_leaves: &exterior_leaves,
             lightmap: &lightmap_section,
             sh_volume: &packed_sh_volume,
+            delta_sh: delta_sections.indirect.as_ref(),
+            animated_weight_maps: animated_light_weight_maps_section.as_ref(),
+            alpha_lights: &alpha_lights_section,
+            chunk_light_list: &chunk_light_list_section,
             texture_keys: &name_to_key,
             prm_root: &prm_root,
         },

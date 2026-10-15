@@ -3,18 +3,26 @@
 //! an octahedral tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
+mod animated_direct;
 mod authored;
 mod box_fit;
 mod capture;
 mod capture_point;
+mod delta_sample;
 mod derived;
 mod hit;
 mod lightmap_sample;
 mod materials;
 mod placement;
+mod reference;
+mod sdf_lights;
 mod sh_sample;
 mod shading;
+mod share;
+mod stage_key;
 
+#[cfg(test)]
+mod capture_tests;
 #[cfg(test)]
 mod placement_test_fixtures;
 #[cfg(test)]
@@ -24,42 +32,52 @@ mod reflection_probes_test_fixtures;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use bvh::bvh::Bvh;
+use postretro_level_format::alpha_lights::AlphaLightsSection;
+use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
+use postretro_level_format::chunk_light_list::ChunkLightListSection;
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
-    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeLightShare, ReflectionProbeRecord,
-    ReflectionProbesSection,
+    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
 };
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
 use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
-use crate::cache::{CacheKey, StageCache};
+use crate::cache::StageCache;
 use crate::geometry::GeometryResult;
 use crate::map_data::MapReflectionVolume;
 use crate::partition::BspTree;
 
+use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
-use capture::{SUPERSAMPLE_OFFSETS, TILE_INTERIOR, capture_row, encode_tile};
+use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_tile};
 use capture_point::PointClassifier;
+use delta_sample::DeltaShSampler;
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use materials::SurfaceMaterials;
 use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
+use reference::reference_value;
+use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
-use shading::{CaptureScene, PRODUCTION_INDIRECT_WEIGHT};
+use shading::CaptureScene;
+use share::{ShareReport, ShareSums};
+use stage_key::{cache_key, cache_payload, parse_cache_payload};
 
 /// Cache stage identity for the whole id-54 section.
 const STAGE_ID: &str = "reflection_probes";
 /// Bump when capture shading, sampling or the payload changes. Placement
 /// enters the key as its output, so a placement change re-keys by itself.
-const STAGE_VERSION: u32 = 2;
+/// 3: animated direct and indirect at reference, sdf lights, light share.
+const STAGE_VERSION: u32 = 3;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -79,8 +97,18 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     /// Id 22 as encoded: the capture decodes the texels it reads.
     pub lightmap: &'a LightmapSection,
     /// The packed pre-BC6H base SH volume id 34 encodes. Warm SH differs from
-    /// cold, so the key hashes this output, not the SH bake's inputs.
+    /// cold, so the key hashes this output, not the SH bake's inputs. Its
+    /// animation descriptors are the runtime's, by roster index.
     pub sh_volume: &'a OctahedralShVolumeSection,
+    /// Id 27 as the level ships it: each animated light's bounce.
+    pub delta_sh: Option<&'a DeltaShVolumesSection>,
+    /// Id 25 as the level ships it: each animated light's direct.
+    pub animated_weight_maps: Option<&'a AnimatedLightWeightMapsSection>,
+    /// Id 18: the runtime's lights, whose non-dynamic records are the spec
+    /// lights the forward sdf loop shades.
+    pub alpha_lights: &'a AlphaLightsSection,
+    /// Id 23: the chunk windows the sdf selection reads.
+    pub chunk_light_list: &'a ChunkLightListSection,
     /// Texture name → `.prm` key, from the TextureMips stage.
     pub texture_keys: &'a HashMap<String, [u8; 32]>,
     pub prm_root: &'a Path,
@@ -134,20 +162,37 @@ pub(crate) fn bake_or_load_reflection_probes(
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
     let key = cache_key(inputs, &probes)?;
-    if let Some(section) = stage_cache
-        .and_then(|cache| cache.get(&key))
-        .and_then(|bytes| {
-            ReflectionProbesSection::from_bytes(&bytes)
-                .map_err(|e| log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}"))
-                .ok()
-        })
+    if let Some((section, reports)) =
+        stage_cache
+            .and_then(|cache| cache.get(&key))
+            .and_then(|bytes| {
+                parse_cache_payload(&bytes)
+                    .map_err(|e| {
+                        log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}")
+                    })
+                    .ok()
+            })
     {
         log::info!("[cache] reflection_probes hit");
-        log_probes(&section);
+        log_probes(&section, &reports);
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
 
+    let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?;
+    let deltas = inputs
+        .delta_sh
+        .map(|delta| {
+            DeltaShSampler::new(
+                delta,
+                &sh,
+                inputs.sh_volume.tile_dimension,
+                inputs.sh_volume.grid_dimensions,
+            )
+        })
+        .transpose()?;
+    let references = references(&inputs.sh_volume.animation_descriptors);
+    check_roster(inputs, references.len())?;
     let scene = CaptureScene {
         tracer,
         materials: SurfaceMaterials::new(
@@ -156,25 +201,32 @@ pub(crate) fn bake_or_load_reflection_probes(
             inputs.prm_root,
         ),
         lightmap: LightmapSampler::new(inputs.lightmap),
-        sh: ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?,
+        sh,
+        animated_direct: inputs
+            .animated_weight_maps
+            .map(|maps| AnimatedDirectSampler::new(maps, inputs.lightmap)),
+        deltas,
+        sdf: SdfLights::new(inputs.alpha_lights, inputs.chunk_light_list),
         max_distance: ((bounds.max - bounds.min).length() + 1.0) as f32,
     };
-    let section = capture_section(&scene, &probes, control)?;
+    let (section, reports) = capture_section(&scene, &probes, &references, control)?;
     if let Some(cache) = stage_cache {
-        cache.put(&key, &section.to_bytes());
+        cache.put(&key, &cache_payload(&section, &reports));
     }
-    log_probes(&section);
+    log_probes(&section, &reports);
     Ok(Some(section))
 }
 
-/// Capture every probe's tile. Work items are tile rows, so one probe spreads
-/// across workers; rows land in item order, so the bytes never depend on
-/// the worker count.
+/// Capture every probe's tile and light share. Work items are tile rows, so
+/// one probe spreads across workers; rows land in item order and each
+/// probe's share sums merge in row order, so the bytes never depend on the
+/// worker count.
 fn capture_section(
     scene: &CaptureScene<'_>,
     probes: &[PlacedProbe],
+    references: &[[f32; 3]],
     control: &BakeControl,
-) -> anyhow::Result<ReflectionProbesSection> {
+) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
     let rows_per_tile = TILE_INTERIOR as usize;
     let items: Vec<(usize, u32)> = (0..probes.len())
         .flat_map(|probe| (0..TILE_INTERIOR).map(move |row| (probe, row)))
@@ -184,147 +236,90 @@ fn capture_section(
         .par_iter()
         .map(|&(probe, row)| {
             let _permit = control.governor().enter();
-            let captured = capture_row(scene, probes[probe].capture_point_vec3(), row);
+            let captured = capture_row(scene, probes[probe].capture_point_vec3(), row, references);
             control.advance(1);
             captured
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let tiles: Vec<Vec<u8>> = rows.par_chunks(rows_per_tile).map(encode_tile).collect();
+        .collect::<anyhow::Result<Vec<RowCapture>>>()?;
+    let tiles: Vec<Vec<u8>> = rows
+        .par_chunks(rows_per_tile)
+        .map(|rows| {
+            let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
+            encode_tile(&texels)
+        })
+        .collect();
+    let shares: Vec<_> = rows
+        .chunks(rows_per_tile)
+        .map(|rows| {
+            let mut sums = ShareSums::default();
+            for row in rows {
+                sums.merge(&row.shares);
+            }
+            sums.finish(references)
+        })
+        .collect();
 
-    Ok(ReflectionProbesSection {
+    let section = ReflectionProbesSection {
         tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
         tile_border: REFLECTION_PROBE_TILE_BORDER,
         atlas_format: IRRADIANCE_FORMAT_BC6H,
         probes: probes
             .iter()
+            .zip(&shares)
             .enumerate()
-            .map(|(layer, probe)| ReflectionProbeRecord {
+            .map(|(layer, (probe, share))| ReflectionProbeRecord {
                 source_entity: probe.source_entity,
                 box_min: probe.box_min,
                 box_max: probe.box_max,
                 capture_point: probe.capture_point,
                 layer: layer as u32,
-                // No light share yet: every entry unused, so the runtime
-                // ratio is 1 in every direction.
-                lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+                lights: share.entries,
             })
             .collect(),
         bindings: bindings(probes),
         tiles: tiles.concat(),
-    })
-}
-
-/// `blake3` over every input the capture reads, in a fixed order, plus the
-/// constants that shape its output. Placement enters as its output: every
-/// probe's box, capture point and bound faces.
-fn cache_key(
-    inputs: &ReflectionProbeInputs<'_>,
-    probes: &[PlacedProbe],
-) -> anyhow::Result<CacheKey> {
-    let mut hasher = blake3::Hasher::new();
-    let mut section = |label: &str, bytes: &[u8]| {
-        hasher.update(label.as_bytes());
-        hasher.update(&(bytes.len() as u64).to_le_bytes());
-        hasher.update(bytes);
     };
-    // Geometry carries the positions the BVH is built over, the UVs and the
-    // lightmap UVs and block ids the capture interpolates.
-    section(
-        "geometry",
-        &postcard::to_allocvec(inputs.geometry).expect("postcard serialize geometry"),
-    );
-    let primitives: Vec<u8> = inputs
-        .primitives
-        .iter()
-        .flat_map(|p| [p.index_offset, p.index_count])
-        .flat_map(u32::to_le_bytes)
-        .collect();
-    section("bvh primitives", &primitives);
-    section(
-        "environment volumes",
-        &inputs.environment_volumes.to_bytes(),
-    );
-    let mut placement = Vec::new();
-    for probe in probes {
-        placement.extend_from_slice(&probe.source_entity.to_le_bytes());
-        for value in probe
-            .box_min
-            .iter()
-            .chain(&probe.box_max)
-            .chain(&probe.capture_point)
-        {
-            placement.extend_from_slice(&value.to_le_bytes());
-        }
-        placement.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
-        for &(volume, face) in &probe.faces {
-            placement.extend_from_slice(&volume.to_le_bytes());
-            placement.extend_from_slice(&face.to_le_bytes());
-        }
-    }
-    section("placement", &placement);
-    section(
-        "sh volume",
-        &inputs
-            .sh_volume
-            .try_to_bytes()
-            .map_err(|e| anyhow::anyhow!("packed SH volume violates its wire contract: {e}"))?,
-    );
-    // Only the materials a face of the static world can show.
-    let used: BTreeSet<u32> = inputs
-        .geometry
-        .geometry
-        .faces
-        .iter()
-        .map(|face| face.texture_index)
-        .collect();
-    let mut materials = Vec::new();
-    let mut warned = std::collections::HashSet::new();
-    for index in used {
-        let Some(name) = inputs.geometry.texture_names.names.get(index as usize) else {
-            continue;
-        };
-        materials.extend_from_slice(&index.to_le_bytes());
-        materials.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        materials.extend_from_slice(name.as_bytes());
-        materials.extend_from_slice(&inputs.texture_keys.get(name).copied().unwrap_or([0; 32]));
-        let strength =
-            postretro_render_data::material::derive_material(name, &mut warned).emissive_strength();
-        materials.extend_from_slice(&strength.to_le_bytes());
-    }
-    section("materials", &materials);
-    let mut constants = Vec::new();
-    for value in [
-        REFLECTION_PROBE_TILE_DIMENSION,
-        REFLECTION_PROBE_TILE_BORDER,
-        u32::from(PRODUCTION_PROBE_OCCLUSION),
-    ] {
-        constants.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in SUPERSAMPLE_OFFSETS
-        .iter()
-        .flatten()
-        .copied()
-        .chain([PRODUCTION_INDIRECT_WEIGHT])
-    {
-        constants.extend_from_slice(&value.to_le_bytes());
-    }
-    section("constants", &constants);
-    drop(section);
-    // Id 22 streams into the hasher: it can be the largest input.
-    hasher.update(b"lightmap");
-    inputs
-        .lightmap
-        .write_to(&mut hasher)
-        .map_err(|e| anyhow::anyhow!("hashing the lightmap section: {e}"))?;
-    Ok(CacheKey::new(
-        STAGE_ID,
-        STAGE_VERSION,
-        hasher.finalize().as_bytes(),
-    ))
+    Ok((section, shares.iter().map(|share| share.report).collect()))
 }
 
-fn log_probes(section: &ReflectionProbesSection) {
-    for (index, probe) in section.probes.iter().enumerate() {
+/// Each animated light's reference value, by roster index: the runtime's
+/// descriptors are the SH section's, one per AnimatedBakedLights row.
+fn references(descriptors: &[AnimationDescriptor]) -> Vec<[f32; 3]> {
+    descriptors.iter().map(reference_value).collect()
+}
+
+/// Every light the baked transport names must have a descriptor, and the
+/// delta's descriptor table must be the identity: a share's roster index is
+/// read straight into the runtime descriptor buffer (pin P10).
+fn check_roster(inputs: &ReflectionProbeInputs<'_>, roster: usize) -> anyhow::Result<()> {
+    if let Some(delta) = inputs.delta_sh {
+        anyhow::ensure!(
+            delta.animation_descriptor_indices.len() == roster
+                && delta
+                    .animation_descriptor_indices
+                    .iter()
+                    .enumerate()
+                    .all(|(slot, &descriptor)| descriptor as usize == slot),
+            "reflection probes need the identity animated-light roster in DeltaShVolumes"
+        );
+        anyhow::ensure!(
+            delta.affinity_lights.iter().all(|&l| (l as usize) < roster),
+            "DeltaShVolumes names an animated light past the {roster}-light roster"
+        );
+    }
+    if let Some(maps) = inputs.animated_weight_maps {
+        anyhow::ensure!(
+            maps.texel_lights
+                .iter()
+                .all(|t| (t.light_index as usize) < roster),
+            "AnimatedLightWeightMaps names an animated light past the {roster}-light roster"
+        );
+    }
+    Ok(())
+}
+
+fn log_probes(section: &ReflectionProbesSection, reports: &[ShareReport]) {
+    for (index, (probe, report)) in section.probes.iter().zip(reports).enumerate() {
         let faces = section
             .bindings
             .iter()
@@ -338,6 +333,41 @@ fn log_probes(section: &ReflectionProbesSection) {
             probe.box_max,
             probe.capture_point,
         );
+        if report.animated_lights == 0 {
+            log::info!("[ReflectionProbes] probe {index}: no animated light reaches its capture");
+            continue;
+        }
+        let stored: Vec<String> = probe
+            .lights
+            .iter()
+            .zip(report.totals)
+            .filter(|(light, _)| light.is_used())
+            .map(|(light, total)| {
+                format!(
+                    "light {} (reference [{:.3}, {:.3}, {:.3}], {:.3} of the capture)",
+                    light.roster_index,
+                    light.reference[0],
+                    light.reference[1],
+                    light.reference[2],
+                    total
+                )
+            })
+            .collect();
+        log::info!(
+            "[ReflectionProbes] probe {index}: covered share {:.3} of {} animated light(s); \
+             stored {}",
+            report.covered,
+            report.animated_lights,
+            stored.join(", "),
+        );
+        let held = report.animated_lights as usize - stored.len();
+        if held > 0 {
+            log::info!(
+                "[ReflectionProbes] probe {index}: {held} animated light(s) past the \
+                 {REFLECTION_PROBE_LIGHTS_PER_PROBE} stored stay at reference; covered share {:.3}",
+                report.covered,
+            );
+        }
     }
     log::info!(
         "[ReflectionProbes] {} probe(s), {} binding(s), {} tile byte(s)",

@@ -51,6 +51,8 @@ pub(crate) struct SurfacePoint {
     pub lightmap_uv: [f32; 2],
     /// Id-22 block id + 1; 0 means no lightmap.
     pub lightmap_block: u16,
+    /// Id-25 animated block id + 1; 0 means the face has no animated direct.
+    pub animated_block: u16,
     /// Base-texture texels per meter on this triangle, for mip selection.
     pub texel_density: f32,
 }
@@ -129,6 +131,12 @@ impl<'a> SceneTracer<'a> {
         })
     }
 
+    /// Whether nothing in the static world blocks the segment `from` → `to`,
+    /// either face of a triangle counting: the lightmap bake's visibility test.
+    pub(crate) fn segment_clear(&self, from: Vec3, to: Vec3) -> bool {
+        crate::lightmap_bake::segment_clear(self.bvh, self.primitives, self.geometry, from, to)
+    }
+
     fn face_for_offset(&self, index_offset: u32) -> Option<u32> {
         self.face_by_offset
             .binary_search_by_key(&index_offset, |&(offset, _)| offset)
@@ -166,6 +174,7 @@ impl<'a> SceneTracer<'a> {
             uv: lerp2(v0.uv, v1.uv, v2.uv),
             lightmap_uv: lerp2(lightmap_uv(v0), lightmap_uv(v1), lightmap_uv(v2)),
             lightmap_block: v0.lightmap_block,
+            animated_block: v0.animated_block,
             texel_density: texel_density(
                 [v0.position, v1.position, v2.position],
                 [v0.uv, v1.uv, v2.uv],

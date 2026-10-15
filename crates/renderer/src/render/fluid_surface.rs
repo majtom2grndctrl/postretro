@@ -464,9 +464,17 @@ impl FluidSurfacePass {
     /// Layers of the installed probe array: 1 for the dummy.
     #[cfg(test)]
     pub(crate) fn probe_array_layers(&self) -> Option<u32> {
+        self.probe_array_size()
+            .map(|size| size.depth_or_array_layers)
+    }
+
+    /// The installed probe array's tile width, height and layer count: 1×1
+    /// and one layer for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
         self.installed
             .as_ref()
-            .map(|installed| installed._probes.array_layers())
+            .map(|installed| installed._probes.array_size())
     }
 
     /// Parameter-row uploads since install.

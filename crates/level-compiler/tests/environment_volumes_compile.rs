@@ -601,6 +601,122 @@ fn adding_a_reflection_volume_changes_only_the_reflection_probes() {
     );
 }
 
+/// One block hanging over the west piece of the doorway pool, above its
+/// capture point: it fills the probe's view straight up.
+const OVER_THE_POOL: ([i32; 3], [i32; 3]) = ([-56, -40, 96], [-24, 40, 112]);
+
+/// A kinematic mover whose brush is [`OVER_THE_POOL`], with its two waypoints.
+fn mover_over_the_pool() -> [String; 3] {
+    let (min, max) = OVER_THE_POOL;
+    let entity = |lines: &[&str]| format!("{{\n{}\n}}", lines.join("\n"));
+    [
+        entity(&[
+            "\"classname\" \"kinematic_mover\"",
+            "\"name\" \"lift\"",
+            "\"path\" \"lift_a\"",
+            "\"speed\" \"1\"",
+            "\"move_mode\" \"ping_pong\"",
+            "\"start_on_spawn\" \"1\"",
+            &box_brush(min, max),
+        ]),
+        entity(&[
+            "\"classname\" \"kinematic_waypoint\"",
+            "\"name\" \"lift_a\"",
+            "\"next\" \"lift_b\"",
+            "\"origin\" \"-40 0 104\"",
+        ]),
+        entity(&[
+            "\"classname\" \"kinematic_waypoint\"",
+            "\"name\" \"lift_b\"",
+            "\"next\" \"\"",
+            "\"origin\" \"-40 0 120\"",
+        ]),
+    ]
+}
+
+/// A `switch` whose brush is [`OVER_THE_POOL`]: static world brushwork.
+fn switch_over_the_pool() -> String {
+    let (min, max) = OVER_THE_POOL;
+    format!(
+        "{{\n\"classname\" \"switch\"\n\"name\" \"pool_switch\"\n\"on_fire\" \"nothing\"\n{}\n}}",
+        box_brush(min, max)
+    )
+}
+
+// Acceptance row 10: the capture sees the static world only. A mover hanging
+// over the pool, in front of its probe, and a dynamic-tier light in its room
+// leave id 54 byte-identical, tiles included (and the static geometry with
+// it). The same brush authored as a `switch` is static world: it enters the
+// geometry and appears in the probe's tile.
+#[test]
+fn the_capture_skips_movers_and_dynamic_lights_and_sees_switch_brushes() {
+    let temp = TempBuildDir::new();
+    let pool = doorway_volume("fluid_volume", "\"fluid\" \"water\"");
+    let base = sections(&compile(
+        &temp,
+        "pool",
+        &two_room_map(std::slice::from_ref(&pool)),
+    ));
+    let probes = section(&base, SectionId::ReflectionProbes);
+
+    let mut with_mover = vec![pool.clone()];
+    with_mover.extend(mover_over_the_pool());
+    let mover = sections(&compile(&temp, "pool-mover", &two_room_map(&with_mover)));
+    assert!(
+        mover.contains_key(&(SectionId::KinematicGeometry as u32)),
+        "the mover compiles as a mover: {:?}",
+        mover.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        section(&mover, SectionId::Geometry) == section(&base, SectionId::Geometry),
+        "a mover is not static geometry"
+    );
+    assert!(
+        section(&mover, SectionId::ReflectionProbes) == probes,
+        "a mover in front of the probe leaves id 54, tiles included, unchanged"
+    );
+
+    let dynamic = sections(&compile(
+        &temp,
+        "pool-dynamic-light",
+        &two_room_map(&[
+            pool.clone(),
+            light([-128, 0, 100], "").replacen("\"light\"\n", "\"light_dynamic\"\n", 1),
+        ]),
+    ));
+    let alpha = postretro_level_format::alpha_lights::AlphaLightsSection::from_bytes(section(
+        &dynamic,
+        SectionId::AlphaLights,
+    ))
+    .expect("AlphaLights decodes");
+    assert!(
+        alpha.lights.iter().any(|light| light.is_dynamic),
+        "the light compiles as dynamic-tier"
+    );
+    assert!(
+        section(&dynamic, SectionId::ReflectionProbes) == probes,
+        "a dynamic-tier light in the room leaves id 54, tiles included, unchanged"
+    );
+
+    let switch = sections(&compile(
+        &temp,
+        "pool-switch",
+        &two_room_map(&[pool, switch_over_the_pool()]),
+    ));
+    assert!(
+        section(&switch, SectionId::Geometry) != section(&base, SectionId::Geometry),
+        "a switch is static geometry"
+    );
+    let base_probes = ReflectionProbesSection::from_bytes(probes).unwrap();
+    let switch_probes =
+        ReflectionProbesSection::from_bytes(section(&switch, SectionId::ReflectionProbes)).unwrap();
+    assert_eq!(base_probes.probes.len(), switch_probes.probes.len());
+    let changed = (0..base_probes.probes.len())
+        .filter(|&layer| base_probes.tile(layer) != switch_probes.tile(layer))
+        .count();
+    assert!(changed > 0, "the switch brush appears in a probe's tile");
+}
+
 // P16: the stress map's 574 fluid volumes still build, with no more probes
 // than the cap. Slow (a full stress compile); run on demand.
 #[test]

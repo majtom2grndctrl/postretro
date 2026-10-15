@@ -185,9 +185,10 @@ impl FluidProbeResources {
         ]
     }
 
+    /// The probe array's tile width, height and layer count.
     #[cfg(test)]
-    pub(crate) fn array_layers(&self) -> u32 {
-        self._array.depth_or_array_layers()
+    pub(crate) fn array_size(&self) -> wgpu::Extent3d {
+        self._array.size()
     }
 }
 

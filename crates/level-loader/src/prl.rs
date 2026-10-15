@@ -2965,6 +2965,106 @@ mod tests {
         }
     }
 
+    // Pin P10, loader half: a share entry's roster index reads descriptor
+    // `r` directly, so section 54 refuses a level whose roster-to-descriptor
+    // table is not the identity the compiler writes, naming the section. The
+    // id-45 fixture maps animated light 0 to the reserved descriptor.
+    #[test]
+    fn load_prl_refuses_reflection_probes_over_a_non_identity_roster_table() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let animated_direct = animated_direct_delta_section_for(expected_affinity_dims(
+            base.grid_dimensions,
+            AFFINITY_FACTOR,
+        ));
+        assert_eq!(animated_direct.animation_descriptor_indices, [u32::MAX]);
+        let blobs = |probes: bool| {
+            let mut sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                octahedral_sh_volume_blob(base.clone()),
+                animated_direct_sh_delta_blob(animated_direct.clone()),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                environment_volumes_blob(&reflection_probe_environment()),
+            ];
+            if probes {
+                sections.push(prl_format::SectionBlob {
+                    section_id: SectionId::ReflectionProbes as u32,
+                    version: 1,
+                    data: reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT)
+                        .to_bytes(),
+                });
+            }
+            sections
+        };
+
+        // Without section 54 the same table loads.
+        let tmp = write_prl_fixture(blobs(false), "postretro_test_probe_roster_table_absent.prl");
+        let result = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        let world = result.expect("a level without probes keeps its id-45 table");
+        assert_eq!(world.animated_direct_descriptor_indices(), [u32::MAX]);
+
+        let tmp = write_prl_fixture(blobs(true), "postretro_test_probe_roster_table.prl");
+        let result = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        match result {
+            Err(PrlLoadError::SectionValidation { section, message }) => {
+                assert_eq!(section, "ReflectionProbes");
+                assert!(
+                    message.contains("animated light 0 maps to descriptor")
+                        && message.contains("need the identity roster"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
+        }
+    }
+
+    // Row 2, through the loader: the format's own refusals (a binding past
+    // the probe count, a face bound twice) fail the load naming the section.
+    #[test]
+    fn load_prl_refuses_a_probe_past_its_count_or_a_face_bound_twice_naming_the_section() {
+        let past = reflection_probes_section(
+            ReflectionProbeBinding {
+                probe: 1,
+                ..FIRST_FACE
+            },
+            REFLECTION_PROBE_NO_LIGHT,
+        );
+        let twice = ReflectionProbesSection {
+            bindings: vec![FIRST_FACE, FIRST_FACE],
+            ..reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT)
+        };
+        for (section, name) in [
+            (past, "postretro_test_probe_index_past.prl"),
+            (twice, "postretro_test_probe_face_twice.prl"),
+        ] {
+            let mut sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                environment_volumes_blob(&reflection_probe_environment()),
+            ];
+            // The section encoder writes what it is given; the decoder refuses.
+            sections.push(prl_format::SectionBlob {
+                section_id: SectionId::ReflectionProbes as u32,
+                version: 1,
+                data: section.to_bytes(),
+            });
+            let tmp = write_prl_fixture(sections, name);
+            let result = load_prl(tmp.to_str().unwrap());
+            let _ = std::fs::remove_file(&tmp);
+            match result {
+                Err(PrlLoadError::SectionValidation { section, message }) => {
+                    assert_eq!(section, "ReflectionProbes", "{name}: {message}");
+                }
+                other => panic!("{name}: expected a ReflectionProbes refusal, got {other:?}"),
+            }
+        }
+    }
+
     // A map authoring no force, and a map built before the force section
     // existed, load with every force at 1.
     #[test]

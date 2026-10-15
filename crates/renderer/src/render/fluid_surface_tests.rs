@@ -2296,3 +2296,176 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
     assert!(source.contains("@group(5) @binding(0) var scene_depth: texture_depth_2d;"));
     assert!(source.contains("@group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;"));
 }
+
+// Acceptance row 31, grep gate: the fluid shader and pass keep no history
+// and no precomputed intersection data. The shader's binding inventory is
+// closed, so any previous-frame, reprojection or intersection resource is a
+// new binding this list refuses; no binding name or pass identifier names
+// one; the pass's own groups (4 and 5) hold exactly the params window, the
+// probe array and table, and the scene depth and inputs.
+#[test]
+fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
+    let module = validated_module();
+    let mut declared: Vec<(u32, u32, String)> = module
+        .global_variables
+        .iter()
+        .filter_map(|(_, global)| {
+            let binding = global.binding.as_ref()?;
+            Some((
+                binding.group,
+                binding.binding,
+                global.name.clone().unwrap_or_default(),
+            ))
+        })
+        .collect();
+    declared.sort();
+    let expected: Vec<(u32, u32, String)> = [
+        (0, 0, "uniforms"),
+        (1, 0, "base_texture"),
+        (1, 1, "emissive_texture"),
+        (1, 3, "material"),
+        (1, 5, "aniso_sampler"),
+        (2, 0, "lights"),
+        (2, 1, "light_influence"),
+        (3, 1, "sh_total_atlas"),
+        (3, 2, "sh_atlas_sampler"),
+        (3, 10, "sh_grid"),
+        (3, 11, "anim_descriptors"),
+        (3, 12, "anim_samples"),
+        (3, 13, "scripted_light_descriptors"),
+        (3, 14, "sh_depth_moments"),
+        (3, 15, "sh_direct_atlas"),
+        (4, 0, "fluid_volumes"),
+        (4, 1, "fluid_probe_array"),
+        (4, 2, "fluid_probes"),
+        (5, 0, "scene_depth"),
+        (5, 1, "fluid_scene"),
+    ]
+    .into_iter()
+    .map(|(group, binding, name)| (group, binding, name.to_owned()))
+    .collect();
+    assert_eq!(declared, expected, "the fluid shader's binding inventory");
+
+    let forbidden = [
+        "history",
+        "previous",
+        "prev_",
+        "last_frame",
+        "reproject",
+        "temporal",
+        "intersection",
+        "hit_buffer",
+        "hit_table",
+    ];
+    for (_, _, name) in &declared {
+        for word in forbidden {
+            assert!(!name.to_lowercase().contains(word), "binding `{name}`");
+        }
+    }
+    for (file, source) in [
+        (
+            "fluid_surface.wgsl",
+            include_str!("../shaders/fluid_surface.wgsl"),
+        ),
+        ("fluid_surface.rs", include_str!("fluid_surface.rs")),
+        (
+            "fluid_reflection_probes.rs",
+            include_str!("fluid_reflection_probes.rs"),
+        ),
+        (
+            "fluid_scene_inputs.rs",
+            include_str!("fluid_scene_inputs.rs"),
+        ),
+    ] {
+        let code = code_only(source).to_lowercase();
+        for word in forbidden {
+            assert!(!code.contains(word), "{file} names `{word}` in code");
+        }
+    }
+
+    let groups = fluid_pipeline_bind_group_layout_entries();
+    let bindings =
+        |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
+    assert_eq!(
+        bindings(4),
+        [0, 1, 2],
+        "group 4: params, probe array, table"
+    );
+    assert_eq!(bindings(5), [0, 1], "group 5: scene depth, scene inputs");
+}
+
+// Acceptance row 31, source scan: the probe's array layer derives from the
+// face's binding input alone. The flat `probe` varying, written from the
+// install-time probe-index vertex buffer, is the only probe index `fs_main`
+// passes on; every probe-table read indexes by that `probe` parameter; the
+// one probe-array tap reads `fluid_probes.probes[probe].layer`, and no
+// lookup-direction value (the lookup, box hit, reflected ray, tile UV or
+// view) reaches that expression. The lookup reaches only the tile UV and the
+// ratio, and the ratio's direction only its lobe weights.
+#[test]
+fn fluid_probe_layer_derives_from_the_face_binding_alone() {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let code = code_only(source);
+    assert!(code_only(wgsl_fn(source, "vs_main")).contains("out.probe=in.probe;"));
+
+    let tail = fs_main_reflection_tail();
+    for call in [
+        "fluid_reflection_gate(in.probe,",
+        "fluid_reflection_sample(in.probe,",
+    ] {
+        assert!(tail.contains(call), "fs_main passes the varying: `{call}`");
+    }
+    assert_eq!(tail.matches("probe,").count(), 2, "{tail}");
+    assert!(!tail.contains("letprobe") && !tail.contains("varprobe"));
+
+    // Every table read is indexed by the `probe` parameter.
+    let table_reads = code.matches("fluid_probes.probes[").count();
+    assert!(table_reads >= 5, "{table_reads}");
+    assert_eq!(
+        code.matches("fluid_probes.probes[probe]").count(),
+        table_reads
+    );
+    for function in ["fluid_reflection_sample", "fluid_reflection_ratio"] {
+        let body = code_only(wgsl_fn(source, function));
+        assert!(body.contains(&format!("fn{function}(probe:u32,")), "{body}");
+        assert!(!body.contains("letprobe") && !body.contains("varprobe"));
+    }
+
+    // The single array tap, and the layer it reads.
+    assert_eq!(
+        code.matches("fluid_probe_array").count(),
+        2,
+        "declaration + one tap"
+    );
+    let sample = code_only(wgsl_fn(source, "fluid_reflection_sample"));
+    assert!(sample.contains("textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0)"));
+    let layer_at = sample.find("letlayer=").expect("layer binding");
+    let layer = &sample[layer_at..layer_at + sample[layer_at..].find(';').expect(";") + 1];
+    assert_eq!(layer, "letlayer=fluid_probes.probes[probe].layer;");
+    for direction_value in [
+        "lookup",
+        "hit",
+        "ray",
+        "uv",
+        "view",
+        "world_position",
+        "outward",
+    ] {
+        assert!(
+            !layer.contains(direction_value),
+            "the layer must not read `{direction_value}`"
+        );
+    }
+    assert_eq!(sample.matches("layer").count(), 3, "{sample}");
+    assert_eq!(
+        sample.matches("lookup").count() - sample.matches("_lookup").count(),
+        3,
+        "lookup feeds only the tile UV and the ratio: {sample}"
+    );
+    assert!(sample.contains("fluid_reflection_tile_uv(lookup,"));
+    assert!(sample.contains("fluid_reflection_ratio(probe,lookup)"));
+
+    let ratio = code_only(wgsl_fn(source, "fluid_reflection_ratio"));
+    assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");
+    assert!(ratio.contains("letlobes=fluid_reflection_lobe_weights(direction);"));
+}

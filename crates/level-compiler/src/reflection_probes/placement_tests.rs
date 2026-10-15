@@ -515,6 +515,44 @@ fn authored_point_in_a_pillar_drops_and_an_offset_clear_of_it_is_kept() {
     capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
 }
 
+// Acceptance row 5, authored half of the in-fluid and outside-hull drops:
+// an authored box whose capture point lies inside another fluid entity, or
+// outside the hull, drops with a warning naming the reflection volume; its
+// faces then fall to their derived probes, which drop for the same reason.
+#[test]
+fn authored_point_inside_another_fluid_or_outside_the_hull_drops_naming_the_entity() {
+    let capture = LogCapture::start();
+    let fixture = PlacementFixture::compile(
+        &room(),
+        &[
+            water(&[([64.0, 64.0, 0.0], [192.0, 192.0, 32.0])]),
+            fluid(
+                "sludge",
+                &[box_brush([32.0, 32.0, 0.0], [224.0, 224.0, 64.0])],
+            ),
+            reflection_volume("", [48.0, 48.0, 0.0], [216.0, 208.0, 96.0]),
+        ],
+    );
+    // Only the sludge's own top keeps a (derived) probe.
+    let probes = fixture.place().unwrap();
+    assert!(probes.iter().all(|p| p.source_entity == 2), "{probes:?}");
+    capture.assert_logged_once(Level::Warn, "entity 3 'reflection_volume' capture point");
+    capture.assert_logged(Level::Warn, "is inside fluid entity 2; dropped");
+    capture.assert_not_logged(Level::Warn, "binds no up-facing fluid face");
+
+    capture.clear();
+    let fixture = PlacementFixture::compile(
+        &room(),
+        &[
+            water(&[([600.0, 64.0, 0.0], [700.0, 192.0, 32.0])]),
+            reflection_volume("", [590.0, 54.0, 0.0], [710.0, 202.0, 96.0]),
+        ],
+    );
+    assert!(fixture.place().unwrap().is_empty());
+    capture.assert_logged_once(Level::Warn, "entity 2 'reflection_volume' capture point");
+    capture.assert_logged(Level::Warn, "is outside the hull; dropped");
+}
+
 #[test]
 fn capture_offset_that_leaves_the_box_is_a_build_error_naming_the_entity() {
     let fixture = PlacementFixture::compile(

@@ -2,7 +2,7 @@
 //! See: context/lib/rendering_pipeline.md §7.3a
 
 use super::{ClearColor, FluidSurfaceDraw, Renderer, ShSampleRegionSets};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
@@ -13,6 +13,13 @@ use postretro_level_format::reflection_probes::{
 };
 use postretro_level_format::sh_volume::AnimationDescriptor;
 use postretro_level_loader::ShDrainBatch;
+use postretro_render_cpu::fluid_surface::reflection::{
+    FLUID_REFLECTION_ALL_TERMS, FLUID_REFLECTION_NO_PROBE, FluidReflectionFragment,
+    FluidReflectionLights, reflection_fragment,
+};
+use postretro_render_cpu::fluid_surface::reflection_style::{
+    FLUID_REFLECTION_STYLE_SMOOTH, FluidReflectionStyle, FluidTexelAxes,
+};
 use postretro_render_cpu::fluid_surface::{
     FLUID_PARAMS_WINDOW_BYTES, FLUID_SLOTS_PER_WINDOW, FluidSurfaceLook, slot_window,
 };
@@ -151,10 +158,223 @@ fn capture_mean_red(renderer: &mut Renderer) -> f32 {
     (left + right) * 0.5
 }
 
-// The pass builds, binds its material and parameter window, and draws: an
-// unlit fluid face (no SH, no lights, zero ambient floor) blends black over
-// the white clear at its surface opacity, no draw leaves the clear untouched,
-// and a lit face shows its albedo.
+/// `screen_effects.wgsl`'s `soft_knee_tonemap` knee: identity at or below
+/// this peak channel.
+const CAPTURE_KNEE_START: f32 = 0.98;
+
+/// The capture's encoding of one linear HDR scene colour: the resolve
+/// shader's soft-knee tonemap, then the `Rgba8UnormSrgb` capture target's
+/// sRGB transfer. Pinned to both by
+/// `capture_encode_mirrors_the_soft_knee_tonemap_and_srgb_target`.
+fn capture_encode(linear: Vec3) -> [u8; 3] {
+    let peak = linear.max_element();
+    let toned = if peak <= CAPTURE_KNEE_START {
+        linear
+    } else {
+        let width = 1.0 - CAPTURE_KNEE_START;
+        let excess = peak - CAPTURE_KNEE_START;
+        linear * ((CAPTURE_KNEE_START + width * excess / (excess + width)) / peak)
+    };
+    toned.to_array().map(linear_to_srgb)
+}
+
+fn linear_to_srgb(linear: f32) -> u8 {
+    let c = linear.clamp(0.0, 1.0);
+    let encoded = if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
+}
+
+/// World position of capture pixel (`column`, `row`)'s centre on a
+/// [`fluid_quad`] face: clip depth 0.5 under the identity view-projection,
+/// row 0 at the top.
+fn pixel_world(column: u32, row: u32) -> Vec3 {
+    let step = 2.0 / SIDE as f32;
+    Vec3::new(
+        (column as f32 + 0.5) * step - 1.0,
+        1.0 - (row as f32 + 0.5) * step,
+        0.5,
+    )
+}
+
+/// A probe term as the CPU reference evaluates it: the level's probes, each
+/// array layer's uniform capture colour, and the row's reflectivity.
+struct ReferenceProbes<'a> {
+    section: &'a ReflectionProbesSection,
+    layer_colours: &'a [Vec3],
+    reflectivity: f32,
+}
+
+/// What the capture reads at (`column`, `row`) from the CPU references alone:
+/// a smooth-style [`fluid_quad`] fragment drawing the straight-alpha
+/// `surface`, its probe term (`reflection_fragment`, with no animated
+/// lights) when `probe` names one, blended straight-alpha over the white
+/// clear, then [`capture_encode`]d.
+fn expected_pixel(
+    camera: Vec3,
+    column: u32,
+    row: u32,
+    surface: Vec4,
+    probe: u32,
+    probes: &ReferenceProbes<'_>,
+) -> [u8; 3] {
+    let fragment = FluidReflectionFragment {
+        probe,
+        camera,
+        world_position: pixel_world(column, row),
+        outward: Vec3::NEG_Z,
+        light_term_mask: FLUID_REFLECTION_ALL_TERMS,
+        reflectivity: probes.reflectivity,
+        style: FLUID_REFLECTION_STYLE_SMOOTH,
+        texel_uv: Vec2::ZERO,
+        axes: FluidTexelAxes::default(),
+        time: 0.0,
+        texels_per_pixel: 0.0,
+    };
+    let out = reflection_fragment(
+        surface,
+        &fragment,
+        &probes.section.probes,
+        [probes.section.tile_dimension, probes.section.tile_border],
+        &FluidReflectionLights::NONE,
+        |layer, _| probes.layer_colours[layer as usize],
+    );
+    capture_encode(out.truncate() * out.w + Vec3::ONE * (1.0 - out.w))
+}
+
+/// The largest per-channel deviation of `pixels` from `expected` over
+/// `columns`, every row, and the pixel it occurs at.
+fn worst_deviation(
+    pixels: &[u8],
+    columns: std::ops::Range<u32>,
+    expected: impl Fn(u32, u32) -> [u8; 3],
+) -> (u8, (u32, u32)) {
+    let mut worst = (0, (0, 0));
+    for row in 0..SIDE {
+        for column in columns.clone() {
+            let at = ((row * SIDE + column) * 4) as usize;
+            let want = expected(column, row);
+            for channel in 0..3 {
+                let deviation = pixels[at + channel].abs_diff(want[channel]);
+                if deviation > worst.0 {
+                    worst = (deviation, (column, row));
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// A probe section over one fluid volume: probe `p` samples layer
+/// `layers[p]`, each layer's tile the uniform f16 colour `tiles[layer]`, and
+/// `bindings` are (face, probe) pairs of volume 0.
+fn uniform_probe_section(
+    dimension: u32,
+    layers: &[u32],
+    tiles: &[[u16; 3]],
+    bindings: &[(u32, u32)],
+) -> ReflectionProbesSection {
+    assert_eq!(layers.len(), tiles.len());
+    ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: layers
+            .iter()
+            .map(|&layer| ReflectionProbeRecord {
+                source_entity: 0,
+                box_min: [-8.0; 3],
+                box_max: [8.0; 3],
+                capture_point: [0.0, 0.0, 0.0],
+                layer,
+                lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+            })
+            .collect(),
+        bindings: bindings
+            .iter()
+            .map(|&(face, probe)| ReflectionProbeBinding {
+                volume: 0,
+                face,
+                probe,
+            })
+            .collect(),
+        tiles: tiles
+            .iter()
+            .flat_map(|&rgb| uniform_rgba16f_tile(dimension, rgb))
+            .collect(),
+    }
+}
+
+/// Linear RGB of f16 bits, for exact values (0, powers of two, small sums).
+fn f16_rgb(bits: [u16; 3]) -> Vec3 {
+    Vec3::from(bits.map(|half| {
+        let exponent = i32::from((half >> 10) & 0x1F) - 15;
+        let mantissa = f32::from(half & 0x3FF) / 1024.0;
+        if half == 0 {
+            0.0
+        } else {
+            (1.0 + mantissa) * 2f32.powi(exponent)
+        }
+    }))
+}
+
+/// The capture pins the resolve's soft knee and the sRGB target that
+/// [`capture_encode`] mirrors.
+#[test]
+fn capture_encode_mirrors_the_soft_knee_tonemap_and_srgb_target() {
+    let shader: String = include_str!("../shaders/screen_effects.wgsl")
+        .split_whitespace()
+        .collect();
+    for line in [
+        "letpeak=max(max(color.r,color.g),color.b);",
+        "letknee_start=0.98;",
+        "ifpeak<=knee_start{returncolor;}",
+        "letknee_width=1.0-knee_start;",
+        "letexcess=peak-knee_start;",
+        "letcompressed_peak=knee_start+knee_width*excess/(excess+knee_width);",
+        "returncolor*(compressed_peak/peak);",
+        "varcolor=soft_knee_tonemap(scene.rgb);",
+    ] {
+        assert!(shader.contains(line), "screen_effects.wgsl lost `{line}`");
+    }
+    let effects: String = include_str!("screen_effects.rs")
+        .split_whitespace()
+        .collect();
+    let capture = &effects[effects
+        .find("fncreate_capture_color(")
+        .expect("capture target")..];
+    let body = &capture[..capture.find("})").expect("descriptor closes")];
+    assert!(
+        body.contains("format:wgpu::TextureFormat::Rgba8UnormSrgb,"),
+        "{body}"
+    );
+    // Linear 0.5 sits below the knee: 188 of 255.
+    assert_eq!(capture_encode(Vec3::splat(0.5)), [188; 3]);
+    assert_eq!(f16_rgb([0x3800, 0x3C00, 0x4200]), Vec3::new(0.5, 1.0, 3.0));
+}
+
+/// A full-screen face whose UVs span texels 3.5..4.5 of the placeholder,
+/// inside its first 8-texel magenta square: shimmer and rings move the sample
+/// at most two texels, so every fragment's albedo is linear (1, 0, 1).
+fn magenta_fluid() -> EnvironmentVolumeRecord {
+    let mut volume = full_screen_fluid();
+    for vertex in &mut volume.surface_faces[0].vertices {
+        vertex.uv = [vertex.position[0], vertex.position[1]].map(|clip| 3.5 + (clip + 1.0) * 0.5);
+    }
+    volume
+}
+
+// Acceptance row 35. The pass builds, binds its material and parameter
+// window, and draws: an unlit fluid face (no SH, no lights, zero ambient
+// floor) at opacity 0.5 blends black over the white clear to linear 0.5,
+// below the tonemap knee, so every pixel reads 188 ± 1. No draw leaves the
+// clear untouched. A face lit by the ambient floor reads the capture's
+// encoding of today's straight-alpha value within 1/255: its magenta albedo
+// at alpha 0.5 over white is (1, 0.5, 1), whose red peak the soft knee
+// compresses.
 #[test]
 fn fluid_surface_blends_over_the_scene_at_its_surface_opacity() {
     let Some(mut renderer) = renderer() else {
@@ -166,28 +386,53 @@ fn fluid_surface_blends_over_the_scene_at_its_surface_opacity() {
     let clear = capture_mean_red(&mut renderer);
 
     renderer.set_fluid_surface_draws(&[clear_draw(0, 0.5)]);
-    let half = capture_mean_red(&mut renderer);
+    let half = capture(&mut renderer);
 
     renderer.set_fluid_surface_draws(&[clear_draw(0, 1.0)]);
     let opaque = capture_mean_red(&mut renderer);
 
-    eprintln!("[FluidSurfaceProof] mean red: clear={clear} half={half} opaque={opaque}");
-    assert!(clear > 200.0, "white clear expected, got {clear}");
+    let (half_low, half_high) = half
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .fold((u8::MAX, 0), |(low, high), px| {
+            (low.min(px[0]), high.max(px[0]))
+        });
+    eprintln!(
+        "[FluidSurfaceProof] row 35 GPU case ran: clear={clear} half red {half_low}..={half_high} \
+         opaque={opaque}"
+    );
+    // White sits past the knee, so it reads 254, not 255.
+    let white = f32::from(capture_encode(Vec3::ONE)[0]);
+    assert!(
+        (clear - white).abs() < 0.5,
+        "the white clear reads its encoding {white}, got {clear}"
+    );
     assert!(opaque < 1.0, "an unlit opaque face is black, got {opaque}");
     assert!(
-        half > opaque + 20.0 && half < clear - 20.0,
-        "half opacity must land between clear ({clear}) and opaque ({opaque}), got {half}"
+        half_low >= 187 && half_high <= 189,
+        "an unlit face at opacity 0.5 over white reads 188 ± 1 red, got {half_low}..={half_high}"
     );
 
-    // Lit by the ambient floor, the face shows its material: the placeholder's
-    // magenta squares carry red.
+    // Lit by the ambient floor, the face shows its material.
+    renderer.install_fluid_surfaces(&[magenta_fluid()], None);
     renderer.set_ambient_floor(1.0);
-    let lit = capture_mean_red(&mut renderer);
-    eprintln!("[FluidSurfaceProof] mean red lit by the ambient floor: {lit}");
-    assert!(
-        lit > 20.0,
-        "the ambient floor must light the fluid's albedo, got {lit}"
+    renderer.set_fluid_surface_draws(&[clear_draw(0, 0.5)]);
+    let lit = capture(&mut renderer);
+    let alpha = 0.5;
+    let today = Vec3::new(1.0, 0.0, 1.0) * alpha + Vec3::ONE * (1.0 - alpha);
+    let want = capture_encode(today);
+    let (worst, at) = worst_deviation(&lit, 0..SIDE, |_, _| want);
+    eprintln!(
+        "[FluidSurfaceProof] row 35 lit GPU case ran: expected {want:?}, worst deviation {worst} \
+         at {at:?}"
     );
+    assert!(
+        worst <= 1,
+        "a lit unbound face reads the encoding {want:?} of today's value within 1/255, \
+         off by {worst} at {at:?}"
+    );
+    renderer.set_ambient_floor(0.0);
 
     // Unloading drops the geometry and closes the pass.
     renderer.release_level_resources();
@@ -477,95 +722,338 @@ fn uniform_rgba16f_tile(dimension: u32, rgb: [u16; 3]) -> Vec<u8> {
         .collect()
 }
 
-// First-slice proof on an adapter: one volume, two faces in one draw. The
-// left face binds a probe whose capture is uniform green; seen at a grazing
-// view it shows the green. The right face binds nothing and reads exactly
-// today's value: the same frame drawn with no section 54. The probe array is
-// level-scoped: a level without the section binds the 1-layer dummy, and
-// unload drops it.
+/// The shading camera high off the faces' outward (−Z) side, about 72° from
+/// the normal at the centre: a grazing view. The identity view-projection
+/// still frames the quads.
+const GRAZING: Vec3 = Vec3::new(0.0, 3.0, -0.5);
+
+/// An unlit face at opacity 0.5: black at half coverage, so today's value
+/// over the white clear is linear 0.5.
+const UNLIT_HALF: Vec4 = Vec4::new(0.0, 0.0, 0.0, 0.5);
+
+/// The linear scene colour the CPU references give a smooth-style fragment
+/// of probe 0 at the centre column of `row`, before the capture encodes it.
+fn reference_linear(
+    row: u32,
+    section: &ReflectionProbesSection,
+    colours: &[Vec3],
+    reflectivity: f32,
+) -> Vec3 {
+    let fragment = FluidReflectionFragment {
+        probe: 0,
+        camera: GRAZING,
+        world_position: pixel_world(SIDE / 2, row),
+        outward: Vec3::NEG_Z,
+        light_term_mask: FLUID_REFLECTION_ALL_TERMS,
+        reflectivity,
+        style: FLUID_REFLECTION_STYLE_SMOOTH,
+        texel_uv: Vec2::ZERO,
+        axes: FluidTexelAxes::default(),
+        time: 0.0,
+        texels_per_pixel: 0.0,
+    };
+    let out = reflection_fragment(
+        UNLIT_HALF,
+        &fragment,
+        &section.probes,
+        [section.tile_dimension, section.tile_border],
+        &FluidReflectionLights::NONE,
+        |layer, _| colours[layer as usize],
+    );
+    out.truncate() * out.w + Vec3::ONE * (1.0 - out.w)
+}
+
+// Acceptance row 33 (P3). A full-screen face bound to a probe whose capture
+// is a uniform colour R, with no animated lights, read at a fixed grazing
+// view in smooth style, reads the capture's encoding of F·R + (1−F)·(surface
+// over clear) within 2/255 at every pixel, F being the CPU Fresnel reference
+// at that pixel's view angle. R is bright enough in red that the lower rows
+// cross the soft knee while the upper rows stay below it, and dim enough in
+// luminance that bloom extracts nothing. At reflectivity 0 every pixel reads
+// the encoding of today's value.
 #[test]
-fn a_probe_bound_face_reflects_its_capture_and_an_unbound_face_in_the_draw_reads_today() {
+fn a_uniform_capture_reads_its_fresnel_composite_in_the_capture_encoding() {
     let Some(mut renderer) = renderer() else {
         return;
     };
-    let mut pool = fluid_quad(-1.0, 0.0);
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    // f16 (3, 0.25, 0.5).
+    let r_bits = [0x4200, 0x3400, 0x3800];
+    let section = uniform_probe_section(8, &[0], &[r_bits], &[(0, 0)]);
+    let colours = [f16_rgb(r_bits)];
+    assert_eq!(colours[0], Vec3::new(3.0, 0.25, 0.5));
+    let pool = full_screen_fluid();
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
+
+    // The view crosses the knee, and bloom (luminance threshold) sees nothing.
+    let top = reference_linear(0, &section, &colours, 1.0);
+    let bottom = reference_linear(SIDE - 1, &section, &colours, 1.0);
+    assert!(
+        top.max_element() < CAPTURE_KNEE_START && bottom.max_element() > 1.0,
+        "the view crosses the knee: top {top}, bottom {bottom}"
+    );
+    assert!(
+        bottom.dot(Vec3::new(0.2126, 0.7152, 0.0722)) < super::bloom::BLOOM_THRESHOLD,
+        "bloom extracts nothing: {bottom}"
+    );
+
+    for reflectivity in [1.0, 0.0] {
+        let look = FluidSurfaceLook {
+            surface_reflectivity: reflectivity,
+            has_bound_face: true,
+            ..FluidSurfaceLook::surface_only(0.5)
+        };
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        let pixels = capture_from(&mut renderer, GRAZING);
+        let reference = ReferenceProbes {
+            section: &section,
+            layer_colours: &colours,
+            reflectivity,
+        };
+        let (worst, at) = worst_deviation(&pixels, 0..SIDE, |column, row| {
+            expected_pixel(GRAZING, column, row, UNLIT_HALF, 0, &reference)
+        });
+        let centre = ((SIDE / 2 * SIDE + SIDE / 2) * 4) as usize;
+        eprintln!(
+            "[FluidSurfaceProof] row 33 GPU case ran: reflectivity {reflectivity}, worst \
+             deviation {worst} at {at:?}, centre {:?}, top-left {:?}, bottom-left {:?}",
+            &pixels[centre..centre + 3],
+            &pixels[..3],
+            &pixels[((SIDE - 1) * SIDE * 4) as usize..][..3],
+        );
+        assert!(
+            worst <= 2,
+            "reflectivity {reflectivity}: off the encoded composite by {worst} at {at:?}"
+        );
+        if reflectivity > 0.0 {
+            assert!(
+                pixels[..3] != [188; 3],
+                "the probe term shows: {:?}",
+                &pixels[..4]
+            );
+        } else {
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|px| px[..3] == [188; 3]),
+                "reflectivity 0 reads today's linear 0.5 everywhere"
+            );
+        }
+    }
+    renderer.release_level_resources();
+}
+
+// Acceptance row 34. One volume, three faces in one draw: the left quarter
+// binds probe 0, the next quarter probe 1, the right half nothing. The
+// probes sample distinct uniform captures, stored in swapped layers so the
+// layer comes from the probe table. Each bound face reads the encoding of
+// its own probe's composite within 2/255; the unbound face reads today's
+// value, exactly the frame drawn with no section 54. Seen from inside the
+// volume every face reads today's value. The probe array is level-scoped: a
+// level without the section binds the 1-layer dummy, and unload drops it.
+#[test]
+fn probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads_today() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let mut pool = fluid_quad(-1.0, -0.5);
+    pool.surface_faces
+        .extend(fluid_quad(-0.5, 0.0).surface_faces);
     pool.surface_faces
         .extend(fluid_quad(0.0, 1.0).surface_faces);
-    // f16 1.0 = 0x3C00: linear (0, 1, 0).
-    let dimension = 8;
-    let probes = ReflectionProbesSection {
-        tile_dimension: dimension,
-        tile_border: 1,
-        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
-        probes: vec![ReflectionProbeRecord {
-            source_entity: 0,
-            box_min: [-8.0; 3],
-            box_max: [8.0; 3],
-            capture_point: [0.0, 0.0, 0.0],
-            layer: 0,
-            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
-        }],
-        bindings: vec![ReflectionProbeBinding {
-            volume: 0,
-            face: 0,
-            probe: 0,
-        }],
-        tiles: uniform_rgba16f_tile(dimension, [0, 0x3C00, 0]),
+    // Probe 0 is green (layer 1), probe 1 red with some blue (layer 0).
+    let (green, red) = ([0, 0x4000, 0], [0x4000, 0, 0x3800]);
+    let section = uniform_probe_section(8, &[1, 0], &[red, green], &[(0, 0), (1, 1)]);
+    let colours = [f16_rgb(red), f16_rgb(green)];
+    let reference = ReferenceProbes {
+        section: &section,
+        layer_colours: &colours,
+        reflectivity: 1.0,
     };
-    // An unlit face at opacity 0.5, reflecting as water; the shading camera
-    // sits high off the faces' outward (−Z) side, about 72° from the normal.
     let look = FluidSurfaceLook {
         has_bound_face: true,
         ..FluidSurfaceLook::surface_only(0.5)
     };
-    let grazing = Vec3::new(0.0, 3.0, -0.5);
 
     renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
     assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(1));
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
-    let (today_left, today_right) = mean_rgb_halves(&capture_from(&mut renderer, grazing));
+    let today = capture_from(&mut renderer, GRAZING);
 
-    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
-    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(1));
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
+    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(2));
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
-    let (left, right) = mean_rgb_halves(&capture_from(&mut renderer, grazing));
+    let pixels = capture_from(&mut renderer, GRAZING);
+    let face_probe = |column: u32| match column {
+        0..4 => 0,
+        4..8 => 1,
+        _ => FLUID_REFLECTION_NO_PROBE,
+    };
+    let expected = |column, row| {
+        expected_pixel(
+            GRAZING,
+            column,
+            row,
+            UNLIT_HALF,
+            face_probe(column),
+            &reference,
+        )
+    };
+    let (probe_0, at_0) = worst_deviation(&pixels, 0..4, expected);
+    let (probe_1, at_1) = worst_deviation(&pixels, 4..8, expected);
+    let (unbound, at_unbound) = worst_deviation(&pixels, 8..SIDE, expected);
+    let (unbound_today, _) = worst_deviation(&pixels, 8..SIDE, |column, row| {
+        let at = ((row * SIDE + column) * 4) as usize;
+        [today[at], today[at + 1], today[at + 2]]
+    });
+    let centre = |column: u32| {
+        let at = ((SIDE / 2 * SIDE + column) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
     eprintln!(
-        "[FluidSurfaceProof] probe GPU case ran: bound left={left:?} (today {today_left:?}), \
-         unbound right={right:?} (today {today_right:?})"
+        "[FluidSurfaceProof] row 34 GPU case ran: probe 0 {:?} worst {probe_0} at {at_0:?}, \
+         probe 1 {:?} worst {probe_1} at {at_1:?}, unbound {:?} worst {unbound} at \
+         {at_unbound:?} (vs the no-section frame {unbound_today})",
+        centre(1),
+        centre(5),
+        centre(12)
     );
-    // Today's value is grey: black at half opacity over the white clear.
     assert!(
-        (today_left[0] - today_left[1]).abs() < 1.0,
-        "{today_left:?}"
+        probe_0 <= 2 && probe_1 <= 2,
+        "each face reads its own probe"
     );
-    for channel in 0..3 {
-        assert!(
-            (right[channel] - today_right[channel]).abs() <= 0.5,
-            "the unbound face reads today's value: {right:?} vs {today_right:?}"
-        );
-    }
     assert!(
-        left[1] > today_left[1] + 10.0 && left[1] > left[0] + 20.0 && left[1] > left[2] + 20.0,
-        "the bound face shows the green capture: {left:?} vs today {today_left:?}"
+        centre(1)[1] > centre(1)[0] + 20 && centre(5)[0] > centre(5)[1] + 20,
+        "probe 0 reads green, probe 1 red: {:?} {:?}",
+        centre(1),
+        centre(5)
+    );
+    assert!(
+        unbound <= 1 && unbound_today == 0,
+        "the unbound face reads today's value"
     );
 
-    // The same face seen from inside its volume (from +Z) reflects nothing.
+    // The same faces seen from inside their volume (from +Z) reflect nothing.
     let below = Vec3::new(0.0, 3.0, 1.5);
     renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
-    let (today_below, _) = mean_rgb_halves(&capture_from(&mut renderer, below));
-    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
+    let today_below = capture_from(&mut renderer, below);
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
-    let (left_below, _) = mean_rgb_halves(&capture_from(&mut renderer, below));
-    for channel in 0..3 {
-        assert!(
-            (left_below[channel] - today_below[channel]).abs() <= 0.5,
-            "from below the bound face reads today's value: {left_below:?} vs {today_below:?}"
-        );
-    }
+    let bound_below = capture_from(&mut renderer, below);
+    assert!(
+        bound_below == today_below,
+        "from below every face reads today's value"
+    );
 
     renderer.release_level_resources();
     assert_eq!(renderer.full().fluid_surface.probe_array_layers(), None);
+}
+
+// Pin P11, level change with probes bound. Level A (section 54, three 16²
+// tiles) draws its probe's capture. Unload leaves no probe texture. Level B
+// has fluid and no section 54: it binds only the 1×1 one-layer dummy, and
+// its face, even drawn as a mirror claiming a bound face, reads exactly
+// today's value, so nothing of A's samples. Level B2 brings its own section
+// (two 8² tiles) whose layer 0 differs from A's: its face reads B2's capture,
+// not A's, and its array is B2's size. Unload leaves no probe texture again.
+#[test]
+fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let pool = full_screen_fluid();
+    let mirror = FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let size = |renderer: &Renderer| {
+        renderer
+            .full()
+            .fluid_surface
+            .probe_array_size()
+            .map(|size| (size.width, size.height, size.depth_or_array_layers))
+    };
+    let draw = |renderer: &mut Renderer, section: Option<&ReflectionProbesSection>| {
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), section);
+        renderer.set_fluid_surface_draws(&[look_draw(0, mirror)]);
+        capture_from(renderer, GRAZING)
+    };
+    let worst = |pixels: &[u8], section: &ReflectionProbesSection, colours: &[Vec3]| {
+        let reference = ReferenceProbes {
+            section,
+            layer_colours: colours,
+            reflectivity: 50.0,
+        };
+        worst_deviation(pixels, 0..SIDE, |column, row| {
+            expected_pixel(GRAZING, column, row, UNLIT_HALF, 0, &reference)
+        })
+    };
+
+    // Level A: red, green, blue layers; the face binds probe 0 (layer 0, red).
+    let a_tiles = [[0x3800, 0, 0], [0, 0x3800, 0], [0, 0, 0x3800]];
+    let a = uniform_probe_section(16, &[0, 1, 2], &a_tiles, &[(0, 0)]);
+    let a_pixels = draw(&mut renderer, Some(&a));
+    assert_eq!(size(&renderer), Some((16, 16, 3)));
+    let (a_worst, a_at) = worst(&a_pixels, &a, &a_tiles.map(f16_rgb));
+    assert!(
+        a_worst <= 2,
+        "level A reads its capture: off by {a_worst} at {a_at:?}"
+    );
+    assert!(
+        a_pixels[0] > a_pixels[1] + 20,
+        "level A reflects red: {:?}",
+        &a_pixels[..4]
+    );
+
+    renderer.release_level_resources();
+    assert_eq!(size(&renderer), None, "unload leaves no probe texture");
+
+    // Level B: fluid, no section 54.
+    let b_pixels = draw(&mut renderer, None);
+    assert_eq!(size(&renderer), Some((1, 1, 1)), "B binds only the dummy");
+    assert!(
+        b_pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| px[..3] == [188; 3]),
+        "B draws fluid as today: linear 0.5 everywhere, got {:?}",
+        &b_pixels[..4]
+    );
+
+    // Level B2: its own blue layer 0 and a yellow layer 1; the face binds
+    // probe 0.
+    renderer.release_level_resources();
+    let b2_tiles = [[0, 0, 0x3800], [0x3800, 0x3800, 0]];
+    let b2 = uniform_probe_section(8, &[0, 1], &b2_tiles, &[(0, 0)]);
+    let b2_pixels = draw(&mut renderer, Some(&b2));
+    assert_eq!(size(&renderer), Some((8, 8, 2)), "B2 binds its own array");
+    let (b2_worst, b2_at) = worst(&b2_pixels, &b2, &b2_tiles.map(f16_rgb));
+    assert!(
+        b2_worst <= 2,
+        "B2 reads its own capture: off by {b2_worst} at {b2_at:?}"
+    );
+    assert!(
+        b2_pixels[2] > b2_pixels[0] + 20,
+        "B2 reflects its blue, not A's red: {:?}",
+        &b2_pixels[..4]
+    );
+
+    renderer.release_level_resources();
+    assert_eq!(size(&renderer), None, "unload leaves no probe texture");
+    eprintln!(
+        "[FluidSurfaceProof] P11 level-change GPU case ran: A {:?} worst {a_worst}, B {:?}, \
+         B2 {:?} worst {b2_worst}",
+        &a_pixels[..3],
+        &b_pixels[..3],
+        &b2_pixels[..3]
+    );
 }
 
 /// Descriptor record 0 for a flat light of `base_color`, on or off, as the

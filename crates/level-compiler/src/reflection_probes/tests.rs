@@ -440,6 +440,39 @@ fn a_level_without_up_facing_fluid_emits_no_section() {
     assert_eq!(bake(&room, &side), None);
 }
 
+// Acceptance row 1: a level whose up-facing faces all lose their probes
+// emits no section. The pool's derived capture point lies inside another
+// fluid entity's brush, so placement keeps nothing and the stage writes no
+// id 54, rather than an empty one.
+#[test]
+fn a_level_whose_faces_all_lose_their_probes_emits_no_section() {
+    use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let room = lit_floor_room([255, 0, 0, 255]);
+    let plane = |normal: [f32; 3], distance: f32| EnvironmentPlane { normal, distance };
+    let mut sludge = fluid_volume(6, &[]);
+    sludge.fluid = "sludge".to_string();
+    sludge.brushes = vec![EnvironmentBrush {
+        aabb_min: [-2.0, 0.0, -2.0],
+        aabb_max: [2.0, 1.0, 2.0],
+        planes: vec![
+            plane([1.0, 0.0, 0.0], 2.0),
+            plane([-1.0, 0.0, 0.0], 2.0),
+            plane([0.0, 1.0, 0.0], 1.0),
+            plane([0.0, -1.0, 0.0], 0.0),
+            plane([0.0, 0.0, 1.0], 2.0),
+            plane([0.0, 0.0, -1.0], 2.0),
+        ],
+    }];
+    let mut environment = pool();
+    environment.volumes.push(sludge);
+    assert_eq!(bake(&room, &environment), None);
+    capture.assert_logged_once(log::Level::Warn, "derived probe of fluid entity 5");
+    capture.assert_logged_once(log::Level::Warn, "is inside fluid entity 6; dropped");
+    // The same pool with nothing over its point keeps its probe.
+    assert!(bake(&room, &pool()).is_some());
+}
+
 /// A room with every capture term: static lightmap, base and delta SH, two
 /// animated lights' weight maps (one tied with a third for the K-th entry)
 /// and an sdf light.

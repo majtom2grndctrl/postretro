@@ -9,6 +9,8 @@ branch: feature/reflection-probes
 
 - 2026-10-14 — rows 33 and 35 restated (owner-approved): capture-path GPU rows compare against the capture's encoding (soft-knee tonemap, then sRGB), since `capture_frame_indirect` tonemaps and sRGB-encodes; linear 0.5 reads 188 ± 1. Applied to `index.md`.
 
+- 2026-10-15 — **distance-correction amendment** (owner-approved after the play test): probes gain a separate R16Float distance tile per probe; the fluid search corrects box projection against it; water the capture point cannot see draws no probe term (Capture shadow Decision). Changes Decisions Technique, Storage, Runtime placement, adds Capture shadow and a Non-goal; restates Acceptance rows 1, 2, 16, 17, 30, 33 and Manual 38; adds rows A1–A6 below; section 54 → internal version 2. Wording applied to `index.md` from `distance-proposal.md` §6. The owner runs the Tencent WO2026113651A1 claims check before shipping.
+
 ## Corrections
 
 Compiler
@@ -184,6 +186,18 @@ Every other pass matches main to noise (forward moves ±0.01 ms run to run; the 
 
 Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the session scratchpad (`out2/`, `bin-main/`, `bin-branch/`).
 
+## Amendment rows (distance correction)
+
+| Row | Proof | Status |
+|---|---|---|
+| A1 Distance tile in a box room (1/L1 to each wall, miss 0, borders) | compiler capture test | achievable as stated |
+| A2 Capture-visibility warning on a mostly hidden L-shaped pool | compiler test + log capture | achievable as stated |
+| A3 Crate fixture: top edge within 0.5° from the west coping at 0.5/1.6/3 m; x 300–336 within 2° | render-cpu search reference, analytic tile | achievable as stated |
+| A4 Pillar fixture: behind-pillar fragment draws no term; capture-facing hit within one texel; ≤ 10% false pillar from the walkway | render-cpu search reference | achievable as stated |
+| A5 Search depends on fragment/cell, box, point and distance tile alone (pixel cells read one lookup) | render-cpu + source scan | achievable as stated |
+| A6 Near-wall distance tile: GPU sampled texel matches the CPU lookup | adapter-backed | achievable as stated |
+| Restated 1, 2, 16, 17, 30, 33, Manual 38 | as each original row, extended | achievable as restated |
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -198,6 +212,13 @@ Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the 
 | 8 | Gates: adapter-backed tests (rows 33–36), level change P11, budget tests incl. new uniform/sampler count, grep gates, DX12 FXC run, ignored stress-map compile | integrating executor | 4, 5, 7 | done (stress compile and FXC carried from tasks 4 and 7) — rows 33/34/35/36 GPU tests ran on the 1660 (worst 1/255; row 35 reads 188 exactly; P11 by array size + pixels), row 31 two grep gates, row 1/2/5/10 gaps filled, P10 loader refusal tested; full row → test sweep recorded below; renderer lib 946 |
 | 9 | Manual test map (pool at floor level, neon sign, animated light, `_shadow_type sdf` light, two-room canal) in `content/dev/maps/`; measurements: 1660 GPU delta, cold/warm stage time on e24, probe VRAM on stress map; **owner-requested A/B against main**: release binary of `origin/main` built in a lean throwaway worktree (`CARGO_INCREMENTAL=0`, own target, binary copied out, target deleted at once, development_guide §Worktree builds), each binary on its own compiler's e24 PRL at the same pose with `POSTRETRO_GPU_TIMING=1`, plus the branch at reflectivity 0 (any lighting-term toggle off) to separate the probe term from the SH border fix; engine closed after each run | integrating executor; owner for Mac trace and look | 8 | |
 | 8b | Two fluid pipelines: reflection-free variant for draws that cannot reflect, reflecting variant otherwise; both under the DX12 FXC test; capture A/B against main on e24 and the test map | delegated (Opus) | 8 | done — `override FLUID_REFLECTIONS` folded by naga `process_overrides` (IR reachability test proves the reflection-free variant reads no probe data); per-draw `FluidParamsRow::shader_variant(mask)`; adapter `a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right` ran on GPU (reflection-free volumes byte-equal to the no-section frame); render-cpu 419, renderer 949; DX12 FXC ran. Timing (steady, two runs each): e24 main 3.165 / reflection-free 3.146 / main's PRL 3.145 / reflecting 4.733 ms; test map main 1.662 / reflection-free 1.653 / reflecting 2.350 ms; early-window transient only on the reflecting pipeline |
-| 10 | `/preflight`, `/review-panel` → `/fix-review-findings` loop, full gate | integrating executor | 9 | |
+| 11a | Section 54 v2: distance format tag and R16F payload, round trip, refusals (v1 refused, payload length), loader length check, `installable_probe_section` | integrating executor | 8b | |
+| 11b | Compiler: mean inverse-L1 distance per texel from the existing hits, borders, f16 encode, `STAGE_VERSION` 4; capture tests (box room, miss = 0, jobs determinism); capture-visibility warning (A1, A2) | delegated (Opus) | 11a | |
+| 11c | render-cpu `reflection_search` reference: two parallel taps, K = 3 sphere steps, M = 2 false position, statuses, capture-shadow fade; analytic crate / pillar / empty-room fixtures; row 17 restated, A3–A5 | delegated (Opus) | 11a | |
+| 11d | Renderer: R16Float distance array (1×1 dummy when absent), group 4 binding 3, budgets sampled 9 → 10, search ported into the reflecting variant only, WGSL↔CPU pins, DX12 FXC | delegated (Opus) | 11b, 11c | |
+| 11e | Adapter rows 33–36 updated + A6 near-wall GPU row | delegated (Opus) | 11d | |
+| 11f | Measure: 1660 capture A/B of the reflecting variant (e24 pool, test-map pool) against task 8b's numbers, stress-map VRAM; tune K and the fade margin; owner 5300M trace and in-engine look at the crate and pillar | integrating executor; owner | 11e | |
+| 11g | Context docs at landing (`rendering_pipeline.md` §7.3a, §10 "10 of 16"; `resource_management.md` §5; `build_pipeline.md` id 54) | integrating executor | 11f | |
+| 10 | `/preflight`, `/review-panel` → `/fix-review-findings` loop, full gate | integrating executor | 9, 11f | |
 
 Hot paths: the fluid fragment stage (one tap, ≤ K descriptor evaluations, slab test; no per-frame allocation; share uniform and probe-index buffer written at install only; style and reflectivity change-driven through existing dirty paths). Build loop: the stage is cached under its own key and parallel per probe under the `--jobs` governor; its domain is the bound probes' tiles only.

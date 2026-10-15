@@ -490,6 +490,7 @@ fn the_fog_and_wave_scripting_example_parses_identically_in_ts_and_luau() {
             wave_period: Some(63.0),
             wave_amplitude: 6.0,
             wave_length: [48.0, 80.0],
+            surface_reflectivity: 1.0,
         }]
     );
 }
@@ -697,6 +698,102 @@ fn a_nan_fog_or_wave_value_rejects_that_fluid_naming_the_field() {
             .filter(|message| message.contains(&format!("non-finite number at `{path}`")))
             .collect();
         assert_eq!(rejected.len(), 2, "{field}: one per runtime: {rejected:?}");
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
+        );
+    }
+}
+
+// --- Reflectivity -----------------------------------------------------------
+
+// Acceptance row 28: an omitted `surfaceReflectivity` resolves to 1 (water);
+// 0 and 50, the range's ends, are accepted in both runtimes.
+#[test]
+fn surface_reflectivity_defaults_to_water_and_accepts_zero_and_fifty() {
+    assert_eq!(accepted_in_both(&[]).surface_reflectivity, 1.0);
+    assert_eq!(
+        accepted_in_both(&[("surfaceReflectivity", "null")]).surface_reflectivity,
+        1.0
+    );
+    for (authored, expected) in [("0", 0.0), ("50", 50.0), ("2.5", 2.5), ("10", 10.0)] {
+        assert_eq!(
+            accepted_in_both(&[("surfaceReflectivity", authored)]).surface_reflectivity,
+            expected,
+            "{authored}"
+        );
+    }
+}
+
+// Acceptance row 28: −0.1 and 50.1 reject that fluid with one warning per
+// runtime naming the field; the rest of the manifest stands.
+#[test]
+fn an_out_of_range_surface_reflectivity_rejects_that_fluid_naming_the_field() {
+    for authored in ["-0.1", "50.1"] {
+        let capture = LogCapture::start();
+        let overrides = [("surfaceReflectivity", authored)];
+        let (js, lua) = drain_with_bad(&overrides, &overrides);
+        assert_eq!(js, lua);
+        assert_eq!(
+            js.names(),
+            ["water", "sludge"],
+            "{authored}: the rest stands"
+        );
+        let rejected = warnings(
+            &capture,
+            "fluids[1].surfaceReflectivity must be a finite value in [0, 50]",
+        );
+        assert_eq!(
+            rejected.len(),
+            2,
+            "{authored}: one per runtime: {rejected:?}"
+        );
+        assert_eq!(
+            rejected[0], rejected[1],
+            "the runtimes' diagnostics diverged"
+        );
+        assert!(
+            rejected[0].contains("fluid 'bad' was rejected"),
+            "{}",
+            rejected[0]
+        );
+        assert_eq!(warnings(&capture, "fluids[1]").len(), 2, "no other warning");
+    }
+}
+
+// Acceptance row 28: NaN never reaches validation; script conversion rejects
+// it, still naming the field, and the rest of the manifest stands. A string
+// is malformed the same way.
+#[test]
+fn a_nan_or_mistyped_surface_reflectivity_rejects_that_fluid_naming_the_field() {
+    for (js_value, lua_value, needle) in [
+        ("NaN", "0/0", "non-finite number at `surfaceReflectivity`"),
+        (
+            "\"mirror\"",
+            "\"mirror\"",
+            "`fluids[1].surfaceReflectivity` must be a number",
+        ),
+    ] {
+        let capture = LogCapture::start();
+        let (js, lua) = drain_with_bad(
+            &[("surfaceReflectivity", js_value)],
+            &[("surfaceReflectivity", lua_value)],
+        );
+        assert_eq!(js, lua);
+        assert_eq!(
+            js.names(),
+            ["water", "sludge"],
+            "{js_value}: the rest stands"
+        );
+        let rejected: Vec<String> = warnings(&capture, "fluids[1] is malformed and was skipped")
+            .into_iter()
+            .filter(|message| message.contains(needle))
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            2,
+            "{js_value}: one per runtime: {rejected:?}"
+        );
         assert_eq!(
             rejected[0], rejected[1],
             "the runtimes' diagnostics diverged"

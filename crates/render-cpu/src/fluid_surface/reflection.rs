@@ -14,6 +14,7 @@ use postretro_level_format::reflection_probes::{
 };
 
 use super::FluidFaceDriftMap;
+use super::reflection_style::{FluidTexelAxes, reflection_point};
 use crate::frame_uniforms::LightTermMask;
 use crate::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
 
@@ -444,13 +445,28 @@ pub struct FluidReflectionFragment {
     pub light_term_mask: u32,
     /// The row's packed reflectivity (`surface.z`).
     pub reflectivity: f32,
+    /// The scene's reflection style (`FluidReflectionStyle::uniform_value`).
+    pub style: u32,
+    /// The unwarped texel UV: the normalized UV times the face texture's
+    /// dimensions, before drift, wave or cell offsets.
+    pub texel_uv: Vec2,
+    /// The face's texel axes (`reflection_texel_axes` of the fragment's
+    /// derivatives).
+    pub axes: FluidTexelAxes,
+    /// The animation clock and the fade footprint the warp reads, so the
+    /// cell's offset is the one its albedo displays.
+    pub time: f32,
+    pub texels_per_pixel: f32,
 }
 
 /// The fragment's output as `fs_main`'s tail computes it from `surface`
 /// (the fog reference's output): unchanged when the gate is off, else the
 /// probe's capture, sampled toward the box hit from the capture point and
 /// scaled by the live-lighting ratio toward that same direction, composited
-/// over it. `sample(layer, uv)` reads the tile at level 0. The layer comes
+/// over it. The reflection starts from the style's point (the fragment, or
+/// its texel cell's centre about the cell's tilted normal) and sees the eye
+/// from there, so every fragment of a pixel-style cell reads one sample at
+/// one weight. `sample(layer, uv)` reads the tile at level 0. The layer comes
 /// from the face's probe index alone.
 pub fn reflection_fragment(
     surface: Vec4,
@@ -471,10 +487,20 @@ pub fn reflection_fragment(
     ) {
         return surface;
     }
-    let probe = &probes[fragment.probe as usize];
-    let ray = reflection_mirror(view, outward);
-    let hit = reflection_box_hit(
+    let point = reflection_point(
+        fragment.style,
+        fragment.texel_uv,
         fragment.world_position,
+        outward,
+        fragment.axes,
+        fragment.time,
+        fragment.texels_per_pixel,
+    );
+    let view = (fragment.camera - point.position).normalize_or_zero();
+    let probe = &probes[fragment.probe as usize];
+    let ray = reflection_mirror(view, point.normal);
+    let hit = reflection_box_hit(
+        point.position,
         ray,
         Vec3::from(probe.box_min),
         Vec3::from(probe.box_max),

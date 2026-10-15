@@ -28,8 +28,20 @@ use crate::App;
 /// Surface opacity frame capture draws every fluid volume at. Capture is
 /// VM-free and loads no manifest, so it cannot read a fluid's own opacity;
 /// a fixed one keeps the pass visible and timed in captures.
-#[cfg(feature = "capture")]
+#[cfg(any(feature = "capture", test))]
 pub(crate) const CAPTURE_FLUID_SURFACE_OPACITY: f32 = 0.6;
+
+/// Frame capture's look for a named fluid's volume. Capture loads no
+/// manifest, so it draws at the fixed capture opacity with no fog or wave,
+/// reflecting as water (reflectivity 1) wherever a face binds a probe; it
+/// never sets a reflection style, so the renderer's default, pixel, holds.
+#[cfg(any(feature = "capture", test))]
+pub(crate) fn capture_surface_look(has_bound_face: bool) -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        has_bound_face,
+        ..FluidSurfaceLook::surface_only(CAPTURE_FLUID_SURFACE_OPACITY)
+    }
+}
 
 /// The local presentation of installed volume `volume`'s fluid: the local
 /// manifest's declaration of the name the active table gives that fluid, or
@@ -45,8 +57,8 @@ pub(crate) fn local_fluid_presentation<'r>(
     fluids.local_presentation(fluid, local)
 }
 
-/// A fluid's surface look as the renderer packs it: opacity, depth fog and
-/// wave from the local declaration, reflecting as water wherever the volume
+/// A fluid's surface look as the renderer packs it: opacity, depth fog, wave
+/// and reflectivity from the local declaration, reflecting wherever the volume
 /// has a probe-bound face (`has_bound_face`).
 pub(crate) fn surface_look(fluid: &FluidDescriptor, has_bound_face: bool) -> FluidSurfaceLook {
     FluidSurfaceLook {
@@ -59,9 +71,7 @@ pub(crate) fn surface_look(fluid: &FluidDescriptor, has_bound_face: bool) -> Flu
         wave_period: fluid.wave_period,
         wave_amplitude: fluid.wave_amplitude,
         wave_length: fluid.wave_length,
-        // Water's until the manifest declares `surfaceReflectivity`
-        // (reflection-probes task 7).
-        surface_reflectivity: 1.0,
+        surface_reflectivity: fluid.surface_reflectivity,
         has_bound_face,
     }
 }

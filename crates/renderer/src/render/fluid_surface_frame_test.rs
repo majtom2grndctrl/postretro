@@ -672,3 +672,151 @@ fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
         );
     }
 }
+
+/// `value` (in `[0, 2)`, positive or zero) as f16 bits, mantissa truncated.
+fn f16_bits(value: f32) -> u16 {
+    if value <= 0.0 {
+        return 0;
+    }
+    let bits = value.to_bits();
+    let exponent = ((bits >> 23) & 0xFF) as i32 - 127 + 15;
+    ((exponent as u16) << 10) | ((bits >> 13) & 0x3FF) as u16
+}
+
+/// One RGBA16F probe tile `dimension`² whose red follows the tile's `u` and
+/// green its `v`, so every lookup direction reads its own colour.
+fn gradient_rgba16f_tile(dimension: u32) -> Vec<u8> {
+    let last = (dimension - 1) as f32;
+    (0..dimension)
+        .flat_map(|row| (0..dimension).map(move |column| (column, row)))
+        .flat_map(|(column, row)| {
+            [
+                f16_bits(column as f32 / last),
+                f16_bits(row as f32 / last),
+                0,
+                0x3C00,
+            ]
+        })
+        .flat_map(|half| half.to_le_bytes())
+        .collect()
+}
+
+/// Largest per-channel spread of the pixels in each 8 × 8 block of a
+/// 16 × 16 capture: the four water texel cells of [`coarse_quad`].
+fn cell_block_spreads(pixels: &[u8]) -> [u8; 4] {
+    let mut spreads = [0u8; 4];
+    for (block, spread) in spreads.iter_mut().enumerate() {
+        let (bx, by) = ((block as u32 % 2) * 8, (block as u32 / 2) * 8);
+        for channel in 0..3 {
+            let values = (by..by + 8).flat_map(|y| {
+                (bx..bx + 8).map(move |x| pixels[((y * SIDE + x) * 4) as usize + channel])
+            });
+            let (low, high) = values.fold((u8::MAX, 0), |(low, high), v| (low.min(v), high.max(v)));
+            *spread = (*spread).max(high - low);
+        }
+    }
+    spreads
+}
+
+/// A full-screen face two texels on a side: each water texel cell covers an
+/// 8 × 8 pixel block, far below the fade threshold, so every cell moves.
+fn coarse_quad() -> EnvironmentVolumeRecord {
+    let mut volume = full_screen_fluid();
+    for vertex in &mut volume.surface_faces[0].vertices {
+        vertex.uv = vertex.uv.map(|texel| texel / 32.0);
+    }
+    volume
+}
+
+// Acceptance rows 26 and 27 on an adapter. A renderer no manifest has spoken
+// to (frame capture's) draws pixel style: every pixel of one water texel cell
+// reads one reflection, so each cell's block holds one value. Smooth varies
+// per pixel inside the same blocks. The style uploads on change through the
+// scene uniform, and switching back restores the pixel frame.
+#[test]
+fn pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel() {
+    use postretro_render_cpu::fluid_surface::reflection_style::{
+        FLUID_REFLECTION_STYLE_PIXEL, FLUID_REFLECTION_STYLE_SMOOTH, FluidReflectionStyle,
+    };
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    assert_eq!(
+        renderer.fluid_reflection_style(),
+        FluidReflectionStyle::Pixel
+    );
+    let uploaded = |renderer: &Renderer| {
+        renderer
+            .full()
+            .fluid_surface
+            .scene_inputs()
+            .uploaded()
+            .reflection_style
+    };
+    assert_eq!(uploaded(&renderer), FLUID_REFLECTION_STYLE_PIXEL);
+
+    let pool = coarse_quad();
+    let dimension = 16;
+    let probes = ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-8.0; 3],
+            box_max: [8.0; 3],
+            capture_point: [0.0, 0.0, 0.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: gradient_rgba16f_tile(dimension),
+    };
+    // A mirror (reflectivity 50) at zero opacity: the output is the
+    // reflection alone.
+    let look = FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let grazing = Vec3::new(0.0, 3.0, -0.5);
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&probes));
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let pixel = capture_from(&mut renderer, grazing);
+    let pixel_spreads = cell_block_spreads(&pixel);
+
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let smooth = capture_from(&mut renderer, grazing);
+    assert_eq!(uploaded(&renderer), FLUID_REFLECTION_STYLE_SMOOTH);
+    let smooth_spreads = cell_block_spreads(&smooth);
+
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Pixel);
+    renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+    let restored = capture_from(&mut renderer, grazing);
+    assert_eq!(uploaded(&renderer), FLUID_REFLECTION_STYLE_PIXEL);
+    eprintln!(
+        "[FluidSurfaceProof] reflection style GPU case ran: pixel cell spreads \
+         {pixel_spreads:?}, smooth {smooth_spreads:?}"
+    );
+    assert!(
+        pixel_spreads.iter().all(|&spread| spread <= 1),
+        "each pixel-style cell holds one reflection: {pixel_spreads:?}"
+    );
+    assert!(
+        smooth_spreads.iter().all(|&spread| spread >= 4),
+        "smooth varies per pixel inside each cell: {smooth_spreads:?}"
+    );
+    assert!(
+        pixel
+            .iter()
+            .zip(&restored)
+            .all(|(a, b)| a.abs_diff(*b) <= 1),
+        "switching back restores the pixel frame"
+    );
+    renderer.release_level_resources();
+}

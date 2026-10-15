@@ -10,12 +10,13 @@ use postretro_foundation::data_descriptors::{FluidDescriptor, FluidRegistry};
 
 /// Keys a fluid entry may carry. Anything else rejects the entry, so a
 /// misspelled optional sound is loud.
-const FLUID_KEYS: [&str; 12] = [
+const FLUID_KEYS: [&str; 13] = [
     "name",
     "viscosity",
     "viewTint",
     "muffle",
     "surfaceOpacity",
+    "surfaceReflectivity",
     "enterSound",
     "exitSound",
     "fogDistance",
@@ -140,8 +141,8 @@ impl EntryPath {
 /// Parse one converted entry's shape. Ranges are checked by the registry.
 /// Diagnostics name the field as `fluids[index].<field>`; `index` counts
 /// entries from 0 in both runtimes. A hole (`null`, `undefined` or `nil`) is a
-/// malformed entry like any other non-object. An omitted `waveAmplitude` and
-/// `waveLength` resolve to their defaults here, so validation judges the
+/// malformed entry like any other non-object. An omitted `surfaceReflectivity`,
+/// `waveAmplitude` and `waveLength` resolve to their defaults here, so validation judges the
 /// resolved values; an omitted `fogColor` stays `None` and resolves against
 /// `viewTint` where it is read (`FluidDescriptor::resolved_fog_color`).
 fn fluid_from_json(
@@ -187,6 +188,9 @@ fn fluid_from_json(
         view_tint,
         muffle: path.number(path.required(&entry, "muffle")?, "muffle")?,
         surface_opacity: path.number(path.required(&entry, "surfaceOpacity")?, "surfaceOpacity")?,
+        surface_reflectivity: path
+            .optional_number(&entry, "surfaceReflectivity")?
+            .unwrap_or(FluidDescriptor::DEFAULT_SURFACE_REFLECTIVITY),
         enter_sound: path.optional_string(&entry, "enterSound")?,
         exit_sound: path.optional_string(&entry, "exitSound")?,
         fog_distance: path.optional_number(&entry, "fogDistance")?,

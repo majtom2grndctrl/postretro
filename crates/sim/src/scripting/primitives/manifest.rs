@@ -25,12 +25,32 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("ReflectionStyle")
+        .doc("Look of every fluid reflection layer: the probe reflection today, and the screen-space layer when it lands.")
+        .variant("pixel", "One reflection direction per water texel cell, tilted by that cell's shimmer and ripples, so the reflection breaks into the blocks the water's texture moves in. Drift and a declared wave tilt nothing. This is the default.")
+        .variant("smooth", "Reflect the flat surface per pixel: a still mirror.")
+        .finish();
+    registry
+        .register_type("ReflectionRenderProfile")
+        .doc("Static fluid-reflection presentation preferences for the entire mod. How strongly each fluid reflects is its own `surfaceReflectivity`.")
+        .field(
+            "style?",
+            "ReflectionStyle",
+            "Reflection look. Optional; defaults to `\"pixel\"`. An unknown value warns and uses `\"pixel\"`.",
+        )
+        .finish();
+    registry
         .register_type("RenderProfile")
         .doc("Static renderer preferences declared once for the entire mod.")
         .field(
             "bloom?",
             "BloomRenderProfile",
             "Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom.",
+        )
+        .field(
+            "reflections?",
+            "ReflectionRenderProfile",
+            "Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections.",
         )
         .finish();
     registry
@@ -124,6 +144,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field("viewTint", "[f32; 4]", "Full-screen tint while the camera eye is inside: red, green, blue, then strength. Each finite and in [0, 1].")
         .field("muffle", "f32", "World-sound low-pass while the camera eye is inside: 0 none, 1 maximum. Finite and in [0, 1].")
         .field("surfaceOpacity", "f32", "Opacity of the fluid's visible surface faces. Finite and in [0, 1].")
+        .field("surfaceReflectivity?", "f32", "How strongly the surface reflects the room around it: a scale on its Fresnel base reflectance (0.02 x value). 0 reflects nothing, 1 is water, about 2 reads as glass, about 10 as wet polished stone, 50 a mirror at every angle. Opacity never dims the reflection, so a zero-opacity fluid still reflects. Finite and in [0, 50]. Omitted: 1.")
         .field("enterSound?", "String", "Optional sound key played when a swim starts in this fluid.")
         .field("exitSound?", "String", "Optional sound key played when a swim in this fluid ends.")
         .field("fogDistance?", "f32", "Metres of view path into the fluid, seen from outside it, that hide 95% of what lies beyond. Finite and > 0. Omitted: clear. Never applies to the view from inside, which `viewTint` alone covers.")
@@ -149,7 +170,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "render?",
             "RenderProfile",
-            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.",
+            "Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections.",
         )
         .field(
             "movers?",
@@ -658,7 +679,7 @@ mod tests {
                 "BloomRenderProfile",
                 ["resolution?", "pixelated?"].as_slice(),
             ),
-            ("RenderProfile", ["bloom?"].as_slice()),
+            ("RenderProfile", ["bloom?", "reflections?"].as_slice()),
         ] {
             let registered = registry
                 .iter_types()
@@ -670,6 +691,76 @@ mod tests {
             let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
             assert_eq!(names, expected_fields);
         }
+    }
+
+    // Drift guard: the SDK's `ReflectionStyle` union is the runtime enum's
+    // authored names, in order. Each variant maps through an exhaustive match,
+    // so a new runtime style fails to compile until it is registered.
+    #[test]
+    fn reflection_render_profile_sdk_types_derive_from_the_runtime_style() {
+        use postretro_scripting_core::runtime::ModReflectionStyle;
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+
+        let style = registry
+            .iter_types()
+            .find(|registered| registered.name == "ReflectionStyle")
+            .expect("ReflectionStyle must be registered");
+        let TypeShape::StringEnum { variants } = &style.shape else {
+            panic!(
+                "ReflectionStyle must be a StringEnum, got {:?}",
+                style.shape
+            );
+        };
+        let names: Vec<&str> = variants.iter().map(|variant| variant.name).collect();
+        let expected: Vec<&str> = ModReflectionStyle::ALL
+            .into_iter()
+            .map(|style| {
+                let name = match style {
+                    ModReflectionStyle::Pixel => "pixel",
+                    ModReflectionStyle::Smooth => "smooth",
+                };
+                assert_eq!(style.authored_name(), name);
+                name
+            })
+            .collect();
+        assert_eq!(names, expected);
+        assert_eq!(
+            ModReflectionStyle::default().authored_name(),
+            names[0],
+            "the default is listed first, as its doc says"
+        );
+
+        let profile = registry
+            .iter_types()
+            .find(|registered| registered.name == "ReflectionRenderProfile")
+            .expect("ReflectionRenderProfile must be registered");
+        let TypeShape::Struct { fields } = &profile.shape else {
+            panic!("ReflectionRenderProfile must be a Struct");
+        };
+        let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        assert_eq!(names, ["style?"]);
+    }
+
+    // `surfaceReflectivity` is an optional field of the fluid descriptor,
+    // beside `surfaceOpacity`.
+    #[test]
+    fn fluid_descriptor_sdk_type_declares_optional_surface_reflectivity() {
+        let mut registry = PrimitiveRegistry::new();
+        register_sdk_type(&mut registry);
+        let fluid = registry
+            .iter_types()
+            .find(|registered| registered.name == "FluidDescriptor")
+            .expect("FluidDescriptor must be registered");
+        let TypeShape::Struct { fields } = &fluid.shape else {
+            panic!("FluidDescriptor must be a Struct");
+        };
+        let names: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        let opacity = names
+            .iter()
+            .position(|name| *name == "surfaceOpacity")
+            .expect("surfaceOpacity");
+        assert_eq!(names[opacity + 1], "surfaceReflectivity?");
     }
 
     #[test]

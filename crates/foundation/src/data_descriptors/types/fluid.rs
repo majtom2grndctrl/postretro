@@ -23,6 +23,12 @@ pub struct FluidDescriptor {
     pub muffle: f32,
     /// Alpha of the fluid's surface faces, `[0, 1]`.
     pub surface_opacity: f32,
+    /// Scale on the surface's Fresnel base reflectance (0.02 × value): 0
+    /// reflects nothing, 1 is water, 50 a mirror at every angle. Resolved:
+    /// [`Self::DEFAULT_SURFACE_REFLECTIVITY`] when omitted. Finite, in `[0, 50]`
+    /// ([`Self::MAX_SURFACE_REFLECTIVITY`]). Presentation only: it never
+    /// feeds drift or the mod digest.
+    pub surface_reflectivity: f32,
     /// Sound key played when a swim starts in this fluid.
     pub enter_sound: Option<String>,
     /// Sound key played when a swim in this fluid ends.
@@ -67,6 +73,10 @@ fn unit(value: f32) -> bool {
 }
 
 impl FluidDescriptor {
+    /// `surfaceReflectivity` when omitted: water.
+    pub const DEFAULT_SURFACE_REFLECTIVITY: f32 = 1.0;
+    /// Largest `surfaceReflectivity`: base reflectance 1, a mirror.
+    pub const MAX_SURFACE_REFLECTIVITY: f32 = 50.0;
     /// `waveAmplitude` when omitted, in texels.
     pub const DEFAULT_WAVE_AMPLITUDE: f32 = 8.0;
     /// Shortest `wavePeriod`, in seconds: about Quake's turb speed.
@@ -133,6 +143,16 @@ impl FluidDescriptor {
                 field: "surfaceOpacity",
                 requirement: "must be a finite value in [0, 1]",
                 got: self.surface_opacity.to_string(),
+            });
+        }
+        let reflectivity = self.surface_reflectivity;
+        if !(reflectivity.is_finite()
+            && (0.0..=Self::MAX_SURFACE_REFLECTIVITY).contains(&reflectivity))
+        {
+            return Err(FluidFieldError {
+                field: "surfaceReflectivity",
+                requirement: "must be a finite value in [0, 50]",
+                got: reflectivity.to_string(),
             });
         }
         for (field, key) in [
@@ -329,6 +349,7 @@ mod tests {
             view_tint: [0.1, 0.3, 0.4, 0.35],
             muffle: 0.8,
             surface_opacity: 0.6,
+            surface_reflectivity: FluidDescriptor::DEFAULT_SURFACE_REFLECTIVITY,
             enter_sound: Some("sfx/splash_in".to_string()),
             exit_sound: None,
             fog_distance: None,
@@ -367,7 +388,7 @@ mod tests {
     #[test]
     fn fluid_validation_names_each_out_of_range_field() {
         type Edit = fn(&mut FluidDescriptor);
-        let cases: [(&str, Edit); 9] = [
+        let cases: [(&str, Edit); 13] = [
             ("name", |fluid| fluid.name.clear()),
             ("viscosity", |fluid| fluid.viscosity = -0.5),
             ("viscosity", |fluid| fluid.viscosity = f32::INFINITY),
@@ -375,6 +396,18 @@ mod tests {
             ("viewTint", |fluid| fluid.view_tint[0] = f32::NAN),
             ("muffle", |fluid| fluid.muffle = -0.1),
             ("surfaceOpacity", |fluid| fluid.surface_opacity = 1.01),
+            ("surfaceReflectivity", |fluid| {
+                fluid.surface_reflectivity = -0.1
+            }),
+            ("surfaceReflectivity", |fluid| {
+                fluid.surface_reflectivity = 50.1
+            }),
+            ("surfaceReflectivity", |fluid| {
+                fluid.surface_reflectivity = f32::NAN
+            }),
+            ("surfaceReflectivity", |fluid| {
+                fluid.surface_reflectivity = f32::INFINITY
+            }),
             ("enterSound", |fluid| {
                 fluid.enter_sound = Some("../escape".to_string())
             }),
@@ -385,6 +418,18 @@ mod tests {
             let mut fluid = water();
             edit(&mut fluid);
             assert_eq!(fluid.validate().map_err(|error| error.field), Err(field));
+        }
+    }
+
+    // `surfaceReflectivity` admits both ends: 0 reflects nothing, 50 is a
+    // mirror at every angle.
+    #[test]
+    fn fluid_validation_accepts_reflectivity_zero_and_fifty() {
+        assert_eq!(water().surface_reflectivity, 1.0);
+        for reflectivity in [0.0, FluidDescriptor::MAX_SURFACE_REFLECTIVITY, 50.0] {
+            let mut fluid = water();
+            fluid.surface_reflectivity = reflectivity;
+            assert_eq!(fluid.validate(), Ok(()), "{reflectivity}");
         }
     }
 
@@ -481,7 +526,13 @@ mod tests {
     #[test]
     fn fluid_requirement_strings_name_the_constants_the_checks_use() {
         type Edit = fn(&mut FluidDescriptor);
-        let cases: [(Edit, String); 4] = [
+        let cases: [(Edit, String); 5] = [
+            (
+                |fluid| {
+                    fluid.surface_reflectivity = FluidDescriptor::MAX_SURFACE_REFLECTIVITY + 0.5
+                },
+                format!("[0, {}]", FluidDescriptor::MAX_SURFACE_REFLECTIVITY),
+            ),
             (
                 |fluid| fluid.wave_period = Some(FluidDescriptor::MIN_WAVE_PERIOD - 0.5),
                 format!(">= {}", FluidDescriptor::MIN_WAVE_PERIOD),

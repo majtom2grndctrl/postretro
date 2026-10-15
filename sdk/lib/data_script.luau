@@ -870,7 +870,9 @@ end
 --- declaration order assigns its index. `viscosity` is drag while swimming
 --- (1/s, >= 0); `viewTint` is rgb plus strength, `muffle` and
 --- `surfaceOpacity` each in [0, 1]; `enterSound` and `exitSound` are optional
---- sound keys. Optional presentation: `fogDistance` (metres seen into the
+--- sound keys. Optional presentation: `surfaceReflectivity` (0..50, default
+--- 1: 0 none, 1 water, 50 a mirror) scales how strongly the surface reflects
+--- the room around it; `fogDistance` (metres seen into the
 --- fluid from outside, > 0) and `fogColor` (rgb in `viewTint`'s space;
 --- omitted, `viewTint`'s rgb) add murk; `wavePeriod` (seconds, >= 6) turns on
 --- a slow surface wave whose `waveAmplitude` (texels, 0..16, default 8) and

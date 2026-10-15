@@ -525,12 +525,45 @@ fn fluid_surface_wgsl_warp_has_no_trig_and_keys_cells_on_the_fixed_grid() {
     assert!(displayed.contains("->vec2<i32>{"));
 }
 
+/// The shader's warp: its whole-texel motion block (shimmer, rings, fade,
+/// drift scroll, wave and the warped UV), from the first motion constant to
+/// the depth fog's, and the vertex stage that scrolls drift.
+fn fluid_warp_source() -> String {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    let start = source
+        .find("const FLUID_MOTION_STEP_HZ")
+        .expect("motion block");
+    let end = start
+        + source[start..]
+            .find("const FLUID_FOG_BAND")
+            .expect("fog block");
+    let block = &source[start..end];
+    for warp_fn in [
+        "fn fluid_warp_uv(",
+        "fn fluid_displayed_offset(",
+        "fn fluid_shimmer_offset(",
+        "fn fluid_ring_offset(",
+        "fn fluid_faded_flat(",
+        "fn fluid_drift_scroll(",
+        "fn fluid_wave_offset(",
+    ] {
+        assert!(
+            block.contains(warp_fn),
+            "the motion block holds `{warp_fn}`"
+        );
+    }
+    format!("{block}{}", wgsl_fn(source, "vs_main"))
+}
+
 // Water motion is world animation, not view feel: no reduce-motion,
-// accessibility or author render-profile input reaches it.
+// accessibility or author render-profile input reaches the warp. The Look
+// Decision makes reflection style the author's, so the render-profile scan
+// covers the warp alone; the style reaches only the reflection tail.
 #[test]
 fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
+    let warp = fluid_warp_source();
     let sources = [
-        include_str!("../shaders/fluid_surface.wgsl"),
+        warp.as_str(),
         include_str!("../../../render-cpu/src/fluid_surface/motion.rs"),
         include_str!("../../../render-cpu/src/fluid_surface/drift.rs"),
         include_str!("../../../postretro/src/fluid_presentation/drift.rs"),
@@ -544,10 +577,26 @@ fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
             "render_profile",
             "renderprofile",
             "bloom",
+            "reflection_style",
+            "reflectionstyle",
+            "fluid_scene",
         ] {
             assert!(!code.contains(forbidden), "fluid warp reads `{forbidden}`");
         }
     }
+    // Nothing in the fluid shader reads reduce motion or accessibility.
+    let shader = code_only(include_str!("../shaders/fluid_surface.wgsl")).to_lowercase();
+    for forbidden in ["reduce_motion", "reducemotion", "accessibility"] {
+        assert!(
+            !shader.contains(forbidden),
+            "fluid shader reads `{forbidden}`"
+        );
+    }
+    // The author's style is read once, by the reflection tail.
+    assert_eq!(shader.matches("fluid_scene.reflection_style").count(), 1);
+    assert!(
+        fs_main_reflection_tail().contains("fluid_reflection_point(fluid_scene.reflection_style,")
+    );
 }
 
 #[test]
@@ -1138,13 +1187,17 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          depth);",
         "lettransmittance=fluid_fog_transmittance(extinction,path);",
         "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
-        "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog.x,proximity,transmittance);",
+        "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog_weight,proximity,transmittance);",
         "surface=fluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
         "letreflectivity=row.surface.z;",
         "if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
          returnsurface;}",
-        "letreflection=fluid_reflection_sample(in.probe,in.world_position,V,outward);",
-        "letfresnel=fluid_reflection_fresnel(dot(V,outward),reflectivity);",
+        "letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);",
+        "letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
+         in.world_position,outward,axes,uniforms.time,texels_per_pixel);",
+        "letview=normalize(uniforms.camera_position-point.position);",
+        "letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);",
+        "letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity);",
         "returnfluid_reflection_composite(surface,reflection,fresnel);}",
     ];
     let mut at = 0;
@@ -1400,15 +1453,180 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letoutward=fragment.outward.normalize();\
          if!reflection_gate(fragment.probe,outward,view,fragment.light_term_mask,\
          fragment.reflectivity,){returnsurface;}\
+         letpoint=reflection_point(fragment.style,fragment.texel_uv,fragment.world_position,\
+         outward,fragment.axes,fragment.time,fragment.texels_per_pixel,);\
+         letview=(fragment.camera-point.position).normalize_or_zero();\
          letprobe=&probes[fragment.probeasusize];\
-         letray=reflection_mirror(view,outward);\
-         lethit=reflection_box_hit(fragment.world_position,ray,Vec3::from(probe.box_min),\
+         letray=reflection_mirror(view,point.normal);\
+         lethit=reflection_box_hit(point.position,ray,Vec3::from(probe.box_min),\
          Vec3::from(probe.box_max),);\
          letlookup=reflection_lookup(hit,Vec3::from(probe.capture_point),ray);\
          letcapture=sample(probe.layer,reflection_tile_uv(lookup,tile[0],tile[1]))\
          *reflection_ratio(&FluidProbeGpu::pack(probe).lights,lookup,lights);\
          letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity);\
          reflection_composite(surface,capture,fresnel)}"
+    );
+}
+
+#[test]
+fn fluid_reflection_style_shader_constants_match_the_cpu_reference() {
+    use postretro_render_cpu::fluid_surface::reflection_style as r;
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_STYLE_PIXEL"),
+        r::FLUID_REFLECTION_STYLE_PIXEL
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_STYLE_SMOOTH"),
+        r::FLUID_REFLECTION_STYLE_SMOOTH
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_PIXEL_TILT"),
+        r::FLUID_REFLECTION_PIXEL_TILT
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_AXES_EPSILON"),
+        r::FLUID_REFLECTION_AXES_EPSILON
+    );
+    for style in r::FluidReflectionStyle::ALL {
+        let shader = match style {
+            r::FluidReflectionStyle::Pixel => shader_u32("FLUID_REFLECTION_STYLE_PIXEL"),
+            r::FluidReflectionStyle::Smooth => shader_u32("FLUID_REFLECTION_STYLE_SMOOTH"),
+        };
+        assert_eq!(style.uniform_value(), shader);
+    }
+}
+
+// The pixel style's texel axes, cell centre, tilted cell normal and style
+// switch are the CPU reflection-style reference in WGSL, pinned on both
+// sides.
+#[test]
+fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_style.rs");
+    let pinned: [(&str, &str, &str, &str); 5] = [
+        (
+            "fluid_reflection_texel_axes",
+            "fnfluid_reflection_texel_axes(ddx_texel:vec2<f32>,ddy_texel:vec2<f32>,\
+             ddx_world:vec3<f32>,ddy_world:vec3<f32>)->FluidTexelAxes{\
+             letdet=ddx_texel.x*ddy_texel.y-ddy_texel.x*ddx_texel.y;letscale=dot(ddx_texel,\
+             ddx_texel)*dot(ddy_texel,ddy_texel);ifdet*det<=FLUID_REFLECTION_AXES_EPSILON*scale{\
+             returnFluidTexelAxes(vec3<f32>(0.0),vec3<f32>(0.0));}\
+             returnFluidTexelAxes((ddx_world*ddy_texel.y-ddy_world*ddx_texel.y)/det,\
+             (ddy_world*ddx_texel.x-ddx_world*ddy_texel.x)/det);}",
+            "reflection_texel_axes",
+            "fnreflection_texel_axes(ddx_texel:Vec2,ddy_texel:Vec2,ddx_world:Vec3,ddy_world:Vec3,\
+             )->FluidTexelAxes{letdet=ddx_texel.x*ddy_texel.y-ddy_texel.x*ddx_texel.y;\
+             letscale=ddx_texel.dot(ddx_texel)*ddy_texel.dot(ddy_texel);\
+             ifdet*det<=FLUID_REFLECTION_AXES_EPSILON*scale{returnFluidTexelAxes{u:Vec3::ZERO,\
+             v:Vec3::ZERO,};}FluidTexelAxes{u:(ddx_world*ddy_texel.y-ddy_world*ddx_texel.y)/det,\
+             v:(ddy_world*ddx_texel.x-ddx_world*ddy_texel.x)/det,}}",
+        ),
+        (
+            "fluid_reflection_cell_centre",
+            "fnfluid_reflection_cell_centre(texel_uv:vec2<f32>,world_position:vec3<f32>,\
+             axes:FluidTexelAxes)->vec3<f32>{\
+             letto_centre=floor(texel_uv)+vec2<f32>(0.5)-texel_uv;\
+             returnworld_position+axes.u*to_centre.x+axes.v*to_centre.y;}",
+            "reflection_cell_centre",
+            "fnreflection_cell_centre(texel_uv:Vec2,world_position:Vec3,\
+             axes:FluidTexelAxes)->Vec3{letto_centre=texel_uv.floor()+Vec2::splat(0.5)-texel_uv;\
+             world_position+axes.u*to_centre.x+axes.v*to_centre.y}",
+        ),
+        (
+            "fluid_reflection_unit_or_zero",
+            "fnfluid_reflection_unit_or_zero(v:vec3<f32>)->vec3<f32>{letlength_sq=dot(v,v);\
+             returnselect(vec3<f32>(0.0),v*inverseSqrt(length_sq),length_sq>0.0);}",
+            "reflection_unit_or_zero",
+            "fnreflection_unit_or_zero(v:Vec3)->Vec3{letlength_sq=v.dot(v);iflength_sq>0.0{\
+             v*length_sq.sqrt().recip()}else{Vec3::ZERO}}",
+        ),
+        (
+            "fluid_reflection_cell_normal",
+            "fnfluid_reflection_cell_normal(outward:vec3<f32>,axes:FluidTexelAxes,\
+             offset:vec2<i32>)->vec3<f32>{\
+             lettilt=fluid_reflection_unit_or_zero(axes.u)*f32(offset.x)+fluid_reflection_unit_or_zero(axes.v)*f32(offset.y);\
+             returnnormalize(outward+tilt*FLUID_REFLECTION_PIXEL_TILT);}",
+            "reflection_cell_normal",
+            "fnreflection_cell_normal(outward:Vec3,axes:FluidTexelAxes,offset:IVec2)->Vec3{\
+             lettilt=reflection_unit_or_zero(axes.u)*offset.xasf32+reflection_unit_or_zero(axes.v)*offset.yasf32;\
+             (outward+tilt*FLUID_REFLECTION_PIXEL_TILT).normalize()}",
+        ),
+        (
+            "fluid_reflection_point",
+            "fnfluid_reflection_point(style:u32,texel_uv:vec2<f32>,world_position:vec3<f32>,\
+             outward:vec3<f32>,axes:FluidTexelAxes,time:f32,\
+             texels_per_pixel:f32)->FluidReflectionPoint{ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{\
+             returnFluidReflectionPoint(world_position,outward);}\
+             letoffset=fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel);\
+             returnFluidReflectionPoint(fluid_reflection_cell_centre(texel_uv,world_position,\
+             axes),fluid_reflection_cell_normal(outward,axes,offset));}",
+            "reflection_point",
+            "fnreflection_point(style:u32,texel_uv:Vec2,world_position:Vec3,outward:Vec3,\
+             axes:FluidTexelAxes,time:f32,texels_per_pixel:f32,)->FluidReflectionPoint{\
+             ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{returnFluidReflectionPoint{\
+             position:world_position,normal:outward,};}\
+             letoffset=displayed_offset(texel_cell(texel_uv),time,texels_per_pixel);\
+             FluidReflectionPoint{position:reflection_cell_centre(texel_uv,world_position,axes),\
+             normal:reflection_cell_normal(outward,axes,offset),}}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+}
+
+// The pixel style keys on the unwarped cell: `fs_main` hands it the unwarped
+// texel UV (never the warped sample UV), the warp's own clock and fade
+// footprint, and the face's texel axes from derivatives taken at the top of
+// `fs_main`, in uniform control flow. No style function reads drift or the
+// wave, so neither moves a cell's reflection direction.
+#[test]
+fn fluid_pixel_reflection_reads_the_unwarped_cell_and_no_drift_or_wave() {
+    let main = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main",
+    ));
+    let derivatives = main
+        .find("letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);")
+        .expect("world derivatives in fs_main");
+    let first_branch = main.find("if").expect("a branch");
+    assert!(
+        derivatives < first_branch,
+        "the derivatives precede every branch"
+    );
+    assert_eq!(main.matches("dpdx(").count(), 2, "{main}");
+    assert_eq!(main.matches("dpdy(").count(), 2, "{main}");
+    let tail = fs_main_reflection_tail();
+    assert!(tail.contains("in.uv*dims"));
+    assert!(!tail.contains("(uv*dims") && !tail.contains(",uv*dims"));
+    assert!(!tail.contains("drift") && !tail.contains("row.wave"));
+    for name in [
+        "fluid_reflection_texel_axes",
+        "fluid_reflection_cell_centre",
+        "fluid_reflection_unit_or_zero",
+        "fluid_reflection_cell_normal",
+        "fluid_reflection_point",
+    ] {
+        let body = code_only(wgsl_fn(include_str!("../shaders/fluid_surface.wgsl"), name));
+        for forbidden in ["drift", "wave", "fluid_warp_uv", "dpdx", "dpdy"] {
+            assert!(!body.contains(forbidden), "`{name}` reads `{forbidden}`");
+        }
+    }
+    let point = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_reflection_point",
+    ));
+    assert!(
+        point.contains("fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel)")
     );
 }
 
@@ -1967,7 +2185,12 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     for builder in ["new", "rebuild"] {
         assert!(code_only(wgsl_fn(inputs, builder)).contains("create_bind_group(device,"));
     }
-    for per_frame in ["upload", "set_fog_weight", "bind_group"] {
+    for per_frame in [
+        "upload",
+        "set_fog_weight",
+        "set_reflection_style",
+        "bind_group",
+    ] {
         assert!(!code_only(wgsl_fn(inputs, per_frame)).contains("create_bind_group"));
     }
     for level_path in ["install", "clear"] {
@@ -2031,6 +2254,40 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
         }
     ));
     assert_eq!(FLUID_SCENE_UNIFORM_BYTES, 16);
+    // Member for member, the CPU uniform the upload writes.
+    {
+        use crate::render::fluid_scene_inputs::FluidSceneUniform;
+        assert_eq!(
+            struct_member_offsets(&validated_module(), "FluidSceneInputs"),
+            [
+                (
+                    "fog_weight".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, fog_weight) as u32
+                ),
+                (
+                    "reflection_style".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, reflection_style) as u32
+                ),
+                (
+                    "spare".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, spare) as u32
+                ),
+            ]
+        );
+    }
+    // The upload writes when either input changed, never on the fog weight
+    // alone.
+    let upload = code_only(wgsl_fn(include_str!("fluid_scene_inputs.rs"), "upload"));
+    assert!(upload.contains("letuniform=self.pending();"), "{upload}");
+    assert!(
+        upload.contains("ifuniform==self.uploaded{return;}"),
+        "{upload}"
+    );
+    let pending = code_only(wgsl_fn(include_str!("fluid_scene_inputs.rs"), "pending"));
+    assert!(
+        pending.contains("FluidSceneUniform::from_inputs(self.fog_weight,self.reflection_style)"),
+        "{pending}"
+    );
     assert_eq!(
         FLUID_SCENE_INPUTS_GROUP as usize,
         FLUID_BIND_GROUP_COUNT - 1

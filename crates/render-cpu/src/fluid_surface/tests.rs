@@ -942,6 +942,94 @@ fn a_reload_reuploads_exactly_the_changed_fluids_slots_and_nothing_when_unchange
     }
 }
 
+// Pin P12 (reflectivity): a staged reload that changes only one fluid's
+// `surfaceReflectivity` re-uploads exactly that fluid's slots on the next
+// frame, and an unchanged re-collect uploads nothing. A volume with no bound
+// face packs 0 either way, so its reflectivity change uploads nothing.
+#[test]
+fn a_reload_changing_only_reflectivity_reuploads_that_fluids_slots_and_nothing_when_unchanged() {
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let bound = FluidSurfaceLook {
+        has_bound_face: true,
+        ..water_look()
+    };
+    // Water in volumes 0 and 2 (bound), sludge in volume 1 (no bound face).
+    let frame = |water: FluidSurfaceLook, sludge: FluidSurfaceLook| {
+        [draw(1, sludge), draw(2, water), draw(0, water)]
+    };
+    slots.set_draws(&frame(bound, sludge_look()));
+    assert_eq!(slots.take_dirty().map(|(range, _)| range), Some(0..3));
+    slots.set_draws(&frame(bound, sludge_look()));
+    assert!(
+        slots.take_dirty().is_none(),
+        "an unchanged re-collect uploads nothing"
+    );
+
+    for reflectivity in [2.0, 0.0, 50.0, 1.0] {
+        let changed = FluidSurfaceLook {
+            surface_reflectivity: reflectivity,
+            ..bound
+        };
+        slots.set_draws(&frame(changed, sludge_look()));
+        let (range, rows) = slots.take_dirty().expect("the changed fluid uploads");
+        assert_eq!(range, 0..3, "water's slots 0 and 2 and the one between");
+        assert_eq!(rows[0], changed.pack());
+        assert_eq!(rows[2], changed.pack());
+        assert_eq!(rows[0].reflectivity(), reflectivity);
+        assert_eq!(rows[1], sludge_look().pack(), "sludge's row stays current");
+        slots.set_draws(&frame(changed, sludge_look()));
+        assert!(
+            slots.take_dirty().is_none(),
+            "{reflectivity}: unchanged next frame"
+        );
+    }
+    let unbound_change = FluidSurfaceLook {
+        surface_reflectivity: 7.0,
+        ..sludge_look()
+    };
+    slots.set_draws(&frame(bound, unbound_change));
+    assert!(
+        slots.take_dirty().is_none(),
+        "no bound face: reflectivity packs 0 and uploads nothing"
+    );
+}
+
+// Pin P24: a zero-opacity, fog-free fluid with bound faces leaves the draw
+// set on the frame a reload commits reflectivity 1 → 0, and rejoins it on the
+// frame after the reverse reload.
+#[test]
+fn a_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
+    let volumes = two_pools();
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let look = |reflectivity: f32| FluidSurfaceLook {
+        surface_reflectivity: reflectivity,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let mut collect = |reflectivity: f32| {
+        volume_indices(collector.collect(
+            &volumes,
+            &VisibleCells::DrawAll,
+            cell_bounds,
+            Vec3::ZERO,
+            |_| Some(look(reflectivity)),
+        ))
+    };
+    let reflecting = collect(1.0);
+    assert!(!reflecting.is_empty());
+    assert!(
+        collect(0.0).is_empty(),
+        "frame N after 1 → 0 collects no draw"
+    );
+    assert_eq!(collect(1.0), reflecting, "the reverse reload draws again");
+}
+
 // The upload is one contiguous range, so a change to a fluid whose slots
 // straddle another's rewrites the one between: water at slots 0 and 2, sludge
 // at 1. The range runs from water's first changed slot to its last, and every

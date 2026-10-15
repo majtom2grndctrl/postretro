@@ -46,7 +46,8 @@ fn clear_replaced_presentation_overlay_state(
     host_facts.clear_for_authoring();
 }
 
-/// Renderer bloom profile a staged manifest result commits, if any.
+/// Renderer profile (bloom and reflection style) a staged manifest result
+/// commits, if any.
 ///
 /// `None` means "leave the active profile alone" — every non-`Committed`
 /// outcome (stale, failed build, rejected, release no-op) plus a committed
@@ -306,9 +307,11 @@ impl App {
                 self.refresh_environment_fluids();
             }
             // Ahead of the UI commit so the first frame that presents the
-            // reloaded UI already renders through the reloaded bloom profile.
+            // reloaded UI already renders through the reloaded bloom profile
+            // and reflection style.
             if let Some(render_profile) = staged_render_profile(&result, &outcome) {
                 self.apply_mod_bloom_render_profile(render_profile);
+                self.apply_mod_reflection_profile(render_profile);
             }
             if let Some(audio_profile) = staged_audio_profile(&result, &outcome) {
                 self.apply_mod_audio_profile(audio_profile);
@@ -352,6 +355,9 @@ mod tests {
             bloom: ModBloomProfile {
                 resolution: ModBloomResolution::Quarter,
                 pixelated: true,
+            },
+            reflections: postretro_scripting_core::runtime::ModReflectionProfile {
+                style: postretro_scripting_core::runtime::ModReflectionStyle::Smooth,
             },
         }
     }

@@ -20,7 +20,8 @@ pub use super::registry::EntityId;
 pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs,
-    ModLoading, ModMapEntry, ModMoverDefaults, ModRenderProfile,
+    ModLoading, ModMapEntry, ModMoverDefaults, ModReflectionProfile, ModReflectionStyle,
+    ModRenderProfile,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{

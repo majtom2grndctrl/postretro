@@ -307,8 +307,16 @@ impl FluidSurfacePass {
         self.scene_inputs.set_fog_weight(weight);
     }
 
-    /// Write the scene uniform if the fog weight changed. Called just before
-    /// the fluid pass opens.
+    /// Store the mod's reflection style; it uploads before the next fluid pass.
+    pub fn set_reflection_style(
+        &mut self,
+        style: postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
+    ) {
+        self.scene_inputs.set_reflection_style(style);
+    }
+
+    /// Write the scene uniform if the fog weight or reflection style changed.
+    /// Called just before the fluid pass opens.
     pub fn upload_scene_inputs(&mut self, queue: &crate::render::uploads::UploadQueue) {
         self.scene_inputs.upload(queue);
     }
@@ -614,6 +622,28 @@ impl Renderer {
     /// first write it is 1, so a renderer recreated mid-level still fogs.
     pub fn set_fluid_fog_weight(&mut self, weight: f32) {
         self.full_mut().fluid_surface.set_fog_weight(weight);
+    }
+
+    /// Commit the mod's fluid reflection style (`render.reflections.style`).
+    /// Retained in boot state, so a full init after surface recovery keeps it,
+    /// and safe before full init; it uploads before the next fluid pass, and
+    /// only when it changed. A renderer never told draws pixel, the default,
+    /// as frame capture does.
+    pub fn set_fluid_reflection_style(
+        &mut self,
+        style: postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
+    ) {
+        self.fluid_reflection_style = style;
+        if let Some(full) = self.full.as_mut() {
+            full.fluid_surface.set_reflection_style(style);
+        }
+    }
+
+    /// The reflection style the next fluid pass draws.
+    pub fn fluid_reflection_style(
+        &self,
+    ) -> postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle {
+        self.fluid_reflection_style
     }
 }
 

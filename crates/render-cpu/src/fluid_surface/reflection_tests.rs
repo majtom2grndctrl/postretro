@@ -102,7 +102,9 @@ fn binding(volume: u32, face: u32, probe: u32) -> ReflectionProbeBinding {
 }
 
 /// A fragment on the pool at `world_position`, bound to probe 0 at
-/// reflectivity 1, seen from `camera` with every lighting term on.
+/// reflectivity 1, seen from `camera` with every lighting term on, in the
+/// smooth style (the per-fragment reflection these rows measure; the pixel
+/// style's cells are `reflection_style_tests`').
 fn pool_fragment(camera: Vec3, world_position: Vec3) -> FluidReflectionFragment {
     FluidReflectionFragment {
         probe: 0,
@@ -111,6 +113,14 @@ fn pool_fragment(camera: Vec3, world_position: Vec3) -> FluidReflectionFragment 
         outward: Vec3::Y,
         light_term_mask: LightTermMask::ALL.bits(),
         reflectivity: 1.0,
+        style: crate::fluid_surface::reflection_style::FLUID_REFLECTION_STYLE_SMOOTH,
+        texel_uv: Vec2::new(world_position.x, world_position.z) * 8.0,
+        axes: crate::fluid_surface::reflection_style::FluidTexelAxes {
+            u: Vec3::X / 8.0,
+            v: Vec3::Z / 8.0,
+        },
+        time: 0.0,
+        texels_per_pixel: 0.5,
     }
 }
 

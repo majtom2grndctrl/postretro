@@ -245,7 +245,12 @@ fn force_never_changes_the_drift() {
 fn frame_capture_installs_fluid_surfaces_still_at_the_capture_opacity() {
     let prepared = include_str!("../capture/prepared.rs");
     assert!(prepared.contains("renderer.install_fluid_surfaces("));
-    assert!(prepared.contains("CAPTURE_FLUID_SURFACE_OPACITY"));
+    // The fixed opacity arrives through capture's look.
+    assert!(prepared.contains("crate::fluid_presentation::capture_surface_look("));
+    assert!(
+        include_str!("mod.rs")
+            .contains("FluidSurfaceLook::surface_only(CAPTURE_FLUID_SURFACE_OPACITY)")
+    );
     assert!(!prepared.contains("set_fluid_surface_drift"));
     assert!(!prepared.contains("resolve_fluid_surface_drift"));
 }
@@ -300,23 +305,41 @@ fn an_unsplit_face_under_part_of_a_push_drifts_whole_by_its_sample_point() {
     );
 }
 
-// The fog and wave fields are local presentation: surface drift resolves from
-// the movement tuning and never reads them.
+// The fog, wave and reflectivity fields are local presentation: surface
+// drift resolves from the movement tuning and never reads them, in the app's
+// resolve or the renderer-side rate fill.
 #[test]
-fn surface_drift_resolve_reads_no_fog_or_wave_field() {
-    let source = include_str!("drift.rs");
-    // Tests may build full descriptors; only the shipped code counts, and doc
-    // comments may name the fields in words.
-    let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
-    let code: String = shipped
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
+fn surface_drift_resolve_reads_no_fog_wave_or_reflectivity_field() {
+    let shipped_code = |source: &'static str| -> String {
+        // Tests may build full descriptors; only the shipped code counts, and
+        // doc comments may name the fields in words.
+        let shipped = source.split("#[cfg(test)]").next().unwrap_or(source);
+        shipped
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let code = shipped_code(include_str!("drift.rs"));
     assert!(
         code.contains("fn resolve_fluid_surface_drift"),
         "positive control: the scan reads the shipped drift slice"
     );
+    let fill = shipped_code(include_str!(
+        "../../../render-cpu/src/fluid_surface/drift.rs"
+    ));
+    assert!(
+        fill.contains("fn fill_drift_rates"),
+        "positive control: the scan reads the renderer-side rate fill"
+    );
+    for field in [
+        "surface_reflectivity",
+        "surfaceReflectivity",
+        "reflectivity",
+    ] {
+        assert!(!code.contains(field), "drift.rs reads `{field}`");
+        assert!(!fill.contains(field), "render-cpu drift.rs reads `{field}`");
+    }
     for field in [
         "fog_distance",
         "fog_color",

@@ -1,8 +1,9 @@
 // App-boundary mappings from player/mod options to renderer-owned settings.
 // See: context/lib/rendering_pipeline.md §7.8
 
-use postretro_scripting_core::runtime::{ModBloomResolution, ModRenderProfile};
+use postretro_scripting_core::runtime::{ModBloomResolution, ModReflectionStyle, ModRenderProfile};
 
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::render_extent::RenderResolutionPolicy;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality as RendererSurfaceDepthQuality;
 
@@ -87,6 +88,16 @@ pub(crate) fn renderer_bloom_profile(profile: ModRenderProfile) -> BloomRenderPr
     }
 }
 
+/// Translate the authored fluid reflection style into the renderer's. The
+/// `match` is exhaustive with no `_` arm: a new authored style must fail to
+/// compile here rather than silently draw pixel.
+pub(crate) const fn renderer_reflection_style(style: ModReflectionStyle) -> FluidReflectionStyle {
+    match style {
+        ModReflectionStyle::Pixel => FluidReflectionStyle::Pixel,
+        ModReflectionStyle::Smooth => FluidReflectionStyle::Smooth,
+    }
+}
+
 impl App {
     /// Retain the player's spot-shadow tier in renderer boot state. A live full
     /// renderer is deliberately left untouched; `install_level_geometry`
@@ -150,13 +161,28 @@ impl App {
             renderer.set_bloom_render_profile(renderer_bloom_profile(profile));
         }
     }
+
+    /// Commit a mod's fluid reflection style (`render.reflections.style`) to
+    /// the renderer, which retains it across a full-renderer rebuild and
+    /// uploads it only when it changed. Called beside the bloom commit at boot
+    /// and on every committed staged reload; a committed reload with no start
+    /// script restores pixel, the default.
+    ///
+    /// A `None` renderer is a no-op for the same reason as the bloom profile:
+    /// resume replays splash frame one, which re-applies the committed style.
+    pub(crate) fn apply_mod_reflection_profile(&mut self, profile: ModRenderProfile) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer
+                .set_fluid_reflection_style(renderer_reflection_style(profile.reflections.style));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use postretro_render_cpu::render_extent::{Extent, RenderExtents, resolve_divisor};
-    use postretro_scripting_core::runtime::ModBloomProfile;
+    use postretro_scripting_core::runtime::{ModBloomProfile, ModReflectionProfile};
 
     fn authored(resolution: ModBloomResolution, pixelated: bool) -> ModRenderProfile {
         ModRenderProfile {
@@ -164,6 +190,81 @@ mod tests {
                 resolution,
                 pixelated,
             },
+            ..ModRenderProfile::default()
+        }
+    }
+
+    // Drift guard both ways: the chokepoint's match is exhaustive over the
+    // authored styles, and walking the renderer's own `ALL` back through an
+    // exhaustive match makes a new renderer style a compile error here too.
+    #[test]
+    fn every_authored_reflection_style_maps_to_its_renderer_style() {
+        for authored in ModReflectionStyle::ALL {
+            let expected = match authored {
+                ModReflectionStyle::Pixel => FluidReflectionStyle::Pixel,
+                ModReflectionStyle::Smooth => FluidReflectionStyle::Smooth,
+            };
+            assert_eq!(renderer_reflection_style(authored), expected);
+        }
+        for renderer_style in FluidReflectionStyle::ALL {
+            let authored = match renderer_style {
+                FluidReflectionStyle::Pixel => ModReflectionStyle::Pixel,
+                FluidReflectionStyle::Smooth => ModReflectionStyle::Smooth,
+            };
+            assert_eq!(renderer_reflection_style(authored), renderer_style);
+        }
+        // An omitted style draws what a renderer no manifest has spoken to
+        // draws (frame capture's): pixel.
+        assert_eq!(
+            renderer_reflection_style(ModRenderProfile::default().reflections.style),
+            FluidReflectionStyle::default(),
+        );
+        assert_eq!(FluidReflectionStyle::default(), FluidReflectionStyle::Pixel);
+        let smooth = ModRenderProfile {
+            reflections: ModReflectionProfile {
+                style: ModReflectionStyle::Smooth,
+            },
+            ..ModRenderProfile::default()
+        };
+        assert_eq!(
+            renderer_reflection_style(smooth.reflections.style),
+            FluidReflectionStyle::Smooth
+        );
+    }
+
+    // The style commits beside bloom at both points a mod's render profile
+    // lands: boot mod init and a committed staged reload.
+    #[test]
+    fn the_reflection_style_commits_beside_bloom_at_boot_and_on_staged_reload() {
+        let code_only = |source: &str| -> String {
+            source
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .collect::<String>()
+                .split_whitespace()
+                .collect()
+        };
+        let boot = code_only(include_str!("splash_lifecycle.rs"));
+        assert!(boot.contains(
+            "self.apply_mod_bloom_render_profile(committed_render_profile);\
+             self.apply_mod_reflection_profile(committed_render_profile);"
+        ));
+        let reload = code_only(include_str!("staged_manifest_lifecycle.rs"));
+        assert!(reload.contains(
+            "self.apply_mod_bloom_render_profile(render_profile);\
+             self.apply_mod_reflection_profile(render_profile);"
+        ));
+        // Frame capture loads no manifest and never sets a style.
+        for capture in [
+            include_str!("../capture/mod.rs"),
+            include_str!("../capture/prepared.rs"),
+            include_str!("../capture/driver.rs"),
+            include_str!("../capture/setup.rs"),
+            include_str!("../capture/scene.rs"),
+        ] {
+            let code = code_only(capture);
+            assert!(!code.contains("set_fluid_reflection_style"));
+            assert!(!code.contains("apply_mod_reflection_profile"));
         }
     }
 

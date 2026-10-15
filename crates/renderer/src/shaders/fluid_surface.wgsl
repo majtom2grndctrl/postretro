@@ -154,8 +154,11 @@ struct FluidProbeTable {
 // Scene depth, loaded under the pass's read-only depth attachment.
 @group(5) @binding(0) var scene_depth: texture_depth_2d;
 struct FluidSceneInputs {
-    // x = the frame's eye fog weight; yzw spare.
-    fog: vec4<f32>,
+    // The frame's eye fog weight.
+    fog_weight: f32,
+    // The mod's reflection style: FLUID_REFLECTION_STYLE_SMOOTH, else pixel.
+    reflection_style: u32,
+    spare: vec2<f32>,
 };
 @group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;
 
@@ -665,6 +668,72 @@ fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32
         * fluid_reflection_ratio(probe, lookup);
 }
 
+// Reflection style. Mirrors `postretro_render_cpu::fluid_surface::reflection_style`:
+// smooth reflects the flat face per fragment; pixel reflects once per water
+// texel cell, from the cell's world-space centre about a normal tilted by the
+// cell's displayed offset, so every fragment of a cell reads one sample.
+// Unlike the warp, this look is the author's (`render.reflections.style`).
+const FLUID_REFLECTION_STYLE_PIXEL: u32 = 0u;
+const FLUID_REFLECTION_STYLE_SMOOTH: u32 = 1u;
+const FLUID_REFLECTION_PIXEL_TILT: f32 = 0.05;
+const FLUID_REFLECTION_AXES_EPSILON: f32 = 1.0e-8;
+
+// The face's world step per texel along u and v.
+struct FluidTexelAxes {
+    u: vec3<f32>,
+    v: vec3<f32>,
+};
+
+struct FluidReflectionPoint {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+// The texel-to-world Jacobian from one fragment's screen derivatives; zero on
+// an edge-on or vanished footprint.
+fn fluid_reflection_texel_axes(ddx_texel: vec2<f32>, ddy_texel: vec2<f32>, ddx_world: vec3<f32>,
+                               ddy_world: vec3<f32>) -> FluidTexelAxes {
+    let det = ddx_texel.x * ddy_texel.y - ddy_texel.x * ddx_texel.y;
+    let scale = dot(ddx_texel, ddx_texel) * dot(ddy_texel, ddy_texel);
+    if det * det <= FLUID_REFLECTION_AXES_EPSILON * scale {
+        return FluidTexelAxes(vec3<f32>(0.0), vec3<f32>(0.0));
+    }
+    return FluidTexelAxes((ddx_world * ddy_texel.y - ddy_world * ddx_texel.y) / det,
+        (ddy_world * ddx_texel.x - ddx_world * ddy_texel.x) / det);
+}
+
+// The world-space centre of the unwarped texel cell the fragment lies in.
+fn fluid_reflection_cell_centre(texel_uv: vec2<f32>, world_position: vec3<f32>,
+                                axes: FluidTexelAxes) -> vec3<f32> {
+    let to_centre = floor(texel_uv) + vec2<f32>(0.5) - texel_uv;
+    return world_position + axes.u * to_centre.x + axes.v * to_centre.y;
+}
+
+fn fluid_reflection_unit_or_zero(v: vec3<f32>) -> vec3<f32> {
+    let length_sq = dot(v, v);
+    return select(vec3<f32>(0.0), v * inverseSqrt(length_sq), length_sq > 0.0);
+}
+
+// The flat normal tilted along the texture's axes by the cell's offset.
+fn fluid_reflection_cell_normal(outward: vec3<f32>, axes: FluidTexelAxes, offset: vec2<i32>) -> vec3<f32> {
+    let tilt = fluid_reflection_unit_or_zero(axes.u) * f32(offset.x)
+        + fluid_reflection_unit_or_zero(axes.v) * f32(offset.y);
+    return normalize(outward + tilt * FLUID_REFLECTION_PIXEL_TILT);
+}
+
+// Where the fragment reflects from, and about which normal. The pixel
+// offset is the albedo's own shimmer and rings, never drift or the wave.
+fn fluid_reflection_point(style: u32, texel_uv: vec2<f32>, world_position: vec3<f32>,
+                          outward: vec3<f32>, axes: FluidTexelAxes, time: f32,
+                          texels_per_pixel: f32) -> FluidReflectionPoint {
+    if style == FLUID_REFLECTION_STYLE_SMOOTH {
+        return FluidReflectionPoint(world_position, outward);
+    }
+    let offset = fluid_displayed_offset(vec2<i32>(floor(texel_uv)), time, texels_per_pixel);
+    return FluidReflectionPoint(fluid_reflection_cell_centre(texel_uv, world_position, axes),
+        fluid_reflection_cell_normal(outward, axes, offset));
+}
+
 // Post Retro sample, the same body as kinematic_brush.wgsl (pinned by a parity
 // test). The seam width and mip footprint come from the UNWARPED derivatives:
 // the warp shifts the sample point, it does not change the pixel footprint.
@@ -780,9 +849,12 @@ fn fluid_light(light_idx: u32, world_pos: vec3<f32>, n: vec3<f32>, scripted: boo
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Derivatives in uniform control flow, from the unwarped UV.
+    // Derivatives in uniform control flow, from the unwarped UV, and the
+    // world position's for the pixel reflection style's texel axes.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
     let dims = vec2<f32>(textureDimensions(base_texture, 0));
     let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
     let row = fluid_volumes.slots[in.slot];
@@ -852,16 +924,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             depth);
         let transmittance = fluid_fog_transmittance(extinction, path);
         let proximity = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
-        let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog.x, proximity, transmittance);
+        let fog_opacity = fluid_fog_layer_opacity(fluid_scene.fog_weight, proximity, transmittance);
         surface = fluid_fog_composite(rgb, alpha, row.fog_albedo.rgb * lighting, fog_opacity);
     }
     // A probe-bound face seen from above under the all-terms mask mirrors its
     // probe over that at union coverage; every other fragment is unchanged.
+    // The reflection starts from the style's point and sees the eye from there.
     let reflectivity = row.surface.z;
     if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
         return surface;
     }
-    let reflection = fluid_reflection_sample(in.probe, in.world_position, V, outward);
-    let fresnel = fluid_reflection_fresnel(dot(V, outward), reflectivity);
+    let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
+    let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
+        outward, axes, uniforms.time, texels_per_pixel);
+    let view = normalize(uniforms.camera_position - point.position);
+    let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
+    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity);
     return fluid_reflection_composite(surface, reflection, fresnel);
 }

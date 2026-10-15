@@ -616,6 +616,7 @@ fn descriptor(name: &str, surface_opacity: f32) -> FluidDescriptor {
         wave_period: None,
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 
@@ -1509,6 +1510,28 @@ fn a_zero_opacity_fluid_draws_only_when_it_declares_fog() {
             assert_eq!(draw.params.fog_extinction(), 3.0);
         }
     }
+}
+
+// Acceptance row 27: frame capture, which loads no manifest, reflects at
+// reflectivity 1 wherever a face binds a probe, and packs none elsewhere.
+// Its style is the renderer default, pixel (`render_profile` tests that
+// capture never sets one; the renderer's adapter test that a renderer no
+// manifest has spoken to draws pixel).
+#[test]
+fn frame_capture_reflects_as_water_wherever_a_face_binds_a_probe() {
+    use super::{CAPTURE_FLUID_SURFACE_OPACITY, capture_surface_look};
+    let bound = capture_surface_look(true);
+    assert_eq!(bound.surface_reflectivity, 1.0);
+    assert_eq!(bound.surface_opacity, CAPTURE_FLUID_SURFACE_OPACITY);
+    assert_eq!(bound.fog_distance, None);
+    assert_eq!(bound.wave_period, None);
+    let row = bound.pack();
+    assert_eq!(row.reflectivity(), 1.0);
+    assert_eq!(row.fog_extinction(), 0.0);
+    assert_eq!(row.wave, [0.0; 4]);
+    assert_eq!(capture_surface_look(false).pack().reflectivity(), 0.0);
+    let prepared = include_str!("../capture/prepared.rs");
+    assert!(prepared.contains("crate::fluid_presentation::capture_surface_look("));
 }
 
 // Pins P2 and P23 through the App's look: a fog-free fluid at `surfaceOpacity`

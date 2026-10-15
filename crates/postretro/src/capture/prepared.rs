@@ -249,18 +249,14 @@ impl PreparedCapture {
             |cell| world.cell_bounds(cell as usize),
             eye,
             |volume| {
-                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then_some(
-                    postretro_render_cpu::fluid_surface::FluidSurfaceLook {
-                        has_bound_face:
-                            postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
-                                world.reflection_probes.as_ref(),
-                                volume,
-                            ),
-                        ..postretro_render_cpu::fluid_surface::FluidSurfaceLook::surface_only(
-                            crate::fluid_presentation::CAPTURE_FLUID_SURFACE_OPACITY,
-                        )
-                    },
-                )
+                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then(|| {
+                    crate::fluid_presentation::capture_surface_look(
+                        postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
+                            world.reflection_probes.as_ref(),
+                            volume,
+                        ),
+                    )
+                })
             },
         ));
         renderer.set_mesh_draws(mesh_collector.instances());

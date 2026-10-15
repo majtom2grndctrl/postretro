@@ -167,7 +167,8 @@ pub fn drain_default_weapon_placement_js<'js>(
 
 /// Drain the optional static renderer profile from a QuickJS mod manifest.
 /// Every malformed field degrades independently so presentation preferences
-/// never reject an otherwise valid manifest.
+/// never reject an otherwise valid manifest: `bloom` and `reflections` parse
+/// apart, so a missing or malformed one never resets the other.
 pub fn drain_render_profile_js<'js>(
     obj: &Object<'js>,
     scope: &str,
@@ -191,18 +192,29 @@ pub fn drain_render_profile_js<'js>(
     let render = raw_render
         .as_object()
         .expect("object type was checked before borrowing");
+    Ok(ModRenderProfile {
+        bloom: drain_bloom_profile_js(render, scope)?,
+        reflections: drain_reflection_profile_js(render, scope)?,
+    })
+}
+
+/// `render.bloom`; absent or malformed is the default bloom profile.
+fn drain_bloom_profile_js<'js>(
+    render: &Object<'js>,
+    scope: &str,
+) -> Result<ModBloomProfile, DescriptorError> {
     if !render.contains_key("bloom").map_err(js_err)? {
-        return Ok(ModRenderProfile::default());
+        return Ok(ModBloomProfile::default());
     }
     let raw_bloom: JsValue = render.get("bloom").map_err(js_err)?;
     if raw_bloom.is_null() || raw_bloom.is_undefined() {
-        return Ok(ModRenderProfile::default());
+        return Ok(ModBloomProfile::default());
     }
     if !raw_bloom.is_object() || raw_bloom.is_array() {
         log::warn!(
             "[Scripting] {scope}: `render.bloom` must be an object; using the default bloom profile"
         );
-        return Ok(ModRenderProfile::default());
+        return Ok(ModBloomProfile::default());
     }
     let bloom = raw_bloom
         .as_object()
@@ -241,12 +253,60 @@ pub fn drain_render_profile_js<'js>(
         false
     };
 
-    Ok(ModRenderProfile {
-        bloom: ModBloomProfile {
-            resolution,
-            pixelated,
-        },
+    Ok(ModBloomProfile {
+        resolution,
+        pixelated,
     })
+}
+
+/// `render.reflections`; absent or malformed is the default (pixel) style.
+fn drain_reflection_profile_js<'js>(
+    render: &Object<'js>,
+    scope: &str,
+) -> Result<ModReflectionProfile, DescriptorError> {
+    if !render.contains_key("reflections").map_err(js_err)? {
+        return Ok(ModReflectionProfile::default());
+    }
+    let raw_reflections: JsValue = render.get("reflections").map_err(js_err)?;
+    if raw_reflections.is_null() || raw_reflections.is_undefined() {
+        return Ok(ModReflectionProfile::default());
+    }
+    if !raw_reflections.is_object() || raw_reflections.is_array() {
+        log::warn!(
+            "[Scripting] {scope}: `render.reflections` must be an object; using the default reflection profile"
+        );
+        return Ok(ModReflectionProfile::default());
+    }
+    let reflections = raw_reflections
+        .as_object()
+        .expect("object type was checked before borrowing");
+    if !reflections.contains_key("style").map_err(js_err)? {
+        return Ok(ModReflectionProfile::default());
+    }
+    let raw: JsValue = reflections.get("style").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(ModReflectionProfile::default());
+    }
+    let authored = raw.as_string().and_then(|value| value.to_string().ok());
+    let style = match authored
+        .as_deref()
+        .and_then(ModReflectionStyle::from_authored)
+    {
+        Some(style) => style,
+        None => {
+            warn_reflection_style(scope);
+            ModReflectionStyle::default()
+        }
+    };
+    Ok(ModReflectionProfile { style })
+}
+
+/// The one diagnostic for an unusable `render.reflections.style`, shared by
+/// both runtimes so their warnings match word for word.
+pub(crate) fn warn_reflection_style(scope: &str) {
+    log::warn!(
+        "[Scripting] {scope}: `render.reflections.style` must be `pixel` or `smooth`; using `pixel`"
+    );
 }
 
 /// Drain optional mod-wide mover defaults. Malformed presentation-like defaults

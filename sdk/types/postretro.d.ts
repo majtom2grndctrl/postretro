@@ -1206,10 +1206,25 @@ declare module "postretro" {
     pixelated?: boolean;
   };
 
+  /** Look of every fluid reflection layer: the probe reflection today, and the screen-space layer when it lands. Valid values: `pixel`, `smooth`. */
+  export type ReflectionStyle =
+    /** One reflection direction per water texel cell, tilted by that cell's shimmer and ripples, so the reflection breaks into the blocks the water's texture moves in. Drift and a declared wave tilt nothing. This is the default. */
+    | "pixel"
+    /** Reflect the flat surface per pixel: a still mirror. */
+    | "smooth";
+
+  /** Static fluid-reflection presentation preferences for the entire mod. How strongly each fluid reflects is its own `surfaceReflectivity`. */
+  export type ReflectionRenderProfile = {
+    /** Reflection look. Optional; defaults to `"pixel"`. An unknown value warns and uses `"pixel"`. */
+    style?: ReflectionStyle;
+  };
+
   /** Static renderer preferences declared once for the entire mod. */
   export type RenderProfile = {
     /** Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom. */
     bloom?: BloomRenderProfile;
+    /** Fluid reflection presentation preferences. Optional; defaults to pixel-style reflections. */
+    reflections?: ReflectionRenderProfile;
   };
 
   /** Static kinematic-mover defaults for the mod. Authored mover `auto_close_ms` values take precedence. */
@@ -1436,6 +1451,8 @@ declare module "postretro" {
     muffle: number;
     /** Opacity of the fluid's visible surface faces. Finite and in [0, 1]. */
     surfaceOpacity: number;
+    /** How strongly the surface reflects the room around it: a scale on its Fresnel base reflectance (0.02 x value). 0 reflects nothing, 1 is water, about 2 reads as glass, about 10 as wet polished stone, 50 a mirror at every angle. Opacity never dims the reflection, so a zero-opacity fluid still reflects. Finite and in [0, 50]. Omitted: 1. */
+    surfaceReflectivity?: number;
     /** Optional sound key played when a swim starts in this fluid. */
     enterSound?: string;
     /** Optional sound key played when a swim in this fluid ends. */
@@ -1460,7 +1477,7 @@ declare module "postretro" {
     id: string;
     /** Required mod version for display and diagnostics. It is never compared for admission and is not a security mechanism; any non-empty string is valid. */
     version: string;
-    /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom. */
+    /** Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom and pixel-style fluid reflections. */
     render?: RenderProfile;
     /** Static kinematic-mover defaults. Optional; authored mover auto_close_ms overrides this delay. */
     movers?: MoverDefaults;

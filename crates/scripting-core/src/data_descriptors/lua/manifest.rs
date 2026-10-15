@@ -164,7 +164,9 @@ pub fn drain_default_weapon_placement_lua(
 }
 
 /// Drain the optional static renderer profile from a Luau mod manifest.
-/// Mirrors [`drain_render_profile_js`] field-for-field.
+/// Mirrors [`drain_render_profile_js`] field-for-field: `bloom` and
+/// `reflections` parse apart, so a missing or malformed one never resets the
+/// other.
 pub fn drain_render_profile_lua(
     table: &Table,
     scope: &str,
@@ -180,16 +182,26 @@ pub fn drain_render_profile_lua(
             return Ok(ModRenderProfile::default());
         }
     };
+    Ok(ModRenderProfile {
+        bloom: drain_bloom_profile_lua(&render, scope)?,
+        reflections: drain_reflection_profile_lua(&render, scope)?,
+    })
+}
 
+/// `render.bloom`; absent or malformed is the default bloom profile.
+fn drain_bloom_profile_lua(
+    render: &Table,
+    scope: &str,
+) -> Result<ModBloomProfile, DescriptorError> {
     let raw_bloom: LuaValue = render.get("bloom").map_err(lua_err)?;
     let bloom = match raw_bloom {
-        LuaValue::Nil => return Ok(ModRenderProfile::default()),
+        LuaValue::Nil => return Ok(ModBloomProfile::default()),
         LuaValue::Table(bloom) => bloom,
         _ => {
             log::warn!(
                 "[Scripting] {scope}: `render.bloom` must be a table; using the default bloom profile"
             );
-            return Ok(ModRenderProfile::default());
+            return Ok(ModBloomProfile::default());
         }
     };
 
@@ -225,12 +237,50 @@ pub fn drain_render_profile_lua(
         }
     };
 
-    Ok(ModRenderProfile {
-        bloom: ModBloomProfile {
-            resolution,
-            pixelated,
-        },
+    Ok(ModBloomProfile {
+        resolution,
+        pixelated,
     })
+}
+
+/// `render.reflections`; absent or malformed is the default (pixel) style.
+fn drain_reflection_profile_lua(
+    render: &Table,
+    scope: &str,
+) -> Result<ModReflectionProfile, DescriptorError> {
+    let raw_reflections: LuaValue = render.get("reflections").map_err(lua_err)?;
+    let reflections = match raw_reflections {
+        LuaValue::Nil => return Ok(ModReflectionProfile::default()),
+        LuaValue::Table(reflections) => reflections,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `render.reflections` must be a table; using the default reflection profile"
+            );
+            return Ok(ModReflectionProfile::default());
+        }
+    };
+    let style = match reflections.get::<LuaValue>("style").map_err(lua_err)? {
+        LuaValue::Nil => ModReflectionStyle::default(),
+        LuaValue::String(value) => {
+            match value
+                .to_str()
+                .ok()
+                .as_deref()
+                .and_then(ModReflectionStyle::from_authored)
+            {
+                Some(style) => style,
+                None => {
+                    warn_reflection_style(scope);
+                    ModReflectionStyle::default()
+                }
+            }
+        }
+        _ => {
+            warn_reflection_style(scope);
+            ModReflectionStyle::default()
+        }
+    };
+    Ok(ModReflectionProfile { style })
 }
 
 /// Luau twin of the QuickJS mover-default drain.

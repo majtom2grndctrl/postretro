@@ -164,6 +164,15 @@ Bake (e24, `-j 5`, fresh cache per cold run): main cold 13.55 / 12.64 s, warm 1.
 
 Stress map (`stress-env-volumes.map`, branch, `--no-cache`, `-j 5`): 1750 s total, probe stage 11.49 s, exactly 256 probes / 364 bindings (460 derived probes dropped past the cap, 262 inside-another-fluid drops), 20 260 fluid vertices. Probe VRAM: array 4 194 304 B + table 61 456 B + probe-index buffer 81 040 B = **4 336 800 B (≈4.14 MiB)**.
 
+**Dry rooms (owner-requested): a level with reflections costs nothing measurable with no water on screen.** Same setup, one process at a time, GPU 1950–1965 MHz. `fluid_surface` was absent (0/720 readbacks) in every arm at both poses — including the test map's pool room with the pool in a visible cell directly behind the camera, so off-screen water in visible cells collects no draw.
+
+| Pose | main forward ms / frame ms | branch on | branch 0x13F |
+|---|---|---|---|
+| e24 wind corridor, facing west (Quake 1150 728 64, yaw 180) | 1.645 / 2.66 (rerun 1.652 / 2.68) | 1.655 / 2.67 (rerun 1.647 / 2.67) | 1.325 / 2.31 |
+| test-map pool room, facing the north wall over the pool's back (Quake 256 400 64, yaw 90) | 1.947 / 3.58 | 1.946 / 3.57 | 1.704 / 3.31 |
+
+Every other pass matches main to noise (forward moves ±0.01 ms run to run; the 0x13F arm is cheaper only because world specular is off). The +1.45 ms e24 overhead appears only when fluid fragments draw; the only dry-room cost is resident VRAM.
+
 Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the session scratchpad (`out2/`, `bin-main/`, `bin-branch/`).
 
 ## Tasks

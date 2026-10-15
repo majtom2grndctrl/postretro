@@ -189,6 +189,19 @@ Every other pass matches main to noise (forward moves ±0.01 ms run to run; the 
 
 Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the session scratchpad (`out2/`, `bin-main/`, `bin-branch/`).
 
+## Distance correction measurements (task 11f, 2026-10-15)
+
+1660 Super, Vulkan, release `capture,dev-tools` at 6d15589c2, task 8b's capture settings, one process at a time, P0 1935–1965 MHz; steady = windows 3–6, two runs per arm.
+
+| Pose | main | reflection-free (0x13F) | reflecting, K = 3 | 8b reflecting | K = 2 scratch |
+|---|---|---|---|---|---|
+| e24 pool, straight down | 3.156 | 3.146 | 5.213 (+0.48 on 8b) | 4.733 | 4.884 |
+| test-map pool, straight down | 1.647 | 1.637 | 2.568 (+0.22 on 8b) | 2.350 | 2.628 |
+
+Reflection-free still equals main. The e24 reflecting early-window transient persists (6.1 → 5.4 → 5.2 ms); the test map is flat. K = 2 helps e24 and hurts the test map — the same codegen sensitivity as the timing audit, so not a clean win; K stays 3. Compile: reflection-probe stage 0.37–0.38 s cold (unchanged), 0.02 s warm; PRL +32 KiB per probe (+4 B tag); byte-identical across runs. VRAM at the 256 cap: colour 4 194 304 + distance 8 388 608 + table 61 456 + probe-index buffer 81 040 = **12 725 408 B (≈12.14 MiB)**.
+
+Offscreen comparisons (pixel style, capture's 0.6 opacity; distance vs a zero-distance copy = plain box projection; session scratchpad `images-11f/`): the crate's reflection sits under the crate at its width (box projection: a displaced smear); at the pillar, distance correction removes box projection's ghost slab but shows the capture-shadow area behind the pillar with a hard diagonal edge and curved light streaks from its base (A4's accepted false fragments). Owner look pending.
+
 ## Amendment rows (distance correction)
 
 | Row | Proof | Status |
@@ -220,7 +233,7 @@ Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the 
 | 11c | render-cpu `reflection_search` reference: two parallel taps, K = 3 sphere steps, M = 2 false position, statuses, capture-shadow fade; analytic crate / pillar / empty-room fixtures; row 17 restated, A3–A5 | delegated (Opus) | 11a | code done — `reflection_search` (2 taps + K = 3 sphere steps + M = 2 false position, ≤ 6 taps, κ = 0.05 fade, horizon clamp per tap), wired into `reflection_fragment`; render-cpu lib 432 (13 search tests); A3 and A4 pass as restated |
 | 11d | Renderer: R16Float distance array (1×1 dummy when absent), group 4 binding 3, budgets sampled 9 → 10, search ported into the reflecting variant only, WGSL↔CPU pins, DX12 FXC | delegated (Opus) | 11b, 11c | done — R16Float distance array at group 4 binding 3 (1×1 zero dummy when absent), sampled through `sh_atlas_sampler`; fluid fragment sampled 9 → 10 (`[0,4,0,3,2,1]`), uniforms 7, storage 8, samplers 2; search ported statement by statement into the reflecting path only (≤ 6 distance taps + 1 colour tap; state confined to `fluid_reflection_search`, only lookup and weight reach the ratio); WGSL↔CPU pins, IR walk (reflection-free reads no distance), row 31 gates; renderer lib 951; DX12 FXC ran |
 | 11e | Adapter rows 33–36 updated + A6 near-wall GPU row | delegated (Opus) | 11d | done — rows 33 (restated, zero tile → box hit), 34, 35 (188 exact), P11 (distance array follows each level; an all-shadow level A2 reads today's frame), A6 `a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up` (GPU within 1/255 of the CPU search; 114 pixels differ from box projection and all changed), loader `load_prl_refuses_a_reflection_probe_distance_payload_of_the_wrong_length`; all 12 adapter fluid tests ran on GPU |
-| 11f | Measure: 1660 capture A/B of the reflecting variant (e24 pool, test-map pool) against task 8b's numbers, stress-map VRAM; tune K and the fade margin; owner 5300M trace and in-engine look at the crate and pillar | integrating executor; owner | 11e | |
+| 11f | Measure: 1660 capture A/B of the reflecting variant (e24 pool, test-map pool) against task 8b's numbers, stress-map VRAM; tune K and the fade margin; owner 5300M trace and in-engine look at the crate and pillar | integrating executor; owner | 11e | measured; owner look pending — see "Distance correction measurements" |
 | 11g | Context docs at landing (`rendering_pipeline.md` §7.3a, §10 "10 of 16"; `resource_management.md` §5; `build_pipeline.md` id 54) | integrating executor | 11f | |
 | 10 | `/preflight`, `/review-panel` → `/fix-review-findings` loop, full gate | integrating executor | 9, 11f | |
 

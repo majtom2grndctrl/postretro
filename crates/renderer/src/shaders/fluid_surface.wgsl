@@ -667,12 +667,20 @@ fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
 // Distance search. Mirrors `postretro_render_cpu::fluid_surface::reflection_search`:
 // box projection corrected against the probe's stored per-texel distance.
 // K sphere steps then M false-position estimates, both constant bounds; at
-// most 2 + K + M - 1 distance taps. Its state lives only inside
+// most 2 + K + M - 1 distance taps, beside the capture-shadow fade's two to
+// four, which depend on the origin alone. Its state lives only inside
 // `fluid_reflection_search`, which runs to its end before the colour tap and
 // the light-share loop, so only the lookup and the weight outlive it.
 const FLUID_REFLECTION_SEARCH_STEPS: u32 = 3u;
 const FLUID_REFLECTION_SEARCH_REFINEMENTS: u32 = 2u;
-const FLUID_REFLECTION_SHADOW_FADE: f32 = 0.05;
+// The capture-shadow fade: N capture texels of angle (pi / interior each)
+// beside the shadow, gated on the side tap's stored surface standing in
+// front of the opposite one's, and the depth margin kappa behind it.
+const FLUID_REFLECTION_SHADOW_FADE_TEXELS: f32 = 2.0;
+const FLUID_REFLECTION_SHADOW_GATE_START: f32 = 6.0;
+const FLUID_REFLECTION_SHADOW_GATE_FULL: f32 = 10.0;
+const FLUID_REFLECTION_SHADOW_MARGIN: f32 = 0.05;
+const FLUID_REFLECTION_HALF_TURN: f32 = 3.1415927;
 const FLUID_REFLECTION_SEARCH_EPSILON: f32 = 1.0e-6;
 
 // The search's result: the tile lookup direction, and the probe term's
@@ -698,11 +706,74 @@ fn fluid_reflection_search_h(q: vec3<f32>, capture_point: vec3<f32>, tile: vec2<
         fluid_reflection_tile_uv(level, tile.x, tile.y), layer, 0.0).r - 1.0;
 }
 
+// The fade's angle in radians: N interior texels of pi / interior each.
+fn fluid_reflection_shadow_fade_angle(tile: vec2<u32>) -> f32 {
+    return FLUID_REFLECTION_SHADOW_FADE_TEXELS * FLUID_REFLECTION_HALF_TURN
+        / (f32(tile.x) - 2.0 * f32(tile.y));
+}
+
+// h at the origin turned about the capture point's vertical by `turn`
+// radians, keeping its distance; `toward` is the origin minus the capture
+// point. No trig: the turn's sine and cosine are short Taylor series, exact
+// to f32 at the fade's few degrees.
+fn fluid_reflection_shadow_tap(capture_point: vec3<f32>, toward: vec3<f32>, turn: f32,
+                               tile: vec2<u32>, layer: u32) -> f32 {
+    let turn2 = turn * turn;
+    let sine = turn * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0));
+    let cosine = 1.0 - turn2 / 2.0 * (1.0 - turn2 / 12.0);
+    let turned = vec3<f32>(toward.x * cosine + toward.z * sine, toward.y,
+        toward.z * cosine - toward.x * sine);
+    return fluid_reflection_search_h(capture_point + turned, capture_point, tile, layer);
+}
+
+// One side's shadow edge, in radians: at most `angle`, 0 for an origin
+// behind the stored surface. A far tap behind its surface, gated on standing
+// in front of the opposite tap's surface, takes a half-turn tap and places
+// the edge where h, interpolated linearly, crosses 0.
+fn fluid_reflection_shadow_edge(capture_point: vec3<f32>, toward: vec3<f32>, angle: f32,
+                                side: f32, h_origin: f32, h_far: f32, h_opposite: f32,
+                                tile: vec2<u32>, layer: u32) -> f32 {
+    let step = (h_far - h_opposite) / max(1.0 + h_opposite, FLUID_REFLECTION_SEARCH_EPSILON);
+    let h_lit = min(h_origin, 0.0);
+    let gate = smoothstep(FLUID_REFLECTION_SHADOW_GATE_START * angle,
+        FLUID_REFLECTION_SHADOW_GATE_FULL * angle, step);
+    if h_far <= 0.0 || gate <= 0.0 {
+        return angle;
+    }
+    let h_half = fluid_reflection_shadow_tap(capture_point, toward, 0.5 * side, tile, layer);
+    var crossing: f32;
+    if h_half > 0.0 {
+        crossing = 0.5 * angle * h_lit / (h_lit - h_half);
+    } else {
+        crossing = 0.5 * angle + 0.5 * angle * h_half / (h_half - h_far);
+    }
+    return angle + (crossing - angle) * gate;
+}
+
+// The fade beside the capture shadow: 1 with no edge within the angle,
+// falling smoothly to 0 at the nearer side's edge. Two taps, three with an
+// edge near, four with one each side.
+fn fluid_reflection_shadow_fade(origin: vec3<f32>, capture_point: vec3<f32>, tile: vec2<u32>,
+                                h_origin: f32, layer: u32) -> f32 {
+    let angle = fluid_reflection_shadow_fade_angle(tile);
+    let toward = origin - capture_point;
+    let h_plus = fluid_reflection_shadow_tap(capture_point, toward, angle, tile, layer);
+    let h_minus = fluid_reflection_shadow_tap(capture_point, toward, -angle, tile, layer);
+    let edge = min(
+        fluid_reflection_shadow_edge(capture_point, toward, angle, angle, h_origin, h_plus,
+            h_minus, tile, layer),
+        fluid_reflection_shadow_edge(capture_point, toward, angle, -angle, h_origin, h_minus,
+            h_plus, tile, layer));
+    return smoothstep(0.0, angle, edge);
+}
+
 // The search along unit `ray` from `origin` inside the probe's box: two
 // independent taps (origin, box hit); an origin behind the stored surface is
-// in the capture shadow. Else up to K sphere steps close a bracket, or the box
-// hit does, or nothing stored lies inside the box (the box hit, plain box
-// projection); then M false-position estimates on the bracket.
+// in the capture shadow, drawing nothing past the depth margin. Else the fade
+// beside the shadow weighs the term, and up to K sphere steps close a
+// bracket, or the box hit does, or nothing stored lies inside the box (the
+// box hit, plain box projection); then M false-position estimates on the
+// bracket.
 fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>,
                            box_max: vec3<f32>, capture_point: vec3<f32>, tile: vec2<u32>,
                            layer: u32) -> FluidReflectionSearch {
@@ -710,8 +781,12 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
     let t_box = dot(box_hit - origin, ray);
     let h_origin = fluid_reflection_search_h(origin, capture_point, tile, layer);
     let h_box = fluid_reflection_search_h(box_hit, capture_point, tile, layer);
+    if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
+        return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), 0.0);
+    }
+    let weight = fluid_reflection_shadow_fade(origin, capture_point, tile, h_origin, layer)
+        * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
     if h_origin >= 0.0 {
-        let weight = 1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_FADE, h_origin);
         return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), weight);
     }
 
@@ -749,7 +824,7 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
         h_front = h_next;
     }
     if !(h_back >= 0.0) {
-        return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), 1.0);
+        return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), weight);
     }
 
     var t_hit = t_back;
@@ -773,7 +848,7 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
         }
     }
     return FluidReflectionSearch(fluid_reflection_lookup(origin + ray * t_hit, capture_point, ray),
-        1.0);
+        weight);
 }
 
 // The probe term before Fresnel: the capture toward the search's lookup,

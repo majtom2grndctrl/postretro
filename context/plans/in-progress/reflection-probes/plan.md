@@ -202,6 +202,8 @@ Reflection-free still equals main. The e24 reflecting early-window transient per
 
 Offscreen comparisons (pixel style, capture's 0.6 opacity; distance vs a zero-distance copy = plain box projection; session scratchpad `images-11f/`): the crate's reflection sits under the crate at its width (box projection: a displaced smear); at the pillar, distance correction removes box projection's ghost slab but shows the capture-shadow area behind the pillar with a hard diagonal edge and curved light streaks from its base (A4's accepted false fragments). Owner look pending.
 
+**Capture-shadow fade in capture texels (owner-approved, 2026-10-15).** The fade band sits on the lit side of the shadow edge, N = 2 capture texels wide (2.857° at 128², derived per fragment from the header's tile dimension), found by two azimuth-turned taps (+1 bracketing tap at an edge; average +1.84 taps, worst 4, beside the search's serial chain), gated so obliquely seen wall feet stay unfaded, with κ kept inside the shadow. Pinned constants: `FLUID_REFLECTION_SHADOW_FADE_TEXELS` 2, `FLUID_REFLECTION_SHADOW_GATE_START` 6, `_GATE_FULL` 10, `_MARGIN` 0.05, `_HALF_TURN` π. Cost: e24 reflecting 5.213 → 5.326 ms, test map 2.568 → 2.696 ms. The pillar's hard diagonal is now a soft ramp; A4's base streaks remain (false-pillar 103 → 98 over three eyes). Limits: the band narrows to ≈1.5 texels within ≈30% of the background wall; partial gate behind shallow occluders; wall feet protected to ≈66–68° from the wall normal; azimuth-only softening. Revisit its complexity once the probe split lands and capture shadows become rare.
+
 ## Amendment rows (distance correction)
 
 | Row | Proof | Status |

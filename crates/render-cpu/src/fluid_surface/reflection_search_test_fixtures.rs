@@ -290,3 +290,28 @@ pub(super) fn room_b() -> &'static Scene {
         )
     })
 }
+
+/// The empty room with a 0.4 m square pillar standing in the water, floor
+/// to ceiling, its capture-facing face `near` metres east (+x) of the
+/// capture point: an occluder near or far from it.
+pub(super) fn pillar_room(near: f32) -> Scene {
+    let room = empty_room();
+    let mut brushes = room.brushes.clone();
+    brushes.push(SceneBox {
+        min: Vec3::new(near, -1.0, -0.2),
+        max: Vec3::new(near + 0.4, 4.0, 0.2),
+        name: "pillar",
+    });
+    Scene::new(brushes, room.capture, room.box_min, room.box_max)
+}
+
+/// A canal 20 m long and 4 m wide over water wall to wall at y = 0, the
+/// capture point 2 mm above its centre: its side walls seen from the capture
+/// point at up to 79° from their normals.
+pub(super) fn canal() -> &'static Scene {
+    static SCENE: OnceLock<Scene> = OnceLock::new();
+    SCENE.get_or_init(|| {
+        let (min, max) = (Vec3::new(-10.0, -1.0, -2.0), Vec3::new(10.0, 4.0, 2.0));
+        Scene::new(shell(min, max), Vec3::new(0.0, 0.002, 0.0), min, max)
+    })
+}

@@ -12,7 +12,8 @@ use postretro_level_format::reflection_probes::{
 };
 
 use super::fixtures::{
-    Scene, TILE, UNIT, capture_tile, empty_room, engine, engine_dir, pool_room, room_b,
+    Scene, TILE, UNIT, canal, capture_tile, empty_room, engine, engine_dir, pillar_room, pool_room,
+    room_b,
 };
 use super::*;
 use crate::fluid_surface::reflection::{
@@ -568,10 +569,11 @@ fn the_fragment_reference_searches_from_the_style_point_alone() {
 
 // --- Capture shadow and cost --------------------------------------------------
 
-// Behind a stored surface the term fades over κ of relative depth: full at
-// the surface, half at κ/2, gone from κ on, looked up toward the box hit.
+// Behind a stored surface with nothing near it to fade beside, the term
+// fades over the depth margin κ: full at the surface, half at κ/2, gone
+// from κ on, looked up toward the box hit.
 #[test]
-fn the_capture_shadow_fades_over_the_pinned_margin() {
+fn the_capture_shadow_fades_over_the_depth_margin() {
     let (box_min, box_max) = (Vec3::new(-5.0, -1.0, -4.0), Vec3::new(5.0, 4.0, 4.0));
     let capture = Vec3::new(0.0, 0.002, 0.0);
     let fragment = Vec3::new(2.0, 0.0, 1.0);
@@ -579,9 +581,10 @@ fn the_capture_shadow_fades_over_the_pinned_margin() {
     // |fragment − capture|₁ is 3 at the horizon: w = (1 + h) / 3 everywhere.
     for (h, weight) in [
         (0.0, 1.0),
-        (FLUID_REFLECTION_SHADOW_FADE * 0.5, 0.5),
-        (FLUID_REFLECTION_SHADOW_FADE, 0.0),
+        (FLUID_REFLECTION_SHADOW_MARGIN * 0.5, 0.5),
+        (FLUID_REFLECTION_SHADOW_MARGIN, 0.0),
         (0.5, 0.0),
+        (4.0, 0.0),
     ] {
         let result = reflection_search(fragment, ray, box_min, box_max, capture, TILE, |_| {
             (1.0 + h) / 3.0
@@ -600,14 +603,17 @@ fn the_capture_shadow_fades_over_the_pinned_margin() {
 }
 
 // The search's cost is bounded: two independent taps, at most K sphere-step
-// taps and M − 1 false-position taps, six in all, over every fragment of the
-// basin from every eye.
+// taps and M − 1 false-position taps, six in all, beside the capture-shadow
+// fade's two to four, over every fragment of the basin from every eye. On
+// average the fade adds at most two: a fragment in the shadow takes none,
+// one well clear of it two, one near its edge three.
 #[test]
-fn the_search_takes_at_most_six_distance_taps() {
+fn the_search_takes_at_most_six_taps_and_the_fade_two_on_average() {
     let scene = room_b();
     let bound = 2 + FLUID_REFLECTION_SEARCH_STEPS + FLUID_REFLECTION_SEARCH_REFINEMENTS - 1;
     assert_eq!(bound, 6);
-    let mut most = 0;
+    let (mut most_search, mut most_fade, mut fade_taps, mut fragments) = (0, 0, 0, 0);
+    let mut near_edge = 0;
     for eye in [
         engine(960.0, 100.0, 63.0),
         engine(1100.0, 90.0, 63.0),
@@ -615,21 +621,258 @@ fn the_search_takes_at_most_six_distance_taps() {
     ] {
         for (fragment, ray) in basin_fragments(scene, eye) {
             let taps = std::cell::Cell::new(0u32);
-            reflection_search(
+            let counted = |uv: Vec2| {
+                taps.set(taps.get() + 1);
+                scene.distance(uv)
+            };
+            let result = reflection_search(
                 fragment,
                 ray,
                 scene.box_min,
                 scene.box_max,
                 scene.capture,
                 TILE,
-                |uv| {
+                counted,
+            );
+            let total = taps.get();
+            // The fade's own taps, counted apart.
+            // Past the depth margin the shadow takes the two first taps only.
+            let deep = result.status == FluidReflectionSearchStatus::CaptureShadow && total == 2;
+            let fade = if deep {
+                0
+            } else {
+                let h_origin =
+                    reflection_search_h(fragment, scene.capture, TILE, &|uv| scene.distance(uv));
+                taps.set(0);
+                reflection_shadow_fade(fragment, scene.capture, TILE, h_origin, &|uv| {
                     taps.set(taps.get() + 1);
                     scene.distance(uv)
-                },
-            );
-            most = most.max(taps.get());
+                });
+                taps.get()
+            };
+            most_search = most_search.max(total - fade);
+            most_fade = most_fade.max(fade);
+            fade_taps += fade;
+            fragments += 1;
+            if fade > 2 {
+                near_edge += 1;
+            }
         }
     }
-    assert!(most <= bound, "{most} taps");
-    assert_eq!(most, bound, "some fragment takes every step");
+    assert!(most_search <= bound, "{most_search} search taps");
+    assert_eq!(most_search, bound, "some fragment takes every search step");
+    assert!(most_fade <= 4, "{most_fade} fade taps");
+    assert!(near_edge > 0, "some fragment brackets an edge");
+    let average = fade_taps as f32 / fragments as f32;
+    assert!(average <= 2.0, "the fade adds {average} taps on average");
+}
+
+// --- The capture-shadow fade -----------------------------------------------------
+
+/// One interior capture texel of angle at the engine's tile.
+fn texel_angle() -> f32 {
+    std::f32::consts::PI / (TILE[0] - 2 * TILE[1]) as f32
+}
+
+/// The water fragment `radius` metres from the capture point at `azimuth`
+/// radians from +x toward +z.
+fn on_arc(scene: &Scene, radius: f32, azimuth: f32) -> Vec3 {
+    let fragment = scene.capture + Vec3::new(azimuth.cos(), 0.0, azimuth.sin()) * radius;
+    Vec3::new(fragment.x, 0.0, fragment.z)
+}
+
+/// The fade's profile across one side of a pillar's capture shadow: the
+/// fragment `radius` metres from the capture point, behind the pillar,
+/// swept in azimuth from well clear of the shadow into it in steps of
+/// 1/200 texel. Per step: the angle past the shadow's edge in texels
+/// (negative in it), and the search's weight.
+fn fade_profile(scene: &Scene, radius: f32) -> Vec<(f32, f32)> {
+    let eye = Vec3::new(-4.0, 1.6, -3.0);
+    let texel = texel_angle();
+    let samples: Vec<(f32, f32, FluidReflectionSearchStatus)> = (0..2400)
+        .map(|k| {
+            let azimuth = (14.0 - k as f32 / 200.0) * texel;
+            let fragment = on_arc(scene, radius, azimuth);
+            let result = search(scene, fragment, reflected(eye, fragment));
+            (azimuth, result.weight, result.status)
+        })
+        .collect();
+    let edge = samples
+        .iter()
+        .find(|(_, _, status)| *status == FluidReflectionSearchStatus::CaptureShadow)
+        .expect("the sweep reaches the shadow")
+        .0;
+    samples
+        .into_iter()
+        .map(|(azimuth, weight, _)| ((azimuth - edge) / texel, weight))
+        .collect()
+}
+
+/// Where the old rule, `1 − smoothstep(0, κ, h)` behind the stored surface
+/// with κ = 0.05, faded the same sweep: its width in texels, from the first
+/// fragment behind the surface to the first at κ.
+fn old_fade_width(scene: &Scene, radius: f32) -> f32 {
+    let texel = texel_angle();
+    let h_at = |k: u32| {
+        let azimuth = (14.0 - k as f32 / 2000.0) * texel;
+        let fragment = on_arc(scene, radius, azimuth);
+        (
+            azimuth,
+            reflection_search_h(fragment, scene.capture, TILE, &|uv| scene.distance(uv)),
+        )
+    };
+    let start = (0..24_000).map(h_at).find(|&(_, h)| h >= 0.0).unwrap().0;
+    let end = (0..24_000).map(h_at).find(|&(_, h)| h >= 0.05).unwrap().0;
+    (start - end) / texel
+}
+
+// The point of the fade: its width in angle is the pinned number of capture
+// texels whether the occluder stands near the capture point or far from it,
+// and whether the fragment lies just behind it or far behind. The old κ
+// rule faded over a fraction of a texel that changed with the distances.
+// (Within about 30% of the background wall's distance the gate opens late
+// and the band narrows, to 1.5 texels 4% in front of it.)
+#[test]
+fn the_capture_shadow_fade_spans_the_pinned_capture_texels_near_and_far() {
+    let n = FLUID_REFLECTION_SHADOW_FADE_TEXELS;
+    assert_eq!(n, 2.0);
+    let mut old_widths = Vec::new();
+    for (near, radii) in [(1.2, [2.2, 4.0]), (3.0, [3.8, 4.2])] {
+        let scene = pillar_room(near);
+        for radius in radii {
+            let profile = fade_profile(&scene, radius);
+            let start = profile
+                .iter()
+                .find(|(_, weight)| *weight < 1.0)
+                .expect("the sweep starts clear of the band")
+                .0;
+            assert!(
+                (start - n).abs() <= 0.25,
+                "occluder {near} m, fragment {radius} m: fades over {start} texels"
+            );
+            old_widths.push(old_fade_width(&scene, radius));
+        }
+    }
+    assert!(
+        old_widths.iter().all(|&width| width < 0.5),
+        "the old rule faded over under half a texel: {old_widths:?}"
+    );
+    let (least, most) = old_widths
+        .iter()
+        .fold((f32::INFINITY, 0.0f32), |(a, b), &w| (a.min(w), b.max(w)));
+    assert!(
+        most > 2.0 * least,
+        "the old rule's width changed with the distances: {old_widths:?}"
+    );
+}
+
+// Across the band the weight falls monotonically and continuously from 1 to
+// 0: full a whisker past N texels from the edge, none in the shadow (at any
+// depth past it), and no step a 1/200-texel move can see.
+#[test]
+fn the_capture_shadow_fade_falls_monotonically_and_continuously() {
+    let n = FLUID_REFLECTION_SHADOW_FADE_TEXELS;
+    for (near, radius) in [(1.2, 2.2), (1.2, 4.0), (3.0, 3.8), (3.0, 4.2), (3.0, 4.8)] {
+        let scene = pillar_room(near);
+        let profile = fade_profile(&scene, radius);
+        let mut steepest = 0.0f32;
+        for pair in profile.windows(2) {
+            let ((_, outer), (past, inner)) = (pair[0], pair[1]);
+            assert!(
+                inner <= outer + 1.0e-6,
+                "occluder {near} m, fragment {radius} m: rises to {inner} at {past} texels"
+            );
+            steepest = steepest.max(outer - inner);
+        }
+        assert!(
+            steepest <= 0.05,
+            "occluder {near} m, fragment {radius} m: steps {steepest} in 1/200 texel"
+        );
+        for &(past, weight) in &profile {
+            if past > n + 0.05 {
+                assert_eq!(weight, 1.0, "{past} texels clear of the shadow");
+            }
+            if past <= 0.0 {
+                assert_eq!(weight, 0.0, "{past} texels into the shadow");
+            }
+        }
+        let start = profile.iter().find(|(_, weight)| *weight < 1.0).unwrap().0;
+        assert!(
+            start >= 1.4,
+            "occluder {near} m, fragment {radius} m: {start} texels"
+        );
+        let last_lit = profile.iter().rev().find(|(past, _)| *past > 0.0).unwrap();
+        assert!(
+            last_lit.1 <= 0.001,
+            "falls to the shadow's 0 at its edge: {last_lit:?}"
+        );
+    }
+}
+
+// A wall seen obliquely from the capture point: turning a fragment at its
+// foot by the fade angle reaches behind it, yet the gate keeps the foot's
+// full term up to 66° from the wall's normal, 1 cm from the wall, in a
+// canal and in the box room.
+#[test]
+fn a_wall_seen_obliquely_keeps_its_foot_unfaded() {
+    let canal = canal();
+    let mut checked = 0;
+    for k in 0..45 {
+        let along = k as f32 * 0.1;
+        for side in [-1.0, 1.0] {
+            let fragment = Vec3::new(along, 0.0, side * 1.99);
+            let incidence = along.atan2(1.99).to_degrees();
+            assert!(incidence <= 66.0);
+            let ray = reflected(Vec3::new(-3.0, 1.6, 0.0), fragment);
+            let result = search(canal, fragment, ray);
+            assert_ne!(result.status, FluidReflectionSearchStatus::CaptureShadow);
+            assert_eq!(result.weight, 1.0, "{fragment} at {incidence:.1}°");
+            assert_eq!(angular_fade(canal, fragment), 1.0);
+            checked += 1;
+        }
+    }
+    let room = empty_room();
+    for k in 0..80 {
+        let along = -3.95 + k as f32 * 0.1;
+        for fragment in [
+            Vec3::new(4.99, 0.0, along),
+            Vec3::new(-4.99, 0.0, along),
+            Vec3::new(along, 0.0, 3.99),
+            Vec3::new(along, 0.0, -3.99),
+        ] {
+            // A foot by a concave corner may read the filtered corner a
+            // little near and fall within the depth margin; the angular
+            // fade still leaves it whole.
+            let ray = reflected(Vec3::new(0.0, 1.6, 0.0), fragment);
+            assert!(search(room, fragment, ray).weight >= 0.95, "{fragment}");
+            assert_eq!(angular_fade(room, fragment), 1.0, "{fragment}");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 90 + 320);
+}
+
+/// The angular part of the fade alone, at `fragment`.
+fn angular_fade(scene: &Scene, fragment: Vec3) -> f32 {
+    let distance = |uv: Vec2| scene.distance(uv);
+    let h_origin = reflection_search_h(fragment, scene.capture, TILE, &distance);
+    reflection_shadow_fade(fragment, scene.capture, TILE, h_origin, &distance)
+}
+
+// The fade angle is N interior texels of the tile the section names, each
+// a half-turn over the interior: it follows the tile's dimension.
+#[test]
+fn the_fade_angle_follows_the_tile_dimension() {
+    let pi = std::f32::consts::PI;
+    assert_eq!(FLUID_REFLECTION_HALF_TURN, pi);
+    for (tile, interior) in [([128, 1], 126.0), ([64, 1], 62.0), ([256, 2], 252.0)] {
+        let angle = reflection_shadow_fade_angle(tile);
+        assert!(
+            (angle - FLUID_REFLECTION_SHADOW_FADE_TEXELS * pi / interior).abs() < 1.0e-7,
+            "{tile:?}: {angle}"
+        );
+    }
+    // ≈1.43° a texel at the engine's 128² tile: the fade is ≈2.86°.
+    let degrees = reflection_shadow_fade_angle(TILE).to_degrees();
+    assert!((degrees - 2.857).abs() < 0.001, "{degrees}°");
 }

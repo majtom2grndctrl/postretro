@@ -15,14 +15,37 @@ use super::reflection::{reflection_box_hit, reflection_lookup, reflection_tile_u
 /// leave it up to 9° low at the rim, and a fourth changes nothing.
 pub const FLUID_REFLECTION_SEARCH_STEPS: u32 = 3;
 /// M: false-position estimates on the bracket. The last needs no tap, so
-/// two cost one tap: worst case 2 + K + M − 1 = 6 distance taps. A third
-/// changes neither test-map fixture beyond a fragment or two.
+/// two cost one tap: 2 + K + M − 1 = 6 search taps, beside the capture-shadow
+/// fade's two to four. A third changes neither test-map fixture beyond a
+/// fragment or two.
 pub const FLUID_REFLECTION_SEARCH_REFINEMENTS: u32 = 2;
-/// κ: the capture-shadow fade's width in h, the relative depth behind the
-/// stored surface (0.05 is 5% beyond it). Wide enough that the shadow edge,
-/// which bilinear filtering already softens over a texel, has no hard step;
-/// narrow enough that a lit face never paints far into the wedge behind it.
-pub const FLUID_REFLECTION_SHADOW_FADE: f32 = 0.05;
+/// N: the capture-shadow fade's width in capture texels of angle about the
+/// capture point. One interior texel spans about π / (dimension − 2·border)
+/// of azimuth, a half-turn of horizon crossing the interior (≈1.43° at the
+/// 128² tile), so the fade follows the tile dimension the section header
+/// names. Two texels soften the edge the stored distance's one bilinear
+/// crossing draws, without eating far into the reflection beside the
+/// occluder.
+pub const FLUID_REFLECTION_SHADOW_FADE_TEXELS: f32 = 2.0;
+/// The fade's occluder gate on one side, in fade angles: the side tap's
+/// stored surface must stand nearer than the opposite side tap's by this
+/// relative step (`H_side / H_opposite − 1`, `H = h + 1`) to fade at all, and
+/// by the second to fade fully. Turning ± the fade angle across a plane seen
+/// at φ from its normal steps about 2·tan φ fade angles, so a wall's foot
+/// keeps its full term up to about 68° from the wall's normal; an occluder
+/// fades fully, and continuously into its shadow, once its background lies
+/// 10 fade angles (≈50% at the 128² tile) farther. A fragment within about
+/// 30% of its background's distance opens the gate a little late, as the
+/// far tap climbs the occluder's edge: its band narrows toward 1.5 texels.
+pub const FLUID_REFLECTION_SHADOW_GATE_START: f32 = 6.0;
+pub const FLUID_REFLECTION_SHADOW_GATE_FULL: f32 = 10.0;
+/// κ: the capture shadow's depth margin, in h: a fragment this little behind
+/// the stored surface (5% beyond it) still draws, fading out over it. It
+/// absorbs the filtered distance reading a concave corner or a wall's foot a
+/// little near; beside an occluder the angular fade has reached 0 already.
+pub const FLUID_REFLECTION_SHADOW_MARGIN: f32 = 0.05;
+/// π: the azimuth a half-turn of horizon spans across the tile's interior.
+pub const FLUID_REFLECTION_HALF_TURN: f32 = std::f32::consts::PI;
 /// An offset from the capture point shorter than this (L1, m) has no
 /// direction; the point counts as in front of every surface.
 pub const FLUID_REFLECTION_SEARCH_EPSILON: f32 = 1.0e-6;
@@ -38,8 +61,8 @@ pub enum FluidReflectionSearchStatus {
     /// box hit, plain box projection.
     BeyondBox,
     /// The fragment itself lies behind a surface the capture point saw: the
-    /// capture holds nothing it could reflect, so the term fades out by
-    /// `weight`, looked up toward the box hit.
+    /// capture holds nothing it could reflect, so it draws no term past the
+    /// depth margin (`weight` 0), looked up toward the box hit.
     CaptureShadow,
 }
 
@@ -53,8 +76,10 @@ pub struct FluidReflectionSearch {
     /// the horizon below it ([`reflection_lookup`]).
     pub lookup: Vec3,
     pub status: FluidReflectionSearchStatus,
-    /// The probe term's weight: 1, except in the capture shadow, where it is
-    /// `1 − smoothstep(0, κ, h(fragment))`.
+    /// The probe term's weight: 0 in the capture shadow, fading up to 1 over
+    /// the N capture texels of angle beside it
+    /// ([`reflection_shadow_fade`]) and over the depth margin κ behind the
+    /// stored surface, 1 everywhere else.
     pub weight: f32,
 }
 
@@ -84,13 +109,134 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// The capture-shadow fade's angle in radians for a tile (dimension,
+/// border): N interior texels of π / interior each.
+pub fn reflection_shadow_fade_angle(tile: [u32; 2]) -> f32 {
+    FLUID_REFLECTION_SHADOW_FADE_TEXELS * FLUID_REFLECTION_HALF_TURN
+        / (tile[0] as f32 - 2.0 * tile[1] as f32)
+}
+
+/// h at the origin turned about the capture point's vertical by `turn`
+/// radians, keeping its distance from the capture point. `toward` is the
+/// origin minus the capture point. The fluid shader calls no trig: the turn's
+/// sine and cosine are their Taylor series to the fifth and fourth order,
+/// within 1e-8 of exact at the fade's ≈3°.
+pub fn reflection_shadow_tap(
+    capture_point: Vec3,
+    toward: Vec3,
+    turn: f32,
+    tile: [u32; 2],
+    distance: &impl Fn(Vec2) -> f32,
+) -> f32 {
+    let turn2 = turn * turn;
+    let sine = turn * (1.0 - turn2 / 6.0 * (1.0 - turn2 / 20.0));
+    let cosine = 1.0 - turn2 / 2.0 * (1.0 - turn2 / 12.0);
+    let turned = Vec3::new(
+        toward.x * cosine + toward.z * sine,
+        toward.y,
+        toward.z * cosine - toward.x * sine,
+    );
+    reflection_search_h(capture_point + turned, capture_point, tile, distance)
+}
+
+/// One side's shadow edge for the fade, in radians from the origin: at most
+/// `angle`, and 0 for an origin behind the stored surface. `side` (± `angle`)
+/// turns toward that side, `h_far` is the tap there and `h_opposite` the tap
+/// on the other side. Behind its stored surface, the far tap puts an edge on
+/// this side, and a tap at half the turn brackets it to a texel, where h,
+/// interpolated linearly, crosses 0: the stored distance's bilinear ramp
+/// across a silhouette spans one to two texels, so samples a texel apart
+/// leave no stretch of the band unread. The gate weighs the edge by how far
+/// the far tap's stored surface stands in front of the opposite one's: an
+/// occluder against its background, not a wall seen obliquely, which a turn
+/// also reaches behind. A side the gate shuts takes no half tap.
+#[allow(clippy::too_many_arguments)]
+pub fn reflection_shadow_edge(
+    capture_point: Vec3,
+    toward: Vec3,
+    angle: f32,
+    side: f32,
+    h_origin: f32,
+    h_far: f32,
+    h_opposite: f32,
+    tile: [u32; 2],
+    distance: &impl Fn(Vec2) -> f32,
+) -> f32 {
+    let step = (h_far - h_opposite) / (1.0 + h_opposite).max(FLUID_REFLECTION_SEARCH_EPSILON);
+    let h_lit = h_origin.min(0.0);
+    let gate = smoothstep(
+        FLUID_REFLECTION_SHADOW_GATE_START * angle,
+        FLUID_REFLECTION_SHADOW_GATE_FULL * angle,
+        step,
+    );
+    if h_far <= 0.0 || gate <= 0.0 {
+        return angle;
+    }
+    let h_half = reflection_shadow_tap(capture_point, toward, 0.5 * side, tile, distance);
+    let crossing = if h_half > 0.0 {
+        0.5 * angle * h_lit / (h_lit - h_half)
+    } else {
+        0.5 * angle + 0.5 * angle * h_half / (h_half - h_far)
+    };
+    angle + (crossing - angle) * gate
+}
+
+/// The capture-shadow fade for an origin in front of the stored surface or
+/// within the depth margin behind it: 1 with no shadow edge within the fade
+/// angle about the capture point, falling smoothly to 0 at the edge, where
+/// the shadow's 0 takes over (an origin behind the surface sits at the
+/// edge). A tap on each side turns the origin about the capture point's
+/// vertical by the angle, keeping its distance; each side then places its
+/// edge ([`reflection_shadow_edge`]), and the nearer counts. Two taps with no
+/// edge near, three with one, four with one each side. A function of the
+/// origin, the capture point and the tile alone.
+pub fn reflection_shadow_fade(
+    origin: Vec3,
+    capture_point: Vec3,
+    tile: [u32; 2],
+    h_origin: f32,
+    distance: &impl Fn(Vec2) -> f32,
+) -> f32 {
+    let angle = reflection_shadow_fade_angle(tile);
+    let toward = origin - capture_point;
+    let h_plus = reflection_shadow_tap(capture_point, toward, angle, tile, distance);
+    let h_minus = reflection_shadow_tap(capture_point, toward, -angle, tile, distance);
+    let edge = reflection_shadow_edge(
+        capture_point,
+        toward,
+        angle,
+        angle,
+        h_origin,
+        h_plus,
+        h_minus,
+        tile,
+        distance,
+    )
+    .min(reflection_shadow_edge(
+        capture_point,
+        toward,
+        angle,
+        -angle,
+        h_origin,
+        h_minus,
+        h_plus,
+        tile,
+        distance,
+    ));
+    smoothstep(0.0, angle, edge)
+}
+
 /// The distance search along unit `ray` from `origin` (the fragment, or the
 /// pixel-style cell centre) inside the probe's box, against its distance
 /// tile. A function of those inputs alone, so every fragment of a cell reads
 /// one lookup.
 ///
 /// 1. Two independent taps: at the origin and at the box hit. An origin at
-///    or behind the stored surface (h ≥ 0) is in the capture shadow.
+///    or behind the stored surface (h ≥ 0) is in the capture shadow: no
+///    term past the depth margin κ. Otherwise two to four more taps,
+///    independent of the search's, fade the term beside the shadow
+///    ([`reflection_shadow_fade`]); within κ the term also fades out by
+///    depth, looked up toward the box hit.
 /// 2. Up to K sphere steps from the origin; the first sample behind a
 ///    surface closes the bracket. A sample in a capture miss, a step that
 ///    stalls, and a step reaching the box hit stop stepping.
@@ -120,8 +266,12 @@ pub fn reflection_search(
         status,
         weight,
     };
+    if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
+        return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, 0.0);
+    }
+    let weight = reflection_shadow_fade(origin, capture_point, tile, h_origin, &distance)
+        * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
     if h_origin >= 0.0 {
-        let weight = 1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_FADE, h_origin);
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, weight);
     }
 
@@ -158,7 +308,7 @@ pub fn reflection_search(
     let (mut t_back, mut h_back) = match back {
         Some(sample) => sample,
         None if h_box >= 0.0 => (t_box, h_box),
-        None => return ends_at(box_hit, FluidReflectionSearchStatus::BeyondBox, 1.0),
+        None => return ends_at(box_hit, FluidReflectionSearchStatus::BeyondBox, weight),
     };
 
     let mut t_hit = t_back;
@@ -178,7 +328,11 @@ pub fn reflection_search(
             (t_front, h_front) = (t_hit, h_hit);
         }
     }
-    ends_at(origin + ray * t_hit, FluidReflectionSearchStatus::Hit, 1.0)
+    ends_at(
+        origin + ray * t_hit,
+        FluidReflectionSearchStatus::Hit,
+        weight,
+    )
 }
 
 /// The distance tile as a linear-filtered, clamp-to-edge sampler reads it at

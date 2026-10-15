@@ -465,7 +465,8 @@ pub struct FluidReflectionFragment {
 /// (the fog reference's output): unchanged when the gate is off, else the
 /// probe's capture, sampled toward the distance search's lookup and scaled
 /// by the live-lighting ratio toward that same direction, composited over it
-/// at the Fresnel weight times the search's (0 deep in the capture shadow).
+/// at the Fresnel weight times the search's (0 in the capture shadow,
+/// fading in over the pinned capture texels of angle beside it).
 /// The reflection starts from the style's point (the fragment, or its texel
 /// cell's centre about the cell's tilted normal) and sees the eye from
 /// there, so every fragment of a pixel-style cell reads one search, one

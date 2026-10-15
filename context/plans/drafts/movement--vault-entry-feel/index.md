@@ -1,107 +1,120 @@
 # movement--vault-entry-feel
 
-Brief · compact · reads: `context/lib/movement.md` §1 §4 (Vault), `context/lib/scripting.md` §5, `context/lib/entity_model.md` §Components (Weapon vocabulary), `context/lib/player_options.md` §5 · read at 41f21c8a
+Brief · compact · reads: `context/lib/movement.md` §1 §2 §4 (Vault), `context/lib/scripting.md` §11, `context/lib/player_options.md` §5 · read at 41f21c8a
 
 ## Problem
 
-The project lead asked for vault view feel that answers how the vault began: a still step-up mantle should read as a subtle bob, a sprinting leap onto a ledge as a hard catch. This is a requested capability. The held pose (`viewFeel.vault`) and the vault kick (`impulse.states.vault`) take literal channels only, so every vault presents the same camera regardless of entry. When this is done, an author scales the pose and the kick per channel with expressions over the vault's entry conditions (horizontal speed, climb height, time airborne, vertical speed, and the context it started from), written in the same fluent style as charge-scaled shots. Each vault evaluates once and keeps that result through its release.
+The project lead asked for vault view feel that answers how the vault began: a still step-up mantle should read as a subtle bob, a sprinting leap onto a ledge as a hard catch. This is a requested capability. The held pose (`viewFeel.vault`) and the vault kick (`impulse.states.vault`) take literals only, so every vault presents the same camera regardless of entry. When this is done, an author writes those fields as fluent expressions over the pawn's motion as the vault began (horizontal speed, vertical speed, time airborne, grounded or swimming, climb height), and each vault evaluates them once and keeps the result through its release. The same `motion` vocabulary gives dash's existing expression fields a fluent spelling.
 
 ## Decisions
 
-- **Syntax mirrors charge shots.** A frozen `vaultEntry` namespace holds read-only fluent inputs and two builders: `vaultEntry.pose(...)` returns the `viewFeel.vault` record and `vaultEntry.kick(...)` returns the `impulse.states.vault` row. Each builder converts fluent refs to raw IR, as `activation.shot()` does (`plans/done/E16--weapon-activations`). A raw `scale` holding literals or `runtime.*` IR is accepted without a builder, as `ShotScaleDescriptor` is.
-- **`scale` is per channel: `pitch`, `roll`, `fov`.** Each field is optional, defaults to 1, and takes a literal or numeric IR. One expression shared across fields covers the single-intensity case. On a kick, `scale` multiplies both the `enter` and `exit` channels.
-- **Scale domain is [0, 64], charge's domain.** It is wide on purpose, so authors find the right amount by overshooting. The final scaled channel clamps to the existing numeric bands: ±90° for pose channels; ±180° per kick channel, then the impulse `max`; ±89° on composed render pitch (`movement.md` §1). Those bands keep the camera numerically stable. They are not taste limits.
-- **Inputs, closed scope.** Inputs are `speed` (m/s, horizontal speed at entry, knockback and drift included), `height` (m the feet rise to the top), `airborneMs` (time in airborne `Normal`/`Dash` before the vault; grounded or swimming resets it; 0 for a ground or swim entry), `verticalSpeed` (signed m/s before the vault, negative falling), and `fromAir`/`fromGround`/`fromSwim` (bools, the `movement.md` §4 entry contexts). Any other name, or a Bool expression in a scale field, fails to bind and rejects the descriptor naming the field. The scope has no store reads, writes or randomness, as charge's has none.
-- **Render-side sources; no tick, wire or payload change.** `speed` and `height` derive from the vault payload the local pawn already carries (`MovementState::Vault { entry_speed, start_offset }`; frames are upright, so the offset's vertical part is true vertical). `airborneMs`, `verticalSpeed` and the context are tracked by view-feel state from the driver's per-frame pawn facts while not vaulting, and frozen at evaluation. Up to one tick of staleness is accepted. Placement follows `movement.md` §1: view feel reads the pawn and writes nothing back. Carrying these facts in the payload would bump the wire for a presentation effect.
-- **One evaluation per vault, held through its release.** It runs on the first frame that shows the vault, through its entry edge or a pose join (a reconcile or a view-feel reset that shows it in progress, or a rewind read as a new vault). The pose and both kicks of that vault use the one result. A later vault evaluates again.
-- **Failure follows charge.** A bad literal or structure rejects the descriptor in both runtimes. A non-finite or out-of-domain evaluated value zeroes that channel for that vault and warns once per descriptor and field.
-- **`scale` is valid on the `vault` impulse row only.** Other rows reject it naming the field. No other state has entry inputs; `ledgeFocus` in `movement--state-view-pose` sets the vault-only-term precedent.
-- **Presentation and accessibility unchanged.** `view_feel_scale` and reduced motion multiply after `scale` (`player_options.md` §5). The viewmodel still never receives the held pose. View feel stays out of the tuning payload, so co-op is untouched.
-- **Built on the shipped `viewFeel.vault`.** `movement--state-view-pose` plans to fold it into `pose.vault`. This brief adds a note there that `scale` and `vaultEntry` carry over unchanged.
-- **Non-goals.** Entry inputs for slide, dash or other states: the same shape extends there when asked. Inputs that change mid-climb: values freeze at entry, as charge freezes at release. Remote pawns: view feel follows only the local pawn.
+- **Fields take expressions directly; no scale sidecar.** `viewFeel.vault`'s `pitch`, `roll`, `fov`, `easeIn` and `easeOut`, and the vault kick row's `tension`, `enter` and `exit` channels, accept a literal or a numeric expression. This is the dash pattern (`movement.md` §2, `plans/done/M14--movement-dash-runtime-values`): a literal stays bit-identical, and the engine pins when the field evaluates. Timing and the enter and exit kicks can each answer the entry, which a magnitude multiplier cannot. It is also the door `movement--state-view-pose` names for `pose.vault`, so its fold carries these fields unchanged.
+- **One `motion` vocabulary for every movement expression.** `motion` is a frozen namespace exported from `"postretro"`, as `activation` is, holding fluent refs that lower to the same input reads dash binds today. Its names keep dash's names and meanings (`speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs`), adds `swimming` and `airborneMs` (time airborne since last grounded or swimming), and adds `climbHeight`, the one vault-only input. A name means the pawn's motion at the field's pinned evaluation moment, so `motion.speed` in a vault field is the speed the vault began with. Each field site binds only the names it can supply. Any other name, or a result type that does not match the field, rejects the descriptor naming the field.
+- **Not a live store slot.** A live `player.speed` would read the climb path's velocity once the vault has begun, not the run that led into it. Movement and charge expressions also bind closed scopes with no store reads (`scripting.md` §11). A readonly speed slot for HUD or crossings stays a separate door with no consumer yet.
+- **`defineEntity` lowers fluent refs** anywhere in `components.movement`, in TypeScript and Luau, as it already lowers loadout references. Authors write fluent refs in fields with no builder. Raw `runtime.*` IR keeps working. Dash adopts fluent spelling in the same change, which gives the lowering a second consumer from day one.
+- **Vault fields evaluate once per vault, on the first frame that shows it.** That frame is the one with its entry edge, or a pose join (a reconcile or a view-feel reset that shows it in progress, or a rewind read as a new vault). The pose and both kicks of that vault use that one evaluation through the climb and its release, and a later vault evaluates again. A joined vault has no enter kick, as today.
+- **Input sources are render-side; no tick, wire or payload change.** `speed` and `climbHeight` come from the vault payload the local pawn already carries: the entry speed, and the vertical part of the start offset, which is true vertical because vault frames are upright. View-feel state tracks `verticalSpeed`, `grounded`, `swimming` and `airborneMs` from the driver's per-frame pawn facts while the pawn is not vaulting, and freezes them at evaluation. They can lag by the ticks the vault's own frame ran. Placement follows `movement.md` §1: view feel reads the pawn and writes nothing back.
+- **Results follow dash: clamp silently to the literal range.** Pose angles clamp to ±90°, kick channels to ±180°, then the impulse `max`, and kick `tension` to [0.1, 240]. `easeIn` clamps to [0, 1] and `easeOut` to [0, 1 − `easeIn`]. A literal pair summing past 1 still rejects. A non-finite node is excluded by the IR evaluator's finite guard. Composed render pitch stays within ±89°.
+- **Vault row only.** Other kick rows, `normal`'s landing kick among them, stay literal. The vocabulary and the tracked state before the vault are general, so each row extends by pinning its own evaluation moment when asked. The context inputs replace the per-transition map `plans/done/movement--state-transition-feel` named as its extension point: one row reads how it was entered instead of keying rows by source state.
+- **Presentation and accessibility unchanged.** `view_feel_scale` and reduced motion multiply the evaluated output (`player_options.md` §5). The viewmodel still never receives the held pose. View feel stays out of the tuning payload, so co-op is untouched.
+- **Non-goals.** New dash inputs: `swimming`, `airborneMs` and `climbHeight` would need tick-side state dash's scope does not have. Inputs that change during the climb: values freeze at the evaluation moment, as dash entry fields do. Remote pawns: view feel follows only the local pawn.
 
 ### Scripting surface
 
 ```typescript
-import { vaultEntry } from "postretro";
+import { defineEntity, motion } from "postretro";
 
 // ~1 at run speed, up to +0.5 more for a long fall; a still step-up stays a nudge.
-const hard = vaultEntry.speed.dividedBy(11)
-  .plus(vaultEntry.airborneMs.dividedBy(600).clamp(0, 0.5))
+const hard = motion.speed.dividedBy(11)
+  .plus(motion.airborneMs.dividedBy(600).clamp(0, 0.5))
   .clamp(0.25, 1.5);
+const airCatch = motion.grounded.or(motion.swimming).not();
 
-viewFeel: {
-  vault: vaultEntry.pose({
-    pitch: -6, roll: 2, fov: -3, easeIn: 0.15, easeOut: 0.2,
-    scale: { pitch: hard, roll: vaultEntry.fromAir.select(hard, 0), fov: hard },
-  }),
-  impulse: {
-    tension: 12,
-    max: { fov: 20, pitch: 8, roll: 6 },
-    states: {
-      vault: vaultEntry.kick({
-        tension: 14,
-        enter: { fov: -2, pitch: -4, roll: 0 },
-        scale: { pitch: hard, fov: hard },
-      }),
+export const playerEntity = defineEntity({
+  components: {
+    movement: {
+      dash: {
+        momentumRetention: motion.grounded.select(0.4, 0.7),
+        // other dash fields unchanged
+      },
+      viewFeel: {
+        vault: {
+          pitch: hard.times(-6),
+          roll: airCatch.select(hard.times(2), 0),
+          fov: hard.times(-3),
+          easeIn: motion.speed.gt(8).select(0.05, 0.15), // a fast catch snaps in sooner
+          easeOut: 0.2,
+        },
+        impulse: {
+          tension: 12,
+          max: { fov: 20, pitch: 8, roll: 6 },
+          states: {
+            vault: {
+              tension: motion.speed.gt(8).select(20, 12),
+              enter: { fov: hard.times(-2), pitch: hard.times(-4), roll: 0 },
+              exit: { fov: 0, pitch: motion.climbHeight.dividedBy(-1.5).clamp(-2, 0), roll: 0 },
+            },
+          },
+        },
+      },
     },
   },
-},
+});
 ```
 
-Luau ships the same surface: `local hard = vaultEntry.speed:dividedBy(11):plus(...)`, and `vaultEntry.pose({ ... })` and `vaultEntry.kick({ ... })` take the same tables. Builder arguments are exactly the existing record fields plus `scale`. Unknown keys reject.
+Luau ships the same surface through `require("postretro").motion`, with `hard:times(-6)` and bracket spelling for `motion.grounded["or"](...)` as `scripting.md` §5 sets out.
 
 ## Acceptance
 
 ### Automated
-- [ ] TypeScript and Luau load the Scripting surface example. Both reject the same cases, naming the field path: a literal scale below 0, above 64 or non-finite; an unknown input name; a Bool expression in a scale field; an unknown `scale` key; `scale` on a non-vault impulse row; an unknown builder key.
-- [ ] Scale 1 everywhere, and an omitted `scale`, present pose and kick output bit-identical to the same descriptor without this feature.
-- [ ] Scale 0 on a channel presents nothing on that channel while the others move.
+- [ ] TypeScript and Luau load the Scripting surface example. Both reject the same cases, naming the field path: an unknown input name; `climbHeight`, `swimming` or `airborneMs` in a dash field; a Bool expression in a number field; an expression on a non-vault kick row; a literal `easeIn` + `easeOut` past 1; a fluent ref in a descriptor not built through `defineEntity`.
+- [ ] A descriptor with only literals presents pose and kick output bit-identical to the same descriptor before this change.
+- [ ] Dash with `motion.grounded.select(0.4, 0.7)` behaves identically to `runtime.select(runtime.read("grounded"), 0.4, 0.7)`, grounded and airborne.
 #### Inputs
-- [ ] A grounded vault reads `airborneMs` 0 and `fromGround` true; the other context flags read false.
-- [ ] An air catch after a known airborne time reads that time within one tick. A long fall into a ledge reads negative `verticalSpeed`; a catch on the rise reads positive.
-- [ ] A swim exit reads `airborneMs` 0 and `fromSwim` true, even after a long time in the water.
-- [ ] `speed` matches the payload's entry speed. `height` matches the landing height minus the entry feet, on a static ledge and on a moving mover.
+- [ ] A grounded vault reads `grounded` true, `swimming` false and `airborneMs` 0.
+- [ ] An air catch after a known airborne time reads that time within the vault frame's tick span. A fall into a ledge reads negative `verticalSpeed`; a catch on the rise reads positive.
+- [ ] A swim exit reads `swimming` true and `airborneMs` 0, even after a long time in the water.
+- [ ] `speed` equals the payload's entry speed, knockback and drift included, and does not read the climb path's velocity. `climbHeight` equals the landing height minus the entry feet, on a static ledge and on a moving mover.
 #### Evaluation timing
-- [ ] Inputs that change mid-climb do not change the presented scale. The release after the climb, and an early end's release, keep it.
-- [ ] Two back-to-back vaults with different entries each present their own scale.
+- [ ] Motion that changes during the climb does not change presented values. The release after the climb, and an early end's release, keep them.
+- [ ] Two back-to-back vaults with different entries each present their own values.
 - [ ] A vault the pose joins in progress (reconcile, mid-vault view-feel reset) evaluates once at the join, with no enter kick.
-- [ ] The enter kick and exit kick of one vault use the same evaluation as its pose.
-#### Failure and bounds
-- [ ] An expression that evaluates non-finite or outside [0, 64] zeroes that channel for that vault and warns once per descriptor and field, never per frame. The other channels are unaffected.
-- [ ] A scale of 64 on large channels stays within ±90° for the pose, the kick's ±180° and `max`, and ±89° composed render pitch. The view never flips.
+- [ ] The enter kick, the exit kick and the pose of one vault use one evaluation.
+#### Bounds
+- [ ] Expressions evaluating far past every range present clamped values: pose within ±90°, kicks within ±180° and `max`, `tension` within [0.1, 240], `easeIn` + `easeOut` at most 1, composed render pitch within ±89°. The view never flips.
 #### Regression guards
-- [ ] `view_feel_scale` 1, 0.5 and 0 (reduced motion) present full, half and zero, after `scale`. Restoring the scale mid-vault resumes with no snap.
-- [ ] The viewmodel transform is unchanged by the scaled pose.
+- [ ] `view_feel_scale` 1, 0.5 and 0 (reduced motion) present full, half and zero. Restoring the scale mid-vault resumes with no snap.
+- [ ] The viewmodel transform is unchanged by the evaluated pose.
 - [ ] `WIRE_VERSION`, `SNAPSHOT_VERSION` and the wire fixtures are unchanged. Committed SDK typedefs match the registry.
-- [ ] `content/dev/scripts/player.ts` and the `movement-vault.ts`/`.luau` twins author their vault feel through `vaultEntry` and load.
+- [ ] `content/dev/scripts/player.ts` and the `movement-vault.ts`/`.luau` twins author dash and vault feel through `motion` and load.
 ### Manual
-- [ ] In `vault-test`: a still waist-high mantle reads as a subtle nudge, a sprint-jump catch as a hard snap and lean, and a long fall into a ledge heaviest. A pool exit stays gentle.
-- [ ] With scale pushed to an absurd value, the camera looks exaggerated but never flips or tears.
+- [ ] In `vault-test`: a still waist-high mantle reads as a subtle nudge, a sprint-jump catch as a hard snap and lean, a long fall into a ledge heaviest. A pool exit stays gentle.
+- [ ] With expressions pushed absurdly high, the camera looks exaggerated but never flips or tears.
 - [ ] Reduced motion on: no vault pose or kick, whatever the entry.
 
 ## Path
 
-- Precedents: `sdk/lib/activation.ts` and `activation.luau` (namespace, builder, `numberRef`/`numberNode` conversion); `foundation::weapon_activation::compiled` (`ActivationScope`, `CompiledScalar`, `check_ir` bounds, warn-once); `foundation::movement::scope::MovementScope` (indexed multi-input scope, Bool inputs, `for_validation` binding at install).
-- Seams: `scripting-core` `movement_view_feel` parsers (`vault_view_params_from_js`, `optional_impulse_state_from_js`, and their Lua twins); `foundation` `VaultViewParams` and `ImpulseStateParams` take `NumberOrIr` scale fields (`ViewFeelParams` is serde, so store IR there and bind where view feel is driven); `postretro::view_feel::vault::evaluate` and `view_feel::impulse` apply scale; `frame_eye::ViewFeelDriver` already supplies velocity and grounded per frame; `frame_loop::presented_vault` reads the payload.
-- Shape chosen: per-channel `scale` plus builders, mirroring charge. Strongest rival: one `intensity` multiplier. It is simpler, but it is a second vocabulary beside charge's and cannot keep roll gentle while pitch hits hard.
-- First slice: pose `scale` from `speed` alone on the dev player in `vault-test`. It falsifies the riskiest assumption, that a frozen entry scale reads as a different catch rather than as noise.
-- `view_feel.rs` sits past 1300 lines. Put the entry tracker and scale evaluation beside `vault.rs`, and keep `view_feel.rs` to wiring.
-- Update `docs/scripting-reference.md` beside its view-feel section, and add the carry-over note to `movement--state-view-pose`.
+- Precedents: dash's `NumberOrIr` fields, `DashPrograms` binding at component construction, and `resolve_number`'s clamp (`physics::movement::intents::dash`); `foundation::movement::scope::MovementScope` (indexed inputs, `for_validation`); `sdk/lib/activation.ts` (frozen fluent namespace); `sdk/lib/util/expression_refs.ts` (`numberNode`/`boolNode`, whose WeakMap is why lowering must happen SDK-side); `defineEntity`'s `lowerLoadoutReferences` in `sdk/lib/data_script.ts` and `.luau`.
+- Seams: `VaultViewParams` and the vault `ImpulseStateParams` take `NumberOrIr` (`ViewFeelParams` is serde; bind where view feel is driven, not in the descriptor); `scripting-core` `movement_view_feel` parsers; `postretro::view_feel::vault::evaluate` and `view_feel::impulse`; `frame_eye::ViewFeelDriver`, which already carries velocity and grounded per frame; `frame_loop::presented_vault`, which reads the payload.
+- Shape chosen: expression-valued fields plus a shared `motion` vocabulary. Strongest rival: a charge-style per-channel `scale` sidecar. It reads as base times multiplier, but it cannot shape timing or split the enter and exit kicks, and it would duplicate the fields once `pose.vault` widens. Research: `research.md`.
+- First slice: `pitch` from `motion.speed` on the dev player in `vault-test`. It falsifies the riskiest assumption, that a frozen entry value reads as a different catch rather than as noise.
+- `view_feel.rs` sits past 1300 lines. Put the tracker and the vault evaluation beside `vault.rs`, and keep `view_feel.rs` to wiring.
+- Update `docs/scripting-reference.md`: its dash read-name table becomes the `motion` table with a per-field supported-inputs column. Add a carry-over note to `movement--state-view-pose`: the fold keeps the vault row's progress-share timing (`easeIn`/`easeOut`) as expression fields, since its rate-based rows would otherwise drop them.
+- At promotion: `scripting.md` §11's adopter list gains this as the first presentation-side adopter (evaluated per frame, not per tick, and free of determinism constraints). `movement.md` §2's "no reads outside the movement component" line notes that view-feel inputs are render-side reads it does not govern.
 
 ## Boundary inventory
 
-camelCase on script sides, snake_case in Rust. No FGD, no PRL, not on the wire. Both TypeScript and Luau ship.
+camelCase on script sides, snake_case in Rust. No FGD, no PRL, not on the wire. TypeScript and Luau both ship.
 
 | Name | Rust | JS / TS | Luau |
 |---|---|---|---|
-| namespace | input names bound by a view-feel entry scope | `vaultEntry` | `vaultEntry` |
-| inputs | `speed`, `height`, `airborneMs`, `verticalSpeed`, `fromAir`, `fromGround`, `fromSwim` (IR input names) | same, `NumberRef` / `BoolRef` | same |
-| builders | none (SDK only) | `vaultEntry.pose`, `vaultEntry.kick` | same |
-| pose scale | `VaultViewParams::scale` (pitch, roll, fov as `NumberOrIr`) | `viewFeel.vault.scale` | same |
-| kick scale | `ImpulseStateParams::scale`, vault row only | `impulse.states.vault.scale` | same |
+| namespace | IR input names, bound per field site | `motion` | `motion` |
+| shared inputs | `speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs` (existing read names) | same, `NumberRef` / `BoolRef` | same |
+| new inputs | `swimming`, `airborneMs`, `climbHeight`; vault view sites only | same | same |
+| vault pose fields | `VaultViewParams` `pitch`/`roll`/`fov`/`ease_in`/`ease_out` as `NumberOrIr` | `viewFeel.vault.*` | same |
+| vault kick fields | vault `ImpulseStateParams` `tension`, `enter`, `exit` channels as `NumberOrIr` | `impulse.states.vault.*` | same |
 
 ## Open questions
 
-- Where evaluation and bound programs live (`ViewFeelState` versus the driver), and how the first frame with a vault is detected when the entry edge and payload arrive on different frames — **delegated**
-- Exact `check_ir` node and depth bounds for view-feel scale programs — **delegated**
+- Where evaluation and bound programs live (`ViewFeelState` versus the driver); how the first frame with a vault is detected when the edge and the payload arrive on different frames; and whether the vault kick row gets its own type or non-vault rows reject IR at parse — **delegated**
+- `check_ir` node and depth bounds for view-feel programs — **delegated**

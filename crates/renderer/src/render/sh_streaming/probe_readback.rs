@@ -1,6 +1,7 @@
 // Bounded asynchronous irradiance readback for streamed probe markers.
 // See: context/lib/rendering_pipeline.md §Cluster SH residency
 
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
@@ -23,6 +24,8 @@ use crate::render::uploads::UploadQueue;
 // A marker spends three segments; reduction never exceeds the drawing budget.
 const MAX_PROBES: usize = MAX_DEBUG_SEGMENTS / 3;
 const READBACK_INTERVAL: Duration = Duration::from_millis(100);
+mod cache;
+
 const SHADER: &str = include_str!("../../shaders/sh_probe_readback.wgsl");
 
 #[repr(C)]
@@ -36,6 +39,27 @@ struct Request {
 struct Identity {
     dense: usize,
     word: u32,
+    corners: u8,
+    dependencies: u8,
+    incarnation: u64,
+    valid: bool,
+}
+
+#[derive(Default)]
+struct SlotIncarnation {
+    incarnation: u64,
+    validation_epoch: u64,
+    corners: u8,
+    referenced: bool,
+}
+
+impl SlotIncarnation {
+    fn new(incarnation: u64) -> Self {
+        Self {
+            incarnation,
+            ..Default::default()
+        }
+    }
 }
 
 struct ProbeColor {
@@ -153,6 +177,12 @@ pub(super) struct StreamedProbeReadback {
     requests: Vec<Request>,
     identities: Vec<Identity>,
     colors: Vec<ProbeColor>,
+    // Only slots referenced by the bounded cache/in-flight sample are tracked.
+    // Removing a released slot rejects ABA reuse even when its word is identical.
+    slot_incarnations: BTreeMap<u32, SlotIncarnation>,
+    next_incarnation: u64,
+    validation_epoch: u64,
+    sample_words_changed: bool,
 }
 
 impl StreamedProbeReadback {
@@ -167,21 +197,6 @@ impl StreamedProbeReadback {
 
     pub(super) fn wanted(&self) -> bool {
         self.wanted
-    }
-
-    // Slot reuse and even an ABA reassignment invalidate both cached and pending colors.
-    pub(super) fn invalidate(&mut self) {
-        self.epoch = self.epoch.wrapping_add(1);
-        self.colors.clear();
-    }
-
-    pub(super) fn color(&self, dense: usize, sampled_word: u32) -> Option<[f32; 3]> {
-        let index = self
-            .colors
-            .binary_search_by_key(&dense, |color| color.identity.dense)
-            .ok()?;
-        let color = &self.colors[index];
-        (sampled_word != 0 && color.identity.word == sampled_word).then_some(color.rgb)
     }
 
     fn wants_copy(&self, now: Instant) -> bool {
@@ -209,13 +224,14 @@ impl StreamedProbeReadback {
                     .slice(..(self.identities.len() * 16) as u64)
                     .get_mapped_range()
                     .expect("successful marker readback mapping");
-                self.colors.clear();
                 if self.wanted && self.copied_epoch == self.epoch {
+                    self.colors.clear();
                     self.colors.extend(
                         self.identities
                             .iter()
                             .copied()
                             .zip(view.as_chunks::<16>().0)
+                            .filter(|(identity, _)| identity.valid)
                             .map(|(identity, bytes)| ProbeColor {
                                 identity,
                                 rgb: std::array::from_fn(|channel| {
@@ -231,9 +247,11 @@ impl StreamedProbeReadback {
                 drop(view);
                 gpu.readback.unmap();
                 self.mapping = false;
+                self.identities.clear();
             }
             2 => {
                 self.mapping = false;
+                self.identities.clear();
             }
             _ => {}
         }
@@ -265,8 +283,19 @@ impl ShResidencyState {
         self.probe_readback.set_overlay(wanted, camera, radius);
     }
 
-    pub(in crate::render) fn probe_overlay_wanted(&self) -> bool {
-        self.probe_readback.wanted()
+    pub(in crate::render) fn probe_overlay_bricks(&self) -> Option<([u32; 3], [u32; 3])> {
+        let readback = &self.probe_readback;
+        if !readback.wanted() {
+            return None;
+        }
+        crate::render::sh_diagnostics_grid::GridBounds::around_sphere(
+            self.grid_dimensions,
+            Vec3::from(self.base_metadata.grid_origin),
+            Vec3::from(self.base_metadata.cell_size),
+            readback.camera,
+            readback.radius,
+        )
+        .brick_bounds()
     }
 
     pub(in crate::render) fn probe_irradiance(&self, dense: usize) -> Option<[f32; 3]> {
@@ -299,6 +328,7 @@ impl ShResidencyState {
         if readback.requests.is_empty() {
             return;
         }
+        readback.capture_incarnations();
         let gpu = readback.gpu.get_or_insert_with(|| GpuReadback::new(device));
         let params = [
             readback.requests.len() as u32,
@@ -376,12 +406,18 @@ fn collect_requests(
     let origin = Vec3::from(base.grid_origin);
     let cell = Vec3::from(base.cell_size);
     let mut markers = 0;
-    for (dense, &word) in words.iter().enumerate() {
-        let coord = [
-            dense as u32 % nx,
-            (dense as u32 / nx) % ny,
-            dense as u32 / (nx * ny),
-        ];
+    let bounds = crate::render::sh_diagnostics_grid::GridBounds::around_sphere(
+        base.grid_dimensions,
+        origin,
+        cell,
+        camera,
+        radius,
+    );
+    for coord in bounds.coordinates() {
+        let dense = (coord[0] + coord[1] * nx + coord[2] * nx * ny) as usize;
+        let Some(&word) = words.get(dense) else {
+            break;
+        };
         let position = origin + Vec3::from(coord.map(|v| v as f32)) * cell;
         if position.distance_squared(camera) > radius * radius {
             continue;
@@ -390,19 +426,108 @@ fn collect_requests(
             break;
         }
         markers += 1;
-        if let Some(request) = probe_request(dense, base.grid_dimensions, words) {
+        if let Some((request, dependencies)) =
+            probe_request_with_dependencies(dense, base.grid_dimensions, words)
+        {
             requests.push(request);
-            identities.push(Identity { dense, word });
+            identities.push(Identity {
+                dense,
+                word,
+                corners: corner_mask(&request),
+                dependencies,
+                incarnation: 0,
+                valid: true,
+            });
         }
     }
 }
 
+fn slot(word: u32) -> u32 {
+    decode_probe_indirection_word(word).slot
+}
+
+fn corner_mask(request: &Request) -> u8 {
+    request
+        .weights
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (corner, &weight)| {
+            mask | (u8::from(weight > 0.0) << corner)
+        })
+}
+
+fn identity_matches(
+    identity: Identity,
+    dims: [u32; 3],
+    words: &[u32],
+    incarnations: &mut BTreeMap<u32, SlotIncarnation>,
+    validation_epoch: u64,
+) -> bool {
+    if !identity.valid || words.get(identity.dense) != Some(&identity.word) {
+        return false;
+    }
+    let Some(current) = incarnations.get_mut(&slot(identity.word)) else {
+        return false;
+    };
+    if current.incarnation != identity.incarnation {
+        return false;
+    }
+    if decode_probe_indirection_word(identity.word).level != 1 {
+        return true;
+    }
+    // All markers of one atomic L1 node share corner availability; only their
+    // positive-weight dependencies differ. Rebuild availability once per node.
+    if current.validation_epoch != validation_epoch {
+        current.corners = sampled_node_corner_mask(identity.dense, identity.word, dims, words);
+        current.validation_epoch = validation_epoch;
+    }
+    current.corners & identity.dependencies == identity.corners
+}
+
+fn sampled_node_corner_mask(dense: usize, word: u32, dims: [u32; 3], words: &[u32]) -> u8 {
+    let [nx, ny, _] = dims;
+    let coord = [
+        dense as u32 % nx,
+        (dense as u32 / nx) % ny,
+        dense as u32 / (nx * ny),
+    ];
+    let scale = decode_probe_indirection_word(word).scale as u8;
+    let Some(local) = node_local_coord(coord, scale) else {
+        return 0;
+    };
+    let origin = std::array::from_fn(|axis| coord[axis] - local[axis]);
+    let mut mask = 0;
+    for corner in 0..8u8 {
+        let Some(global) = node_corner_coord(origin, scale, corner) else {
+            continue;
+        };
+        if global.iter().zip(dims).any(|(&v, dim)| v >= dim) {
+            continue;
+        }
+        let index = (global[0] + global[1] * nx + global[2] * nx * ny) as usize;
+        if words.get(index) == Some(&word) {
+            mask |= 1 << corner;
+        }
+    }
+    mask
+}
+
+#[cfg(test)]
 fn probe_request(dense: usize, dims: [u32; 3], words: &[u32]) -> Option<Request> {
+    probe_request_with_dependencies(dense, dims, words).map(|(request, _)| request)
+}
+
+fn probe_request_with_dependencies(
+    dense: usize,
+    dims: [u32; 3],
+    words: &[u32],
+) -> Option<(Request, u8)> {
     let word = decode_probe_indirection_word(*words.get(dense)?);
     if !word.valid {
         return None;
     }
     let mut request = Request::default();
+    let mut dependencies = 1;
     match word.level {
         0 | 2 => {
             request.slots[0] = word.slot;
@@ -418,7 +543,12 @@ fn probe_request(dense: usize, dims: [u32; 3], words: &[u32]) -> Option<Request>
             let local = node_local_coord(coord, word.scale as u8)?;
             let origin = std::array::from_fn(|axis| coord[axis] - local[axis]);
             let mut sum = 0.0;
+            dependencies = 0;
             for corner in 0..8u8 {
+                let weight = node_l1_corner_weight(local, corner, word.scale as u8)?;
+                if weight > 0.0 {
+                    dependencies |= 1 << corner;
+                }
                 let global = node_corner_coord(origin, word.scale as u8, corner)?;
                 if global.iter().zip(dims).any(|(&v, dim)| v >= dim) {
                     continue;
@@ -432,7 +562,6 @@ fn probe_request(dense: usize, dims: [u32; 3], words: &[u32]) -> Option<Request>
                 {
                     continue;
                 }
-                let weight = node_l1_corner_weight(local, corner, word.scale as u8)?;
                 request.slots[corner as usize] = word.slot + u32::from(corner);
                 request.weights[corner as usize] = weight;
                 sum += weight;
@@ -446,7 +575,7 @@ fn probe_request(dense: usize, dims: [u32; 3], words: &[u32]) -> Option<Request>
         }
         _ => return None,
     }
-    Some(request)
+    Some((request, dependencies))
 }
 
 #[cfg(test)]

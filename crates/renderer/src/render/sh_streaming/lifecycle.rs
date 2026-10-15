@@ -16,13 +16,6 @@ impl ShResidencyState {
         // Validate the complete public handoff before target transitions,
         // retirement, promotion, eviction, or installation can mutate state.
         self.validate_batch_contract(&batch)?;
-        #[cfg(feature = "dev-tools")]
-        if !batch.ready.is_empty()
-            || !batch.evictions.is_empty()
-            || !self.pending_promotion.is_empty()
-        {
-            self.probe_readback.invalidate();
-        }
         self.apply_targets(device, queue, &batch)?;
         self.release_retired_generations();
         // Promotion and eviction share one upload batch, submitted before any
@@ -40,6 +33,9 @@ impl ShResidencyState {
             selection_weights,
         };
         self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
+        #[cfg(feature = "dev-tools")]
+        self.probe_readback
+            .reconcile(self.grid_dimensions, &self.sampled_words);
         Ok(outcome)
     }
 

@@ -165,7 +165,7 @@ impl UploadOrderSh {
         assert_eq!(outcome.accepted, [cluster]);
     }
 
-    fn drain_many(
+    pub(in crate::render::sh_streaming) fn drain_many(
         &mut self,
         device: &wgpu::Device,
         queue: &UploadQueue,
@@ -188,6 +188,32 @@ impl UploadOrderSh {
                 ..Default::default()
             },
         )
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub(in crate::render::sh_streaming) fn evict_and_reinstall(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &UploadQueue,
+        cluster: u32,
+    ) {
+        let ready = self.prepared(cluster);
+        self.state.targets.remove(&cluster);
+        let mut uploads = self.state.begin_uploads(0);
+        self.state.evict(&mut uploads, cluster).unwrap();
+        self.state.submit_uploads(uploads, device, queue);
+        self.state.targets.insert(cluster);
+        let mut gpu = super::super::InstallGpu {
+            device,
+            queue,
+            sh: &mut self.sh,
+            uniform_bind_group_layout: &self.uniforms,
+            selection_weights: &self.weights,
+        };
+        self.state.install(Some(&mut gpu), &ready).unwrap();
+        self.state
+            .probe_readback
+            .reconcile(self.state.grid_dimensions, &self.state.sampled_words);
     }
 
     pub(crate) fn compose(&mut self, device: &wgpu::Device, queue: &UploadQueue) {

@@ -30,6 +30,10 @@ pub(super) struct GateInputs<'a> {
     pub(super) fog_cells: &'a [u32],
     /// Mover and forward-mesh bounds; these move, so they walk bricks.
     pub(super) dynamic_regions: &'a [ShSampleRegion],
+    /// Diagnostic probes already selected in grid coordinates. A world-space
+    /// round trip is not conservative for their rounded marker positions.
+    #[cfg(feature = "dev-tools")]
+    pub(super) probe_bricks: Option<([u32; 3], [u32; 3])>,
     /// The empty-fog-reach sentinel: every resident row is gated.
     pub(super) fog_draw_all: bool,
 }
@@ -177,6 +181,16 @@ impl SampleRegionIndex {
             else {
                 continue;
             };
+            for brick in brick_rows_in(bricks) {
+                let row = affinity_row(brick, self.dimensions)?;
+                if is_resident(row) && first_sight(&mut self.row_stamps, stamp, row)? {
+                    rows.push(row);
+                }
+            }
+        }
+
+        #[cfg(feature = "dev-tools")]
+        if let Some(bricks) = inputs.probe_bricks {
             for brick in brick_rows_in(bricks) {
                 let row = affinity_row(brick, self.dimensions)?;
                 if is_resident(row) && first_sight(&mut self.row_stamps, stamp, row)? {
@@ -336,6 +350,8 @@ mod tests {
                 visible_cells: &self.visible,
                 fog_cells: &self.fog,
                 dynamic_regions: &self.dynamic,
+                #[cfg(feature = "dev-tools")]
+                probe_bricks: None,
                 fog_draw_all: self.fog_draw_all,
             }
         }

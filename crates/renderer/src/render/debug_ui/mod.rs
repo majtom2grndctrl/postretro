@@ -244,7 +244,7 @@ impl DebugUi {
             winit_state,
             visible: false,
             panel_state: DiagnosticsState::default(),
-            sh_diagnostics_state: ShDiagnosticsState::default(),
+            sh_diagnostics_state: ShDiagnosticsState::from_environment(),
             pending_textures: PendingTextures::default(),
         }
     }

@@ -36,32 +36,31 @@ impl ShResidencyState {
         &self.base_metadata
     }
 
-    /// Classify every dense probe by the renderer's own residency mirrors, in
-    /// the same x-fastest order as `base_metadata().probes`. `dense_owner`,
-    /// `compose_words`, and `sampled_words` are each sized to
-    /// `base.probes.len()` at construction (`from_parts`/`setup::from_manifest`)
-    /// and indexed by the same dense-probe id the loader assigns from id-49's
-    /// `DenseProbe` resource ranges — one entry per dense probe, matching
-    /// `base_metadata().probes`'s order.
-    pub(in crate::render) fn probe_residency_classes(&self) -> Vec<ProbeResidencyClass> {
-        self.base_metadata
+    /// Read only the marker being drawn; a small overlay never classifies the whole level.
+    pub(in crate::render) fn probe_residency_class(&self, i: usize) -> ProbeResidencyClass {
+        let validity = self
+            .base_metadata
             .probes
-            .iter()
-            .enumerate()
-            .map(|(i, probe)| {
-                let owner_is_target = self
-                    .dense_owner
-                    .get(i)
-                    .copied()
-                    .flatten()
-                    .is_some_and(|owner| self.targets.contains(&owner));
-                classify_probe(
-                    probe.validity,
-                    self.sampled_words.get(i).copied().unwrap_or(0),
-                    self.compose_words.get(i).copied().unwrap_or(0),
-                    owner_is_target,
-                )
-            })
+            .get(i)
+            .map_or(0, |probe| probe.validity);
+        let sampled = self.sampled_words.get(i).copied().unwrap_or(0);
+        let composed = self.compose_words.get(i).copied().unwrap_or(0);
+        let owner_is_target = validity != 0
+            && sampled == 0
+            && composed == 0
+            && self
+                .dense_owner
+                .get(i)
+                .copied()
+                .flatten()
+                .is_some_and(|owner| self.targets.contains(&owner));
+        classify_probe(validity, sampled, composed, owner_is_target)
+    }
+
+    #[cfg(test)]
+    fn probe_residency_classes(&self) -> Vec<ProbeResidencyClass> {
+        (0..self.base_metadata.probes.len())
+            .map(|i| self.probe_residency_class(i))
             .collect()
     }
 }

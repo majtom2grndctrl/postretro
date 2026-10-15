@@ -306,6 +306,15 @@ impl DebugLineRenderer {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn segment_count(&self) -> usize {
+        self.cpu_vertices.len() / 2
+    }
+
+    pub(super) fn depth_tested_overflowed(&self) -> bool {
+        self.overflowed_this_frame
+    }
+
     pub fn clear(&mut self) {
         self.cpu_vertices.clear();
         self.overlay_cpu_vertices.clear();

@@ -349,9 +349,11 @@ impl ReflectionProbesSection {
         let distances = r
             .take(probe_count * distance_tile_bytes, "distance payload")?
             .to_vec();
-        if let Some(texel) = distances.chunks_exact(2).position(|bits| {
-            !f16_bits_are_finite_non_negative(u16::from_le_bytes([bits[0], bits[1]]))
-        }) {
+        let (texels, _) = distances.as_chunks::<2>();
+        if let Some(texel) = texels
+            .iter()
+            .position(|bits| !f16_bits_are_finite_non_negative(u16::from_le_bytes(*bits)))
+        {
             return invalid(format!(
                 "distance payload holds a negative or non-finite value at texel {texel}"
             ));

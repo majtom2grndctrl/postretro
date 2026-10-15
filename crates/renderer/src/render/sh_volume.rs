@@ -324,6 +324,20 @@ impl AnimatedLightBuffers {
         self.dirty = true;
     }
 
+    /// Overwrite mirror record `slot`, the single dummy record of a level with
+    /// no animated lights included, and mark the mirror for the frame's flush.
+    /// GPU tests stand in for the light bridge with it.
+    #[cfg(test)]
+    pub(crate) fn write_record_for_test(
+        &mut self,
+        slot: usize,
+        bytes: &[u8; ANIMATION_DESCRIPTOR_SIZE],
+    ) {
+        let start = slot * ANIMATION_DESCRIPTOR_SIZE;
+        self.descriptor_mirror[start..start + ANIMATION_DESCRIPTOR_SIZE].copy_from_slice(bytes);
+        self.dirty = true;
+    }
+
     /// Upload the CPU mirror to the GPU descriptor buffer. No-op when clean.
     /// Must be called before the compose pass and forward pass each frame.
     pub fn upload_descriptors_if_dirty(&mut self, queue: &crate::render::uploads::UploadQueue) {

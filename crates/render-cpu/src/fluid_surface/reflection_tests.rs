@@ -20,6 +20,7 @@ const TILE: [u32; 2] = [
     REFLECTION_PROBE_TILE_DIMENSION,
     REFLECTION_PROBE_TILE_BORDER,
 ];
+const NO_LIGHTS: &FluidReflectionLights<'static> = &FluidReflectionLights::NONE;
 
 fn assert_close(actual: f32, expected: f32, tolerance: f32, what: &str) {
     assert!(
@@ -313,6 +314,7 @@ fn the_fragment_reference_samples_toward_the_box_hit_from_the_capture_point() {
             &pool_fragment(camera, world_position),
             &probes,
             TILE,
+            NO_LIGHTS,
             |layer, uv| {
                 seen.set(Some((layer, uv)));
                 Vec3::ONE
@@ -419,7 +421,7 @@ fn reflectivity_zero_returns_the_surface_unchanged() {
         ..pool_fragment(camera, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &off, &probes, TILE, red),
+        reflection_fragment(surface, &off, &probes, TILE, NO_LIGHTS, red),
         surface
     );
     let on = reflection_fragment(
@@ -427,6 +429,7 @@ fn reflectivity_zero_returns_the_surface_unchanged() {
         &pool_fragment(camera, world_position),
         &probes,
         TILE,
+        NO_LIGHTS,
         red,
     );
     assert_ne!(on, surface);
@@ -452,6 +455,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
             &pool_fragment(below, world_position),
             &probes,
             TILE,
+            NO_LIGHTS,
             red
         ),
         surface,
@@ -462,6 +466,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         &pool_fragment(above, world_position),
         &probes,
         TILE,
+        NO_LIGHTS,
         red,
     );
     assert!(
@@ -475,7 +480,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &flipped, &probes, TILE, red),
+        reflection_fragment(surface, &flipped, &probes, TILE, NO_LIGHTS, red),
         surface
     );
     // A face bound to no probe renders as today.
@@ -484,7 +489,7 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
         ..pool_fragment(above, world_position)
     };
     assert_eq!(
-        reflection_fragment(surface, &unbound, &probes, TILE, red),
+        reflection_fragment(surface, &unbound, &probes, TILE, NO_LIGHTS, red),
         surface
     );
 }
@@ -525,7 +530,7 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         // With fog: surface over fog over scene, then the reflection over it.
         let fogged = fog_fragment(rgb, alpha, &fog);
         assert!(fogged.w >= alpha && fogged.w > 0.0, "fog adds coverage");
-        let out = reflection_fragment(fogged, &frag, &probes, TILE, |_, _| reflection);
+        let out = reflection_fragment(fogged, &frag, &probes, TILE, NO_LIGHTS, |_, _| reflection);
         let expected = reflection * f + over(fogged, scene) * (1.0 - f);
         assert_vec_close(over(out, scene), expected, 1.0e-5, "fogged composite");
         assert_close(out.w, f + (1.0 - f) * fogged.w, 1.0e-6, "fogged coverage");
@@ -537,7 +542,7 @@ fn the_composite_is_reflection_over_surface_over_fog_over_scene() {
         };
         let surface = fog_fragment(rgb, alpha, &clear);
         assert_eq!(surface, rgb.extend(alpha));
-        let out = reflection_fragment(surface, &frag, &probes, TILE, |_, _| reflection);
+        let out = reflection_fragment(surface, &frag, &probes, TILE, NO_LIGHTS, |_, _| reflection);
         let expected = reflection * f + (rgb * alpha + scene * (1.0 - alpha)) * (1.0 - f);
         assert_vec_close(over(out, scene), expected, 1.0e-5, "clear composite");
         assert_close(out.w, f + (1.0 - f) * alpha, 1.0e-6, "clear coverage");
@@ -574,7 +579,7 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
     for mask in [all, all | 0x80] {
         assert!(reflection_mask_on(mask));
         assert_ne!(
-            reflection_fragment(surface, &with_mask(mask), &probes, TILE, red),
+            reflection_fragment(surface, &with_mask(mask), &probes, TILE, NO_LIGHTS, red),
             surface
         );
     }
@@ -582,11 +587,460 @@ fn the_probe_term_draws_only_under_the_all_terms_mask() {
         let mask = all & !term.bits();
         assert!(!reflection_mask_on(mask), "{}", term.label());
         assert_eq!(
-            reflection_fragment(surface, &with_mask(mask), &probes, TILE, red),
+            reflection_fragment(surface, &with_mask(mask), &probes, TILE, NO_LIGHTS, red),
             surface,
             "{} off",
             term.label()
         );
     }
     assert!(!reflection_mask_on(0));
+}
+
+// --- Acceptance rows 18–20: live lighting by light share --------------------
+
+/// A flat (curveless) descriptor: its live value is `base_color` while
+/// active, 0 while not.
+fn flat_light(base_color: [f32; 3], is_active: bool) -> AnimatedLightScaleDescriptor<'static> {
+    AnimatedLightScaleDescriptor {
+        period: 1.0,
+        phase: 0.0,
+        base_color,
+        brightness: &[],
+        color: &[],
+        is_active,
+    }
+}
+
+/// A flickering descriptor: brightness swings 0 → 2 → 0.5 → 1.5 over 0.5 s.
+fn flicker(base_color: [f32; 3], phase: f32) -> AnimatedLightScaleDescriptor<'static> {
+    AnimatedLightScaleDescriptor {
+        period: 0.5,
+        phase,
+        base_color,
+        brightness: &[0.0, 2.0, 0.5, 1.5],
+        color: &[],
+        is_active: true,
+    }
+}
+
+/// One packed share entry, as the probe table carries it.
+fn entry(
+    roster_index: u32,
+    reference: [f32; 3],
+    shares: [[f32; 3]; REFLECTION_PROBE_LOBE_COUNT],
+) -> FluidProbeLightGpu {
+    FluidProbeLightGpu::pack(&ReflectionProbeLightShare {
+        roster_index,
+        reference,
+        shares,
+    })
+}
+
+fn unused_entries() -> [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] {
+    [FluidProbeLightGpu::pack(&ReflectionProbeLightShare::UNUSED);
+        REFLECTION_PROBE_LIGHTS_PER_PROBE]
+}
+
+/// Directions spread over the whole sphere (a Fibonacci lattice), the axes
+/// and the straight-down limit included.
+fn sphere_directions() -> Vec<Vec3> {
+    let count = 400;
+    let golden = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    let mut directions: Vec<Vec3> = (0..count)
+        .map(|i| {
+            let y = 1.0 - 2.0 * (i as f32 + 0.5) / count as f32;
+            let radius = (1.0 - y * y).sqrt();
+            let theta = golden * i as f32;
+            Vec3::new(radius * theta.cos(), y, radius * theta.sin())
+        })
+        .collect();
+    directions.extend([Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z, -Vec3::Y]);
+    directions
+}
+
+fn lights<'a>(
+    descriptors: &'a [AnimatedLightScaleDescriptor<'a>],
+    time: f32,
+) -> FluidReflectionLights<'a> {
+    FluidReflectionLights { descriptors, time }
+}
+
+// Pin P3: with no animated lights, or with every stored light's live value at
+// the reference its entry stores, the ratio is 1 in every direction and the
+// capture shows unscaled.
+#[test]
+fn ratio_is_one_with_no_lights_or_every_light_at_its_reference() {
+    for direction in sphere_directions() {
+        assert_eq!(
+            reflection_ratio(&unused_entries(), direction, NO_LIGHTS),
+            Vec3::ONE,
+            "no lights, {direction}"
+        );
+    }
+
+    // Four flat lights at their references, zero channels included.
+    let references = [
+        [0.5, 1.0, 2.0],
+        [3.0, 0.0, 0.0],
+        [0.25, 0.25, 0.25],
+        [0.0, 4.0, 1.0],
+    ];
+    let shares = [
+        [0.3, 0.2, 0.1],
+        [0.1; 3],
+        [0.0; 3],
+        [0.25; 3],
+        [0.5, 0.0, 0.2],
+    ];
+    let descriptors: Vec<_> = references.iter().map(|&r| flat_light(r, true)).collect();
+    let flat = lights(&descriptors, 3.25);
+    let stored: [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] =
+        std::array::from_fn(|i| entry(i as u32, references[i], shares));
+    for direction in sphere_directions() {
+        assert_eq!(
+            reflection_ratio(&stored, direction, &flat),
+            Vec3::ONE,
+            "flat lights at reference, {direction}"
+        );
+    }
+
+    // A flickering light whose live value this frame equals its stored
+    // reference also reads 1.
+    let flickering = [flicker([1.0, 0.5, 0.25], 0.1)];
+    let now = lights(&flickering, 0.7);
+    let live = reflection_light_value(&now, 0);
+    let mut stored = unused_entries();
+    stored[0] = entry(0, live.to_array(), [[0.6; 3]; REFLECTION_PROBE_LOBE_COUNT]);
+    for direction in sphere_directions() {
+        assert_vec_close(
+            reflection_ratio(&stored, direction, &now),
+            Vec3::ONE,
+            1.0e-6,
+            "flicker at its reference",
+        );
+    }
+}
+
+// Pin P6: the compiler stores K = 4 lights per probe; a fifth light lighting
+// the probe has no entry, so however it flickers or switches the ratio does
+// not move: it holds its reference. Stored, the same flicker would move it.
+#[test]
+fn a_light_past_k_holds_its_reference() {
+    let references = [[1.0; 3], [2.0, 1.0, 0.5], [0.5; 3], [1.0, 0.0, 1.0]];
+    let shares = [[0.2; 3]; REFLECTION_PROBE_LOBE_COUNT];
+    let stored: [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] =
+        std::array::from_fn(|i| entry(i as u32, references[i], shares));
+    for (time, fifth) in [
+        (0.0, flicker([5.0, 5.0, 5.0], 0.0)),
+        (0.13, flicker([5.0, 5.0, 5.0], 0.0)),
+        (0.37, flicker([0.1, 2.0, 0.0], 0.4)),
+        (1.0, flat_light([9.0; 3], false)),
+    ] {
+        let mut descriptors: Vec<_> = references.iter().map(|&r| flat_light(r, true)).collect();
+        descriptors.push(fifth);
+        let frame = lights(&descriptors, time);
+        for direction in sphere_directions() {
+            assert_eq!(
+                reflection_ratio(&stored, direction, &frame),
+                Vec3::ONE,
+                "the fifth light at t = {time} moved the ratio toward {direction}"
+            );
+        }
+        // Had the compiler stored it in the fourth entry, it would show.
+        let mut covered = stored;
+        covered[3] = entry(4, [1.0; 3], shares);
+        if (reflection_light_value(&frame, 4) - Vec3::ONE)
+            .abs()
+            .max_element()
+            > 1.0e-3
+        {
+            assert_ne!(reflection_ratio(&covered, Vec3::Y, &frame), Vec3::ONE);
+        }
+    }
+}
+
+/// Step between adjacent lookup directions in the P7 sweep.
+const P7_STEP_RADIANS: f32 = 1.0e-3;
+/// Largest change of the ratio between two lookup directions one step apart,
+/// for one light at a change of at most 1 in any channel. The lobe weights
+/// are C¹ and move by at most one unit of weight per radian in total, so the
+/// blend moves by at most the step; a hard lobe assignment would jump by the
+/// full share difference (here up to 1) at an edge.
+const P7_RATIO_STEP_EPSILON: f32 = 2.0e-3;
+
+// Pin P7: sweep the lookup direction across every lobe edge — up against each
+// horizontal lobe along meridians, and each horizontal lobe against its
+// neighbours along parallels, below the horizon too — with one light away
+// from its reference: adjacent samples differ by at most the pinned epsilon,
+// while the ratio itself spans the lobes' different shares.
+#[test]
+fn ratio_is_continuous_across_every_lobe_edge() {
+    // Per channel, adjacent lobes hold different shares: up, +X, −X, +Z, −Z.
+    let shares = [
+        [0.5, 0.0, 1.0],
+        [1.0, 1.0, 0.0],
+        [1.0, 1.0, 0.25],
+        [0.0, 1.0, 0.75],
+        [0.0, 1.0, 0.5],
+    ];
+    let mut stored = unused_entries();
+    stored[0] = entry(0, [1.0, 2.0, 0.5], shares);
+    // Twice the reference: a change of +1 in every channel.
+    let descriptors = [flat_light([2.0, 4.0, 1.0], true)];
+    let frame = lights(&descriptors, 0.0);
+    let ratio = |direction: Vec3| reflection_ratio(&stored, direction, &frame);
+
+    let steps = (std::f32::consts::TAU / P7_STEP_RADIANS) as usize + 1;
+    let mut sweeps: Vec<Vec<Vec3>> = Vec::new();
+    // Meridians: full great circles through up and down every 15°.
+    for azimuth_step in 0..12 {
+        let azimuth = (azimuth_step as f32 * 15.0).to_radians();
+        let across = Vec3::new(azimuth.cos(), 0.0, azimuth.sin());
+        sweeps.push(
+            (0..steps)
+                .map(|i| {
+                    let a = i as f32 * P7_STEP_RADIANS;
+                    across * a.cos() + Vec3::Y * a.sin()
+                })
+                .collect(),
+        );
+    }
+    // Parallels: every horizontal lobe edge, at and around the horizon.
+    for elevation in [-60.0f32, -30.0, -5.0, 0.0, 5.0, 30.0, 60.0, 85.0] {
+        let (y, radius) = (elevation.to_radians().sin(), elevation.to_radians().cos());
+        sweeps.push(
+            (0..steps)
+                .map(|i| {
+                    let a = i as f32 * P7_STEP_RADIANS;
+                    Vec3::new(radius * a.cos(), y, radius * a.sin())
+                })
+                .collect(),
+        );
+    }
+
+    let (mut lowest, mut highest) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for sweep in &sweeps {
+        for pair in sweep.windows(2) {
+            let (a, b) = (ratio(pair[0]), ratio(pair[1]));
+            let step = (a - b).abs().max_element();
+            assert!(
+                step <= P7_RATIO_STEP_EPSILON,
+                "ratio stepped {step} between {} and {}",
+                pair[0],
+                pair[1]
+            );
+            lowest = lowest.min(a);
+            highest = highest.max(a);
+        }
+    }
+    // The sweep is not flat: each channel spans its lobes' shares.
+    assert!(
+        (highest - lowest).min_element() > 0.4,
+        "{lowest} .. {highest}"
+    );
+}
+
+// Pin P8: shares in a lobe summing past 1 with every light at 0 give ratio 0,
+// never negative; a pure-red light's green and blue channels (reference 0)
+// add no term and no NaN, whatever its live value there.
+#[test]
+fn ratio_clamps_at_zero_and_a_zero_reference_channel_adds_no_term() {
+    let full = [[1.0; 3]; REFLECTION_PROBE_LOBE_COUNT];
+    let stored: [FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE] =
+        std::array::from_fn(|i| entry(i as u32, [1.0, 0.5, 2.0], full));
+    let off: Vec<_> = (0..REFLECTION_PROBE_LIGHTS_PER_PROBE)
+        .map(|_| flat_light([1.0, 0.5, 2.0], false))
+        .collect();
+    let dark = lights(&off, 0.0);
+    for direction in sphere_directions() {
+        let ratio = reflection_ratio(&stored, direction, &dark);
+        assert_eq!(
+            ratio,
+            Vec3::ZERO,
+            "four full shares at 0 toward {direction}"
+        );
+    }
+
+    let mut stored = unused_entries();
+    stored[0] = entry(0, [1.0, 0.0, 0.0], full);
+    for (live, expected) in [
+        ([3.0, 0.0, 0.0], Vec3::new(3.0, 1.0, 1.0)),
+        // Live green and blue the reference never held: still no term.
+        ([3.0, 5.0, 0.25], Vec3::new(3.0, 1.0, 1.0)),
+        ([0.0, 0.0, 0.0], Vec3::new(0.0, 1.0, 1.0)),
+    ] {
+        let descriptors = [flat_light(live, true)];
+        let frame = lights(&descriptors, 0.0);
+        for direction in sphere_directions() {
+            let ratio = reflection_ratio(&stored, direction, &frame);
+            assert!(ratio.is_finite(), "{ratio}");
+            assert_vec_close(ratio, expected, 1.0e-6, "pure-red light");
+        }
+    }
+    let change = reflection_light_change(Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO);
+    assert_eq!(change, Vec3::ZERO);
+}
+
+// Pin P28: a probe whose every share entry holds the reserved value reads 1
+// in every direction while the level's lights flicker and switch; the
+// reserved value indexes no descriptor, however many exist.
+#[test]
+fn a_probe_with_only_reserved_entries_reads_one_while_lights_flicker() {
+    let descriptors: Vec<_> = (0..8)
+        .map(|i| {
+            if i % 3 == 0 {
+                flat_light([1.0; 3], false)
+            } else {
+                flicker([i as f32, 1.0, 0.5], i as f32 * 0.1)
+            }
+        })
+        .collect();
+    for time in [0.0, 0.11, 0.29, 0.5, 2.71] {
+        let frame = lights(&descriptors, time);
+        assert!(!reflection_light_present(&frame, REFLECTION_PROBE_NO_LIGHT));
+        for direction in sphere_directions() {
+            assert_eq!(
+                reflection_ratio(&unused_entries(), direction, &frame),
+                Vec3::ONE
+            );
+        }
+    }
+    // An index past the bound descriptors indexes nothing either.
+    let frame = lights(&descriptors, 0.0);
+    assert!(reflection_light_present(&frame, 7));
+    assert!(!reflection_light_present(&frame, 8));
+}
+
+/// Per-lobe shares that differ by lobe, so the ratio depends on direction.
+const LOBED_SHARES: [[f32; 3]; REFLECTION_PROBE_LOBE_COUNT] = [
+    [0.6, 0.5, 0.4],
+    [0.1, 0.2, 0.3],
+    [0.9, 0.0, 0.5],
+    [0.3, 0.7, 0.2],
+    [0.0, 0.4, 0.8],
+];
+
+// Two fragments of one probe whose reflected rays leave the box at the same
+// wall point look the tile up in one direction and read one ratio, however
+// far apart they sit and whatever their Fresnel; a fragment looking another
+// way reads another ratio. At zero opacity the output colour is the scaled
+// capture alone.
+#[test]
+fn two_fragments_of_one_probe_read_one_ratio_for_one_direction() {
+    let mut probe = room_probe([0.0, 0.002, 0.0], 0);
+    probe.lights[0] = ReflectionProbeLightShare {
+        roster_index: 0,
+        reference: [1.0; 3],
+        shares: LOBED_SHARES,
+    };
+    let probes = [probe];
+    // The light is switched off.
+    let descriptors = [flat_light([1.0; 3], false)];
+    let frame = lights(&descriptors, 0.0);
+    let capture = Vec3::new(0.8, 0.6, 0.4);
+    let surface = Vec4::new(0.2, 0.3, 0.4, 0.0);
+    // The camera whose view mirrors about the plane y = 0 onto the ray from
+    // `p` through `hit`.
+    let camera_toward = |p: Vec3, hit: Vec3| Vec3::new(2.0 * p.x - hit.x, hit.y, 2.0 * p.z - hit.z);
+    let out = |p: Vec3, hit: Vec3| {
+        reflection_fragment(
+            surface,
+            &pool_fragment(camera_toward(p, hit), p),
+            &probes,
+            TILE,
+            &frame,
+            |_, _| capture,
+        )
+    };
+    let wall = Vec3::new(1.0, 2.0, 4.0);
+    let near = out(Vec3::new(0.0, 0.0, 1.0), wall);
+    let far = out(Vec3::new(-2.0, 0.0, -1.0), wall);
+    let lookup = wall - Vec3::from(probes[0].capture_point);
+    let ratio = reflection_ratio(&FluidProbeGpu::pack(&probes[0]).lights, lookup, &frame);
+    assert!(ratio.cmplt(Vec3::ONE).all(), "the light is off: {ratio}");
+    assert_vec_close(near.truncate(), capture * ratio, 1.0e-5, "near fragment");
+    assert_vec_close(far.truncate(), capture * ratio, 1.0e-5, "far fragment");
+    assert_ne!(near.w, far.w, "the two see different Fresnel");
+
+    // Toward the ceiling instead, the up lobe's share sets another ratio.
+    let ceiling = out(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.5, 4.0, 2.0));
+    assert!(
+        (ceiling.truncate() - near.truncate()).abs().max_element() > 0.01,
+        "{ceiling} vs {near}"
+    );
+}
+
+// One light away from its reference moves the ratio by its share toward the
+// lookup direction, measured against the reference its share entry stores,
+// not the descriptor's own colour: at twice the reference by +share, off by
+// −share, and at a live (1, 1, 1) against a stored (0.5, 1, 2) by
+// share × (1, 0, −0.5). The share is the lobe blend of the stored shares,
+// within unorm10 quantization.
+#[test]
+fn one_light_away_from_its_reference_moves_the_ratio_by_its_share() {
+    let reference = Vec3::new(0.5, 1.0, 2.0);
+    let mut stored = unused_entries();
+    stored[0] = entry(0, reference.to_array(), LOBED_SHARES);
+    let quantum = 0.5 / FLUID_REFLECTION_UNORM10_MAX as f32;
+    for (live, is_active, change) in [
+        (reference * 2.0, true, Vec3::ONE),
+        (reference, false, -Vec3::ONE),
+        (Vec3::ONE, true, Vec3::new(1.0, 0.0, -0.5)),
+    ] {
+        let descriptors = [flat_light(live.to_array(), is_active)];
+        let frame = lights(&descriptors, 0.0);
+        for direction in sphere_directions() {
+            let lobes = reflection_probe_lobe_weights(direction.to_array());
+            let share: Vec3 = LOBED_SHARES
+                .iter()
+                .zip(lobes)
+                .map(|(lobe, weight)| Vec3::from(*lobe) * weight)
+                .sum();
+            let ratio = reflection_ratio(&stored, direction, &frame);
+            let expected = (Vec3::ONE + share * change).max(Vec3::ZERO);
+            assert_vec_close(
+                ratio,
+                expected,
+                quantum * change.abs().max_element() + 1.0e-6,
+                "ratio = 1 + share × change",
+            );
+            // The quantized blend is what the shader reads.
+            let packed = reflection_light_share(&stored[0].shares, &lobes);
+            assert_vec_close(ratio, Vec3::ONE + packed * change, 1.0e-6, "packed share");
+        }
+    }
+}
+
+// Pin P1: promotion crossfades a light between its baked and runtime paths by
+// a weight w that Pass B (`animated_direct_sh_compose.wgsl`) multiplies into
+// its own scale, and never writes the light's descriptor. The reflection's
+// live value is the descriptor's own, read with no weight, so across the
+// whole crossfade the ratio is identical while Pass B's weighted scale falls
+// to 0.
+#[test]
+fn promotion_never_moves_the_ratio() {
+    let descriptors = [flicker([1.5, 1.0, 0.5], 0.2)];
+    let frame = lights(&descriptors, 0.42);
+    let mut stored = unused_entries();
+    stored[0] = entry(0, [1.0; 3], LOBED_SHARES);
+    let direction = Vec3::new(0.4, 0.7, -0.3);
+    let unweighted = Vec3::from(animated_light_scale(Some(descriptors[0]), frame.time));
+    let before = reflection_ratio(&stored, direction, &frame);
+    assert_ne!(
+        before,
+        Vec3::ONE,
+        "the flicker sits away from its reference"
+    );
+    let mut weighted = Vec::new();
+    for step in 0..=10 {
+        let w = step as f32 / 10.0;
+        weighted.push(unweighted * (1.0 - w));
+        assert_eq!(reflection_light_value(&frame, 0), unweighted, "w = {w}");
+        assert_eq!(
+            reflection_ratio(&stored, direction, &frame),
+            before,
+            "w = {w}"
+        );
+    }
+    assert_eq!(weighted.last(), Some(&Vec3::ZERO));
 }

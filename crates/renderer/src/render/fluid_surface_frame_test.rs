@@ -8,14 +8,18 @@ use postretro_level_format::environment_volumes::{
 };
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
-    ReflectionProbeRecord, ReflectionProbesSection,
+    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT, ReflectionProbeBinding,
+    ReflectionProbeLightShare, ReflectionProbeRecord, ReflectionProbesSection,
 };
+use postretro_level_format::sh_volume::AnimationDescriptor;
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::fluid_surface::{
     FLUID_PARAMS_WINDOW_BYTES, FLUID_SLOTS_PER_WINDOW, FluidSurfaceLook, slot_window,
 };
 use postretro_render_cpu::render_extent::{Extent, RenderResolutionPolicy};
+use postretro_render_cpu::sh_volume::{
+    ANIMATION_DESCRIPTOR_SIZE, build_animation_buffers_from_descriptors,
+};
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 const SIDE: u32 = 16;
@@ -562,4 +566,109 @@ fn a_probe_bound_face_reflects_its_capture_and_an_unbound_face_in_the_draw_reads
 
     renderer.release_level_resources();
     assert_eq!(renderer.full().fluid_surface.probe_array_layers(), None);
+}
+
+/// Descriptor record 0 for a flat light of `base_color`, on or off, as the
+/// light bridge writes it into the descriptor mirror.
+fn flat_descriptor(base_color: [f32; 3], start_active: bool) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
+    let (bytes, _, _) = build_animation_buffers_from_descriptors(&[AnimationDescriptor {
+        base_color,
+        start_active: u32::from(start_active),
+        ..AnimationDescriptor::default()
+    }]);
+    bytes[..ANIMATION_DESCRIPTOR_SIZE]
+        .try_into()
+        .expect("one descriptor record")
+}
+
+// Live lighting on an adapter. A probe's one share entry names roster light 0
+// at reference (1, 1, 1) holding half the capture's light in every lobe. With
+// the light's descriptor on at its reference the face reads its capture, as a
+// probe with no lights does; switched off, it reads darker by exactly its
+// share: the pixels of a capture of half the brightness with no lights. The
+// descriptor reaches the GPU through the frame's one flush, which the capture
+// recorder runs before the fluid pass.
+#[test]
+fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let dimension = 8;
+    let probes = |green: u16, light: ReflectionProbeLightShare| {
+        let mut lights = [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE];
+        lights[0] = light;
+        ReflectionProbesSection {
+            tile_dimension: dimension,
+            tile_border: 1,
+            atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+            probes: vec![ReflectionProbeRecord {
+                source_entity: 0,
+                box_min: [-8.0; 3],
+                box_max: [8.0; 3],
+                capture_point: [0.0, 0.0, 0.0],
+                layer: 0,
+                lights,
+            }],
+            bindings: vec![ReflectionProbeBinding {
+                volume: 0,
+                face: 0,
+                probe: 0,
+            }],
+            tiles: uniform_rgba16f_tile(dimension, [0, green, 0]),
+        }
+    };
+    let half_share = ReflectionProbeLightShare {
+        roster_index: 0,
+        reference: [1.0; 3],
+        shares: [[0.5; 3]; REFLECTION_PROBE_LOBE_COUNT],
+    };
+    // f16 1.0 and 0.5: linear green 1 and 0.5.
+    let (one, half) = (0x3C00, 0x3800);
+    let look = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let grazing = Vec3::new(0.0, 3.0, -0.5);
+    let pool = full_screen_fluid();
+    let draw = |renderer: &mut Renderer, section: &ReflectionProbesSection| {
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(section));
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        mean_rgb_halves(&capture_from(renderer, grazing)).0
+    };
+
+    let unlit = draw(
+        &mut renderer,
+        &probes(one, ReflectionProbeLightShare::UNUSED),
+    );
+    let reference_half = draw(
+        &mut renderer,
+        &probes(half, ReflectionProbeLightShare::UNUSED),
+    );
+
+    let animation = &mut renderer.full_mut().sh_volume_resources.animation;
+    animation.write_record_for_test(0, &flat_descriptor([1.0; 3], true));
+    let on = draw(&mut renderer, &probes(one, half_share));
+
+    let animation = &mut renderer.full_mut().sh_volume_resources.animation;
+    animation.write_record_for_test(0, &flat_descriptor([1.0; 3], false));
+    let off = draw(&mut renderer, &probes(one, half_share));
+
+    eprintln!(
+        "[FluidSurfaceProof] live-lighting GPU case ran: no lights {unlit:?}, light on {on:?}, \
+         light off {off:?}, half capture {reference_half:?}"
+    );
+    assert!(
+        unlit[1] > reference_half[1] + 10.0,
+        "half the capture reads darker: {unlit:?} vs {reference_half:?}"
+    );
+    for channel in 0..3 {
+        assert!(
+            (on[channel] - unlit[channel]).abs() <= 0.5,
+            "a light at its reference leaves the capture: {on:?} vs {unlit:?}"
+        );
+        assert!(
+            (off[channel] - reference_half[channel]).abs() <= 1.0,
+            "switched off, the face loses the light's share: {off:?} vs {reference_half:?}"
+        );
+    }
 }

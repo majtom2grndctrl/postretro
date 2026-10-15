@@ -1,5 +1,6 @@
 // Fluid reflection probes: the probe table's GPU layout, the per-vertex probe
-// index, and the GPU-free CPU reference for `fluid_surface.wgsl`'s probe term.
+// index, and the GPU-free CPU reference for `fluid_surface.wgsl`'s probe term,
+// its live-lighting ratio included.
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};
@@ -8,11 +9,13 @@ use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::octahedral::encode_unquantized_uv;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
-    ReflectionProbeLightShare, ReflectionProbeRecord, ReflectionProbesSection,
+    REFLECTION_PROBE_NO_LIGHT, ReflectionProbeLightShare, ReflectionProbeRecord,
+    ReflectionProbesSection, reflection_probe_lobe_weights,
 };
 
 use super::FluidFaceDriftMap;
 use crate::frame_uniforms::LightTermMask;
+use crate::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
 
 // The shader mirrors each reference function below, `reflection_fragment`
 // inlined as `fs_main`'s tail after the fog composite, and each constant but
@@ -33,6 +36,12 @@ pub const FLUID_REFLECTION_ALL_TERMS: u32 = LightTermMask::ALL.bits();
 pub const FLUID_REFLECTION_DIRECTION_EPSILON: f32 = 1.0e-6;
 /// Floor on the union coverage before the composite divides by it.
 pub const FLUID_REFLECTION_COVERAGE_EPSILON: f32 = 1.0e-4;
+/// Floor on a stored reference channel before the live ratio divides by it;
+/// a zero channel's term is dropped outright, so this only keeps the divide
+/// off zero.
+pub const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
+/// Largest value of one unorm10 share field.
+pub const FLUID_REFLECTION_UNORM10_MAX: u32 = 1023;
 
 /// u32 words of one share entry's lobe shares, padded to whole `vec4<u32>`.
 pub const FLUID_PROBE_SHARE_WORDS: usize = REFLECTION_PROBE_LOBE_COUNT.div_ceil(4) * 4;
@@ -328,6 +337,100 @@ pub fn reflection_composite(surface: Vec4, reflection: Vec3, fresnel: f32) -> Ve
     rgb.extend(coverage)
 }
 
+/// The animated lights' compose descriptors as the fluid pass binds them
+/// (group 3 binding 11, `anim_descriptors`), roster-indexed, and the frame's
+/// animation clock (`uniforms.time`).
+#[derive(Debug, Clone, Copy)]
+pub struct FluidReflectionLights<'a> {
+    pub descriptors: &'a [AnimatedLightScaleDescriptor<'a>],
+    pub time: f32,
+}
+
+impl FluidReflectionLights<'_> {
+    /// No animated lights: every share entry indexes nothing.
+    pub const NONE: FluidReflectionLights<'static> = FluidReflectionLights {
+        descriptors: &[],
+        time: 0.0,
+    };
+}
+
+/// Whether a share entry's roster index names a descriptor: the reserved
+/// value, and any index past the bound descriptors, indexes nothing, so the
+/// entry adds no term (P28).
+pub fn reflection_light_present(lights: &FluidReflectionLights<'_>, roster_index: u32) -> bool {
+    roster_index != REFLECTION_PROBE_NO_LIGHT && (roster_index as usize) < lights.descriptors.len()
+}
+
+/// A present light's live RGB value, as SH compose evaluates it:
+/// `sh_compose.wgsl`'s `animated_light_scale` read straight from descriptor
+/// `roster_index`, the roster→descriptor table being identity whenever
+/// section 54 loads (P10). Clamped colour × clamped brightness, 0 while
+/// inactive; no promotion weight, lighting mask or debug override.
+pub fn reflection_light_value(lights: &FluidReflectionLights<'_>, roster_index: u32) -> Vec3 {
+    Vec3::from(animated_light_scale(
+        Some(lights.descriptors[roster_index as usize]),
+        lights.time,
+    ))
+}
+
+/// One lobe word's RGB share: three 10-bit unorm fields, red lowest.
+pub fn reflection_unpack_unorm10x3(word: u32) -> Vec3 {
+    let field = FLUID_REFLECTION_UNORM10_MAX;
+    Vec3::new(
+        (word & field) as f32,
+        ((word >> 10) & field) as f32,
+        ((word >> 20) & field) as f32,
+    ) / field as f32
+}
+
+/// A stored light's RGB share toward a lookup direction: its lobe shares
+/// blended by that direction's lobe weights (`reflection_probe_lobe_weights`,
+/// the function the compiler split the capture's light by).
+pub fn reflection_light_share(
+    shares: &[u32; FLUID_PROBE_SHARE_WORDS],
+    lobes: &[f32; REFLECTION_PROBE_LOBE_COUNT],
+) -> Vec3 {
+    let mut share = Vec3::ZERO;
+    for (word, weight) in shares.iter().zip(lobes) {
+        share += reflection_unpack_unorm10x3(*word) * *weight;
+    }
+    share
+}
+
+/// A light's live change against the reference its share entry stores, per
+/// channel: `current / reference − 1`. A channel the reference holds no
+/// light in adds no term, so a pure-red light's green never divides by zero.
+pub fn reflection_light_change(current: Vec3, reference: Vec3) -> Vec3 {
+    Vec3::select(
+        reference.cmpgt(Vec3::ZERO),
+        current / reference.max(Vec3::splat(FLUID_REFLECTION_REFERENCE_FLOOR)) - Vec3::ONE,
+        Vec3::ZERO,
+    )
+}
+
+/// The capture's live-lighting scale toward `direction`, the tile lookup
+/// direction, per RGB channel: `1 + Σ share(direction) × change`, clamped at
+/// 0, over the probe's stored lights. A light past the stored K has no entry,
+/// so it holds its reference. Reads no SH and no promotion weight: a function
+/// of the probe, the direction and the live descriptors alone.
+pub fn reflection_ratio(
+    probe_lights: &[FluidProbeLightGpu; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+    direction: Vec3,
+    lights: &FluidReflectionLights<'_>,
+) -> Vec3 {
+    let lobes = reflection_probe_lobe_weights(direction.to_array());
+    let mut ratio = Vec3::ONE;
+    for light in probe_lights {
+        if !reflection_light_present(lights, light.roster_index) {
+            continue;
+        }
+        let current = reflection_light_value(lights, light.roster_index);
+        ratio += reflection_light_share(&light.shares, &lobes)
+            * reflection_light_change(current, Vec3::from(light.reference));
+    }
+    ratio.max(Vec3::ZERO)
+}
+
 /// Everything one fluid fragment's probe term reads besides its surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FluidReflectionFragment {
@@ -345,14 +448,16 @@ pub struct FluidReflectionFragment {
 
 /// The fragment's output as `fs_main`'s tail computes it from `surface`
 /// (the fog reference's output): unchanged when the gate is off, else the
-/// probe's capture, sampled toward the box hit from the capture point,
-/// composited over it. `sample(layer, uv)` reads the tile at level 0. The
-/// layer comes from the face's probe index alone.
+/// probe's capture, sampled toward the box hit from the capture point and
+/// scaled by the live-lighting ratio toward that same direction, composited
+/// over it. `sample(layer, uv)` reads the tile at level 0. The layer comes
+/// from the face's probe index alone.
 pub fn reflection_fragment(
     surface: Vec4,
     fragment: &FluidReflectionFragment,
     probes: &[ReflectionProbeRecord],
     tile: [u32; 2],
+    lights: &FluidReflectionLights<'_>,
     sample: impl Fn(u32, Vec2) -> Vec3,
 ) -> Vec4 {
     let view = (fragment.camera - fragment.world_position).normalize_or_zero();
@@ -375,7 +480,8 @@ pub fn reflection_fragment(
         Vec3::from(probe.box_max),
     );
     let lookup = reflection_lookup(hit, Vec3::from(probe.capture_point), ray);
-    let capture = sample(probe.layer, reflection_tile_uv(lookup, tile[0], tile[1]));
+    let capture = sample(probe.layer, reflection_tile_uv(lookup, tile[0], tile[1]))
+        * reflection_ratio(&FluidProbeGpu::pack(probe).lights, lookup, lights);
     let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity);
     reflection_composite(surface, capture, fresnel)
 }

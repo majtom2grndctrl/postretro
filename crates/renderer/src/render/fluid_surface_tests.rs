@@ -1213,6 +1213,32 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
         shader_f32("FLUID_REFLECTION_COVERAGE_EPSILON"),
         r::FLUID_REFLECTION_COVERAGE_EPSILON
     );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_REFERENCE_FLOOR"),
+        r::FLUID_REFLECTION_REFERENCE_FLOOR
+    );
+    assert_eq!(
+        shader_u32("FLUID_REFLECTION_UNORM10_MAX"),
+        r::FLUID_REFLECTION_UNORM10_MAX
+    );
+    {
+        use postretro_level_format::reflection_probes::{
+            REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
+            REFLECTION_PROBE_NO_LIGHT,
+        };
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_NO_LIGHT"),
+            REFLECTION_PROBE_NO_LIGHT
+        );
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_LIGHTS_PER_PROBE") as usize,
+            REFLECTION_PROBE_LIGHTS_PER_PROBE
+        );
+        // The lobe blend's `array<f32, 5>` and the entry's two `vec4<u32>` of
+        // shares are the format's lobe count.
+        assert_eq!(REFLECTION_PROBE_LOBE_COUNT, 5);
+        assert_eq!(r::FLUID_PROBE_SHARE_WORDS, 8);
+    }
 }
 
 // The mask, underside and probe gates, the mirror, the slab test, the
@@ -1362,12 +1388,14 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letlookup=fluid_reflection_lookup(hit,fluid_probes.probes[probe].capture_point,ray);\
          letuv=fluid_reflection_tile_uv(lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
          letlayer=fluid_probes.probes[probe].layer;\
-         returntextureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;}"
+         returntextureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb\
+         *fluid_reflection_ratio(probe,lookup);}"
     );
     assert_eq!(
         code_only(wgsl_fn(cpu, "reflection_fragment")),
         "fnreflection_fragment(surface:Vec4,fragment:&FluidReflectionFragment,\
-         probes:&[ReflectionProbeRecord],tile:[u32;2],sample:implFn(u32,Vec2)->Vec3,)->Vec4{\
+         probes:&[ReflectionProbeRecord],tile:[u32;2],lights:&FluidReflectionLights<'_>,\
+         sample:implFn(u32,Vec2)->Vec3,)->Vec4{\
          letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
          letoutward=fragment.outward.normalize();\
          if!reflection_gate(fragment.probe,outward,view,fragment.light_term_mask,\
@@ -1377,10 +1405,508 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          lethit=reflection_box_hit(fragment.world_position,ray,Vec3::from(probe.box_min),\
          Vec3::from(probe.box_max),);\
          letlookup=reflection_lookup(hit,Vec3::from(probe.capture_point),ray);\
-         letcapture=sample(probe.layer,reflection_tile_uv(lookup,tile[0],tile[1]));\
+         letcapture=sample(probe.layer,reflection_tile_uv(lookup,tile[0],tile[1]))\
+         *reflection_ratio(&FluidProbeGpu::pack(probe).lights,lookup,lights);\
          letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity);\
          reflection_composite(surface,capture,fresnel)}"
     );
+}
+
+// Live lighting by light share: the lobe blend, the reserved-entry guard, the
+// live value, the share unpack and blend, the per-channel change and the
+// ratio are the CPU reference in WGSL, pinned on both sides. The lobe blend's
+// CPU side is level-format's, the function the compiler split the capture's
+// light by; the live value's is render-cpu `sh_compose::animated_light_scale`.
+#[test]
+fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
+    let format = include_str!("../../../level-format/src/reflection_probes.rs");
+    let compose = include_str!("../../../render-cpu/src/sh_compose.rs");
+    let pinned: [(&str, &str, &str, &str, &str); 7] = [
+        (
+            "fluid_reflection_lobe_weights",
+            "fnfluid_reflection_lobe_weights(direction:vec3<f32>)->array<f32,5>{\
+             letpositive=max(direction,vec3<f32>(0.0));\
+             letnegative=max(-direction,vec3<f32>(0.0));\
+             letdown=negative.y*negative.y*0.25;\
+             letweights=array<f32,5>(positive.y*positive.y,positive.x*positive.x+down,\
+             negative.x*negative.x+down,positive.z*positive.z+down,\
+             negative.z*negative.z+down,);\
+             letsum=weights[0]+weights[1]+weights[2]+weights[3]+weights[4];\
+             if!(sum>0.0){returnarray<f32,5>(1.0,0.0,0.0,0.0,0.0);}\
+             returnarray<f32,5>(weights[0]/sum,weights[1]/sum,weights[2]/sum,weights[3]/sum,\
+             weights[4]/sum);}",
+            format,
+            "reflection_probe_lobe_weights",
+            "fnreflection_probe_lobe_weights(direction:[f32;3])->[f32;\
+             REFLECTION_PROBE_LOBE_COUNT]{let[x,y,z]=direction;\
+             letpos=|v:f32|{letc=v.max(0.0);c*c};letdown=pos(-y)*0.25;\
+             letweights=[pos(y),pos(x)+down,pos(-x)+down,pos(z)+down,pos(-z)+down,];\
+             letsum:f32=weights.iter().sum();\
+             if!(sum.is_finite()&&sum>0.0){return[1.0,0.0,0.0,0.0,0.0];}\
+             weights.map(|w|w/sum)}",
+        ),
+        (
+            "fluid_reflection_light_present",
+            "fnfluid_reflection_light_present(roster_index:u32)->bool{\
+             returnroster_index!=FLUID_REFLECTION_NO_LIGHT\
+             &&roster_index<arrayLength(&anim_descriptors);}",
+            cpu,
+            "reflection_light_present",
+            "fnreflection_light_present(lights:&FluidReflectionLights<'_>,\
+             roster_index:u32)->bool{\
+             roster_index!=REFLECTION_PROBE_NO_LIGHT\
+             &&(roster_indexasusize)<lights.descriptors.len()}",
+        ),
+        (
+            "fluid_reflection_light_value",
+            "fnfluid_reflection_light_value(roster_index:u32)->vec3<f32>{\
+             letdesc=anim_descriptors[roster_index];\
+             if(desc.is_active==0u){returnvec3<f32>(0.0);}\
+             lett=animation_curve_t(desc.period,desc.phase,uniforms.time);\
+             letbrightness=max(sample_curve_catmull_rom(desc.brightness_offset,\
+             desc.brightness_count,t),0.0,);\
+             varcolor=desc.base_color;\
+             if(desc.color_count>0u){\
+             color=max(sample_color_catmull_rom(desc.color_offset,desc.color_count,t,\
+             vec3<f32>(1.0)),vec3<f32>(0.0),)*desc.base_color;}\
+             returncolor*brightness;}",
+            cpu,
+            "reflection_light_value",
+            "fnreflection_light_value(lights:&FluidReflectionLights<'_>,roster_index:u32)->Vec3{\
+             Vec3::from(animated_light_scale(Some(lights.descriptors[roster_indexasusize]),\
+             lights.time,))}",
+        ),
+        (
+            "fluid_reflection_unpack_unorm10x3",
+            "fnfluid_reflection_unpack_unorm10x3(word:u32)->vec3<f32>{\
+             letfield=FLUID_REFLECTION_UNORM10_MAX;\
+             returnvec3<f32>(f32(word&field),f32((word>>10u)&field),f32((word>>20u)&field))\
+             /f32(field);}",
+            cpu,
+            "reflection_unpack_unorm10x3",
+            "fnreflection_unpack_unorm10x3(word:u32)->Vec3{\
+             letfield=FLUID_REFLECTION_UNORM10_MAX;\
+             Vec3::new((word&field)asf32,((word>>10)&field)asf32,((word>>20)&field)asf32,)\
+             /fieldasf32}",
+        ),
+        (
+            "fluid_reflection_light_share",
+            "fnfluid_reflection_light_share(shares:array<vec4<u32>,2>,lobes:array<f32,5>)\
+             ->vec3<f32>{\
+             returnfluid_reflection_unpack_unorm10x3(shares[0].x)*lobes[0]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].y)*lobes[1]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].z)*lobes[2]\
+             +fluid_reflection_unpack_unorm10x3(shares[0].w)*lobes[3]\
+             +fluid_reflection_unpack_unorm10x3(shares[1].x)*lobes[4];}",
+            cpu,
+            "reflection_light_share",
+            "fnreflection_light_share(shares:&[u32;FLUID_PROBE_SHARE_WORDS],\
+             lobes:&[f32;REFLECTION_PROBE_LOBE_COUNT],)->Vec3{\
+             letmutshare=Vec3::ZERO;\
+             for(word,weight)inshares.iter().zip(lobes){\
+             share+=reflection_unpack_unorm10x3(*word)**weight;}share}",
+        ),
+        (
+            "fluid_reflection_light_change",
+            "fnfluid_reflection_light_change(current:vec3<f32>,reference:vec3<f32>)->vec3<f32>{\
+             returnselect(vec3<f32>(0.0),\
+             current/max(reference,vec3<f32>(FLUID_REFLECTION_REFERENCE_FLOOR))-vec3<f32>(1.0),\
+             reference>vec3<f32>(0.0));}",
+            cpu,
+            "reflection_light_change",
+            "fnreflection_light_change(current:Vec3,reference:Vec3)->Vec3{\
+             Vec3::select(reference.cmpgt(Vec3::ZERO),\
+             current/reference.max(Vec3::splat(FLUID_REFLECTION_REFERENCE_FLOOR))-Vec3::ONE,\
+             Vec3::ZERO,)}",
+        ),
+        (
+            "fluid_reflection_ratio",
+            "fnfluid_reflection_ratio(probe:u32,direction:vec3<f32>)->vec3<f32>{\
+             letlobes=fluid_reflection_lobe_weights(direction);\
+             varratio=vec3<f32>(1.0);\
+             for(vari:u32=0u;i<FLUID_REFLECTION_LIGHTS_PER_PROBE;i=i+1u){\
+             letlight=fluid_probes.probes[probe].lights[i];\
+             if!fluid_reflection_light_present(light.roster_index){continue;}\
+             letcurrent=fluid_reflection_light_value(light.roster_index);\
+             ratio=ratio+fluid_reflection_light_share(light.shares,lobes)\
+             *fluid_reflection_light_change(current,light.reference);}\
+             returnmax(ratio,vec3<f32>(0.0));}",
+            cpu,
+            "reflection_ratio",
+            "fnreflection_ratio(probe_lights:&[FluidProbeLightGpu;\
+             REFLECTION_PROBE_LIGHTS_PER_PROBE],direction:Vec3,\
+             lights:&FluidReflectionLights<'_>,)->Vec3{\
+             letlobes=reflection_probe_lobe_weights(direction.to_array());\
+             letmutratio=Vec3::ONE;\
+             forlightinprobe_lights{\
+             if!reflection_light_present(lights,light.roster_index){continue;}\
+             letcurrent=reflection_light_value(lights,light.roster_index);\
+             ratio+=reflection_light_share(&light.shares,&lobes)\
+             *reflection_light_change(current,Vec3::from(light.reference));}\
+             ratio.max(Vec3::ZERO)}",
+        ),
+    ];
+    for (wgsl_name, wgsl_body, cpu_source, cpu_name, cpu_body) in pinned {
+        assert_eq!(
+            code_only(wgsl_fn(wgsl, wgsl_name)),
+            wgsl_body,
+            "WGSL `{wgsl_name}` drifted"
+        );
+        assert_eq!(
+            code_only(wgsl_fn(cpu_source, cpu_name)),
+            cpu_body,
+            "CPU `{cpu_name}` drifted"
+        );
+    }
+
+    // The live value's CPU side: clamped colour × clamped brightness, 0 while
+    // inactive.
+    assert_eq!(
+        code_only(wgsl_fn(compose, "animated_light_scale")),
+        "fnanimated_light_scale(descriptor:Option<AnimatedLightScaleDescriptor<'_>>,time:f32,\
+         )->[f32;3]{\
+         letSome(descriptor)=descriptor.filter(|descriptor|descriptor.is_active)else{\
+         return[0.0;3];};\
+         letcycle_t=animation_curve_t(descriptor.period,descriptor.phase,time);\
+         letbrightness=sample_curve_catmull_rom(descriptor.brightness,cycle_t).max(0.0);\
+         letcolor=ifdescriptor.color.is_empty(){descriptor.base_color}else{\
+         letsampled=sample_color_catmull_rom(descriptor.color,cycle_t);\
+         [sampled[0].max(0.0)*descriptor.base_color[0],\
+         sampled[1].max(0.0)*descriptor.base_color[1],\
+         sampled[2].max(0.0)*descriptor.base_color[2],]};\
+         [color[0]*brightness,color[1]*brightness,color[2]*brightness,]}"
+    );
+}
+
+// The fluid port of the live value is `sh_compose.wgsl`'s
+// `animated_light_scale` from its descriptor fetch on, token for token; only
+// the fetch differs, indexing the roster-indexed descriptors directly where SH
+// compose goes through its delta-light index table. It is not
+// `animated_direct_sh_compose.wgsl`'s form, which multiplies the promotion
+// weight and gates on the lighting mask and its debug override.
+#[test]
+fn fluid_reflection_light_value_ports_the_sh_compose_light_scale() {
+    let fluid = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_reflection_light_value",
+    ));
+    let compose = code_only(wgsl_fn(
+        include_str!("../shaders/sh_compose.wgsl"),
+        "animated_light_scale",
+    ));
+    let fluid_fetch = "letdesc=anim_descriptors[roster_index];";
+    let compose_fetch = "letdesc=descriptors[descriptor_index];";
+    let fluid_tail = &fluid[fluid.find(fluid_fetch).expect("fluid fetch") + fluid_fetch.len()..];
+    let compose_tail =
+        &compose[compose.find(compose_fetch).expect("compose fetch") + compose_fetch.len()..];
+    assert_eq!(fluid_tail, compose_tail);
+
+    let promoted = code_only(wgsl_fn(
+        include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+        "animated_light_scale",
+    ));
+    assert!(promoted.contains("animated_compose_weight(light_index)"));
+    assert!(!fluid.contains("animated_compose_weight"));
+}
+
+/// Every `fn fluid_reflection_*` in the fluid shader, by name, with its body
+/// as code only.
+fn fluid_reflection_functions() -> Vec<(String, String)> {
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    source
+        .match_indices("fn fluid_reflection_")
+        .map(|(at, _)| {
+            let name_start = at + "fn ".len();
+            let name_end = name_start + source[name_start..].find('(').expect("fn name");
+            let name = &source[name_start..name_end];
+            (name.to_owned(), code_only(wgsl_fn(source, name)))
+        })
+        .collect()
+}
+
+/// The probe term's part of `fs_main`: from the gate to the composite.
+fn fs_main_reflection_tail() -> String {
+    let main = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fs_main",
+    ));
+    let start = main
+        .find("letreflectivity=row.surface.z;")
+        .expect("reflection tail");
+    main[start..].to_owned()
+}
+
+// Pin P1, by source: the reflection's light evaluation reads no promotion
+// weight, crossfade array, lighting mask or debug override, and the fluid
+// shader declares none of the promotion-side bindings. Promotion crossfades a
+// light by its compose weight and never rewrites its descriptor, so the
+// reflection does not move while it promotes.
+#[test]
+fn fluid_reflection_light_evaluation_reads_no_promotion_weight_or_debug_override() {
+    let functions = fluid_reflection_functions();
+    let names: Vec<&str> = functions.iter().map(|(name, _)| name.as_str()).collect();
+    for expected in [
+        "fluid_reflection_ratio",
+        "fluid_reflection_light_value",
+        "fluid_reflection_light_present",
+        "fluid_reflection_light_share",
+        "fluid_reflection_light_change",
+        "fluid_reflection_lobe_weights",
+        "fluid_reflection_sample",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    for (name, body) in &functions {
+        for forbidden in [
+            "animated_compose_weight",
+            "compose_weight",
+            "animated_light_scale_uniform",
+            "debug_override",
+            "DebugOverride",
+            "promot",
+            "crossfade",
+            "animation_descriptor_indices",
+            "scripted_light_descriptors",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "`{name}` must not read `{forbidden}`"
+            );
+        }
+    }
+    // The live-light evaluation proper reads no lighting mask either: the
+    // gate's all-terms test is the only mask read on the probe path.
+    for (name, body) in functions.iter().filter(|(name, _)| {
+        !matches!(
+            name.as_str(),
+            "fluid_reflection_gate" | "fluid_reflection_mask_on"
+        )
+    }) {
+        assert!(!body.contains("mask"), "`{name}` must not read the mask");
+        assert!(!body.contains("LIGHT_TERM"), "`{name}`");
+    }
+    let code = code_only(include_str!("../shaders/fluid_surface.wgsl"));
+    for binding in [
+        "animated_light_scale_uniform",
+        "compose_weights",
+        "debug_override",
+        "animation_descriptor_indices",
+        "MAX_ANIMATED_BAKED_LIGHTS",
+    ] {
+        assert!(
+            !code.contains(binding),
+            "the fluid shader declares no `{binding}`"
+        );
+    }
+}
+
+// The probe term takes no SH read: no reflection function, and no part of
+// `fs_main`'s reflection tail, touches the SH atlases, grid, depth moments or
+// sampler chain, or the SH-lit surface lighting. Its only group-3 reads are
+// the descriptors and curve samples (and the SH atlas's linear-clamp sampler,
+// which reads no SH data), so a pool whose capture point's cells are not
+// resident still follows a switch (P5).
+#[test]
+fn fluid_reflection_term_takes_no_sh_read() {
+    let mut scanned = fluid_reflection_functions();
+    scanned.push((
+        "fs_main reflection tail".to_owned(),
+        fs_main_reflection_tail(),
+    ));
+    for (name, body) in &scanned {
+        for forbidden in [
+            "sh_total_atlas",
+            "sh_direct_atlas",
+            "sh_grid",
+            "sh_depth_moments",
+            "fluid_sample_sh",
+            "sample_sh",
+            "ShDirPair",
+            "probe_indirection",
+            "sh.a",
+            "sh.b",
+            "lighting",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "`{name}` must not read `{forbidden}`"
+            );
+        }
+    }
+    let ratio = code_only(wgsl_fn(
+        include_str!("../shaders/fluid_surface.wgsl"),
+        "fluid_reflection_light_value",
+    ));
+    assert!(ratio.contains("anim_descriptors[roster_index]"));
+    assert!(ratio.contains("uniforms.time"));
+}
+
+// The fluid shader reads the live descriptors through the shared group 3 it
+// already binds, at binding 11: a FRAGMENT-visible read-only storage entry of
+// the SH layout, so declaring it spends no budget, and its struct is the
+// 48-byte descriptor record the flush uploads, `is_active` at its offset.
+#[test]
+fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
+    use postretro_render_cpu::sh_volume::{
+        ANIMATION_DESCRIPTOR_ACTIVE_OFFSET, ANIMATION_DESCRIPTOR_SIZE, BIND_ANIM_DESCRIPTORS,
+    };
+    let source = include_str!("../shaders/fluid_surface.wgsl");
+    assert!(source.contains(
+        "@group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;"
+    ));
+    assert_eq!(BIND_ANIM_DESCRIPTORS, 11);
+    let groups = fluid_pipeline_bind_group_layout_entries();
+    let entry = groups[3]
+        .iter()
+        .find(|entry| entry.binding == BIND_ANIM_DESCRIPTORS)
+        .expect("group 3 binds the descriptors");
+    assert!(entry.visibility.contains(wgpu::ShaderStages::FRAGMENT));
+    assert!(matches!(
+        entry.ty,
+        wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            ..
+        }
+    ));
+    let module = validated_module();
+    assert_eq!(
+        struct_span(&module, "AnimationDescriptor") as usize,
+        ANIMATION_DESCRIPTOR_SIZE
+    );
+    let is_active = struct_member_offsets(&module, "AnimationDescriptor")
+        .into_iter()
+        .find(|(name, _)| name == "is_active")
+        .expect("is_active");
+    assert_eq!(is_active.1 as usize, ANIMATION_DESCRIPTOR_ACTIVE_OFFSET);
+    // The fluid pass binds the same group-3 bind group the flush's buffer
+    // sits in.
+    assert!(
+        code_only(fluid_pass_block())
+            .contains("fluid_pass.set_bind_group(3,self.full().sh_bind_group(),&[]);")
+    );
+}
+
+// Pins P4, P5 and P25, by source order. Script writes reach the descriptors'
+// CPU mirror only (the light bridge's `write_descriptor`), on any frame and
+// whatever the SH residency; the frame's one flush,
+// `upload_descriptors_if_dirty` in `update_per_frame_uniforms`, uploads the
+// whole level's descriptors; and every frame path runs that flush before it
+// records the scene passes, the fluid pass among them. So the frame a script
+// switches a light off already reflects it off: on a pool entering the draw
+// set that frame (P4), on a pool across a vista whose SH is not resident (P5;
+// the term reads no SH), and on the first revealed frame after a levelLoad
+// reaction (P25), where the same flush precedes the world's animated
+// lightmap compose too.
+#[test]
+fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
+    // One flush, in the per-frame uniform update.
+    let frame_update = include_str!("renderer_frame.rs");
+    assert_eq!(
+        frame_update
+            .matches("upload_descriptors_if_dirty(queue)")
+            .count(),
+        1
+    );
+    assert!(
+        code_only(wgsl_fn(frame_update, "update_per_frame_uniforms"))
+            .contains(".animation.upload_descriptors_if_dirty(queue);")
+    );
+    // The flush writes the buffer group 3 binds at binding 11, from the
+    // mirror script writes land in.
+    let sh = include_str!("sh_volume.rs");
+    assert!(
+        code_only(wgsl_fn(sh, "upload_descriptors_if_dirty"))
+            .contains("queue.write_buffer(&self.descriptors,0,&self.descriptor_mirror);")
+    );
+    assert!(code_only(wgsl_fn(sh, "write_descriptor")).contains("self.dirty=true;"));
+    assert!(code_only(wgsl_fn(sh, "set_active")).contains("self.dirty=true;"));
+    let lighting = include_str!("renderer_lighting.rs");
+    assert!(
+        code_only(wgsl_fn(lighting, "upload_light_bridge_snapshot"))
+            .contains(".animation.write_descriptor(*slotasusize,bytes);")
+    );
+    for (file, source) in [
+        (
+            "renderer_render_frame.rs",
+            include_str!("renderer_render_frame.rs"),
+        ),
+        ("renderer_capture.rs", include_str!("renderer_capture.rs")),
+        (
+            "renderer_pre_scene.rs",
+            include_str!("renderer_pre_scene.rs"),
+        ),
+    ] {
+        // Production code only; the files' own tests name the flush.
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let code = code_only(production);
+        for write in [
+            "upload_descriptors_if_dirty",
+            "write_descriptor(",
+            "set_active(",
+        ] {
+            assert!(
+                !code.contains(write),
+                "{file} must not write descriptors mid-frame"
+            );
+        }
+    }
+
+    // Both scene recorders reach the fluid pass through `record_scene_passes`.
+    let render = include_str!("renderer_render_frame.rs");
+    let scene = code_only(wgsl_fn(render, "record_scene_passes"));
+    assert!(scene.contains("ifrender_world&&self.full().fluid_surface.has_draws()"));
+    assert!(
+        code_only(wgsl_fn(render, "render_frame_indirect")).contains("self.record_scene_passes(")
+    );
+
+    // Capture flushes first in each recorder.
+    let capture = code_only(
+        include_str!("renderer_capture.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production code"),
+    );
+    let flushes: Vec<usize> = capture
+        .match_indices("self.update_per_frame_uniforms(")
+        .map(|(at, _)| at)
+        .collect();
+    let records: Vec<usize> = capture
+        .match_indices("self.record_scene_passes(")
+        .map(|(at, _)| at)
+        .collect();
+    assert!(!records.is_empty() && flushes.len() == records.len());
+    for (flush, record) in flushes.iter().zip(&records) {
+        assert!(flush < record, "capture must flush before recording");
+    }
+
+    // The app: script light writes, then the flush, then the frame.
+    for (file, source, writes) in [
+        (
+            "frame_loop/mod.rs",
+            include_str!("../../../postretro/src/frame_loop/mod.rs"),
+            Some("renderer.upload_light_bridge_snapshot("),
+        ),
+        (
+            "app/world_less_frame.rs",
+            include_str!("../../../postretro/src/app/world_less_frame.rs"),
+            None,
+        ),
+    ] {
+        let code = code_only(source);
+        let flush = code
+            .find("renderer.update_per_frame_uniforms(")
+            .unwrap_or_else(|| panic!("{file} flushes"));
+        let draw = code
+            .find("renderer.render_frame_indirect(")
+            .unwrap_or_else(|| panic!("{file} renders"));
+        assert!(flush < draw, "{file}: the flush precedes the frame");
+        if let Some(writes) = writes {
+            let at = code.find(writes).expect("light bridge upload");
+            assert!(at < flush, "{file}: script writes precede the flush");
+        }
+    }
 }
 
 /// The frame's fluid pass block: from its gate to the end of its draws.

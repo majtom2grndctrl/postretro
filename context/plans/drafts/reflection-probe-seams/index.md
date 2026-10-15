@@ -63,6 +63,6 @@ Section id 54, next internal version. Bindings gain, per (volume, face, probe) t
 | Nearby probes | section 54 binding field | id 54 | n/a | n/a | n/a |
 
 ## Open questions
-- Cost of up to three samples, each with its own live-lighting evaluation, and which lever applies if it is over budget (per-probe ratio precompute, a stochastic per-cell probe pick, or a third pipeline variant) — owner — **blocks build**: settled by a spike per `experimental_spikes.md` before this brief is finalized. The spike measures a three-probe band with real share tables at a view-filling pose, on the GTX 1660 Super (`POSTRETRO_GPU_TIMING=1`) and on the owner's MacBook Pro (Radeon Pro 5300M; Metal System Trace where timestamps are unsupported, owner-run). It runs after the parent's timed work frees the machine.
+- Cost of up to three samples, each with its own live-lighting evaluation, and which lever applies if it is over budget (per-probe ratio precompute, a stochastic per-cell probe pick, or a third pipeline variant) — owner — **blocks build**: settled by the spike `reflection-probe-seams--blend-cost-spike` before this brief is finalized; its findings note becomes one Decisions bullet here.
 - W's value, and whether the falloff is linear or smooth (any continuous falloff keeps continuity) — **delegated**: pin in the CPU reference; the owner may tune W at the manual canal rows
 - Whether a bent nearest boundary needs a second segment per nearby probe — **delegated**: measure the weight error on an L-shaped fixture and report

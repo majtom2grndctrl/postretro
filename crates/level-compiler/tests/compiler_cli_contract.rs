@@ -36,6 +36,7 @@ const SUMMARY_LABELS: &[&str] = &[
     "AnimLightChunks",
     "AnimWeightMaps",
     "TextureMips",
+    "Reflection Probes",
     "ClusterDirectory",
     "Packing",
     "Total",

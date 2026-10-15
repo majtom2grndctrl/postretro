@@ -1,4 +1,5 @@
-//! Environment volumes are non-solid: a volume changes only its own section and the texture tables.
+//! Environment volumes are non-solid: a volume changes only its own section, the texture tables
+//! and, for a fluid with an up-facing surface, the reflection probes it derives.
 //! See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::BTreeMap;
@@ -12,6 +13,7 @@ use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::push_forces::PushForcesSection;
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
@@ -173,6 +175,87 @@ fn environment(sections: &BTreeMap<u32, Vec<u8>>) -> EnvironmentVolumesSection {
     EnvironmentVolumesSection::from_bytes(bytes).expect("EnvironmentVolumes decodes")
 }
 
+/// The base map's section ids, with ReflectionProbes (id 54) when the added
+/// volume is a fluid whose up-facing surface derives a probe.
+fn expected_sections(base: &BTreeMap<u32, Vec<u8>>, with_probes: bool) -> Vec<u32> {
+    assert!(
+        !base.contains_key(&(SectionId::ReflectionProbes as u32)),
+        "a map without fluid has no reflection probes"
+    );
+    let mut ids: Vec<u32> = base.keys().copied().collect();
+    if with_probes {
+        ids.push(SectionId::ReflectionProbes as u32);
+        ids.sort_unstable();
+    }
+    ids
+}
+
+/// The doorway fluid's top, one plane spanning the doorway, derives one
+/// probe: captured 2 mm above the water at its centre, inside its box, and
+/// bound by every up-facing piece of that top.
+fn assert_doorway_pool_probe(sections: &BTreeMap<u32, Vec<u8>>) {
+    let probes =
+        ReflectionProbesSection::from_bytes(section(sections, SectionId::ReflectionProbes))
+            .expect("ReflectionProbes decodes");
+    assert_eq!(probes.probes.len(), 1, "one water plane, one derived probe");
+    let probe = &probes.probes[0];
+    assert_eq!(probe.source_entity, FIRST_VOLUME_ENTITY);
+    let water = 80.0 * UNIT;
+    assert!(
+        (probe.capture_point[1] - (water + 0.002)).abs() < 1e-4,
+        "{probe:?}"
+    );
+    assert!(probe.capture_point[0].abs() < 1e-3 && probe.capture_point[2].abs() < 1e-3);
+    for axis in 0..3 {
+        assert!(probe.box_min[axis] <= probe.capture_point[axis]);
+        assert!(probe.capture_point[axis] <= probe.box_max[axis]);
+    }
+    // The box reaches the ceiling (128 u) and every wall: the end walls at
+    // ±256 u along map x and the side walls at ±128 u along map y.
+    assert!((probe.box_max[1] - 128.0 * UNIT).abs() < 1e-3, "{probe:?}");
+    let mut half_extents = [0, 2].map(|axis| {
+        assert!(
+            (probe.box_min[axis] + probe.box_max[axis]).abs() < 1e-3,
+            "{probe:?}"
+        );
+        (probe.box_max[axis] / UNIT).round() as i32
+    });
+    half_extents.sort_unstable();
+    assert_eq!(half_extents, [128, 256], "{probe:?}");
+
+    let environment = environment(sections);
+    let top_faces: Vec<u32> = environment.volumes[0]
+        .surface_faces
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| {
+            face.vertices
+                .iter()
+                .all(|v| (v.position[1] - water).abs() < 1e-4)
+        })
+        .map(|(index, _)| index as u32)
+        .collect();
+    assert!(!top_faces.is_empty());
+    assert_eq!(
+        probes
+            .bindings
+            .iter()
+            .map(|b| (b.volume, b.face, b.probe))
+            .collect::<Vec<_>>(),
+        top_faces
+            .iter()
+            .map(|&face| (0, face, 0))
+            .collect::<Vec<_>>(),
+        "every piece of the top binds the probe; sides bind nothing"
+    );
+    assert_eq!(probes.tiles.len(), probe_tile_bytes());
+}
+
+/// One 128² BC6H tile.
+fn probe_tile_bytes() -> usize {
+    (128 / 4) * (128 / 4) * 16
+}
+
 fn section(sections: &BTreeMap<u32, Vec<u8>>, id: SectionId) -> &[u8] {
     sections
         .get(&(id as u32))
@@ -211,17 +294,28 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
         ("gravity_volume", "\"gravity\" \"-3\""),
         ("push_volume", "\"push\" \"0 0 15\""),
     ] {
-        let with_volume = sections(&compile(
+        let prl = compile(
             &temp,
             classname,
             &two_room_map(&[doorway_volume(classname, field)]),
-        ));
+        );
+        let with_volume = sections(&prl);
 
         assert_eq!(
-            with_volume.keys().collect::<Vec<_>>(),
-            base.keys().collect::<Vec<_>>(),
-            "{classname}: the same sections are emitted"
+            with_volume.keys().copied().collect::<Vec<_>>(),
+            expected_sections(&base, classname == "fluid_volume"),
+            "{classname}: the same sections are emitted, plus a fluid's reflection probes"
         );
+        if classname == "fluid_volume" {
+            assert_doorway_pool_probe(&with_volume);
+            // The runtime loader's cross-section checks accept it.
+            let world = postretro_level_loader::load_prl(prl.to_str().expect("UTF-8 path"))
+                .expect("the compiled level loads");
+            let probes = world
+                .reflection_probes
+                .expect("the loader keeps the probes");
+            assert_eq!(probes.probes.len(), 1);
+        }
         for (id, payload) in &base {
             if *id == SectionId::EnvironmentVolumes as u32 {
                 continue;
@@ -338,9 +432,9 @@ fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_sect
     let with_fluid = sections(&compile(&temp, "fluid", &two_room_map(&[fluid])));
 
     assert_eq!(
-        with_fluid.keys().collect::<Vec<_>>(),
-        base.keys().collect::<Vec<_>>(),
-        "the same sections are emitted"
+        with_fluid.keys().copied().collect::<Vec<_>>(),
+        expected_sections(&base, true),
+        "the same sections are emitted, plus the fluid's reflection probes"
     );
     let tables = [
         SectionId::EnvironmentVolumes as u32,

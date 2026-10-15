@@ -30,7 +30,7 @@ use resolution::{
 // -- Gamma helpers --------------------------------------------------------
 
 /// 256-entry sRGB → linear lookup. Built once per world-bundle bake.
-fn build_srgb_to_linear_lut() -> [f32; 256] {
+pub(crate) fn build_srgb_to_linear_lut() -> [f32; 256] {
     let mut lut = [0.0f32; 256];
     for (i, slot) in lut.iter_mut().enumerate() {
         let c = (i as f32) / 255.0;

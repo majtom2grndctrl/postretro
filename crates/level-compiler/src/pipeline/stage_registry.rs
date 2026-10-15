@@ -31,6 +31,7 @@ pub enum StageId {
     AnimatedWeightMaps,
     SdfAtlasBake,
     TextureMips,
+    ReflectionProbes,
     ClusterDirectory,
     Packing,
 }
@@ -71,6 +72,7 @@ impl StageId {
             Self::AnimatedWeightMaps => "AnimWeightMaps",
             Self::SdfAtlasBake => "SDF Atlas Bake",
             Self::TextureMips => "TextureMips",
+            Self::ReflectionProbes => "Reflection Probes",
             Self::ClusterDirectory => "ClusterDirectory",
             Self::Packing => "Packing",
         }
@@ -103,6 +105,7 @@ impl StageId {
             Self::AnimatedWeightMaps => "Animated light weight maps...",
             Self::SdfAtlasBake => "SDF atlas bake...",
             Self::TextureMips => "Texture mip bake...",
+            Self::ReflectionProbes => "Reflection probe capture...",
             Self::ClusterDirectory => "SH cluster directory...",
             Self::Packing => "Packing and writing...",
         }
@@ -112,7 +115,7 @@ impl StageId {
 /// Execution order. Partitioning precedes DataScript because buried-light
 /// classification needs the BSP, and the data script's light table must
 /// already omit buried lights.
-pub(crate) const ORDERED_STAGES: [StageId; 27] = [
+pub(crate) const ORDERED_STAGES: [StageId; 28] = [
     StageId::Parsing,
     StageId::TextureValidation,
     StageId::Partitioning,
@@ -138,6 +141,7 @@ pub(crate) const ORDERED_STAGES: [StageId; 27] = [
     StageId::AnimatedWeightMaps,
     StageId::SdfAtlasBake,
     StageId::TextureMips,
+    StageId::ReflectionProbes,
     StageId::ClusterDirectory,
     StageId::Packing,
 ];

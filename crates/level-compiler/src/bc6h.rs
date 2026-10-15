@@ -338,7 +338,7 @@ pub enum Bc6hDecodeError {
 /// Blocks are row-major, `ceil(width/4)·ceil(height/4)` of them; texels a
 /// partial edge block covers past `width`/`height` are dropped. Every block
 /// must be Mode 11 — the only mode the encoder emits — or the decode fails.
-#[cfg_attr(not(test), allow(dead_code))] // Production reader: the reflection-probe capture stage.
+#[cfg_attr(not(test), allow(dead_code))] // Whole-payload reader for tests; the capture decodes per block.
 pub fn decode_bc6h_rgb_to_f32_rgba(
     bytes: &[u8],
     width: u32,
@@ -380,7 +380,6 @@ pub fn decode_bc6h_rgb_to_f32_rgba(
 /// `unq` endpoints, the 4-bit weight table, then the UFloat finalize to f16.
 /// The capture stage samples one lightmap texel per hit through this, so a
 /// single-texel read never decodes a whole block row.
-#[cfg_attr(not(test), allow(dead_code))] // Production reader: the reflection-probe capture stage.
 pub fn decode_bc6h_block(block: &[u8; 16]) -> Result<[[f32; 3]; 16], Bc6hDecodeError> {
     let bits = u128::from_le_bytes(*block);
     let mut cursor = 0u32;

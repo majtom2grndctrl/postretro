@@ -38,6 +38,9 @@ fs4.workspace = true
 # runtime sees.
 postretro-level-loader.workspace = true
 postretro-visibility.workspace = true
+# Reflection-probe capture multiplies emissive by the runtime's per-prefix
+# `Material::emissive_strength`; reading the one table keeps bake and renderer equal.
+postretro-render-data.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true

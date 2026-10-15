@@ -144,7 +144,7 @@ Game logic tests must control time. Inject a fixed delta time rather than readin
 
 Resource proof covers the full lifetime in [Development Guide](./development_guide.md) §1.4. Observe production, buffering, serialization, persistence, return, and cleanup. A custom allocation seam proves only allocations routed through that seam.
 
-Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
+Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. A timed run owns the machine: no bake, build, or second engine runs beside it. The baker saturates every core by design, which skews even GPU pass times. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
 
 ### No GPU context in tests
 

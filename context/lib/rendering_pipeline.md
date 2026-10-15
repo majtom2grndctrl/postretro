@@ -960,9 +960,11 @@ the export is parsed.
 
 **Pin the GPU clock.** A lightly loaded discrete AMD GPU drops to a low, drifting core clock (a third of its top clock, varying ~13% run to run), which dominates sub-millisecond A/Bs; it is power management, not thermal throttling. Capture mode waits for the GPU after every submit, so its GPU idles between frames at low resolutions. Measure at a resolution that saturates the GPU (4K capture held per-frame `forward` to about ±1.5% and run-to-run spread to ±0.03 ms), and confirm by polling `ioreg -c IOAccelerator`'s `PerformanceStatistics` (`Core Clock(MHz)`, `Temperature(C)`) during the capture, not only between runs. Put a watchdog on `xctrace record`: it can hang after the target exits and stall a batch.
 
-**Machine-state confounders.** On a discrete GPU shared with other processes, Mac frame
-time can depend as much on machine state as on code. Other processes can hold much of the
-VRAM and keep the GPU busy at idle, which pushes the engine into per-frame paging. Before
+**Machine-state confounders.** Frame time can depend as much on machine state as on code.
+A timed run, engine or bake, owns the machine: no bake, build or second engine runs beside
+it. The baker saturates every core by design, which skews even GPU pass times. On the
+Mac, other processes sharing the discrete GPU can also hold much of the VRAM and keep the
+GPU busy at idle, which pushes the engine into per-frame paging. Before
 blaming code for a frame-time change, close the engine and record idle VRAM and GPU
 utilization from `ioreg -c IOAccelerator` (`inUseVidMemoryBytes`, `vramFreeBytes`,
 `Device Utilization %`). Then A/B an older commit under the same machine state.

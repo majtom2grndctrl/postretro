@@ -1,7 +1,7 @@
 // Stage-level reflection-probe tests: a probe captured end to end over a synthetic room.
 // See: context/lib/resource_management.md §5
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use glam::Vec3;
@@ -24,6 +24,14 @@ use super::reflection_probes_test_fixtures::{
 use super::*;
 use crate::bc6h::decode_bc6h_rgb_to_f32_rgba;
 use crate::bvh_build::build_bvh;
+
+/// No BSP: no capture point is in solid or outside the hull.
+fn empty_tree() -> BspTree {
+    BspTree {
+        nodes: Vec::new(),
+        leaves: Vec::new(),
+    }
+}
 
 /// A 4×4 diffuse `.prm` of one sRGB colour, at `key`.
 fn write_solid_prm(dir: &Path, key: [u8; 32], rgba: [u8; 4]) {
@@ -139,11 +147,16 @@ fn bake(
 ) -> Option<ReflectionProbesSection> {
     let (bvh, primitives, _) = build_bvh(&room.geometry).unwrap();
     let sh = OctahedralShVolumeSection::placeholder();
+    let tree = empty_tree();
+    let exterior = HashSet::new();
     let inputs = ReflectionProbeInputs {
         bvh: &bvh,
         primitives: &primitives,
         geometry: &room.geometry,
         environment_volumes: environment,
+        reflection_volumes: &[],
+        tree: &tree,
+        exterior_leaves: &exterior,
         lightmap: &room.lightmap,
         sh_volume: &sh,
         texture_keys: &room.keys,
@@ -228,37 +241,85 @@ fn capture_is_byte_identical_across_worker_counts() {
     assert_eq!(one.to_bytes(), four.to_bytes());
 }
 
+/// The stage's cache key for these inputs, placement run as the stage runs it.
+fn stage_key(
+    room: &LitFloorRoom,
+    environment: &EnvironmentVolumesSection,
+    authored: &[MapReflectionVolume],
+    lightmap: &LightmapSection,
+    sh: &OctahedralShVolumeSection,
+    keys: &HashMap<String, [u8; 32]>,
+) -> String {
+    let (bvh, primitives, _) = build_bvh(&room.geometry).unwrap();
+    let tree = empty_tree();
+    let exterior = HashSet::new();
+    let inputs = ReflectionProbeInputs {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &room.geometry,
+        environment_volumes: environment,
+        reflection_volumes: authored,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        lightmap,
+        sh_volume: sh,
+        texture_keys: keys,
+        prm_root: room.prm_dir.path(),
+    };
+    let tracer = SceneTracer::new(&bvh, &primitives, &room.geometry);
+    let bounds =
+        WorldBounds::from_positions(room.geometry.geometry.vertices.iter().map(|v| &v.position))
+            .unwrap();
+    let classifier = PointClassifier::new(&tree, &exterior, environment);
+    let control = BakeControl::unrestricted();
+    let probes = place_probes(
+        environment,
+        authored,
+        &PlacementScene {
+            tracer: &tracer,
+            bounds: &bounds,
+            classifier: &classifier,
+            governor: control.governor(),
+        },
+        MAX_REFLECTION_PROBES,
+    )
+    .unwrap();
+    cache_key(&inputs, &probes).unwrap().as_filename()
+}
+
+fn probe_box(min: [f32; 3], max: [f32; 3], offset: Option<[f32; 2]>) -> MapReflectionVolume {
+    MapReflectionVolume {
+        source_entity: 6,
+        source_label: "entity 6 'reflection_volume'".to_string(),
+        min,
+        max,
+        capture_offset: offset,
+    }
+}
+
 #[test]
-fn cache_key_covers_the_lightmap_sh_volumes_and_materials_it_reads() {
+fn cache_key_covers_the_lightmap_sh_volumes_materials_and_probe_boxes_it_reads() {
     let room = lit_floor_room([255, 0, 0, 255]);
     let environment = volumes(vec![fluid_volume(5, &[up_rect(-1.0, -1.0, 1.0, 1.0, 0.5)])]);
-    let (bvh, primitives, _) = build_bvh(&room.geometry).unwrap();
     let sh = OctahedralShVolumeSection::placeholder();
-    let key = |lightmap: &LightmapSection,
+    let key = |environment: &EnvironmentVolumesSection,
+               authored: &[MapReflectionVolume],
+               lightmap: &LightmapSection,
                sh: &OctahedralShVolumeSection,
-               environment: &EnvironmentVolumesSection,
                keys: &HashMap<String, [u8; 32]>| {
-        cache_key(&ReflectionProbeInputs {
-            bvh: &bvh,
-            primitives: &primitives,
-            geometry: &room.geometry,
-            environment_volumes: environment,
-            lightmap,
-            sh_volume: sh,
-            texture_keys: keys,
-            prm_root: room.prm_dir.path(),
-        })
-        .unwrap()
-        .as_filename()
+        stage_key(&room, environment, authored, lightmap, sh, keys)
     };
-    let base = key(&room.lightmap, &sh, &environment, &room.keys);
-    assert_eq!(base, key(&room.lightmap, &sh, &environment, &room.keys));
+    let base = key(&environment, &[], &room.lightmap, &sh, &room.keys);
+    assert_eq!(
+        base,
+        key(&environment, &[], &room.lightmap, &sh, &room.keys)
+    );
 
     let mut brighter = room.lightmap.clone();
     brighter.blocks[0] = uniform_block(8, 8, 2.0);
     assert_ne!(
         base,
-        key(&brighter, &sh, &environment, &room.keys),
+        key(&environment, &[], &brighter, &sh, &room.keys),
         "lightmap"
     );
 
@@ -269,14 +330,14 @@ fn cache_key_covers_the_lightmap_sh_volumes_and_materials_it_reads() {
     .unwrap();
     assert_ne!(
         base,
-        key(&room.lightmap, &baked_sh, &environment, &room.keys),
+        key(&environment, &[], &room.lightmap, &baked_sh, &room.keys),
         "SH"
     );
 
     let moved = volumes(vec![fluid_volume(5, &[up_rect(-1.0, -1.0, 1.0, 1.0, 0.6)])]);
     assert_ne!(
         base,
-        key(&room.lightmap, &sh, &moved, &room.keys),
+        key(&moved, &[], &room.lightmap, &sh, &room.keys),
         "fluid face"
     );
 
@@ -284,9 +345,40 @@ fn cache_key_covers_the_lightmap_sh_volumes_and_materials_it_reads() {
     retextured.insert("floor".to_string(), [9; 32]);
     assert_ne!(
         base,
-        key(&room.lightmap, &sh, &environment, &retextured),
+        key(&environment, &[], &room.lightmap, &sh, &retextured),
         "albedo"
     );
+
+    let authored = [probe_box([-2.0, 0.0, -2.0], [2.0, 2.5, 2.0], None)];
+    let with_box = key(&environment, &authored, &room.lightmap, &sh, &room.keys);
+    assert_ne!(base, with_box, "an authored probe");
+    assert_eq!(
+        with_box,
+        key(&environment, &authored, &room.lightmap, &sh, &room.keys)
+    );
+    let moved_box = [probe_box([-2.5, 0.0, -2.0], [2.0, 2.5, 2.0], None)];
+    assert_ne!(
+        with_box,
+        key(&environment, &moved_box, &room.lightmap, &sh, &room.keys),
+        "a moved probe brush"
+    );
+    let offsets = [
+        [probe_box(
+            [-2.0, 0.0, -2.0],
+            [2.0, 2.5, 2.0],
+            Some([0.25, 0.0]),
+        )],
+        [probe_box(
+            [-2.0, 0.0, -2.0],
+            [2.0, 2.5, 2.0],
+            Some([0.5, 0.0]),
+        )],
+    ];
+    let offset_keys = offsets
+        .each_ref()
+        .map(|authored| key(&environment, authored, &room.lightmap, &sh, &room.keys));
+    assert_ne!(offset_keys[0], with_box, "an authored capture offset");
+    assert_ne!(offset_keys[0], offset_keys[1], "a changed capture offset");
 }
 
 #[test]
@@ -295,11 +387,16 @@ fn unchanged_inputs_hit_the_stage_cache_with_the_same_section() {
     let environment = volumes(vec![fluid_volume(5, &[up_rect(-1.0, -1.0, 1.0, 1.0, 0.5)])]);
     let (bvh, primitives, _) = build_bvh(&room.geometry).unwrap();
     let sh = OctahedralShVolumeSection::placeholder();
+    let tree = empty_tree();
+    let exterior = HashSet::new();
     let inputs = ReflectionProbeInputs {
         bvh: &bvh,
         primitives: &primitives,
         geometry: &room.geometry,
         environment_volumes: &environment,
+        reflection_volumes: &[],
+        tree: &tree,
+        exterior_leaves: &exterior,
         lightmap: &room.lightmap,
         sh_volume: &sh,
         texture_keys: &room.keys,

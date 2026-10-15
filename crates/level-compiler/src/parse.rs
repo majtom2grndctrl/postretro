@@ -31,6 +31,11 @@ mod authoring_regions;
 mod environment_volume_tests;
 #[path = "parse/environment_volumes.rs"]
 mod environment_volumes;
+#[cfg(test)]
+#[path = "parse/reflection_volume_tests.rs"]
+mod reflection_volume_tests;
+#[path = "parse/reflection_volumes.rs"]
+mod reflection_volumes;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
@@ -842,6 +847,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
+    // Authored reflection-probe boxes, in map entity order.
+    let mut reflection_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1116,6 +1123,22 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 entities.len() - 1,
             )?);
             environment_volume_brush_ids.push(brush_ids);
+            continue;
+        }
+
+        // Reflection volumes are compiler-only boxes for the reflection-probe
+        // stage. They stay out of `is_environment_volume_classname` so id 52
+        // never sees them, and out of the world set so no geometry, BVH or SH
+        // input changes when one is added.
+        if classname == reflection_volumes::REFLECTION_VOLUME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            reflection_volumes.push(reflection_volumes::resolve_reflection_volume(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                entities.len() - 1,
+            )?);
             continue;
         }
 
@@ -1576,6 +1599,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Lights: {}", lights.len());
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
     log::info!("Environment volumes: {}", environment_volumes.len());
+    log::info!("Reflection volumes: {}", reflection_volumes.len());
 
     Ok(MapData {
         brush_volumes,
@@ -1593,6 +1617,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_waypoints,
         trigger_volumes,
         environment_volumes,
+        reflection_volumes,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,

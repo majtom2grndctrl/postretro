@@ -190,38 +190,27 @@ fn expected_sections(base: &BTreeMap<u32, Vec<u8>>, with_probes: bool) -> Vec<u3
     ids
 }
 
-/// The doorway fluid's top, one plane spanning the doorway, derives one
-/// probe: captured 2 mm above the water at its centre, inside its box, and
-/// bound by every up-facing piece of that top.
-fn assert_doorway_pool_probe(sections: &BTreeMap<u32, Vec<u8>>) {
+/// The doorway fluid's top is one plane in two rooms: the wall cuts it into
+/// a piece in each room and one in the doorway. Each room's piece fits its
+/// own room, so the boxes do not match and each gets its own probe, captured
+/// 2 mm above the water and inside its box. Every up-facing piece binds a
+/// probe; the sides bind nothing.
+fn assert_doorway_pool_probes(sections: &BTreeMap<u32, Vec<u8>>) -> usize {
     let probes =
         ReflectionProbesSection::from_bytes(section(sections, SectionId::ReflectionProbes))
             .expect("ReflectionProbes decodes");
-    assert_eq!(probes.probes.len(), 1, "one water plane, one derived probe");
-    let probe = &probes.probes[0];
-    assert_eq!(probe.source_entity, FIRST_VOLUME_ENTITY);
     let water = 80.0 * UNIT;
-    assert!(
-        (probe.capture_point[1] - (water + 0.002)).abs() < 1e-4,
-        "{probe:?}"
-    );
-    assert!(probe.capture_point[0].abs() < 1e-3 && probe.capture_point[2].abs() < 1e-3);
-    for axis in 0..3 {
-        assert!(probe.box_min[axis] <= probe.capture_point[axis]);
-        assert!(probe.capture_point[axis] <= probe.box_max[axis]);
-    }
-    // The box reaches the ceiling (128 u) and every wall: the end walls at
-    // ±256 u along map x and the side walls at ±128 u along map y.
-    assert!((probe.box_max[1] - 128.0 * UNIT).abs() < 1e-3, "{probe:?}");
-    let mut half_extents = [0, 2].map(|axis| {
+    for probe in &probes.probes {
+        assert_eq!(probe.source_entity, FIRST_VOLUME_ENTITY);
         assert!(
-            (probe.box_min[axis] + probe.box_max[axis]).abs() < 1e-3,
+            (probe.capture_point[1] - (water + 0.002)).abs() < 1e-4,
             "{probe:?}"
         );
-        (probe.box_max[axis] / UNIT).round() as i32
-    });
-    half_extents.sort_unstable();
-    assert_eq!(half_extents, [128, 256], "{probe:?}");
+        for axis in 0..3 {
+            assert!(probe.box_min[axis] <= probe.capture_point[axis]);
+            assert!(probe.capture_point[axis] <= probe.box_max[axis]);
+        }
+    }
 
     let environment = environment(sections);
     let top_faces: Vec<u32> = environment.volumes[0]
@@ -240,15 +229,44 @@ fn assert_doorway_pool_probe(sections: &BTreeMap<u32, Vec<u8>>) {
         probes
             .bindings
             .iter()
-            .map(|b| (b.volume, b.face, b.probe))
+            .map(|b| (b.volume, b.face))
             .collect::<Vec<_>>(),
-        top_faces
-            .iter()
-            .map(|&face| (0, face, 0))
-            .collect::<Vec<_>>(),
-        "every piece of the top binds the probe; sides bind nothing"
+        top_faces.iter().map(|&face| (0, face)).collect::<Vec<_>>(),
+        "every piece of the top binds a probe; sides bind nothing"
     );
-    assert_eq!(probes.tiles.len(), probe_tile_bytes());
+
+    // The pieces at either end of the pool: map x −64 and +64 are engine
+    // z +64 u and −64 u. Each binds a probe fitted to its own room: the
+    // ceiling (128 u), the side walls (±128 u along map y, engine x) and the
+    // room's end wall and the dividing wall (map x ±256 and ±16).
+    let probe_at = |engine_z: f32| {
+        let face = top_faces
+            .iter()
+            .copied()
+            .find(|&face| {
+                environment.volumes[0].surface_faces[face as usize]
+                    .vertices
+                    .iter()
+                    .any(|v| (v.position[2] - engine_z).abs() < 1e-4)
+            })
+            .expect("a top piece at the pool's end");
+        let binding = probes.bindings.iter().find(|b| b.face == face).unwrap();
+        probes.probes[binding.probe as usize]
+    };
+    let west = probe_at(64.0 * UNIT);
+    let east = probe_at(-64.0 * UNIT);
+    assert_ne!(west, east, "one probe per room");
+    for (probe, near, far) in [(west, 16.0, 256.0), (east, -256.0, -16.0)] {
+        let close = |a: f32, b: f32| (a - b * UNIT).abs() < 0.25;
+        assert!(close(probe.box_max[1], 128.0), "{probe:?}");
+        assert!(close(probe.box_min[0], -128.0) && close(probe.box_max[0], 128.0));
+        assert!(
+            close(probe.box_min[2], near) && close(probe.box_max[2], far),
+            "{probe:?}"
+        );
+    }
+    assert_eq!(probes.tiles.len(), probes.probes.len() * probe_tile_bytes());
+    probes.probes.len()
 }
 
 /// One 128² BC6H tile.
@@ -307,14 +325,14 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
             "{classname}: the same sections are emitted, plus a fluid's reflection probes"
         );
         if classname == "fluid_volume" {
-            assert_doorway_pool_probe(&with_volume);
+            let count = assert_doorway_pool_probes(&with_volume);
             // The runtime loader's cross-section checks accept it.
             let world = postretro_level_loader::load_prl(prl.to_str().expect("UTF-8 path"))
                 .expect("the compiled level loads");
             let probes = world
                 .reflection_probes
                 .expect("the loader keeps the probes");
-            assert_eq!(probes.probes.len(), 1);
+            assert_eq!(probes.probes.len(), count);
         }
         for (id, payload) in &base {
             if *id == SectionId::EnvironmentVolumes as u32 {
@@ -521,5 +539,103 @@ fn an_authored_push_force_writes_the_push_forces_section_in_record_order() {
     assert!(
         !unforced.contains_key(&(SectionId::PushForces as u32)),
         "a push with no authored force writes no PushForces section"
+    );
+}
+
+// Acceptance row 10: an authored probe brush is compiler-only. It changes the
+// reflection probes and nothing else: geometry, BVH and SH stay
+// byte-identical, and so does every other section.
+#[test]
+fn adding_a_reflection_volume_changes_only_the_reflection_probes() {
+    let temp = TempBuildDir::new();
+    let pool = doorway_volume("fluid_volume", "\"fluid\" \"water\"");
+    let without = sections(&compile(
+        &temp,
+        "pool",
+        &two_room_map(std::slice::from_ref(&pool)),
+    ));
+    // The west room, a unit in from its walls: it claims the pool's west piece.
+    let probe_box = format!(
+        "{{\n\"classname\" \"reflection_volume\"\n{}\n}}",
+        box_brush([-248, -120, 0], [-24, 120, 120])
+    );
+    let with = sections(&compile(
+        &temp,
+        "pool-probe",
+        &two_room_map(&[pool, probe_box]),
+    ));
+
+    assert_eq!(
+        with.keys().copied().collect::<Vec<_>>(),
+        without.keys().copied().collect::<Vec<_>>()
+    );
+    for id in [
+        SectionId::Geometry,
+        SectionId::Bvh,
+        SectionId::OctahedralShVolume,
+    ] {
+        assert!(
+            section(&with, id) == section(&without, id),
+            "{id:?} differs with a reflection volume"
+        );
+    }
+    for (id, payload) in &without {
+        if *id != SectionId::ReflectionProbes as u32 {
+            assert!(
+                with[id] == *payload,
+                "section {id} ({:?}) differs with a reflection volume",
+                SectionId::from_u32(*id)
+            );
+        }
+    }
+    let probes =
+        ReflectionProbesSection::from_bytes(section(&with, SectionId::ReflectionProbes)).unwrap();
+    assert_eq!(
+        probes.probes[0].source_entity,
+        FIRST_VOLUME_ENTITY + 1,
+        "authored probes lead, named by the reflection volume"
+    );
+    assert_ne!(
+        section(&with, SectionId::ReflectionProbes),
+        section(&without, SectionId::ReflectionProbes)
+    );
+}
+
+// P16: the stress map's 574 fluid volumes still build, with no more probes
+// than the cap. Slow (a full stress compile); run on demand.
+#[test]
+#[ignore = "compiles the stress-env-volumes map (minutes); run with --ignored"]
+fn stress_env_volumes_builds_with_no_more_probes_than_the_cap() {
+    let temp = TempBuildDir::new();
+    let input =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/maps/stress-env-volumes.map");
+    let output_path = temp.0.join("stress-env-volumes.prl");
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        .env("RUST_LOG", "warn")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output_path)
+        .arg("--no-cache")
+        .arg("--no-tui")
+        .output()
+        .expect("spawn prl-build");
+    assert!(
+        output.status.success(),
+        "prl-build failed for the stress map\n{}",
+        combined_logs(&output)
+    );
+    let built = sections(&output_path);
+    let probes =
+        ReflectionProbesSection::from_bytes(section(&built, SectionId::ReflectionProbes)).unwrap();
+    eprintln!(
+        "stress-env-volumes: {} probe(s), {} binding(s), built in {:.1} s",
+        probes.probes.len(),
+        probes.bindings.len(),
+        started.elapsed().as_secs_f64()
+    );
+    assert!(!probes.probes.is_empty());
+    assert!(
+        probes.probes.len() <= postretro_level_format::reflection_probes::MAX_REFLECTION_PROBES
     );
 }

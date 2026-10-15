@@ -1,11 +1,17 @@
-// Reflection-probe placement: up-facing fluid faces, their groups, fitted boxes and capture points.
+// Reflection-probe placement: up-facing fluid faces, authored and derived probes, drops, binding and the cap.
 // See: context/lib/resource_management.md §5.1
 
-use glam::{DVec3, Vec3};
+use glam::{DVec2, DVec3, Vec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::reflection_probes::{MAX_REFLECTION_PROBES, ReflectionProbeBinding};
+use postretro_level_format::reflection_probes::ReflectionProbeBinding;
 
-use super::box_fit::{FitRay, WorldBounds, fit_box, fit_rays};
+use crate::governor::Governor;
+use crate::map_data::MapReflectionVolume;
+
+use super::authored::place_authored;
+use super::box_fit::WorldBounds;
+use super::capture_point::PointClassifier;
+use super::derived::derive_probes;
 use super::hit::SceneTracer;
 
 /// A face is up-facing when its outward normal is within 1° of up. Water is
@@ -16,7 +22,7 @@ pub(crate) const UP_FACING_MIN_COS: f64 = 0.999_847_695_156_391_3;
 /// The capture point and fit origins sit this far above the water plane, so
 /// lookups stay in the upper hemisphere and the point stays out of the fluid.
 pub(crate) const CAPTURE_LIFT_M: f64 = 0.002;
-/// Faces of one volume whose planes differ by less than this share a plane.
+/// Faces whose planes differ by less than this share a plane.
 pub(crate) const PLANE_TOLERANCE_M: f64 = 0.001;
 
 /// Area-weighted geometry of one planar surface polygon.
@@ -68,11 +74,13 @@ impl FaceGeometry {
 }
 
 /// An up-facing fluid face in EnvironmentVolumes (id 52) numbering.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UpFacingFace {
     pub volume: u32,
     pub face: u32,
     pub geometry: FaceGeometry,
+    /// The polygon seen from above, `(x, z)` per vertex.
+    pub outline: Vec<DVec2>,
 }
 
 /// Every up-facing fluid face, in volume then face order. Side, bottom and
@@ -93,6 +101,7 @@ pub(crate) fn up_facing_faces(volumes: &EnvironmentVolumesSection) -> Vec<UpFaci
                     volume: volume as u32,
                     face: face as u32,
                     geometry,
+                    outline: points.iter().map(|p| DVec2::new(p.x, p.z)).collect(),
                 });
             }
         }
@@ -100,31 +109,37 @@ pub(crate) fn up_facing_faces(volumes: &EnvironmentVolumesSection) -> Vec<UpFaci
     out
 }
 
-/// Groups one volume's up-facing faces into probes, as indices into `faces`,
-/// each group ascending and groups ordered by their first face. Faces share a
-/// group when their planes lie within [`PLANE_TOLERANCE_M`] of the group's
-/// first face.
-///
-/// The minimal grouping: placement completeness replaces it with connected
-/// components of the box-match relation, which splits one plane across rooms.
-pub(crate) fn group_volume_faces(faces: &[UpFacingFace]) -> Vec<Vec<usize>> {
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for (i, face) in faces.iter().enumerate() {
-        let height = face.geometry.plane_height();
-        match groups.iter_mut().find(|group| {
-            (faces[group[0]].geometry.plane_height() - height).abs() < PLANE_TOLERANCE_M
-        }) {
-            Some(group) => group.push(i),
-            None => groups.push(vec![i]),
+/// Clusters of plane heights: sorted heights chained within
+/// [`PLANE_TOLERANCE_M`], so input order never changes them. Each cluster is
+/// its lowest height.
+pub(crate) fn plane_heights(heights: impl IntoIterator<Item = f64>) -> Vec<f64> {
+    let mut sorted: Vec<f64> = heights.into_iter().collect();
+    sorted.sort_by(f64::total_cmp);
+    let mut clusters: Vec<f64> = Vec::new();
+    let mut last = f64::NEG_INFINITY;
+    for height in sorted {
+        if height - last >= PLANE_TOLERANCE_M {
+            clusters.push(height);
         }
+        last = height;
     }
-    groups
+    clusters
+}
+
+/// The cluster of [`plane_heights`] `height` belongs to.
+pub(crate) fn plane_of(clusters: &[f64], height: f64) -> f64 {
+    clusters
+        .iter()
+        .rev()
+        .copied()
+        .find(|&lowest| lowest <= height)
+        .unwrap_or(clusters[0])
 }
 
 /// One probe before capture.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlacedProbe {
-    /// The fluid entity of a derived probe.
+    /// The authored box's entity, or the fluid entity of a derived probe.
     pub source_entity: u32,
     pub box_min: [f32; 3],
     pub box_max: [f32; 3],
@@ -141,82 +156,57 @@ impl PlacedProbe {
     }
 }
 
-/// Derived probes for every up-facing fluid face, in fluid entity order. Each
-/// face fits its own box; a group stores the union of its members' boxes and
-/// captures from its horizontal area centroid, [`CAPTURE_LIFT_M`] above its
-/// lowest plane.
-pub(crate) fn derive_probes(
+/// What placement reads besides the faces and the authored boxes.
+pub(crate) struct PlacementScene<'a> {
+    pub tracer: &'a SceneTracer<'a>,
+    pub bounds: &'a WorldBounds,
+    pub classifier: &'a PointClassifier<'a>,
+    /// Bounds the derived box fits' parallelism, as the capture's.
+    pub governor: &'a Governor,
+}
+
+/// Every kept probe: authored probes in map entity order, then derived probes
+/// in fluid entity order. In order: authored capture points and their drops,
+/// binding among the kept boxes, dropping boxes that bind nothing, derived
+/// probes for the unclaimed faces and their drops, then the cap of `cap`
+/// probes. Authored probes past the cap refuse the build.
+pub(crate) fn place_probes(
     volumes: &EnvironmentVolumesSection,
-    tracer: &SceneTracer<'_>,
-    bounds: &WorldBounds,
-) -> Vec<PlacedProbe> {
+    authored: &[MapReflectionVolume],
+    scene: &PlacementScene<'_>,
+    cap: usize,
+) -> anyhow::Result<Vec<PlacedProbe>> {
     let faces = up_facing_faces(volumes);
-    let rays = fit_rays();
-    let mut probes = Vec::new();
-    let mut start = 0;
-    while start < faces.len() {
-        let volume = faces[start].volume;
-        let end = start + faces[start..].partition_point(|f| f.volume == volume);
-        let volume_faces = &faces[start..end];
-        for group in group_volume_faces(volume_faces) {
-            let members: Vec<&UpFacingFace> = group.iter().map(|&i| &volume_faces[i]).collect();
-            probes.push(group_probe(
-                volumes.volumes[volume as usize].source_entity,
-                &members,
-                tracer,
-                bounds,
-                &rays,
-            ));
-        }
-        start = end;
+    let authored = place_authored(&faces, authored, scene.classifier)?;
+    if authored.probes.len() > cap {
+        anyhow::bail!(
+            "{} reflection volumes keep a probe, past the {cap}-probe cap; remove or merge \
+             reflection volumes until at most {cap} remain",
+            authored.probes.len()
+        );
     }
-    probes
+    let unclaimed: Vec<&UpFacingFace> = faces
+        .iter()
+        .zip(&authored.claimed)
+        .filter_map(|(face, &claimed)| (!claimed).then_some(face))
+        .collect();
+    let derived = derive_probes(&unclaimed, volumes, scene);
+    let mut probes = authored.probes;
+    probes.extend(apply_probe_cap(derived, cap - probes.len(), cap));
+    Ok(probes)
 }
 
-fn group_probe(
-    source_entity: u32,
-    members: &[&UpFacingFace],
-    tracer: &SceneTracer<'_>,
-    bounds: &WorldBounds,
-    rays: &[FitRay],
-) -> PlacedProbe {
-    let mut box_lo = DVec3::splat(f64::INFINITY);
-    let mut box_hi = DVec3::splat(f64::NEG_INFINITY);
-    let mut area = 0.0;
-    let mut weighted = DVec3::ZERO;
-    let mut lowest_plane = f64::INFINITY;
-    for member in members {
-        let g = &member.geometry;
-        let origin = g.centroid + DVec3::Y * CAPTURE_LIFT_M;
-        let (lo, hi) = fit_box(tracer, origin, bounds, rays);
-        box_lo = box_lo.min(lo);
-        box_hi = box_hi.max(hi);
-        area += g.area;
-        weighted += g.centroid * g.area;
-        lowest_plane = lowest_plane.min(g.plane_height());
-    }
-    let centroid = weighted / area;
-    let capture = DVec3::new(centroid.x, lowest_plane + CAPTURE_LIFT_M, centroid.z);
-    let box_min = box_lo.as_vec3();
-    let box_max = box_hi.as_vec3();
-    // The point is a convex combination of points inside the union box; the
-    // clamp only absorbs f32 rounding at a box face.
-    let capture_point = capture.as_vec3().clamp(box_min, box_max);
-    PlacedProbe {
-        source_entity,
-        box_min: box_min.to_array(),
-        box_max: box_max.to_array(),
-        capture_point: capture_point.to_array(),
-        bound_area: area,
-        faces: members.iter().map(|m| (m.volume, m.face)).collect(),
-    }
-}
-
-/// Keep at most [`MAX_REFLECTION_PROBES`] derived probes, the largest bound
-/// surface area first (ties to the earlier probe), in their original order.
-/// Dropped probes' faces bind nothing; one warning names the count.
-pub(crate) fn apply_probe_cap(probes: Vec<PlacedProbe>) -> Vec<PlacedProbe> {
-    if probes.len() <= MAX_REFLECTION_PROBES {
+/// Keep at most `limit` derived probes, the room `cap` leaves after the
+/// authored ones, the largest bound surface area first; ties go to the
+/// earlier probe, which is fluid entity then face order. The kept probes stay
+/// in their order. Dropped probes' faces bind nothing; one warning names the
+/// count.
+pub(crate) fn apply_probe_cap(
+    probes: Vec<PlacedProbe>,
+    limit: usize,
+    cap: usize,
+) -> Vec<PlacedProbe> {
+    if probes.len() <= limit {
         return probes;
     }
     let mut ranked: Vec<usize> = (0..probes.len()).collect();
@@ -227,13 +217,13 @@ pub(crate) fn apply_probe_cap(probes: Vec<PlacedProbe>) -> Vec<PlacedProbe> {
             .then(a.cmp(&b))
     });
     let mut keep = vec![false; probes.len()];
-    for &i in &ranked[..MAX_REFLECTION_PROBES] {
+    for &i in &ranked[..limit] {
         keep[i] = true;
     }
     log::warn!(
-        "[ReflectionProbes] {} derived probe(s) past the {MAX_REFLECTION_PROBES}-probe cap \
-         dropped, smallest bound water first; their faces reflect nothing",
-        probes.len() - MAX_REFLECTION_PROBES
+        "[ReflectionProbes] {} derived probe(s) past the {cap}-probe cap dropped, smallest bound \
+         water first; their faces reflect nothing",
+        probes.len() - limit
     );
     probes
         .into_iter()
@@ -265,10 +255,6 @@ pub(crate) fn bindings(probes: &[PlacedProbe]) -> Vec<ReflectionProbeBinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bvh_build::build_bvh;
-    use crate::reflection_probes::reflection_probes_test_fixtures::{
-        box_room, fluid_volume, up_rect, volumes,
-    };
 
     fn d(points: &[[f64; 3]]) -> Vec<DVec3> {
         points.iter().map(|&p| DVec3::from(p)).collect()
@@ -353,153 +339,14 @@ mod tests {
     }
 
     #[test]
-    fn side_bottom_and_sloped_fluid_faces_bind_no_probe() {
-        let room = box_room([-4.0, 0.0, -4.0], [4.0, 3.0, 4.0]);
-        let (bvh, primitives, _) = build_bvh(&room).unwrap();
-        let tracer = SceneTracer::new(&bvh, &primitives, &room);
-        let bounds =
-            WorldBounds::from_positions(room.geometry.vertices.iter().map(|v| &v.position))
-                .unwrap();
-        let pool = vec![
-            // Top (face 0): up-facing.
-            up_rect(-1.0, -1.0, 1.0, 1.0, 1.0),
-            // Bottom (face 1): wound to face down.
-            vec![
-                [-1.0, 0.5, -1.0],
-                [1.0, 0.5, -1.0],
-                [1.0, 0.5, 1.0],
-                [-1.0, 0.5, 1.0],
-            ],
-            // Side (face 2).
-            vec![
-                [1.0, 0.5, -1.0],
-                [1.0, 1.0, -1.0],
-                [1.0, 1.0, 1.0],
-                [1.0, 0.5, 1.0],
-            ],
-            // Sloped (face 3): 10° off up.
-            vec![
-                [2.0, 1.0, -1.0],
-                [2.0, 1.0, 1.0],
-                [3.0, 1.176, 1.0],
-                [3.0, 1.176, -1.0],
-            ],
-        ];
-        let section = volumes(vec![fluid_volume(7, &pool)]);
-        let probes = derive_probes(&section, &tracer, &bounds);
-        assert_eq!(probes.len(), 1);
-        assert_eq!(probes[0].source_entity, 7);
-        assert_eq!(
-            bindings(&probes),
-            vec![ReflectionProbeBinding {
-                volume: 0,
-                face: 0,
-                probe: 0,
-            }]
-        );
-    }
-
-    #[test]
-    fn derived_probe_fits_the_room_and_captures_above_its_water() {
-        let room = box_room([-4.0, -1.0, -3.0], [4.0, 3.0, 3.0]);
-        let (bvh, primitives, _) = build_bvh(&room).unwrap();
-        let tracer = SceneTracer::new(&bvh, &primitives, &room);
-        let bounds =
-            WorldBounds::from_positions(room.geometry.vertices.iter().map(|v| &v.position))
-                .unwrap();
-        // One pool built from two coplanar faces of one entity, offset from
-        // the room centre so the capture point is not trivially the origin.
-        let section = volumes(vec![fluid_volume(
-            3,
-            &[
-                up_rect(0.0, -1.0, 1.0, 1.0, 0.5),
-                up_rect(1.0, -1.0, 3.0, 1.0, 0.5),
-            ],
-        )]);
-        let probes = derive_probes(&section, &tracer, &bounds);
-        assert_eq!(
-            probes.len(),
-            1,
-            "coplanar faces of one entity share a probe"
-        );
-        let probe = &probes[0];
-        assert_eq!(probe.faces, vec![(0, 0), (0, 1)]);
-
-        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
-        // The box reaches the room's walls and ceiling, and its floor is the
-        // capture plane: water reads only its upper hemisphere.
-        assert!(
-            close(probe.box_min[0], -4.0) && close(probe.box_max[0], 4.0),
-            "{probe:?}"
-        );
-        assert!(
-            close(probe.box_min[2], -3.0) && close(probe.box_max[2], 3.0),
-            "{probe:?}"
-        );
-        assert!(close(probe.box_max[1], 3.0), "{probe:?}");
-        assert!(close(probe.box_min[1], 0.502), "{probe:?}");
-        // Horizontal area centroid of 2 m² at x 0.5 and 4 m² at x 2: x = 1.5.
-        assert!(close(probe.capture_point[0], 1.5), "{probe:?}");
-        assert!(close(probe.capture_point[2], 0.0), "{probe:?}");
-        assert!(close(probe.capture_point[1], 0.502), "{probe:?}");
-        assert!((probe.bound_area - 6.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn faces_of_one_entity_at_two_heights_get_separate_probes() {
-        let room = box_room([-4.0, -1.0, -3.0], [4.0, 3.0, 3.0]);
-        let (bvh, primitives, _) = build_bvh(&room).unwrap();
-        let tracer = SceneTracer::new(&bvh, &primitives, &room);
-        let bounds =
-            WorldBounds::from_positions(room.geometry.vertices.iter().map(|v| &v.position))
-                .unwrap();
-        let section = volumes(vec![
-            fluid_volume(
-                3,
-                &[
-                    up_rect(-2.0, -1.0, -1.0, 1.0, 0.0),
-                    up_rect(1.0, -1.0, 2.0, 1.0, 0.5),
-                ],
-            ),
-            fluid_volume(4, &[up_rect(-3.0, -2.0, -2.5, -1.5, 0.0)]),
-        ]);
-        let probes = derive_probes(&section, &tracer, &bounds);
-        let entities: Vec<u32> = probes.iter().map(|p| p.source_entity).collect();
-        assert_eq!(
-            entities,
-            vec![3, 3, 4],
-            "fluid entity order, one probe per plane"
-        );
-        assert_eq!(
-            bindings(&probes)
-                .iter()
-                .map(|b| (b.volume, b.face, b.probe))
-                .collect::<Vec<_>>(),
-            vec![(0, 0, 0), (0, 1, 1), (1, 0, 2)]
-        );
-    }
-
-    #[test]
-    fn probe_cap_keeps_the_largest_bound_water_in_order() {
-        let probe = |area: f64| PlacedProbe {
-            source_entity: 0,
-            box_min: [0.0; 3],
-            box_max: [1.0; 3],
-            capture_point: [0.5; 3],
-            bound_area: area,
-            faces: Vec::new(),
-        };
-        let mut probes: Vec<PlacedProbe> = (0..MAX_REFLECTION_PROBES).map(|_| probe(2.0)).collect();
-        probes.insert(10, probe(1.0));
-        probes.push(probe(1.0));
-        probes.push(probe(5.0));
-        let kept = apply_probe_cap(probes);
-        assert_eq!(kept.len(), MAX_REFLECTION_PROBES);
-        assert!(kept.iter().all(|p| p.bound_area >= 2.0));
-        assert_eq!(
-            kept.last().unwrap().bound_area,
-            5.0,
-            "original order survives"
-        );
+    fn plane_heights_chain_within_the_tolerance_whatever_the_order() {
+        let heights = [0.5, 0.0, 0.0004, 0.5008, 0.0008, -1.0];
+        let clusters = plane_heights(heights);
+        assert_eq!(clusters, vec![-1.0, 0.0, 0.5]);
+        let mut reversed = heights;
+        reversed.reverse();
+        assert_eq!(plane_heights(reversed), clusters);
+        assert_eq!(plane_of(&clusters, 0.0008), 0.0);
+        assert_eq!(plane_of(&clusters, 0.5008), 0.5);
     }
 }

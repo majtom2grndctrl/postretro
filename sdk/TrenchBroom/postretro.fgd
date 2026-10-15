@@ -589,6 +589,19 @@
     priority(integer) : "Overlap priority" : 0 : "Default 0. Where volumes setting the same field overlap, the highest priority wins; on a tie the smaller volume wins, then the earlier entity in map order."
 ]
 
+// Reflection volume: an authored reflection-probe box, compiler-only. Water
+// reflects with no authoring: the compiler fits a probe to each pool's room.
+// Draw one of these around a room when the fitted box is wrong. Its bounds
+// are the box the water's reflection projects onto, and the region it
+// claims: an up-facing fluid face whose centre lies inside binds the
+// smallest such box. It never renders, collides or changes the lighting.
+@SolidClass
+    color(120 200 230)
+    = reflection_volume : "Reflection probe box (brush)"
+[
+    _capture_offset(string) : "Capture offset (map units)" : "" : "Optional. Two numbers on the map's horizontal axes, such as \"32 -16\", moving the capture point from the middle of the lowest water inside the box, clear of a pillar standing in the water there. Its height stays 2 mm above that water. A third number, anything but two numbers, or an offset that leaves the box fails the build."
+]
+
 // Per-region volumetric fog brush.
 //
 // Geometry behaviour is auto-detected from the brush faces:

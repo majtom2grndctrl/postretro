@@ -1,9 +1,13 @@
-//! Reflection-probe capture stage (PRL id 54): derive probes over up-facing
-//! fluid faces, capture each probe's static world into an octahedral tile.
+//! Reflection-probe capture stage (PRL id 54): place authored and derived
+//! probes over up-facing fluid faces, capture each probe's static world into
+//! an octahedral tile.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
+mod authored;
 mod box_fit;
 mod capture;
+mod capture_point;
+mod derived;
 mod hit;
 mod lightmap_sample;
 mod materials;
@@ -12,18 +16,22 @@ mod sh_sample;
 mod shading;
 
 #[cfg(test)]
+mod placement_test_fixtures;
+#[cfg(test)]
+mod placement_tests;
+#[cfg(test)]
 mod reflection_probes_test_fixtures;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use bvh::bvh::Bvh;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use postretro_level_format::reflection_probes::{
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
+    MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
     REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeLightShare, ReflectionProbeRecord,
     ReflectionProbesSection,
 };
@@ -34,20 +42,24 @@ use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
+use crate::map_data::MapReflectionVolume;
+use crate::partition::BspTree;
 
 use box_fit::WorldBounds;
 use capture::{SUPERSAMPLE_OFFSETS, TILE_INTERIOR, capture_row, encode_tile};
+use capture_point::PointClassifier;
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use materials::SurfaceMaterials;
-use placement::{PlacedProbe, apply_probe_cap, bindings, derive_probes, up_facing_faces};
+use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::{CaptureScene, PRODUCTION_INDIRECT_WEIGHT};
 
 /// Cache stage identity for the whole id-54 section.
 const STAGE_ID: &str = "reflection_probes";
-/// Bump when placement, capture shading, sampling or the payload changes.
-const STAGE_VERSION: u32 = 1;
+/// Bump when capture shading, sampling or the payload changes. Placement
+/// enters the key as its output, so a placement change re-keys by itself.
+const STAGE_VERSION: u32 = 2;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -55,8 +67,15 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     pub bvh: &'a Bvh<f32, 3>,
     pub primitives: &'a [BvhPrimitive],
     pub geometry: &'a GeometryResult,
-    /// Id 52, whose up-facing fluid faces derive the probes.
+    /// Id 52, whose up-facing fluid faces bind the probes and whose fluid
+    /// brushes drop a capture point inside them.
     pub environment_volumes: &'a EnvironmentVolumesSection,
+    /// Authored boxes, in map entity order.
+    pub reflection_volumes: &'a [MapReflectionVolume],
+    /// The compiler BSP and its exterior leaves: a capture point in a solid
+    /// leaf is in solid, one in an exterior leaf is outside the hull.
+    pub tree: &'a BspTree,
+    pub exterior_leaves: &'a HashSet<usize>,
     /// Id 22 as encoded: the capture decodes the texels it reads.
     pub lightmap: &'a LightmapSection,
     /// The packed pre-BC6H base SH volume id 34 encodes. Warm SH differs from
@@ -74,12 +93,47 @@ pub(crate) fn bake_or_load_reflection_probes(
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
-    if up_facing_faces(inputs.environment_volumes).is_empty() {
+    if inputs.reflection_volumes.is_empty()
+        && up_facing_faces(inputs.environment_volumes).is_empty()
+    {
         return Ok(None);
     }
-    // Placement and capture are pure functions of the keyed inputs, so a hit
-    // skips both.
-    let key = cache_key(inputs)?;
+    let Some(bounds) = WorldBounds::from_positions(
+        inputs
+            .geometry
+            .geometry
+            .vertices
+            .iter()
+            .map(|v| &v.position),
+    ) else {
+        log::warn!("[ReflectionProbes] the level has no static world to reflect; no probes");
+        return Ok(None);
+    };
+    let tracer = SceneTracer::new(inputs.bvh, inputs.primitives, inputs.geometry);
+    // Placement runs on every build, warm included, so its drop warnings
+    // always reach the mapper; its output keys the capture.
+    let classifier = PointClassifier::new(
+        inputs.tree,
+        inputs.exterior_leaves,
+        inputs.environment_volumes,
+    );
+    let probes = place_probes(
+        inputs.environment_volumes,
+        inputs.reflection_volumes,
+        &PlacementScene {
+            tracer: &tracer,
+            bounds: &bounds,
+            classifier: &classifier,
+            governor: control.governor(),
+        },
+        MAX_REFLECTION_PROBES,
+    )?;
+    if probes.is_empty() {
+        return Ok(None);
+    }
+
+    // Capture is a pure function of the keyed inputs, so a hit skips it.
+    let key = cache_key(inputs, &probes)?;
     if let Some(section) = stage_cache
         .and_then(|cache| cache.get(&key))
         .and_then(|bytes| {
@@ -93,23 +147,6 @@ pub(crate) fn bake_or_load_reflection_probes(
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
-
-    let Some(bounds) = WorldBounds::from_positions(
-        inputs
-            .geometry
-            .geometry
-            .vertices
-            .iter()
-            .map(|v| &v.position),
-    ) else {
-        log::warn!("[ReflectionProbes] the level has no static world to reflect; no probes");
-        return Ok(None);
-    };
-    let tracer = SceneTracer::new(inputs.bvh, inputs.primitives, inputs.geometry);
-    let probes = apply_probe_cap(derive_probes(inputs.environment_volumes, &tracer, &bounds));
-    if probes.is_empty() {
-        return Ok(None);
-    }
 
     let scene = CaptureScene {
         tracer,
@@ -177,9 +214,13 @@ fn capture_section(
     })
 }
 
-/// `blake3` over every input the stage reads, in a fixed order, plus the
-/// constants that shape its output.
-fn cache_key(inputs: &ReflectionProbeInputs<'_>) -> anyhow::Result<CacheKey> {
+/// `blake3` over every input the capture reads, in a fixed order, plus the
+/// constants that shape its output. Placement enters as its output: every
+/// probe's box, capture point and bound faces.
+fn cache_key(
+    inputs: &ReflectionProbeInputs<'_>,
+    probes: &[PlacedProbe],
+) -> anyhow::Result<CacheKey> {
     let mut hasher = blake3::Hasher::new();
     let mut section = |label: &str, bytes: &[u8]| {
         hasher.update(label.as_bytes());
@@ -203,6 +244,24 @@ fn cache_key(inputs: &ReflectionProbeInputs<'_>) -> anyhow::Result<CacheKey> {
         "environment volumes",
         &inputs.environment_volumes.to_bytes(),
     );
+    let mut placement = Vec::new();
+    for probe in probes {
+        placement.extend_from_slice(&probe.source_entity.to_le_bytes());
+        for value in probe
+            .box_min
+            .iter()
+            .chain(&probe.box_max)
+            .chain(&probe.capture_point)
+        {
+            placement.extend_from_slice(&value.to_le_bytes());
+        }
+        placement.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
+        for &(volume, face) in &probe.faces {
+            placement.extend_from_slice(&volume.to_le_bytes());
+            placement.extend_from_slice(&face.to_le_bytes());
+        }
+    }
+    section("placement", &placement);
     section(
         "sh volume",
         &inputs
@@ -237,18 +296,7 @@ fn cache_key(inputs: &ReflectionProbeInputs<'_>) -> anyhow::Result<CacheKey> {
     for value in [
         REFLECTION_PROBE_TILE_DIMENSION,
         REFLECTION_PROBE_TILE_BORDER,
-        box_fit::FIT_AZIMUTHS as u32,
-        box_fit::FIT_RING_COUNT as u32,
         u32::from(PRODUCTION_PROBE_OCCLUSION),
-    ] {
-        constants.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in [
-        box_fit::FIT_ELEVATION_STEP_DEG,
-        box_fit::FIT_PLANE_MERGE_M,
-        placement::UP_FACING_MIN_COS,
-        placement::CAPTURE_LIFT_M,
-        placement::PLANE_TOLERANCE_M,
     ] {
         constants.extend_from_slice(&value.to_le_bytes());
     }

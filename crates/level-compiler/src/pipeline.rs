@@ -1857,7 +1857,8 @@ fn run_after_parsing(
     );
 
     // Reflection probes read the encoded id 52 and id 22, the packed base SH
-    // and the baked `.prm` sidecars, with the BVH still in scope.
+    // and the baked `.prm` sidecars, with the BVH still in scope; the BSP and
+    // its exterior leaves drop capture points in solid or outside the hull.
     let stage_start = begin_stage(reporter.as_ref(), StageId::ReflectionProbes);
     let reflection_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ReflectionProbes, reflection_progress.clone());
@@ -1868,6 +1869,9 @@ fn run_after_parsing(
             primitives: &bvh_primitives,
             geometry: &geo_result,
             environment_volumes: &environment_volumes_section,
+            reflection_volumes: &map_data.reflection_volumes,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
             lightmap: &lightmap_section,
             sh_volume: &packed_sh_volume,
             texture_keys: &name_to_key,

@@ -146,6 +146,21 @@ Manual (owner, in-engine)
 | 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual |
 
 
+## Task 9b measurement state (paused 2026-10-15 at the owner's request)
+
+Measured: e24 reflection-probe stage, branch release compiler, `-j 5`, fresh `--cache-dir` per cold run: 0.38 / 0.37 / 0.37 s cold, 0.02 / 0.01 s warm; whole compile 14.1 / 13.7 s cold (one 50.8 s outlier: a 40 s lightmap stall consistent with Defender scanning fresh cache writes), 2.3–3.5 s warm. Fixed VRAM terms at the cap: probe array 256 × 16 384 B = 4 194 304 B; probe table 61 456 B.
+
+Not yet run (resume in order):
+1. Main compiler on e24 cold + warm → `content/dev/maps/e24-environment-test.main.prl` (gitignored), compare its `.prm` output with `baked/materials` byte for byte.
+2. Main compiler on `reflection-probes-test.map` (record whether it ignores or rejects `reflection_volume`).
+3. Capture scenes (`postretro --capture <scene.json>`: exact pose, offscreen, never presents so vsync is off; GPU timing needs `dev-tools`): e24 east-wing pool straight down (eye `[-4.8768, 1.6, -44.2976]`, yaw 0, pitch −89, hfov 100 — the pool fills the frame), test-map pool straight down (`[-6.5024, 1.6, -6.5024]`); 1920×1080, warmup 240, 720 samples (6 windows of 120).
+4. Three arms per scene: main; branch all terms; branch `light_term_mask` 0x13F (specular off disables the probe term; forward is then not like-for-like, fluid_surface is). Poll `nvidia-smi` clocks during runs (power plan is Balanced; GPU idles at 300 MHz P8).
+5. Stress map branch compile in the background (≈34 min, `--no-cache`) for the probe-index term (4 B × fluid vertices, counted from id 52 as `pack_fluid_surfaces` does).
+
+Resume paths (`<scratch>` = this session's scratchpad): `<scratch>/bin-branch/{postretro,prl-build}.exe` (HEAD 086d9ca2b, release, capture + dev-tools; also in the worktree's `target/release`), `<scratch>/bin-main/{postretro,prl-build}.exe` (origin/main 41f21c8ae, same features), helpers `<scratch>/mkscene.py`, `<scratch>/fluid_verts.py`, logs `<scratch>/logs/`. The throwaway main worktree and its target are already deleted (it built under `%TEMP%/prm`: scratchpad paths exceed MAX_PATH for build scripts, LNK1104). Run both binaries from this worktree root; capture reads `.prm` from `<workspace>/baked/materials`. Clean up `<scratch>/cache-*` and `<scratch>/main-baked` after.
+
+Fairness flags: Balanced power plan; capture draws fluids at a fixed 0.6 opacity, reflectivity 1, pixel style (no manifest); cold compile time varies with the environment.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |

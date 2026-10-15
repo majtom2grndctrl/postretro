@@ -146,20 +146,25 @@ Manual (owner, in-engine)
 | 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual |
 
 
-## Task 9b measurement state (paused 2026-10-15 at the owner's request)
+## Task 9b measurements (clean rerun, 2026-10-15)
 
-Measured: e24 reflection-probe stage, branch release compiler, `-j 5`, fresh `--cache-dir` per cold run: 0.38 / 0.37 / 0.37 s cold, 0.02 / 0.01 s warm; whole compile 14.1 / 13.7 s cold (one 50.8 s outlier: a 40 s lightmap stall consistent with Defender scanning fresh cache writes), 2.3–3.5 s warm. Fixed VRAM terms at the cap: probe array 256 × 16 384 B = 4 194 304 B; probe table 61 456 B.
+Setup: GTX 1660 Super, Vulkan, release `capture,dev-tools` binaries (main = origin/main 41f21c8ae, branch = 086d9ca2b), `--capture` offscreen 1920×1080 fov 100, no vsync, 240 warmup + 720 samples (6 × 120-readback windows), one process at a time after the stress bake exited; GPU P0, graphics median 1935–1950 MHz in every arm. Capture draws fluids at 0.6 opacity, reflectivity 1, pixel style. "Off" = `light_term_mask` 0x13F (specular off gates the probe term; forward is then not like-for-like). Each binary runs its own compiler's PRL; main's `.prm` output is byte-identical to the branch's.
 
-Not yet run (resume in order):
-1. Main compiler on e24 cold + warm → `content/dev/maps/e24-environment-test.main.prl` (gitignored), compare its `.prm` output with `baked/materials` byte for byte.
-2. Main compiler on `reflection-probes-test.map` (record whether it ignores or rejects `reflection_volume`).
-3. Capture scenes (`postretro --capture <scene.json>`: exact pose, offscreen, never presents so vsync is off; GPU timing needs `dev-tools`): e24 east-wing pool straight down (eye `[-4.8768, 1.6, -44.2976]`, yaw 0, pitch −89, hfov 100 — the pool fills the frame), test-map pool straight down (`[-6.5024, 1.6, -6.5024]`); 1920×1080, warmup 240, 720 samples (6 windows of 120).
-4. Three arms per scene: main; branch all terms; branch `light_term_mask` 0x13F (specular off disables the probe term; forward is then not like-for-like, fluid_surface is). Poll `nvidia-smi` clocks during runs (power plan is Balanced; GPU idles at 300 MHz P8).
-5. Stress map branch compile in the background (≈34 min, `--no-cache`) for the probe-index term (4 B × fluid vertices, counted from id 52 as `pack_fluid_surfaces` does).
+| Pose | main fluid ms | branch on | branch off | probe term (on − off) | frame ms main → on |
+|---|---|---|---|---|---|
+| e24 east-wing pool, straight down | 3.10 (rerun 3.13) | 4.77 (4.76) | 4.57 (4.54) | +0.21 | 6.43 → 8.05 |
+| test-map pool, straight down | 1.645 | 2.322 | 1.638 | +0.68 | 5.05 → 5.74 |
+| test-map spawn, oblique | 0.173 | 0.244 | 0.171 | +0.07 | 4.28 → 4.33 |
 
-Resume paths (`<scratch>` = this session's scratchpad): `<scratch>/bin-branch/{postretro,prl-build}.exe` (HEAD 086d9ca2b, release, capture + dev-tools; also in the worktree's `target/release`), `<scratch>/bin-main/{postretro,prl-build}.exe` (origin/main 41f21c8ae, same features), helpers `<scratch>/mkscene.py`, `<scratch>/fluid_verts.py`, logs `<scratch>/logs/`. The throwaway main worktree and its target are already deleted (it built under `%TEMP%/prm`: scratchpad paths exceed MAX_PATH for build scripts, LNK1104). Run both binaries from this worktree root; capture reads `.prm` from `<workspace>/baked/materials`. Clean up `<scratch>/cache-*` and `<scratch>/main-baked` after.
+**Open: +1.45 ms (+47%) branch fluid-pass overhead on e24 with the probe term off.** The branch binary on main's PRL (no section 54, no probe bound) also reads 4.55 ms, so it is the binary, not the data; the test map shows none (off ≈ main). Cause unknown; candidates are shader-wide (register pressure / occupancy from the larger fluid shader, the always-taken world-position derivatives) amplified by e24's fluid overdraw. Every branch run's first window reads high (5.0–5.2 ms).
 
-Fairness flags: Balanced power plan; capture draws fluids at a fixed 0.6 opacity, reflectivity 1, pixel style (no manifest); cold compile time varies with the environment.
+**Open: the branch release capture binary exits with code 1 under `WGPU_BACKEND=dx12`** during init, right after SH compose setup, logging no error; main's binary runs on DX12. (`dx12_fxc_compiles_every_full_init_pipeline` passes.) Not yet investigated.
+
+Bake (e24, `-j 5`, fresh cache per cold run): main cold 13.55 / 12.64 s, warm 1.45 s; branch cold 12.93 s with the probe stage 0.36 s, warm 1.48–2.16 s with the stage 0.01–0.02 s. Cold SH Bake swings 5.8 → 20–34 s with machine noise on both compilers. Main's compiler compiles `reflection-probes-test.map` and silently ignores `reflection_volume` (no id 54).
+
+Stress map (`stress-env-volumes.map`, branch, `--no-cache`, `-j 5`): 1750 s total, probe stage 11.49 s, exactly 256 probes / 364 bindings (460 derived probes dropped past the cap, 262 inside-another-fluid drops), 20 260 fluid vertices. Probe VRAM: array 4 194 304 B + table 61 456 B + probe-index buffer 81 040 B = **4 336 800 B (≈4.14 MiB)**.
+
+Not run here: Mac (5300M) Metal System Trace — owner's. Artifacts kept in the session scratchpad (`out2/`, `bin-main/`, `bin-branch/`).
 
 ## Tasks
 

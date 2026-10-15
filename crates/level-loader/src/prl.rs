@@ -2970,6 +2970,54 @@ mod tests {
         }
     }
 
+    // Acceptance row 2: a distance payload whose length mismatches the
+    // header's tile dimension and probe count, one texel short or one texel
+    // long, fails the load naming the section.
+    #[test]
+    fn load_prl_refuses_a_reflection_probe_distance_payload_of_the_wrong_length() {
+        let section = reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT);
+        let expected = section.distances.len();
+        assert_eq!(expected, 4 * 4 * 2, "one 4² f16 distance tile");
+        for (length, name, says) in [
+            (
+                expected - 2,
+                "postretro_test_probe_distance_short.prl",
+                "distance payload",
+            ),
+            (
+                expected + 2,
+                "postretro_test_probe_distance_long.prl",
+                "trailing bytes",
+            ),
+        ] {
+            let mut wrong = section.clone();
+            wrong.distances.resize(length, 0);
+            let mut sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                environment_volumes_blob(&reflection_probe_environment()),
+            ];
+            // The section encoder writes what it is given; the decoder refuses.
+            sections.push(prl_format::SectionBlob {
+                section_id: SectionId::ReflectionProbes as u32,
+                version: 1,
+                data: wrong.to_bytes(),
+            });
+            let tmp = write_prl_fixture(sections, name);
+            let result = load_prl(tmp.to_str().unwrap());
+            let _ = std::fs::remove_file(&tmp);
+            match result {
+                Err(PrlLoadError::SectionValidation { section, message }) => {
+                    assert_eq!(section, "ReflectionProbes", "{name}: {message}");
+                    assert!(message.contains(says), "{name}: {message}");
+                }
+                other => panic!("{name}: expected a ReflectionProbes refusal, got {other:?}"),
+            }
+        }
+    }
+
     // Pin P10, loader half: a share entry's roster index reads descriptor
     // `r` directly, so section 54 refuses a level whose roster-to-descriptor
     // table is not the identity the compiler writes, naming the section. The

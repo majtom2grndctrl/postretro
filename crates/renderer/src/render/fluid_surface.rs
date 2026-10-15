@@ -63,11 +63,11 @@ pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static
 }
 
 /// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
-/// rows selected by a dynamic offset, then the reflection probe array and
-/// share table. Textures, samplers and uniforms only: the shared groups
-/// already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
-    let [probe_array, probe_table] = fluid_probe_bind_group_layout_entries();
+/// rows selected by a dynamic offset, then the reflection probe array, share
+/// table and distance array. Textures, samplers and uniforms only: the shared
+/// groups already spend the whole FRAGMENT storage budget.
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+    let [probe_array, probe_table, probe_distance] = fluid_probe_bind_group_layout_entries();
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -81,6 +81,7 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
         },
         probe_array,
         probe_table,
+        probe_distance,
     ]
 }
 
@@ -200,9 +201,9 @@ struct InstalledFluidSurfaces {
     probe_index_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     params_buffer: wgpu::Buffer,
-    /// The level's probe array and share table, or their dummies. Held so
-    /// they drop with the level; the frame reaches them only through
-    /// `params_bind_group`.
+    /// The level's probe array, share table and distance array, or their
+    /// dummies. Held so they drop with the level; the frame reaches them only
+    /// through `params_bind_group`.
     _probes: FluidProbeResources,
     params_bind_group: wgpu::BindGroup,
     /// Indexed by draw slot.
@@ -366,7 +367,7 @@ impl FluidSurfacePass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let [probe_array, probe_table] = probes.bind_group_entries();
+        let [probe_array, probe_table, probe_distance] = probes.bind_group_entries();
         let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
             layout: &self.params_bind_group_layout,
@@ -381,6 +382,7 @@ impl FluidSurfacePass {
                 },
                 probe_array,
                 probe_table,
+                probe_distance,
             ],
         });
         log::info!(
@@ -454,6 +456,15 @@ impl FluidSurfacePass {
         self.installed
             .as_ref()
             .map(|installed| installed._probes.array_size())
+    }
+
+    /// The installed distance array's tile width, height and layer count:
+    /// 1×1 and one layer for the dummy.
+    #[cfg(test)]
+    pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed._probes.distance_size())
     }
 
     /// Parameter-row uploads since install.

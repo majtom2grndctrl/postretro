@@ -396,12 +396,13 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     assert!(vertex_storage.iter().sum::<u32>() <= 8);
 
     // Albedo, emissive, specular and normal (group 1), the SH atlas, depth
-    // moments and direct atlas (group 3), the reflection probe array (group
-    // 4), and scene depth for depth fog (group 5): 9 of the 16.
+    // moments and direct atlas (group 3), the reflection probe array and its
+    // distance array (group 4), and scene depth for depth fog (group 5): 10
+    // of the 16. Before probes the stage held 8; the probes add exactly two.
     let fragment_sampled = per_group(fragment_sampled_textures);
-    assert_eq!(fragment_sampled, [0, 4, 0, 3, 1, 1]);
+    assert_eq!(fragment_sampled, [0, 4, 0, 3, 2, 1]);
     let fragment_total: u32 = fragment_sampled.iter().sum();
-    assert_eq!(fragment_total, 9);
+    assert_eq!(fragment_total, 10);
     assert_eq!(
         fluid_surface::fluid_pipeline_stage_count(fragment_sampled_textures),
         fragment_total
@@ -415,9 +416,10 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
 }
 
 // The reflection probes add exactly one fragment uniform (the share table, in
-// group 4 beside the params window) and no sampler: the probe array samples
-// through the SH atlas sampler of group 3. Before probes the fluid fragment
-// stage held 6 uniforms and 2 samplers; storage stays at 8.
+// group 4 beside the params window) and no sampler: the probe array and the
+// distance array both sample through the SH atlas sampler of group 3. Before
+// probes the fluid fragment stage held 8 sampled textures, 6 uniforms and 2
+// samplers; storage stays at 8.
 #[cfg(debug_assertions)]
 #[test]
 fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
@@ -436,7 +438,7 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [4, 0, 1, 1],
             [0, 5, 1, 0],
             [3, 3, 1, 1],
-            [1, 0, 2, 0],
+            [2, 0, 2, 0],
             [1, 0, 1, 0],
         ],
         "fluid FRAGMENT bindings changed"
@@ -447,6 +449,12 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
         7,
         "six uniforms before probes, plus the share table"
     );
+    assert_eq!(
+        total(0),
+        10,
+        "eight sampled textures before probes, plus the probe and distance arrays"
+    );
+    assert_eq!(total(1), 8, "the probes add no storage buffer");
     assert_eq!(total(3), 2, "the probes add no sampler");
     let limits = wgpu::Limits::default();
     assert!(total(0) <= limits.max_sampled_textures_per_shader_stage);

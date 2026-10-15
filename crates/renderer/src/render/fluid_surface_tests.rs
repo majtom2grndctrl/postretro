@@ -260,10 +260,10 @@ fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<
 }
 
 // Two fluid pipelines: the reflection-free variant's fragment stage reaches
-// no reflection function and reads neither the probe array nor the probe
-// table; everything up to the surface it returns stays (lighting, fog, the
-// warp). The reflecting variant reaches the probe term, so the walk is not
-// vacuous. Each variant's override is the shader's own `FLUID_REFLECTIONS`,
+// no reflection function (the distance search included) and reads none of the
+// probe array, the probe table or the distance array; everything up to the
+// surface it returns stays (lighting, fog, the warp). The reflecting variant
+// reaches the probe term and its search, so the walk is not vacuous. Each variant's override is the shader's own `FLUID_REFLECTIONS`,
 // default true, set per pipeline.
 #[test]
 fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
@@ -309,7 +309,7 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
         reflecting_functions.is_empty(),
         "the reflection-free variant calls {reflecting_functions:?}"
     );
-    for probe_global in ["fluid_probes", "fluid_probe_array"] {
+    for probe_global in ["fluid_probes", "fluid_probe_array", "fluid_probe_distance"] {
         assert!(
             !globals.iter().any(|name| name == probe_global),
             "the reflection-free variant reads {probe_global}: {globals:?}"
@@ -325,6 +325,8 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
     for reached in [
         "fluid_reflection_gate",
         "fluid_reflection_sample",
+        "fluid_reflection_search",
+        "fluid_reflection_search_h",
         "fluid_reflection_ratio",
     ] {
         assert!(
@@ -332,7 +334,12 @@ fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path()
             "reaches {reached}: {functions:?}"
         );
     }
-    for probe_global in ["fluid_probes", "fluid_probe_array", "anim_descriptors"] {
+    for probe_global in [
+        "fluid_probes",
+        "fluid_probe_array",
+        "fluid_probe_distance",
+        "anim_descriptors",
+    ] {
         assert!(
             globals.iter().any(|name| name == probe_global),
             "the reflecting variant reads {probe_global}: {globals:?}"
@@ -454,7 +461,8 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let [param_entry, probe_array, probe_table] = fluid_params_bind_group_layout_entries();
+    let [param_entry, probe_array, probe_table, probe_distance] =
+        fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -483,12 +491,35 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
             min_binding_size: Some(size),
         } if size.get() == FLUID_PROBE_TABLE_BYTES as u64
     ));
-    for entry in [&probe_array, &probe_table] {
+    // The distance array: a second filterable sampled texture, read through
+    // the same sampler as the probe array.
+    assert_eq!(probe_distance.binding, 3);
+    assert!(matches!(
+        probe_distance.ty,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        }
+    ));
+    for entry in [&probe_array, &probe_table, &probe_distance] {
         assert_eq!(entry.visibility, wgpu::ShaderStages::FRAGMENT);
     }
     let source = include_str!("../shaders/fluid_surface.wgsl");
     assert!(source.contains("@group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;"));
     assert!(source.contains("@group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;"));
+    assert!(
+        source.contains("@group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;")
+    );
+    // Every distance tap is an explicit level-0 sample through the probe
+    // array's sampler.
+    let code = code_only(source);
+    assert_eq!(
+        code.matches("fluid_probe_distance").count(),
+        2,
+        "declaration + one tap"
+    );
+    assert!(code.contains("textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,"));
 
     // The share table is the CPU layout member for member, at the cap.
     {
@@ -1489,8 +1520,8 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          in.world_position,outward,axes,uniforms.time,texels_per_pixel);",
         "letview=normalize(uniforms.camera_position-point.position);",
         "letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);",
-        "letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity);",
-        "returnfluid_reflection_composite(surface,reflection,fresnel);}",
+        "letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;",
+        "returnfluid_reflection_composite(surface,reflection.capture,fresnel);}",
     ];
     let mut at = 0;
     for line in tail {
@@ -1566,6 +1597,26 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
         shader_u32("FLUID_REFLECTION_UNORM10_MAX"),
         r::FLUID_REFLECTION_UNORM10_MAX
     );
+    // The distance search's K, M, fade margin and epsilon.
+    {
+        use postretro_render_cpu::fluid_surface::reflection_search as s;
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_SEARCH_STEPS"),
+            s::FLUID_REFLECTION_SEARCH_STEPS
+        );
+        assert_eq!(
+            shader_u32("FLUID_REFLECTION_SEARCH_REFINEMENTS"),
+            s::FLUID_REFLECTION_SEARCH_REFINEMENTS
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SHADOW_FADE"),
+            s::FLUID_REFLECTION_SHADOW_FADE
+        );
+        assert_eq!(
+            shader_f32("FLUID_REFLECTION_SEARCH_EPSILON"),
+            s::FLUID_REFLECTION_SEARCH_EPSILON
+        );
+    }
     {
         use postretro_level_format::reflection_probes::{
             REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
@@ -1723,24 +1774,28 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
         );
     }
 
+    // The sample chain: the search runs first and ends, then one colour tap
+    // and the ratio read its lookup; the search's weight rides out beside the
+    // capture for `fs_main` to scale Fresnel by.
     assert_eq!(
         code_only(wgsl_fn(wgsl, "fluid_reflection_sample")),
         "fnfluid_reflection_sample(probe:u32,world_position:vec3<f32>,view:vec3<f32>,\
-         outward:vec3<f32>)->vec3<f32>{\
+         outward:vec3<f32>)->FluidReflectionSample{\
          letray=fluid_reflection_mirror(view,outward);\
-         lethit=fluid_reflection_box_hit(world_position,ray,fluid_probes.probes[probe].box_min,\
-         fluid_probes.probes[probe].box_max);\
-         letlookup=fluid_reflection_lookup(hit,fluid_probes.probes[probe].capture_point,ray);\
-         letuv=fluid_reflection_tile_uv(lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
          letlayer=fluid_probes.probes[probe].layer;\
-         returntextureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb\
-         *fluid_reflection_ratio(probe,lookup);}"
+         letsearch=fluid_reflection_search(world_position,ray,fluid_probes.probes[probe].box_min,\
+         fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,\
+         fluid_probes.tile.xy,layer);\
+         letuv=fluid_reflection_tile_uv(search.lookup,fluid_probes.tile.x,fluid_probes.tile.y);\
+         letcapture=textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0).rgb;\
+         returnFluidReflectionSample(capture*fluid_reflection_ratio(probe,search.lookup),\
+         search.weight);}"
     );
     assert_eq!(
         code_only(wgsl_fn(cpu, "reflection_fragment")),
         "fnreflection_fragment(surface:Vec4,fragment:&FluidReflectionFragment,\
          probes:&[ReflectionProbeRecord],tile:[u32;2],lights:&FluidReflectionLights<'_>,\
-         sample:implFn(u32,Vec2)->Vec3,)->Vec4{\
+         sample:implFn(u32,Vec2)->Vec3,distance:implFn(u32,Vec2)->f32,)->Vec4{\
          letview=(fragment.camera-fragment.world_position).normalize_or_zero();\
          letoutward=fragment.outward.normalize();\
          if!reflection_gate(fragment.probe,outward,view,fragment.light_term_mask,\
@@ -1750,13 +1805,132 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letview=(fragment.camera-point.position).normalize_or_zero();\
          letprobe=&probes[fragment.probeasusize];\
          letray=reflection_mirror(view,point.normal);\
-         lethit=reflection_box_hit(point.position,ray,Vec3::from(probe.box_min),\
-         Vec3::from(probe.box_max),);\
-         letlookup=reflection_lookup(hit,Vec3::from(probe.capture_point),ray);\
-         letcapture=sample(probe.layer,reflection_tile_uv(lookup,tile[0],tile[1]))\
-         *reflection_ratio(&FluidProbeGpu::pack(probe).lights,lookup,lights);\
-         letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity);\
+         letsearch=reflection_search(point.position,ray,Vec3::from(probe.box_min),\
+         Vec3::from(probe.box_max),Vec3::from(probe.capture_point),tile,\
+         |uv|distance(probe.layer,uv),);\
+         letcapture=sample(probe.layer,reflection_tile_uv(search.lookup,tile[0],tile[1]),)\
+         *reflection_ratio(&FluidProbeGpu::pack(probe).lights,search.lookup,lights);\
+         letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity)*search.weight;\
          reflection_composite(surface,capture,fresnel)}"
+    );
+}
+
+// The distance search is the CPU `reflection_search` reference in WGSL,
+// pinned on both sides: h, then the search (two independent taps, the
+// capture-shadow fade, K sphere steps, the box-hit bracket, M false-position
+// estimates). The CPU's `ends_at` closure is the WGSL's three returns through
+// `fluid_reflection_lookup`; its `Option` back end is the WGSL's back end
+// starting at the box hit, which a closing sphere step overwrites. The status
+// and the hit point are CPU diagnostics; the shader keeps the lookup and the
+// weight.
+#[test]
+fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
+    let wgsl = include_str!("../shaders/fluid_surface.wgsl");
+    let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection_search.rs");
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_search_h")),
+        "fnfluid_reflection_search_h(q:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
+         layer:u32)->f32{\
+         lettoward=q-capture_point;\
+         letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
+         letl1=abs(level.x)+abs(level.y)+abs(level.z);\
+         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
+         returnl1*textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,\
+         fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0).r-1.0;}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_search_h")),
+        "fnreflection_search_h(q:Vec3,capture_point:Vec3,tile:[u32;2],\
+         distance:&implFn(Vec2)->f32,)->f32{\
+         lettoward=q-capture_point;\
+         letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
+         letl1=level.abs().element_sum();\
+         ifl1<FLUID_REFLECTION_SEARCH_EPSILON{return-1.0;}\
+         l1*distance(reflection_tile_uv(level,tile[0],tile[1]))-1.0}"
+    );
+    // GLSL smoothstep on the CPU side; WGSL's builtin is the same polynomial.
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "smoothstep")),
+        "fnsmoothstep(edge0:f32,edge1:f32,x:f32)->f32{\
+         lett=((x-edge0)/(edge1-edge0)).clamp(0.0,1.0);t*t*(3.0-2.0*t)}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(wgsl, "fluid_reflection_search")),
+        "fnfluid_reflection_search(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
+         box_max:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
+         layer:u32)->FluidReflectionSearch{\
+         letbox_hit=fluid_reflection_box_hit(origin,ray,box_min,box_max);\
+         lett_box=dot(box_hit-origin,ray);\
+         leth_origin=fluid_reflection_search_h(origin,capture_point,tile,layer);\
+         leth_box=fluid_reflection_search_h(box_hit,capture_point,tile,layer);\
+         ifh_origin>=0.0{\
+         letweight=1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_FADE,h_origin);\
+         returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray),weight);}\
+         vart_front=0.0;varh_front=h_origin;vart_back=t_box;varh_back=h_box;\
+         letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);\
+         for(vari:u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){\
+         ifh_front<=-1.0{break;}\
+         letq=origin+ray*t_front;lettoward=q-capture_point;\
+         letlevel=vec3<f32>(toward.x,max(toward.y,0.0),toward.z);\
+         letradius=length(level)/(h_front+1.0);\
+         letdisc=b*b-(dot(from_capture,from_capture)-radius*radius);\
+         ifdisc<0.0{break;}\
+         lett_next=-b+sqrt(disc);\
+         ift_next<=t_front||t_next>=t_box{break;}\
+         leth_next=fluid_reflection_search_h(origin+ray*t_next,capture_point,tile,layer);\
+         ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}\
+         t_front=t_next;h_front=h_next;}\
+         if!(h_back>=0.0){\
+         returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray),1.0);}\
+         vart_hit=t_back;\
+         for(varrefinement:u32=0u;refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;\
+         refinement=refinement+1u){\
+         ifh_back!=h_front{t_hit=t_front-h_front*(t_back-t_front)/(h_back-h_front);}\
+         else{t_hit=t_back;}\
+         ifrefinement+1u==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
+         leth_hit=fluid_reflection_search_h(origin+ray*t_hit,capture_point,tile,layer);\
+         ifh_hit>=0.0{t_back=t_hit;h_back=h_hit;}else{t_front=t_hit;h_front=h_hit;}}\
+         returnFluidReflectionSearch(fluid_reflection_lookup(origin+ray*t_hit,capture_point,ray),\
+         1.0);}"
+    );
+    assert_eq!(
+        code_only(wgsl_fn(cpu, "reflection_search")),
+        "fnreflection_search(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
+         capture_point:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->FluidReflectionSearch{\
+         leth=|q:Vec3|reflection_search_h(q,capture_point,tile,&distance);\
+         letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
+         lett_box=(box_hit-origin).dot(ray);\
+         leth_origin=h(origin);leth_box=h(box_hit);\
+         letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,\
+         lookup:reflection_lookup(point,capture_point,ray),status,weight,};\
+         ifh_origin>=0.0{\
+         letweight=1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_FADE,h_origin);\
+         returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,weight);}\
+         let(mutt_front,muth_front)=(0.0,h_origin);letmutback=None;\
+         letfrom_capture=origin-capture_point;letb=from_capture.dot(ray);\
+         for_in0..FLUID_REFLECTION_SEARCH_STEPS{\
+         ifh_front<=-1.0{break;}\
+         letq=origin+ray*t_front;lettoward=q-capture_point;\
+         letlevel=Vec3::new(toward.x,toward.y.max(0.0),toward.z);\
+         letradius=level.length()/(h_front+1.0);\
+         letdisc=b*b-(from_capture.dot(from_capture)-radius*radius);\
+         ifdisc<0.0{break;}\
+         lett_next=-b+disc.sqrt();\
+         ift_next<=t_front||t_next>=t_box{break;}\
+         leth_next=h(origin+ray*t_next);\
+         ifh_next>=0.0{back=Some((t_next,h_next));break;}\
+         (t_front,h_front)=(t_next,h_next);}\
+         let(mutt_back,muth_back)=matchback{Some(sample)=>sample,\
+         Noneifh_box>=0.0=>(t_box,h_box),\
+         None=>returnends_at(box_hit,FluidReflectionSearchStatus::BeyondBox,1.0),};\
+         letmutt_hit=t_back;\
+         forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{\
+         t_hit=ifh_back!=h_front{t_front-h_front*(t_back-t_front)/(h_back-h_front)}\
+         else{t_back};\
+         ifrefinement+1==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
+         leth_hit=h(origin+ray*t_hit);\
+         ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{(t_front,h_front)=(t_hit,h_hit);}}\
+         ends_at(origin+ray*t_hit,FluidReflectionSearchStatus::Hit,1.0)}"
     );
 }
 
@@ -2609,7 +2783,8 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
 // closed, so any previous-frame, reprojection or intersection resource is a
 // new binding this list refuses; no binding name or pass identifier names
 // one; the pass's own groups (4 and 5) hold exactly the params window, the
-// probe array and table, and the scene depth and inputs.
+// probe array, table and distance array (the probe's own capture data, not an
+// intersection table), and the scene depth and inputs.
 #[test]
 fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
     let module = validated_module();
@@ -2645,6 +2820,7 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (4, 0, "fluid_volumes"),
         (4, 1, "fluid_probe_array"),
         (4, 2, "fluid_probes"),
+        (4, 3, "fluid_probe_distance"),
         (5, 0, "scene_depth"),
         (5, 1, "fluid_scene"),
     ]
@@ -2695,8 +2871,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
     assert_eq!(
         bindings(4),
-        [0, 1, 2],
-        "group 4: params, probe array, table"
+        [0, 1, 2, 3],
+        "group 4: params, probe array, table, distance array"
     );
     assert_eq!(bindings(5), [0, 1], "group 5: scene depth, scene inputs");
 }
@@ -2707,8 +2883,10 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
 // passes on; every probe-table read indexes by that `probe` parameter; the
 // one probe-array tap reads `fluid_probes.probes[probe].layer`, and no
 // lookup-direction value (the lookup, box hit, reflected ray, tile UV or
-// view) reaches that expression. The lookup reaches only the tile UV and the
-// ratio, and the ratio's direction only its lobe weights.
+// view) reaches that expression. The distance search takes that same layer
+// as a parameter and only passes it on, unchanged, to its one distance tap.
+// The lookup reaches only the tile UV and the ratio, and the ratio's
+// direction only its lobe weights.
 #[test]
 fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     let source = include_str!("../shaders/fluid_surface.wgsl");
@@ -2763,14 +2941,40 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
             "the layer must not read `{direction_value}`"
         );
     }
-    assert_eq!(sample.matches("layer").count(), 3, "{sample}");
+    // The layer binding, the colour tap, and the search it is handed to.
+    assert_eq!(sample.matches("layer").count(), 4, "{sample}");
+    assert!(sample.contains("fluid_probes.tile.xy,layer);"), "{sample}");
     assert_eq!(
         sample.matches("lookup").count() - sample.matches("_lookup").count(),
-        3,
+        2,
         "lookup feeds only the tile UV and the ratio: {sample}"
     );
-    assert!(sample.contains("fluid_reflection_tile_uv(lookup,"));
-    assert!(sample.contains("fluid_reflection_ratio(probe,lookup)"));
+    assert!(sample.contains("fluid_reflection_tile_uv(search.lookup,"));
+    assert!(sample.contains("fluid_reflection_ratio(probe,search.lookup)"));
+
+    // The search and its h take the layer as a parameter, never bind or
+    // assign it, and only pass it on: every other mention is a `,layer)`
+    // argument to h, or h's one distance tap.
+    for (function, passes) in [
+        ("fluid_reflection_search", ",layer)"),
+        ("fluid_reflection_search_h", ",layer,0.0)"),
+    ] {
+        let body = code_only(wgsl_fn(source, function));
+        assert!(body.contains("layer:u32)"), "{body}");
+        for bound in ["letlayer", "varlayer", "layer="] {
+            assert!(!body.contains(bound), "`{function}` binds `{bound}`");
+        }
+        assert_eq!(
+            body.matches("layer").count(),
+            body.matches(passes).count() + 1,
+            "`{function}` only passes the layer on: {body}"
+        );
+    }
+    let search_h = code_only(wgsl_fn(source, "fluid_reflection_search_h"));
+    assert!(search_h.contains(
+        "textureSampleLevel(fluid_probe_distance,sh_atlas_sampler,\
+         fluid_reflection_tile_uv(level,tile.x,tile.y),layer,0.0)"
+    ));
 
     let ratio = code_only(wgsl_fn(source, "fluid_reflection_ratio"));
     assert_eq!(ratio.matches("direction").count(), 2, "{ratio}");

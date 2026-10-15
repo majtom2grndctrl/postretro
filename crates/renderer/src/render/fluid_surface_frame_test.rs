@@ -15,7 +15,11 @@ use postretro_level_format::sh_volume::AnimationDescriptor;
 use postretro_level_loader::ShDrainBatch;
 use postretro_render_cpu::fluid_surface::reflection::{
     FLUID_REFLECTION_ALL_TERMS, FLUID_REFLECTION_NO_PROBE, FluidReflectionFragment,
-    FluidReflectionLights, reflection_fragment,
+    FluidReflectionLights, reflection_box_hit, reflection_fragment, reflection_lookup,
+    reflection_mirror,
+};
+use postretro_render_cpu::fluid_surface::reflection_search::{
+    FluidReflectionSearchStatus, reflection_distance_sample, reflection_search,
 };
 use postretro_render_cpu::fluid_surface::reflection_style::{
     FLUID_REFLECTION_STYLE_SMOOTH, FluidReflectionStyle, FluidTexelAxes,
@@ -26,6 +30,7 @@ use postretro_render_cpu::fluid_surface::{
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::render_extent::{Extent, RenderResolutionPolicy};
+use postretro_render_cpu::sh_compose::f16_bits_to_f32;
 use postretro_render_cpu::sh_volume::{
     ANIMATION_DESCRIPTOR_SIZE, build_animation_buffers_from_descriptors,
 };
@@ -111,6 +116,11 @@ fn capture(renderer: &mut Renderer) -> Vec<u8> {
 /// view-projection still frames the quads, so only lighting, fog and
 /// reflection see the move.
 fn capture_from(renderer: &mut Renderer, camera: Vec3) -> Vec<u8> {
+    capture_through(renderer, Mat4::IDENTITY, camera)
+}
+
+/// One captured frame under `view_proj`, shaded from `camera`.
+fn capture_through(renderer: &mut Renderer, view_proj: Mat4, camera: Vec3) -> Vec<u8> {
     renderer
         .capture_frame_indirect(
             CameraCullVisibility {
@@ -126,7 +136,7 @@ fn capture_from(renderer: &mut Renderer, camera: Vec3) -> Vec<u8> {
                 movers: &[],
             },
             None,
-            Mat4::IDENTITY,
+            view_proj,
             camera,
             &[],
             &[],
@@ -202,19 +212,63 @@ fn pixel_world(column: u32, row: u32) -> Vec3 {
     )
 }
 
+/// Every array layer's distance tile of `section`, decoded to f32, row-major
+/// with its border: what the GPU's R16Float distance array holds.
+fn distance_tiles(section: &ReflectionProbesSection) -> Vec<Vec<f32>> {
+    (0..section.probes.len())
+        .map(|layer| {
+            section
+                .distance_tile(layer)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|bytes| f16_bits_to_f32(u16::from_le_bytes(*bytes)))
+                .collect()
+        })
+        .collect()
+}
+
 /// A probe term as the CPU reference evaluates it: the level's probes, each
-/// array layer's uniform capture colour, and the row's reflectivity.
+/// array layer's uniform capture colour and decoded distance tile, and the
+/// row's reflectivity.
 struct ReferenceProbes<'a> {
     section: &'a ReflectionProbesSection,
     layer_colours: &'a [Vec3],
+    distances: Vec<Vec<f32>>,
     reflectivity: f32,
+}
+
+impl<'a> ReferenceProbes<'a> {
+    fn new(
+        section: &'a ReflectionProbesSection,
+        layer_colours: &'a [Vec3],
+        reflectivity: f32,
+    ) -> Self {
+        Self {
+            section,
+            layer_colours,
+            distances: distance_tiles(section),
+            reflectivity,
+        }
+    }
+
+    /// The distance tile at `layer`, sampled as the GPU's linear-clamp
+    /// sampler reads it at level 0.
+    fn distance(&self, layer: u32, uv: Vec2) -> f32 {
+        reflection_distance_sample(
+            &self.distances[layer as usize],
+            self.section.tile_dimension,
+            uv,
+        )
+    }
 }
 
 /// What the capture reads at (`column`, `row`) from the CPU references alone:
 /// a smooth-style [`fluid_quad`] fragment drawing the straight-alpha
 /// `surface`, its probe term (`reflection_fragment`, with no animated
-/// lights) when `probe` names one, blended straight-alpha over the white
-/// clear, then [`capture_encode`]d.
+/// lights, its distance search reading the section's own distance tiles)
+/// when `probe` names one, blended straight-alpha over the white clear, then
+/// [`capture_encode`]d.
 fn expected_pixel(
     camera: Vec3,
     column: u32,
@@ -243,6 +297,7 @@ fn expected_pixel(
         [probes.section.tile_dimension, probes.section.tile_border],
         &FluidReflectionLights::NONE,
         |layer, _| probes.layer_colours[layer as usize],
+        |layer, uv| probes.distance(layer, uv),
     );
     capture_encode(out.truncate() * out.w + Vec3::ONE * (1.0 - out.w))
 }
@@ -760,6 +815,7 @@ fn reference_linear(
         time: 0.0,
         texels_per_pixel: 0.0,
     };
+    let distances = distance_tiles(section);
     let out = reflection_fragment(
         UNLIT_HALF,
         &fragment,
@@ -767,12 +823,16 @@ fn reference_linear(
         [section.tile_dimension, section.tile_border],
         &FluidReflectionLights::NONE,
         |layer, _| colours[layer as usize],
+        |layer, uv| {
+            reflection_distance_sample(&distances[layer as usize], section.tile_dimension, uv)
+        },
     );
     out.truncate() * out.w + Vec3::ONE * (1.0 - out.w)
 }
 
 // Acceptance row 33 (P3). A full-screen face bound to a probe whose capture
-// is a uniform colour R, with no animated lights, read at a fixed grazing
+// is a uniform colour R, with a distance tile holding 0 (no surface) so the
+// lookup is the box hit's, with no animated lights, read at a fixed grazing
 // view in smooth style, reads the capture's encoding of F·R + (1−F)·(surface
 // over clear) within 2/255 at every pixel, F being the CPU Fresnel reference
 // at that pixel's view angle. R is bright enough in red that the lower rows
@@ -788,6 +848,31 @@ fn a_uniform_capture_reads_its_fresnel_composite_in_the_capture_encoding() {
     // f16 (3, 0.25, 0.5).
     let r_bits = [0x4200, 0x3400, 0x3800];
     let section = uniform_probe_section(8, &[0], &[r_bits], &[(0, 0)]);
+    // The distance tile holds 0 everywhere: at every pixel the search sees
+    // no surface and ends at the box hit, so the lookup is box projection's.
+    assert!(section.distances.iter().all(|&byte| byte == 0));
+    let tile = [section.tile_dimension, section.tile_border];
+    let probe = &section.probes[0];
+    for row in 0..SIDE {
+        for column in 0..SIDE {
+            let origin = pixel_world(column, row);
+            let ray = reflection_mirror((GRAZING - origin).normalize(), Vec3::NEG_Z);
+            let (box_min, box_max) = (Vec3::from(probe.box_min), Vec3::from(probe.box_max));
+            let capture_point = Vec3::from(probe.capture_point);
+            let search =
+                reflection_search(origin, ray, box_min, box_max, capture_point, tile, |_| 0.0);
+            assert_eq!(search.status, FluidReflectionSearchStatus::BeyondBox);
+            assert_eq!(search.weight, 1.0);
+            assert_eq!(
+                search.lookup,
+                reflection_lookup(
+                    reflection_box_hit(origin, ray, box_min, box_max),
+                    capture_point,
+                    ray
+                )
+            );
+        }
+    }
     let colours = [f16_rgb(r_bits)];
     assert_eq!(colours[0], Vec3::new(3.0, 0.25, 0.5));
     let pool = full_screen_fluid();
@@ -813,11 +898,7 @@ fn a_uniform_capture_reads_its_fresnel_composite_in_the_capture_encoding() {
         };
         renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
         let pixels = capture_from(&mut renderer, GRAZING);
-        let reference = ReferenceProbes {
-            section: &section,
-            layer_colours: &colours,
-            reflectivity,
-        };
+        let reference = ReferenceProbes::new(&section, &colours, reflectivity);
         let (worst, at) = worst_deviation(&pixels, 0..SIDE, |column, row| {
             expected_pixel(GRAZING, column, row, UNLIT_HALF, 0, &reference)
         });
@@ -876,11 +957,7 @@ fn probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads
     let (green, red) = ([0, 0x4000, 0], [0x4000, 0, 0x3800]);
     let section = uniform_probe_section(8, &[1, 0], &[red, green], &[(0, 0), (1, 1)]);
     let colours = [f16_rgb(red), f16_rgb(green)];
-    let reference = ReferenceProbes {
-        section: &section,
-        layer_colours: &colours,
-        reflectivity: 1.0,
-    };
+    let reference = ReferenceProbes::new(&section, &colours, 1.0);
     let look = FluidSurfaceLook {
         has_bound_face: true,
         ..FluidSurfaceLook::surface_only(0.5)
@@ -988,11 +1065,7 @@ fn a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right() {
         probe: 0,
     });
     let colours = [f16_rgb(green)];
-    let reference = ReferenceProbes {
-        section: &section,
-        layer_colours: &colours,
-        reflectivity: 1.0,
-    };
+    let reference = ReferenceProbes::new(&section, &colours, 1.0);
     let bound = |reflectivity: f32| FluidSurfaceLook {
         surface_reflectivity: reflectivity,
         has_bound_face: true,
@@ -1080,13 +1153,30 @@ fn a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right() {
     renderer.release_level_resources();
 }
 
+/// `section` with every distance texel holding the f16 inverse distance
+/// `bits`.
+fn with_uniform_distance(
+    mut section: ReflectionProbesSection,
+    bits: u16,
+) -> ReflectionProbesSection {
+    for texel in section.distances.as_chunks_mut::<2>().0 {
+        *texel = bits.to_le_bytes();
+    }
+    section
+}
+
 // Pin P11, level change with probes bound. Level A (section 54, three 16²
-// tiles) draws its probe's capture. Unload leaves no probe texture. Level B
-// has fluid and no section 54: it binds only the 1×1 one-layer dummy, and
-// its face, even drawn as a mirror claiming a bound face, reads exactly
-// today's value, so nothing of A's samples. Level B2 brings its own section
-// (two 8² tiles) whose layer 0 differs from A's: its face reads B2's capture,
-// not A's, and its array is B2's size. Unload leaves no probe texture again.
+// tiles, distance tiles holding 0) draws its probe's capture. Unload leaves
+// no probe or distance texture. Level B has fluid and no section 54: it
+// binds only the 1×1 one-layer dummies, and its face, even drawn as a mirror
+// claiming a bound face, reads exactly today's value, so nothing of A's
+// samples. Level A2 is A with distance tiles placing every fragment far
+// behind a stored surface: every fragment lies in the capture shadow and
+// reads today's value, so A2 binds its own distance array, not A's. Level B2
+// brings its own section (two 8² tiles, distances 0) whose layer 0 differs
+// from A's: its face reads B2's capture, not A's colour and not A2's
+// shadowing distances, and both its arrays are B2's size. Unload leaves no
+// probe or distance texture again.
 #[test]
 fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     let Some(mut renderer) = renderer() else {
@@ -1099,12 +1189,17 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
         has_bound_face: true,
         ..FluidSurfaceLook::surface_only(0.5)
     };
+    // The probe array's and the distance array's (width, height, layers).
     let size = |renderer: &Renderer| {
-        renderer
-            .full()
-            .fluid_surface
-            .probe_array_size()
-            .map(|size| (size.width, size.height, size.depth_or_array_layers))
+        let surface = &renderer.full().fluid_surface;
+        let extent = |size: wgpu::Extent3d| (size.width, size.height, size.depth_or_array_layers);
+        let probes = surface.probe_array_size().map(extent);
+        let distances = surface.probe_distance_size().map(extent);
+        assert_eq!(
+            probes, distances,
+            "the distance array matches the probe array"
+        );
+        probes
     };
     let draw = |renderer: &mut Renderer, section: Option<&ReflectionProbesSection>| {
         renderer.install_fluid_surfaces(std::slice::from_ref(&pool), section);
@@ -1112,11 +1207,7 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
         capture_from(renderer, GRAZING)
     };
     let worst = |pixels: &[u8], section: &ReflectionProbesSection, colours: &[Vec3]| {
-        let reference = ReferenceProbes {
-            section,
-            layer_colours: colours,
-            reflectivity: 50.0,
-        };
+        let reference = ReferenceProbes::new(section, colours, 50.0);
         worst_deviation(pixels, 0..SIDE, |column, row| {
             expected_pixel(GRAZING, column, row, UNLIT_HALF, 0, &reference)
         })
@@ -1154,6 +1245,25 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
         &b_pixels[..4]
     );
 
+    // Level A2: A's colours, its distance tiles 4 (inverse metres) in every
+    // texel. Every fragment of the quad lies at least 0.5 m (L1) from the
+    // capture point, so h ≥ 4 · 0.5 − 1 = 1, far past the fade margin.
+    renderer.release_level_resources();
+    let a2 = with_uniform_distance(a.clone(), 0x4400);
+    assert_eq!(f16_bits_to_f32(0x4400), 4.0);
+    let a2_pixels = draw(&mut renderer, Some(&a2));
+    assert_eq!(size(&renderer), Some((16, 16, 3)));
+    let (a2_worst, a2_at) = worst(&a2_pixels, &a2, &a_tiles.map(f16_rgb));
+    assert!(
+        a2_worst <= 1,
+        "level A2 draws no probe term in its capture shadow: off by {a2_worst} at {a2_at:?}"
+    );
+    assert!(
+        a2_pixels == b_pixels,
+        "level A2 reads today's value everywhere: {:?}",
+        &a2_pixels[..4]
+    );
+
     // Level B2: its own blue layer 0 and a yellow layer 1; the face binds
     // probe 0.
     renderer.release_level_resources();
@@ -1168,7 +1278,7 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     );
     assert!(
         b2_pixels[2] > b2_pixels[0] + 20,
-        "B2 reflects its blue, not A's red: {:?}",
+        "B2 reflects its blue, not A's red nor A2's shadow: {:?}",
         &b2_pixels[..4]
     );
 
@@ -1176,9 +1286,10 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     assert_eq!(size(&renderer), None, "unload leaves no probe texture");
     eprintln!(
         "[FluidSurfaceProof] P11 level-change GPU case ran: A {:?} worst {a_worst}, B {:?}, \
-         B2 {:?} worst {b2_worst}",
+         A2 (shadowing distances) {:?} worst {a2_worst}, B2 {:?} worst {b2_worst}",
         &a_pixels[..3],
         &b_pixels[..3],
+        &a2_pixels[..3],
         &b2_pixels[..3]
     );
 }
@@ -1444,4 +1555,296 @@ fn pixel_style_reflects_once_per_water_texel_cell_and_smooth_per_pixel() {
         "switching back restores the pixel frame"
     );
     renderer.release_level_resources();
+}
+
+/// A horizontal water face at engine height 0, outward +Y, spanning
+/// `±half` metres on x and z.
+fn horizontal_fluid(half: f32) -> EnvironmentVolumeRecord {
+    let corner = |x: f32, z: f32| EnvironmentSurfaceVertex {
+        position: [x, 0.0, z],
+        uv: [x * 4.0, z * 4.0],
+    };
+    let mut volume = full_screen_fluid();
+    volume.surface_faces[0].vertices = vec![
+        corner(-half, -half),
+        corner(-half, half),
+        corner(half, half),
+        corner(half, -half),
+    ];
+    volume
+}
+
+/// The near-wall room of row A6, engine metres: the probe box's walls at
+/// x ±10 and z −10, its ceiling at y 6, the pool floor 1 m under the water,
+/// and a near wall at z 5, 3 m in front of the capture point and 5 m inside
+/// the box's z 10 face. Each plane is (axis, coordinate).
+const NEAR_WALL_ROOM: [(usize, f32); 6] = [
+    (0, -10.0),
+    (0, 10.0),
+    (2, -10.0),
+    (2, 5.0),
+    (1, 6.0),
+    (1, -1.0),
+];
+
+/// The distance the near-wall room holds from `capture` along unit `dir`: the
+/// nearest plane ahead.
+fn near_wall_room_distance(capture: Vec3, dir: Vec3) -> f32 {
+    NEAR_WALL_ROOM
+        .iter()
+        .filter_map(|&(axis, at)| {
+            let t = (at - capture[axis]) / dir[axis];
+            (dir[axis].abs() > 1.0e-6 && t > 0.0).then_some(t)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// A distance tile `dimension`² for the near-wall room seen from `capture`,
+/// in the capture's octahedral mapping and shared border rule: per interior
+/// texel 1/(t·|d|₁) toward its centre direction, f16 little-endian.
+fn near_wall_distance_tile(capture: Vec3, dimension: u32) -> Vec<u8> {
+    use postretro_level_format::octahedral::{
+        irradiance_interior_texel_direction, irradiance_tile_source_texel,
+    };
+    use postretro_render_cpu::sh_volume::f32_to_f16_bits;
+    (0..dimension)
+        .flat_map(|y| (0..dimension).map(move |x| (x, y)))
+        .flat_map(|(x, y)| {
+            let [ix, iy] = irradiance_tile_source_texel(x, y, dimension, 1);
+            let dir = Vec3::from(irradiance_interior_texel_direction(ix, iy, dimension, 1));
+            let t = near_wall_room_distance(capture, dir);
+            f32_to_f16_bits(1.0 / (t * dir.abs().element_sum())).to_le_bytes()
+        })
+        .collect()
+}
+
+/// One RGBA16F probe tile `dimension`² striped smoothly along both tile
+/// axes: red is `0.4 + 0.4·sin` of `u` and green of `v`, `STRIPES` periods
+/// across the tile, so a lookup a fraction of a texel off reads another
+/// colour, bilinear filtering stays smooth, and nothing reaches the bloom
+/// threshold.
+fn striped_rgba16f_tile(dimension: u32) -> Vec<u8> {
+    const STRIPES: f32 = 2.0;
+    let stripe = |texel: u32| {
+        let phase = (texel as f32 + 0.5) / dimension as f32 * STRIPES * std::f32::consts::TAU;
+        f16_bits(0.4 + 0.4 * phase.sin())
+    };
+    (0..dimension)
+        .flat_map(|row| (0..dimension).map(move |column| (column, row)))
+        .flat_map(|(column, row)| [stripe(column), stripe(row), 0, 0x3C00])
+        .flat_map(|half| half.to_le_bytes())
+        .collect()
+}
+
+/// Channel `channel` of an RGBA16F tile, decoded to f32, row-major.
+fn rgba16f_channel(tile: &[u8], channel: usize) -> Vec<f32> {
+    tile.as_chunks::<8>()
+        .0
+        .iter()
+        .map(|texel| {
+            f16_bits_to_f32(u16::from_le_bytes([
+                texel[2 * channel],
+                texel[2 * channel + 1],
+            ]))
+        })
+        .collect()
+}
+
+/// World position of capture pixel (`column`, `row`)'s centre on the plane
+/// y = 0, seen through `view_proj`.
+fn pixel_on_water(view_proj: Mat4, column: u32, row: u32) -> Vec3 {
+    let step = 2.0 / SIDE as f32;
+    let ndc = Vec2::new(
+        (column as f32 + 0.5) * step - 1.0,
+        1.0 - (row as f32 + 0.5) * step,
+    );
+    let inverse = view_proj.inverse();
+    let near = inverse.project_point3(ndc.extend(0.0));
+    let far = inverse.project_point3(ndc.extend(1.0));
+    let dir = far - near;
+    near + dir * (-near.y / dir.y)
+}
+
+// Acceptance row A6. A probe whose distance tile holds a near wall: a pool
+// at engine height 0, seen from 2 m up looking down and ahead, in a room
+// whose wall 3 m ahead of the capture point stands 5 m inside the probe's
+// box. The capture is striped over the tile, so a pixel's colour
+// names the texel it sampled. Drawn as a mirror at zero opacity, each pixel
+// is the probe's capture alone, toward the distance search's lookup: the
+// GPU frame matches the CPU reference (`reflection_fragment`, its distance
+// read through `reflection_distance_sample`) within 2/255 at every pixel.
+// Not vacuous: the CPU search hits the near wall at most pixels, and there
+// the frame differs from the same probe with no distances (box projection).
+#[test]
+fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
+    use postretro_render_cpu::fluid_surface::face_normal;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    let pool = horizontal_fluid(9.0);
+    assert_eq!(face_normal(&pool.surface_faces[0]), Some(Vec3::Y));
+    let camera = Vec3::new(0.0, 2.0, 0.0);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 100.0)
+            * glam::camera::rh::view::look_at_mat4(camera, Vec3::new(0.0, 0.0, 1.5), Vec3::Y);
+    let capture_point = Vec3::new(0.0, 0.002, 2.0);
+    let dimension = 64;
+    let near_wall = ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-10.0, -1.0, -10.0],
+            box_max: [10.0, 6.0, 10.0],
+            capture_point: capture_point.to_array(),
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: striped_rgba16f_tile(dimension),
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: near_wall_distance_tile(capture_point, dimension),
+    };
+    let box_only = ReflectionProbesSection {
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            1, dimension,
+        ),
+        ..near_wall.clone()
+    };
+    // A mirror at zero opacity: the output is the reflection alone.
+    let look = FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let draw = |renderer: &mut Renderer, section: &ReflectionProbesSection| {
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(section));
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        capture_through(renderer, view_proj, camera)
+    };
+
+    let red = rgba16f_channel(&near_wall.tiles, 0);
+    let green = rgba16f_channel(&near_wall.tiles, 1);
+    let tile = [near_wall.tile_dimension, near_wall.tile_border];
+    let reference = |section: &ReflectionProbesSection, column: u32, row: u32| {
+        let distances = distance_tiles(section);
+        let fragment = FluidReflectionFragment {
+            probe: 0,
+            camera,
+            world_position: pixel_on_water(view_proj, column, row),
+            outward: Vec3::Y,
+            light_term_mask: FLUID_REFLECTION_ALL_TERMS,
+            reflectivity: 50.0,
+            style: FLUID_REFLECTION_STYLE_SMOOTH,
+            texel_uv: Vec2::ZERO,
+            axes: FluidTexelAxes::default(),
+            time: 0.0,
+            texels_per_pixel: 0.0,
+        };
+        let out = reflection_fragment(
+            Vec4::ZERO,
+            &fragment,
+            &section.probes,
+            tile,
+            &FluidReflectionLights::NONE,
+            |_, uv| {
+                Vec3::new(
+                    reflection_distance_sample(&red, dimension, uv),
+                    reflection_distance_sample(&green, dimension, uv),
+                    0.0,
+                )
+            },
+            |layer, uv| reflection_distance_sample(&distances[layer as usize], dimension, uv),
+        );
+        capture_encode(out.truncate() * out.w + Vec3::ONE * (1.0 - out.w))
+    };
+
+    // Where the CPU search lands: on the near wall at most pixels.
+    let distances = distance_tiles(&near_wall);
+    let mut hits = 0;
+    for row in 0..SIDE {
+        for column in 0..SIDE {
+            let origin = pixel_on_water(view_proj, column, row);
+            assert!(
+                origin.x.abs() < 9.0 && origin.z.abs() < 9.0,
+                "pixel ({column}, {row}) lies on the pool: {origin}"
+            );
+            let ray = reflection_mirror((camera - origin).normalize(), Vec3::Y);
+            let search = reflection_search(
+                origin,
+                ray,
+                Vec3::from(near_wall.probes[0].box_min),
+                Vec3::from(near_wall.probes[0].box_max),
+                capture_point,
+                tile,
+                |uv| reflection_distance_sample(&distances[0], dimension, uv),
+            );
+            assert_eq!(search.weight, 1.0, "no capture shadow in an empty room");
+            if search.status == FluidReflectionSearchStatus::Hit {
+                hits += 1;
+            }
+        }
+    }
+
+    let pixels = draw(&mut renderer, &near_wall);
+    let box_pixels = draw(&mut renderer, &box_only);
+    let (worst, at) = worst_deviation(&pixels, 0..SIDE, |column, row| {
+        reference(&near_wall, column, row)
+    });
+    let (box_worst, box_at) = worst_deviation(&box_pixels, 0..SIDE, |column, row| {
+        reference(&box_only, column, row)
+    });
+    // Pixels where the near wall's reference and box projection's read
+    // texels far enough apart that a 2/255 match tells them apart, and where
+    // the GPU's two frames differ too.
+    let distinct = (0..SIDE * SIDE)
+        .filter(|&index| {
+            let (column, row) = (index % SIDE, index / SIDE);
+            let (wall, plain) = (
+                reference(&near_wall, column, row),
+                reference(&box_only, column, row),
+            );
+            (0..3).any(|channel| wall[channel].abs_diff(plain[channel]) > 4)
+        })
+        .collect::<Vec<_>>();
+    let moved = distinct
+        .iter()
+        .filter(|&&index| {
+            let at = index as usize * 4;
+            (0..3).any(|channel| pixels[at + channel] != box_pixels[at + channel])
+        })
+        .count();
+    eprintln!(
+        "[FluidSurfaceProof] row A6 near-wall GPU case ran: CPU search hits {hits}/{} pixels, \
+         worst deviation {worst} at {at:?} (box projection frame: {box_worst} at {box_at:?}), \
+         {} pixels read texels apart from box projection's, {moved} of them moved on the GPU",
+        SIDE * SIDE,
+        distinct.len()
+    );
+    renderer.release_level_resources();
+    assert!(
+        hits * 2 > SIDE * SIDE,
+        "the search hits the near wall at most pixels: {hits}"
+    );
+    assert!(
+        distinct.len() * 4 > (SIDE * SIDE) as usize && moved == distinct.len(),
+        "the near wall moves a quarter of the frame off box projection: {} distinct, {moved} \
+         moved",
+        distinct.len()
+    );
+    assert!(
+        box_worst <= 2,
+        "the box-projection frame matches its reference: {box_worst} at {box_at:?}"
+    );
+    assert!(
+        worst <= 2,
+        "the GPU samples the texel the CPU search looks up: off by {worst} at {at:?}"
+    );
 }

@@ -1,6 +1,7 @@
 // Fluid surface pass: translucent, two-sided fluid faces moving in whole texels,
 // lit per fragment by baked SH indirect, baked direct SH, and dynamic lights,
-// and mirroring their room through box-projected reflection probes.
+// and mirroring their room through distance-corrected box-projected
+// reflection probes.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 // --- Group 0: camera uniforms (shared with forward and billboard) ---
@@ -149,6 +150,10 @@ struct FluidProbeTable {
 };
 @group(4) @binding(1) var fluid_probe_array: texture_2d_array<f32>;
 @group(4) @binding(2) var<uniform> fluid_probes: FluidProbeTable;
+// Beside each capture tile, in the same layer, mapping and border: the mean
+// inverse L1 distance from the capture point to what each texel saw, 0 where
+// it saw nothing. Sampled at level 0 through the same sampler.
+@group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
 
 // --- Group 5: fluid scene inputs, rebuilt only with the scene targets ---
 // Scene depth, loaded under the pass's read-only depth attachment.
@@ -659,19 +664,141 @@ fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
     return max(ratio, vec3<f32>(0.0));
 }
 
-// The probe's capture toward the box hit from its capture point, scaled by
-// the live-lighting ratio toward that same direction. The layer comes from
-// the face's probe index alone; the lookup picks only the texel and the share.
+// Distance search. Mirrors `postretro_render_cpu::fluid_surface::reflection_search`:
+// box projection corrected against the probe's stored per-texel distance.
+// K sphere steps then M false-position estimates, both constant bounds; at
+// most 2 + K + M - 1 distance taps. Its state lives only inside
+// `fluid_reflection_search`, which runs to its end before the colour tap and
+// the light-share loop, so only the lookup and the weight outlive it.
+const FLUID_REFLECTION_SEARCH_STEPS: u32 = 3u;
+const FLUID_REFLECTION_SEARCH_REFINEMENTS: u32 = 2u;
+const FLUID_REFLECTION_SHADOW_FADE: f32 = 0.05;
+const FLUID_REFLECTION_SEARCH_EPSILON: f32 = 1.0e-6;
+
+// The search's result: the tile lookup direction, and the probe term's
+// weight (1, except faded out in the capture shadow).
+struct FluidReflectionSearch {
+    lookup: vec3<f32>,
+    weight: f32,
+};
+
+// h(Q) = |v|1 * w(v) - 1 for v the horizon-clamped offset from the capture
+// point to q: negative in front of the stored surface, at or above 0 behind
+// it; a stored 0 (no surface) gives -1, never a root. `layer` is the face's
+// probe layer, passed through unchanged.
+fn fluid_reflection_search_h(q: vec3<f32>, capture_point: vec3<f32>, tile: vec2<u32>,
+                             layer: u32) -> f32 {
+    let toward = q - capture_point;
+    let level = vec3<f32>(toward.x, max(toward.y, 0.0), toward.z);
+    let l1 = abs(level.x) + abs(level.y) + abs(level.z);
+    if l1 < FLUID_REFLECTION_SEARCH_EPSILON {
+        return -1.0;
+    }
+    return l1 * textureSampleLevel(fluid_probe_distance, sh_atlas_sampler,
+        fluid_reflection_tile_uv(level, tile.x, tile.y), layer, 0.0).r - 1.0;
+}
+
+// The search along unit `ray` from `origin` inside the probe's box: two
+// independent taps (origin, box hit); an origin behind the stored surface is
+// in the capture shadow. Else up to K sphere steps close a bracket, or the box
+// hit does, or nothing stored lies inside the box (the box hit, plain box
+// projection); then M false-position estimates on the bracket.
+fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>,
+                           box_max: vec3<f32>, capture_point: vec3<f32>, tile: vec2<u32>,
+                           layer: u32) -> FluidReflectionSearch {
+    let box_hit = fluid_reflection_box_hit(origin, ray, box_min, box_max);
+    let t_box = dot(box_hit - origin, ray);
+    let h_origin = fluid_reflection_search_h(origin, capture_point, tile, layer);
+    let h_box = fluid_reflection_search_h(box_hit, capture_point, tile, layer);
+    if h_origin >= 0.0 {
+        let weight = 1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_FADE, h_origin);
+        return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), weight);
+    }
+
+    // Front end of the bracket: the last sample in front of a surface. The
+    // back end starts at the box hit and moves to the first sample behind one.
+    var t_front = 0.0;
+    var h_front = h_origin;
+    var t_back = t_box;
+    var h_back = h_box;
+    let from_capture = origin - capture_point;
+    let b = dot(from_capture, ray);
+    for (var i: u32 = 0u; i < FLUID_REFLECTION_SEARCH_STEPS; i = i + 1u) {
+        if h_front <= -1.0 {
+            break;
+        }
+        let q = origin + ray * t_front;
+        let toward = q - capture_point;
+        let level = vec3<f32>(toward.x, max(toward.y, 0.0), toward.z);
+        let radius = length(level) / (h_front + 1.0);
+        let disc = b * b - (dot(from_capture, from_capture) - radius * radius);
+        if disc < 0.0 {
+            break;
+        }
+        let t_next = -b + sqrt(disc);
+        if t_next <= t_front || t_next >= t_box {
+            break;
+        }
+        let h_next = fluid_reflection_search_h(origin + ray * t_next, capture_point, tile, layer);
+        if h_next >= 0.0 {
+            t_back = t_next;
+            h_back = h_next;
+            break;
+        }
+        t_front = t_next;
+        h_front = h_next;
+    }
+    if !(h_back >= 0.0) {
+        return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), 1.0);
+    }
+
+    var t_hit = t_back;
+    for (var refinement: u32 = 0u; refinement < FLUID_REFLECTION_SEARCH_REFINEMENTS;
+         refinement = refinement + 1u) {
+        if h_back != h_front {
+            t_hit = t_front - h_front * (t_back - t_front) / (h_back - h_front);
+        } else {
+            t_hit = t_back;
+        }
+        if refinement + 1u == FLUID_REFLECTION_SEARCH_REFINEMENTS {
+            break;
+        }
+        let h_hit = fluid_reflection_search_h(origin + ray * t_hit, capture_point, tile, layer);
+        if h_hit >= 0.0 {
+            t_back = t_hit;
+            h_back = h_hit;
+        } else {
+            t_front = t_hit;
+            h_front = h_hit;
+        }
+    }
+    return FluidReflectionSearch(fluid_reflection_lookup(origin + ray * t_hit, capture_point, ray),
+        1.0);
+}
+
+// The probe term before Fresnel: the capture toward the search's lookup,
+// scaled by the live-lighting ratio toward that same direction, and the
+// search's weight.
+struct FluidReflectionSample {
+    capture: vec3<f32>,
+    weight: f32,
+};
+
+// The search runs first and ends; only its lookup and weight reach the colour
+// tap and the ratio loop. The layer comes from the face's probe index alone,
+// and the distance taps read that same layer; the lookup picks only the texel
+// and the share.
 fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
-                           outward: vec3<f32>) -> vec3<f32> {
+                           outward: vec3<f32>) -> FluidReflectionSample {
     let ray = fluid_reflection_mirror(view, outward);
-    let hit = fluid_reflection_box_hit(world_position, ray, fluid_probes.probes[probe].box_min,
-        fluid_probes.probes[probe].box_max);
-    let lookup = fluid_reflection_lookup(hit, fluid_probes.probes[probe].capture_point, ray);
-    let uv = fluid_reflection_tile_uv(lookup, fluid_probes.tile.x, fluid_probes.tile.y);
     let layer = fluid_probes.probes[probe].layer;
-    return textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb
-        * fluid_reflection_ratio(probe, lookup);
+    let search = fluid_reflection_search(world_position, ray, fluid_probes.probes[probe].box_min,
+        fluid_probes.probes[probe].box_max, fluid_probes.probes[probe].capture_point,
+        fluid_probes.tile.xy, layer);
+    let uv = fluid_reflection_tile_uv(search.lookup, fluid_probes.tile.x, fluid_probes.tile.y);
+    let capture = textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb;
+    return FluidReflectionSample(capture * fluid_reflection_ratio(probe, search.lookup),
+        search.weight);
 }
 
 // Reflection style. Mirrors `postretro_render_cpu::fluid_surface::reflection_style`:
@@ -949,6 +1076,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         outward, axes, uniforms.time, texels_per_pixel);
     let view = normalize(uniforms.camera_position - point.position);
     let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
-    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity);
-    return fluid_reflection_composite(surface, reflection, fresnel);
+    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight;
+    return fluid_reflection_composite(surface, reflection.capture, fresnel);
 }

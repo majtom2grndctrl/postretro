@@ -14,7 +14,7 @@ PostRetro is a Doom/Quake-lineage shooter in which movement is a combat tool, wi
 | Not a live store slot | Unchanged | Closed scopes and no store reads keep movement-adjacent evaluation cheap and side-effect free |
 | Silent clamp, as dash | Unchanged, weakly | A modder pushing values high sees exaggeration, not an error, which matches the owner's wide-range intent; a dev-only clamp notice is a later option |
 | Vault fields only | Unchanged | Slide and dash kicks are the next consumers; each pins its own evaluation moment |
-| Pose brief first, this one after | **Flips to phased** | The kick half has no pose dependency and carries most of the hard-catch feel. Holding the vocabulary behind an unrelated brief delays the foundation and its first consumers for no design gain |
+| Pose brief first, this one after | **Phased (owner chose)** | The kick half has no pose dependency and carries most of the hard-catch feel. Holding the vocabulary behind an unrelated brief delays the foundation and its first consumers for no design gain |
 | Reduced motion multiplies the evaluated output | Stronger | Entry-scaled intensity raises peak motion for hard catches; the comfort floor must stay a single multiplier over all of it |
 
 ## Shape rivals

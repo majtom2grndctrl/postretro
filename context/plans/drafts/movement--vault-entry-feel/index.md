@@ -1,6 +1,6 @@
 # movement--vault-entry-feel
 
-Brief · compact · reads: `context/lib/movement.md` §1 §2 §4 (Vault), `context/lib/scripting.md` §5 §11, `context/lib/player_options.md` §5 · read at 41f21c8a
+Brief · resumable · reads: `context/lib/movement.md` §1 §2 §4 (Vault), `context/lib/scripting.md` §5 §11, `context/lib/player_options.md` §5 · read at 41f21c8a
 
 ## Problem
 
@@ -19,7 +19,7 @@ The project lead asked for vault view feel that answers how the vault began: a s
 - **Overlap keeps the shipped weight and blends values.** A vault that starts while a release is running presents the larger of the two weights, as `movement.md` §1 ships, with the two value sets blended by their weights. A later release starts from the pose as presented. Literal-only descriptors present exactly as today. The vault kick spring is shared, so the newest evaluation sets its `tension`.
 - **Vault fields only.** Other kick rows, the shared impulse `tension` and `max`, and the other view-feel blocks stay literal and reject expressions. Each extends by pinning its own evaluation moment when asked. The grounded and swimming inputs replace the per-transition map `plans/done/movement--state-transition-feel` named as its extension point: one row reads how it was entered instead of keying rows by source state. This also chooses differently from `player-descriptor-composition`, which calls branching an expression on `grounded` a workaround: for a presentation response to one transition, the branch is the shape.
 - **Presentation and accessibility unchanged.** `view_feel_scale` and reduced motion multiply the evaluated output (`player_options.md` §5), and evaluation happens at every scale. View feel stays out of the tuning payload, so co-op is untouched.
-- **Builds after `movement--state-view-pose`.** That brief moves the held pose into `pose.vault` and settles its timing model. This brief's pose fields, overlap rule and release-tied evaluation lifetime rebase onto it before build; the vocabulary, entry record, lowering and kick fields do not depend on it.
+- **Two phases.** Phase 1 builds now: the `motion` vocabulary, the entry record, the `defineEntity` lowering, dash's fluent spelling and the vault kick fields. The kick carries most of the hard-catch feel and has no pose dependency, and the vocabulary ships with its first consumers. Phase 2, the pose angle expressions and their overlap, builds after `movement--state-view-pose`, which moves the held pose into `pose.vault` and settles its timing.
 - **Non-goals.** New dash inputs: `swimming` is always false in a dash, which enters only from `Normal` or `Crouching`, and `climbHeight` means nothing outside a vault.
 
 ### Scripting surface
@@ -110,7 +110,6 @@ camelCase on script sides, snake_case in Rust. No FGD, no PRL, not on the wire. 
 | entry record | local movement-event output beside the vault entry edge; not a component field, not on the wire | none | none |
 
 ## Open questions
-- Execution: switch to resumable with two phases? Recommend yes. Phase 1 (the `motion` vocabulary, the entry record, the `defineEntity` lowering and the vault kick fields) has no dependency on `movement--state-view-pose` and can build now; phase 2 (pose angle expressions, overlap) waits for it. The kick carries most of the hard-catch feel, and the vocabulary is a modder foundation whose first consumers ship with it (`research.md` §Product fit). — owner: project lead — **blocks build**
-- Rebase the pose fields, the overlap rule and the pins written against the shipped progress-based block (P12, P22, P24) onto `pose.vault` once `movement--state-view-pose` lands — **blocks build**
+- Rebase the pose fields, the overlap rule and the pins written against the shipped progress-based block (P12, P22, P24) onto `pose.vault` once `movement--state-view-pose` lands — **blocks phase 2**
 - Where evaluation records and bound programs live, how a record is tied to its vault for the exit kick and the release, and whether the vault kick row gets its own type or non-vault rows reject IR at parse — **delegated**
 - `check_ir` node and depth bounds for view-feel programs — **delegated**

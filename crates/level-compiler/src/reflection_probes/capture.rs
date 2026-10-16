@@ -39,6 +39,11 @@ pub(crate) fn sample_angle() -> f32 {
 /// within 1.5e-5 m of the capture point never encodes as infinity, which the
 /// section decoder refuses.
 const F16_MAX: f32 = 65504.0;
+/// Smallest positive f16 (2⁻²⁴, subnormal). A texel whose mean inverse
+/// distance is positive stores at least this, so no finite hit, however far
+/// or however few of its supersamples hit, rounds to the 0 a miss stores: a
+/// later sky term fills exactly the directions the capture saw nothing.
+pub(crate) const F16_MIN_POSITIVE: f32 = 5.960_464_5e-8;
 
 /// One interior row of a tile: each texel's mean captured radiance and mean
 /// inverse L1 distance over its supersamples, and the row's light-share sums.
@@ -128,8 +133,18 @@ pub(crate) fn encode_tile(rows: &[&[Vec3]]) -> Vec<u8> {
 pub(crate) fn encode_distance_tile(rows: &[&[f32]]) -> Vec<u8> {
     bordered(rows)
         .into_iter()
-        .flat_map(|w| f32_to_f16_bits(w).to_le_bytes())
+        .flat_map(|w| distance_bits(w).to_le_bytes())
         .collect()
+}
+
+/// One texel's stored f16: 0 stays the miss, and any positive mean keeps a
+/// non-zero encoding ([`F16_MIN_POSITIVE`]).
+pub(crate) fn distance_bits(w: f32) -> u16 {
+    if w > 0.0 {
+        f32_to_f16_bits(w.max(F16_MIN_POSITIVE))
+    } else {
+        0
+    }
 }
 
 /// The tile as row-major RGBA f32, border included.

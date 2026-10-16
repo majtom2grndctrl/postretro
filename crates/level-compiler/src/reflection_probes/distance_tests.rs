@@ -1,28 +1,26 @@
-// Distance tile and capture-visibility tests: the stored inverse L1 hit distance per texel, and the hidden-water warning.
+// Distance tile tests: the stored inverse L1 hit distance per texel.
 // See: context/lib/resource_management.md §5 · rendering_pipeline.md §7.3a
 
 use glam::Vec3;
-use log::Level as LogLevel;
-use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::octahedral::{
     irradiance_tile_source_texel, irradiance_tile_texel_coord,
 };
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
-use postretro_test_log_capture::LogCapture;
 
 use super::capture::{SUPERSAMPLE_OFFSETS, TILE_INTERIOR, octahedral_direction};
-use super::reflection_probes_test_fixtures::{
-    GeometryBuilder, fluid_volume, rect, up_rect, volumes,
-};
-use super::tests::{CEILING, bake, lit_floor_room, lit_floor_room_with, pool};
+use super::tests::{CEILING, bake, lit_floor_room, pool};
 use crate::bc6h::f16_bits_to_f32;
-use crate::map_data::MapReflectionVolume;
 
 /// The capture point of [`pool`]'s probe.
 const CAPTURE: Vec3 = Vec3::new(0.0, 0.502, 0.0);
 
 /// Decoded distance texel `(x, y)` of `layer`'s tile, border included.
-fn distance_texel(section: &ReflectionProbesSection, layer: usize, x: u32, y: u32) -> f32 {
+pub(super) fn distance_texel(
+    section: &ReflectionProbesSection,
+    layer: usize,
+    x: u32,
+    y: u32,
+) -> f32 {
     let at = ((y * section.tile_dimension + x) * 2) as usize;
     let tile = section.distance_tile(layer);
     f16_bits_to_f32(u16::from_le_bytes([tile[at], tile[at + 1]]))
@@ -158,84 +156,4 @@ fn distance_tile_borders_copy_their_wrapped_interior_sources() {
         }
     }
     assert_eq!(borders, 4 * dimension - 4);
-}
-
-// --- Capture-visibility warning ----------------------------------------------
-
-/// An L-shaped pool at 0.5 m in [`lit_floor_room`]: a narrow west leg
-/// (x −2.8..−2, z −2.8..0.6) turning into a wide north leg (z 0.6..2.8),
-/// 2.72 m² and 12.32 m².
-fn l_pool() -> EnvironmentVolumesSection {
-    volumes(vec![fluid_volume(
-        5,
-        &[
-            up_rect(-2.8, -2.8, -2.0, 0.6, 0.5),
-            up_rect(-2.8, 0.6, 2.8, 2.8, 0.5),
-        ],
-    )])
-}
-
-/// One authored box over the whole L, its capture point moved into the
-/// south end of the west leg, (−2.4, −2.4): the faces' area centroid
-/// (−0.434, 1.194) plus the offset.
-fn l_pool_box() -> MapReflectionVolume {
-    MapReflectionVolume {
-        source_entity: 6,
-        source_label: "entity 6 'reflection_volume'".to_string(),
-        min: [-2.9, 0.4, -2.9],
-        max: [2.9, 2.9, 2.9],
-        capture_offset: Some([-1.966, -3.594]),
-    }
-}
-
-/// A full-height wall from the east wall to x −2, between the legs.
-fn dividing_wall(builder: &mut GeometryBuilder) {
-    let (lo, hi) = (Vec3::new(-2.0, 0.0, -0.25), Vec3::new(3.0, 3.0, 0.25));
-    for (normal, axis, value) in [
-        (Vec3::NEG_X, 0, lo.x),
-        (Vec3::NEG_Z, 2, lo.z),
-        (Vec3::Z, 2, hi.z),
-    ] {
-        builder.push_face(normal, &rect(lo, hi, axis, value), 1, lo, 0, [[0.0; 2]; 4]);
-    }
-}
-
-// Acceptance A2: the dividing wall hides most of the north leg from a
-// capture point in the west leg (about a third of the water seen), so the
-// probe warns, naming itself and its source entity. The same L without the
-// wall, and the plain pool, warn nothing.
-#[test]
-fn a_capture_point_that_sees_under_half_its_water_warns() {
-    let warning = "probe 0 of entity 6: its capture point";
-    let mut room = lit_floor_room_with([255, 255, 255, 255], dividing_wall);
-    room.extras.authored = vec![l_pool_box()];
-    let logs = LogCapture::start();
-    let section = bake(&room, &l_pool()).unwrap();
-    assert_eq!(section.probes.len(), 1);
-    let point = Vec3::from(section.probes[0].capture_point);
-    assert!(
-        (point - Vec3::new(-2.4, 0.502, -2.4)).length() < 1e-3,
-        "{point}"
-    );
-    logs.assert_logged_once(LogLevel::Warn, warning);
-    let message = logs
-        .records()
-        .into_iter()
-        .find(|r| r.message.contains(warning))
-        .unwrap()
-        .message;
-    let percent: f64 = message
-        .split(" sees ")
-        .nth(1)
-        .and_then(|rest| rest.split('%').next())
-        .and_then(|n| n.parse().ok())
-        .expect("the warning names the fraction seen");
-    assert!((20.0..45.0).contains(&percent), "{message}");
-
-    logs.clear();
-    let mut open = lit_floor_room([255, 255, 255, 255]);
-    open.extras.authored = vec![l_pool_box()];
-    assert!(bake(&open, &l_pool()).is_some());
-    assert!(bake(&lit_floor_room([255, 255, 255, 255]), &pool()).is_some());
-    logs.assert_not_logged(LogLevel::Warn, "of the water it binds");
 }

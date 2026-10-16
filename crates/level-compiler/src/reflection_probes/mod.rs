@@ -1,12 +1,15 @@
 //! Reflection-probe capture stage (PRL id 54): place authored and derived
 //! probes over up-facing fluid faces, capture each probe's static world into
-//! an octahedral colour tile and a distance tile.
+//! an octahedral colour tile and a distance tile, split probes whose capture
+//! point fails their water, then cap.
 //! See: context/lib/resource_management.md §5 · build_pipeline.md §Compiler pipeline, §Build Cache
 
 mod animated_direct;
 mod authored;
 mod box_fit;
+mod cap;
 mod capture;
+mod capture_batch;
 mod capture_point;
 mod capture_visibility;
 mod delta_sample;
@@ -20,6 +23,8 @@ mod sdf_lights;
 mod sh_sample;
 mod shading;
 mod share;
+mod split;
+mod split_triggers;
 mod stage_key;
 
 #[cfg(test)]
@@ -33,9 +38,12 @@ mod placement_tests;
 #[cfg(test)]
 mod reflection_probes_test_fixtures;
 #[cfg(test)]
+mod split_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::Path;
 
 use bvh::bvh::Bvh;
@@ -44,14 +52,12 @@ use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsS
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
+use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::reflection_probes::{
-    MAX_REFLECTION_PROBES, REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-    REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
-    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbeRecord, ReflectionProbesSection,
+    MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_TILE_BORDER,
+    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbesSection,
 };
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
-use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
@@ -62,19 +68,21 @@ use crate::partition::BspTree;
 
 use animated_direct::AnimatedDirectSampler;
 use box_fit::WorldBounds;
-use capture::{RowCapture, TILE_INTERIOR, capture_row, encode_distance_tile, encode_tile};
+use cap::{apply_probe_cap, warn_capped};
+use capture_batch::{assemble_section, capture_probes};
 use capture_point::PointClassifier;
-use capture_visibility::warn_hidden_water;
+use capture_visibility::{DistanceTile, warn_hidden_water};
 use delta_sample::DeltaShSampler;
 use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use materials::SurfaceMaterials;
-use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
+use placement::{PlacementScene, place_probes, up_facing_faces};
 use reference::reference_value;
 use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
-use share::{ShareReport, ShareSums};
+use share::ShareReport;
+use split::{MAX_SPLIT_ROUNDS, SplitScene, StageProbe, split_round};
 use stage_key::{cache_key, cache_payload, parse_cache_payload};
 
 /// Cache stage identity for the whole id-54 section.
@@ -83,7 +91,24 @@ const STAGE_ID: &str = "reflection_probes";
 /// enters the key as its output, so a placement change re-keys by itself.
 /// 3: animated direct and indirect at reference, sdf lights, light share.
 /// 4: the distance tile (mean inverse L1 hit distance per texel).
-const STAGE_VERSION: u32 = 4;
+/// 5: splitting by sight and hidden mirror hits, then the cap; a finite hit
+/// never stores distance 0.
+const STAGE_VERSION: u32 = 5;
+
+/// How far the stage splits and how many probes it keeps. Production runs
+/// [`MAX_SPLIT_ROUNDS`] under the array's layer cap; tests hold either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StageLimits {
+    pub rounds: u32,
+    pub cap: usize,
+}
+
+impl StageLimits {
+    pub(crate) const PRODUCTION: Self = Self {
+        rounds: MAX_SPLIT_ROUNDS,
+        cap: MAX_REFLECTION_PROBES,
+    };
+}
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -127,6 +152,17 @@ pub(crate) fn bake_or_load_reflection_probes(
     stage_cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<Option<ReflectionProbesSection>> {
+    bake_or_load_with_limits(inputs, stage_cache, control, StageLimits::PRODUCTION)
+}
+
+/// [`bake_or_load_reflection_probes`] under `limits`. In order: placement,
+/// capture, splitting (capture and retest, round by round), the cap.
+pub(crate) fn bake_or_load_with_limits(
+    inputs: &ReflectionProbeInputs<'_>,
+    stage_cache: Option<&StageCache>,
+    control: &BakeControl,
+    limits: StageLimits,
+) -> anyhow::Result<Option<ReflectionProbesSection>> {
     if inputs.reflection_volumes.is_empty()
         && up_facing_faces(inputs.environment_volumes).is_empty()
     {
@@ -151,7 +187,7 @@ pub(crate) fn bake_or_load_reflection_probes(
         inputs.exterior_leaves,
         inputs.environment_volumes,
     );
-    let probes = place_probes(
+    let placement = place_probes(
         inputs.environment_volumes,
         inputs.reflection_volumes,
         &PlacementScene {
@@ -160,28 +196,26 @@ pub(crate) fn bake_or_load_reflection_probes(
             classifier: &classifier,
             governor: control.governor(),
         },
-        MAX_REFLECTION_PROBES,
+        limits.cap,
     )?;
-    if probes.is_empty() {
+    if placement.probes.is_empty() {
         return Ok(None);
     }
 
-    // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(inputs, &probes)?;
-    if let Some((section, reports)) =
-        stage_cache
-            .and_then(|cache| cache.get(&key))
-            .and_then(|bytes| {
-                parse_cache_payload(&bytes)
-                    .map_err(|e| {
-                        log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}")
-                    })
-                    .ok()
-            })
+    // Capture, splitting and the cap are a pure function of the keyed
+    // inputs, so a hit skips all three; the entry carries what their
+    // warnings need, so a warm build warns as a cold one does.
+    let key = cache_key(inputs, &placement, limits)?;
+    if let Some((section, capped, reports)) = stage_cache
+        .and_then(|cache| cache.get(&key))
+        .and_then(|bytes| {
+            parse_cache_payload(&bytes)
+                .map_err(|e| log::warn!("[cache] corrupt reflection_probes entry, re-baking: {e}"))
+                .ok()
+        })
     {
         log::info!("[cache] reflection_probes hit");
-        log_probes(&section, &reports);
-        warn_hidden_water(&section, &probes, inputs.environment_volumes);
+        report(&section, &reports, capped, limits.cap, inputs);
         return Ok(Some(section));
     }
     log::info!("[cache] reflection_probes miss");
@@ -216,87 +250,72 @@ pub(crate) fn bake_or_load_reflection_probes(
         sdf: SdfLights::new(inputs.alpha_lights, inputs.chunk_light_list),
         max_distance: ((bounds.max - bounds.min).length() + 1.0) as f32,
     };
-    let (section, reports) = capture_section(&scene, &probes, &references, control)?;
-    if let Some(cache) = stage_cache {
-        cache.put(&key, &cache_payload(&section, &reports));
+
+    let mut probes: Vec<StageProbe> = placement
+        .probes
+        .into_iter()
+        .map(|placed| StageProbe {
+            placed,
+            parent: None,
+        })
+        .collect();
+    let mut published = 0;
+    let mut captures = capture_probes(&scene, &probes, &references, control, &mut published)?;
+    let faces = up_facing_faces(inputs.environment_volumes);
+    let split_scene = SplitScene {
+        tracer: &scene.tracer,
+        classifier: &classifier,
+        faces: &faces,
+        max_distance: scene.max_distance,
+        governor: control.governor(),
+    };
+    let mut batch: Range<usize> = 0..probes.len();
+    for _ in 0..limits.rounds {
+        let tiles: Vec<DistanceTile> = captures[batch.clone()]
+            .iter()
+            .map(|capture| {
+                DistanceTile::from_bytes(
+                    REFLECTION_PROBE_TILE_DIMENSION,
+                    REFLECTION_PROBE_TILE_BORDER,
+                    &capture.distance,
+                )
+            })
+            .collect();
+        let made = split_round(&mut probes, batch, &tiles, &split_scene);
+        if made.is_empty() {
+            break;
+        }
+        captures.extend(capture_probes(
+            &scene,
+            &probes[made.clone()],
+            &references,
+            control,
+            &mut published,
+        )?);
+        batch = made;
     }
-    log_probes(&section, &reports);
-    warn_hidden_water(&section, &probes, inputs.environment_volumes);
+    let (kept, capped) = apply_probe_cap(&mut probes, placement.authored, limits.cap);
+
+    let (section, reports) = assemble_section(&probes, captures, &kept);
+    if let Some(cache) = stage_cache {
+        cache.put(&key, &cache_payload(&section, capped, &reports));
+    }
+    report(&section, &reports, capped, limits.cap, inputs);
     Ok(Some(section))
 }
 
-/// Capture every probe's colour and distance tiles and light share. Work
-/// items are tile rows, so one probe spreads across workers; rows land in
-/// item order and each probe's share sums merge in row order, so the bytes
-/// never depend on the worker count.
-fn capture_section(
-    scene: &CaptureScene<'_>,
-    probes: &[PlacedProbe],
-    references: &[[f32; 3]],
-    control: &BakeControl,
-) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
-    let rows_per_tile = TILE_INTERIOR as usize;
-    let items: Vec<(usize, u32)> = (0..probes.len())
-        .flat_map(|probe| (0..TILE_INTERIOR).map(move |row| (probe, row)))
-        .collect();
-    control.publish_total(items.len());
-    let rows = items
-        .par_iter()
-        .map(|&(probe, row)| {
-            let _permit = control.governor().enter();
-            let captured = capture_row(scene, probes[probe].capture_point_vec3(), row, references);
-            control.advance(1);
-            captured
-        })
-        .collect::<anyhow::Result<Vec<RowCapture>>>()?;
-    let tiles: Vec<Vec<u8>> = rows
-        .par_chunks(rows_per_tile)
-        .map(|rows| {
-            let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
-            encode_tile(&texels)
-        })
-        .collect();
-    let distances: Vec<u8> = rows
-        .chunks(rows_per_tile)
-        .flat_map(|rows| {
-            let texels: Vec<&[f32]> = rows.iter().map(|r| r.distances.as_slice()).collect();
-            encode_distance_tile(&texels)
-        })
-        .collect();
-    let shares: Vec<_> = rows
-        .chunks(rows_per_tile)
-        .map(|rows| {
-            let mut sums = ShareSums::default();
-            for row in rows {
-                sums.merge(&row.shares);
-            }
-            sums.finish(references)
-        })
-        .collect();
-
-    let section = ReflectionProbesSection {
-        tile_dimension: REFLECTION_PROBE_TILE_DIMENSION,
-        tile_border: REFLECTION_PROBE_TILE_BORDER,
-        atlas_format: IRRADIANCE_FORMAT_BC6H,
-        probes: probes
-            .iter()
-            .zip(&shares)
-            .enumerate()
-            .map(|(layer, (probe, share))| ReflectionProbeRecord {
-                source_entity: probe.source_entity,
-                box_min: probe.box_min,
-                box_max: probe.box_max,
-                capture_point: probe.capture_point,
-                layer: layer as u32,
-                lights: share.entries,
-            })
-            .collect(),
-        bindings: bindings(probes),
-        tiles: tiles.concat(),
-        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
-        distances,
-    };
-    Ok((section, shares.iter().map(|share| share.report).collect()))
+/// Everything the stage tells the mapper about the finished section, from
+/// the section and the cache entry alone.
+fn report(
+    section: &ReflectionProbesSection,
+    reports: &[ShareReport],
+    capped: usize,
+    cap: usize,
+    inputs: &ReflectionProbeInputs<'_>,
+) {
+    log_probes(section, reports);
+    warn_capped(capped, cap);
+    warn_hidden_water(section, inputs.environment_volumes);
 }
 
 /// Each animated light's reference value, by roster index: the runtime's

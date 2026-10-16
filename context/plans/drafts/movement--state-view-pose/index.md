@@ -56,7 +56,14 @@ Every row and channel is optional; a missing channel is 0. `pitch` and `roll` ar
 - [ ] Sprint on and moving in `Normal`, grounded or airborne (a sprint-jump), presents run. Walking, sprint while stationary, and a toggled latch after stopping present none (P15). Crouch, slide, dash, swim and vault present none.
 - [ ] Releasing sprint while momentum carries the pawn eases run out monotonically. Hold and Toggle both follow the resolved intent the tick reads. Zero-tick frames hold the last intent with no step (P14). A focused menu under Hold eases run out; under Toggle the latch keeps run until the pawn coasts below the epsilon (P16).
 - [ ] A slide exit with sprint on cross-fades slide out and run in with no step (P17). A dash entered from a run eases run out while dash eases in.
-- [ ] Riding a moving mover while standing still with sprint on presents none. A knockback shove on a stationary toggled-sprint pawn presents run while the shove carries it. (P18)
+- [ ] Riding a moving mover while standing still with sprint on presents none. A knockback shove on a stationary toggled-sprint pawn presents run while the shove carries it. Both, and the stationary cases, read the component that movement ticks produced, through the driver's speed source, not an injected velocity. (P18)
+- [ ] With sprint on in `Normal`, vertical-only velocity (a straight fall, a vertical launch) presents no run; the same speed horizontally does.
+- [ ] Sprint turned on mid-air in `Normal` above the epsilon eases run in before landing; landing adds no step. (P19)
+- [ ] A slide exit on the frame sprint is released eases slide out and presents no run. (P20)
+- [ ] A dash or slide that starts and ends inside one frame's ticks, sprint held, leaves run unchanged and presents no dash or slide pose. (P21)
+- [ ] A full climb with sprint on hands to run as the vault pose finishes, and an aborted vault releases with no run until the pawn regains speed. Rows add; no frame steps. (P22)
+- [ ] A hot reload mid-run, run presenting before the commit, snaps run to neutral on the first frame after it and eases it back in. Mid-slide with sprint on, slide snaps and run eases in from neutral. (P23)
+- [ ] After a level install or respawn mid-run with the toggle latch on, run starts neutral and eases in once the new pawn moves. (P24)
 #### Vault row
 - [ ] With a nonzero `easeOut`, the pose reaches neutral on the tick the path reaches the top, at 30, 60, 144 and 240 Hz, and is still easing a tick before.
 - [ ] A blocked-path abort, `break_off_vault` on death, and a reconcile that ends the vault each release from the last presented pose, ledge focus included, over the climb's time × `easeOut` and at least 0.1 s, monotonically and with no step.
@@ -72,11 +79,11 @@ Every row and channel is optional; a missing channel is 0. `pitch` and `roll` ar
 - [ ] A vault onto a moving mover presents the same focus as the static case at the same relative geometry, and follows the mover if it tilts mid-vault, read at the frame's own interpolation share. (P8, P12)
 #### Regression guards
 - [ ] Aim pitch at the limit plus a full pose on every row and an impulse kick keeps the composed render pitch within ±89°, and every row's FOV together stays within the projection band.
-- [ ] Movement input facing pitch, host aim pitch and every fired shot's direction are bit-identical over a slide, over a run with `pose.run` present and absent, and over a vault with `allowFire: true` firing during the hold with focus active, with `pose` present and absent.
+- [ ] Movement input facing pitch, host aim pitch and every fired shot's direction are bit-identical over a slide, over a run with `pose.run` present and absent and run presenting a nonzero pose, and over a vault with `allowFire: true` firing during the hold with focus active, with `pose` present and absent.
 - [ ] The viewmodel camera-space transform is unchanged by any row's pitch and roll, and still tracks sway and impulse. A vault row's eye drop, like slide's, moves the render eye, the audio listener and the viewmodel together.
 - [ ] Scale 1.0, 0.5 and 0.0 (reduced motion included) give full, half and zero pose on a rate row and the vault row. Restoring scale mid-hold resumes from the live weight with no snap. Scale 0 through a vault's end, restored mid-release, shows the rest of that release, ledge focus included. (P4)
 - [ ] A descriptor refresh and a hot reload mid-vault, mid-slide or mid-release snap the pose to neutral on the first frame assembled after the commit, a run row included; a pawn change, no driver and level install reset it. A hot reload mid-swim keeps swimming, so the swim row snaps and eases back in. (P9, P11)
-- [ ] A remote pawn vaulting, sliding or running in co-op adds no pose to the local camera.
+- [ ] A remote pawn vaulting, sliding or running in co-op adds no pose to the local camera; in the same session the local pawn running presents run.
 - [ ] Diff gate: `WIRE_VERSION`, `SNAPSHOT_VERSION` and the wire fixtures are unchanged. Committed SDK typedefs match the registry.
 - [ ] `content/dev/scripts/player.ts` authors `pose`, `pose.run` included, and loads. Grep gate: no `viewFeel.slide` or `viewFeel.vault` remains in `content/`, `docs/` or `sdk/`, and `docs/scripting-reference.md` documents `pose` and the reticle offset under `allowFire: true`.
 ### Manual

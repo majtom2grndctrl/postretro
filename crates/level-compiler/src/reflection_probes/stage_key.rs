@@ -11,31 +11,22 @@ use postretro_level_format::reflection_probes::{
 };
 
 use super::capture::SUPERSAMPLE_OFFSETS;
-use super::capture_visibility::SUBDIVISIONS;
-use super::placement::Placement;
+use super::placement::PlacedProbe;
 use super::reference::REFERENCE_MEAN_SAMPLES;
 use super::sdf_lights::SdfLights;
 use super::sh_sample::PRODUCTION_PROBE_OCCLUSION;
 use super::shading::PRODUCTION_INDIRECT_WEIGHT;
 use super::share::ShareReport;
-use super::split::ADJACENT_FACE_M;
-use super::split_triggers::split_key_bytes;
-use super::{ReflectionProbeInputs, STAGE_ID, STAGE_VERSION, StageLimits};
+use super::{ReflectionProbeInputs, STAGE_ID, STAGE_VERSION};
 use crate::cache::CacheKey;
 
-/// The cache entry: the section, then how many probes the cap dropped, then
-/// each probe's share report, so a warm build logs the covered share and
-/// warns of the cap as a cold one does.
-pub(super) fn cache_payload(
-    section: &ReflectionProbesSection,
-    capped: usize,
-    reports: &[ShareReport],
-) -> Vec<u8> {
+/// The cache entry: the section, then each probe's share report, so a warm
+/// build logs the covered share a cold one does.
+pub(super) fn cache_payload(section: &ReflectionProbesSection, reports: &[ShareReport]) -> Vec<u8> {
     let bytes = section.to_bytes();
-    let mut out = Vec::with_capacity(12 + bytes.len() + reports.len() * ShareReport::BYTES);
+    let mut out = Vec::with_capacity(8 + bytes.len() + reports.len() * ShareReport::BYTES);
     out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(&bytes);
-    out.extend_from_slice(&(capped as u32).to_le_bytes());
     for report in reports {
         report.to_bytes(&mut out);
     }
@@ -44,7 +35,7 @@ pub(super) fn cache_payload(
 
 pub(super) fn parse_cache_payload(
     bytes: &[u8],
-) -> anyhow::Result<(ReflectionProbesSection, usize, Vec<ShareReport>)> {
+) -> anyhow::Result<(ReflectionProbesSection, Vec<ShareReport>)> {
     let len = bytes
         .get(..8)
         .map(|b| u64::from_le_bytes(b.try_into().expect("eight bytes")) as usize)
@@ -53,11 +44,7 @@ pub(super) fn parse_cache_payload(
         .get(8..8 + len)
         .ok_or_else(|| anyhow::anyhow!("truncated section"))?;
     let section = ReflectionProbesSection::from_bytes(body)?;
-    let capped = bytes
-        .get(8 + len..12 + len)
-        .map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")) as usize)
-        .ok_or_else(|| anyhow::anyhow!("truncated cap count"))?;
-    let rest = &bytes[12 + len..];
+    let rest = &bytes[8 + len..];
     anyhow::ensure!(
         rest.len() == section.probes.len() * ShareReport::BYTES,
         "share reports do not match the probe count"
@@ -66,17 +53,15 @@ pub(super) fn parse_cache_payload(
         .chunks(ShareReport::BYTES)
         .map(|chunk| ShareReport::from_bytes(chunk).expect("chunk has the report size"))
         .collect();
-    Ok((section, capped, reports))
+    Ok((section, reports))
 }
 
 /// `blake3` over every input the capture reads, in a fixed order, plus the
-/// constants that shape its output, splitting's and the cap's included.
-/// Placement enters as its output: every probe's box, capture point and
-/// bound faces, and how many lead as authored.
+/// constants that shape its output. Placement enters as its output: every
+/// probe's box, capture point and bound faces.
 pub(super) fn cache_key(
     inputs: &ReflectionProbeInputs<'_>,
-    placement: &Placement,
-    limits: StageLimits,
+    probes: &[PlacedProbe],
 ) -> anyhow::Result<CacheKey> {
     let mut hasher = blake3::Hasher::new();
     let mut section = |label: &str, bytes: &[u8]| {
@@ -101,25 +86,24 @@ pub(super) fn cache_key(
         "environment volumes",
         &inputs.environment_volumes.to_bytes(),
     );
-    let mut placed = Vec::new();
-    placed.extend_from_slice(&(placement.authored as u64).to_le_bytes());
-    for probe in &placement.probes {
-        placed.extend_from_slice(&probe.source_entity.to_le_bytes());
+    let mut placement = Vec::new();
+    for probe in probes {
+        placement.extend_from_slice(&probe.source_entity.to_le_bytes());
         for value in probe
             .box_min
             .iter()
             .chain(&probe.box_max)
             .chain(&probe.capture_point)
         {
-            placed.extend_from_slice(&value.to_le_bytes());
+            placement.extend_from_slice(&value.to_le_bytes());
         }
-        placed.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
+        placement.extend_from_slice(&(probe.faces.len() as u64).to_le_bytes());
         for &(volume, face) in &probe.faces {
-            placed.extend_from_slice(&volume.to_le_bytes());
-            placed.extend_from_slice(&face.to_le_bytes());
+            placement.extend_from_slice(&volume.to_le_bytes());
+            placement.extend_from_slice(&face.to_le_bytes());
         }
     }
-    section("placement", &placed);
+    section("placement", &placement);
     section(
         "sh volume",
         &inputs
@@ -206,12 +190,6 @@ pub(super) fn cache_key(
         constants.extend_from_slice(&value.to_le_bytes());
     }
     section("constants", &constants);
-    let mut split = split_key_bytes();
-    split.extend_from_slice(&limits.rounds.to_le_bytes());
-    split.extend_from_slice(&(limits.cap as u64).to_le_bytes());
-    split.extend_from_slice(&SUBDIVISIONS.to_le_bytes());
-    split.extend_from_slice(&ADJACENT_FACE_M.to_le_bytes());
-    section("split", &split);
     drop(section);
     // Id 22 streams into the hasher: it can be the largest input.
     hasher.update(b"lightmap");

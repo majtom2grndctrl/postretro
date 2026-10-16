@@ -18,7 +18,7 @@ use super::capture_point::{NEAREST_POINT_INSET_M, PointClassifier, nearest_point
 use super::derived::FIT_MATCH_TOLERANCE_M;
 use super::hit::SceneTracer;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, bindings, place_and_cap,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, bindings, place_probes,
 };
 use super::placement_test_fixtures::{
     PlacementFixture, UNIT, box_brush, engine, engine_box, fluid, reflection_volume, sealed_room,
@@ -695,7 +695,7 @@ fn place_synthetic(
     let exterior = HashSet::new();
     let classifier = PointClassifier::new(&tree, &exterior, section);
     let control = BakeControl::unrestricted();
-    place_and_cap(
+    place_probes(
         section,
         authored,
         &PlacementScene {
@@ -834,7 +834,7 @@ fn cap_overflow_drops_the_smallest_derived_and_refuses_authored_past_it() {
     );
     capture.assert_logged_once(
         Level::Warn,
-        "2 derived or split probe(s) past the 3-probe cap dropped",
+        "2 derived probe(s) past the 3-probe cap dropped",
     );
     let bound: Vec<u32> = bindings(&probes).iter().map(|b| b.volume).collect();
     assert_eq!(bound, vec![1, 3, 4], "dropped probes' faces bind nothing");

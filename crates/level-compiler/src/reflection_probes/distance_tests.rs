@@ -1,26 +1,35 @@
-// Distance tile tests: the stored inverse L1 hit distance per texel.
+// Distance tile and capture-visibility tests: the stored inverse L1 hit distance per texel, the miss substrate, and the hidden-water warning.
 // See: context/lib/resource_management.md §5 · rendering_pipeline.md §7.3a
 
 use glam::Vec3;
+use log::Level as LogLevel;
+use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
+use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::octahedral::{
-    irradiance_tile_source_texel, irradiance_tile_texel_coord,
+    irradiance_interior_texel_direction, irradiance_tile_source_texel, irradiance_tile_texel_coord,
 };
-use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_TILE_BORDER, REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbesSection,
+};
+use postretro_test_log_capture::LogCapture;
 
-use super::capture::{SUPERSAMPLE_OFFSETS, TILE_INTERIOR, octahedral_direction};
-use super::tests::{CEILING, bake, lit_floor_room, pool};
+use super::capture::{
+    F16_MIN_POSITIVE, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, distance_bits, encode_distance_tile,
+    inverse_l1_distance, octahedral_direction,
+};
+use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile};
+use super::reflection_probes_test_fixtures::{
+    GeometryBuilder, fluid_volume, rect, up_rect, volumes,
+};
+use super::tests::{CEILING, bake, lit_floor_room, lit_floor_room_with, pool};
 use crate::bc6h::f16_bits_to_f32;
+use crate::map_data::MapReflectionVolume;
 
 /// The capture point of [`pool`]'s probe.
 const CAPTURE: Vec3 = Vec3::new(0.0, 0.502, 0.0);
 
 /// Decoded distance texel `(x, y)` of `layer`'s tile, border included.
-pub(super) fn distance_texel(
-    section: &ReflectionProbesSection,
-    layer: usize,
-    x: u32,
-    y: u32,
-) -> f32 {
+fn distance_texel(section: &ReflectionProbesSection, layer: usize, x: u32, y: u32) -> f32 {
     let at = ((y * section.tile_dimension + x) * 2) as usize;
     let tile = section.distance_tile(layer);
     f16_bits_to_f32(u16::from_le_bytes([tile[at], tile[at + 1]]))
@@ -156,4 +165,164 @@ fn distance_tile_borders_copy_their_wrapped_interior_sources() {
         }
     }
     assert_eq!(borders, 4 * dimension - 4);
+}
+
+// --- Capture-visibility warning ----------------------------------------------
+
+/// An L-shaped pool at 0.5 m in [`lit_floor_room`]: a narrow west leg
+/// (x −2.8..−2, z −2.8..0.6) turning into a wide north leg (z 0.6..2.8),
+/// 2.72 m² and 12.32 m².
+fn l_pool() -> EnvironmentVolumesSection {
+    volumes(vec![fluid_volume(
+        5,
+        &[
+            up_rect(-2.8, -2.8, -2.0, 0.6, 0.5),
+            up_rect(-2.8, 0.6, 2.8, 2.8, 0.5),
+        ],
+    )])
+}
+
+/// One authored box over the whole L, its capture point moved into the
+/// south end of the west leg, (−2.4, −2.4): the faces' area centroid
+/// (−0.434, 1.194) plus the offset.
+fn l_pool_box() -> MapReflectionVolume {
+    MapReflectionVolume {
+        source_entity: 6,
+        source_label: "entity 6 'reflection_volume'".to_string(),
+        min: [-2.9, 0.4, -2.9],
+        max: [2.9, 2.9, 2.9],
+        capture_offset: Some([-1.966, -3.594]),
+    }
+}
+
+/// A full-height wall from the east wall to x −2, between the legs.
+fn dividing_wall(builder: &mut GeometryBuilder) {
+    let (lo, hi) = (Vec3::new(-2.0, 0.0, -0.25), Vec3::new(3.0, 3.0, 0.25));
+    for (normal, axis, value) in [
+        (Vec3::NEG_X, 0, lo.x),
+        (Vec3::NEG_Z, 2, lo.z),
+        (Vec3::Z, 2, hi.z),
+    ] {
+        builder.push_face(normal, &rect(lo, hi, axis, value), 1, lo, 0, [[0.0; 2]; 4]);
+    }
+}
+
+// Acceptance A2: the dividing wall hides most of the north leg from a
+// capture point in the west leg (about a third of the water seen), so the
+// probe warns, naming itself and its source entity. The same L without the
+// wall, and the plain pool, warn nothing.
+#[test]
+fn a_capture_point_that_sees_under_half_its_water_warns() {
+    let warning = "probe 0 of entity 6: its capture point";
+    let mut room = lit_floor_room_with([255, 255, 255, 255], dividing_wall);
+    room.extras.authored = vec![l_pool_box()];
+    let logs = LogCapture::start();
+    let section = bake(&room, &l_pool()).unwrap();
+    assert_eq!(section.probes.len(), 1);
+    let point = Vec3::from(section.probes[0].capture_point);
+    assert!(
+        (point - Vec3::new(-2.4, 0.502, -2.4)).length() < 1e-3,
+        "{point}"
+    );
+    logs.assert_logged_once(LogLevel::Warn, warning);
+    let message = logs
+        .records()
+        .into_iter()
+        .find(|r| r.message.contains(warning))
+        .unwrap()
+        .message;
+    let percent: f64 = message
+        .split(" sees ")
+        .nth(1)
+        .and_then(|rest| rest.split('%').next())
+        .and_then(|n| n.parse().ok())
+        .expect("the warning names the fraction seen");
+    assert!((20.0..45.0).contains(&percent), "{message}");
+
+    logs.clear();
+    let mut open = lit_floor_room([255, 255, 255, 255]);
+    open.extras.authored = vec![l_pool_box()];
+    assert!(bake(&open, &l_pool()).is_some());
+    assert!(bake(&lit_floor_room([255, 255, 255, 255]), &pool()).is_some());
+    logs.assert_not_logged(LogLevel::Warn, "of the water it binds");
+}
+
+// --- Miss substrate ----------------------------------------------------------
+
+// Acceptance A7: a finite hit at any in-level distance stores a non-zero
+// distance, a texel only one supersample of which hit at 40 km included; a
+// miss stores 0, so a later sky term can fill exactly what the capture missed.
+#[test]
+fn a_finite_hit_at_any_distance_stores_non_zero_and_a_miss_stores_zero() {
+    assert_eq!(distance_bits(0.0), 0);
+    let one_far_hit = inverse_l1_distance(Some(40_000.0), Vec3::ONE.normalize())
+        / SUPERSAMPLE_OFFSETS.len() as f32;
+    for w in [1.0e-12, 1.0e-9, F16_MIN_POSITIVE, one_far_hit, 3.0e-5, 0.5] {
+        let bits = distance_bits(w);
+        assert_ne!(bits, 0, "{w}");
+        assert!(f16_bits_to_f32(bits) > 0.0, "{w}");
+    }
+    // Through the tile encoder: a texel holding a vanishing mean keeps it,
+    // and its missed neighbour stays 0.
+    let mut rows = vec![vec![0.0f32; TILE_INTERIOR as usize]; TILE_INTERIOR as usize];
+    rows[10][20] = 1.0e-10;
+    let rows: Vec<&[f32]> = rows.iter().map(Vec::as_slice).collect();
+    let bytes = encode_distance_tile(&rows);
+    let texel = |x: u32, y: u32| {
+        let at = ((y * REFLECTION_PROBE_TILE_DIMENSION + x) * 2) as usize;
+        f16_bits_to_f32(u16::from_le_bytes([bytes[at], bytes[at + 1]]))
+    };
+    let border = REFLECTION_PROBE_TILE_BORDER;
+    assert!(texel(20 + border, 10 + border) > 0.0);
+    assert_eq!(texel(21 + border, 10 + border), 0.0);
+}
+
+// --- Sight in the shader's units ---------------------------------------------
+
+/// A distance tile storing `w(direction)` at every texel, border included.
+fn tile_of(w: impl Fn(Vec3) -> f32) -> DistanceTile {
+    let dimension = REFLECTION_PROBE_TILE_DIMENSION;
+    let border = REFLECTION_PROBE_TILE_BORDER;
+    let mut bytes = Vec::new();
+    for y in 0..dimension {
+        for x in 0..dimension {
+            let [ix, iy] = irradiance_tile_source_texel(x, y, dimension, border);
+            let d = Vec3::from(irradiance_interior_texel_direction(
+                ix, iy, dimension, border,
+            ));
+            bytes.extend_from_slice(&f32_to_f16_bits(w(d)).to_le_bytes());
+        }
+    }
+    DistanceTile::from_bytes(dimension, border, &bytes)
+}
+
+/// A point at L1 distance `l1` from the origin, `degrees` above +X.
+fn at(l1: f32, degrees: f32) -> Vec3 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let d = Vec3::new(cos, sin, 0.0);
+    d * (l1 / d.abs().element_sum())
+}
+
+// The capture-visibility warning's depth margin is the fluid shader's
+// capture-shadow κ, so its seen water is the water that draws a probe term.
+#[test]
+fn capture_shadow_margin_matches_the_fluid_shaders() {
+    use postretro_render_cpu::fluid_surface::reflection_search::FLUID_REFLECTION_SHADOW_MARGIN;
+    assert_eq!(CAPTURE_SHADOW_MARGIN, FLUID_REFLECTION_SHADOW_MARGIN);
+}
+
+// Sight means "the shader draws a probe term": h < κ, not h < 0. Water a
+// little behind the stored surface, inside the margin, draws a faded term
+// and is seen; water past the margin draws none.
+#[test]
+fn sight_holds_inside_the_capture_shadow_margin_and_fails_past_it() {
+    // A surface at L1 2 in every direction: h = l1 / 2 − 1.
+    let shell = tile_of(|_| 0.5);
+    let seen = |l1: f32| shell.sees(Vec3::ZERO, at(l1, 20.0));
+    assert!(seen(1.9), "in front of the surface");
+    assert!(seen(2.0 * (1.0 + 0.5 * CAPTURE_SHADOW_MARGIN)), "h = κ/2");
+    assert!(!seen(2.0 * (1.0 + 2.0 * CAPTURE_SHADOW_MARGIN)), "h = 2κ");
+    // A capture that stored no surface sees everything.
+    let sky = tile_of(|_| 0.0);
+    assert!(sky.sees(Vec3::ZERO, at(40.0, 10.0)));
 }

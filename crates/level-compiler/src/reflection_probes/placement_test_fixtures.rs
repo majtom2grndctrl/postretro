@@ -1,16 +1,12 @@
 // Placement fixtures: small inline maps compiled through parse, BSP, portals, geometry, BVH and id 52.
 // See: context/lib/testing_guide.md §4
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use bvh::bvh::Bvh;
 use glam::DVec3;
-use postretro_level_format::alpha_lights::AlphaLightsSection;
-use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_RGBA16F, LightmapMode, LightmapSection};
-use postretro_level_format::reflection_probes::{MAX_REFLECTION_PROBES, ReflectionProbesSection};
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::reflection_probes::MAX_REFLECTION_PROBES;
 
 use crate::bake_control::BakeControl;
 use crate::bvh_build::{BvhPrimitive, build_bvh};
@@ -24,9 +20,8 @@ use super::box_fit::{WorldBounds, fit_box, fit_rays};
 use super::capture_point::PointClassifier;
 use super::hit::SceneTracer;
 use super::placement::{
-    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, place_and_cap, up_facing_faces,
+    CAPTURE_LIFT_M, PlacedProbe, PlacementScene, UpFacingFace, place_probes, up_facing_faces,
 };
-use super::{ReflectionProbeInputs, StageLimits, bake_or_load_with_limits};
 
 /// Quake map units to engine meters.
 pub(crate) const UNIT: f64 = 0.0254;
@@ -106,22 +101,11 @@ impl PlacementFixture {
     /// Worldspawn with `world` brushes (entity 0), then `entities` as map
     /// entities 1, 2, …
     pub(crate) fn compile(world: &[String], entities: &[String]) -> Self {
-        Self::from_map(parse_inline(&format!(
+        let map = parse_inline(&format!(
             "{}\n{}\n",
             entity("worldspawn", "", world),
             entities.join("\n")
-        )))
-    }
-
-    /// A map file on disk, such as a content map, by the same front end.
-    pub(crate) fn from_map_file(path: &std::path::Path) -> Self {
-        Self::from_map(
-            parse::parse_map_file(path, MapFormat::IdTech2)
-                .unwrap_or_else(|e| panic!("parse {}: {e:#}", path.display())),
-        )
-    }
-
-    fn from_map(map: MapData) -> Self {
+        ));
         let result = partition::partition(&map.brush_volumes).expect("partition");
         let generated = portals::generate_portals(&result.tree);
         let exterior = visibility::find_exterior_leaves(&result.tree, &generated);
@@ -153,7 +137,7 @@ impl PlacementFixture {
         let bounds = self.bounds();
         let classifier = PointClassifier::new(&self.tree, &self.exterior, &self.environment);
         let control = BakeControl::unrestricted();
-        place_and_cap(
+        place_probes(
             &self.environment,
             &self.authored,
             &PlacementScene {
@@ -164,41 +148,6 @@ impl PlacementFixture {
             },
             cap,
         )
-    }
-
-    /// The whole stage under `limits`, lit by nothing: the placeholder
-    /// lighting and materials leave every tile black, while the distance
-    /// tiles, the splitting and the cap they drive are the real ones.
-    pub(crate) fn bake(&self, limits: StageLimits) -> Option<ReflectionProbesSection> {
-        let prm_dir = tempfile::tempdir().unwrap();
-        let lightmap = LightmapSection {
-            direction_texel_scale: 1,
-            irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
-            mode: LightmapMode::Shadowed,
-            blocks: Vec::new(),
-        };
-        let sh = OctahedralShVolumeSection::placeholder();
-        let alpha_lights = AlphaLightsSection::default();
-        let chunk_list = ChunkLightListSection::placeholder();
-        let keys = HashMap::new();
-        let inputs = ReflectionProbeInputs {
-            bvh: &self.bvh,
-            primitives: &self.primitives,
-            geometry: &self.geometry,
-            environment_volumes: &self.environment,
-            reflection_volumes: &self.authored,
-            tree: &self.tree,
-            exterior_leaves: &self.exterior,
-            lightmap: &lightmap,
-            sh_volume: &sh,
-            delta_sh: None,
-            animated_weight_maps: None,
-            alpha_lights: &alpha_lights,
-            chunk_light_list: &chunk_list,
-            texture_keys: &keys,
-            prm_root: prm_dir.path(),
-        };
-        bake_or_load_with_limits(&inputs, None, &BakeControl::unrestricted(), limits).unwrap()
     }
 
     pub(crate) fn up_faces(&self) -> Vec<UpFacingFace> {

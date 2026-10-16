@@ -1,19 +1,16 @@
-// Reflection-probe capture visibility: how much of its water a capture point sees, and the warning when splitting left a probe seeing under half.
+// Reflection-probe capture visibility: warn when a capture point sees less than half of its probe's bound water.
 // See: context/lib/resource_management.md §5.1 · rendering_pipeline.md §7.3a
-
-use std::collections::BTreeMap;
 
 use glam::{DVec2, DVec3, Vec3};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 
-use super::placement::{UpFacingFace, up_facing_faces};
+use super::placement::{PlacedProbe, UpFacingFace, up_facing_faces};
 use crate::bc6h::f16_bits_to_f32;
 
-/// A probe still seeing less than this fraction of its bound water after
-/// splitting warns: the runtime draws no probe term on water its point
-/// cannot see. Splitting itself reads per-sample sight, not this fraction.
+/// A probe whose capture point sees less than this fraction of its bound
+/// water area warns: the runtime draws no probe term on the rest.
 pub(crate) const MIN_SEEN_FRACTION: f64 = 0.5;
 /// κ: the fluid shader's capture-shadow depth margin, in
 /// `h = |v|₁ · w(v) − 1`. Water with h < κ draws a probe term (faded within
@@ -22,70 +19,63 @@ pub(crate) const MIN_SEEN_FRACTION: f64 = 0.5;
 pub(crate) const CAPTURE_SHADOW_MARGIN: f32 = 0.05;
 /// Each fan triangle of a bound face splits into `SUBDIVISIONS²` equal
 /// sub-triangles, one sample at each centroid: 128 samples on a quad.
-pub(crate) const SUBDIVISIONS: u32 = 8;
+const SUBDIVISIONS: u32 = 8;
 /// An offset this short (L1, m) from the capture point is the point itself.
-pub(crate) const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
+const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 
-/// Warn, naming the probe and its source entity, for every probe of the
-/// finished section whose capture point still sees less than
-/// [`MIN_SEEN_FRACTION`] of the water it binds: splitting stopped short of
-/// it, at the round limit, the minimum piece (a whole face until face cuts),
-/// the cap, or the all-fail rule (a probe all of whose water fails keeps the
-/// face its point serves best).
+/// Warn, naming the probe and its source entity, for every probe whose
+/// capture point sees less than [`MIN_SEEN_FRACTION`] of the water it binds.
 ///
-/// "Sees" is [`DistanceTile::sees`], the shader's capture-shadow cutoff, so
-/// the warning predicts the water that draws no probe term. It runs from the
-/// section and id 52 alone, so a warm build warns as a cold one does.
-/// Samples sit at fixed points of each face and sum in fixed order, so the
-/// result is deterministic.
+/// "Sees" is [`DistanceTile::sees`], the runtime's capture-shadow cutoff read
+/// from the stored distance tile, so the seen water matches the water the
+/// fluid shader draws a probe term on (faded within κ of the cutoff), and
+/// the warning predicts the dark water. It traces no rays (a direct C-to-P
+/// visibility test would cost a BVH query per sample and could disagree
+/// with what the shader reads), and it runs from the section alone, so a warm build warns as a
+/// cold one does. Samples sit at fixed points of each face and sum in fixed
+/// order, so the result is deterministic.
 pub(crate) fn warn_hidden_water(
     section: &ReflectionProbesSection,
+    probes: &[PlacedProbe],
     volumes: &EnvironmentVolumesSection,
 ) {
     let faces = up_facing_faces(volumes);
-    let mut bound: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-    for binding in &section.bindings {
-        bound
-            .entry(binding.probe)
-            .or_default()
-            .push((binding.volume, binding.face));
-    }
-    for (index, record) in section.probes.iter().enumerate() {
-        let keys = bound.get(&(index as u32)).map_or(&[][..], Vec::as_slice);
+    for (index, (probe, record)) in probes.iter().zip(&section.probes).enumerate() {
         let tile = DistanceTile::decode(section, record.layer as usize);
-        let seen = seen_fraction(&tile, Vec3::from(record.capture_point), keys, &faces);
+        let seen = seen_fraction(&tile, probe, &faces);
         if seen < MIN_SEEN_FRACTION {
             log::warn!(
                 "[ReflectionProbes] probe {index} of entity {}: its capture point {:?} sees \
-                 {:.0}% of the water it binds after splitting (stopped by the round limit, the \
-                 minimum piece, the probe cap, or all of its water failing), and water it cannot \
-                 see draws no reflection; move the point with `_capture_offset`, or bound the \
-                 hidden water with its own reflection_volume",
-                record.source_entity,
-                record.capture_point,
+                 {:.0}% of the water it binds, and water it cannot see draws no reflection; \
+                 move the point with `_capture_offset`, or bound the hidden water with its own \
+                 reflection_volume",
+                probe.source_entity,
+                probe.capture_point,
                 seen * 100.0,
             );
         }
     }
 }
 
-/// The fraction of the water `keys` (bound faces, `(volume, face)`) a
-/// capture point at `capture` sees, by area-weighted samples. No bound area
-/// is all seen.
+/// The fraction of `probe`'s bound water area its capture point sees, by
+/// area-weighted samples. A probe binding no area sees all of it.
 pub(crate) fn seen_fraction(
     tile: &DistanceTile,
-    capture: Vec3,
-    keys: &[(u32, u32)],
+    probe: &PlacedProbe,
     faces: &[UpFacingFace],
 ) -> f64 {
+    let capture = Vec3::from(probe.capture_point);
     let (mut seen, mut total) = (0.0f64, 0.0f64);
-    for key in keys {
-        let Some(face) = face_by_key(faces, *key) else {
+    for key in &probe.faces {
+        let Ok(at) = faces.binary_search_by_key(key, |face| (face.volume, face.face)) else {
             continue;
         };
+        let face = &faces[at];
+        let height = face.geometry.plane_height();
         face_samples(&face.outline, |point, area| {
             total += area;
-            if tile.sees(capture, water_point(face, point)) {
+            let water = DVec3::new(point.x, height, point.y).as_vec3();
+            if tile.sees(capture, water) {
                 seen += area;
             }
         });
@@ -93,23 +83,10 @@ pub(crate) fn seen_fraction(
     if total > 0.0 { seen / total } else { 1.0 }
 }
 
-/// The up-facing face `key` names in `faces` (id-52 order).
-pub(crate) fn face_by_key(faces: &[UpFacingFace], key: (u32, u32)) -> Option<&UpFacingFace> {
-    faces
-        .binary_search_by_key(&key, |face| (face.volume, face.face))
-        .ok()
-        .map(|at| &faces[at])
-}
-
-/// The water point under horizontal sample `point` of `face`.
-pub(crate) fn water_point(face: &UpFacingFace, point: DVec2) -> Vec3 {
-    DVec3::new(point.x, face.geometry.plane_height(), point.y).as_vec3()
-}
-
 /// Every sample of a convex `outline` (horizontal `(x, z)`), with the area
 /// it stands for: a fan from the first vertex, each triangle split into
 /// equal sub-triangles sampled at their centroids.
-pub(crate) fn face_samples(outline: &[DVec2], mut sample: impl FnMut(DVec2, f64)) {
+fn face_samples(outline: &[DVec2], mut sample: impl FnMut(DVec2, f64)) {
     let Some(&first) = outline.first() else {
         return;
     };
@@ -161,12 +138,6 @@ impl DistanceTile {
                 .map(|bits| f16_bits_to_f32(u16::from_le_bytes(*bits)))
                 .collect(),
         }
-    }
-
-    /// Angular width of one interior texel, radians: a half-turn of horizon
-    /// crosses the interior, as the fluid shader's capture-shadow fade reads.
-    pub(crate) fn texel_angle(&self) -> f32 {
-        std::f32::consts::PI / (self.dimension - 2 * self.border) as f32
     }
 
     /// The stored inverse L1 distance toward non-zero `direction`.

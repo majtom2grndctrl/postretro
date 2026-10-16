@@ -13,7 +13,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::fixtures::{
     Scene, TILE, UNIT, canal, capture_tile, empty_room, engine, engine_dir, pillar_room, pool_room,
-    room_b,
+    pool_room_probes, room_b,
 };
 use super::*;
 use crate::fluid_surface::reflection::{
@@ -465,6 +465,117 @@ fn from_the_west_walkway_few_fragments_show_a_false_pillar() {
     assert!(
         box_false * 10 > n,
         "the fixture separates: box {box_false} of {n}"
+    );
+}
+
+// --- Two probes over one room ----------------------------------------------------
+
+/// Points on the pool room's four walls on a 32-unit grid, 8 to 248 units up.
+fn pool_room_wall_points() -> Vec<Vec3> {
+    let mut points = Vec::new();
+    for along in (16..512).step_by(32) {
+        for up in (8..256).step_by(16) {
+            let (a, z) = (along as f32, up as f32);
+            points.extend([
+                engine(0.0, a, z),
+                engine(512.0, a, z),
+                engine(a, 0.0, z),
+                engine(a, 512.0, z),
+            ]);
+        }
+    }
+    points
+}
+
+/// Where the eye sees the water mirror `wall`: the fragment on the water on
+/// the line from `eye` to `wall` mirrored below the water plane, when it lies
+/// on the pool and the eye sees it.
+fn mirror_fragment(scene: &Scene, eye: Vec3, wall: Vec3) -> Option<Vec3> {
+    let fragment = eye + (Vec3::new(wall.x, -wall.y, wall.z) - eye) * (eye.y / (eye.y + wall.y));
+    let (map_x, map_y) = (-fragment.z / UNIT, -fragment.x / UNIT);
+    let on_pool = (160.5..351.5).contains(&map_x) && (160.5..351.5).contains(&map_y);
+    let to_eye = eye - fragment;
+    let seen = scene
+        .trace(fragment, to_eye.normalize())
+        .is_none_or(|(t, _)| t >= to_eye.length() - UNIT);
+    (on_pool && seen).then_some(fragment)
+}
+
+// Acceptance A8: two probes sharing the pool room's box at different capture
+// points, both seeing a wall point W. For every fragment of the pool whose
+// true mirror ray hits W (wall points on a grid, eyes around the room at 0.5,
+// 1.6 and 3 m), at least 99% of each probe's searches resolve to within one
+// capture texel of W in that probe's own tile, and none beyond five, so two
+// faces hard-bound to the two probes meet there with no geometry jump. The
+// misses are rays passing behind an occluder's silhouette as seen from that
+// probe's capture point (A4's thin-object class): the bench and stump put
+// 2.75 and 3.92 texels of error on 5 of 3072 fragments per probe.
+const CROSS_PROBE_MISS_SHARE: f32 = 0.01;
+const CROSS_PROBE_WORST_TEXELS: f32 = 5.0;
+
+#[test]
+fn two_probes_over_one_room_resolve_a_wall_point_both_see_within_one_texel() {
+    let probes = pool_room_probes();
+    let eyes: Vec<Vec3> = [
+        (152.0, 224.0),
+        (100.0, 300.0),
+        (256.0, 140.0),
+        (400.0, 400.0),
+        (470.0, 150.0),
+        (300.0, 450.0),
+    ]
+    .into_iter()
+    .flat_map(|(x, y)| [0.5, 1.6, 3.0].map(|m: f32| engine(x, y, m / UNIT)))
+    .collect();
+    let mut worst = [0.0f32; 2];
+    let mut misses = [0usize; 2];
+    let mut over = Vec::new();
+    let mut checked = 0;
+    for wall in pool_room_wall_points() {
+        let both_see = probes.iter().all(|scene| {
+            let toward = wall - scene.capture;
+            scene
+                .trace(scene.capture, toward.normalize())
+                .is_some_and(|(t, _)| (t - toward.length()).abs() < 1.0e-3)
+        });
+        if !both_see {
+            continue;
+        }
+        for &eye in &eyes {
+            let Some(fragment) = mirror_fragment(&probes[0], eye, wall) else {
+                continue;
+            };
+            let ray = reflected(eye, fragment);
+            let truly = probes[0]
+                .trace(fragment, ray)
+                .is_some_and(|(t, _)| (fragment + ray * t).abs_diff_eq(wall, 1.0e-3));
+            if !truly {
+                continue;
+            }
+            for (i, scene) in probes.iter().enumerate() {
+                let result = search(scene, fragment, ray);
+                let apart = texels_apart(result.lookup, wall - scene.capture);
+                worst[i] = worst[i].max(apart);
+                if apart > 1.0 {
+                    misses[i] += 1;
+                    over.push(format!(
+                        "probe {i}: W {wall} from eye {eye} at {fragment}: {apart:.2} texels ({:?})",
+                        result.status
+                    ));
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 100, "only {checked} fragments");
+    let allowed = CROSS_PROBE_MISS_SHARE * checked as f32;
+    assert!(
+        misses.iter().all(|&n| n as f32 <= allowed)
+            && worst.iter().all(|&w| w <= CROSS_PROBE_WORST_TEXELS),
+        "per probe {misses:?} of {checked} fragments' searches land over one texel from W \
+         (at most {allowed:.0} allowed); worst per probe {worst:?} texels (at most \
+         {CROSS_PROBE_WORST_TEXELS}):\n{}",
+        over.join("\n")
     );
 }
 

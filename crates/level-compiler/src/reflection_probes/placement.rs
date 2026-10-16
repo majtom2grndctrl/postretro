@@ -1,4 +1,4 @@
-// Reflection-probe placement: up-facing fluid faces, authored and derived probes, their drops and binding.
+// Reflection-probe placement: up-facing fluid faces, authored and derived probes, drops, binding and the cap.
 // See: context/lib/resource_management.md §5.1
 
 use glam::{DVec2, DVec3, Vec3};
@@ -10,7 +10,6 @@ use crate::map_data::MapReflectionVolume;
 
 use super::authored::place_authored;
 use super::box_fit::WorldBounds;
-use super::cap::cap_placed_probes;
 use super::capture_point::PointClassifier;
 use super::derived::derive_probes;
 use super::hit::SceneTracer;
@@ -166,31 +165,17 @@ pub(crate) struct PlacementScene<'a> {
     pub governor: &'a Governor,
 }
 
-/// Placement's output: authored probes in map entity order, then the derived
-/// probes the pre-capture cap kept, in fluid entity order. Capture,
-/// splitting and the post-split cap act on it next.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Placement {
-    pub probes: Vec<PlacedProbe>,
-    /// How many of `probes`, from the front, are authored.
-    pub authored: usize,
-    /// Derived probes the pre-capture cap dropped: they count in the one cap
-    /// warning.
-    pub dropped_past_cap: usize,
-}
-
-/// Every probe placement keeps. In order: authored capture points and their
-/// drops, binding among the kept boxes, dropping boxes that bind nothing,
-/// derived probes for the unclaimed faces and their drops, then derived
-/// probes past `cap` by bound area, so none of them is ever captured.
-/// Authored probes past `cap` refuse the build. Split probes face the cap
-/// again after splitting ([`super::cap::apply_probe_cap`]).
+/// Every kept probe: authored probes in map entity order, then derived probes
+/// in fluid entity order. In order: authored capture points and their drops,
+/// binding among the kept boxes, dropping boxes that bind nothing, derived
+/// probes for the unclaimed faces and their drops, then the cap of `cap`
+/// probes. Authored probes past the cap refuse the build.
 pub(crate) fn place_probes(
     volumes: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
     scene: &PlacementScene<'_>,
     cap: usize,
-) -> anyhow::Result<Placement> {
+) -> anyhow::Result<Vec<PlacedProbe>> {
     let faces = up_facing_faces(volumes);
     let authored = place_authored(&faces, authored, scene.classifier)?;
     if authored.probes.len() > cap {
@@ -206,40 +191,45 @@ pub(crate) fn place_probes(
         .filter_map(|(face, &claimed)| (!claimed).then_some(face))
         .collect();
     let derived = derive_probes(&unclaimed, volumes, scene);
-    let count = authored.probes.len();
     let mut probes = authored.probes;
-    probes.extend(derived);
-    let dropped_past_cap = cap_placed_probes(&mut probes, count, cap);
-    Ok(Placement {
-        probes,
-        authored: count,
-        dropped_past_cap,
-    })
+    probes.extend(apply_probe_cap(derived, cap - probes.len(), cap));
+    Ok(probes)
 }
 
-/// Placement then the cap, with no splitting between: what the placement
-/// contracts test.
-#[cfg(test)]
-pub(crate) fn place_and_cap(
-    volumes: &EnvironmentVolumesSection,
-    authored: &[MapReflectionVolume],
-    scene: &PlacementScene<'_>,
+/// Keep at most `limit` derived probes, the room `cap` leaves after the
+/// authored ones, the largest bound surface area first; ties go to the
+/// earlier probe, which is fluid entity then face order. The kept probes stay
+/// in their order. Dropped probes' faces bind nothing; one warning names the
+/// count.
+pub(crate) fn apply_probe_cap(
+    probes: Vec<PlacedProbe>,
+    limit: usize,
     cap: usize,
-) -> anyhow::Result<Vec<PlacedProbe>> {
-    use super::cap::{apply_probe_cap, warn_capped};
-    use super::split::StageProbe;
-    let placement = place_probes(volumes, authored, scene, cap)?;
-    let mut probes: Vec<StageProbe> = placement
-        .probes
+) -> Vec<PlacedProbe> {
+    if probes.len() <= limit {
+        return probes;
+    }
+    let mut ranked: Vec<usize> = (0..probes.len()).collect();
+    ranked.sort_by(|&a, &b| {
+        probes[b]
+            .bound_area
+            .total_cmp(&probes[a].bound_area)
+            .then(a.cmp(&b))
+    });
+    let mut keep = vec![false; probes.len()];
+    for &i in &ranked[..limit] {
+        keep[i] = true;
+    }
+    log::warn!(
+        "[ReflectionProbes] {} derived probe(s) past the {cap}-probe cap dropped, smallest bound \
+         water first; their faces reflect nothing",
+        probes.len() - limit
+    );
+    probes
         .into_iter()
-        .map(|placed| StageProbe {
-            placed,
-            parent: None,
-        })
-        .collect();
-    let (kept, dropped) = apply_probe_cap(&mut probes, placement.authored, cap);
-    warn_capped(placement.dropped_past_cap + dropped, cap);
-    Ok(kept.into_iter().map(|i| probes[i].placed.clone()).collect())
+        .zip(keep)
+        .filter_map(|(probe, kept)| kept.then_some(probe))
+        .collect()
 }
 
 /// Every kept probe's faces as bindings, ascending by `(volume, face)`.

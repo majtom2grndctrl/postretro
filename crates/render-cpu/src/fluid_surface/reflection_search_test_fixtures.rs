@@ -214,30 +214,47 @@ pub(super) fn empty_room() -> &'static Scene {
 /// derived box is the room; the capture point is over the pool's centre.
 pub(super) fn pool_room() -> &'static Scene {
     static SCENE: OnceLock<Scene> = OnceLock::new();
-    SCENE.get_or_init(|| {
-        let b = brush;
-        let brushes = vec![
-            b([-16.0, -16.0, -112.0], [0.0, 528.0, 272.0], "wall"),
-            b([512.0, -16.0, -112.0], [528.0, 528.0, 272.0], "wall"),
-            b([-16.0, -16.0, -112.0], [528.0, 0.0, 272.0], "wall"),
-            b([-16.0, 512.0, -112.0], [528.0, 528.0, 272.0], "wall"),
-            b([-16.0, -16.0, 256.0], [528.0, 528.0, 272.0], "ceiling"),
-            b([0.0, 0.0, -112.0], [160.0, 512.0, 0.0], "floor"),
-            b([352.0, 0.0, -112.0], [512.0, 512.0, 0.0], "floor"),
-            b([160.0, 0.0, -112.0], [352.0, 160.0, 0.0], "floor"),
-            b([160.0, 352.0, -112.0], [352.0, 512.0, 0.0], "floor"),
-            b([160.0, 160.0, -112.0], [352.0, 352.0, -96.0], "pitfloor"),
-            b([144.0, 144.0, 0.0], [368.0, 160.0, 6.0], "coping"),
-            b([144.0, 352.0, 0.0], [368.0, 368.0, 6.0], "coping"),
-            b([144.0, 144.0, 0.0], [160.0, 368.0, 6.0], "coping"),
-            b([352.0, 144.0, 0.0], [368.0, 368.0, 6.0], "coping"),
-            b([392.0, 200.0, 0.0], [440.0, 248.0, 48.0], "crate"),
-            b([200.0, 104.0, 0.0], [312.0, 128.0, 20.0], "bench"),
-            b([88.0, 88.0, 0.0], [120.0, 120.0, 64.0], "stump"),
-        ];
-        let (p, q) = (engine(0.0, 0.0, 0.0), engine(512.0, 512.0, 256.0));
-        Scene::new(brushes, engine(256.0, 256.0, LIFT), p.min(q), p.max(q))
+    SCENE.get_or_init(|| pool_room_captured_at(256.0, 256.0))
+}
+
+/// Two probes sharing the pool room's box, as two faces of its pool bound to
+/// different probes see it: one captured over the pool's centre, the other
+/// over its south-west quarter (map 196, 316), each 2 mm above the water.
+pub(super) fn pool_room_probes() -> &'static [Scene; 2] {
+    static SCENES: OnceLock<[Scene; 2]> = OnceLock::new();
+    SCENES.get_or_init(|| {
+        [
+            pool_room_captured_at(256.0, 256.0),
+            pool_room_captured_at(196.0, 316.0),
+        ]
     })
+}
+
+/// The pool room with its capture point 2 mm above the water at map
+/// `(x, y)`.
+fn pool_room_captured_at(x: f32, y: f32) -> Scene {
+    let b = brush;
+    let brushes = vec![
+        b([-16.0, -16.0, -112.0], [0.0, 528.0, 272.0], "wall"),
+        b([512.0, -16.0, -112.0], [528.0, 528.0, 272.0], "wall"),
+        b([-16.0, -16.0, -112.0], [528.0, 0.0, 272.0], "wall"),
+        b([-16.0, 512.0, -112.0], [528.0, 528.0, 272.0], "wall"),
+        b([-16.0, -16.0, 256.0], [528.0, 528.0, 272.0], "ceiling"),
+        b([0.0, 0.0, -112.0], [160.0, 512.0, 0.0], "floor"),
+        b([352.0, 0.0, -112.0], [512.0, 512.0, 0.0], "floor"),
+        b([160.0, 0.0, -112.0], [352.0, 160.0, 0.0], "floor"),
+        b([160.0, 352.0, -112.0], [352.0, 512.0, 0.0], "floor"),
+        b([160.0, 160.0, -112.0], [352.0, 352.0, -96.0], "pitfloor"),
+        b([144.0, 144.0, 0.0], [368.0, 160.0, 6.0], "coping"),
+        b([144.0, 352.0, 0.0], [368.0, 368.0, 6.0], "coping"),
+        b([144.0, 144.0, 0.0], [160.0, 368.0, 6.0], "coping"),
+        b([352.0, 144.0, 0.0], [368.0, 368.0, 6.0], "coping"),
+        b([392.0, 200.0, 0.0], [440.0, 248.0, 48.0], "crate"),
+        b([200.0, 104.0, 0.0], [312.0, 128.0, 20.0], "bench"),
+        b([88.0, 88.0, 0.0], [120.0, 120.0, 64.0], "stump"),
+    ];
+    let (p, q) = (engine(0.0, 0.0, 0.0), engine(512.0, 512.0, 256.0));
+    Scene::new(brushes, engine(x, y, LIFT), p.min(q), p.max(q))
 }
 
 /// The test map's room B (map x 928..1440, floor z 0, ceiling 384): the

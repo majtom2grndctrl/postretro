@@ -234,17 +234,6 @@ pub(super) fn bake(
     })
 }
 
-/// [`bake`] under `limits`: splitting rounds and the cap held.
-pub(super) fn bake_limited(
-    room: &LitFloorRoom,
-    environment: &EnvironmentVolumesSection,
-    limits: StageLimits,
-) -> Option<ReflectionProbesSection> {
-    with_inputs(room, environment, |inputs| {
-        bake_or_load_with_limits(inputs, None, &BakeControl::unrestricted(), limits).unwrap()
-    })
-}
-
 /// An animated light's descriptor: `brightness` keys over a 1 s loop at
 /// `base_color`.
 pub(super) fn descriptor(base_color: [f32; 3], brightness: Vec<f32>) -> AnimationDescriptor {
@@ -563,7 +552,7 @@ fn stage_key(room: &LitFloorRoom, environment: &EnvironmentVolumesSection) -> St
         .unwrap();
         let classifier = PointClassifier::new(inputs.tree, inputs.exterior_leaves, environment);
         let control = BakeControl::unrestricted();
-        let placement = place_probes(
+        let probes = place_probes(
             environment,
             inputs.reflection_volumes,
             &PlacementScene {
@@ -575,9 +564,7 @@ fn stage_key(room: &LitFloorRoom, environment: &EnvironmentVolumesSection) -> St
             MAX_REFLECTION_PROBES,
         )
         .unwrap();
-        cache_key(inputs, &placement, StageLimits::PRODUCTION)
-            .unwrap()
-            .as_filename()
+        cache_key(inputs, &probes).unwrap().as_filename()
     })
 }
 

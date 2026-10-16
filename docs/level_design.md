@@ -335,6 +335,17 @@ The compiler draws a fluid's surface from its brush faces, using each face's tex
 
 ---
 
+## Teleporters
+
+A `trigger_teleport` brush sends a player who walks into it to a
+`teleport_destination` point: either exactly there (`classic`), or carried
+relative to a pair of points with their offset, view and momentum kept
+(`seamless`), for shifts between copies of a room. Scripts turn teleporters on
+and off. Keys, room-copy layout, firing rules and scripting are in
+[docs/teleporters.md](teleporters.md).
+
+---
+
 ## SH Probe Protection Volumes
 
 Adaptive SH probe density is enabled by default. The compiler stores each

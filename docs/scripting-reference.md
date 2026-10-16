@@ -1647,6 +1647,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `events` | Level-local impact policies. |
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
+| `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -1758,6 +1759,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 |------|--------|-----------------|
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
+| `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |

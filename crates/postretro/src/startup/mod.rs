@@ -28,6 +28,8 @@ pub(crate) mod settling;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
 pub(crate) mod start_pose;
+#[cfg(test)]
+mod teleporters_surface_tests;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;

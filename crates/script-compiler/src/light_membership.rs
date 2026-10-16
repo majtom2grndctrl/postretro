@@ -1502,6 +1502,11 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<JsonValue> {
                 let mut values = JsonMap::new();
                 for entry in table.pairs::<String, LuaValue>() {
                     let (key, value) = entry?;
+                    // A method field (an impact event's `override`) is not
+                    // manifest data; the runtime manifest reader ignores it.
+                    if matches!(value, LuaValue::Function(_)) {
+                        continue;
+                    }
                     values.insert(key, lua_to_json_inner(value, depth + 1)?);
                 }
                 Ok(JsonValue::Object(values))
@@ -1950,6 +1955,27 @@ mod tests {
             &table(),
         )
         .expect("empty Luau reaction table is the empty dense array");
+        assert!(manifest.lights.is_empty());
+    }
+
+    #[test]
+    fn teleport_fixture_luau_level_returning_impact_event_handles_is_valid() {
+        // Regression: an impact-event handle carries an `override` method; the
+        // teleporters dev level returns one under `events`.
+        let manifest = emit_light_membership_manifest(
+            r#"
+            local Postretro = require("postretro")
+            local base = Postretro.defineImpactEvent("enemy-death", { tag = "enemy" }, function(_) return {} end)
+            local special = base:override({ tag = "closet" }, function(impact)
+              return { { ["do"] = { impact.target:despawn() } } }
+            end)
+            function setupLevel(_) return { reactions = {}, events = { special } } end
+            "#,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("method fields are skipped, not manifest data");
         assert!(manifest.lights.is_empty());
     }
 

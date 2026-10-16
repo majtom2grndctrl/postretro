@@ -9,7 +9,7 @@ end)
 local closetDeath = enemyDeath:override({ tag = "teleport_closet" }, function(impact)
   local killed = impact.target.healthBefore:gt(0)
   killed = killed["and"](killed, impact.target.healthAfter:le(0))
-  return { { when = killed, do = { impact.target:despawn() } } }
+  return { { when = killed, ["do"] = { impact.target:despawn() } } }
 end)
 
 local function append(out, values)

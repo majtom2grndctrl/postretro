@@ -495,7 +495,6 @@
 "target" "vault_in"
 "enabled_on_spawn" "0"
 "arrival_sound" "fixtures/jump"
-"on_teleport" "gate.shut"
 {
 ( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( -16 0 0 ) ( -16 0 1 ) ( -16 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1

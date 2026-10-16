@@ -296,11 +296,12 @@
 // and the spawner's local +X fan-out, but inside alarm_light's cone. The prop
 // stands close enough to the closed door that alarm_light casts its shadow
 // onto the door's lit face. The promoted capture needs that shadow: the door
-// is convex, so it cannot shadow itself.
+// is convex, so it cannot shadow itself. Its 135 yaw is the silhouette the
+// receiver captures and masks were tuned on.
 {
 "classname" "prop_mesh"
 "origin" "128 -112 0"
-"angles" "0 315 0"
+"angles" "0 135 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }
 // entity 14

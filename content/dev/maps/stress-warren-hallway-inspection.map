@@ -26454,121 +26454,121 @@
 {
 "classname" "reference_enemy"
 "origin" "3958 -3208 1360"
-"angles" "0 291 0"
+"angles" "0 111 0"
 "_tags" "enemy"
 }
 // entity 766
 {
 "classname" "reference_enemy"
 "origin" "857 1543 720"
-"angles" "0 237 0"
+"angles" "0 57 0"
 "_tags" "enemy"
 }
 // entity 767
 {
 "classname" "reference_enemy"
 "origin" "2393 185 1360"
-"angles" "0 123 0"
+"angles" "0 303 0"
 "_tags" "enemy"
 }
 // entity 768
 {
 "classname" "reference_enemy"
 "origin" "-2622 3515 80"
-"angles" "0 73 0"
+"angles" "0 253 0"
 "_tags" "enemy"
 }
 // entity 769
 {
 "classname" "reference_enemy"
 "origin" "-4003 -1843 80"
-"angles" "0 303 0"
+"angles" "0 123 0"
 "_tags" "enemy"
 }
 // entity 770
 {
 "classname" "reference_enemy"
 "origin" "-741 3126 80"
-"angles" "0 203 0"
+"angles" "0 23 0"
 "_tags" "enemy"
 }
 // entity 771
 {
 "classname" "reference_enemy"
 "origin" "-656 -3348 720"
-"angles" "0 57 0"
+"angles" "0 237 0"
 "_tags" "enemy"
 }
 // entity 772
 {
 "classname" "reference_enemy"
 "origin" "2726 -3463 720"
-"angles" "0 49 0"
+"angles" "0 229 0"
 "_tags" "enemy"
 }
 // entity 773
 {
 "classname" "reference_enemy"
 "origin" "1077 184 720"
-"angles" "0 93 0"
+"angles" "0 273 0"
 "_tags" "enemy"
 }
 // entity 774
 {
 "classname" "reference_enemy"
 "origin" "2657 -3511 1360"
-"angles" "0 36 0"
+"angles" "0 216 0"
 "_tags" "enemy"
 }
 // entity 775
 {
 "classname" "reference_enemy"
 "origin" "760 -1701 720"
-"angles" "0 341 0"
+"angles" "0 161 0"
 "_tags" "enemy"
 }
 // entity 776
 {
 "classname" "reference_enemy"
 "origin" "-2257 -1535 1360"
-"angles" "0 10 0"
+"angles" "0 190 0"
 "_tags" "enemy"
 }
 // entity 777
 {
 "classname" "reference_pistol"
 "origin" "-2248 3225 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 778
 {
 "classname" "reference_shotgun"
 "origin" "-4375 -1588 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 779
 {
 "classname" "wieldable_fixture_auto"
 "origin" "-974 3157 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 780
 {
 "classname" "wieldable_fixture_press"
 "origin" "-650 -3237 720"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 781
 {
 "classname" "reference_pistol"
 "origin" "2683 -3469 720"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 782
 {
 "classname" "reference_shotgun"
 "origin" "719 159 720"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 783
 {
@@ -26918,7 +26918,7 @@
 {
 "classname" "entity_spawner"
 "origin" "4160 -1632 80"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_0"
@@ -26978,7 +26978,7 @@
 {
 "classname" "entity_spawner"
 "origin" "2496 32 1360"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_1"
@@ -27038,7 +27038,7 @@
 {
 "classname" "entity_spawner"
 "origin" "-4160 3360 1360"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_2"

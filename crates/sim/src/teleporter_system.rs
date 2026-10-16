@@ -115,6 +115,7 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
 
 impl TeleporterBindingTable {
     /// No teleporter is bound: the default table a level unload leaves.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
     }

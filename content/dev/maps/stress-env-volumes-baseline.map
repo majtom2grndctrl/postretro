@@ -42728,497 +42728,497 @@
 {
 "classname" "reference_enemy"
 "origin" "1272 -108 80"
-"angles" "0 318 0"
+"angles" "0 138 0"
 "_tags" "enemy"
 }
 // entity 1279
 {
 "classname" "reference_enemy"
 "origin" "1255 435 80"
-"angles" "0 355 0"
+"angles" "0 175 0"
 "_tags" "enemy"
 }
 // entity 1280
 {
 "classname" "reference_enemy"
 "origin" "1180 -801 80"
-"angles" "0 307 0"
+"angles" "0 127 0"
 "_tags" "enemy"
 }
 // entity 1281
 {
 "classname" "reference_enemy"
 "origin" "1172 1237 80"
-"angles" "0 280 0"
+"angles" "0 100 0"
 "_tags" "enemy"
 }
 // entity 1282
 {
 "classname" "reference_enemy"
 "origin" "-2849 748 80"
-"angles" "0 203 0"
+"angles" "0 23 0"
 "_tags" "enemy"
 }
 // entity 1283
 {
 "classname" "reference_enemy"
 "origin" "-939 1227 80"
-"angles" "0 166 0"
+"angles" "0 346 0"
 "_tags" "enemy"
 }
 // entity 1284
 {
 "classname" "reference_enemy"
 "origin" "-1485 1253 80"
-"angles" "0 117 0"
+"angles" "0 297 0"
 "_tags" "enemy"
 }
 // entity 1285
 {
 "classname" "reference_enemy"
 "origin" "1034 1217 80"
-"angles" "0 131 0"
+"angles" "0 311 0"
 "_tags" "enemy"
 }
 // entity 1286
 {
 "classname" "reference_enemy"
 "origin" "-1020 1200 80"
-"angles" "0 196 0"
+"angles" "0 16 0"
 "_tags" "enemy"
 }
 // entity 1287
 {
 "classname" "reference_enemy"
 "origin" "-283 1231 80"
-"angles" "0 55 0"
+"angles" "0 235 0"
 "_tags" "enemy"
 }
 // entity 1288
 {
 "classname" "reference_enemy"
 "origin" "-2610 1194 80"
-"angles" "0 98 0"
+"angles" "0 278 0"
 "_tags" "enemy"
 }
 // entity 1289
 {
 "classname" "reference_enemy"
 "origin" "1279 -747 80"
-"angles" "0 292 0"
+"angles" "0 112 0"
 "_tags" "enemy"
 }
 // entity 1290
 {
 "classname" "reference_enemy"
 "origin" "5932 2287 1360"
-"angles" "0 160 0"
+"angles" "0 340 0"
 "_tags" "enemy"
 }
 // entity 1291
 {
 "classname" "reference_enemy"
 "origin" "692 4143 80"
-"angles" "0 250 0"
+"angles" "0 70 0"
 "_tags" "enemy"
 }
 // entity 1292
 {
 "classname" "reference_enemy"
 "origin" "3970 848 720"
-"angles" "0 199 0"
+"angles" "0 19 0"
 "_tags" "enemy"
 }
 // entity 1293
 {
 "classname" "reference_enemy"
 "origin" "-5696 -600 1360"
-"angles" "0 351 0"
+"angles" "0 171 0"
 "_tags" "enemy"
 }
 // entity 1294
 {
 "classname" "reference_enemy"
 "origin" "-4099 3909 80"
-"angles" "0 5 0"
+"angles" "0 185 0"
 "_tags" "enemy"
 }
 // entity 1295
 {
 "classname" "reference_enemy"
 "origin" "-4314 2701 80"
-"angles" "0 149 0"
+"angles" "0 329 0"
 "_tags" "enemy"
 }
 // entity 1296
 {
 "classname" "reference_enemy"
 "origin" "591 1017 720"
-"angles" "0 282 0"
+"angles" "0 102 0"
 "_tags" "enemy"
 }
 // entity 1297
 {
 "classname" "reference_enemy"
 "origin" "4151 2458 1360"
-"angles" "0 277 0"
+"angles" "0 97 0"
 "_tags" "enemy"
 }
 // entity 1298
 {
 "classname" "reference_enemy"
 "origin" "2300 694 1360"
-"angles" "0 188 0"
+"angles" "0 8 0"
 "_tags" "enemy"
 }
 // entity 1299
 {
 "classname" "reference_enemy"
 "origin" "-997 -818 1360"
-"angles" "0 99 0"
+"angles" "0 279 0"
 "_tags" "enemy"
 }
 // entity 1300
 {
 "classname" "reference_enemy"
 "origin" "919 3968 720"
-"angles" "0 110 0"
+"angles" "0 290 0"
 "_tags" "enemy"
 }
 // entity 1301
 {
 "classname" "reference_enemy"
 "origin" "-5842 -4272 720"
-"angles" "0 38 0"
+"angles" "0 218 0"
 "_tags" "enemy"
 }
 // entity 1302
 {
 "classname" "reference_enemy"
 "origin" "-576 -775 720"
-"angles" "0 213 0"
+"angles" "0 33 0"
 "_tags" "enemy"
 }
 // entity 1303
 {
 "classname" "reference_enemy"
 "origin" "-2559 -920 720"
-"angles" "0 323 0"
+"angles" "0 143 0"
 "_tags" "enemy"
 }
 // entity 1304
 {
 "classname" "reference_enemy"
 "origin" "-1071 -2682 1360"
-"angles" "0 59 0"
+"angles" "0 239 0"
 "_tags" "enemy"
 }
 // entity 1305
 {
 "classname" "reference_enemy"
 "origin" "5866 -4369 80"
-"angles" "0 50 0"
+"angles" "0 230 0"
 "_tags" "enemy"
 }
 // entity 1306
 {
 "classname" "reference_enemy"
 "origin" "4330 -2469 1360"
-"angles" "0 310 0"
+"angles" "0 130 0"
 "_tags" "enemy"
 }
 // entity 1307
 {
 "classname" "reference_enemy"
 "origin" "-2463 3981 1360"
-"angles" "0 124 0"
+"angles" "0 304 0"
 "_tags" "enemy"
 }
 // entity 1308
 {
 "classname" "reference_enemy"
 "origin" "-2531 -1021 1360"
-"angles" "0 354 0"
+"angles" "0 174 0"
 "_tags" "enemy"
 }
 // entity 1309
 {
 "classname" "reference_enemy"
 "origin" "-1002 4045 1360"
-"angles" "0 23 0"
+"angles" "0 203 0"
 "_tags" "enemy"
 }
 // entity 1310
 {
 "classname" "reference_enemy"
 "origin" "-723 855 720"
-"angles" "0 111 0"
+"angles" "0 291 0"
 "_tags" "enemy"
 }
 // entity 1311
 {
 "classname" "reference_enemy"
 "origin" "-4300 -2414 720"
-"angles" "0 5 0"
+"angles" "0 185 0"
 "_tags" "enemy"
 }
 // entity 1312
 {
 "classname" "reference_enemy"
 "origin" "-2496 852 1360"
-"angles" "0 200 0"
+"angles" "0 20 0"
 "_tags" "enemy"
 }
 // entity 1313
 {
 "classname" "reference_enemy"
 "origin" "-5649 2390 1360"
-"angles" "0 209 0"
+"angles" "0 29 0"
 "_tags" "enemy"
 }
 // entity 1314
 {
 "classname" "reference_enemy"
 "origin" "2282 -2313 1360"
-"angles" "0 151 0"
+"angles" "0 331 0"
 "_tags" "enemy"
 }
 // entity 1315
 {
 "classname" "reference_enemy"
 "origin" "-744 4356 80"
-"angles" "0 264 0"
+"angles" "0 84 0"
 "_tags" "enemy"
 }
 // entity 1316
 {
 "classname" "reference_enemy"
 "origin" "-2587 4142 720"
-"angles" "0 20 0"
+"angles" "0 200 0"
 "_tags" "enemy"
 }
 // entity 1317
 {
 "classname" "reference_enemy"
 "origin" "5848 4307 80"
-"angles" "0 247 0"
+"angles" "0 67 0"
 "_tags" "enemy"
 }
 // entity 1318
 {
 "classname" "reference_enemy"
 "origin" "764 931 1360"
-"angles" "0 215 0"
+"angles" "0 35 0"
 "_tags" "enemy"
 }
 // entity 1319
 {
 "classname" "reference_enemy"
 "origin" "4141 4140 1360"
-"angles" "0 210 0"
+"angles" "0 30 0"
 "_tags" "enemy"
 }
 // entity 1320
 {
 "classname" "reference_enemy"
 "origin" "-2605 2687 1360"
-"angles" "0 191 0"
+"angles" "0 11 0"
 "_tags" "enemy"
 }
 // entity 1321
 {
 "classname" "reference_enemy"
 "origin" "838 3925 1360"
-"angles" "0 117 0"
+"angles" "0 297 0"
 "_tags" "enemy"
 }
 // entity 1322
 {
 "classname" "reference_enemy"
 "origin" "-4251 4279 720"
-"angles" "0 212 0"
+"angles" "0 32 0"
 "_tags" "enemy"
 }
 // entity 1323
 {
 "classname" "reference_enemy"
 "origin" "936 2567 1360"
-"angles" "0 239 0"
+"angles" "0 59 0"
 "_tags" "enemy"
 }
 // entity 1324
 {
 "classname" "reference_enemy"
 "origin" "2546 -4236 720"
-"angles" "0 304 0"
+"angles" "0 124 0"
 "_tags" "enemy"
 }
 // entity 1325
 {
 "classname" "reference_enemy"
 "origin" "-1037 4295 720"
-"angles" "0 224 0"
+"angles" "0 44 0"
 "_tags" "enemy"
 }
 // entity 1326
 {
 "classname" "reference_enemy"
 "origin" "-5794 2320 720"
-"angles" "0 167 0"
+"angles" "0 347 0"
 "_tags" "enemy"
 }
 // entity 1327
 {
 "classname" "reference_enemy"
 "origin" "-5659 2465 80"
-"angles" "0 94 0"
+"angles" "0 274 0"
 "_tags" "enemy"
 }
 // entity 1328
 {
 "classname" "reference_enemy"
 "origin" "-4330 679 720"
-"angles" "0 129 0"
+"angles" "0 309 0"
 "_tags" "enemy"
 }
 // entity 1329
 {
 "classname" "reference_enemy"
 "origin" "2379 -2569 720"
-"angles" "0 219 0"
+"angles" "0 39 0"
 "_tags" "enemy"
 }
 // entity 1330
 {
 "classname" "reference_enemy"
 "origin" "-3934 4195 1360"
-"angles" "0 88 0"
+"angles" "0 268 0"
 "_tags" "enemy"
 }
 // entity 1331
 {
 "classname" "reference_enemy"
 "origin" "-1023 2608 1360"
-"angles" "0 26 0"
+"angles" "0 206 0"
 "_tags" "enemy"
 }
 // entity 1332
 {
 "classname" "reference_enemy"
 "origin" "-6037 -3914 80"
-"angles" "0 330 0"
+"angles" "0 150 0"
 "_tags" "enemy"
 }
 // entity 1333
 {
 "classname" "reference_enemy"
 "origin" "5708 699 80"
-"angles" "0 151 0"
+"angles" "0 331 0"
 "_tags" "enemy"
 }
 // entity 1334
 {
 "classname" "reference_enemy"
 "origin" "-2523 -2373 1360"
-"angles" "0 358 0"
+"angles" "0 178 0"
 "_tags" "enemy"
 }
 // entity 1335
 {
 "classname" "reference_enemy"
 "origin" "2634 2261 80"
-"angles" "0 302 0"
+"angles" "0 122 0"
 "_tags" "enemy"
 }
 // entity 1336
 {
 "classname" "reference_enemy"
 "origin" "4032 2488 80"
-"angles" "0 182 0"
+"angles" "0 2 0"
 "_tags" "enemy"
 }
 // entity 1337
 {
 "classname" "reference_enemy"
 "origin" "6077 -694 1360"
-"angles" "0 322 0"
+"angles" "0 142 0"
 "_tags" "enemy"
 }
 // entity 1338
 {
 "classname" "reference_enemy"
 "origin" "-2319 4221 80"
-"angles" "0 156 0"
+"angles" "0 336 0"
 "_tags" "enemy"
 }
 // entity 1339
 {
 "classname" "reference_enemy"
 "origin" "633 -1014 720"
-"angles" "0 50 0"
+"angles" "0 230 0"
 "_tags" "enemy"
 }
 // entity 1340
 {
 "classname" "reference_enemy"
 "origin" "2570 2511 720"
-"angles" "0 186 0"
+"angles" "0 6 0"
 "_tags" "enemy"
 }
 // entity 1341
 {
 "classname" "reference_enemy"
 "origin" "4385 4193 80"
-"angles" "0 267 0"
+"angles" "0 87 0"
 "_tags" "enemy"
 }
 // entity 1342
 {
 "classname" "reference_pistol"
 "origin" "-1379 1237 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1343
 {
 "classname" "reference_shotgun"
 "origin" "-2380 2358 720"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1344
 {
 "classname" "wieldable_fixture_auto"
 "origin" "1188 -561 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1345
 {
 "classname" "wieldable_fixture_press"
 "origin" "-4274 -977 1360"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1346
 {
 "classname" "reference_pistol"
 "origin" "-1639 1239 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1347
 {
 "classname" "reference_shotgun"
 "origin" "-2414 1157 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1348
 {
 "classname" "wieldable_fixture_auto"
 "origin" "-2826 -437 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1349
 {
 "classname" "wieldable_fixture_press"
 "origin" "2670 988 720"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 1350
 {
@@ -43568,7 +43568,7 @@
 {
 "classname" "entity_spawner"
 "origin" "-2496 2528 720"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_0"
@@ -43628,7 +43628,7 @@
 {
 "classname" "entity_spawner"
 "origin" "2496 -800 80"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_1"
@@ -43688,7 +43688,7 @@
 {
 "classname" "entity_spawner"
 "origin" "-832 -2464 1360"
-"angles" "0 180 0"
+"angles" "0 0 0"
 "archetype" "reference_enemy"
 "count" "2"
 "_tags" "warren_closet_spawner_2"
@@ -44047,28 +44047,28 @@
 "classname" "prop_mesh"
 "origin" "6208 -448 704"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 1412
 {
 "classname" "prop_mesh"
 "origin" "1216 -2112 64"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 1413
 {
 "classname" "prop_mesh"
 "origin" "6208 1216 1344"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 1414
 {
 "classname" "prop_mesh"
 "origin" "-2112 -2112 64"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 1415
 {

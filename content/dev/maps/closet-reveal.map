@@ -209,8 +209,9 @@
 // entity 10
 // Closet spawner: the reveal fires this member after the wait. Its own tag
 // addresses it; spawned_tags makes each NPC it releases join the closet
-// residents, so one npcs group step reaches both. count NPCs fan out along
-// the spawner local +X axis, which this yaw points back toward the doorway.
+// residents, so one npcs group step reaches both. This yaw faces them west
+// out through the doorway; count NPCs fan out across the nook along the
+// spawner local +X axis.
 {
 "classname" "entity_spawner"
 "origin" "224 -16 16"

@@ -953,10 +953,14 @@ def enemy_entity(origin, yaw):
 
 
 def weapon_entity(origin, cls):
-    """A pre-placed wieldable weapon pickup (touchable world item)."""
+    """A pre-placed wieldable weapon pickup (touchable world item).
+
+    Its model faces its TrenchBroom arrow; 180 keeps the facing the committed
+    stress baselines were measured with.
+    """
     return ["{", f'"classname" "{cls}"',
             f'"origin" "{origin[0]} {origin[1]} {origin[2]}"',
-            '"angles" "0 0 0"', "}"]
+            '"angles" "0 180 0"', "}"]
 
 
 def door_entities(idx, axis, line, dcenter, zf, tag, activation):
@@ -1083,8 +1087,11 @@ def monster_closet_entities(idx, cx, front_y, zf, zc):
                          d1, y0 + CLOSET_WALL_T, ztop,
                          tex, tex, tex).rstrip("\n").split("\n")
     trigger.append("}")
+    # Spawned enemies face the spawner's TrenchBroom arrow and fan out beside
+    # it; 0 keeps the facing and fan side the committed stress baselines were
+    # measured with.
     spawner = ["{", '"classname" "entity_spawner"',
-               f'"origin" "{cx} {y1 - 96} {zf + 16}"', '"angles" "0 180 0"',
+               f'"origin" "{cx} {y1 - 96} {zf + 16}"', '"angles" "0 0 0"',
                f'"archetype" "{ENEMY_CLASS}"', f'"count" "{CLOSET_ENEMY_COUNT}"',
                f'"_tags" "{spawner_tag}"', f'"spawned_tags" "{ENEMY_TAG}"', "}"]
     return brushes, [mover,
@@ -1547,10 +1554,10 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                 rect = place_rects[e % len(place_rects)]
             enemy_rooms[rect[1:6]] = enemy_rooms.get(rect[1:6], 0) + 1
             px, py, zf = floor_point(rect)
-            # Emitted mirrored: the compiler once mirrored entity yaw, and
-            # mirroring the same draw keeps committed maps' enemy facings (and
-            # the RNG stream) unchanged now that yaw follows the TrenchBroom arrow.
-            yaw = (360 - prng.randint(0, 359)) % 360
+            # An enemy faces its TrenchBroom arrow. Emitting 180 minus the draw
+            # keeps every committed stress map's enemy facings, the ones its
+            # perf and AI baselines were measured with, and the RNG stream.
+            yaw = (180 - prng.randint(0, 359)) % 360
             entities.append(enemy_entity((px, py, zf + 16), yaw))
         for w in range(max(0, n_weapons)):
             if zoned and arena_rects and w % 2 == 0:

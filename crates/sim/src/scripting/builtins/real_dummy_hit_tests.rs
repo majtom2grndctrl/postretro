@@ -31,7 +31,7 @@ const MAP: &str = include_str!("../../../../../content/dev/maps/splash-damage-de
 const PLAYER: &str = include_str!("../../../../../content/dev/scripts/player.ts");
 const PISTOL: &str = include_str!("../../../../../content/dev/scripts/reference-pistol.ts");
 
-fn map_placement(classname: &str, tag: &str, raw_origin: &str, yaw: f32) -> MapEntity {
+fn map_placement(classname: &str, tag: &str, raw_origin: &str) -> MapEntity {
     // Pin the individual point entity, rather than accepting the same origin
     // somewhere else in the map. This fixture has no brush-bearing entities.
     let block = MAP
@@ -40,18 +40,29 @@ fn map_placement(classname: &str, tag: &str, raw_origin: &str, yaw: f32) -> MapE
         .expect("named splash map point entity");
     assert!(block.contains(&format!("\"classname\" \"{classname}\"")));
     assert!(block.contains(&format!("\"origin\" \"{raw_origin}\"")));
+    let props: HashMap<String, String> = block
+        .lines()
+        .filter_map(|line| {
+            let mut quoted = line.trim().split('"').skip(1).step_by(2);
+            Some((quoted.next()?.to_string(), quoted.next()?.to_string()))
+        })
+        .collect();
     let raw: Vec<f32> = raw_origin
         .split_whitespace()
         .map(|n| n.parse().unwrap())
         .collect();
     let scale = postretro_level_compiler::map_format::MapFormat::IdTech2.units_to_meters() as f32;
-    // The actual compiler adapter: parse.rs::quake_to_engine, then unit scale.
+    // Mirrors parse.rs::quake_to_engine (engine = (-qy, qz, -qx)), then unit scale.
     let origin = Vec3::new(-raw[1], raw[2], -raw[0]) * scale;
+    // The compiler's own angle conversion point, on the block's authored keys.
+    let angles =
+        postretro_level_compiler::format::quake_map::angles::try_quake_to_engine_angles(&props)
+            .expect("splash map angles are well formed");
     MapEntity {
         map_ordinal: None,
         classname: classname.into(),
         origin,
-        angles: Vec3::new(0.0, -yaw.to_radians(), 0.0),
+        angles: Vec3::from(angles),
         key_values: HashMap::new(),
         tags: vec![tag.into()],
     }
@@ -75,11 +86,14 @@ fn dummy_descriptor() -> EntityTypeDescriptor {
 
 fn fixture(display_copy: bool) -> (EntityRegistry, EntityId, HitZoneStore) {
     let descriptor = dummy_descriptor();
-    let placement = map_placement("target_dummy", "dummy splash_direct", "352 256 0", 180.0);
+    let placement = map_placement("target_dummy", "dummy splash_direct", "352 256 0");
     let mut registry = EntityRegistry::new();
     let id = registry.spawn(Transform {
         position: placement.origin,
-        rotation: placement.rotation_quat(),
+        rotation: data_archetype::descriptor_spawn_rotation(
+            &placement,
+            DescriptorSpawnPath::MapPlacement,
+        ),
         scale: Vec3::ONE,
     });
     if display_copy {
@@ -254,7 +268,7 @@ fn real_dummy_torso_aim_hits_local_and_mesh_only_display_copy() {
         let target = model_matrix(transform, mesh.origin_offset)
             .unwrap()
             .transform_point3(target_model);
-        let player = map_placement("player_spawn", "player", "288 256 24", 0.0);
+        let player = map_placement("player_spawn", "player", "288 256 24");
         let origin = Vec3::new(player.origin.x, target.y, player.origin.z);
         assert_pistol_hit(&registry, id, &store, origin, (target - origin).normalize());
     }
@@ -309,7 +323,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
     // Spawn uses the authored origin unchanged for a movement-only descriptor;
     // the physics tick settles the capsule before the level reveal. Do not add
     // a guessed feet-to-eye lift to the raw map z=24 coordinate.
-    let placement = map_placement("player_spawn", "player", "288 256 24", 0.0);
+    let placement = map_placement("player_spawn", "player", "288 256 24");
     let mut player_descriptor = mesh_descriptor("player", false);
     player_descriptor.mesh = None;
     player_descriptor.movement = Some(player_movement());

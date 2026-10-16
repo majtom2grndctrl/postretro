@@ -143,6 +143,133 @@ pub(crate) fn hash_content(hasher: &mut blake3::Hasher, world: &LevelWorld) {
     }
 }
 
+pub(crate) fn apply_local_camera_turn(
+    camera: &mut crate::camera::Camera,
+    registry: &EntityRegistry,
+    before: Option<(u8, f32)>,
+) {
+    if let (Some((_, before)), Some((_, after))) = (before, local_teleport_identity(registry)) {
+        camera.yaw += postretro_foundation::wrap_teleport_yaw(after - before);
+    }
+}
+
+/// Hold the camera at the arrival eye and detach the local view from mover carry.
+/// The carry ground is the only cached carry state: the next input seam's yaw carry
+/// and the render-only yaw residual (`effective_render_yaw`) both derive from it, so
+/// airborne here removes the platform's rotation at tick rate and at every alpha.
+pub(crate) fn hold_local_arrival(
+    camera: &crate::camera::Camera,
+    timing: &mut crate::frame_timing::FrameTiming,
+    carry: &mut postretro_foundation::GroundRef,
+) {
+    *carry = postretro_foundation::GroundRef::Airborne;
+    timing.hold_state(crate::frame_timing::InterpolableState::new(camera.position));
+}
+
+/// A connected client's forward-predicted teleport on this tick: turn the view by
+/// the predicted delta, detach mover carry, and start the traveller cue now. Reconcile
+/// replay never reaches here; it reports through [`apply_local_adoptions`].
+pub(crate) fn apply_predicted_teleport(
+    camera: &mut crate::camera::Camera,
+    carry: &mut postretro_foundation::GroundRef,
+    sounds: &mut Vec<postretro_audio::SoundRequest>,
+    teleporters: &postretro_physics::teleporters::Teleporters,
+    event: &postretro_physics::movement::TeleportEvent,
+) {
+    camera.yaw += event.yaw_delta;
+    *carry = postretro_foundation::GroundRef::Airborne;
+    sounds.extend(crate::sound_events::arrival_sound(
+        teleporters,
+        event.teleporter,
+        event.arrival,
+    ));
+}
+
+/// The host seat's own traveller cue from one authoritative tick. Remote pawns'
+/// teleports reach the host seat as an observer, through
+/// [`host_observed_arrival_cues`].
+pub(crate) fn push_local_traveller_cues(
+    sounds: &mut Vec<postretro_audio::SoundRequest>,
+    teleporters: &postretro_physics::teleporters::Teleporters,
+    local_pawn: Option<postretro_entities::EntityId>,
+    teleports: &[(
+        postretro_entities::EntityId,
+        postretro_physics::movement::TeleportEvent,
+    )],
+) {
+    for (pawn, event) in teleports {
+        if Some(*pawn) == local_pawn {
+            sounds.extend(crate::sound_events::arrival_sound(
+                teleporters,
+                event.teleporter,
+                event.arrival,
+            ));
+        }
+    }
+}
+
+/// Host-seat observer cues for connected-client pawns. Drain once after the frame's
+/// authoritative ticks and before the audio step: each pawn's generation changes
+/// since the last drain coalesce to its last authoritative sample, at that sample's
+/// pose, whatever delayed pose the host still presents. No-op off the host.
+pub(crate) fn host_observed_arrival_cues(
+    endpoint: Option<&mut postretro_netcode::NetEndpoint>,
+    teleporters: &postretro_physics::teleporters::Teleporters,
+    sounds: &mut Vec<postretro_audio::SoundRequest>,
+) {
+    let Some(postretro_netcode::NetEndpoint::Host {
+        client_pawn_presentation,
+        owners,
+        allocator,
+        ..
+    }) = endpoint
+    else {
+        return;
+    };
+    let observed = postretro_netcode::host_take_client_pawn_teleports(
+        client_pawn_presentation,
+        owners,
+        allocator,
+    );
+    crate::sound_events::observed_arrival_sounds(teleporters, &observed, sounds);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_local_adoptions(
+    camera: &mut crate::camera::Camera,
+    timing: &mut crate::frame_timing::FrameTiming,
+    carry: &mut postretro_foundation::GroundRef,
+    sounds: &mut Vec<postretro_audio::SoundRequest>,
+    teleporters: &postretro_physics::teleporters::Teleporters,
+    registry: &EntityRegistry,
+    adoptions: &[postretro_netcode::LocalTeleportAdoption],
+) {
+    for adoption in adoptions {
+        camera.yaw += adoption.yaw_delta;
+        if adoption.camera_cut {
+            if let (Ok(pose), Ok(movement)) = (
+                registry.get_component::<Transform>(adoption.entity_id),
+                registry.get_component::<postretro_foundation::PlayerMovementComponent>(
+                    adoption.entity_id,
+                ),
+            ) {
+                camera.position = pose.position + Vec3::Y * movement.capsule.eye_height;
+            }
+            hold_local_arrival(camera, timing, carry);
+        }
+        if let Some(index) = adoption.cue_teleporter {
+            sounds.extend(crate::sound_events::arrival_sound(
+                teleporters,
+                index,
+                adoption.arrival,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod app_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,58 +597,6 @@ mod tests {
                         .abs()
                         < 0.0001
                 );
-            }
-        }
-    }
-}
-
-pub(crate) fn apply_local_camera_turn(
-    camera: &mut crate::camera::Camera,
-    registry: &EntityRegistry,
-    before: Option<(u8, f32)>,
-) {
-    if let (Some((_, before)), Some((_, after))) = (before, local_teleport_identity(registry)) {
-        camera.yaw += postretro_foundation::wrap_teleport_yaw(after - before);
-    }
-}
-
-pub(crate) fn hold_local_arrival(
-    camera: &crate::camera::Camera,
-    timing: &mut crate::frame_timing::FrameTiming,
-    carry: &mut postretro_foundation::GroundRef,
-) {
-    *carry = postretro_foundation::GroundRef::Airborne;
-    timing.hold_state(crate::frame_timing::InterpolableState::new(camera.position));
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_local_adoptions(
-    camera: &mut crate::camera::Camera,
-    timing: &mut crate::frame_timing::FrameTiming,
-    carry: &mut postretro_foundation::GroundRef,
-    sounds: &mut Vec<postretro_audio::SoundRequest>,
-    teleporters: &postretro_physics::teleporters::Teleporters,
-    registry: &EntityRegistry,
-    adoptions: &[postretro_netcode::LocalTeleportAdoption],
-) {
-    for adoption in adoptions {
-        camera.yaw += adoption.yaw_delta;
-        if adoption.camera_cut {
-            if let (Ok(pose), Ok(movement)) = (
-                registry.get_component::<Transform>(adoption.entity_id),
-                registry.get_component::<postretro_foundation::PlayerMovementComponent>(
-                    adoption.entity_id,
-                ),
-            ) {
-                camera.position = pose.position + Vec3::Y * movement.capsule.eye_height;
-            }
-            hold_local_arrival(camera, timing, carry);
-        }
-        if let Some(index) = adoption.cue_teleporter {
-            if let Some(request) =
-                crate::sound_events::arrival_sound(teleporters, index, adoption.arrival)
-            {
-                sounds.push(request);
             }
         }
     }

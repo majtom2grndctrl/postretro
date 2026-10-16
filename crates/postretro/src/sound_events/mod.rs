@@ -19,4 +19,4 @@ pub(crate) use descriptors::{
 pub(crate) use movers::{MoverEdge, resolve_mover_edges};
 
 mod teleporters;
-pub(crate) use teleporters::arrival_sound;
+pub(crate) use teleporters::{arrival_sound, observed_arrival_sounds};

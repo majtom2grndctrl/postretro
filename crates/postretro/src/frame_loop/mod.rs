@@ -738,16 +738,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 let predicted_teleport = prediction_tick
                     .as_ref()
                     .and_then(|tick| tick.movement_events.teleport);
-                if let Some(event) = predicted_teleport {
-                    app.camera.yaw += event.yaw_delta;
-                    app.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
-                    if let Some(request) = sound_events::arrival_sound(
+                if let Some(event) = predicted_teleport.as_ref() {
+                    crate::runtime_teleporters::apply_predicted_teleport(
+                        &mut app.camera,
+                        &mut app.mover_yaw_carry_ground,
+                        &mut app.pending_teleport_sounds,
                         &app.collision_world.teleporters,
-                        event.teleporter,
-                        event.arrival,
-                    ) {
-                        app.pending_teleport_sounds.push(request);
-                    }
+                        event,
+                    );
                 }
                 if let Some(prediction_tick) = prediction_tick {
                     // Predicted movement sounds from the local pawn, swim
@@ -1136,18 +1134,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             pending_trigger_residuals.extend(tick_events.trigger_residuals);
             pending_teleport_residuals.extend(tick_events.teleport_residuals);
 
-            let local_pawn = script_ctx.registry.borrow().local_player_movement_pawn();
-            for (pawn, event) in &tick_events.teleports {
-                if Some(*pawn) == local_pawn {
-                    if let Some(request) = sound_events::arrival_sound(
-                        &app.collision_world.teleporters,
-                        event.teleporter,
-                        event.arrival,
-                    ) {
-                        app.pending_teleport_sounds.push(request);
-                    }
-                }
-            }
+            crate::runtime_teleporters::push_local_traveller_cues(
+                &mut app.pending_teleport_sounds,
+                &app.collision_world.teleporters,
+                script_ctx.registry.borrow().local_player_movement_pawn(),
+                &tick_events.teleports,
+            );
             let local_arrived = teleport_before.is_some_and(|before| {
                 crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow())
                     .is_some_and(|after| before != after)
@@ -1173,6 +1165,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             app.host_register_descriptor_entities_after_fixed_sim_tick();
         }
     }
+    // Host-seat observer cues for client pawns, once after the authoritative ticks.
+    crate::runtime_teleporters::host_observed_arrival_cues(
+        app.session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut()),
+        &app.collision_world.teleporters,
+        &mut app.pending_teleport_sounds,
+    );
 
     // Fixed ticks run this frame. A UI-captured frame still ticks
     // (on a neutral snapshot), so this is the accumulator's count.

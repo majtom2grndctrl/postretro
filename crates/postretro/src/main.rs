@@ -4395,6 +4395,11 @@ impl App {
                     &registry,
                     &apply_outcome.local_teleport_adoptions,
                 );
+                sound_events::observed_arrival_sounds(
+                    &self.collision_world.teleporters,
+                    &apply_outcome.observed_teleports,
+                    &mut self.pending_teleport_sounds,
+                );
                 // This owner projection can arrive on a zero-tick frame. Death
                 // clears charge feedback/input immediately, without changing
                 // the local health simulation or previously produced flights.

@@ -20,3 +20,18 @@ pub(crate) fn arrival_sound(
         anchor: Some(SoundAnchor::Point(arrival.to_array())),
     })
 }
+
+/// One cue per accepted remote generation change, at the sample's fixed arrival
+/// point. Netcode already coalesced each pawn's changes to its last sample and
+/// kept first samples silent; an entity anchor would resolve the delayed pose.
+pub(crate) fn observed_arrival_sounds(
+    teleporters: &postretro_physics::teleporters::Teleporters,
+    observed: &[postretro_netcode::ObservedTeleport],
+    sounds: &mut Vec<SoundRequest>,
+) {
+    sounds.extend(
+        observed
+            .iter()
+            .filter_map(|cue| arrival_sound(teleporters, cue.last_teleporter, cue.arrival)),
+    );
+}

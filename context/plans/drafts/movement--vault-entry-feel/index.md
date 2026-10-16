@@ -110,7 +110,7 @@ camelCase on script sides, snake_case in Rust. No FGD, no PRL, not on the wire. 
 | entry record | local movement-event output beside the vault entry edge; not a component field, not on the wire | none | none |
 
 ## Open questions
-
+- Execution: switch to resumable with two phases? Recommend yes. Phase 1 (the `motion` vocabulary, the entry record, the `defineEntity` lowering and the vault kick fields) has no dependency on `movement--state-view-pose` and can build now; phase 2 (pose angle expressions, overlap) waits for it. The kick carries most of the hard-catch feel, and the vocabulary is a modder foundation whose first consumers ship with it (`research.md` §Product fit). — owner: project lead — **blocks build**
 - Rebase the pose fields, the overlap rule and the pins written against the shipped progress-based block (P12, P22, P24) onto `pose.vault` once `movement--state-view-pose` lands — **blocks build**
 - Where evaluation records and bound programs live, how a record is tied to its vault for the exit kick and the release, and whether the vault kick row gets its own type or non-vault rows reject IR at parse — **delegated**
 - `check_ir` node and depth bounds for view-feel programs — **delegated**

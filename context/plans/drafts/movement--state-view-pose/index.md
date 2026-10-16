@@ -117,4 +117,5 @@ camelCase on script sides, snake_case in Rust. TypeScript and Luau both ship. No
 | driver sprint bit | `ViewFeelDriver` sprint-intent field; not in the tuning payload | none | none |
 
 ## Open questions
+- Ledge focus reference: aim-referenced (Decisions) or entry-aim? Recommend entry-aim: the offset is measured from aim at vault entry, so mouse pitch stays 1:1 for the whole climb, as every other view-feel term does. Aim-referenced at `strength` 0.7 cuts mouse pitch to 30% for the climb, the moment a player in a combat arena turns to the next target. Cost: a player who looks further down mid-climb gets the pull on top, bounded by `maxPitch` and the ±89° clamp (`research.md` §Product fit). — owner: project lead — **blocks build**
 - Horizontal-distance floor value for the focus angle, which presented mover pose to read, and the run speed epsilon (tests pin stationary exclusion and ordinary run activation, not its value) — **delegated**

@@ -40,6 +40,19 @@ presented = max(w_r, w_n) · (w_r·v_r + w_n·v_n) / (w_r + w_n), and 0 when bot
 
 With equal literals and no focus, this equals the shipped max(w_r, w_n) · v. A rewind past 5% (or two vaults with no `Normal` frame between them, which present only as a progress drop) is the most frequent overlap. The formula differs from shipped only when the value sets differ, which `ledgeFocus` makes routine (two ledges, two lines) and `movement--vault-entry-feel` makes routine again (two entries, two evaluations). Without the blend, a re-vault at a different ledge steps by roughly w_r · |v_r − v_n| on its first frame.
 
+## Product fit
+
+PostRetro is a Doom/Quake-lineage shooter in which movement is a combat tool (`movement.md` §5): high speed, auto-mantle, and Ultrakill and Neon White as the ceiling where movement is the game. Mouse authority is part of that lineage. Reduce motion is an accessibility commitment (`E23--accessibility`), and the descriptor surface is a modder contract.
+
+| Recommendation | After reflection | Why |
+|---|---|---|
+| Vault row keeps progress timing | Stronger | The pose is gone the tick the feet land, so the player acts at once; rates would leave the camera easing while the player is already fighting |
+| Ledge focus aim-referenced | **Flips to entry-aim** | Every other view-feel term is additive and leaves mouse gain at 1:1. A gain change during a climb is the one term that fights the mouse, at the moment a combat-movement game asks for it most. Entry-aim keeps the focus and keeps 1:1 |
+| Fold `viewFeel.slide` now | Stronger | Pre-stable is the cheap time to rename a modder surface; after mods ship against two blocks, the fold is a breaking migration |
+| No fire coupling | Stronger | Firing through movement is the Ultrakill ceiling; aim stays honest, and a pose that changed with weapon tuning would couple two author surfaces |
+| Strict `pose` parsing | Stronger | A typo that silently poses nothing costs a modder the most time |
+| Run FOV stays with `movement--sustained-fov-feel` | Unchanged | `pose` is state-keyed; an input-derived tier is a different shape, and the flexibility band warns against widening a primitive past its vocabulary |
+
 ## Paths
 
 | | 1 Per-state literal pose | 2 Vault look-at block | 3 Impulse hold | 4 Pose rows + state terms (chosen) |

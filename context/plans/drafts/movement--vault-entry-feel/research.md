@@ -2,6 +2,21 @@
 
 Read at 41f21c8a.
 
+## Product fit
+
+PostRetro is a Doom/Quake-lineage shooter in which movement is a combat tool, with Ultrakill and Neon White as the ceiling (`movement.md` §5). Its movement surface is a closed, composable vocabulary for modders (`movement.md` §3), and reduce motion is an accessibility commitment (`E23--accessibility`).
+
+| Recommendation | After reflection | Why |
+|---|---|---|
+| Expression fields over a scale sidecar | Stronger | Same mechanism as dash, engine-owned evaluator, closed vocabulary: FPS-flexible without framework creep |
+| One `motion` vocabulary | Stronger | The ceiling games chain moves; one name with one meaning across dash, vault and later slide and wall-run is what lets authors compose them |
+| Catch speed, not hang time | Stronger | The camera should answer how hard the pawn hit the ledge; an apex catch that hangs long and arrives slowly is common with double jumps and launch pads |
+| Not a live store slot | Unchanged | Closed scopes and no store reads keep movement-adjacent evaluation cheap and side-effect free |
+| Silent clamp, as dash | Unchanged, weakly | A modder pushing values high sees exaggeration, not an error, which matches the owner's wide-range intent; a dev-only clamp notice is a later option |
+| Vault fields only | Unchanged | Slide and dash kicks are the next consumers; each pins its own evaluation moment |
+| Pose brief first, this one after | **Flips to phased** | The kick half has no pose dependency and carries most of the hard-catch feel. Holding the vocabulary behind an unrelated brief delays the foundation and its first consumers for no design gain |
+| Reduced motion multiplies the evaluated output | Stronger | Entry-scaled intensity raises peak motion for hard catches; the comfort floor must stay a single multiplier over all of it |
+
 ## Shape rivals
 
 | Shape | For | Against |

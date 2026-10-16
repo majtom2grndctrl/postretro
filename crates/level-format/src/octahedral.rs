@@ -613,8 +613,9 @@ mod tests {
     fn irradiance_tile_border_copies_across_octahedral_wrap() {
         let border = DEFAULT_IRRADIANCE_TILE_BORDER;
 
-        // Literal pins at the SH atlas tile (n = 6, interior 4), so the stored
-        // atlas bytes cannot move under a refactor of the general rule below.
+        // Literal pins at the SH atlas tile (n = 6, interior 4). They record
+        // the current border convention, so its bytes cannot move under a
+        // refactor.
         let n = DEFAULT_IRRADIANCE_TILE_DIMENSION;
         assert_eq!(irradiance_tile_source_texel(1, 1, n, border), [0, 0]);
         assert_eq!(irradiance_tile_source_texel(4, 4, n, border), [3, 3]);

@@ -41,7 +41,7 @@ pub const REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1: u32 = 0;
 /// weights sum to 1 by construction; the final divide only removes rounding
 /// and a non-unit input's length. Exponent 2 is the trig-free choice: each
 /// term is C¹ across its axis plane, so the blended ratio has no crease at a
-/// lobe edge (P7), and a lobe still holds half its weight 45° off its axis.
+/// lobe edge, and a lobe still holds half its weight 45° off its axis.
 /// Straight down gives each horizontal lobe ¼, the limit of every nearby
 /// direction. A zero or non-finite direction falls back to the up lobe, so
 /// the result is never NaN.
@@ -240,11 +240,28 @@ impl ReflectionProbesSection {
         out
     }
 
-    /// Decode untrusted section bytes: another version, a malformed header, a
-    /// binding past the probe count, a face bound twice, a tile or distance
-    /// payload of the wrong length, or a negative or non-finite distance is
-    /// refused. Every count is bounded by the bytes left
-    /// before anything is allocated.
+    /// Decode untrusted section bytes. Refused, each with a message prefixed
+    /// `reflection probes:`:
+    /// - another version;
+    /// - a header off the engine's contract: a tile dimension that is not a
+    ///   multiple of 4 in 4..=`MAX_TILE_DIMENSION`, a border other than 1, an
+    ///   unknown atlas or distance format, or another K or lobe count;
+    /// - a probe count of 0, or over the layer cap;
+    /// - a probe whose layer is past the probe count or reused, whose box min
+    ///   exceeds its max, or whose capture point lies outside its box;
+    /// - a non-finite box, capture point, reference or share, a negative
+    ///   reference, or a share outside 0..=1;
+    /// - an unused share entry carrying values, or two used entries in one
+    ///   probe naming the same roster index (the light's change would count
+    ///   twice in the ratio);
+    /// - a binding past the probe count, out of (volume, face) order, or
+    ///   binding a face twice;
+    /// - a tile or distance payload of the wrong length, or trailing bytes;
+    /// - a negative or non-finite distance texel. −0.0 is refused too, by
+    ///   choice: the compiler never writes it, and refusing it keeps one bit
+    ///   pattern for "no surface".
+    ///
+    /// Every count is bounded by the bytes left before anything is allocated.
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut r = Reader { data, offset: 0 };
         let version = r.u16("version")?;
@@ -259,7 +276,10 @@ impl ReflectionProbesSection {
         let distance_format = r.u32("distance format")?;
         let lights_per_probe = r.u32("lights per probe")? as usize;
         let lobe_count = r.u32("lobe count")? as usize;
-        if tile_dimension < 4 || tile_dimension % 4 != 0 || tile_dimension > MAX_TILE_DIMENSION {
+        if tile_dimension < 4
+            || !tile_dimension.is_multiple_of(4)
+            || tile_dimension > MAX_TILE_DIMENSION
+        {
             return invalid(format!(
                 "tile dimension {tile_dimension} must be a multiple of 4 in 4..={MAX_TILE_DIMENSION}"
             ));
@@ -426,6 +446,21 @@ fn read_probe(r: &mut Reader<'_>, p: usize) -> crate::Result<ReflectionProbeReco
         }
         if !light.is_used() && *light != ReflectionProbeLightShare::UNUSED {
             return invalid(format!("{what} is unused but carries values"));
+        }
+    }
+    for (k, light) in lights
+        .iter()
+        .enumerate()
+        .filter(|(_, light)| light.is_used())
+    {
+        if let Some(first) = lights[..k]
+            .iter()
+            .position(|earlier| earlier.roster_index == light.roster_index)
+        {
+            return invalid(format!(
+                "{what} lights {first} and {k} both name animated light {}",
+                light.roster_index
+            ));
         }
     }
     Ok(ReflectionProbeRecord {

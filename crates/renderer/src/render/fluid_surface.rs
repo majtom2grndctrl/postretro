@@ -29,10 +29,12 @@ pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneI
 
 use super::*;
 
-/// Pipeline group of the per-volume parameter window.
+/// Pipeline group of the per-volume parameter window and the reflection probe
+/// resources (probe array, share table, distance array).
 pub(crate) const FLUID_PARAMS_GROUP: u32 = 4;
 /// Groups the pipeline layout composes, in order: 0 camera, 1 world material,
-/// 2 lighting, 3 SH volume, 4 per-volume parameters, 5 scene inputs.
+/// 2 lighting, 3 SH volume, 4 per-volume parameters and reflection probes,
+/// 5 scene inputs.
 #[cfg(any(test, debug_assertions))]
 pub(crate) const FLUID_BIND_GROUP_COUNT: usize = 6;
 
@@ -111,7 +113,9 @@ pub(crate) fn fluid_pipeline_stage_count(count: fn(&[wgpu::BindGroupLayoutEntry]
 }
 
 /// Straight alpha over the scene. The fragment's alpha is the composite's
-/// coverage, surface over fog, so murk alone still hides the scene.
+/// coverage: the surface over fog, plus the probe reflection's union coverage
+/// F + (1 - F)·a from `fluid_reflection_composite`. Murk alone still hides the
+/// scene.
 pub(crate) fn fluid_blend_state() -> wgpu::BlendState {
     wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -230,9 +234,8 @@ pub(crate) struct FluidSurfacePass {
 
 impl FluidSurfacePass {
     /// Build both shader-variant pipelines over the renderer-owned shared
-    /// layouts: camera
-    /// (group 0), world material (1), lighting (2) and SH volume (3), and
-    /// group 5 over the current scene depth.
+    /// layouts: camera (group 0), world material (1), lighting (2) and SH
+    /// volume (3), and group 5 over the current scene depth.
     pub fn new(
         device: &wgpu::Device,
         depth_format: wgpu::TextureFormat,
@@ -567,9 +570,7 @@ impl FluidSurfacePass {
             }
         }
     }
-}
 
-impl FluidSurfacePass {
     fn pipeline(&self, variant: FluidShaderVariant) -> &wgpu::RenderPipeline {
         &self.pipelines[variant as usize]
     }

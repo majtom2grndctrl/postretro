@@ -14,7 +14,10 @@ use crate::map_data::MapReflectionVolume;
 use crate::partition::BspTree;
 
 use super::box_fit::WorldBounds;
-use super::capture_point::{NEAREST_POINT_INSET_M, PointClassifier, nearest_point_on_polygon};
+use super::capture_point::{
+    CAPTURE_CLEARANCE_M, NEAREST_POINT_INSET_M, PointClassifier, PointFault,
+    nearest_point_on_polygon,
+};
 use super::derived::FIT_MATCH_TOLERANCE_M;
 use super::hit::SceneTracer;
 use super::placement::{
@@ -372,6 +375,43 @@ fn a_valid_probe_beside_a_wall_is_kept() {
     capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
 }
 
+// A derived centroid 5 mm from a wall, closer than the clearance, moves the
+// clearance off it and keeps its probe: a capture ray would otherwise start
+// within reach of the wall, but the probe is valid.
+#[test]
+fn a_derived_centroid_within_the_clearance_of_a_wall_moves_clear_and_is_kept() {
+    let capture = LogCapture::start();
+    // A block hanging 1.5 mm above the water, its west face 0.2 units
+    // (5.08 mm) east of the pool's centroid at x = 128: the water runs under
+    // it, and the point 2 mm up stands level with it.
+    let block = box_brush([128.2, 112.0, 32.059], [160.0, 144.0, 192.0]);
+    let fixture = PlacementFixture::compile(
+        &room_with(&[block]),
+        &[water(&[([64.0, 64.0, 0.0], [192.0, 192.0, 32.0])])],
+    );
+    let faces = fixture.up_faces();
+    let probes = fixture.place().unwrap();
+    assert_eq!(probes.len(), 1, "{probes:?}");
+    let p = point(&probes[0]);
+    // West of the face is higher engine z: moved the clearance west.
+    let centroid = engine([128.0, 128.0, 0.0]) + DVec3::Y * (32.0 * UNIT + CAPTURE_LIFT_M);
+    assert_near(p, centroid + DVec3::Z * CAPTURE_CLEARANCE_M, 1e-5);
+    let face_z = engine([128.2, 0.0, 0.0]).z;
+    assert!(p.z - face_z >= CAPTURE_CLEARANCE_M, "{p}");
+    let all: Vec<&UpFacingFace> = faces.iter().collect();
+    assert!(distance_to_water(p, &all) <= 1e-6, "{p} is over water");
+    let (lo, hi) = probe_box(&probes[0]);
+    assert!(p.cmpge(lo).all() && p.cmple(hi).all(), "{p} in {lo}..{hi}");
+    let classifier = PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
+    assert_eq!(classifier.fault(p), None);
+    assert_eq!(
+        classifier.fault(centroid),
+        Some(PointFault::InSolid),
+        "crowded where it started"
+    );
+    capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
+}
+
 // ---------------------------------------------------------------- authored
 
 // P33: a room box over a main pool and a lower basin, then a smaller box
@@ -512,6 +552,86 @@ fn authored_point_in_a_pillar_drops_and_an_offset_clear_of_it_is_kept() {
         engine([176.0, 128.0, 0.0]) + DVec3::Y * (32.0 * UNIT + CAPTURE_LIFT_M),
         1e-4,
     );
+    capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
+}
+
+// Capture rays ignore hits within the tracer's 1 mm epsilon, so an authored
+// `_capture_offset` that sets the point on a wall, or a fraction of a
+// millimetre beside it, would capture through the wall. A point inside the
+// wall drops as in solid; one beside it, closer than the clearance, moves
+// the clearance off it and is kept; one on the wall plane does one or the
+// other, by the side the BSP gives the plane. Whichever, no kept point
+// starts its capture on the wall.
+#[test]
+fn an_offset_point_in_a_wall_drops_and_one_just_beside_it_moves_clear() {
+    let capture = LogCapture::start();
+    // A block hanging 1.5 mm above the water, over the pool's centroid: the
+    // water runs under it, and the point 2 mm up stands level with it.
+    let block = box_brush([112.0, 112.0, 32.059], [144.0, 144.0, 192.0]);
+    let pool = water(&[([64.0, 64.0, 0.0], [192.0, 192.0, 32.0])]);
+    let world = room_with(&[block]);
+    let fixture_with = |offset: &str| {
+        let properties = format!("\"_capture_offset\" \"{offset}\"");
+        PlacementFixture::compile(
+            &world,
+            &[
+                pool.clone(),
+                reflection_volume(&properties, [48.0, 48.0, 0.0], [216.0, 208.0, 96.0]),
+            ],
+        )
+    };
+    // The block's east face, x = 144, is engine z = −144 units; east of it
+    // is lower z.
+    let face_z = engine([144.0, 0.0, 0.0]).z;
+    let water_y = 32.0 * UNIT + CAPTURE_LIFT_M;
+    let kept_clear = |offset: &str| -> Option<DVec3> {
+        let fixture = fixture_with(offset);
+        let probes = fixture.place().unwrap();
+        let probe = probes.iter().find(|p| p.source_entity == 2)?;
+        let p = point(probe);
+        let clearance = face_z - p.z;
+        assert!(
+            clearance >= CAPTURE_CLEARANCE_M - 1e-6,
+            "{offset}: {p} is {clearance} m off the wall"
+        );
+        let classifier =
+            PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
+        assert_eq!(classifier.fault(p), None, "{offset}: {p}");
+        assert_near(
+            DVec3::new(p.x, p.y, 0.0),
+            DVec3::new(engine([0.0, 128.0, 0.0]).x, water_y, 0.0),
+            1e-5,
+        );
+        Some(p)
+    };
+
+    // 0.5 mm inside the block.
+    capture.clear();
+    assert_eq!(kept_clear("15.98 0"), None);
+    capture.assert_logged_once(Level::Warn, "entity 2 'reflection_volume' capture point");
+    capture.assert_logged(Level::Warn, "is in solid; dropped");
+
+    // On the face: dropped as in solid, or kept clear of it.
+    capture.clear();
+    if kept_clear("16 0").is_none() {
+        capture.assert_logged(Level::Warn, "is in solid; dropped");
+    } else {
+        capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
+    }
+
+    // 0.5 mm east of the face: moved the clearance east, so 10.5 mm off it.
+    capture.clear();
+    let p = kept_clear("16.02 0").expect("a point beside the wall is kept");
+    assert!(
+        (face_z - p.z - (0.02 * UNIT + CAPTURE_CLEARANCE_M)).abs() < 1e-5,
+        "{p}"
+    );
+    capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
+
+    // 1.27 cm clear: kept where the offset puts it.
+    capture.clear();
+    let p = kept_clear("16.5 0").expect("a point clear of the wall is kept");
+    assert!((p.z - engine([144.5, 0.0, 0.0]).z).abs() < 1e-5, "{p}");
     capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
 }
 
@@ -674,6 +794,69 @@ fn a_pool_spanning_two_authored_boxes_binds_each_face_to_its_own() {
     assert_eq!(probes[1].faces, vec![(east.volume, east.face)]);
 }
 
+// P14 in map units: two 128 × 128 × 96 u boxes 32 u apart both hold the
+// pool's centroids. Map units × 0.0254 in f32 give their volumes different
+// roundings, yet they tie, so the earlier box in map entity order binds,
+// whichever box that is.
+#[test]
+fn map_unit_boxes_of_one_size_tie_to_the_earlier_entity_in_either_order() {
+    let capture = LogCapture::start();
+    let pool = water(&[([104.0, 80.0, 0.0], [184.0, 176.0, 32.0])]);
+    let west = ([64.0, 64.0, 0.0], [192.0, 192.0, 96.0]);
+    let east = ([96.0, 64.0, 0.0], [224.0, 192.0, 96.0]);
+    let west_box = reflection_volume("", west.0, west.1);
+    let east_box = reflection_volume("", east.0, east.1);
+    for (entities, first) in [
+        ([pool.clone(), west_box.clone(), east_box.clone()], west),
+        ([pool, east_box, west_box], east),
+    ] {
+        capture.clear();
+        let fixture = PlacementFixture::compile(&room(), &entities);
+        let probes = fixture.place().unwrap();
+        assert_eq!(probes.len(), 1, "{probes:?}");
+        assert_eq!(probes[0].source_entity, 2, "the earlier box binds");
+        assert_eq!(probes[0].faces.len(), fixture.up_faces().len());
+        let (lo, hi) = probe_box(&probes[0]);
+        let (expected_lo, expected_hi) = engine_box(first.0, first.1);
+        assert_near(lo, expected_lo, 1e-4);
+        assert_near(hi, expected_hi, 1e-4);
+        capture.assert_logged_once(
+            Level::Warn,
+            "entity 3 'reflection_volume' binds no up-facing fluid face; dropped",
+        );
+    }
+}
+
+// P21 in map units: two 128 × 128 u pools 192 u apart under a cap of one.
+// Their bound areas round differently in f32, yet they tie, so the earlier
+// fluid entity keeps its probe, whichever pool that is.
+#[test]
+fn map_unit_pools_of_one_area_tie_at_the_cap_to_the_earlier_entity_in_either_order() {
+    let capture = LogCapture::start();
+    let west = water(&[([64.0, 64.0, 0.0], [192.0, 192.0, 32.0])]);
+    let east = water(&[([256.0, 64.0, 0.0], [384.0, 192.0, 32.0])]);
+    for (entities, first) in [
+        ([west.clone(), east.clone()], [128.0, 128.0, 32.0]),
+        ([east, west], [320.0, 128.0, 32.0]),
+    ] {
+        capture.clear();
+        let fixture = PlacementFixture::compile(&room(), &entities);
+        let faces = fixture.up_faces();
+        let probes = fixture.place_with_cap(1).unwrap();
+        assert_eq!(probes.len(), 1, "{probes:?}");
+        assert_eq!(probes[0].source_entity, 1, "the earlier fluid entity stays");
+        let kept = face_near(&faces, first);
+        assert!(
+            probes[0].faces.contains(&(kept.volume, kept.face)),
+            "{probes:?}"
+        );
+        capture.assert_logged_once(
+            Level::Warn,
+            "1 derived probe(s) past the 1-probe cap dropped",
+        );
+    }
+}
+
 // ---------------------------------------------------------------- synthetic
 
 /// Placement over a synthetic room with no BSP: no point is in solid or
@@ -760,6 +943,46 @@ fn side_bottom_and_sloped_fluid_faces_bind_no_probe() {
     assert_eq!(probes.len(), 1);
     assert_eq!(probes[0].source_entity, 9);
     assert_eq!(probes[0].faces, vec![(0, 0)]);
+}
+
+// P29 with P32: a centroid off its water moves to the nearest water, which
+// can lie past the box's wall; the point is clamped into the box before the
+// offset applies, so an offset of "0 0" never fails the build, and an offset
+// that carries the clamped point out still does.
+#[test]
+fn a_zero_capture_offset_holds_when_the_nearest_point_move_leaves_the_box() {
+    // A U open toward +z: its area centroid (0, −0.625) lies in the notch,
+    // and the nearest water, the inner edge of its base at z = −2, lies
+    // south of the box's wall at z = −1.5.
+    let u = vec![
+        [-3.0, 0.5, -3.0],
+        [-3.0, 0.5, 3.0],
+        [-2.0, 0.5, 3.0],
+        [-2.0, 0.5, -2.0],
+        [2.0, 0.5, -2.0],
+        [2.0, 0.5, 3.0],
+        [3.0, 0.5, 3.0],
+        [3.0, 0.5, -3.0],
+    ];
+    let section = volumes(vec![fluid_volume(1, &[u])]);
+    let mut volume = authored_box(4, [-4.0, 0.0, -1.5], [4.0, 3.0, 3.5]);
+    volume.capture_offset = Some([0.0, 0.0]);
+    let probes = place_synthetic(&section, std::slice::from_ref(&volume), 256).unwrap();
+    assert_eq!(probes.len(), 1, "{probes:?}");
+    assert_eq!(probes[0].source_entity, 4);
+    assert_near(
+        point(&probes[0]),
+        DVec3::new(0.0, 0.5 + CAPTURE_LIFT_M, -1.5),
+        1e-6,
+    );
+
+    volume.capture_offset = Some([0.0, -0.1]);
+    let error = place_synthetic(&section, &[volume], 256).expect_err("the offset leaves the box");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("entity 4 'reflection_volume' `_capture_offset` moves its capture point"),
+        "{message}"
+    );
 }
 
 // P14: equal-volume boxes that both hold a centroid, overlapping or sharing

@@ -226,9 +226,8 @@ fn every_reflection_style_round_trips_its_authored_name() {
 
 // --- Acceptance row 29: the Scripting surface example ---------------------
 
-/// The brief's TS example, verbatim.
+/// TS manifest declaring a reflection style and a surface reflectivity.
 const SURFACE_EXAMPLE_TS: &str = r#"
-// Proposed design
 export default defineMod({
   name: "neon-sump",
   id: "example.neon-sump",

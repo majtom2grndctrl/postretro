@@ -142,9 +142,10 @@ impl EntryPath {
 /// Diagnostics name the field as `fluids[index].<field>`; `index` counts
 /// entries from 0 in both runtimes. A hole (`null`, `undefined` or `nil`) is a
 /// malformed entry like any other non-object. An omitted `surfaceReflectivity`,
-/// `waveAmplitude` and `waveLength` resolve to their defaults here, so validation judges the
-/// resolved values; an omitted `fogColor` stays `None` and resolves against
-/// `viewTint` where it is read (`FluidDescriptor::resolved_fog_color`).
+/// `waveAmplitude` and `waveLength` resolve to their defaults here, so
+/// validation judges the resolved values; an omitted `fogColor` stays `None`
+/// and resolves against `viewTint` where it is read
+/// (`FluidDescriptor::resolved_fog_color`).
 fn fluid_from_json(
     index: usize,
     entry: serde_json::Value,

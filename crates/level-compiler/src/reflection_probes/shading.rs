@@ -9,7 +9,7 @@ use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
 use super::materials::SurfaceMaterials;
 use super::sdf_lights::SdfLights;
-use super::sh_sample::ShVolumeSampler;
+use super::sh_sample::{ShVolumeSampler, SlotRead};
 
 /// The renderer's production SH indirect weight, `DEFAULT_INDIRECT_SCALE`
 /// (`renderer_types.rs`), which the forward and fluid passes multiply into SH
@@ -69,7 +69,8 @@ impl AnimatedTerms {
 pub(crate) struct ShadeScratch {
     /// The animated terms of the last [`CaptureScene::radiance`] call.
     pub animated: AnimatedTerms,
-    slots: Vec<(u32, f32)>,
+    slots: Vec<SlotRead>,
+    slot_deltas: Vec<(u32, Vec3)>,
 }
 
 impl CaptureScene<'_> {
@@ -123,7 +124,7 @@ impl CaptureScene<'_> {
                 });
         }
         let slots = self.deltas.as_ref().map(|_| &mut scratch.slots);
-        let indirect = self
+        let mut indirect = self
             .sh
             .indirect_and_slots(surface.position, surface.normal, slots);
         if let Some(animated) = &self.animated_direct {
@@ -136,10 +137,13 @@ impl CaptureScene<'_> {
             );
         }
         if let Some(deltas) = &self.deltas {
-            deltas.accumulate(
+            // The runtime clamps each SH slot after composing the deltas into
+            // it, so the base indirect comes back clamped at the reference.
+            indirect = deltas.accumulate(
                 &scratch.slots,
                 &self.sh.tile_taps(surface.normal),
                 material.albedo * PRODUCTION_INDIRECT_WEIGHT,
+                &mut scratch.slot_deltas,
                 &mut scratch.animated,
             );
         }

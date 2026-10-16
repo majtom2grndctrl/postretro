@@ -141,7 +141,7 @@ fn pool_fragment(camera: Vec3, world_position: Vec3) -> FluidReflectionFragment 
 // The table is laid out at the cap: header, then probes at a 240-byte stride
 // (box min, box max, capture point with its layer, then K 48-byte entries of
 // RGB reference, roster index and unorm10×3 shares). Unused entries pack as
-// the reserved roster index with zero values, so task 6 adds only reads.
+// the reserved roster index with zero values.
 #[test]
 fn probe_table_packs_every_probe_at_its_stride_and_zeros_the_rest() {
     let mut lit = room_probe([1.0, 0.002, -0.5], 1);
@@ -265,6 +265,79 @@ fn probe_indices_cover_each_bound_faces_vertices_and_nothing_else() {
     );
     assert!(volume_has_bound_face(Some(&later), 2));
     assert!(!volume_has_bound_face(Some(&later), 0));
+}
+
+// A section whose payloads or tile format disagree with its header is
+// unusable whole: no table, no probe index and no bound face, so the draw
+// predicate agrees with the renderer's install, which builds on this answer.
+#[test]
+fn a_section_with_a_bad_payload_or_tile_format_is_unusable() {
+    let volumes = vec![fluid(vec![level_top(0.0, 0.0, 1.0)])];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let good = section(
+        vec![room_probe([0.0, 0.002, 0.0], 0)],
+        vec![binding(0, 0, 0)],
+    );
+    assert!(usable_probe_section(Some(&good)).is_some());
+    assert!(volume_has_bound_face(Some(&good), 0));
+    let dimension = good.tile_dimension as usize;
+    let uncompressed = ReflectionProbesSection {
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        tiles: vec![0; dimension * dimension * 8],
+        ..good.clone()
+    };
+    assert!(usable_probe_section(Some(&uncompressed)).is_some());
+
+    let mut short_tiles = good.clone();
+    short_tiles.tiles.pop();
+    let mut long_distances = good.clone();
+    long_distances.distances.extend([0, 0]);
+    let malformed = [
+        ("colour payload a byte short", short_tiles),
+        ("distance payload a texel long", long_distances),
+        (
+            "unknown colour format",
+            ReflectionProbesSection {
+                atlas_format: 0xBAD,
+                ..good.clone()
+            },
+        ),
+        (
+            "unknown distance format",
+            ReflectionProbesSection {
+                distance_format: 0xBAD,
+                ..good.clone()
+            },
+        ),
+        (
+            "BC6H tile of partial 4×4 blocks",
+            ReflectionProbesSection {
+                tile_dimension: 6,
+                tiles: vec![0; 16],
+                distances:
+                    postretro_level_format::reflection_probes::reflection_probe_zero_distances(1, 6),
+                ..good
+            },
+        ),
+    ];
+    for (what, section) in &malformed {
+        assert!(usable_probe_section(Some(section)).is_none(), "{what}");
+        assert!(!volume_has_bound_face(Some(section), 0), "{what}");
+        assert!(
+            pack_probe_table(Some(section))
+                .iter()
+                .all(|&byte| byte == 0),
+            "{what}"
+        );
+        let mut indices = vec![7; mesh.vertices.len()];
+        fill_probe_indices(&volumes, &mesh.face_drift_maps, Some(section), &mut indices);
+        assert!(
+            indices
+                .iter()
+                .all(|&index| index == FLUID_REFLECTION_NO_PROBE),
+            "{what}"
+        );
+    }
 }
 
 // --- Acceptance row 17: box projection --------------------------------------
@@ -517,6 +590,41 @@ fn a_face_seen_from_below_reflects_nothing_and_from_above_reflects() {
     assert_eq!(
         reflection_fragment(surface, &unbound, &probes, TILE, NO_LIGHTS, red, no_surface),
         surface
+    );
+}
+
+// From above, an eye inside the fog's band of the plane scales the term by
+// its height through the band (the fog's own proximity): 0 at the plane,
+// full one band up and higher. From below the gate already gives 0. Over a
+// zero-alpha surface the output coverage is the term's weight alone.
+#[test]
+fn an_eye_inside_the_fog_band_scales_the_reflection_by_its_height() {
+    use crate::fluid_surface::fog::FLUID_FOG_BAND;
+    let world_position = Vec3::new(0.0, 0.0, 1.0);
+    let probes = [room_probe([0.0, 0.002, 0.0], 0)];
+    let clear = Vec4::new(0.2, 0.3, 0.4, 0.0);
+    let red = |_: u32, _: Vec2| Vec3::new(4.0, 0.0, 0.0);
+    let eye = |height: f32| Vec3::new(0.0, height, -2.0);
+    let coverage = |height: f32| {
+        let fragment = pool_fragment(eye(height), world_position);
+        reflection_fragment(clear, &fragment, &probes, TILE, NO_LIGHTS, red, no_surface).w
+    };
+    for bands in [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 25.0] {
+        let height = bands * FLUID_FOG_BAND;
+        let view = (eye(height) - world_position).normalize();
+        let expected = reflection_fresnel(view.dot(Vec3::Y), 1.0) * bands.min(1.0);
+        assert_close(
+            coverage(height),
+            expected,
+            1.0e-6,
+            &format!("eye {bands} bands up"),
+        );
+    }
+    assert_eq!(coverage(0.0), 0.0, "at the plane");
+    assert_eq!(coverage(-0.5 * FLUID_FOG_BAND), 0.0, "from below");
+    assert!(
+        coverage(0.5 * FLUID_FOG_BAND) > 0.4,
+        "half the band up reflects half the grazing term"
     );
 }
 

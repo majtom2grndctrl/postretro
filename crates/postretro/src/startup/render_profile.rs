@@ -1,5 +1,5 @@
 // App-boundary mappings from player/mod options to renderer-owned settings.
-// See: context/lib/rendering_pipeline.md §7.8
+// See: context/lib/rendering_pipeline.md §7.3a, §7.8
 
 use postretro_scripting_core::runtime::{ModBloomResolution, ModReflectionStyle, ModRenderProfile};
 

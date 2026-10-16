@@ -55,10 +55,46 @@ fn one_animated_light_adds_its_reference_times_its_unit_contribution() {
     room.extras.sh.animation_descriptors[0].start_active = 0;
     assert_eq!(bake(&room, &pool()).unwrap().to_bytes(), section.to_bytes());
 
-    // The light's share entry carries that reference.
+    // The light's share entry carries that reference, once the light also
+    // reaches the upper hemisphere the water reads: the floor sits below it.
+    uniform_weight_maps(&mut room, &[(FLOOR, &[(0, 0.5)]), (CEILING, &[(0, 0.25)])]);
+    let section = bake(&room, &pool()).unwrap();
     let entry = &section.probes[0].lights[0];
     assert_eq!(entry.roster_index, 0);
     assert_eq!(Vec3::from(entry.reference), m);
+}
+
+// Row 14: a light that reaches only directions below the horizon (the floor
+// under the pool) still shows in the tile's lower hemisphere, but takes no
+// share and no slot: every lookup the water makes is clamped to the horizon.
+#[test]
+fn a_light_reaching_only_below_the_horizon_takes_no_share_and_no_slot() {
+    let mut room = lit_floor_room([255, 255, 255, 255]);
+    room.extras.sh.animation_descriptors = vec![
+        descriptor([1.0; 3], Vec::new()),
+        descriptor([1.0; 3], Vec::new()),
+    ];
+    // Light 0 lights only the floor, below the capture point; light 1 the
+    // ceiling, above it.
+    uniform_weight_maps(&mut room, &[(FLOOR, &[(0, 0.8)]), (CEILING, &[(1, 0.2)])]);
+    let section = bake(&room, &pool()).unwrap();
+    // The tile still traces the floor: static 1 plus light 0's 0.8.
+    let down = tile_texel(&section, 0, Vec3::NEG_Y);
+    assert!(close(down, Vec3::splat(1.8), 0.03), "{down}");
+    let lights = &section.probes[0].lights;
+    let stored: Vec<u32> = lights
+        .iter()
+        .filter(|l| l.is_used())
+        .map(|l| l.roster_index)
+        .collect();
+    assert_eq!(stored, [1], "{lights:?}");
+    // Above the horizon light 1 is all the light every lobe captured; the
+    // lit floor would otherwise fill a quarter of each horizontal lobe.
+    for lobe in &lights[0].shares {
+        for share in lobe {
+            assert!((share - 1.0).abs() < 1e-4, "{lights:?}");
+        }
+    }
 }
 
 // Row 12: bounce enters at the production indirect weight, base and delta
@@ -184,7 +220,8 @@ fn a_hit_reached_by_more_than_four_sdf_lights_carries_the_four_the_selection_pic
 }
 
 /// `∫ lobe(d) × tile(d) dΩ` per lobe and channel over a decoded tile's
-/// interior, by texel centre.
+/// interior upper hemisphere, the directions the water reads, by texel
+/// centre.
 fn lobe_integrals(
     section: &ReflectionProbesSection,
     layer: usize,
@@ -198,8 +235,12 @@ fn lobe_integrals(
                 (x as f32 + 0.5) / TILE_INTERIOR as f32,
                 (y as f32 + 0.5) / TILE_INTERIOR as f32,
             );
+            let direction = octahedral_direction(u, v);
+            if direction.y < 0.0 {
+                continue;
+            }
             let omega = sample_solid_angle(u, v, TILE_INTERIOR, 1);
-            let lobes = reflection_probe_lobe_weights(octahedral_direction(u, v).to_array());
+            let lobes = reflection_probe_lobe_weights(direction.to_array());
             let at = (((y + 1) * dimension + x + 1) * 4) as usize;
             for (lobe, w) in lobes.iter().enumerate() {
                 for c in 0..3 {
@@ -217,14 +258,20 @@ fn shares_room() -> super::tests::LitFloorRoom {
         descriptor([1.0, 0.6, 0.2], strobe()),
         descriptor([0.2, 0.4, 1.0], vec![0.8]),
     ];
-    // Light 0 on the floor beside its static light; light 1 on the ceiling.
-    uniform_weight_maps(&mut room, &[(FLOOR, &[(0, 0.6)]), (CEILING, &[(1, 0.9)])]);
+    // Light 0 on the floor beside its static light and, more weakly, on the
+    // ceiling; light 1 on the ceiling. The floor lies below the horizon, so
+    // only light 0's ceiling term counts toward the shares.
+    uniform_weight_maps(
+        &mut room,
+        &[(FLOOR, &[(0, 0.6)]), (CEILING, &[(0, 0.3), (1, 0.9)])],
+    );
     room
 }
 
 // Row 14: each stored share is the light's fraction of the captured light in
-// its lobe, measured independently from captures with the other lights off,
-// and each entry's reference is the light's reference state.
+// its lobe over the upper hemisphere, measured independently from captures
+// with the other lights off, and each entry's reference is the light's
+// reference state.
 #[test]
 fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
     let room = shares_room();
@@ -265,8 +312,10 @@ fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
             }
         }
     }
-    // The up lobe is the ceiling light's; the floor light holds most of
-    // every horizontal lobe's red, which the ceiling light barely has.
+    // The up lobe's blue is the ceiling light's. Above the horizon the two
+    // lights' ceiling terms are all the light there is, so their shares sum
+    // to 1 in every lobe and channel: the floor's static light and light 0's
+    // floor term, below it, count nowhere.
     let floor = &full.probes[0]
         .lights
         .iter()
@@ -278,7 +327,15 @@ fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
         .find(|e| e.roster_index == 1)
         .unwrap();
     assert!(ceiling.shares[0][2] > 0.9, "{ceiling:?}");
-    assert!(floor.shares[0][0] < 0.05, "{floor:?}");
+    for lobe in 0..REFLECTION_PROBE_LOBE_COUNT {
+        for c in 0..3 {
+            let sum = floor.shares[lobe][c] + ceiling.shares[lobe][c];
+            assert!(
+                (sum - 1.0).abs() < 1e-3,
+                "lobe {lobe} channel {c}: {floor:?} + {ceiling:?}"
+            );
+        }
+    }
 }
 
 // P6: more animated lights than K; the smallest stays at reference and the
@@ -288,8 +345,9 @@ fn past_k_lights_the_smallest_stays_out_and_the_log_names_the_covered_share() {
     let mut room = lit_floor_room([255, 255, 255, 255]);
     room.extras.sh.animation_descriptors =
         (0..5).map(|_| descriptor([1.0; 3], Vec::new())).collect();
+    // On the ceiling, above the horizon the shares count over.
     let weights: Vec<(u32, f32)> = vec![(0, 0.3), (1, 0.05), (2, 0.4), (3, 0.2), (4, 0.25)];
-    uniform_weight_maps(&mut room, &[(FLOOR, &weights)]);
+    uniform_weight_maps(&mut room, &[(CEILING, &weights)]);
     let logs = LogCapture::start();
     let section = bake(&room, &pool()).unwrap();
     let stored: Vec<u32> = section.probes[0]
@@ -298,7 +356,7 @@ fn past_k_lights_the_smallest_stays_out_and_the_log_names_the_covered_share() {
         .map(|l| l.roster_index)
         .collect();
     assert_eq!(stored, [2, 0, 4, 3]);
-    // Covered: every light lights the same floor, so by weight.
+    // Covered: every light lights the same ceiling, so by weight.
     let covered = (0.3 + 0.4 + 0.2 + 0.25) / 1.2;
     logs.assert_logged_once(
         LogLevel::Info,
@@ -319,13 +377,13 @@ fn a_dark_lobe_stores_zero_shares_and_never_nan() {
     let mut room = lit_floor_room([255, 0, 0, 255]);
     room.lightmap.blocks[0] = uniform_block(8, 8, 0.0);
     room.extras.sh.animation_descriptors = vec![descriptor([1.0, 0.0, 0.0], Vec::new())];
-    uniform_weight_maps(&mut room, &[(FLOOR, &[(0, 1.0)])]);
+    // The red light reaches the water's hemisphere through the ceiling.
+    uniform_weight_maps(&mut room, &[(CEILING, &[(0, 1.0)])]);
     let section = bake(&room, &pool()).unwrap();
     let entry = &section.probes[0].lights[0];
     assert_eq!(entry.roster_index, 0);
-    // The up lobe sees only the unlit ceiling; green and blue see nothing.
-    assert_eq!(entry.shares[0], [0.0; 3]);
-    for lobe in &entry.shares[1..] {
+    // Every lobe's red is the light's; green and blue capture nothing.
+    for lobe in &entry.shares {
         assert!((lobe[0] - 1.0).abs() < 1e-5, "{entry:?}");
         assert_eq!((lobe[1], lobe[2]), (0.0, 0.0));
     }

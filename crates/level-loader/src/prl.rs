@@ -3065,7 +3065,77 @@ mod tests {
             Err(PrlLoadError::SectionValidation { section, message }) => {
                 assert_eq!(section, "ReflectionProbes");
                 assert!(
-                    message.contains("animated light 0 maps to descriptor")
+                    message.contains(
+                        "AnimatedDirectShDeltaVolumes (id 45) maps animated light 0 to descriptor"
+                    ) && message.contains("need the identity roster"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a ReflectionProbes refusal, got {other:?}"),
+        }
+    }
+
+    // Pin P10, the table the shares flow through: the compiler numbers shares
+    // in DeltaShVolumes' (id 27) roster, so an identity id 45 does not save a
+    // level whose id-27 table maps animated light 0 to the reserved
+    // descriptor. Without section 54 the same tables load.
+    #[test]
+    fn load_prl_refuses_reflection_probes_over_a_non_identity_indirect_delta_table() {
+        let base = base_octahedral_section([1, 1, 1]);
+        let affinity_dims = expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR);
+        let mut animated_direct = animated_direct_delta_section_for(affinity_dims);
+        animated_direct.animation_descriptor_indices = vec![0];
+        // The fixture base marks every probe invalid, so the id-27 entry is
+        // zero-length, as id 45's is.
+        let mut delta = delta_section_for(affinity_dims);
+        delta.animation_descriptor_indices = vec![u32::MAX];
+        delta.valid_probe_masks = vec![0; delta.valid_probe_masks.len()];
+        delta.delta_subblocks = Vec::new();
+        let blobs = |probes: bool| {
+            let mut sections = vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                octahedral_sh_volume_blob(base.clone()),
+                delta_sh_volume_blob(delta.clone()),
+                animated_direct_sh_delta_blob(animated_direct.clone()),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                environment_volumes_blob(&reflection_probe_environment()),
+            ];
+            if probes {
+                sections.push(prl_format::SectionBlob {
+                    section_id: SectionId::ReflectionProbes as u32,
+                    version: 1,
+                    data: reflection_probes_section(FIRST_FACE, REFLECTION_PROBE_NO_LIGHT)
+                        .to_bytes(),
+                });
+            }
+            sections
+        };
+
+        let tmp = write_prl_fixture(
+            blobs(false),
+            "postretro_test_probe_indirect_table_absent.prl",
+        );
+        let result = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        let world = result.expect("a level without probes keeps its id-27 table");
+        assert_eq!(world.animated_direct_descriptor_indices(), [0]);
+        assert_eq!(
+            world
+                .delta_sh_volumes()
+                .map(|section| section.animation_descriptor_indices.clone()),
+            Some(vec![u32::MAX])
+        );
+
+        let tmp = write_prl_fixture(blobs(true), "postretro_test_probe_indirect_table.prl");
+        let result = load_prl(tmp.to_str().unwrap());
+        let _ = std::fs::remove_file(&tmp);
+        match result {
+            Err(PrlLoadError::SectionValidation { section, message }) => {
+                assert_eq!(section, "ReflectionProbes");
+                assert!(
+                    message.contains("DeltaShVolumes (id 27) maps animated light 0 to descriptor")
                         && message.contains("need the identity roster"),
                     "{message}"
                 );

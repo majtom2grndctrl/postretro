@@ -25,7 +25,8 @@ type FittedBox = (DVec3, DVec3);
 /// from its own area centroid; a group is a connected component of the
 /// box-match relation among one fluid entity's faces at one plane height, so
 /// face order never changes it. The group stores the union box and captures
-/// from its horizontal area centroid, 2 mm above its plane. A probe whose
+/// from its horizontal area centroid, 2 mm above its plane, moved clear of a
+/// wall within [`super::capture_point::CAPTURE_CLEARANCE_M`]. A probe whose
 /// point is in solid, inside any fluid or outside the hull drops, warned
 /// with its fluid entity; its faces bind nothing.
 pub(crate) fn derive_probes(
@@ -90,23 +91,28 @@ fn group_probe(
         .iter()
         .map(|m| m.geometry.plane_height())
         .fold(f64::INFINITY, f64::min);
-    let capture = capture_point_over(&members, plane);
-    if let Some(fault) = scene.classifier.fault(capture) {
-        log::warn!(
-            "[ReflectionProbes] derived probe of fluid entity {source_entity}: capture point {:?} \
-             is {fault}; dropped, its faces reflect nothing",
-            capture.as_vec3().to_array(),
-        );
-        return None;
-    }
     let box_min = lo.as_vec3();
     let box_max = hi.as_vec3();
     // Each member's centroid lies in its own box, so the group's lies in the
-    // union; a nearest-point move stays on a member's water. The clamp only
-    // absorbs f32 rounding at a box face.
-    let capture_point = capture.as_vec3().clamp(box_min, box_max);
+    // union; a nearest-point move stays on a member's water. The clamp in
+    // `settle` only absorbs f32 rounding at a box face; a point outside the
+    // hull, which a hull-clamped box cannot hold, drops on its own fault
+    // before it.
+    let raw = capture_point_over(&members, plane);
+    let capture_point = match scene.classifier.settle(raw, box_min, box_max, &members) {
+        Ok(point) => point,
+        Err((point, fault)) => {
+            log::warn!(
+                "[ReflectionProbes] derived probe of fluid entity {source_entity}: capture \
+                 point {:?} is {fault}; dropped, its faces reflect nothing",
+                point.to_array(),
+            );
+            return None;
+        }
+    };
     Some(PlacedProbe {
         source_entity,
+        authored: false,
         box_min: box_min.to_array(),
         box_max: box_max.to_array(),
         capture_point: capture_point.to_array(),

@@ -26,7 +26,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_enum("ReflectionStyle")
-        .doc("Look of every fluid reflection layer: the probe reflection today, and the screen-space layer when it lands.")
+        .doc("Look of every fluid reflection layer.")
         .variant("pixel", "One reflection direction per water texel cell, tilted by that cell's shimmer and ripples, so the reflection breaks into the blocks the water's texture moves in. Drift and a declared wave tilt nothing. This is the default.")
         .variant("smooth", "Reflect the flat surface per pixel: a still mirror.")
         .finish();

@@ -1,12 +1,12 @@
 // Authored reflection probes: each box's capture point, its drops, and which up-facing faces it binds.
 // See: context/lib/resource_management.md §5.1
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 
 use crate::map_data::MapReflectionVolume;
 
 use super::capture_point::{PointClassifier, capture_point_over};
-use super::placement::{PLANE_TOLERANCE_M, PlacedProbe, UpFacingFace, plane_heights};
+use super::placement::{PLANE_TOLERANCE_M, PlacedProbe, UpFacingFace, plane_heights, tied};
 
 /// The authored probes kept, in map entity order, and which faces (indexed
 /// as the faces passed in) they claimed.
@@ -36,9 +36,11 @@ impl Candidate<'_> {
 
 /// Capture points first, each fixed from the faces inside its box before any
 /// binding, then the drops, then binding among the kept boxes. A face binds
-/// the smallest kept box holding its area centroid, ties to the earlier box;
-/// a dropped box's faces bind as if it were absent. A kept box that binds
-/// nothing drops too: it claimed nothing, so nothing rebinds.
+/// the smallest kept box holding its area centroid; volumes within
+/// [`super::placement::TIE_RELATIVE_TOLERANCE`] tie, going to the earlier box
+/// in map entity order. A dropped box's faces bind as if it were absent. A
+/// kept box that binds nothing drops too: it claimed nothing, so nothing
+/// rebinds.
 pub(crate) fn place_authored(
     faces: &[UpFacingFace],
     authored: &[MapReflectionVolume],
@@ -62,14 +64,19 @@ pub(crate) fn place_authored(
             warn_binds_no_face(volume);
             continue;
         }
-        candidate.capture = authored_capture_point(&candidate, &inside)?;
-        if let Some(fault) = classifier.fault(candidate.capture) {
-            log::warn!(
-                "[ReflectionProbes] {} capture point {:?} is {fault}; dropped",
-                volume.source_label,
-                candidate.capture.as_vec3().to_array(),
-            );
-            continue;
+        let (raw, water) = authored_capture_point(&candidate, &inside)?;
+        let box_min = Vec3::from(volume.min);
+        let box_max = Vec3::from(volume.max);
+        match classifier.settle(raw, box_min, box_max, &water) {
+            Ok(point) => candidate.capture = point.as_dvec3(),
+            Err((point, fault)) => {
+                log::warn!(
+                    "[ReflectionProbes] {} capture point {:?} is {fault}; dropped",
+                    volume.source_label,
+                    point.to_array(),
+                );
+                continue;
+            }
         }
         kept.push(candidate);
     }
@@ -77,15 +84,17 @@ pub(crate) fn place_authored(
     let mut claimed = vec![false; faces.len()];
     let mut bound: Vec<Vec<usize>> = vec![Vec::new(); kept.len()];
     for (index, face) in faces.iter().enumerate() {
-        let mut best: Option<(f64, usize)> = None;
-        for (slot, candidate) in kept.iter().enumerate() {
-            let size = candidate.volume_m3();
-            // Strict: an equal box later in map entity order loses the tie.
-            if candidate.contains(face.geometry.centroid) && best.is_none_or(|(b, _)| size < b) {
-                best = Some((size, slot));
-            }
-        }
-        if let Some((_, slot)) = best {
+        let centroid = face.geometry.centroid;
+        let smallest = kept
+            .iter()
+            .filter(|candidate| candidate.contains(centroid))
+            .map(|candidate| candidate.volume_m3())
+            .fold(f64::INFINITY, f64::min);
+        // The earliest box tied with the smallest, in map entity order.
+        let slot = kept
+            .iter()
+            .position(|c| c.contains(centroid) && tied(c.volume_m3(), smallest));
+        if let Some(slot) = slot {
             claimed[index] = true;
             bound[slot].push(index);
         }
@@ -109,6 +118,7 @@ pub(crate) fn place_authored(
         }
         probes.push(PlacedProbe {
             source_entity: candidate.volume.source_entity,
+            authored: true,
             box_min: candidate.volume.min,
             box_max: candidate.volume.max,
             capture_point: candidate.capture.as_vec3().to_array(),
@@ -132,13 +142,18 @@ fn warn_binds_no_face(volume: &MapReflectionVolume) {
 }
 
 /// The horizontal area centroid of the inside faces on the lowest plane, 2 mm
-/// above that plane, moved onto their water when off it, then shifted by the
-/// authored offset. An offset that carries the point out of the box is a
-/// build error: box projection needs the point inside its box.
-fn authored_capture_point(
+/// above that plane, moved onto their water when off it, clamped to the box,
+/// then shifted by the authored offset. The clamp comes first: it absorbs a
+/// nearest-point move past the wall of a straddling face, and a box whose top
+/// sits within the lift of its water, so an offset of `"0 0"` always holds.
+/// An offset that then carries the point out of the box is a build error:
+/// box projection needs the point inside its box. Returned with the
+/// lowest-plane faces, the water the point stays over when it moves clear of
+/// a wall.
+fn authored_capture_point<'f>(
     candidate: &Candidate<'_>,
-    inside: &[&UpFacingFace],
-) -> anyhow::Result<DVec3> {
+    inside: &[&'f UpFacingFace],
+) -> anyhow::Result<(DVec3, Vec<&'f UpFacingFace>)> {
     let lowest = inside
         .iter()
         .map(|face| face.geometry.plane_height())
@@ -148,21 +163,20 @@ fn authored_capture_point(
         .copied()
         .filter(|face| face.geometry.plane_height() - lowest < PLANE_TOLERANCE_M)
         .collect();
-    let mut point = capture_point_over(&lowest_faces, lowest);
-    if let Some([x, z]) = candidate.volume.capture_offset {
-        point += DVec3::new(f64::from(x), 0.0, f64::from(z));
-        let (lo, hi) = (candidate.min, candidate.max);
-        if point.x < lo.x || point.x > hi.x || point.z < lo.z || point.z > hi.z {
-            anyhow::bail!(
-                "{} capture offset moves its capture point to {:?}, outside its box {:?}..{:?}",
-                candidate.volume.source_label,
-                point.as_vec3().to_array(),
-                candidate.volume.min,
-                candidate.volume.max,
-            );
-        }
+    let (lo, hi) = (candidate.min, candidate.max);
+    let point = capture_point_over(&lowest_faces, lowest).clamp(lo, hi);
+    let Some([x, z]) = candidate.volume.capture_offset else {
+        return Ok((point, lowest_faces));
+    };
+    let offset = point + DVec3::new(f64::from(x), 0.0, f64::from(z));
+    if offset.x < lo.x || offset.x > hi.x || offset.z < lo.z || offset.z > hi.z {
+        anyhow::bail!(
+            "{} `_capture_offset` moves its capture point to {:?}, outside its box {:?}..{:?}",
+            candidate.volume.source_label,
+            offset.as_vec3().to_array(),
+            candidate.volume.min,
+            candidate.volume.max,
+        );
     }
-    // Absorbs a nearest-point move past the wall of a straddling face, and a
-    // box whose top sits within the lift of its water.
-    Ok(point.clamp(candidate.min, candidate.max))
+    Ok((offset, lowest_faces))
 }

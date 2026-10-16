@@ -83,10 +83,11 @@ const STAGE_ID: &str = "reflection_probes";
 /// enters the key as its output, so a placement change re-keys by itself.
 /// 3: animated direct and indirect at reference, sdf lights, light share.
 /// 4: the distance tile (mean inverse L1 hit distance per texel).
-/// 5, 6: the probe split's epochs (since removed); never reuse them, as their
-/// entries may sit in local caches.
+/// 5, 6: unused; never reuse them, as their entries may sit in local caches.
 /// 7: a finite hit never stores distance 0.
-const STAGE_VERSION: u32 = 7;
+/// 8: shares over the upper hemisphere; derived box fit stops at the ceiling;
+/// ties within tolerance; SH clamped after the deltas, as the runtime does.
+const STAGE_VERSION: u32 = 8;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -189,6 +190,8 @@ pub(crate) fn bake_or_load_reflection_probes(
     }
     log::info!("[cache] reflection_probes miss");
 
+    let references = references(&inputs.sh_volume.animation_descriptors);
+    check_roster(inputs, references.len())?;
     let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?;
     let deltas = inputs
         .delta_sh
@@ -198,11 +201,10 @@ pub(crate) fn bake_or_load_reflection_probes(
                 &sh,
                 inputs.sh_volume.tile_dimension,
                 inputs.sh_volume.grid_dimensions,
+                &references,
             )
         })
         .transpose()?;
-    let references = references(&inputs.sh_volume.animation_descriptors);
-    check_roster(inputs, references.len())?;
     let scene = CaptureScene {
         tracer,
         materials: SurfaceMaterials::new(
@@ -217,7 +219,7 @@ pub(crate) fn bake_or_load_reflection_probes(
             .map(|maps| AnimatedDirectSampler::new(maps, inputs.lightmap)),
         deltas,
         sdf: SdfLights::new(inputs.alpha_lights, inputs.chunk_light_list),
-        max_distance: ((bounds.max - bounds.min).length() + 1.0) as f32,
+        max_distance: bounds.diagonal() as f32 + 1.0,
     };
     let (section, reports) = capture_section(&scene, &probes, &references, control)?;
     if let Some(cache) = stage_cache {
@@ -255,6 +257,7 @@ fn capture_section(
     let tiles: Vec<Vec<u8>> = rows
         .par_chunks(rows_per_tile)
         .map(|rows| {
+            let _permit = control.governor().enter();
             let texels: Vec<&[glam::Vec3]> = rows.iter().map(|r| r.texels.as_slice()).collect();
             encode_tile(&texels)
         })
@@ -309,8 +312,9 @@ fn references(descriptors: &[AnimationDescriptor]) -> Vec<[f32; 3]> {
 }
 
 /// Every light the baked transport names must have a descriptor, and the
-/// delta's descriptor table must be the identity: a share's roster index is
-/// read straight into the runtime descriptor buffer (pin P10).
+/// delta's descriptor table must be the identity: a share's roster index
+/// indexes the runtime descriptor buffer directly, so the delta roster's
+/// slot `r` must name descriptor `r`.
 fn check_roster(inputs: &ReflectionProbeInputs<'_>, roster: usize) -> anyhow::Result<()> {
     if let Some(delta) = inputs.delta_sh {
         anyhow::ensure!(

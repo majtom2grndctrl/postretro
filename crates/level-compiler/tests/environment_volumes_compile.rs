@@ -13,7 +13,9 @@ use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::push_forces::PushForcesSection;
-use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_level_format::reflection_probes::{
+    REFLECTION_PROBE_TILE_DIMENSION, ReflectionProbesSection,
+};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
@@ -271,7 +273,7 @@ fn assert_doorway_pool_probes(sections: &BTreeMap<u32, Vec<u8>>) -> usize {
 
 /// One 128² BC6H tile.
 fn probe_tile_bytes() -> usize {
-    (128 / 4) * (128 / 4) * 16
+    (REFLECTION_PROBE_TILE_DIMENSION as usize / 4).pow(2) * 16
 }
 
 fn section(sections: &BTreeMap<u32, Vec<u8>>, id: SectionId) -> &[u8] {

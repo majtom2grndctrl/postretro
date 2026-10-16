@@ -1,5 +1,5 @@
-// Fluid reflection probe resources: the probe array and share table that join
-// the fluid pass's level-scoped group 4, created once at level install.
+// Fluid reflection probe resources: the probe array, share table and distance
+// array that join the fluid pass's level-scoped group 4, created at level install.
 // See: context/lib/rendering_pipeline.md §7.3a, §10 · context/lib/resource_management.md §5
 
 use std::num::NonZeroU64;
@@ -8,9 +8,7 @@ use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
-use postretro_level_format::reflection_probes::{
-    ReflectionProbesSection, reflection_probe_distance_tile_bytes, reflection_probe_tile_bytes,
-};
+use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_render_cpu::fluid_surface::FluidFaceDriftMap;
 use postretro_render_cpu::fluid_surface::reflection::{
     FLUID_PROBE_TABLE_BYTES, FLUID_REFLECTION_NO_PROBE, fill_probe_indices, pack_probe_table,
@@ -59,21 +57,18 @@ pub(crate) fn fluid_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutE
     ]
 }
 
-/// The section whose probes this renderer installs: a usable one whose tile
-/// payload matches its header. The loader refuses anything else; a
-/// hand-built section that slips past reflects nothing rather than failing
-/// texture creation. Install feeds the same answer to the table, the probe
-/// indices and the array, so a face never samples a probe that is not there.
+/// The section whose probes this renderer installs: render-cpu's usable one
+/// (some probe within the cap, a tile format the array uploads, colour and
+/// distance payloads matching the header), mapped to a texture format. The
+/// loader refuses anything else; a hand-built section that slips past is
+/// dropped whole and reflects nothing rather than failing texture creation.
+/// The draw predicate's bound face reads the same usable answer, and install
+/// feeds this one to the table, the probe indices and the arrays, so a face
+/// never draws for or samples a probe that is not there.
 pub(crate) fn installable_probe_section(
     section: Option<&ReflectionProbesSection>,
 ) -> Option<&ReflectionProbesSection> {
-    usable_probe_section(section).filter(|section| {
-        probe_array_format(section).is_some()
-            && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
-                .is_some_and(|bytes| bytes * section.probes.len() == section.tiles.len())
-            && reflection_probe_distance_tile_bytes(section.distance_format, section.tile_dimension)
-                .is_some_and(|bytes| bytes * section.probes.len() == section.distances.len())
-    })
+    usable_probe_section(section).filter(|section| probe_array_format(section).is_some())
 }
 
 /// The fluid mesh's third vertex buffer: one probe index per vertex of the

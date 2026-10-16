@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn fluid_validation_accepts_reflectivity_zero_and_fifty() {
         assert_eq!(water().surface_reflectivity, 1.0);
-        for reflectivity in [0.0, FluidDescriptor::MAX_SURFACE_REFLECTIVITY, 50.0] {
+        for reflectivity in [0.0, 50.0] {
             let mut fluid = water();
             fluid.surface_reflectivity = reflectivity;
             assert_eq!(fluid.validate(), Ok(()), "{reflectivity}");

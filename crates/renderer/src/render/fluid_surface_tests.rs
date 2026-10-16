@@ -263,8 +263,9 @@ fn reached_names(module: &naga::Module, entry_point: &str) -> (Vec<String>, Vec<
 // no reflection function (the distance search included) and reads none of the
 // probe array, the probe table or the distance array; everything up to the
 // surface it returns stays (lighting, fog, the warp). The reflecting variant
-// reaches the probe term and its search, so the walk is not vacuous. Each variant's override is the shader's own `FLUID_REFLECTIONS`,
-// default true, set per pipeline.
+// reaches the probe term and its search, so the walk is not vacuous. Each
+// variant's override is the shader's own `FLUID_REFLECTIONS`, default true,
+// set per pipeline.
 #[test]
 fn the_reflection_free_variant_compiles_no_reflection_into_its_executable_path() {
     let source = code_only(include_str!("../shaders/fluid_surface.wgsl"));
@@ -1490,10 +1491,13 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
 // `reflection_fragment`: no fog or an inside view keeps the surface;
 // otherwise one depth load, then path, transmittance, proximity, layer and
 // composite. The reflection gate then returns that unchanged, or wraps it in
-// the probe's union composite, for the fog branch and the clear path alike.
-// The outside gate, the proximity and the reflection read the interpolated
-// outward normal, never the viewer-flipped shading normal `n`, which always
-// faces the camera.
+// the probe's union composite, for the fog branch and the clear path alike,
+// at Fresnel times the search's weight times the eye's band (the fog's own
+// proximity). The fog part is pinned in order; the reflection block, from its
+// variant gate to the shader's output, is pinned exactly. The outside gate,
+// the proximity, the band and the reflection read the interpolated outward
+// normal, never the viewer-flipped shading normal `n`, which always faces the
+// camera.
 #[test]
 fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
     let fragment = code_only(wgsl_fn(
@@ -1514,17 +1518,6 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
         "letproximity=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);",
         "letfog_opacity=fluid_fog_layer_opacity(fluid_scene.fog_weight,proximity,transmittance);",
         "surface=fluid_fog_composite(rgb,alpha,row.fog_albedo.rgb*lighting,fog_opacity);}",
-        "if!FLUID_REFLECTIONS{returnsurface;}",
-        "letreflectivity=row.surface.z;",
-        "if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
-         returnsurface;}",
-        "letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);",
-        "letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
-         in.world_position,outward,axes,uniforms.time,texels_per_pixel);",
-        "letview=normalize(uniforms.camera_position-point.position);",
-        "letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);",
-        "letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;",
-        "returnfluid_reflection_composite(surface,reflection.capture,fresnel);}",
     ];
     let mut at = 0;
     for line in tail {
@@ -1533,7 +1526,22 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
             .unwrap_or_else(|| panic!("fs_main must contain, in order: {line}\n{fragment}"));
         at += found + line.len();
     }
-    assert_eq!(at, fragment.len(), "the composite is the shader's output");
+    assert_eq!(
+        &fragment[at..],
+        "if!FLUID_REFLECTIONS{returnsurface;}\
+         letreflectivity=row.surface.z;\
+         if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
+         returnsurface;}\
+         letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
+         letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
+         in.world_position,outward,axes,uniforms.time,texels_per_pixel);\
+         letview=normalize(uniforms.camera_position-point.position);\
+         letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
+         letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;\
+         letband=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
+         returnfluid_reflection_composite(surface,reflection.capture,fresnel*band);}",
+        "the reflection block, from its variant gate to the shader's output"
+    );
     for flipped in [
         "fluid_fog_seen_from_outside(n,",
         "in.world_position,n)",
@@ -1563,6 +1571,73 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
          fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
     );
+}
+
+// The renderer installs exactly the section render-cpu deems usable, mapped
+// to a texture format, and the draw predicate's bound face reads that same
+// answer: a section with a bad payload length or tile format is dropped
+// whole by both, so no fluid draws for a probe that is not installed.
+#[test]
+fn the_install_filter_and_the_bound_face_predicate_agree() {
+    use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1, REFLECTION_PROBE_LIGHTS_PER_PROBE,
+        ReflectionProbeBinding, ReflectionProbeLightShare, ReflectionProbeRecord,
+        reflection_probe_zero_distances,
+    };
+    use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
+    let section = |atlas_format: u32, dimension: u32, tile_bytes: usize| ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-1.0; 3],
+            box_max: [1.0; 3],
+            capture_point: [0.0, 0.002, 0.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; tile_bytes],
+        distance_format: REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: reflection_probe_zero_distances(1, dimension),
+    };
+    let bc6h = section(IRRADIANCE_FORMAT_BC6H, 8, 4 * 16);
+    let mut long_distances = bc6h.clone();
+    long_distances.distances.extend([0, 0]);
+    let cases = [
+        ("BC6H", bc6h, true),
+        (
+            "RGBA16F",
+            section(IRRADIANCE_FORMAT_RGBA16F, 6, 6 * 6 * 8),
+            true,
+        ),
+        (
+            "colour payload a byte short",
+            section(IRRADIANCE_FORMAT_BC6H, 8, 4 * 16 - 1),
+            false,
+        ),
+        ("distance payload a texel long", long_distances, false),
+        (
+            "BC6H tile of partial 4×4 blocks",
+            section(IRRADIANCE_FORMAT_BC6H, 6, 16),
+            false,
+        ),
+        ("unknown colour format", section(0xBAD, 8, 4 * 16), false),
+    ];
+    for (what, section, usable) in &cases {
+        assert_eq!(
+            installable_probe_section(Some(section)).is_some(),
+            *usable,
+            "{what}"
+        );
+        assert_eq!(volume_has_bound_face(Some(section), 0), *usable, "{what}");
+    }
 }
 
 #[test]
@@ -1599,6 +1674,10 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
     assert_eq!(
         shader_u32("FLUID_REFLECTION_UNORM10_MAX"),
         r::FLUID_REFLECTION_UNORM10_MAX
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RAY_MIN_Y"),
+        r::FLUID_REFLECTION_RAY_MIN_Y
     );
     // The distance search's K, M, capture-shadow fade and epsilon.
     {
@@ -1656,17 +1735,18 @@ fn fluid_reflection_shader_constants_match_the_cpu_reference() {
     }
 }
 
-// The mask, underside and probe gates, the mirror, the slab test, the
-// lookup's horizon clamp, the tile UV, Fresnel and the union composite are the
-// CPU reflection reference in WGSL, pinned on both sides. The sample chain is
-// the reference's `reflection_fragment` body: the layer is read from the
-// probe table by the face's probe index, and the tile is sampled at level 0
-// through the SH atlas sampler.
+// The mask, underside and probe gates, the mirror and its upper-hemisphere
+// floor, the slab test (a slab exited at or behind the origin skipped), the
+// lookup's horizon clamp, the tile UV, Fresnel and the union composite are
+// the CPU reflection reference in WGSL, pinned on both sides. The sample
+// chain is the reference's `reflection_fragment` body: the ray floored above
+// the horizon, the layer read from the probe table by the face's probe index,
+// and the tile sampled at level 0 through the SH atlas sampler.
 #[test]
 fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
     let wgsl = include_str!("../shaders/fluid_surface.wgsl");
     let cpu = include_str!("../../../render-cpu/src/fluid_surface/reflection.rs");
-    let pinned: [(&str, &str, &str, &str); 9] = [
+    let pinned: [(&str, &str, &str, &str); 10] = [
         (
             "fluid_reflection_mask_on",
             "fnfluid_reflection_mask_on(mask:u32)->bool{\
@@ -1701,6 +1781,14 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
             "fnreflection_mirror(view:Vec3,outward:Vec3)->Vec3{outward*(2.0*view.dot(outward))-view}",
         ),
         (
+            "fluid_reflection_above_horizon",
+            "fnfluid_reflection_above_horizon(ray:vec3<f32>)->vec3<f32>{\
+             returnnormalize(vec3<f32>(ray.x,max(ray.y,FLUID_REFLECTION_RAY_MIN_Y),ray.z));}",
+            "reflection_above_horizon",
+            "fnreflection_above_horizon(ray:Vec3)->Vec3{\
+             Vec3::new(ray.x,ray.y.max(FLUID_REFLECTION_RAY_MIN_Y),ray.z).normalize()}",
+        ),
+        (
             "fluid_reflection_box_hit",
             "fnfluid_reflection_box_hit(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
              box_max:vec3<f32>)->vec3<f32>{\
@@ -1709,7 +1797,9 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
              letsafe=select(ray,nudged,abs(ray)<vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON));\
              lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
              letfar=max(t0,t1);\
-             lett=max(min(far.x,min(far.y,far.z)),0.0);\
+             letlead=max(far.x,max(far.y,far.z));\
+             letahead=select(vec3<f32>(lead),far,far>vec3<f32>(0.0));\
+             lett=max(min(ahead.x,min(ahead.y,ahead.z)),0.0);\
              returnorigin+ray*t;}",
             "reflection_box_hit",
             "fnreflection_box_hit(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3)->Vec3{\
@@ -1720,7 +1810,9 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
              nudged,ray,);\
              lett0=(box_min-origin)/safe;lett1=(box_max-origin)/safe;\
              letfar=t0.max(t1);\
-             lett=far.x.min(far.y.min(far.z)).max(0.0);\
+             letlead=far.x.max(far.y.max(far.z));\
+             letahead=Vec3::select(far.cmpgt(Vec3::ZERO),far,Vec3::splat(lead));\
+             lett=ahead.x.min(ahead.y.min(ahead.z)).max(0.0);\
              origin+ray*t}",
         ),
         (
@@ -1793,14 +1885,15 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
         );
     }
 
-    // The sample chain: the search runs first and ends, then one colour tap
-    // and the ratio read its lookup; the search's weight rides out beside the
-    // capture for `fs_main` to scale Fresnel by.
+    // The sample chain: the ray floored above the horizon, then the search
+    // runs first and ends, then one colour tap and the ratio read its lookup;
+    // the search's weight rides out beside the capture for `fs_main` to scale
+    // Fresnel by, with the eye's band.
     assert_eq!(
         code_only(wgsl_fn(wgsl, "fluid_reflection_sample")),
         "fnfluid_reflection_sample(probe:u32,world_position:vec3<f32>,view:vec3<f32>,\
          outward:vec3<f32>)->FluidReflectionSample{\
-         letray=fluid_reflection_mirror(view,outward);\
+         letray=fluid_reflection_above_horizon(fluid_reflection_mirror(view,outward));\
          letlayer=fluid_probes.probes[probe].layer;\
          letsearch=fluid_reflection_search(world_position,ray,fluid_probes.probes[probe].box_min,\
          fluid_probes.probes[probe].box_max,fluid_probes.probes[probe].capture_point,\
@@ -1823,22 +1916,25 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          outward,fragment.axes,fragment.time,fragment.texels_per_pixel,);\
          letview=(fragment.camera-point.position).normalize_or_zero();\
          letprobe=&probes[fragment.probeasusize];\
-         letray=reflection_mirror(view,point.normal);\
+         letray=reflection_above_horizon(reflection_mirror(view,point.normal));\
          letsearch=reflection_search(point.position,ray,Vec3::from(probe.box_min),\
          Vec3::from(probe.box_max),Vec3::from(probe.capture_point),tile,\
          |uv|distance(probe.layer,uv),);\
          letcapture=sample(probe.layer,reflection_tile_uv(search.lookup,tile[0],tile[1]),)\
          *reflection_ratio(&FluidProbeGpu::pack(probe).lights,search.lookup,lights);\
          letfresnel=reflection_fresnel(view.dot(outward),fragment.reflectivity)*search.weight;\
-         reflection_composite(surface,capture,fresnel)}"
+         letband=fog_proximity(fragment.camera,fragment.world_position,outward);\
+         reflection_composite(surface,capture,fresnel*band)}"
     );
 }
 
 // The distance search is the CPU `reflection_search` reference in WGSL,
 // pinned on both sides: h, the capture-shadow fade (its angle from the tile,
-// the turned tap, each side's gated edge, the fade), then the search (two
-// independent taps, the depth margin and the fade, K sphere steps, the
-// box-hit bracket, M false-position estimates). The CPU's `ends_at` closure is the WGSL's three returns through
+// the turned tap, each side's gated edge, the fade), then the search (the
+// origin clamped into the box, a side-clamped start on the stored surface
+// within the margin, two independent taps, the depth margin and the fade, K
+// sphere steps, the box-hit bracket, M false-position estimates). The CPU's
+// `ends_at` closure is the WGSL's three returns through
 // `fluid_reflection_lookup`; its `Option` back end is the WGSL's back end
 // starting at the box hit, which a closing sphere step overwrites. The status
 // and the hit point are CPU diagnostics; the shader keeps the lookup and the
@@ -1958,32 +2054,36 @@ fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
         code_only(wgsl_fn(wgsl, "fluid_reflection_search")),
         "fnfluid_reflection_search(origin:vec3<f32>,ray:vec3<f32>,box_min:vec3<f32>,\
          box_max:vec3<f32>,capture_point:vec3<f32>,tile:vec2<u32>,\
-         layer:u32)->FluidReflectionSearch{letbox_hit=fluid_reflection_box_hit(origin,ray,\
-         box_min,box_max);lett_box=dot(box_hit-origin,ray);\
-         leth_origin=fluid_reflection_search_h(origin,capture_point,tile,layer);\
+         layer:u32)->FluidReflectionSearch{letstart=clamp(origin,box_min,box_max);\
+         leton_side=start.x!=origin.x||start.z!=origin.z;\
+         letbox_hit=fluid_reflection_box_hit(start,ray,box_min,box_max);\
+         lett_box=dot(box_hit-start,ray);\
+         leth_start=fluid_reflection_search_h(start,capture_point,tile,layer);\
          leth_box=fluid_reflection_search_h(box_hit,capture_point,tile,layer);\
+         leth_origin=select(h_start,min(h_start,0.0),\
+         on_side&&h_start<FLUID_REFLECTION_SHADOW_MARGIN);\
          ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{\
          returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,capture_point,ray),0.0);\
-         }letweight=fluid_reflection_shadow_fade(origin,capture_point,tile,h_origin,\
+         }letweight=fluid_reflection_shadow_fade(start,capture_point,tile,h_origin,\
          layer)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
-         ifh_origin>=0.0{returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
+         ifh_origin>=0.0&&!on_side{returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
          capture_point,ray),weight);}vart_front=0.0;varh_front=h_origin;vart_back=t_box;\
-         varh_back=h_box;letfrom_capture=origin-capture_point;letb=dot(from_capture,ray);\
+         varh_back=h_box;letfrom_capture=start-capture_point;letb=dot(from_capture,ray);\
          for(vari:u32=0u;i<FLUID_REFLECTION_SEARCH_STEPS;i=i+1u){ifh_front<=-1.0{break;}\
-         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=vec3<f32>(toward.x,\
+         letq=start+ray*t_front;lettoward=q-capture_point;letlevel=vec3<f32>(toward.x,\
          max(toward.y,0.0),toward.z);letradius=length(level)/(h_front+1.0);\
          letdisc=b*b-(dot(from_capture,from_capture)-radius*radius);ifdisc<0.0{break;}\
          lett_next=-b+sqrt(disc);ift_next<=t_front||t_next>=t_box{break;}\
-         leth_next=fluid_reflection_search_h(origin+ray*t_next,capture_point,tile,layer);\
+         leth_next=fluid_reflection_search_h(start+ray*t_next,capture_point,tile,layer);\
          ifh_next>=0.0{t_back=t_next;h_back=h_next;break;}t_front=t_next;h_front=h_next;}\
          if!(h_back>=0.0){returnFluidReflectionSearch(fluid_reflection_lookup(box_hit,\
          capture_point,ray),weight);}vart_hit=t_back;for(varrefinement:u32=0u;\
          refinement<FLUID_REFLECTION_SEARCH_REFINEMENTS;refinement=refinement+1u){\
          ifh_back!=h_front{t_hit=t_front-h_front*(t_back-t_front)/(h_back-h_front);}else{\
          t_hit=t_back;}ifrefinement+1u==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
-         leth_hit=fluid_reflection_search_h(origin+ray*t_hit,capture_point,tile,layer);\
+         leth_hit=fluid_reflection_search_h(start+ray*t_hit,capture_point,tile,layer);\
          ifh_hit>=0.0{t_back=t_hit;h_back=h_hit;}else{t_front=t_hit;h_front=h_hit;}}\
-         returnFluidReflectionSearch(fluid_reflection_lookup(origin+ray*t_hit,capture_point,\
+         returnFluidReflectionSearch(fluid_reflection_lookup(start+ray*t_hit,capture_point,\
          ray),weight);}"
     );
     assert_eq!(
@@ -1991,31 +2091,36 @@ fn fluid_reflection_search_wgsl_bodies_match_the_cpu_reference() {
         "fnreflection_search(origin:Vec3,ray:Vec3,box_min:Vec3,box_max:Vec3,\
          capture_point:Vec3,tile:[u32;2],distance:implFn(Vec2)->f32,)->FluidReflectionSearch{\
          leth=|q:Vec3|reflection_search_h(q,capture_point,tile,&distance);\
-         letbox_hit=reflection_box_hit(origin,ray,box_min,box_max);\
-         lett_box=(box_hit-origin).dot(ray);leth_origin=h(origin);leth_box=h(box_hit);\
+         letstart=origin.clamp(box_min,box_max);\
+         leton_side=start.x!=origin.x||start.z!=origin.z;\
+         letbox_hit=reflection_box_hit(start,ray,box_min,box_max);\
+         lett_box=(box_hit-start).dot(ray);leth_start=h(start);leth_box=h(box_hit);\
+         leth_origin=ifon_side&&h_start<FLUID_REFLECTION_SHADOW_MARGIN{h_start.min(0.0)}\
+         else{h_start};\
          letends_at=|point:Vec3,status,weight|FluidReflectionSearch{point,\
          lookup:reflection_lookup(point,capture_point,ray),status,weight,};\
          ifh_origin>=FLUID_REFLECTION_SHADOW_MARGIN{returnends_at(box_hit,\
          FluidReflectionSearchStatus::CaptureShadow,0.0);}\
-         letweight=reflection_shadow_fade(origin,capture_point,tile,h_origin,\
+         letweight=reflection_shadow_fade(start,capture_point,tile,h_origin,\
          &distance)*(1.0-smoothstep(0.0,FLUID_REFLECTION_SHADOW_MARGIN,h_origin));\
-         ifh_origin>=0.0{returnends_at(box_hit,FluidReflectionSearchStatus::CaptureShadow,\
-         weight);}let(mutt_front,muth_front)=(0.0,h_origin);letmutback=None;\
-         letfrom_capture=origin-capture_point;letb=from_capture.dot(ray);\
+         ifh_origin>=0.0&&!on_side{returnends_at(box_hit,\
+         FluidReflectionSearchStatus::CaptureShadow,weight);}\
+         let(mutt_front,muth_front)=(0.0,h_origin);letmutback=None;\
+         letfrom_capture=start-capture_point;letb=from_capture.dot(ray);\
          for_in0..FLUID_REFLECTION_SEARCH_STEPS{ifh_front<=-1.0{break;}\
-         letq=origin+ray*t_front;lettoward=q-capture_point;letlevel=Vec3::new(toward.x,\
+         letq=start+ray*t_front;lettoward=q-capture_point;letlevel=Vec3::new(toward.x,\
          toward.y.max(0.0),toward.z);letradius=level.length()/(h_front+1.0);\
          letdisc=b*b-(from_capture.dot(from_capture)-radius*radius);ifdisc<0.0{break;}\
          lett_next=-b+disc.sqrt();ift_next<=t_front||t_next>=t_box{break;}\
-         leth_next=h(origin+ray*t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}\
+         leth_next=h(start+ray*t_next);ifh_next>=0.0{back=Some((t_next,h_next));break;}\
          (t_front,h_front)=(t_next,h_next);}let(mutt_back,muth_back)=matchback{\
          Some(sample)=>sample,Noneifh_box>=0.0=>(t_box,h_box),None=>returnends_at(box_hit,\
          FluidReflectionSearchStatus::BeyondBox,weight),};letmutt_hit=t_back;\
          forrefinementin0..FLUID_REFLECTION_SEARCH_REFINEMENTS{t_hit=ifh_back!=h_front{\
          t_front-h_front*(t_back-t_front)/(h_back-h_front)}else{t_back};\
          ifrefinement+1==FLUID_REFLECTION_SEARCH_REFINEMENTS{break;}\
-         leth_hit=h(origin+ray*t_hit);ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{\
-         (t_front,h_front)=(t_hit,h_hit);}}ends_at(origin+ray*t_hit,\
+         leth_hit=h(start+ray*t_hit);ifh_hit>=0.0{(t_back,h_back)=(t_hit,h_hit);}else{\
+         (t_front,h_front)=(t_hit,h_hit);}}ends_at(start+ray*t_hit,\
          FluidReflectionSearchStatus::Hit,weight,)}"
     );
 }

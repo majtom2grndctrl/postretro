@@ -24,6 +24,19 @@ pub(crate) const UP_FACING_MIN_COS: f64 = 0.999_847_695_156_391_3;
 pub(crate) const CAPTURE_LIFT_M: f64 = 0.002;
 /// Faces whose planes differ by less than this share a plane.
 pub(crate) const PLANE_TOLERANCE_M: f64 = 0.001;
+/// Box volumes and bound areas within this fraction of each other are tied,
+/// and the tie rules (earlier box in map entity order; earlier fluid entity,
+/// then face) decide. Both come from f32 engine coordinates, map units scaled
+/// by 0.0254, so boxes or pools a mapper drew the same size almost never
+/// compare exactly equal: an extent's rounding is a few f32 steps of the
+/// coordinate, about 1e-6 of a 3 m extent at 100 m from the origin, and a
+/// volume sums three of them.
+pub(crate) const TIE_RELATIVE_TOLERANCE: f64 = 1.0e-5;
+
+/// Whether `a` and `b` are equal within [`TIE_RELATIVE_TOLERANCE`].
+pub(crate) fn tied(a: f64, b: f64) -> bool {
+    (a - b).abs() <= TIE_RELATIVE_TOLERANCE * a.abs().max(b.abs())
+}
 
 /// Area-weighted geometry of one planar surface polygon.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,6 +154,8 @@ pub(crate) fn plane_of(clusters: &[f64], height: f64) -> f64 {
 pub(crate) struct PlacedProbe {
     /// The authored box's entity, or the fluid entity of a derived probe.
     pub source_entity: u32,
+    /// Whether a `reflection_volume` placed it, rather than derivation.
+    pub authored: bool,
     pub box_min: [f32; 3],
     pub box_max: [f32; 3],
     pub capture_point: [f32; 3],
@@ -197,28 +212,26 @@ pub(crate) fn place_probes(
 }
 
 /// Keep at most `limit` derived probes, the room `cap` leaves after the
-/// authored ones, the largest bound surface area first; ties go to the
-/// earlier probe, which is fluid entity then face order. The kept probes stay
-/// in their order. Dropped probes' faces bind nothing; one warning names the
-/// count.
-pub(crate) fn apply_probe_cap(
-    probes: Vec<PlacedProbe>,
-    limit: usize,
-    cap: usize,
-) -> Vec<PlacedProbe> {
+/// authored ones, the largest bound surface area first; areas within
+/// [`TIE_RELATIVE_TOLERANCE`] tie, and ties go to the earlier probe, which is
+/// fluid entity then face order. Each kept slot goes to the earliest probe
+/// tied with the largest area left, so the choice is deterministic though a
+/// tolerance is not a total order. The kept probes stay in their order.
+/// Dropped probes' faces bind nothing; one warning names the count.
+fn apply_probe_cap(probes: Vec<PlacedProbe>, limit: usize, cap: usize) -> Vec<PlacedProbe> {
     if probes.len() <= limit {
         return probes;
     }
-    let mut ranked: Vec<usize> = (0..probes.len()).collect();
-    ranked.sort_by(|&a, &b| {
-        probes[b]
-            .bound_area
-            .total_cmp(&probes[a].bound_area)
-            .then(a.cmp(&b))
-    });
     let mut keep = vec![false; probes.len()];
-    for &i in &ranked[..limit] {
-        keep[i] = true;
+    for _ in 0..limit {
+        let largest = (0..probes.len())
+            .filter(|&i| !keep[i])
+            .map(|i| probes[i].bound_area)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let pick = (0..probes.len())
+            .find(|&i| !keep[i] && tied(probes[i].bound_area, largest))
+            .expect("a probe is left while fewer than `limit` are kept");
+        keep[pick] = true;
     }
     log::warn!(
         "[ReflectionProbes] {} derived probe(s) past the {cap}-probe cap dropped, smallest bound \

@@ -238,8 +238,8 @@ pub enum SectionId {
 
     /// Optional compile-time reflection probes: box, capture point and
     /// per-light shares per probe, (volume, face) bindings into
-    /// EnvironmentVolumes, and one octahedral capture tile per probe. Absent
-    /// means no probes.
+    /// EnvironmentVolumes, and one octahedral colour tile and one distance
+    /// tile per probe. Absent means no probes.
     /// See `reflection_probes::ReflectionProbesSection`.
     ReflectionProbes = 54,
 }

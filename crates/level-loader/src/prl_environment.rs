@@ -118,7 +118,7 @@ pub(crate) fn decode_reflection_probes(
         }
     }
     log::info!(
-        "[PRL] ReflectionProbes: {} probe(s) at {}² binding {} face(s)",
+        "[PRL] ReflectionProbes: {} probe(s), {}² tiles, {} bound face(s)",
         section.probes.len(),
         section.tile_dimension,
         section.bindings.len(),
@@ -128,8 +128,17 @@ pub(crate) fn decode_reflection_probes(
 
 /// A share entry names a light by its AnimatedBakedLights roster index and
 /// the fluid shader reads that index straight into the descriptor buffer, so
-/// every entry must fall inside the roster and the roster-to-descriptor
-/// table must be the identity the compiler writes.
+/// every entry must fall inside the roster and both roster-to-descriptor
+/// tables must be the identity the compiler writes.
+///
+/// The fluid stage binds the descriptors but no index table, so it reads
+/// descriptor `r` for roster `r`. Each compose pass maps roster `r` through
+/// its own table: SH compose (the form the fluid ratio ports) through
+/// DeltaShVolumes (id 27), whose roster the compiler numbers the shares in,
+/// and animated direct compose through AnimatedDirectShDeltaVolumes (id 45).
+/// A non-identity id 27 animates a share by another light's curve; a
+/// non-identity id 45 animates the world's direct term for that light by a
+/// different descriptor than its reflection.
 pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(), PrlLoadError> {
     let Some(section) = world.reflection_probes.as_ref() else {
         return Ok(());
@@ -148,18 +157,44 @@ pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(),
             }
         }
     }
-    let indices = world.animated_direct_descriptor_indices();
-    if let Some((slot, descriptor)) = indices
-        .iter()
-        .enumerate()
-        .find(|(slot, descriptor)| **descriptor as usize != *slot)
-    {
-        return Err(section_validation_from_error(
-            "ReflectionProbes",
-            format!(
-                "animated light {slot} maps to descriptor {descriptor}; probe shares need the identity roster"
-            ),
-        ));
+    for (table, indices) in [
+        (
+            "DeltaShVolumes (id 27)",
+            indirect_delta_descriptor_indices(world),
+        ),
+        (
+            "AnimatedDirectShDeltaVolumes (id 45)",
+            world.animated_direct_descriptor_indices(),
+        ),
+    ] {
+        if let Some((slot, descriptor)) = indices
+            .iter()
+            .enumerate()
+            .find(|(slot, descriptor)| **descriptor as usize != *slot)
+        {
+            return Err(section_validation_from_error(
+                "ReflectionProbes",
+                format!(
+                    "{table} maps animated light {slot} to descriptor {descriptor}; probe shares \
+                     need the identity roster"
+                ),
+            ));
+        }
     }
     Ok(())
+}
+
+/// Id 27's roster-to-descriptor table, from the streaming metadata or the
+/// resident section; empty when the level has no indirect delta.
+fn indirect_delta_descriptor_indices(world: &LevelWorld) -> &[u32] {
+    match world.sh_stream_manifest() {
+        Some(manifest) => manifest
+            .sources()
+            .indirect_delta
+            .as_ref()
+            .map_or(&[], |metadata| &metadata.animation_descriptor_indices),
+        None => world
+            .delta_sh_volumes()
+            .map_or(&[], |section| &section.animation_descriptor_indices),
+    }
 }

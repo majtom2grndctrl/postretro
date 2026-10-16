@@ -5,7 +5,7 @@ use glam::Vec3;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::sh_reconstruct::{Level, kept_mask, local_xyz, trilinear_weight};
 
-use super::sh_sample::ShVolumeSampler;
+use super::sh_sample::{ShVolumeSampler, SlotRead};
 use super::shading::AnimatedTerms;
 use crate::bc6h::f16_bits_to_f32;
 
@@ -13,11 +13,14 @@ use crate::bc6h::f16_bits_to_f32;
 /// level ships it (after exact-zero drop, coarsening and valid-probe
 /// compaction). `sh_compose.wgsl` adds every light's delta, reconstructed for
 /// the stored slot's writer probe and scaled by its descriptor, into the
-/// stored slots the forward pass samples; the descriptor scale is the only
-/// non-linear step, so a light's unit indirect is the base sample's weighted
-/// sum over that light's delta texels.
+/// stored slots the forward pass samples, which clamps each slot's sample at
+/// zero. At the capture's reference state that clamp is fixed per slot and
+/// channel, so a light's unit indirect is the base sample's weighted sum over
+/// that light's delta texels in the slot channels the clamp keeps.
 pub(crate) struct DeltaShSampler<'a> {
     section: &'a DeltaShVolumesSection,
+    /// Each animated light's reference value, by roster index.
+    references: &'a [[f32; 3]],
     /// f16-half payload offset of each CSR entry's kept tiles.
     entry_offsets: Vec<u32>,
     /// Writer `(affinity cell, local probe)` of each base stored slot.
@@ -27,12 +30,14 @@ pub(crate) struct DeltaShSampler<'a> {
 
 impl<'a> DeltaShSampler<'a> {
     /// Fails when id 27 does not share the base volume's tile and affinity
-    /// geometry, which the loader would also refuse.
+    /// geometry, which the loader would also refuse. `references` holds each
+    /// animated light's reference value by roster index.
     pub(crate) fn new(
         section: &'a DeltaShVolumesSection,
         base: &ShVolumeSampler<'_>,
         base_tile_dimension: u32,
         base_grid: [u32; 3],
+        references: &'a [[f32; 3]],
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             section.tile_dimension == base_tile_dimension,
@@ -72,46 +77,73 @@ impl<'a> DeltaShSampler<'a> {
         );
         Ok(Self {
             section,
+            references,
             entry_offsets,
             slot_writers: base.slot_writers(),
             tile_dimension: section.tile_dimension as usize,
         })
     }
 
-    /// Add each light's unit-radiance indirect, times `scale`, to `out`:
-    /// the base sample's `slots` and the tile `taps` read over the light's
-    /// composed delta texels.
+    /// The base SH indirect at a hit as the runtime draws it at the reference
+    /// state, with each light's unit-radiance indirect, times `scale`, added
+    /// to `out`: the base sample's `slots` and the tile `taps` read over each
+    /// light's composed delta texels. The runtime clamps a slot's sample at
+    /// zero after the compose pass adds every light's delta, scaled by its
+    /// descriptor, into it. So a slot channel whose base plus deltas at
+    /// reference is not positive contributes nothing, base or delta, and every
+    /// other channel contributes its base and each delta linearly: the
+    /// capture, this static part plus each unit term times its reference,
+    /// equals the runtime's clamped sum. `deltas` is scratch.
     pub(crate) fn accumulate(
         &self,
-        slots: &[(u32, f32)],
+        slots: &[SlotRead],
         taps: &[(usize, usize, f32); 4],
         scale: Vec3,
+        deltas: &mut Vec<(u32, Vec3)>,
         out: &mut AnimatedTerms,
-    ) {
-        for &(slot, slot_weight) in slots {
-            let Some(Some((cell, local))) = self.slot_writers.get(slot as usize).copied() else {
-                continue;
-            };
-            let cell = cell as usize;
-            let range = self.section.affinity_offsets[cell] as usize
-                ..self.section.affinity_offsets[cell + 1] as usize;
-            for entry in range {
-                let mut value = Vec3::ZERO;
-                for &(x, y, tap_weight) in taps {
-                    if tap_weight > 0.0 {
-                        value +=
-                            self.composed_texel(entry, cell, local, y * self.tile_dimension + x)
-                                * tap_weight;
+    ) -> Vec3 {
+        let mut indirect = Vec3::ZERO;
+        for read in slots {
+            deltas.clear();
+            if let Some(Some((cell, local))) = self.slot_writers.get(read.slot as usize).copied() {
+                let cell = cell as usize;
+                let range = self.section.affinity_offsets[cell] as usize
+                    ..self.section.affinity_offsets[cell + 1] as usize;
+                for entry in range {
+                    let mut value = Vec3::ZERO;
+                    for &(x, y, tap_weight) in taps {
+                        if tap_weight > 0.0 {
+                            let texel = y * self.tile_dimension + x;
+                            value += self.composed_texel(entry, cell, local, texel) * tap_weight;
+                        }
+                    }
+                    if value != Vec3::ZERO {
+                        deltas.push((self.section.affinity_lights[entry], value));
                     }
                 }
-                if value != Vec3::ZERO {
-                    out.add(
-                        self.section.affinity_lights[entry],
-                        value * slot_weight * scale,
-                    );
+            }
+            let composed = deltas.iter().fold(read.base, |sum, &(light, delta)| {
+                sum + delta * Vec3::from(self.reference(light))
+            });
+            let kept = Vec3::select(composed.cmpgt(Vec3::ZERO), Vec3::ONE, Vec3::ZERO);
+            indirect += read.base * kept * read.weight;
+            for &(light, delta) in deltas.iter() {
+                let term = delta * kept;
+                if term != Vec3::ZERO {
+                    out.add(light, term * read.weight * scale);
                 }
             }
         }
+        indirect
+    }
+
+    /// A light past the reference table adds nothing; the stage checks every
+    /// delta light against the roster before capture.
+    fn reference(&self, light: u32) -> [f32; 3] {
+        self.references
+            .get(light as usize)
+            .copied()
+            .unwrap_or([0.0; 3])
     }
 
     /// One texel of entry `entry`'s delta as the compose pass adds it into
@@ -238,17 +270,20 @@ mod tests {
         let mut slots = Vec::new();
         let base_value = sampler.indirect_and_slots(point, Vec3::Y, Some(&mut slots));
         assert!((base_value - Vec3::ONE).length() < 1e-3, "{base_value}");
-        let weight_total: f32 = slots.iter().map(|s| s.1).sum();
+        let weight_total: f32 = slots.iter().map(|s| s.weight).sum();
         assert!((weight_total - 1.0).abs() < 1e-5, "{slots:?}");
         let taps = sampler.tile_taps(Vec3::Y);
+        let references = [[1.0; 3]; 4];
 
         // Up normal at y = 1.4 reads the y = 2 layer at x frac 0.25, z frac 0.5.
         let expected = 1.0 + 1.25 + 2.0 * 2.0 + 4.0 * 2.5;
         for level in [Level::L0, Level::L1] {
             let delta = delta_section(level, 3, field);
-            let deltas = DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4]).unwrap();
+            let deltas = DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4], &references).unwrap();
             let mut out = AnimatedTerms::default();
-            deltas.accumulate(&slots, &taps, Vec3::ONE, &mut out);
+            let indirect = deltas.accumulate(&slots, &taps, Vec3::ONE, &mut Vec::new(), &mut out);
+            // Every slot composes positive, so the base passes unclamped.
+            assert!((indirect - base_value).length() < 1e-5, "{indirect}");
             assert_eq!(out.lights().len(), 1);
             let (light, value) = out.lights()[0];
             assert_eq!(light, 3);
@@ -257,14 +292,41 @@ mod tests {
         }
         // L2 keeps one representative tile for the whole brick.
         let delta = delta_section(Level::L2, 0, |_| 2.5);
-        let deltas = DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4]).unwrap();
+        let deltas = DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4], &references).unwrap();
         let mut out = AnimatedTerms::default();
-        deltas.accumulate(&slots, &taps, Vec3::splat(2.0), &mut out);
+        deltas.accumulate(&slots, &taps, Vec3::splat(2.0), &mut Vec::new(), &mut out);
         assert!(
             (out.lights()[0].1.x - 5.0).abs() < 1e-2,
             "{:?}",
             out.lights()
         );
+    }
+
+    // Regression: the capture clamped the base SH at zero, then added the
+    // deltas; the runtime clamps each slot once, after composing them.
+    #[test]
+    fn a_slot_channel_composed_below_zero_contributes_nothing_as_the_runtime_clamps_it() {
+        let base = base();
+        let sampler = ShVolumeSampler::new(&base, false).unwrap();
+        let mut slots = Vec::new();
+        sampler.indirect_and_slots(Vec3::new(1.25, 1.4, 2.5), Vec3::Y, Some(&mut slots));
+        let taps = sampler.tile_taps(Vec3::Y);
+        // A red delta of −2 over a base of 1 in every channel.
+        let delta = delta_section(Level::L0, 0, |_| -2.0);
+        // At reference 1 red composes to −1 and clamps to 0; at 0.25 it
+        // composes to 0.5 and both terms pass.
+        for (reference, red) in [(1.0, 0.0), (0.25, 0.5)] {
+            let references = [[reference; 3]];
+            let deltas = DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4], &references).unwrap();
+            let mut out = AnimatedTerms::default();
+            let indirect = deltas.accumulate(&slots, &taps, Vec3::ONE, &mut Vec::new(), &mut out);
+            let unit = out.lights().first().map_or(Vec3::ZERO, |light| light.1);
+            let composed = indirect + unit * reference;
+            assert!(
+                (composed - Vec3::new(red, 1.0, 1.0)).length() < 1e-3,
+                "reference {reference}: {composed}"
+            );
+        }
     }
 
     #[test]
@@ -273,6 +335,6 @@ mod tests {
         let sampler = ShVolumeSampler::new(&base, false).unwrap();
         let mut delta = delta_section(Level::L0, 0, field);
         delta.affinity_dims = [2, 1, 1];
-        assert!(DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4]).is_err());
+        assert!(DeltaShSampler::new(&delta, &sampler, 6, [4, 4, 4], &[[1.0; 3]]).is_err());
     }
 }

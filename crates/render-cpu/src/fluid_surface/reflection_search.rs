@@ -10,14 +10,16 @@ use super::reflection::{reflection_box_hit, reflection_lookup, reflection_tile_u
 /// K: sphere steps from the fragment before the box hit closes the bracket.
 /// Each step moves to the point of the reflected ray as far from the capture
 /// point as the surface the capture stored in the current sample's
-/// direction. On the test map's crate three bring the reflected top within
-/// half a capture texel from the coping and within 2° at the east rim; two
-/// leave it up to 9° low at the rim, and a fourth changes nothing.
+/// direction. Three is enough for the reflected crate to track the true mirror
+/// (`the_crate_top_edge_from_the_west_coping_matches_the_mirror`,
+/// `the_crate_top_elevation_at_the_east_rim_matches_the_mirror`); a fourth
+/// changes nothing.
 pub const FLUID_REFLECTION_SEARCH_STEPS: u32 = 3;
 /// M: false-position estimates on the bracket. The last needs no tap, so
 /// two cost one tap: 2 + K + M − 1 = 6 search taps, beside the capture-shadow
-/// fade's two to four. A third changes neither test-map fixture beyond a
-/// fragment or two.
+/// fade's two to four. Two already settle the crate fixtures
+/// (`the_crate_top_elevation_at_the_east_rim_matches_the_mirror`); a third
+/// buys nothing visible.
 pub const FLUID_REFLECTION_SEARCH_REFINEMENTS: u32 = 2;
 /// N: the capture-shadow fade's width in capture texels of angle about the
 /// capture point. One interior texel spans about π / (dimension − 2·border)
@@ -60,9 +62,10 @@ pub enum FluidReflectionSearchStatus {
     /// doorway, a vista past the box, or a capture miss): the lookup is the
     /// box hit, plain box projection.
     BeyondBox,
-    /// The fragment itself lies behind a surface the capture point saw: the
-    /// capture holds nothing it could reflect, so it draws no term past the
-    /// depth margin (`weight` 0), looked up toward the box hit.
+    /// The search's start (the fragment, clamped into the box) lies behind a
+    /// surface the capture point saw: the capture holds nothing it could
+    /// reflect, so it draws no term past the depth margin (`weight` 0),
+    /// looked up toward the box hit.
     CaptureShadow,
 }
 
@@ -227,25 +230,36 @@ pub fn reflection_shadow_fade(
 }
 
 /// The distance search along unit `ray` from `origin` (the fragment, or the
-/// pixel-style cell centre) inside the probe's box, against its distance
-/// tile. A function of those inputs alone, so every fragment of a cell reads
-/// one lookup.
+/// pixel-style cell centre) against the probe's box and distance tile. A
+/// function of those inputs alone, so every fragment of a cell reads one
+/// lookup.
 ///
-/// 1. Two independent taps: at the origin and at the box hit. An origin at
-///    or behind the stored surface (h ≥ 0) is in the capture shadow: no
-///    term past the depth margin κ. Otherwise two to four more taps,
-///    independent of the search's, fade the term beside the shadow
+/// 0. The search starts from the origin clamped into the box, keeping the
+///    ray. An origin past a side face (a straddling face's water outside an
+///    authored box, a pixel cell centred inside the wall at a rim) starts on
+///    that face, and a derived box's floor, the capture plane 2 mm above the
+///    water, lifts every origin onto it. A start the clamp moved onto a side
+///    face lies on what the capture saw there (a derived box's wall): within
+///    the depth margin it reads as on that stored surface, never behind it,
+///    so a cell straddling a wall keeps its term and its search reads the
+///    wall's foot.
+/// 1. Two independent taps: at the start and at the box hit. A start at or
+///    behind the stored surface (h ≥ 0) is in the capture shadow: no term
+///    past the depth margin κ. Otherwise two to four more taps, independent
+///    of the search's, fade the term beside the shadow
 ///    ([`reflection_shadow_fade`]); within κ the term also fades out by
 ///    depth, looked up toward the box hit.
-/// 2. Up to K sphere steps from the origin; the first sample behind a
-///    surface closes the bracket. A sample in a capture miss, a step that
-///    stalls, and a step reaching the box hit stop stepping.
+/// 2. Up to K sphere steps from the start; the first sample behind a surface
+///    closes the bracket. A sample in a capture miss, a step that stalls,
+///    and a step reaching the box hit stop stepping.
 /// 3. Otherwise the box hit closes the bracket when it lies behind a stored
 ///    surface; if not, nothing stored lies inside the box: the box hit.
 /// 4. M false-position estimates on the bracket.
 ///
 /// A wall on the box keeps box projection's answer: h is 0 at the box hit,
-/// and false position returns it.
+/// and false position returns it. A start on a face the ray leaves through
+/// leaves the box through another ([`reflection_box_hit`]), so water outside
+/// an authored box resolves along its ray rather than at its own azimuth.
 pub fn reflection_search(
     origin: Vec3,
     ray: Vec3,
@@ -256,10 +270,17 @@ pub fn reflection_search(
     distance: impl Fn(Vec2) -> f32,
 ) -> FluidReflectionSearch {
     let h = |q: Vec3| reflection_search_h(q, capture_point, tile, &distance);
-    let box_hit = reflection_box_hit(origin, ray, box_min, box_max);
-    let t_box = (box_hit - origin).dot(ray);
-    let h_origin = h(origin);
+    let start = origin.clamp(box_min, box_max);
+    let on_side = start.x != origin.x || start.z != origin.z;
+    let box_hit = reflection_box_hit(start, ray, box_min, box_max);
+    let t_box = (box_hit - start).dot(ray);
+    let h_start = h(start);
     let h_box = h(box_hit);
+    let h_origin = if on_side && h_start < FLUID_REFLECTION_SHADOW_MARGIN {
+        h_start.min(0.0)
+    } else {
+        h_start
+    };
     let ends_at = |point: Vec3, status, weight| FluidReflectionSearch {
         point,
         lookup: reflection_lookup(point, capture_point, ray),
@@ -269,16 +290,17 @@ pub fn reflection_search(
     if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, 0.0);
     }
-    let weight = reflection_shadow_fade(origin, capture_point, tile, h_origin, &distance)
+    let weight = reflection_shadow_fade(start, capture_point, tile, h_origin, &distance)
         * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
-    if h_origin >= 0.0 {
+    if h_origin >= 0.0 && !on_side {
         return ends_at(box_hit, FluidReflectionSearchStatus::CaptureShadow, weight);
     }
 
-    // Front end of the bracket: the last sample in front of a surface.
+    // Front end of the bracket: the last sample in front of a surface (or,
+    // for a start on a side face, on it).
     let (mut t_front, mut h_front) = (0.0, h_origin);
     let mut back = None;
-    let from_capture = origin - capture_point;
+    let from_capture = start - capture_point;
     let b = from_capture.dot(ray);
     for _ in 0..FLUID_REFLECTION_SEARCH_STEPS {
         // The stored surface toward this sample, as a distance from the
@@ -286,7 +308,7 @@ pub fn reflection_search(
         if h_front <= -1.0 {
             break;
         }
-        let q = origin + ray * t_front;
+        let q = start + ray * t_front;
         let toward = q - capture_point;
         let level = Vec3::new(toward.x, toward.y.max(0.0), toward.z);
         let radius = level.length() / (h_front + 1.0);
@@ -298,7 +320,7 @@ pub fn reflection_search(
         if t_next <= t_front || t_next >= t_box {
             break;
         }
-        let h_next = h(origin + ray * t_next);
+        let h_next = h(start + ray * t_next);
         if h_next >= 0.0 {
             back = Some((t_next, h_next));
             break;
@@ -321,7 +343,7 @@ pub fn reflection_search(
         if refinement + 1 == FLUID_REFLECTION_SEARCH_REFINEMENTS {
             break;
         }
-        let h_hit = h(origin + ray * t_hit);
+        let h_hit = h(start + ray * t_hit);
         if h_hit >= 0.0 {
             (t_back, h_back) = (t_hit, h_hit);
         } else {
@@ -329,7 +351,7 @@ pub fn reflection_search(
         }
     }
     ends_at(
-        origin + ray * t_hit,
+        start + ray * t_hit,
         FluidReflectionSearchStatus::Hit,
         weight,
     )

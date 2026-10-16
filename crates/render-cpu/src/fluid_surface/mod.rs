@@ -1,7 +1,5 @@
-// Fluid surface data logic: surface faces packed into one shared mesh, per-face
-// drift maps and rates, visible draws, draw slots and their parameter rows, the
-// reflection probe table, and the warp's, depth fog's, reflection's and
-// reflection style's CPU references.
+// Fluid surface data logic: the shared surface mesh, drift, draws and slots,
+// the reflection probe table, and the warp, fog and reflection CPU references.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use bytemuck::{Pod, Zeroable};

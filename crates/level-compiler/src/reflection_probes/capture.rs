@@ -71,9 +71,10 @@ pub(crate) fn inverse_l1_distance(distance: Option<f32>, direction: Vec3) -> f32
 /// Capture one interior row. Each supersample's radiance is the static
 /// result plus every animated light's unit term at its reference value
 /// (`references`, by roster index), and the same sample, weighted by the
-/// solid angle it stands for, feeds the share sums. The same ray's hit
-/// distance feeds the distance tile, summed in the fixed supersample order so
-/// the bytes never depend on the worker count.
+/// solid angle it stands for, feeds the share sums, which keep only the upper
+/// hemisphere the water reads; the tile keeps every direction. The same ray's
+/// hit distance feeds the distance tile, summed in the fixed supersample order
+/// so the bytes never depend on the worker count.
 pub(crate) fn capture_row(
     scene: &CaptureScene<'_>,
     capture_point: Vec3,

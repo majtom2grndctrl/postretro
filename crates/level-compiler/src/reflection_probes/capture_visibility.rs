@@ -11,7 +11,7 @@ use crate::bc6h::f16_bits_to_f32;
 
 /// A probe whose capture point sees less than this fraction of its bound
 /// water area warns: the runtime draws no probe term on the rest.
-pub(crate) const MIN_SEEN_FRACTION: f64 = 0.5;
+const MIN_SEEN_FRACTION: f64 = 0.5;
 /// κ: the fluid shader's capture-shadow depth margin, in
 /// `h = |v|₁ · w(v) − 1`. Water with h < κ draws a probe term (faded within
 /// the margin and beside the shadow's edge); water at or past it draws none.
@@ -31,9 +31,14 @@ const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 /// fluid shader draws a probe term on (faded within κ of the cutoff), and
 /// the warning predicts the dark water. It traces no rays (a direct C-to-P
 /// visibility test would cost a BVH query per sample and could disagree
-/// with what the shader reads), and it runs from the section alone, so a warm build warns as a
-/// cold one does. Samples sit at fixed points of each face and sum in fixed
-/// order, so the result is deterministic.
+/// with what the shader reads), and it runs from the section alone, so a
+/// warm build warns as a cold one does. Samples sit at fixed points of each
+/// face and sum in fixed order, so the result is deterministic.
+///
+/// The remedy it names follows the probe's source: an authored box can move
+/// its point with `_capture_offset` or be split; a derived probe's entity is
+/// its fluid, which has no such key, so the hidden water needs its own
+/// `reflection_volume`.
 pub(crate) fn warn_hidden_water(
     section: &ReflectionProbesSection,
     probes: &[PlacedProbe],
@@ -44,11 +49,15 @@ pub(crate) fn warn_hidden_water(
         let tile = DistanceTile::decode(section, record.layer as usize);
         let seen = seen_fraction(&tile, probe, &faces);
         if seen < MIN_SEEN_FRACTION {
+            let remedy = if probe.authored {
+                "move the point with `_capture_offset`, or split the box"
+            } else {
+                "bound the hidden water with its own reflection_volume"
+            };
             log::warn!(
                 "[ReflectionProbes] probe {index} of entity {}: its capture point {:?} sees \
                  {:.0}% of the water it binds, and water it cannot see draws no reflection; \
-                 move the point with `_capture_offset`, or bound the hidden water with its own \
-                 reflection_volume",
+                 {remedy}",
                 probe.source_entity,
                 probe.capture_point,
                 seen * 100.0,
@@ -59,11 +68,7 @@ pub(crate) fn warn_hidden_water(
 
 /// The fraction of `probe`'s bound water area its capture point sees, by
 /// area-weighted samples. A probe binding no area sees all of it.
-pub(crate) fn seen_fraction(
-    tile: &DistanceTile,
-    probe: &PlacedProbe,
-    faces: &[UpFacingFace],
-) -> f64 {
+fn seen_fraction(tile: &DistanceTile, probe: &PlacedProbe, faces: &[UpFacingFace]) -> f64 {
     let capture = Vec3::from(probe.capture_point);
     let (mut seen, mut total) = (0.0f64, 0.0f64);
     for key in &probe.faces {
@@ -141,7 +146,7 @@ impl DistanceTile {
     }
 
     /// The stored inverse L1 distance toward non-zero `direction`.
-    pub(crate) fn sample(&self, direction: Vec3) -> f32 {
+    fn sample(&self, direction: Vec3) -> f32 {
         let [x, y] = irradiance_tile_texel_coord(direction.to_array(), self.dimension, self.border);
         let last = self.dimension as i64 - 1;
         let (fx, fy) = (x - 0.5, y - 0.5);

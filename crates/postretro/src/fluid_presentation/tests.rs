@@ -1534,6 +1534,24 @@ fn frame_capture_reflects_as_water_wherever_a_face_binds_a_probe() {
     assert!(prepared.contains("crate::fluid_presentation::capture_surface_look("));
 }
 
+// The descriptor's reflectivity limits and render-cpu's packing live in crates
+// that cannot see each other: a validated maximum past the packing clamp
+// would silently flatten, and a look built without a manifest would reflect
+// unlike an authored fluid that omits the field. Exact equality is the
+// contract.
+#[test]
+fn descriptor_reflectivity_limits_match_the_surface_look_packing() {
+    use postretro_render_cpu::fluid_surface::reflection::FLUID_REFLECTIVITY_MAX;
+    assert_eq!(
+        FluidDescriptor::MAX_SURFACE_REFLECTIVITY,
+        FLUID_REFLECTIVITY_MAX
+    );
+    assert_eq!(
+        FluidSurfaceLook::surface_only(1.0).surface_reflectivity,
+        FluidDescriptor::DEFAULT_SURFACE_REFLECTIVITY
+    );
+}
+
 // Pins P2 and P23 through the App's look: a fog-free fluid at `surfaceOpacity`
 // 0 draws its reflection alone once its volume has a face the level's
 // section 54 binds to a probe, and draws nothing while no face binds.

@@ -1,4 +1,4 @@
-// Distance tile and capture-visibility tests: the stored inverse L1 hit distance per texel, the miss substrate, and the hidden-water warning.
+// Distance tile and capture-visibility tests: the stored inverse L1 hit distance per texel, the miss encoding (0 = nothing hit), and the hidden-water warning.
 // See: context/lib/resource_management.md §5 · rendering_pipeline.md §7.3a
 
 use glam::Vec3;
@@ -17,7 +17,8 @@ use super::capture::{
     F16_MIN_POSITIVE, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, distance_bits, encode_distance_tile,
     inverse_l1_distance, octahedral_direction,
 };
-use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile};
+use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, warn_hidden_water};
+use super::placement::PlacedProbe;
 use super::reflection_probes_test_fixtures::{
     GeometryBuilder, fluid_volume, rect, up_rect, volumes,
 };
@@ -136,9 +137,17 @@ fn distance_tile_stores_zero_where_the_capture_hits_nothing() {
     }
     assert!(misses > 100, "only {misses} texels see the open top");
     // Straight up is open sky; straight down still reads the floor.
-    let [u, v] = irradiance_tile_texel_coord([1.0e-3, 1.0, 1.0e-3], 128, 1);
+    let [u, v] = irradiance_tile_texel_coord(
+        [1.0e-3, 1.0, 1.0e-3],
+        REFLECTION_PROBE_TILE_DIMENSION,
+        REFLECTION_PROBE_TILE_BORDER,
+    );
     assert_eq!(distance_texel(&section, 0, u as u32, v as u32), 0.0);
-    let [u, v] = irradiance_tile_texel_coord([1.0e-3, -1.0, 1.0e-3], 128, 1);
+    let [u, v] = irradiance_tile_texel_coord(
+        [1.0e-3, -1.0, 1.0e-3],
+        REFLECTION_PROBE_TILE_DIMENSION,
+        REFLECTION_PROBE_TILE_BORDER,
+    );
     assert!(distance_texel(&section, 0, u as u32, v as u32) > 1.9);
 }
 
@@ -209,8 +218,11 @@ fn dividing_wall(builder: &mut GeometryBuilder) {
 
 // Acceptance A2: the dividing wall hides most of the north leg from a
 // capture point in the west leg (about a third of the water seen), so the
-// probe warns, naming itself and its source entity. The same L without the
-// wall, and the plain pool, warn nothing.
+// probe warns, naming itself and its source entity, and the remedy its
+// source can take: an authored box moves its point or splits; a derived
+// probe's fluid entity has no `_capture_offset`, so its hidden water needs a
+// box of its own. The same L without the wall, and the plain pool, warn
+// nothing.
 #[test]
 fn a_capture_point_that_sees_under_half_its_water_warns() {
     let warning = "probe 0 of entity 6: its capture point";
@@ -238,6 +250,35 @@ fn a_capture_point_that_sees_under_half_its_water_warns() {
         .and_then(|n| n.parse().ok())
         .expect("the warning names the fraction seen");
     assert!((20.0..45.0).contains(&percent), "{message}");
+    assert!(
+        message.contains("move the point with `_capture_offset`, or split the box"),
+        "{message}"
+    );
+    logs.assert_not_logged(LogLevel::Warn, "bound the hidden water");
+
+    // The same capture as a derived probe of the fluid entity.
+    logs.clear();
+    let record = &section.probes[0];
+    let derived = PlacedProbe {
+        source_entity: 5,
+        authored: false,
+        box_min: record.box_min,
+        box_max: record.box_max,
+        capture_point: record.capture_point,
+        bound_area: 0.0,
+        faces: section
+            .bindings
+            .iter()
+            .map(|b| (b.volume, b.face))
+            .collect(),
+    };
+    warn_hidden_water(&section, &[derived], &l_pool());
+    logs.assert_logged_once(LogLevel::Warn, "probe 0 of entity 5: its capture point");
+    logs.assert_logged_once(
+        LogLevel::Warn,
+        "bound the hidden water with its own reflection_volume",
+    );
+    logs.assert_not_logged(LogLevel::Warn, "_capture_offset");
 
     logs.clear();
     let mut open = lit_floor_room([255, 255, 255, 255]);
@@ -247,7 +288,7 @@ fn a_capture_point_that_sees_under_half_its_water_warns() {
     logs.assert_not_logged(LogLevel::Warn, "of the water it binds");
 }
 
-// --- Miss substrate ----------------------------------------------------------
+// --- Miss encoding (0 = nothing hit) ----------------------------------------------------------
 
 // Acceptance A7: a finite hit at any in-level distance stores a non-zero
 // distance, a texel only one supersample of which hit at 40 km included; a

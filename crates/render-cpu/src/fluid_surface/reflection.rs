@@ -1,19 +1,21 @@
-// Fluid reflection probes: the probe table's GPU layout, the per-vertex probe
-// index, and the GPU-free CPU reference for `fluid_surface.wgsl`'s probe term,
-// its live-lighting ratio included (the distance search is `reflection_search`).
+// Fluid reflection probes: probe table GPU layout, per-vertex probe index, and
+// the CPU reference for `fluid_surface.wgsl`'s probe term (search: `reflection_search`).
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3, Vec4};
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::octahedral::encode_unquantized_uv;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
     REFLECTION_PROBE_NO_LIGHT, ReflectionProbeLightShare, ReflectionProbeRecord,
-    ReflectionProbesSection, reflection_probe_lobe_weights,
+    ReflectionProbesSection, reflection_probe_distance_tile_bytes, reflection_probe_lobe_weights,
+    reflection_probe_tile_bytes,
 };
 
 use super::FluidFaceDriftMap;
+use super::fog::fog_proximity;
 use super::reflection_search::reflection_search;
 use super::reflection_style::{FluidTexelAxes, reflection_point};
 use crate::frame_uniforms::LightTermMask;
@@ -44,6 +46,10 @@ pub const FLUID_REFLECTION_COVERAGE_EPSILON: f32 = 1.0e-4;
 pub const FLUID_REFLECTION_REFERENCE_FLOOR: f32 = 1.0e-30;
 /// Largest value of one unorm10 share field.
 pub const FLUID_REFLECTION_UNORM10_MAX: u32 = 1023;
+/// Least height a reflected unit ray keeps above the horizon before the
+/// search, about 0.06°: a pixel-style cell's tilted normal can mirror a
+/// grazing view below the water, where the probe reflects nothing.
+pub const FLUID_REFLECTION_RAY_MIN_Y: f32 = 1.0e-3;
 
 /// u32 words of one share entry's lobe shares, padded to whole `vec4<u32>`.
 pub const FLUID_PROBE_SHARE_WORDS: usize = REFLECTION_PROBE_LOBE_COUNT.div_ceil(4) * 4;
@@ -149,14 +155,36 @@ impl FluidProbeGpu {
     }
 }
 
+/// Whether the probe array can upload `section`'s colour tiles: BC6H at a
+/// tile dimension of whole 4×4 blocks, or RGBA16F.
+fn probe_tile_format_usable(section: &ReflectionProbesSection) -> bool {
+    match section.atlas_format {
+        IRRADIANCE_FORMAT_BC6H => section.tile_dimension.is_multiple_of(4),
+        IRRADIANCE_FORMAT_RGBA16F => true,
+        _ => false,
+    }
+}
+
 /// Whether the renderer can install `section`'s probes: some probe, no more
-/// than the cap. The loader already refuses anything else; a hand-built
-/// section past it reflects nothing rather than overrunning the table.
+/// than the cap, a colour format the probe array uploads, and colour and
+/// distance payloads of exactly one tile per probe. The loader already
+/// refuses anything else; a hand-built section past it reflects nothing
+/// rather than overrunning the table or failing texture creation. Every
+/// consumer reads this one answer (the table, the probe indices, the draw
+/// predicate's bound face, and the renderer's install), so no face draws or
+/// samples a probe that is not there.
 pub fn usable_probe_section(
     section: Option<&ReflectionProbesSection>,
 ) -> Option<&ReflectionProbesSection> {
     section.filter(|section| {
-        !section.probes.is_empty() && section.probes.len() <= MAX_REFLECTION_PROBES
+        let probes = section.probes.len();
+        probes > 0
+            && probes <= MAX_REFLECTION_PROBES
+            && probe_tile_format_usable(section)
+            && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
+                .is_some_and(|bytes| bytes * probes == section.tiles.len())
+            && reflection_probe_distance_tile_bytes(section.distance_format, section.tile_dimension)
+                .is_some_and(|bytes| bytes * probes == section.distances.len())
     })
 }
 
@@ -273,10 +301,20 @@ pub fn reflection_mirror(view: Vec3, outward: Vec3) -> Vec3 {
     outward * (2.0 * view.dot(outward)) - view
 }
 
-/// Where the reflected ray from `origin` leaves the projection box: the
-/// runtime slab test, nearest exit over the three slabs. A component near
-/// zero is nudged off it rather than divided by. A fragment outside the box
-/// clamps to itself.
+/// The reflected unit ray kept in the upper hemisphere: its height floored
+/// at [`FLUID_REFLECTION_RAY_MIN_Y`], renormalized, its azimuth kept. Smooth
+/// style's flat mirror never reaches the floor; a pixel-style cell's tilt
+/// can push a grazing view's ray below the water.
+pub fn reflection_above_horizon(ray: Vec3) -> Vec3 {
+    Vec3::new(ray.x, ray.y.max(FLUID_REFLECTION_RAY_MIN_Y), ray.z).normalize()
+}
+
+/// Where the reflected ray from `origin`, inside the projection box or on
+/// it, leaves the box: the runtime slab test, nearest exit over the three
+/// slabs. A component near zero is nudged off it rather than divided by. A
+/// slab whose exit lies at or behind the origin (an origin on a face the ray
+/// leaves through) does not stop the ray, which leaves through another; an
+/// origin on such faces of all three slabs keeps itself.
 pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3) -> Vec3 {
     let nudged = Vec3::select(
         ray.cmplt(Vec3::ZERO),
@@ -292,7 +330,9 @@ pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3)
     let t0 = (box_min - origin) / safe;
     let t1 = (box_max - origin) / safe;
     let far = t0.max(t1);
-    let t = far.x.min(far.y.min(far.z)).max(0.0);
+    let lead = far.x.max(far.y.max(far.z));
+    let ahead = Vec3::select(far.cmpgt(Vec3::ZERO), far, Vec3::splat(lead));
+    let t = ahead.x.min(ahead.y.min(ahead.z)).max(0.0);
     origin + ray * t
 }
 
@@ -359,7 +399,7 @@ impl FluidReflectionLights<'_> {
 
 /// Whether a share entry's roster index names a descriptor: the reserved
 /// value, and any index past the bound descriptors, indexes nothing, so the
-/// entry adds no term (P28).
+/// entry adds no term.
 pub fn reflection_light_present(lights: &FluidReflectionLights<'_>, roster_index: u32) -> bool {
     roster_index != REFLECTION_PROBE_NO_LIGHT && (roster_index as usize) < lights.descriptors.len()
 }
@@ -367,7 +407,7 @@ pub fn reflection_light_present(lights: &FluidReflectionLights<'_>, roster_index
 /// A present light's live RGB value, as SH compose evaluates it:
 /// `sh_compose.wgsl`'s `animated_light_scale` read straight from descriptor
 /// `roster_index`, the roster→descriptor table being identity whenever
-/// section 54 loads (P10). Clamped colour × clamped brightness, 0 while
+/// section 54 loads. Clamped colour × clamped brightness, 0 while
 /// inactive; no promotion weight, lighting mask or debug override.
 pub fn reflection_light_value(lights: &FluidReflectionLights<'_>, roster_index: u32) -> Vec3 {
     Vec3::from(animated_light_scale(
@@ -466,13 +506,18 @@ pub struct FluidReflectionFragment {
 /// probe's capture, sampled toward the distance search's lookup and scaled
 /// by the live-lighting ratio toward that same direction, composited over it
 /// at the Fresnel weight times the search's (0 in the capture shadow,
-/// fading in over the pinned capture texels of angle beside it).
+/// fading in over the pinned capture texels of angle beside it) times the
+/// eye's band: an eye within [`super::fog::FLUID_FOG_BAND`] above the plane
+/// scales the term by its height through the band, the fog's own proximity
+/// ([`fog_proximity`]), reaching 0 at the plane, so an eye bobbing there
+/// never flips the mirror.
 /// The reflection starts from the style's point (the fragment, or its texel
 /// cell's centre about the cell's tilted normal) and sees the eye from
 /// there, so every fragment of a pixel-style cell reads one search, one
-/// sample and one weight. `sample(layer, uv)` reads the colour tile and
-/// `distance(layer, uv)` the distance tile, both at level 0. The layer comes
-/// from the face's probe index alone.
+/// sample and one weight; the mirrored ray is kept above the horizon
+/// ([`reflection_above_horizon`]) before the search. `sample(layer, uv)`
+/// reads the colour tile and `distance(layer, uv)` the distance tile, both
+/// at level 0. The layer comes from the face's probe index alone.
 pub fn reflection_fragment(
     surface: Vec4,
     fragment: &FluidReflectionFragment,
@@ -504,7 +549,7 @@ pub fn reflection_fragment(
     );
     let view = (fragment.camera - point.position).normalize_or_zero();
     let probe = &probes[fragment.probe as usize];
-    let ray = reflection_mirror(view, point.normal);
+    let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
     let search = reflection_search(
         point.position,
         ray,
@@ -519,7 +564,8 @@ pub fn reflection_fragment(
         reflection_tile_uv(search.lookup, tile[0], tile[1]),
     ) * reflection_ratio(&FluidProbeGpu::pack(probe).lights, search.lookup, lights);
     let fresnel = reflection_fresnel(view.dot(outward), fragment.reflectivity) * search.weight;
-    reflection_composite(surface, capture, fresnel)
+    let band = fog_proximity(fragment.camera, fragment.world_position, outward);
+    reflection_composite(surface, capture, fresnel * band)
 }
 
 #[cfg(test)]

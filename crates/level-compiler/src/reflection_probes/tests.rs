@@ -487,11 +487,16 @@ fn every_term_room() -> LitFloorRoom {
         descriptor([2.0; 3], Vec::new()),
     ];
     room.extras.delta = Some(uniform_delta(&room.extras.sh, 5, 1, [0.5, 0.25, 0.125]));
+    // Light 0 on the floor too, below the horizon: in the tile, not the
+    // shares. Every light reaches the ceiling, above it, so all five rank.
     uniform_weight_maps(
         &mut room,
         &[
-            (FLOOR, &[(0, 0.5), (2, 0.1), (3, 0.1), (4, 0.05)]),
-            (CEILING, &[(1, 0.75)]),
+            (FLOOR, &[(0, 0.5)]),
+            (
+                CEILING,
+                &[(0, 0.5), (1, 0.75), (2, 0.1), (3, 0.1), (4, 0.05)],
+            ),
         ],
     );
     room.extras.alpha_lights = AlphaLightsSection {

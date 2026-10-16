@@ -1,7 +1,6 @@
 // Game: Postretro
 // Format: Standard
-// Reflection-probes manual test map. Covers the Manual rows of
-// context/plans/in-progress/reflection-probes/index.md.
+// Reflection-probe manual test map: what to look for, per feature, below.
 // Axis-aligned box brushes; 1 map unit = 0.0254 m; map coordinates, Z up.
 // Keep comments free of braces and quotes and
 // never leave a blank line inside an entity block. A bare comment marker with
@@ -45,21 +44,21 @@
 //   Room B has a second SWITCHABLE cyan light, same tag, at 1200 440 300, and a
 //   red OFF and green ON switch pair on the east wall above the balcony.
 // ----
-// WHAT TO LOOK FOR, per Manual row
-//   Row 37, existing map: not this map; rebuild e24-environment-test.map.
-//   Row 38, mirror: from the start, the pool mirrors the room, the magenta sdf
+// WHAT TO LOOK FOR, per feature
+//   Existing-map pool reflects: not this map; rebuild e24-environment-test.map.
+//   Mirror and parallax: from the start, the pool mirrors the room, the magenta sdf
 //     corner and the stump shadow included. Strafe along y 56: the north wall
 //     and neon sign hold their place. Crouch or stand on the coping edge for a
 //     low eye: coping, crate, bench and stump reflect at the right height.
-//   Row 39, Fresnel: look straight down from the coping, faint; look across the
+//   Fresnel: look straight down from the coping, faint; look across the
 //     pool, near-mirror. Climb the stairs to the balcony and look west across
 //     the basin and canal: far walls and the green ceiling reflect strongly.
-//   Row 40, live light: watch the amber flicker in the pool reflection, no seam
+//   Live lighting and switch: watch the amber flicker in the pool reflection, no seam
 //     between lobes. Press the red pool-room switch: the south-east cyan wash
 //     leaves the reflection there; green restores it. Repeat from the balcony
 //     with its own switches and watch the basin. The neon sign reflects.
-//   Row 41, pixel style: per the manifest water fluid reflection style.
-//   Row 42, canal boundary: stand in room A or on the balcony looking along the
+//   Style, pixel: per the manifest water fluid reflection style.
+//   Canal boundary: stand in room A or on the balcony looking along the
 //     canal through the doorway. Where the derived room A probe meets the
 //     authored room B probe at x 920, expect at most a brightness or occlusion
 //     step, never a geometry jump.

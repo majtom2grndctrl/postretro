@@ -17,7 +17,8 @@ use super::fixtures::{
 };
 use super::*;
 use crate::fluid_surface::reflection::{
-    FluidReflectionFragment, FluidReflectionLights, reflection_box_hit, reflection_fragment,
+    FLUID_REFLECTION_RAY_MIN_Y, FluidReflectionFragment, FluidReflectionLights,
+    reflection_above_horizon, reflection_box_hit, reflection_fragment, reflection_fresnel,
     reflection_lookup, reflection_mirror,
 };
 use crate::fluid_surface::reflection_style::{
@@ -219,6 +220,253 @@ fn a_capture_miss_never_ends_the_search_early() {
         "the stored wall at x = 5, not the box at 7: {}",
         result.point
     );
+}
+
+// A capture miss partway along the ray never ends the search either: with
+// nothing stored in a band of azimuth east-south-east of the capture point,
+// the first sphere step lands in the band and stepping stops, yet the box
+// hit, far past the east wall and outside the band, still closes the
+// bracket, and false position settles between the step and the box hit.
+#[test]
+fn a_capture_miss_on_a_sphere_step_never_ends_the_search_early() {
+    let room = empty_room();
+    let in_band = |d: Vec3| d.x > 0.0 && (-44.0..=-24.0).contains(&d.z.atan2(d.x).to_degrees());
+    let banded = Scene {
+        brushes: room.brushes.clone(),
+        capture: room.capture,
+        box_min: room.box_min,
+        box_max: room.box_max + Vec3::new(20.0, 0.0, 0.0),
+        tile: capture_tile(|d| if in_band(d) { 0.0 } else { room.inverse_l1(d) }),
+    };
+    let h = |q: Vec3| reflection_search_h(q, banded.capture, TILE, &|uv| banded.distance(uv));
+    let fragment = Vec3::new(-4.5, 0.0, -3.5);
+    let theta = 6.0f32.to_radians();
+    let ray = Vec3::new(theta.cos(), theta.sin(), 0.0);
+    // The first sphere step, as the search takes it: to the ray point as far
+    // from the capture point as the surface the fragment's own tap stores.
+    let h_origin = h(fragment);
+    assert!(h_origin > -1.0 && h_origin < 0.0, "{h_origin}");
+    let from_capture = fragment - banded.capture;
+    let level = Vec3::new(from_capture.x, from_capture.y.max(0.0), from_capture.z);
+    let radius = level.length() / (h_origin + 1.0);
+    let b = from_capture.dot(ray);
+    let t_step = -b + (b * b - (from_capture.dot(from_capture) - radius * radius)).sqrt();
+    assert!(
+        in_band(fragment + ray * t_step - banded.capture),
+        "the fixture's step lies in the band"
+    );
+    assert_eq!(h(fragment + ray * t_step), -1.0, "the first step is a miss");
+    let box_hit = reflection_box_hit(fragment, ray, banded.box_min, banded.box_max);
+    let t_box = (box_hit - fragment).dot(ray);
+    assert!(t_step < t_box);
+    assert!(
+        h(box_hit) >= 0.0,
+        "the box hit lies behind the stored east wall"
+    );
+
+    let result = search(&banded, fragment, ray);
+    assert_eq!(result.status, FluidReflectionSearchStatus::Hit);
+    let t_hit = (result.point - fragment).dot(ray);
+    assert!(
+        t_hit > t_step && t_hit <= t_box,
+        "settles in the bracket: {t_step} < {t_hit} ≤ {t_box}"
+    );
+}
+
+// --- The search starts inside the box -----------------------------------------
+
+/// The probe record of `scene`'s probe, at layer 0 with no lights.
+fn probe_record(scene: &Scene) -> ReflectionProbeRecord {
+    ReflectionProbeRecord {
+        source_entity: 0,
+        box_min: scene.box_min.to_array(),
+        box_max: scene.box_max.to_array(),
+        capture_point: scene.capture.to_array(),
+        layer: 0,
+        lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+    }
+}
+
+// Water outside an authored box (a face straddling the box, its centroid
+// inside): the search starts from the fragment clamped onto the box face it
+// lies past, and a ray leaving through that face leaves the box through
+// another, so the reflection resolves along the ray to the wall the capture
+// saw past the box and follows the view, rather than collapsing onto the
+// horizon at the fragment's own azimuth.
+#[test]
+fn water_outside_an_authored_box_resolves_along_its_ray() {
+    let room = empty_room();
+    let (box_min, box_max) = (Vec3::new(-3.0, -1.0, -2.5), Vec3::new(3.0, 2.5, 2.5));
+    let fragment = Vec3::new(3.5, 0.0, 0.0);
+    let start = Vec3::new(3.0, 0.0, 0.0);
+    let mut heights = Vec::new();
+    for eye in [Vec3::new(-2.0, 1.5, 0.0), Vec3::new(-2.0, 3.0, 0.0)] {
+        let ray = reflected(eye, fragment);
+        assert!(
+            ray.x > 0.0,
+            "the ray leaves through the face the fragment lies past"
+        );
+        let result = reflection_search(fragment, ray, box_min, box_max, room.capture, TILE, |uv| {
+            room.distance(uv)
+        });
+        assert_eq!(result.status, FluidReflectionSearchStatus::Hit, "eye {eye}");
+        assert_eq!(result.weight, 1.0, "eye {eye}");
+        assert!(
+            (result.point.x - 5.0).abs() < 0.05,
+            "the east wall past the box: {}",
+            result.point
+        );
+        let along = (result.point - start).normalize();
+        assert!(
+            along.abs_diff_eq(ray, 1.0e-3),
+            "on the ray from the clamped start: {along} vs {ray}"
+        );
+        let lookup = result.lookup;
+        let elevation = lookup.y.atan2(lookup.x.hypot(lookup.z)).to_degrees();
+        assert!(
+            elevation > 4.0,
+            "eye {eye}: {elevation:.1}° above the horizon"
+        );
+        heights.push(result.point.y);
+    }
+    assert!(
+        heights[1] > heights[0] + 0.3,
+        "the reflection follows the view: {heights:?}"
+    );
+}
+
+// A pixel-style cell straddling a wall at the water's rim: its centre lies
+// inside the wall, behind the surface the capture stored there, where the
+// depth margin alone would fade the term to about 0.8. The search starts
+// from the centre clamped onto the box (a derived box's wall), on the stored
+// surface: the cell keeps its full term, and its search reads the wall's
+// foot where the cell meets it.
+#[test]
+fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
+    let scene = canal();
+    let probe = probe_record(scene);
+    let eye = Vec3::new(-1.5, 1.6, 0.0);
+    // The rim's last 3 mm of water before the +z wall, in a cell (16 texels
+    // a metre, offset a twentieth of a texel) whose centre lies 2.8 cm in.
+    let world = Vec3::new(0.0, 0.0, 1.998);
+    let mut fragment = smooth_fragment(eye, world);
+    fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
+    fragment.texel_uv = Vec2::new(world.x * 16.0, world.z * 16.0 + 0.05);
+    let point = reflection_point(
+        fragment.style,
+        fragment.texel_uv,
+        world,
+        Vec3::Y,
+        fragment.axes,
+        fragment.time,
+        fragment.texels_per_pixel,
+    );
+    assert!(
+        point.position.z > 2.02,
+        "inside the wall: {}",
+        point.position
+    );
+    let h_centre = reflection_search_h(point.position, scene.capture, TILE, &|uv| {
+        scene.distance(uv)
+    });
+    assert!(
+        h_centre > 0.0 && h_centre < FLUID_REFLECTION_SHADOW_MARGIN,
+        "the centre lies behind the stored wall, within the depth margin: {h_centre}"
+    );
+
+    let view = (eye - point.position).normalize();
+    let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
+    let result = search(scene, point.position, ray);
+    assert_eq!(result.weight, 1.0, "{:?}", result.status);
+    let start = point.position.clamp(scene.box_min, scene.box_max);
+    let foot = Vec3::new(start.x, 0.0, start.z) - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
+    let apart = texels_apart(result.lookup, foot);
+    assert!(apart <= 1.0, "the wall's foot: {apart} texels off");
+
+    // The whole fragment reference: over a zero-alpha surface its coverage
+    // is the cell's undimmed Fresnel weight.
+    let out = reflection_fragment(
+        Vec4::new(0.1, 0.2, 0.3, 0.0),
+        &fragment,
+        &[probe],
+        TILE,
+        &FluidReflectionLights::NONE,
+        |_, _| Vec3::ONE,
+        |_, uv| scene.distance(uv),
+    );
+    let fresnel = reflection_fresnel(view.dot(Vec3::Y), 1.0);
+    assert!((out.w - fresnel).abs() < 1.0e-6, "{} vs {fresnel}", out.w);
+}
+
+// A grazing pixel-style view: a cell whose displayed offset tilts its normal
+// away from the eye mirrors the ray below the water. The fragment reference
+// floors it above the horizon before the search: its distance taps are
+// those of the search along the floored ray, not along the mirrored one.
+#[test]
+fn a_pixel_cell_tilted_past_a_grazing_view_searches_above_the_horizon() {
+    let scene = empty_room();
+    let probe = probe_record(scene);
+    let camera = Vec3::new(-4.5, 0.25, 0.0);
+    let (fragment, point, mirrored) = (0..64)
+        .flat_map(|x| (-16..16).map(move |z| Vec2::new(x as f32 + 0.5, z as f32 + 0.5)))
+        .find_map(|texel| {
+            let mut fragment = smooth_fragment(camera, cell_point(texel));
+            fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
+            fragment.time = 3.3;
+            let point = reflection_point(
+                fragment.style,
+                fragment.texel_uv,
+                fragment.world_position,
+                Vec3::Y,
+                fragment.axes,
+                fragment.time,
+                fragment.texels_per_pixel,
+            );
+            let mirrored = reflection_mirror((camera - point.position).normalize(), point.normal);
+            (mirrored.y < 0.0).then_some((fragment, point, mirrored))
+        })
+        .expect("some cell's tilt mirrors the grazing view below the water");
+    let floored = reflection_above_horizon(mirrored);
+    assert!(floored.y >= 0.99 * FLUID_REFLECTION_RAY_MIN_Y && floored.y < 0.01);
+    assert!((floored.length() - 1.0).abs() < 1.0e-6);
+    let level = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize();
+    assert!(
+        level(floored).abs_diff_eq(level(mirrored), 1.0e-6),
+        "azimuth kept"
+    );
+
+    let taps_along = |ray: Vec3| {
+        let taps = RefCell::new(Vec::new());
+        reflection_search(
+            point.position,
+            ray,
+            scene.box_min,
+            scene.box_max,
+            scene.capture,
+            TILE,
+            |uv| {
+                taps.borrow_mut().push(uv);
+                scene.distance(uv)
+            },
+        );
+        taps.into_inner()
+    };
+    let taps = RefCell::new(Vec::new());
+    reflection_fragment(
+        Vec4::new(0.1, 0.2, 0.3, 0.6),
+        &fragment,
+        &[probe],
+        TILE,
+        &FluidReflectionLights::NONE,
+        |_, _| Vec3::ONE,
+        |_, uv| {
+            taps.borrow_mut().push(uv);
+            scene.distance(uv)
+        },
+    );
+    let taps = taps.into_inner();
+    assert_eq!(taps, taps_along(floored));
+    assert_ne!(taps, taps_along(mirrored));
 }
 
 // --- Crate fixture (test-map pool room) ---------------------------------------

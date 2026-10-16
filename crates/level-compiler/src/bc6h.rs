@@ -54,10 +54,10 @@
 //! output-f16 space because the finalize step is a monotonic linear scale.
 //! No cluster-fit refinement; the round-trip tolerance gates the result.
 //!
-//! The CPU decoder ([`decode_bc6h_block`], [`decode_bc6h_rgb_to_f32_rgba`])
-//! reproduces that hardware decode for Mode 11 and refuses every other mode:
-//! it reads only what this encoder writes, such as id 22 lightmap texels a
-//! later compiler stage shades with.
+//! The CPU decoder ([`decode_bc6h_block`], plus a whole-payload reader the
+//! tests use) reproduces that hardware decode for Mode 11 and refuses every
+//! other mode: it reads only what this encoder writes, such as id 22 lightmap
+//! texels a later compiler stage shades with.
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use thiserror::Error;
@@ -338,7 +338,7 @@ pub enum Bc6hDecodeError {
 /// Blocks are row-major, `ceil(width/4)·ceil(height/4)` of them; texels a
 /// partial edge block covers past `width`/`height` are dropped. Every block
 /// must be Mode 11 — the only mode the encoder emits — or the decode fails.
-#[cfg_attr(not(test), allow(dead_code))] // Whole-payload reader for tests; the capture decodes per block.
+#[cfg(test)]
 pub fn decode_bc6h_rgb_to_f32_rgba(
     bytes: &[u8],
     width: u32,
@@ -378,8 +378,8 @@ pub fn decode_bc6h_rgb_to_f32_rgba(
 /// Decode one 16-byte BC6H Mode 11 block to its 16 RGB texels, row-major
 /// within the block (texel `k` sits at `(k % 4, k / 4)`). Exact to hardware:
 /// `unq` endpoints, the 4-bit weight table, then the UFloat finalize to f16.
-/// The capture stage samples one lightmap texel per hit through this, so a
-/// single-texel read never decodes a whole block row.
+/// The capture stage reads a bilinear footprint per hit and decodes only the
+/// blocks its taps land in.
 pub fn decode_bc6h_block(block: &[u8; 16]) -> Result<[[f32; 3]; 16], Bc6hDecodeError> {
     let bits = u128::from_le_bytes(*block);
     let mut cursor = 0u32;
@@ -421,8 +421,8 @@ fn read_bits(bits: u128, cursor: &mut u32, count: u32) -> u128 {
     value
 }
 
-/// Half-float bit pattern → f32, exact for every f16 value. The decoder's
-/// finalize step and the tests' raw-f16 lightmap reads share it.
+/// Half-float bit pattern → f32, exact for every f16 value. Shared by the BC6H
+/// decoder and the reflection-probe samplers that read f16 sections.
 pub(crate) fn f16_bits_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 0x1) as u32;
     let exp = ((h >> 10) & 0x1f) as u32;

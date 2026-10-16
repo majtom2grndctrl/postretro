@@ -3008,10 +3008,8 @@ warning.
 **In co-op,** everyone swims by the host's fluids: the host's `viscosity`
 drives movement on every machine. The tint, muffle, surface opacity,
 reflectivity, fog, wave and sounds come from each machine's own declaration of
-that name, the way sound
-keys do, so a player whose mod lacks the fluid still swims in it but sees no
-tint.
-Fluid declarations do not affect who can join.
+that name, the way sound keys do, so a player whose mod lacks the fluid still
+swims in it but sees no tint. Fluid declarations do not affect who can join.
 
 ### `movement.swim`
 

@@ -195,6 +195,27 @@ fn malformed_probes_are_refused() {
     assert!(refusal(&stale).contains("light 3 is unused but carries values"));
 }
 
+// Two used entries naming one light would count its change twice in the
+// ratio. The same light in two probes is ordinary: the fixture names lights
+// 3 and 0 in both.
+#[test]
+fn a_light_named_twice_in_one_probe_is_refused() {
+    let mut twice = section();
+    twice.probes[1].lights[2] = share(3);
+    let message = refusal(&twice);
+    assert!(
+        message.starts_with("reflection probes:")
+            && message.contains("probe 1 lights 0 and 2 both name animated light 3"),
+        "{message}"
+    );
+
+    let shared = section();
+    assert_eq!(shared.probes[0].lights[0].roster_index, 3);
+    assert_eq!(shared.probes[1].lights[0].roster_index, 3);
+    ReflectionProbesSection::from_bytes(&shared.to_bytes())
+        .expect("one light shared by two probes loads");
+}
+
 #[test]
 fn distance_tiles_round_trip_beside_the_colour_tiles() {
     let mut section = section();

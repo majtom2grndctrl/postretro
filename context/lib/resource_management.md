@@ -256,9 +256,9 @@ A reflection probe is a compile-time capture of the static world, stored for dis
 ### 5.1 Placement
 
 - **Derived by default.** prl-build gives a probe to every up-facing fluid face no authored box claims, so existing maps' water reflects after a rebuild. Each face fits a box, clamped to the hull, to what its water sees: a pool sunk below its room's floor fits the room. Faces of one fluid entity at one height whose boxes match share a probe, stored with their union box.
-- **Authored override.** A `reflection_volume` brush's AABB is its projection box and influence region (`build_pipeline.md` §Custom FGD). An up-facing face binds the smallest authored box containing its area centroid, ties going to the earlier box in map entity order. Side and sloped faces bind nothing.
-- **Capture point.** Stored, 2 mm above the lowest water plane its probe binds, so lookups stay in the upper hemisphere. It sits at the horizontal area centroid of that water, moved onto the water when the centroid falls off it. `_capture_offset` shifts an authored point horizontally, clear of a pillar standing in the water or toward a better vantage. A box binding planes at more than one height keeps its probe and warns, naming the heights.
-- **Drops and cap.** A probe whose point lies in solid, inside any fluid or outside the hull drops with a warning naming the entity, as does an authored box binding no face. A dropped box's faces bind as if it were absent; a dropped derived probe's faces bind nothing. The per-level cap is the probe array's portable layer limit, 256: authored probes past it refuse the build, and derived probes past it drop, largest bound surface area kept, with one warning.
+- **Authored override.** A `reflection_volume` brush's AABB is its projection box and influence region (`build_pipeline.md` §Custom FGD). An up-facing face binds the smallest authored box containing its area centroid, ties going to the earlier box in map entity order; volumes within a small relative tolerance tie, so float rounding of equal boxes never decides. Side and sloped faces bind nothing.
+- **Capture point.** Stored, 2 mm above a water plane at or below every plane its probe binds, so lookups stay in the upper hemisphere. A derived probe's point is the horizontal area centroid of its group's water; an authored box's is that of the up-facing water on the lowest plane inside the box, fixed before binding so it sits over real water even when a smaller box claims that basin. Either moves onto the water when the centroid falls off it. `_capture_offset` shifts an authored point horizontally, clear of a pillar standing in the water or toward a better vantage. A box binding planes at more than one height keeps its probe and warns, naming the heights.
+- **Drops and cap.** A point within 1 cm of a wall moves 1 cm clear of it when it can stay inside its box and over its water, so no capture ray starts on a wall. A probe whose point lies in solid (or cannot clear a wall), inside any fluid or outside the hull drops with a warning naming the entity, as does an authored box binding no face. A dropped box's faces bind as if it were absent; a dropped derived probe's faces bind nothing. The per-level cap is the probe array's portable layer limit, 256: authored probes past it refuse the build, and derived probes past it drop, largest bound surface area kept (equal within the same tolerance, the earlier kept), with one warning.
 
 ### 5.2 Capture
 
@@ -266,7 +266,7 @@ Captured in its own cached prl-build stage against the static world (`build_pipe
 
 - **Colour tile.** BC6H, each texel the mean of four rotated-grid rays.
 - **Distance tile.** R16F, each texel the mean over the same rays of 1/|hit − capture point|₁. Inverse L1 is affine across an octahedral octant on a plane, so bilinear filtering reconstructs a wall exactly. 0 means the ray hit nothing, and no finite hit stores 0, so a later sky term can fill exactly the directions the capture saw nothing.
-- **Light share.** Each probe stores its top four animated lights by contribution, each with its roster index, RGB reference value and RGB share of the capture per direction lobe (up and four horizontal); the runtime scales the capture by them live (`rendering_pipeline.md` §7.3a). A light's identity is its animated-light roster index, the same in compiler and runtime. The compiler logs each probe's covered share.
+- **Light share.** Each probe stores its top four animated lights by contribution, each with its roster index, RGB reference value and RGB share of the capture over the upper hemisphere per direction lobe (up and four horizontal), the only directions water reads, so light on a pool floor never moves the reflection; the runtime scales the capture by them live (`rendering_pipeline.md` §7.3a). A light's identity is its animated-light roster index, the same in compiler and runtime. The compiler logs each probe's covered share.
 
 ### 5.3 Residency
 
@@ -279,7 +279,7 @@ PRL id 54 carries probes, tiles and face bindings (`build_pipeline.md` §PRL sec
 | Share table | One uniform laid out at the cap, written once at install: per probe its box, capture point and layer, then its light entries with shares packed unorm10 RGB per lobe |
 | Probe index | Third fluid vertex buffer, one probe index per vertex, written once at install from the face bindings |
 
-At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B) and the table 61 456 B; the probe-index buffer costs 4 B per fluid vertex (81 040 B on the stress map, ≈12.14 MiB in all). A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array and a zeroed table, and no face samples them.
+At the cap the arrays cost 12 MiB (colour 4 194 304 B BC6H, distance 8 388 608 B) and the table 61 456 B; the probe-index buffer costs 4 B per fluid vertex. A level with fluid surfaces and no usable id 54 binds a 1×1 one-layer dummy for each array and a zeroed table, and no face samples them.
 
 ---
 

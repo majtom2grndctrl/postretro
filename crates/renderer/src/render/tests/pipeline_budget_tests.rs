@@ -398,7 +398,7 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     // Albedo, emissive, specular and normal (group 1), the SH atlas, depth
     // moments and direct atlas (group 3), the reflection probe array and its
     // distance array (group 4), and scene depth for depth fog (group 5): 10
-    // of the 16. Before probes the stage held 8; the probes add exactly two.
+    // of the 16.
     let fragment_sampled = per_group(fragment_sampled_textures);
     assert_eq!(fragment_sampled, [0, 4, 0, 3, 2, 1]);
     let fragment_total: u32 = fragment_sampled.iter().sum();
@@ -415,11 +415,10 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     assert!(vertex_sampled.iter().sum::<u32>() <= 16);
 }
 
-// The reflection probes add exactly one fragment uniform (the share table, in
-// group 4 beside the params window) and no sampler: the probe array and the
-// distance array both sample through the SH atlas sampler of group 3. Before
-// probes the fluid fragment stage held 8 sampled textures, 6 uniforms and 2
-// samplers; storage stays at 8.
+// The reflection probes contribute exactly one fragment uniform (the share
+// table, in group 4 beside the params window) and no sampler: the probe array
+// and the distance array both sample through the SH atlas sampler of group 3.
+// Storage stays at 8.
 #[cfg(debug_assertions)]
 #[test]
 fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {

@@ -13,10 +13,13 @@ const K: usize = REFLECTION_PROBE_LIGHTS_PER_PROBE;
 type LobeSums = [[f64; 3]; LOBES];
 
 /// Lobe-weighted, solid-angle-weighted radiance sums over a probe's captured
-/// samples: the captured total, and each animated light's part of it at its
-/// reference value. Rows sum independently and merge in row order, so the
-/// result never depends on the worker count; no per-texel per-light value is
-/// ever held.
+/// samples in the upper hemisphere: the captured total, and each animated
+/// light's part of it at its reference value. Every runtime lookup is clamped
+/// to the horizon, so light only the lower hemisphere holds (a pool floor
+/// below the capture point) never reaches the water and takes no share; the
+/// tile itself still holds the full sphere. Rows sum independently and merge
+/// in row order, so the result never depends on the worker count; no
+/// per-texel per-light value is ever held.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ShareSums {
     captured: LobeSums,
@@ -72,7 +75,7 @@ impl ShareReport {
 impl ShareSums {
     /// One captured sample in `direction`, standing for `solid_angle`: its
     /// captured radiance and each animated light's unit term, which counts at
-    /// the light's reference value.
+    /// the light's reference value. A sample below the horizon adds nothing.
     pub(crate) fn add(
         &mut self,
         direction: Vec3,
@@ -81,6 +84,9 @@ impl ShareSums {
         animated: &[(u32, Vec3)],
         references: &[[f32; 3]],
     ) {
+        if direction.y < 0.0 {
+            return;
+        }
         let lobes = reflection_probe_lobe_weights(direction.to_array());
         let weights = lobes.map(|w| f64::from(w) * f64::from(solid_angle));
         accumulate(&mut self.captured, &weights, capture);
@@ -110,9 +116,12 @@ impl ShareSums {
 
     /// The K lights of largest total contribution (their lobe-weighted
     /// captured radiance summed over lobes and channels: the light's captured
-    /// energy over the sphere), ties to the lower roster index, each with its
-    /// per-lobe per-channel fraction of the captured light. A lobe that
-    /// captured nothing in a channel stores 0 there.
+    /// energy over the upper hemisphere), ties to the lower roster index, each
+    /// with its per-lobe per-channel fraction of the captured light. A lobe
+    /// that captured nothing in a channel stores 0 there. A light whose
+    /// reference has a negative channel is never stored, since the section
+    /// refuses a negative reference: it stays at reference, so the ratio is
+    /// unaffected, and counts toward the uncovered share.
     pub(crate) fn finish(&self, references: &[[f32; 3]]) -> ProbeShares {
         let measure = |sums: &LobeSums| sums.iter().flatten().sum::<f64>();
         let mut ranked: Vec<(u32, &LobeSums, f64)> = self
@@ -124,11 +133,23 @@ impl ShareSums {
         ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
         let animated_total: f64 = ranked.iter().map(|r| r.2).sum();
         let captured_total = measure(&self.captured);
+        let storable = |light: u32| {
+            let negative = reference(references, light).iter().any(|c| *c < 0.0);
+            if negative {
+                log::info!(
+                    "[ReflectionProbes] animated light {light} has a negative reference {:?}; \
+                     it stays at reference in reflections",
+                    reference(references, light)
+                );
+            }
+            !negative
+        };
 
         let mut entries = [ReflectionProbeLightShare::UNUSED; K];
         let mut totals = [0.0f32; K];
         let mut kept = 0.0f64;
-        for (k, (light, sums, m)) in ranked.iter().take(K).enumerate() {
+        let stored = ranked.iter().filter(|(light, ..)| storable(*light)).take(K);
+        for (k, (light, sums, m)) in stored.enumerate() {
             let mut shares = [[0.0f32; 3]; LOBES];
             for (lobe, share) in shares.iter_mut().enumerate() {
                 for channel in 0..3 {
@@ -314,6 +335,61 @@ mod tests {
             shares.report
         );
         assert!((shares.report.totals[0] - 5.0 / 17.0).abs() < 1e-6);
+    }
+
+    // Row 14: the water reads only the upper hemisphere, so light below the
+    // horizon (a lit pool floor) takes no share and no slot, and adds nothing
+    // to a horizontal lobe's captured total.
+    #[test]
+    fn samples_below_the_horizon_count_toward_no_share_or_slot() {
+        let references = [[1.0; 3], [1.0; 3]];
+        let below = Vec3::new(1.0, -0.2, 0.0).normalize();
+        let samples = vec![
+            (Vec3::NEG_Y, Vec3::splat(4.0), vec![(0, Vec3::splat(4.0))]),
+            (below, Vec3::splat(4.0), vec![(0, Vec3::splat(4.0))]),
+            (Vec3::X, Vec3::ONE, vec![(1, Vec3::ONE)]),
+        ];
+        let shares = sums_of(&samples, &references).finish(&references);
+        let stored: Vec<u32> = shares
+            .entries
+            .iter()
+            .filter(|e| e.is_used())
+            .map(|e| e.roster_index)
+            .collect();
+        assert_eq!(stored, [1]);
+        // Light 1 is all the +X lobe captured above the horizon.
+        assert_eq!(shares.entries[0].shares[1], [1.0; 3]);
+        assert_eq!(shares.report.animated_lights, 1);
+        assert_eq!(shares.report.covered, 1.0);
+    }
+
+    // The section refuses a negative reference: such a light is never
+    // stored, stays at reference, and counts as uncovered.
+    #[test]
+    fn a_light_with_a_negative_reference_channel_is_never_stored() {
+        let references = [[1.0, -0.5, 1.0], [1.0; 3]];
+        let animated = vec![(0, Vec3::splat(2.0)), (1, Vec3::ONE)];
+        let shares =
+            sums_of(&[(Vec3::Y, Vec3::splat(3.0), animated)], &references).finish(&references);
+        let stored: Vec<u32> = shares
+            .entries
+            .iter()
+            .filter(|e| e.is_used())
+            .map(|e| e.roster_index)
+            .collect();
+        assert_eq!(stored, [1]);
+        assert!(
+            shares
+                .entries
+                .iter()
+                .all(|e| e.reference.iter().all(|c| *c >= 0.0))
+        );
+        assert_eq!(shares.report.animated_lights, 2);
+        assert!(
+            (shares.report.covered - 0.5).abs() < 1e-6,
+            "{:?}",
+            shares.report
+        );
     }
 
     #[test]

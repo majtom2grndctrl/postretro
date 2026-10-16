@@ -281,7 +281,7 @@ Each brush is one convex piece of the volume. One entity may own several brushes
 
 | Key | Entity | Type | Default | What it does |
 |-----|--------|------|---------|--------------|
-| `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
+| `fluid` | `fluid_volume` | string | **required** | The name of a fluid your mod declares with `defineFluid`, such as `water`. The mod's declaration sets how thick the fluid is, the screen tint and sound muffling while your view is inside, the surface opacity, how strongly the surface reflects (`surfaceReflectivity`), and the splash sounds (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). A name the mod does not declare loads as dry, with a warning naming the entity and the fluid. |
 | `gravity` | `gravity_volume` | float | **required** | Gravity inside the volume, in **m/s²**, signed like worldspawn `initialGravity`: negative pulls down. `-20.32` is the level default, `-6` is low gravity, `0` is weightless, and a positive value pulls up. It replaces the level's gravity inside the volume. A script's `setGravity` changes the level's gravity everywhere else, never inside a gravity volume, and `getGravity` returns the level's gravity even inside one. |
 | `push` | `push_volume` | three floats | **required** | An acceleration in **m/s²**, in map axes (X, Y, Z, with Z up, as TrenchBroom shows them). `0 0 25` is an updraft, `8 0 0` a wind toward +X, `0 6 0` a current toward +Y. A push never changes which way is down. |
 | `force` | `push_volume` | float | `1` | How hard the push shoves the player, who feels `push` × `force`. `push` keeps its direction and look: a current's surface drifts, and particles flow, the same at any force. `0` makes a decorative current that pushes nothing; above `1` shoves harder than it looks. Any finite number from `0` up. |
@@ -325,6 +325,21 @@ The compiler draws a fluid's surface from its brush faces, using each face's tex
 - A face flush against solid world draws nothing, so a pool sunk into the floor shows only its top. A face partly against solid world draws only its open part.
 - A face shared by two brushes of the same `fluid_volume` draws nothing.
 - **Build one pool as one entity.** A pool made from two `fluid_volume` entities draws a surface where they meet. Give one entity several brushes instead.
+
+### Fluid reflections
+
+Every up-facing fluid surface reflects the room around it, with no authoring: after a rebuild the compiler derives a reflection probe for each pool, fitted to the room the pool sees. A pool sunk below the floor reflects the room, not the pit. How strongly a fluid reflects is its declaration's `surfaceReflectivity` (see [Fluids and swimming](scripting-reference.md#fluids-and-swimming)). Sloped and side faces do not reflect. Seen from below the surface, nothing reflects.
+
+When the fitted box is wrong, draw a `reflection_volume` brush around the room. It is an invisible, compiler-only brush entity: it does not render, collide or change the lighting.
+
+| Key | Type | Default | What it does |
+|-----|------|---------|--------------|
+| `_capture_offset` | two floats | none | Moves the capture point, the spot the room is photographed from, in **map units** on the map's horizontal axes: `32 -16`. It starts in the middle of the lowest water inside the box, 2 mm above the surface. Use it to step clear of a pillar standing in the water there. Its height cannot be moved. |
+
+- **The box is the reflection's room and its reach.** The reflection projects onto the box's walls, and the box claims the up-facing fluid surfaces inside it. A surface binds the smallest box that contains the centre of its area. On a tie, the entity that comes first in the `.map` file wins. A surface no box claims keeps its derived probe.
+- **Offset errors.** An offset with three numbers (the third would be vertical), one that is not two numbers, or one that moves the capture point outside the box fails the build, and the error names the entity.
+- **Too many boxes.** A level holds at most 256 reflection probes. `reflection_volume` boxes past that cap refuse the build; derived probes past it are dropped with a warning instead.
+- **Warnings.** A box with no water inside draws nothing and warns. A capture point inside solid, inside a fluid or outside the level drops its box with a warning, so a pillar standing in the water at the capture point needs an offset. A capture point that sees less than half of its box's water warns, naming the probe.
 
 ### Tips
 

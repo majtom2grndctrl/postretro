@@ -11,11 +11,11 @@ use super::hit::SceneTracer;
 /// points below the horizon. Eight azimuths per quadrant put rays on the box
 /// axes and both diagonals; 2.5° rings see a far wall through the band
 /// between a low rim prop and the ceiling (e24's still pool sees 3.4°).
-pub(crate) const FIT_AZIMUTHS: usize = 32;
-pub(crate) const FIT_ELEVATION_STEP_DEG: f64 = 2.5;
-pub(crate) const FIT_RING_COUNT: usize = 36;
+const FIT_AZIMUTHS: usize = 32;
+const FIT_ELEVATION_STEP_DEG: f64 = 2.5;
+const FIT_RING_COUNT: usize = 36;
 /// Hits on one side within this distance of each other lie on one plane.
-pub(crate) const FIT_PLANE_MERGE_M: f64 = 0.01;
+const FIT_PLANE_MERGE_M: f64 = 0.01;
 
 /// One fit ray: its direction, the solid angle it stands for (as a share of
 /// the hemisphere), and its azimuth column; the zenith has none.
@@ -115,14 +115,19 @@ const CEILING: usize = 4;
 
 /// The box a face's water sees, from `origin` just above it: the room shell.
 /// Walls vote by azimuth column: walking a column up from the horizon, the
-/// last wall its rays hit before the ceiling is the shell there, and each side
-/// takes the plane most columns vote for (ties to the farther). A doorway's
-/// column tops out on the lintel, a sunken pool's on the room wall above its
-/// pit, and a column over a low prop on the wall beyond it, so none of them
-/// pulls the box off the room. The ceiling is the downward-facing plane the
-/// most sky ends on. A side nothing votes for falls back to the farthest point
-/// reached that way, misses counting where they leave the world bounds; the
-/// box is clamped to those bounds and always holds the origin.
+/// last wall its rays hit before its first ceiling-facing hit is the shell
+/// there, and each side takes the plane most columns vote for (ties to the
+/// farther). A wall a column meets only above a ceiling hit is ceiling
+/// detail, such as the side of a beam spanning the room or the riser of a
+/// tray ceiling, and is no shell, unless another column meets the same plane
+/// below any ceiling: then it is a wall with an opening under it, and a
+/// column seeing through a doorway tops out on the lintel. A sunken pool's
+/// column tops out on the room wall above its pit, and a column over a low
+/// prop on the wall beyond it, so none of them pulls the box off the room.
+/// The ceiling is the downward-facing plane the most sky ends on. A side
+/// nothing votes for falls back to the farthest point reached that way,
+/// misses counting where they leave the world bounds; the box is clamped to
+/// those bounds and always holds the origin.
 pub(crate) fn fit_box(
     tracer: &SceneTracer<'_>,
     origin: DVec3,
@@ -132,7 +137,11 @@ pub(crate) fn fit_box(
     let origin = bounds.clamp(origin);
     let reach = bounds.diagonal() as f32 + 1.0;
     let origin_f32 = origin.as_vec3();
+    // Per column: the last wall below its first ceiling hit, and the last
+    // wall at all.
     let mut column_top: [Option<(usize, f64)>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_last: [Option<(usize, f64)>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_closed = [false; FIT_AZIMUTHS];
     let mut ceiling: Vec<(f64, f64)> = Vec::new();
     let mut reached = [f64::NEG_INFINITY; 5];
     // Rays run ring by ring upward, so a column's later wall hit is higher.
@@ -151,14 +160,38 @@ pub(crate) fn fit_box(
             reached[side] = reached[side].max((point[axis] - origin[axis]) * sign);
         }
         match (facing, ray.azimuth) {
-            (Some(CEILING), _) => ceiling.push((point.y, ray.weight)),
-            (Some(side), Some(column)) => column_top[column] = Some((side, point[SIDES[side].0])),
+            (Some(CEILING), column) => {
+                ceiling.push((point.y, ray.weight));
+                if let Some(column) = column {
+                    column_closed[column] = true;
+                }
+            }
+            (Some(side), Some(column)) => {
+                let wall = Some((side, point[SIDES[side].0]));
+                column_last[column] = wall;
+                if !column_closed[column] {
+                    column_top[column] = wall;
+                }
+            }
             _ => {}
         }
     }
+    // A plane some column meets below any ceiling is a wall.
+    let is_wall = |side: usize, coordinate: f64| {
+        column_top
+            .iter()
+            .flatten()
+            .any(|&(s, c)| s == side && (c - coordinate).abs() < FIT_PLANE_MERGE_M)
+    };
     let mut votes: [Vec<(f64, f64)>; 5] = Default::default();
-    for (side, coordinate) in column_top.into_iter().flatten() {
-        votes[side].push((coordinate, 1.0));
+    for (top, last) in column_top.into_iter().zip(column_last) {
+        let top = match last {
+            Some((side, coordinate)) if is_wall(side, coordinate) => last,
+            _ => top,
+        };
+        if let Some((side, coordinate)) = top {
+            votes[side].push((coordinate, 1.0));
+        }
     }
     votes[CEILING] = ceiling;
     let mut lo = origin;
@@ -359,6 +392,88 @@ mod tests {
 
         let fitted = fit(&geometry, DVec3::new(0.0, 0.302, 0.0));
         assert_box(fitted, [-12.0, 0.302, -6.0], [12.0, 10.0, 6.0]);
+    }
+
+    /// The walls and ceiling of the room `lo`..`hi`; no floor, since fit rays
+    /// never point down.
+    fn open_floor_room(b: &mut GeometryBuilder, lo: Vec3, hi: Vec3) {
+        quad(b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(b, normal, rect(lo, hi, axis, value));
+        }
+    }
+
+    /// A beam spanning the room above the pool, 1 m deep under a 4 m
+    /// ceiling: columns toward it meet the ceiling beyond the beam first,
+    /// then the beam's side, which must not become the room's wall.
+    #[test]
+    fn fit_box_ignores_a_ceiling_beam_spanning_the_room() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 4.0, 6.0));
+        let mut b = GeometryBuilder::default();
+        open_floor_room(&mut b, lo, hi);
+        let (blo, bhi) = (Vec3::new(0.0, 3.0, lo.z), Vec3::new(0.4, hi.y, hi.z));
+        for (normal, axis, value) in [
+            (Vec3::NEG_Y, 1, blo.y),
+            (Vec3::NEG_X, 0, blo.x),
+            (Vec3::X, 0, bhi.x),
+        ] {
+            quad(&mut b, normal, rect(blo, bhi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let fitted = fit(&geometry, DVec3::new(-2.0, 0.302, 0.3));
+        assert_box(fitted, [-6.0, 0.302, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// A tray ceiling: a 3 m soffit 2 m deep around the walls, the centre
+    /// raised to 4 m. Columns meet the soffit, then the raised centre's
+    /// riser, which must not become the room's wall.
+    #[test]
+    fn fit_box_of_a_tray_ceiling_reaches_the_walls() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 3.0, 6.0));
+        let mut b = GeometryBuilder::default();
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(&mut b, normal, rect(lo, hi, axis, value));
+        }
+        // The soffit as four strips around the raised centre.
+        let inner = 4.0;
+        let soffit = |b: &mut GeometryBuilder, x0: f32, z0: f32, x1: f32, z1: f32| {
+            let r = rect(Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1), 1, hi.y);
+            quad(b, Vec3::NEG_Y, r);
+        };
+        soffit(&mut b, lo.x, lo.z, hi.x, -inner);
+        soffit(&mut b, lo.x, inner, hi.x, hi.z);
+        soffit(&mut b, lo.x, -inner, -inner, inner);
+        soffit(&mut b, inner, -inner, hi.x, inner);
+        // The raised centre: its risers facing inward, and its ceiling.
+        let (clo, chi) = (
+            Vec3::new(-inner, hi.y, -inner),
+            Vec3::new(inner, 4.0, inner),
+        );
+        quad(&mut b, Vec3::NEG_Y, rect(clo, chi, 1, chi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, clo.x),
+            (Vec3::NEG_X, 0, chi.x),
+            (Vec3::Z, 2, clo.z),
+            (Vec3::NEG_Z, 2, chi.z),
+        ] {
+            quad(&mut b, normal, rect(clo, chi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        // Most sky ends on the raised centre, so the box's top is its 4 m.
+        let fitted = fit(&geometry, DVec3::new(0.3, 0.302, -0.2));
+        assert_box(fitted, [-6.0, 0.302, -6.0], [6.0, 4.0, 6.0]);
     }
 
     #[test]

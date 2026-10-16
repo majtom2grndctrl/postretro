@@ -23,8 +23,19 @@ const SH_DEPTH_BIAS_CELL_FRACTION: f32 = 0.05;
 const SH_DEPTH_MIN_VISIBILITY: f32 = 0.03;
 const SH_WEIGHT_EPSILON: f32 = 1.0e-5;
 
+/// One stored slot an SH sample read: its final linear weight in the sample
+/// and its own bilinear sample toward the normal, unclamped. The runtime
+/// clamps a slot at zero only after the compose pass has added every animated
+/// light's delta into it, so the delta sampler applies that clamp.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SlotRead {
+    pub slot: u32,
+    pub weight: f32,
+    pub base: Vec3,
+}
+
 /// A probe's load-derived indirection: storage level, node scale and the
-/// stored-atlas slot, or `None` for an invalid probe.
+/// stored-atlas slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProbeIndirection {
     level: Level,
@@ -39,6 +50,7 @@ struct ProbeIndirection {
 /// and agree with it to rounding.
 pub(crate) struct ShVolumeSampler<'a> {
     section: &'a OctahedralShVolumeSection,
+    /// Per probe; `None` for an invalid probe.
     indirection: Vec<Option<ProbeIndirection>>,
     probe_occlusion: bool,
 }
@@ -76,16 +88,17 @@ impl<'a> ShVolumeSampler<'a> {
 
     /// [`Self::indirect`], also listing every stored slot the sample read with
     /// its final linear weight (corner weight over the corner sum, times an L1
-    /// node corner's share). The composed atlas the runtime samples adds each
-    /// animated light's delta into these same slots, so a light's indirect at
-    /// this point is the same weighted sum over its delta texels at
-    /// [`Self::tile_taps`]. Only the base sample is clamped at zero; bounce
-    /// deltas are never negative, so the clamp is linear over them.
+    /// node corner's share) and its unclamped sample. The returned value is
+    /// the weighted sum of those samples each clamped at zero: the runtime's
+    /// value with no animated light composed in. The composed atlas the
+    /// runtime samples adds each animated light's delta into these same
+    /// slots before that clamp, so with deltas the indirect comes from
+    /// `DeltaShSampler::accumulate` over the listed slots instead.
     pub(crate) fn indirect_and_slots(
         &self,
         position: Vec3,
         normal: Vec3,
-        mut slots: Option<&mut Vec<(u32, f32)>>,
+        mut slots: Option<&mut Vec<SlotRead>>,
     ) -> Vec3 {
         if let Some(slots) = slots.as_deref_mut() {
             slots.clear();
@@ -136,10 +149,10 @@ impl<'a> ShVolumeSampler<'a> {
         }
         if let Some(slots) = slots {
             for read in &corners {
-                for &(slot, share) in &read.slots[..read.count] {
-                    let w = read.weight / weight_sum * share;
-                    if w > 0.0 {
-                        slots.push((slot, w));
+                for &(slot, share, base) in &read.slots[..read.count] {
+                    let weight = read.weight / weight_sum * share;
+                    if weight > 0.0 {
+                        slots.push(SlotRead { slot, weight, base });
                     }
                 }
             }
@@ -207,9 +220,10 @@ impl<'a> ShVolumeSampler<'a> {
         match ind.level {
             Level::L1 => self.sample_l1(idx, ind, dir, read),
             Level::L0 | Level::L2 => {
-                read.slots[0] = (ind.slot, 1.0);
+                let sample = self.sample_slot(ind.slot, dir).truncate();
+                read.slots[0] = (ind.slot, 1.0, sample);
                 read.count = 1;
-                self.sample_slot(ind.slot, dir).truncate()
+                sample
             }
         }
     }
@@ -242,7 +256,7 @@ impl<'a> ShVolumeSampler<'a> {
             sum += present * sample.truncate().max(Vec3::ZERO);
             weight_sum += present;
             if present > 0.0 {
-                read.slots[read.count] = (ind.slot + corner, present);
+                read.slots[read.count] = (ind.slot + corner, present, sample.truncate());
                 read.count += 1;
             }
         }
@@ -396,11 +410,11 @@ impl<'a> ShVolumeSampler<'a> {
 }
 
 /// One SH corner's sample: its probe weight and the stored slots it read,
-/// each with its share of the corner.
+/// each with its share of the corner and its unclamped sample.
 #[derive(Debug, Clone, Copy, Default)]
 struct CornerRead {
     weight: f32,
-    slots: [(u32, f32); 8],
+    slots: [(u32, f32, Vec3); 8],
     count: usize,
 }
 

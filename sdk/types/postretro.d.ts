@@ -1206,7 +1206,7 @@ declare module "postretro" {
     pixelated?: boolean;
   };
 
-  /** Look of every fluid reflection layer: the probe reflection today, and the screen-space layer when it lands. Valid values: `pixel`, `smooth`. */
+  /** Look of every fluid reflection layer. Valid values: `pixel`, `smooth`. */
   export type ReflectionStyle =
     /** One reflection direction per water texel cell, tilted by that cell's shimmer and ripples, so the reflection breaks into the blocks the water's texture moves in. Drift and a declared wave tilt nothing. This is the default. */
     | "pixel"

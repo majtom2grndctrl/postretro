@@ -78,6 +78,11 @@ impl MipChain {
     }
 }
 
+/// The mip a sample spanning `texels` level-0 texels reads.
+fn footprint_lod(texels: f32) -> u8 {
+    texels.max(1.0).log2().round().clamp(0.0, 15.0) as u8
+}
+
 fn level_extent(base: u32, level: u8) -> usize {
     (base >> level).max(1) as usize
 }
@@ -103,8 +108,11 @@ impl<'a> SurfaceMaterials<'a> {
     }
 
     /// Albedo and emissive at raw-texel `uv` on texture `texture_index`, read
-    /// at the mip a sample of `footprint_texels` level-0 texels selects, as
-    /// the forward pass's minified sample would.
+    /// at the mip a sample of `footprint_texels` raw texels selects, as the
+    /// forward pass's minified sample would. Raw texels are the diffuse's
+    /// level-0 texels (the placeholder's without a diffuse), which normalize
+    /// the UV both textures share; the emissive's own level comes from that
+    /// footprint in its own texels, as hardware derivatives select it.
     pub(crate) fn sample(
         &self,
         texture_index: u32,
@@ -122,22 +130,22 @@ impl<'a> SurfaceMaterials<'a> {
                 emissive: Vec3::ZERO,
             };
         };
-        let lod = footprint_texels.max(1.0).log2().round().clamp(0.0, 15.0) as u8;
-        let (albedo, normalized) = match &material.diffuse {
+        let (albedo, raw_extent) = match &material.diffuse {
             Some(chain) => {
-                let normalized = [uv[0] / chain.width as f32, uv[1] / chain.height as f32];
-                (self.linear(chain.texel(normalized, lod)), normalized)
+                let extent = [chain.width as f32, chain.height as f32];
+                let normalized = [uv[0] / extent[0], uv[1] / extent[1]];
+                let lod = footprint_lod(footprint_texels);
+                (self.linear(chain.texel(normalized, lod)), extent)
             }
-            None => (
-                self.placeholder(uv),
-                [
-                    uv[0] / PLACEHOLDER_EDGE as f32,
-                    uv[1] / PLACEHOLDER_EDGE as f32,
-                ],
-            ),
+            None => (self.placeholder(uv), [PLACEHOLDER_EDGE as f32; 2]),
         };
         let emissive = match (&material.emissive, material.emissive_strength > 0.0) {
             (Some(chain), true) => {
+                let normalized = [uv[0] / raw_extent[0], uv[1] / raw_extent[1]];
+                // The footprint in emissive texels, along its coarser axis.
+                let scale =
+                    (chain.width as f32 / raw_extent[0]).max(chain.height as f32 / raw_extent[1]);
+                let lod = footprint_lod(footprint_texels * scale);
                 self.linear(chain.texel(normalized, lod)) * material.emissive_strength
             }
             _ => Vec3::ZERO,
@@ -220,8 +228,34 @@ mod tests {
     use super::*;
     use postretro_level_format::prm::{PrmHeader, PrmSlots, STAGE_VERSION, expected_level_count};
 
+    /// A square `edge`² sRGB chain whose level 0 is `fine` everywhere and
+    /// whose coarser levels are `rest`.
+    fn chain(edge: u16, fine: [u8; 4], rest: [u8; 4]) -> PrmSlot {
+        let level0 = usize::from(edge) * usize::from(edge);
+        let mut coarser = 0;
+        let mut extent = usize::from(edge);
+        while extent > 1 {
+            extent /= 2;
+            coarser += extent * extent;
+        }
+        let mut payload = Vec::new();
+        for _ in 0..level0 {
+            payload.extend_from_slice(&fine);
+        }
+        for _ in 0..coarser {
+            payload.extend_from_slice(&rest);
+        }
+        PrmSlot {
+            format: PrmFormat::Rgba8UnormSrgb,
+            width: edge,
+            height: edge,
+            level_count: expected_level_count(edge, edge),
+            payload,
+        }
+    }
+
     /// A 4×4 diffuse whose level 0 is `level0` everywhere and whose 2×2 and
-    /// 1×1 levels are `coarse`, plus an optional uniform emissive.
+    /// 1×1 levels are `coarse`, plus an optional uniform 4×4 emissive.
     fn write_prm(
         dir: &Path,
         key: [u8; 32],
@@ -229,22 +263,15 @@ mod tests {
         coarse: [u8; 4],
         emissive: Option<[u8; 4]>,
     ) {
-        let chain = |fine: [u8; 4], rest: [u8; 4]| {
-            let mut payload = Vec::new();
-            for _ in 0..16 {
-                payload.extend_from_slice(&fine);
-            }
-            for _ in 0..5 {
-                payload.extend_from_slice(&rest);
-            }
-            PrmSlot {
-                format: PrmFormat::Rgba8UnormSrgb,
-                width: 4,
-                height: 4,
-                level_count: expected_level_count(4, 4),
-                payload,
-            }
-        };
+        write_slots(
+            dir,
+            key,
+            chain(4, level0, coarse),
+            emissive.map(|e| chain(4, e, e)),
+        );
+    }
+
+    fn write_slots(dir: &Path, key: [u8; 32], diffuse: PrmSlot, emissive: Option<PrmSlot>) {
         let mut mask = PrmSlots::DIFFUSE;
         if emissive.is_some() {
             mask |= PrmSlots::EMISSIVE;
@@ -257,12 +284,7 @@ mod tests {
                 total_body_bytes: 0,
                 layer_count: 1,
             },
-            slots: [
-                Some(chain(level0, coarse)),
-                None,
-                None,
-                emissive.map(|e| chain(e, e)),
-            ],
+            slots: [Some(diffuse), None, None, emissive],
         };
         std::fs::write(
             dir.join(format!("{}.prm", cache_filename_for_key(&key))),
@@ -317,6 +339,48 @@ mod tests {
             neon.emissive
         );
         assert_eq!(materials.sample(1, [0.5, 0.5], 1.0).emissive, Vec3::ZERO);
+    }
+
+    // The emissive texture samples with its own derivatives: the UV both
+    // textures share, normalized by the diffuse, spans more emissive texels
+    // when the emissive is larger, so it minifies sooner.
+    #[test]
+    fn emissive_reads_the_mip_its_own_texel_footprint_selects() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fine, coarse) = ([255, 255, 255, 255], [0, 0, 0, 255]);
+        // An 8×8 emissive over a 4×4 diffuse: one diffuse texel spans two
+        // emissive texels.
+        write_slots(
+            dir.path(),
+            [3; 32],
+            chain(4, fine, coarse),
+            Some(chain(8, fine, coarse)),
+        );
+        let names = vec!["neon_tube".to_string()];
+        let keys = HashMap::from([(names[0].clone(), [3u8; 32])]);
+        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+
+        // One diffuse texel: diffuse level 0, emissive level 1.
+        let sample = materials.sample(0, [1.5, 2.5], 1.0);
+        assert_eq!(sample.albedo, Vec3::ONE);
+        assert_eq!(sample.emissive, Vec3::ZERO, "the emissive's level 1");
+        // Half a diffuse texel is one emissive texel: both at level 0.
+        let sample = materials.sample(0, [1.5, 2.5], 0.5);
+        assert!(sample.emissive.x > 1.0, "{}", sample.emissive);
+
+        // A 2×2 emissive over the same diffuse: two diffuse texels span one
+        // emissive texel, its level 0, while the diffuse reads level 1.
+        write_slots(
+            dir.path(),
+            [4; 32],
+            chain(4, fine, coarse),
+            Some(chain(2, fine, coarse)),
+        );
+        let keys = HashMap::from([(names[0].clone(), [4u8; 32])]);
+        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+        let sample = materials.sample(0, [1.5, 2.5], 2.0);
+        assert_eq!(sample.albedo, Vec3::ZERO, "the diffuse's level 1");
+        assert!(sample.emissive.x > 1.0, "{}", sample.emissive);
     }
 
     #[test]

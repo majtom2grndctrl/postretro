@@ -47,7 +47,7 @@ PostRetro is a Doom/Quake-lineage shooter in which movement is a combat tool (`m
 | Recommendation | After reflection | Why |
 |---|---|---|
 | Vault row keeps progress timing | Stronger | The pose is gone the tick the feet land, so the player acts at once; rates would leave the camera easing while the player is already fighting |
-| Ledge focus aim-referenced | **Flips to entry-aim** | Every other view-feel term is additive and leaves mouse gain at 1:1. A gain change during a climb is the one term that fights the mouse, at the moment a combat-movement game asks for it most. Entry-aim keeps the focus and keeps 1:1 |
+| Ledge focus reference | **Entry aim (owner chose)** | Every other view-feel term is additive and leaves mouse gain at 1:1. A gain change during a climb is the one term that fights the mouse, at the moment a combat-movement game asks for it most. Entry-aim keeps the focus and keeps 1:1 |
 | Fold `viewFeel.slide` now | Stronger | Pre-stable is the cheap time to rename a modder surface; after mods ship against two blocks, the fold is a breaking migration |
 | No fire coupling | Stronger | Firing through movement is the Ultrakill ceiling; aim stays honest, and a pose that changed with weapon tuning would couple two author surfaces |
 | Strict `pose` parsing | Stronger | A typo that silently poses nothing costs a modder the most time |
@@ -71,18 +71,18 @@ Rejected:
 - **1 alone.** It cannot follow geometry or sign roll by wall side. It ships as the literal half of 4.
 - **2 alone.** A third sustained block, vault-shaped, with no home for other states.
 - **Rates on the vault row.** Asymptotic, and not tied to the climb's end; see above.
-- **Entry-aim reference.** Measure focus against aim at vault entry instead of live aim. Mouse pitch stays 1:1 for the whole climb, but the pull no longer stops at the line: a player who looks further down mid-climb gets it on top, bounded only by `maxPitch` and the ±89° clamp. It is the fallback if the first slice reads as a fought camera.
+- **Live-aim reference.** Measure focus against live aim, so the pull never passes the line and stops once the player looks at the ledge. It changes mouse pitch gain to (1 − `strength`) while above the line, the only view-feel term that would; in a combat-movement game that fights the player mid-climb.
 - **Pose writes aim.** It would keep the reticle honest. But it writes tick input that is predicted and replicated, steals the mouse, and breaks render-only view feel.
 
 ## Focus geometry
 
 Ledge line = atan2(top_y − eye_y, max(horizontal, floor)) from the rendered eye (after bob and every row's eye drop), and no focus at all when top_y ≥ eye_y, with the landing spot carried into world space through the mover's presented pose when `mover` is set. Without the floor, horizontal distance goes to 0 as the pawn arrives over the landing spot and the angle approaches −90°.
 
-Reference view = aim + the row's literal `pitch`. Focus offset = max(−maxPitch, strength · min(0, line − reference)). Row output = weight · (pitch + focus), with roll and fov likewise weighted.
+Reference = aim pitch on the first frame the pose follows the vault (its start or a join) + the row's literal `pitch`; a new vault or a rewind past 5% takes a new reference. Focus offset = max(−maxPitch, strength · min(0, line − reference)), re-evaluated each frame as the eye rises and the line moves. Row output = weight · (pitch + focus), with roll and fov likewise weighted.
 
-- Reference at or below the line: zero, and mouse pitch maps 1:1.
-- Above the line and unsaturated: d(view)/d(aim) = 1 − strength.
-- Saturated: back to 1:1.
+- Reference at or below the line: zero.
+- Mouse pitch never enters the offset, so d(view)/d(aim) = 1 throughout.
+- A player who looks down mid-climb gets the offset on top; `maxPitch` and the ±89° clamp bound it.
 - A literal that already reaches the line leaves no gap, so focus adds nothing; the shipped −38.5° hold would mostly do this, which is why the example drops it for focus.
 
 Illustrative dev numbers, eye 1.5 m above feet, assuming 0.6 m horizontal at entry:
@@ -126,9 +126,9 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 | P2 | Two rows with `eyeDrop` at once (crouch↔slide, swim→vault). | Bob, then the summed drop of every row, then the 0.05 m floor once. | Eye stays at least 0.05 m above the feet. The floor bounds the sum, not each row. |
 | P3 | Vault A releasing; vault B starts; B ends or aborts before A's release finishes. | B's end starts a new release while A's still runs. | The new release starts from the presented weight and blended values. No step on B's end frame. |
 | P4 | View-feel scale 0 across a vault's end, restored mid-release. | Captured values are unscaled; scale multiplies output only. | After restore, the frame presents scale × release weight × captured values. Not neutral, not a restarted release. |
-| P5 | Ledge focus during a release. | Geometry is gone after the end frame; the captured focus is an angle, not a line. | Focus is not re-evaluated against live aim. Mouse pitch maps 1:1 through the release. |
+| P5 | Ledge focus during a release. | Geometry is gone after the end frame; the captured focus is an angle, not a line. | Focus is not re-evaluated. Mouse pitch maps 1:1 through the release. |
 | P6 | Ledge focus on a full climb and on a joined vault. | Focus is computed, then scaled by the one row weight. | A join's first frame is near neutral. A full climb starts and ends at neutral. Focus never presents outside the row weight. |
-| P7 | Ledge focus with an impulse kick, sway or another row active. | The line bounds aim + row literal pitch + focus; other terms compose after. | "Never past the line" holds for the row's reference view; rendered pitch may pass it by the other terms. |
+| P7 | Ledge focus with an impulse kick, sway or another row active. | The line bounds the entry reference + focus; live aim and other terms compose after. | "Never past the line" holds for the row's reference view; rendered pitch may pass it by the other terms. |
 | P8 | A mover tilts after vault entry. | Uprightness is checked at entry only; each tick re-resolves the frame. | Focus reads the landing spot through the mover's presented pose; no assumption of uprightness. |
 | P9 | Hot reload or descriptor refresh mid-vault or mid-slide. | The commit replaces the movement component, then clears pose state on the same frame. | The pose snaps to neutral; no release runs. |
 | P10 | Vault A ends and vault B starts with no frame presenting `Normal` between them; or a reconcile rewinds progress past 5%. | The driver reads only the latest tick, so B shows as a progress drop. | The drop captures A's presented values and blends them with B's; no step beyond B's ease-in, ledge focus included. |
@@ -146,3 +146,4 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 | P22 | A vault ends into `Normal` with sprint on. | A full climb exits on the top tick with its entry speed; an early end zeroes base velocity first. | Full climb: run eases in at `enterRate` from the exit tick while the vault row reaches neutral or releases on its own timing. Early end: the release runs; run enters only once horizontal speed passes the epsilon. Rows add; no step. |
 | P23 | Hot reload or descriptor refresh mid-run, or mid-slide with sprint on. | The commit keeps `Normal`, velocity and the toggle latch, drops slide to `Normal`, and clears pose state on the same frame. | Run snaps to neutral on the first frame after the commit and eases back in at `enterRate`. Mid-slide, slide snaps and run eases in from neutral. |
 | P24 | Level install or pawn change mid-run, Toggle latch on. | All view-feel state resets; the latch survives. | The first frame is neutral. Run eases in from neutral once the new pawn passes the epsilon; no weight carries over. |
+| P25 | Vault reference capture: a vault starts, the pose joins one mid-climb, or a rewind past 5% | the reference is taken on the first frame the pose follows the vault | one reference per vault; live aim never re-enters it |

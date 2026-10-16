@@ -23,6 +23,10 @@ Read at 3409c2fc. Symbols, not lines.
 | Unknown top-level `viewFeel` keys are ignored. Impulse rows skip inherited rows rather than reject them. A retired-key precedent exists: "`components.ai` has been retired; author `components.behavior` instead". | `view_feel_params_from_js`/`_lua`; `js/entity.rs`, `lua/entity.rs` |
 | Dev player: eye 1.5 m above feet (`halfHeight` 0.8, `radius` 0.2, `eyeHeight` 0.5 above the capsule centre), `vault.maxHeight` 1.6 m, `durationMs` 800, `allowFire: false`; vault pose `pitch −38.5, roll 10, fov −30, easeIn 0.33, easeOut 0.33`. The twins `movement-vault.ts`/`.luau` author no view feel. | `content/dev/scripts/player.ts` |
 | Human docs for both blocks live only in `docs/scripting-reference.md` (§Slide camera feel, §Vault camera pose, the accessibility table). | `docs/scripting-reference.md` |
+| Read at 3b85e43b. Sprint intent is resolved in `frame_loop` only inside the `gameplay_snapshot` block, which is `None` on zero-tick frames, and that block closes before `view_feel_driver` is built. The resolved intent feeds `MovementInput.running`, honouring `SprintMode` Hold and Toggle. | `frame_loop` `resolve_sprint_intent`, `sprint_intent`; `GameplayInputLatch::snapshot_for_ticks` |
+| Read at 3b85e43b. A focused menu or console yields a neutral snapshot: Hold resolves false, Toggle keeps its latch. Only `resolve_sprint_intent` writes `app.sprint_toggle_active`; stopping, state changes, menus and level change leave it. | `gameplay_snapshot_for_capture_state`; `sprint_toggle_active` in `main.rs`, `startup/session.rs`, `startup/lifecycle.rs` |
+| Read at 3b85e43b. A connected client predicts with the same command, so the local intent matches its prediction. | `client_predict_movement_tick` |
+| Read at 3b85e43b. `PlayerMovementComponent::velocity` is total collision-resolved velocity, knockback and push drift included. Mover carry moves position only and never enters it. | `foundation` `PlayerMovementComponent`; `physics::movement::mover_carry::apply_mover_carry` |
 
 ## Why the vault row keeps progress timing
 
@@ -97,7 +101,7 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 
 - **Wall-run:** a `wallRun` row plus a term signed toward the wall.
 - **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row, and its P26 (hot reload releases the pose) is false against source.
-- **Sustained FOV draft:** its slide row is superseded. Its `run` tier is input-derived inside `Normal` and targets an absolute FOV, so it does not fit a state row's additive offset; see the open question.
+- **Sustained FOV draft:** retired, wholly superseded. Its slide row is `pose.slide`. Its `run` tier is `pose.run`, an additive offset on a rate row rather than an absolute target, keyed by the run activity inside `Normal`. Its `impulse.states` inherited-row repair lands here as a reject in both runtimes.
 - **Composition draft:** `pose.<state>` moves to its state layer.
 - **Spectator follow-cam:** evaluates from the replicated vault payload and that pawn's replicated aim, no wire change.
 
@@ -118,3 +122,8 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 | P11 | Hot reload mid-swim. | The commit keeps `Swim` and clears pose state. | The swim row snaps to neutral on the first frame after the commit and eases back in at `enterRate`. |
 | P12 | Ledge focus on a moving mover. | The eye is assembled before movers are collected for render. | Focus reads the mover pose at the eye's own interpolation share for that frame, never the previous frame's. |
 | P13 | Reconcile corrects a vault's landing target mid-climb. | Focus is a pure function of target, eye and aim. | Focus re-aims within one frame, with a step the size of the correction's angle. Accepted; no slew mechanism. |
+| P14 | Run across a zero-tick frame. | No tick runs, so `frame_loop` resolves no sprint intent; the driver is still built. | The driver presents the last resolved intent. Run weight keeps easing toward that activity by `frame_dt`; no drop, no step. |
+| P15 | Toggled sprint, then the pawn stops. | The toggle latch stays on; only the speed term changes. | Run eases out once horizontal speed falls below the epsilon. Moving again with the latch on eases it back in. |
+| P16 | Menu or console focused mid-run. | The neutral snapshot resolves sprint before the tick. | Hold: intent false, run eases out. Toggle: latch kept, run holds until the pawn coasts below the epsilon. |
+| P17 | Slide ends into `Normal` with sprint on and speed above the epsilon. | Kind changes on one tick; run's activity starts that same tick. | Slide eases out at its `exitRate` while run eases in at its `enterRate`. Rows add; no frame steps. |
+| P18 | Riding a moving mover while still; a knockback shove on a still toggled-sprint pawn. | Mover carry moves position only; knockback writes velocity. | The ride presents no run. The shove presents run while its horizontal speed stays above the epsilon. Accepted, as dash reads total motion. |

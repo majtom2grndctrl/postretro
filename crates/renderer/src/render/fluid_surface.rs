@@ -23,9 +23,9 @@ use super::fluid_reflection_probes::{
 
 #[cfg(test)]
 pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
-pub(crate) use super::fluid_scene_inputs::{
-    FLUID_SCENE_INPUTS_GROUP, FluidSceneInputs, fluid_scene_inputs_bind_group_layout_entries,
-};
+#[cfg(any(test, debug_assertions))]
+pub(crate) use super::fluid_scene_inputs::fluid_scene_inputs_bind_group_layout_entries;
+pub(crate) use super::fluid_scene_inputs::{FLUID_SCENE_INPUTS_GROUP, FluidSceneInputs};
 
 use super::*;
 

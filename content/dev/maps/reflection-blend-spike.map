@@ -19,10 +19,11 @@
 // ROOM B, typical pose: canal hall B1 x 1024 to 1536 and B2 x 1552 to 2064,
 //   y 0 to 512, ceiling z 320, wall x 1536 to 1552 with a doorway y 192 to 320,
 //   z 0 to 128. ONE fluid_volume x 1088 to 2000, y 224 to 288, surface z -16, as
-//   three brushes split at the doorway faces x 1536 and 1552: B1 run, doorway
-//   piece, B2 run. No authored boxes; the derived probes bind B1, the doorway
-//   piece and B2, three probes on one plane. One unsplit brush is one face
-//   and so one derived probe for the whole canal, with no seam to blend.
+//   two brushes split at the doorway midline x 1544, under two authored
+//   reflection_volume boxes x 1024 to 1544 and 1544 to 2064 that abut there,
+//   so each box rectangle is its water region and the spike's box distance
+//   gives a true band at the doorway. A derived doorway piece would get a box
+//   spanning both rooms and put the whole canal inside the band.
 //   Static lights only. A door x 960 to 1024, y 32 to 96 joins A and B1.
 // ----
 // CAPTURE POSES, engine coordinates: x = -map y, y = map z, z = -map x, metres.
@@ -368,33 +369,49 @@
 ( 960 0 -96 ) ( 960 960 320 ) ( 960 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 }
 }
-// room B canal: ONE fluid entity, three brushes split at the doorway faces, surface z -16
+// room B canal: ONE fluid entity, two brushes split at the doorway midline x 1544, surface z -16
 {
 "classname" "fluid_volume"
 "fluid" "water"
 {
 ( 1088 288 -96 ) ( 1088 224 -16 ) ( 1088 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1088 224 -96 ) ( 1536 224 -16 ) ( 1536 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1088 224 -96 ) ( 1536 288 -96 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
-( 1088 288 -16 ) ( 1536 224 -16 ) ( 1088 224 -16 ) fluids/water_64 0 0 0 1 1
-( 1536 288 -96 ) ( 1088 288 -16 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
-( 1536 224 -96 ) ( 1536 288 -16 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 224 -96 ) ( 1544 224 -16 ) ( 1544 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 224 -96 ) ( 1544 288 -96 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 288 -16 ) ( 1544 224 -16 ) ( 1088 224 -16 ) fluids/water_64 0 0 0 1 1
+( 1544 288 -96 ) ( 1088 288 -16 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1544 224 -96 ) ( 1544 288 -16 ) ( 1544 288 -96 ) fluids/water_64 0 0 0 1 1
 }
 {
-( 1536 288 -96 ) ( 1536 224 -16 ) ( 1536 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1536 224 -96 ) ( 1552 224 -16 ) ( 1552 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1536 224 -96 ) ( 1552 288 -96 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
-( 1536 288 -16 ) ( 1552 224 -16 ) ( 1536 224 -16 ) fluids/water_64 0 0 0 1 1
-( 1552 288 -96 ) ( 1536 288 -16 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
-( 1552 224 -96 ) ( 1552 288 -16 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
-}
-{
-( 1552 288 -96 ) ( 1552 224 -16 ) ( 1552 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1552 224 -96 ) ( 2000 224 -16 ) ( 2000 224 -96 ) fluids/water_64 0 0 0 1 1
-( 1552 224 -96 ) ( 2000 288 -96 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
-( 1552 288 -16 ) ( 2000 224 -16 ) ( 1552 224 -16 ) fluids/water_64 0 0 0 1 1
-( 2000 288 -96 ) ( 1552 288 -16 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1544 288 -96 ) ( 1544 224 -16 ) ( 1544 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1544 224 -96 ) ( 2000 224 -16 ) ( 2000 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1544 224 -96 ) ( 2000 288 -96 ) ( 1544 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1544 288 -16 ) ( 2000 224 -16 ) ( 1544 224 -16 ) fluids/water_64 0 0 0 1 1
+( 2000 288 -96 ) ( 1544 288 -16 ) ( 1544 288 -96 ) fluids/water_64 0 0 0 1 1
 ( 2000 224 -96 ) ( 2000 288 -16 ) ( 2000 288 -96 ) fluids/water_64 0 0 0 1 1
+}
+}
+// room B probe box B1, abuts B2 at the doorway midline
+{
+"classname" "reflection_volume"
+{
+( 1024 512 -96 ) ( 1024 0 320 ) ( 1024 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1024 0 -96 ) ( 1544 0 320 ) ( 1544 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1024 0 -96 ) ( 1544 512 -96 ) ( 1024 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1024 512 320 ) ( 1544 0 320 ) ( 1024 0 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1544 512 -96 ) ( 1024 512 320 ) ( 1024 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1544 0 -96 ) ( 1544 512 320 ) ( 1544 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// room B probe box B2
+{
+"classname" "reflection_volume"
+{
+( 1544 512 -96 ) ( 1544 0 320 ) ( 1544 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1544 0 -96 ) ( 2064 0 320 ) ( 2064 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1544 0 -96 ) ( 2064 512 -96 ) ( 1544 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 1544 512 320 ) ( 2064 0 320 ) ( 1544 0 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 512 -96 ) ( 1544 512 320 ) ( 1544 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 0 -96 ) ( 2064 512 320 ) ( 2064 512 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
 }
 }
 // room A curve light 1, amber, period 900

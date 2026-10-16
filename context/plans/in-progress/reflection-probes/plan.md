@@ -24,6 +24,8 @@ branch: feature/reflection-probes
 
 - 2026-10-15 — **two review-panel owner calls** (owner: yes to both, applied to `index.md`). (1) Light shares and the top-K ranking count only the upper hemisphere: every runtime lookup is horizon-clamped, so lower-hemisphere light (a pool floor) inflated horizontal-lobe shares and could take a slot (found by two lenses). The tile itself still traces the full sphere. Restates row 14. (2) The reflection weight fades to 0 over `FLUID_FOG_BAND` as the eye nears the plane from above (the fog's proximity rule), so a bobbing eye no longer flips a near-mirror surface; from below it stays 0. Restates row 22.
 
+- 2026-10-16 — **IP check (executor's engineering due diligence, not legal advice; owner decision still open)**: `ip-check.md`. Tencent WO2026113651A1 / CN122115679A pending (no US/EP national entry yet; deadlines ≈2027-05-28 US, ≈2027-06-28 EP). Independent claims 1 and 20 appear to read on the technique, but claim 1 is broad enough that Bjorke 2004 and Lagarde & Zanuttini 2012 appear to disclose all of it; dependents 4–19 each appear to need an element PostRetro lacks (camera-driven probe placement, runtime update of stored lighting, completing occluded lighting). Closest element: claim 16's stored-depth occlusion test (= h(Q) ≥ 0), but only under claim 15's completion step. NVIDIA US20210012562A1 abandoned 2023; no NVIDIA filing found on the 2017 light-field probes. No design-around appears needed on this reading; counsel should review before building probe-to-probe continuation, filling the capture shadow from SH or the lightmap, or occlusion-triggered screen-space fill. Not accessed: Patentscope search report/written opinion, certified claim text.
+
 ## Corrections
 
 Compiler

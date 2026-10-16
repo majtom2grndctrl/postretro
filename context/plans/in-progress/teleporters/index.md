@@ -59,7 +59,8 @@ resident on arrival.
     from the landmark, vertical included, is rotated onto the target.
 - **Arrival state.**
   - A vault aborts. Slide and dash continue with the rotated velocity.
-  - Ground becomes airborne, and no mover carry follows the pawn.
+  - No mover carry follows the pawn. The arrival is grounded only on static floor
+    under its capsule; otherwise it is airborne and owes no coyote jump.
   - An arrival capsule blocked by world geometry or a mover at its pose this
     tick refuses the teleport with no event and no sound, and warns once per
     teleporter.
@@ -203,7 +204,7 @@ Firing:
 - [ ] Disarming then arming a latched teleporter, in one tick or across ticks, clears its latches and fires it for occupants on the next tick. `arm()` on an armed one does not. Arm then disarm of a disarmed one in one tick leaves it disarmed and fires nothing (P3).
 - [ ] Two players entering one classic teleporter on the same tick both arrive, and the event fires twice. Arming an occupied seamless teleporter with two players inside shifts both on the next tick, and the event fires once for each (P4).
 - [ ] An arrival blocked by world geometry or a mover is refused: no move, no event, no sound, one warning. A mover moving into the arrival capsule on the teleport tick refuses it, and one moving out of it does not, on host and client alike (P5).
-- [ ] A vault in progress aborts. A slide or dash survives with the rotated velocity. The pawn is airborne after arrival.
+- [ ] A vault in progress aborts and reports `vault_ended`. A slide or dash survives with the rotated velocity. The pawn arrives grounded on static floor and airborne otherwise, never carried by a mover, with no coyote jump in mid-air.
 - [ ] An enemy or projectile inside an armed teleporter is not moved, and no event fires. A player dead at tick start, including one zeroed by a deferred health write that lands before movement, does not teleport. A player killed later in the tick it crosses in still teleports and fires the event (P25).
 - [ ] On the teleport tick, a trigger volume at the arrival point fires its enter edge and one the pawn left at the source fires its exit edge (P24).
 

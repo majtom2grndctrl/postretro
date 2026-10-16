@@ -51,6 +51,36 @@ pub(crate) struct CaptureScene {
     /// generation and every drain. Omitted keeps the engine default. Requires
     /// a streamed lightmap.
     pub(crate) lightmap_pool_cap_layers: Option<u32>,
+    /// SPIKE (blend-cost spike, never merged): the debug reflection blend
+    /// lever. Omitted keeps the single-sample reflection.
+    pub(crate) reflection_blend: Option<CaptureReflectionBlend>,
+}
+
+/// SPIKE: the capture's reflection blend candidate, coverage lever and band.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct CaptureReflectionBlend {
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) coverage: bool,
+    #[serde(default = "default_blend_band")]
+    pub(crate) band: f32,
+}
+
+fn default_blend_band() -> f32 {
+    postretro_render_cpu::fluid_surface::reflection_blend::FLUID_BLEND_DEFAULT_BAND
+}
+
+impl CaptureReflectionBlend {
+    /// The validated mode.
+    pub(crate) fn mode(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode>
+    {
+        postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode::from_name(
+            &self.mode,
+        )
+    }
 }
 
 impl CaptureScene {
@@ -160,6 +190,14 @@ pub(crate) enum SceneError {
     LightTermMaskOutOfRange { bits: u32 },
     #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
     LightmapPoolCapZero,
+    #[error(
+        "invalid capture scene: reflection_blend mode must be single, blend, precomputed or stochastic, got {mode:?}"
+    )]
+    ReflectionBlendModeUnknown { mode: String },
+    #[error(
+        "invalid capture scene: reflection_blend band must be finite and at least 0, got {band}"
+    )]
+    ReflectionBlendBandOutOfRange { band: f32 },
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -228,6 +266,16 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.lightmap_pool_cap_layers == Some(0) {
         return Err(SceneError::LightmapPoolCapZero);
+    }
+    if let Some(blend) = &scene.reflection_blend {
+        if blend.mode().is_none() {
+            return Err(SceneError::ReflectionBlendModeUnknown {
+                mode: blend.mode.clone(),
+            });
+        }
+        if !blend.band.is_finite() || blend.band < 0.0 {
+            return Err(SceneError::ReflectionBlendBandOutOfRange { band: blend.band });
+        }
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -588,10 +636,49 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            reflection_blend: None,
         };
         assert!(matches!(
             validate_scene(&scene),
             Err(SceneError::NonFiniteForcedAnimLightRadiance)
+        ));
+    }
+
+    #[test]
+    fn parse_scene_reads_and_validates_the_reflection_blend_lever() {
+        use postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode;
+        let with = |blend: &str| {
+            format!(
+                "{{\"map\": \"m.prl\", \"camera\": {{\"position\": [0, 1, 0], \
+                 \"yaw_deg\": 0, \"pitch_deg\": -89}}, \"resolution\": [64, 64], \
+                 \"output\": \"c.png\", \"reflection_blend\": {blend}}}"
+            )
+        };
+        let scene = parse_scene(&with(
+            "{\"mode\": \"precomputed\", \"coverage\": true, \"band\": 2.5}",
+        ))
+        .expect("valid lever");
+        let blend = scene.reflection_blend.expect("lever set");
+        assert_eq!(blend.mode(), Some(FluidReflectionBlendMode::Precomputed));
+        assert!(blend.coverage);
+        assert_eq!(blend.band, 2.5);
+        let defaults = parse_scene(&with("{\"mode\": \"stochastic\"}"))
+            .expect("defaults")
+            .reflection_blend
+            .expect("lever set");
+        assert!(!defaults.coverage);
+        assert_eq!(defaults.band, 1.0);
+        assert!(matches!(
+            parse_scene(&with("{\"mode\": \"triple\"}")),
+            Err(SceneError::ReflectionBlendModeUnknown { .. })
+        ));
+        assert!(matches!(
+            parse_scene(&with("{\"mode\": \"blend\", \"band\": -1}")),
+            Err(SceneError::ReflectionBlendBandOutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_scene(&with("{\"mode\": \"blend\", \"width\": 1}")),
+            Err(SceneError::Parse(_))
         ));
     }
 

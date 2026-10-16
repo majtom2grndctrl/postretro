@@ -173,7 +173,8 @@ impl FluidProbeResources {
         let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Reflection Probe Table"),
             contents: &pack_probe_table(section),
-            usage: wgpu::BufferUsages::UNIFORM,
+            // SPIKE: COPY_DST so a GPU test can force synthetic neighbours.
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         // One distance tile per probe in the colour tiles' layers, uploaded
         // as stored (little-endian f16); 0 is no surface.
@@ -231,6 +232,12 @@ impl FluidProbeResources {
                 resource: wgpu::BindingResource::TextureView(&self.distance_view),
             },
         ]
+    }
+
+    /// SPIKE test hook: overwrite the share table.
+    #[cfg(test)]
+    pub(crate) fn rewrite_table(&self, queue: &wgpu::Queue, bytes: &[u8]) {
+        queue.write_buffer(&self.table, 0, bytes);
     }
 
     /// The probe array's tile width, height and layer count.

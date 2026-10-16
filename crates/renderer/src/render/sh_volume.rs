@@ -209,6 +209,10 @@ pub struct AnimatedLightBuffers {
     /// One `ANIMATION_DESCRIPTOR_SIZE` record per animated light. Empty maps
     /// carry a single zeroed dummy record; `animated_light_count` is the real count.
     descriptor_mirror: Vec<u8>,
+    /// SPIKE: the sample pool as created (FGD-baked samples, scripted region
+    /// zeroed), for the precomputed blend mode's CPU ratio. Bridge writes to
+    /// the scripted region are not mirrored.
+    sample_mirror: Vec<f32>,
     animated_light_count: u32,
     /// Dirty bit set by `set_active`; cleared by `upload_descriptors_if_dirty`.
     /// Writes are batched across the frame so multiple `set_active` calls
@@ -243,10 +247,53 @@ impl AnimatedLightBuffers {
             descriptors,
             anim_samples,
             descriptor_mirror,
+            sample_mirror: vec![0.0; ANIMATION_DESCRIPTOR_SIZE / 4],
             animated_light_count,
             dirty: false,
             oor_warned: false,
         }
+    }
+
+    /// SPIKE: every descriptor record (the dummy included, as the shader's
+    /// `arrayLength` counts it) decoded for `animated_light_scale`, curve
+    /// slices borrowed from the sample mirror; a curve past it reads empty.
+    pub(crate) fn scale_descriptors(
+        &self,
+    ) -> Vec<postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor<'_>> {
+        let word = |record: &[u8], offset: usize| {
+            u32::from_ne_bytes(record[offset..offset + 4].try_into().expect("4 bytes"))
+        };
+        let float = |record: &[u8], offset: usize| f32::from_bits(word(record, offset));
+        let (records, _) = self
+            .descriptor_mirror
+            .as_chunks::<ANIMATION_DESCRIPTOR_SIZE>();
+        records
+            .iter()
+            .map(|record| {
+                let record = record.as_slice();
+                let brightness_offset = word(record, 8) as usize;
+                let brightness_count = word(record, 12) as usize;
+                let color_offset = word(record, 28) as usize;
+                let color_count = word(record, 32) as usize;
+                let brightness = self
+                    .sample_mirror
+                    .get(brightness_offset..brightness_offset + brightness_count)
+                    .unwrap_or(&[]);
+                let color: &[[f32; 3]] = self
+                    .sample_mirror
+                    .get(color_offset..color_offset + 3 * color_count)
+                    .map(bytemuck::cast_slice)
+                    .unwrap_or(&[]);
+                postretro_render_cpu::sh_compose::AnimatedLightScaleDescriptor {
+                    period: float(record, 0),
+                    phase: float(record, 4),
+                    base_color: [float(record, 16), float(record, 20), float(record, 24)],
+                    brightness,
+                    color,
+                    is_active: word(record, ANIMATION_DESCRIPTOR_ACTIVE_OFFSET) != 0,
+                }
+            })
+            .collect()
     }
 
     /// 0 when the map has no animated lights (buffers still hold a single dummy record so wgpu accepts the binding).
@@ -861,6 +908,7 @@ impl ShVolumeResources {
             descriptors: anim_descriptors_buffer,
             anim_samples: anim_samples_buffer,
             descriptor_mirror: anim_descriptor_bytes,
+            sample_mirror: bytemuck::pod_collect_to_vec(&anim_sample_bytes),
             animated_light_count,
             dirty: false,
             oor_warned: false,
@@ -1991,6 +2039,7 @@ mod tests {
             descriptors: buffer,
             anim_samples,
             descriptor_mirror: mirror,
+            sample_mirror: Vec::new(),
             animated_light_count: 2,
             dirty: false,
             oor_warned: false,

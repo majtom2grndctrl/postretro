@@ -661,6 +661,12 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                // SPIKE: the precomputed blend mode's per-frame CPU ratios.
+                full.fluid_surface.upload_ratio_lobes(
+                    queue,
+                    &full.sh_volume_resources.animation,
+                    full.mesh_dynamic_time,
+                );
                 full.fluid_surface.upload_scene_inputs(queue);
             }
             let fluid_ts = self

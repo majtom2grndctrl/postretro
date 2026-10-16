@@ -8,6 +8,10 @@ use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_render_cpu::fluid_surface::reflection::{FluidProbeGpu, FluidReflectionLights};
+use postretro_render_cpu::fluid_surface::reflection_blend::{
+    FLUID_RATIO_LOBES_STRIDE, FluidReflectionBlendMode, pack_ratio_lobes, ratio_lobes,
+};
 use postretro_render_cpu::fluid_surface::{
     FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
     FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidShaderVariant,
@@ -209,6 +213,11 @@ struct InstalledFluidSurfaces {
     /// dummies. Held so they drop with the level; the frame reaches them only
     /// through `params_bind_group`.
     _probes: FluidProbeResources,
+    /// SPIKE: each installed probe's packed light entries, for the
+    /// precomputed blend mode's per-frame CPU ratio.
+    probe_lights: Vec<FluidProbeGpu>,
+    /// SPIKE: reused per frame: the packed lobe ratios.
+    ratio_scratch: Vec<f32>,
     params_bind_group: wgpu::BindGroup,
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
@@ -230,7 +239,13 @@ pub(crate) struct FluidSurfacePass {
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
     installed: Option<InstalledFluidSurfaces>,
+    /// SPIKE: the precomputed mode's CPU cost, frames and nanoseconds since
+    /// the last log line.
+    ratio_timing: (u32, u128),
 }
+
+/// SPIKE: frames between precomputed-mode CPU cost log lines.
+const RATIO_TIMING_LOG_FRAMES: u32 = 600;
 
 impl FluidSurfacePass {
     /// Build both shader-variant pipelines over the renderer-owned shared
@@ -276,6 +291,93 @@ impl FluidSurfacePass {
             params_bind_group_layout,
             scene_inputs,
             installed: None,
+            ratio_timing: (0, 0),
+        }
+    }
+
+    /// SPIKE: store the debug reflection blend lever.
+    pub fn set_reflection_blend(
+        &mut self,
+        mode: FluidReflectionBlendMode,
+        coverage: bool,
+        band: f32,
+    ) {
+        self.scene_inputs.set_reflection_blend(mode, coverage, band);
+    }
+
+    /// SPIKE: the debug reflection blend lever: mode, coverage, band.
+    pub fn reflection_blend(&self) -> (FluidReflectionBlendMode, bool, f32) {
+        let blend = self.scene_inputs.reflection_blend();
+        (blend.mode, blend.coverage, blend.band)
+    }
+
+    /// SPIKE: in the precomputed blend mode, compute every installed probe's
+    /// five unclamped lobe ratios from the live descriptors at `time` (the
+    /// frame's `uniforms.time`) and upload them; otherwise nothing. Logs the
+    /// CPU cost (decode, compute and write) every few hundred frames.
+    pub fn upload_ratio_lobes(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        animation: &sh_volume::AnimatedLightBuffers,
+        time: f32,
+    ) {
+        if self.scene_inputs.reflection_blend().mode != FluidReflectionBlendMode::Precomputed {
+            return;
+        }
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        if installed.probe_lights.is_empty() {
+            return;
+        }
+        let start = std::time::Instant::now();
+        let descriptors = animation.scale_descriptors();
+        let lights = FluidReflectionLights {
+            descriptors: &descriptors,
+            time,
+        };
+        installed.ratio_scratch.clear();
+        for probe in &installed.probe_lights {
+            pack_ratio_lobes(
+                &ratio_lobes(&probe.lights, &lights),
+                &mut installed.ratio_scratch,
+            );
+        }
+        self.scene_inputs
+            .write_ratio_lobes(queue, &installed.ratio_scratch);
+        let elapsed = start.elapsed().as_nanos();
+        self.ratio_timing.0 += 1;
+        self.ratio_timing.1 += elapsed;
+        if self.ratio_timing.0 >= RATIO_TIMING_LOG_FRAMES {
+            log::info!(
+                "[Renderer] Fluid blend spike (precomputed): {} probes, {} descriptors, \
+                 avg {:.2} us CPU/frame over {} frames, {} B uploaded/frame",
+                installed.probe_lights.len(),
+                descriptors.len(),
+                self.ratio_timing.1 as f64 / self.ratio_timing.0 as f64 / 1000.0,
+                self.ratio_timing.0,
+                installed.probe_lights.len() * FLUID_RATIO_LOBES_STRIDE,
+            );
+            self.ratio_timing = (0, 0);
+        }
+    }
+
+    /// SPIKE test hook: rewrite the installed probe table with `neighbours`.
+    #[cfg(test)]
+    pub(crate) fn rewrite_probe_neighbours(
+        &self,
+        queue: &wgpu::Queue,
+        section: Option<&ReflectionProbesSection>,
+        neighbours: &[[u32; 2]],
+    ) {
+        if let Some(installed) = self.installed.as_ref() {
+            installed._probes.rewrite_table(
+                queue,
+                &postretro_render_cpu::fluid_surface::reflection::pack_probe_table_with_neighbours(
+                    installable_probe_section(section),
+                    neighbours,
+                ),
+            );
         }
     }
 
@@ -346,6 +448,9 @@ impl FluidSurfacePass {
         );
         // An install-time upload takes the raw queue, as the SH atlases do.
         let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
+        let probe_lights: Vec<FluidProbeGpu> = reflection_probes
+            .map(|section| section.probes.iter().map(FluidProbeGpu::pack).collect())
+            .unwrap_or_default();
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
@@ -402,6 +507,8 @@ impl FluidSurfacePass {
             index_buffer,
             params_buffer,
             _probes: probes,
+            probe_lights,
+            ratio_scratch: Vec::new(),
             params_bind_group,
             volumes: mesh.volumes,
             slots,
@@ -727,6 +834,34 @@ impl Renderer {
         if let Some(full) = self.full.as_mut() {
             full.fluid_surface.set_reflection_style(style);
         }
+    }
+
+    /// SPIKE: set the debug reflection blend lever (blend-cost spike): the
+    /// candidate, the coverage lever and the band W in metres. Safe before
+    /// full init (then dropped); uploads before the next fluid pass.
+    pub fn set_fluid_reflection_blend(
+        &mut self,
+        mode: postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode,
+        coverage: bool,
+        band: f32,
+    ) {
+        if let Some(full) = self.full.as_mut() {
+            full.fluid_surface
+                .set_reflection_blend(mode, coverage, band);
+        }
+    }
+
+    /// SPIKE: the debug reflection blend lever: mode, coverage, band.
+    pub fn fluid_reflection_blend(
+        &self,
+    ) -> Option<(
+        postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode,
+        bool,
+        f32,
+    )> {
+        self.full
+            .as_ref()
+            .map(|full| full.fluid_surface.reflection_blend())
     }
 
     /// The reflection style the next fluid pass draws.

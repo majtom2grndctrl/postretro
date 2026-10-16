@@ -115,6 +115,18 @@ impl PreparedCapture {
         if let Some(mask) = scene.light_term_mask() {
             renderer.set_light_term_mask(mask);
         }
+        // SPIKE (blend-cost spike): the debug reflection blend lever.
+        if let Some(blend) = &scene.reflection_blend
+            && let Some(mode) = blend.mode()
+        {
+            renderer.set_fluid_reflection_blend(mode, blend.coverage, blend.band);
+            log::info!(
+                "[Capture] Reflection blend spike: mode {}, coverage {}, band {} m",
+                mode.name(),
+                blend.coverage,
+                blend.band,
+            );
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);

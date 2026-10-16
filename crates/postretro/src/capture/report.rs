@@ -737,6 +737,7 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            reflection_blend: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,

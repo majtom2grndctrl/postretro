@@ -136,9 +136,10 @@ struct FluidProbeLight {
 };
 struct FluidProbe {
     box_min: vec3<f32>,
-    _pad0: u32,
+    // SPIKE: the probe's two synthetic blend neighbours (pad words in main).
+    neighbour0: u32,
     box_max: vec3<f32>,
-    _pad1: u32,
+    neighbour1: u32,
     capture_point: vec3<f32>,
     layer: u32,
     lights: array<FluidProbeLight, 4>,
@@ -163,9 +164,18 @@ struct FluidSceneInputs {
     fog_weight: f32,
     // The mod's reflection style: FLUID_REFLECTION_STYLE_SMOOTH, else pixel.
     reflection_style: u32,
-    spare: vec2<f32>,
+    // SPIKE: the debug reflection blend lever: bits 0..7 mode, bit 8 coverage.
+    blend_mode: u32,
+    // SPIKE: the blend band W, metres.
+    blend_band: f32,
 };
 @group(5) @binding(1) var<uniform> fluid_scene: FluidSceneInputs;
+// SPIKE: per probe, per lobe, the unclamped live-lighting ratio the CPU
+// precomputes each frame for the precomputed blend mode.
+struct FluidRatioLobes {
+    probes: array<array<vec4<f32>, 5>, 256>,
+};
+@group(5) @binding(2) var<uniform> fluid_ratio_lobes: FluidRatioLobes;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -892,6 +902,97 @@ fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32
         search.weight);
 }
 
+// SPIKE: the reflection blend-cost candidates. Mirrors
+// `postretro_render_cpu::fluid_surface::reflection_blend`. Mode 0 never
+// reaches this code; it is the reflecting variant's only addition.
+const FLUID_BLEND_MODE_MASK: u32 = 0xFFu;
+const FLUID_BLEND_MODE_SINGLE: u32 = 0u;
+const FLUID_BLEND_MODE_PRECOMPUTED: u32 = 2u;
+const FLUID_BLEND_MODE_STOCHASTIC: u32 = 3u;
+const FLUID_BLEND_COVERAGE_BIT: u32 = 0x100u;
+const FLUID_BLEND_COVERAGE_FLOOR: f32 = 0.25;
+const FLUID_SALT_BLEND_PICK: u32 = 0xB5297A4Du;
+
+// The precomputed ratio toward `direction`: the lobe blend, then the clamp.
+fn fluid_reflection_ratio_precomputed(probe: u32, direction: vec3<f32>) -> vec3<f32> {
+    let lobes = fluid_reflection_lobe_weights(direction);
+    let r = fluid_ratio_lobes.probes[probe];
+    return max(r[0].xyz * lobes[0] + r[1].xyz * lobes[1] + r[2].xyz * lobes[2]
+        + r[3].xyz * lobes[3] + r[4].xyz * lobes[4], vec3<f32>(0.0));
+}
+
+// `fluid_reflection_sample` with the precomputed ratio: no descriptor reads.
+fn fluid_reflection_sample_precomputed(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
+                                       outward: vec3<f32>) -> FluidReflectionSample {
+    let ray = fluid_reflection_above_horizon(fluid_reflection_mirror(view, outward));
+    let layer = fluid_probes.probes[probe].layer;
+    let search = fluid_reflection_search(world_position, ray, fluid_probes.probes[probe].box_min,
+        fluid_probes.probes[probe].box_max, fluid_probes.probes[probe].capture_point,
+        fluid_probes.tile.xy, layer);
+    let uv = fluid_reflection_tile_uv(search.lookup, fluid_probes.tile.x, fluid_probes.tile.y);
+    let capture = textureSampleLevel(fluid_probe_array, sh_atlas_sampler, uv, layer, 0.0).rgb;
+    return FluidReflectionSample(capture * fluid_reflection_ratio_precomputed(probe, search.lookup),
+        search.weight);
+}
+
+// One neighbour's unnormalised falloff max(0, 1 - d/W), d the position's
+// horizontal distance to its box rectangle; with coverage at least the floor.
+fn fluid_blend_falloff(neighbour: u32, position: vec3<f32>, band: f32, coverage: bool) -> f32 {
+    if neighbour == FLUID_REFLECTION_NO_PROBE {
+        return 0.0;
+    }
+    let box_min = fluid_probes.probes[neighbour].box_min;
+    let box_max = fluid_probes.probes[neighbour].box_max;
+    let d = max(max(box_min.xz - position.xz, position.xz - box_max.xz), vec2<f32>(0.0));
+    let falloff = select(0.0, max(1.0 - length(d) / band, 0.0), band > 0.0);
+    return select(falloff, max(falloff, FLUID_BLEND_COVERAGE_FLOOR), coverage);
+}
+
+// Blend (1), precomputed (2) and stochastic (3): taps the own probe and its
+// two neighbours, weights f_P = 1 and each neighbour's falloff, normalised.
+// Blend and precomputed mix every weighted tap's capture and fade weight;
+// stochastic takes the one tap a stable hash of the water texel cell and the
+// draw slot picks, with probability its weight.
+fn fluid_reflection_blend(mode: u32, probe: u32, position: vec3<f32>, view: vec3<f32>,
+                          normal: vec3<f32>, cell: vec2<i32>, slot: u32) -> FluidReflectionSample {
+    let coverage = (fluid_scene.blend_mode & FLUID_BLEND_COVERAGE_BIT) != 0u;
+    let band = fluid_scene.blend_band;
+    let taps = vec3<u32>(probe, fluid_probes.probes[probe].neighbour0,
+        fluid_probes.probes[probe].neighbour1);
+    let f1 = fluid_blend_falloff(taps.y, position, band, coverage);
+    let f2 = fluid_blend_falloff(taps.z, position, band, coverage);
+    let inv = 1.0 / (1.0 + f1 + f2);
+    let weights = vec3<f32>(inv, f1 * inv, f2 * inv);
+    if mode == FLUID_BLEND_MODE_STOCHASTIC {
+        let u = fluid_hash_unit(fluid_hash3(bitcast<u32>(cell.x), bitcast<u32>(cell.y),
+            slot ^ FLUID_SALT_BLEND_PICK));
+        var pick = taps.x;
+        if u >= weights.x && weights.y > 0.0 {
+            pick = taps.y;
+        }
+        if u >= weights.x + weights.y && weights.z > 0.0 {
+            pick = taps.z;
+        }
+        return fluid_reflection_sample(pick, position, view, normal);
+    }
+    var capture = vec3<f32>(0.0);
+    var weight = 0.0;
+    for (var i: u32 = 0u; i < 3u; i = i + 1u) {
+        let w = weights[i];
+        if w > 0.0 {
+            var tap: FluidReflectionSample;
+            if mode == FLUID_BLEND_MODE_PRECOMPUTED {
+                tap = fluid_reflection_sample_precomputed(taps[i], position, view, normal);
+            } else {
+                tap = fluid_reflection_sample(taps[i], position, view, normal);
+            }
+            capture = capture + tap.capture * w;
+            weight = weight + tap.weight * w;
+        }
+    }
+    return FluidReflectionSample(capture, weight);
+}
+
 // Reflection style. Mirrors `postretro_render_cpu::fluid_surface::reflection_style`:
 // smooth reflects the flat face per fragment; pixel reflects once per water
 // texel cell, from the cell's world-space centre (held to the probe's box at
@@ -1202,7 +1303,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
         fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);
     let view = normalize(uniforms.camera_position - point.position);
-    let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
+    // SPIKE: the debug blend lever; mode 0 runs today's single sample.
+    let blend_mode = fluid_scene.blend_mode & FLUID_BLEND_MODE_MASK;
+    var reflection: FluidReflectionSample;
+    if blend_mode == FLUID_BLEND_MODE_SINGLE {
+        reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
+    } else {
+        reflection = fluid_reflection_blend(blend_mode, in.probe, point.position, view,
+            point.normal, vec2<i32>(floor(in.uv * dims)), in.slot);
+    }
     let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight;
     // From above, an eye within the fog's band of the plane scales the term
     // by its height through the band, the fog's own proximity, reaching 0 at

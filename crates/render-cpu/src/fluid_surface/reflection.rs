@@ -72,9 +72,11 @@ pub struct FluidProbeLightGpu {
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct FluidProbeGpu {
     pub box_min: [f32; 3],
-    _pad0: u32,
+    /// SPIKE: the probe's first synthetic blend neighbour (was a pad word).
+    pub neighbour0: u32,
     pub box_max: [f32; 3],
-    _pad1: u32,
+    /// SPIKE: the probe's second synthetic blend neighbour (was a pad word).
+    pub neighbour1: u32,
     pub capture_point: [f32; 3],
     /// Array layer of the probe's tile.
     pub layer: u32,
@@ -145,9 +147,9 @@ impl FluidProbeGpu {
     pub fn pack(probe: &ReflectionProbeRecord) -> Self {
         Self {
             box_min: probe.box_min,
-            _pad0: 0,
+            neighbour0: 0,
             box_max: probe.box_max,
-            _pad1: 0,
+            neighbour1: 0,
             capture_point: probe.capture_point,
             layer: probe.layer,
             lights: probe.lights.map(|share| FluidProbeLightGpu::pack(&share)),
@@ -224,6 +226,19 @@ pub fn usable_probe_section(
 /// zeros, which no fragment reads, since every probe index is then
 /// [`FLUID_REFLECTION_NO_PROBE`].
 pub fn pack_probe_table(section: Option<&ReflectionProbesSection>) -> Vec<u8> {
+    let neighbours = usable_probe_section(section)
+        .map(|section| super::reflection_blend::probe_neighbours(&section.probes))
+        .unwrap_or_default();
+    pack_probe_table_with_neighbours(section, &neighbours)
+}
+
+/// SPIKE: [`pack_probe_table`] with each probe's two synthetic blend
+/// neighbours in its spare words (`neighbours` indexed by probe; a probe past
+/// it takes [`FLUID_REFLECTION_NO_PROBE`]).
+pub fn pack_probe_table_with_neighbours(
+    section: Option<&ReflectionProbesSection>,
+    neighbours: &[[u32; 2]],
+) -> Vec<u8> {
     let mut bytes = vec![0u8; FLUID_PROBE_TABLE_BYTES];
     let Some(section) = usable_probe_section(section) else {
         return bytes;
@@ -237,8 +252,16 @@ pub fn pack_probe_table(section: Option<&ReflectionProbesSection>) -> Vec<u8> {
     bytes[..FLUID_PROBE_TABLE_HEADER_BYTES].copy_from_slice(bytemuck::bytes_of(&header));
     for (index, probe) in section.probes.iter().enumerate() {
         let start = FLUID_PROBE_TABLE_HEADER_BYTES + index * FLUID_PROBE_STRIDE;
-        bytes[start..start + FLUID_PROBE_STRIDE]
-            .copy_from_slice(bytemuck::bytes_of(&FluidProbeGpu::pack(probe)));
+        bytes[start..start + FLUID_PROBE_STRIDE].copy_from_slice(bytemuck::bytes_of(&{
+            let mut packed = FluidProbeGpu::pack(probe);
+            let [first, second] = neighbours
+                .get(index)
+                .copied()
+                .unwrap_or([FLUID_REFLECTION_NO_PROBE; 2]);
+            packed.neighbour0 = first;
+            packed.neighbour1 = second;
+            packed
+        }));
     }
     bytes
 }

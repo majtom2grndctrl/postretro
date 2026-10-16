@@ -6,6 +6,9 @@
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
+use postretro_render_cpu::fluid_surface::reflection_blend::{
+    FLUID_BLEND_DEFAULT_BAND, FLUID_RATIO_LOBES_BYTES, FluidReflectionBlendMode, pack_blend_word,
+};
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use wgpu::util::DeviceExt;
 
@@ -14,35 +17,64 @@ pub(crate) const FLUID_SCENE_INPUTS_GROUP: u32 = 5;
 
 /// The fluid scene uniform (binding 1), the shader's `FluidSceneInputs`
 /// member for member: the eye fog weight, the reflection style
-/// (`FluidReflectionStyle::uniform_value`), and two spares for later
-/// scene-wide fluid inputs, such as screen-space reflections'.
+/// (`FluidReflectionStyle::uniform_value`), and (SPIKE) the debug reflection
+/// blend lever in the two former spares: mode and coverage, and the band W.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct FluidSceneUniform {
     pub fog_weight: f32,
     pub reflection_style: u32,
-    pub spare: [f32; 2],
+    pub blend_mode: u32,
+    pub blend_band: f32,
 }
 pub(crate) const FLUID_SCENE_UNIFORM_BYTES: u64 = std::mem::size_of::<FluidSceneUniform>() as u64;
+const _: () = assert!(FLUID_SCENE_UNIFORM_BYTES == 16);
 
-impl FluidSceneUniform {
-    fn from_inputs(fog_weight: f32, style: FluidReflectionStyle) -> Self {
+/// SPIKE: the debug reflection blend lever's state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FluidReflectionBlend {
+    pub mode: FluidReflectionBlendMode,
+    pub coverage: bool,
+    pub band: f32,
+}
+
+impl Default for FluidReflectionBlend {
+    fn default() -> Self {
         Self {
-            fog_weight,
-            reflection_style: style.uniform_value(),
-            spare: [0.0; 2],
+            mode: FluidReflectionBlendMode::Single,
+            coverage: false,
+            band: FLUID_BLEND_DEFAULT_BAND,
         }
     }
 }
+
+impl FluidSceneUniform {
+    fn from_inputs(
+        fog_weight: f32,
+        style: FluidReflectionStyle,
+        blend: FluidReflectionBlend,
+    ) -> Self {
+        Self {
+            fog_weight,
+            reflection_style: style.uniform_value(),
+            blend_mode: pack_blend_word(blend.mode, blend.coverage),
+            blend_band: blend.band,
+        }
+    }
+}
+
+/// SPIKE: group 5 binding of the precomputed per-probe lobe ratios.
+pub(crate) const FLUID_RATIO_LOBES_BINDING: u32 = 2;
 
 /// The eye fog weight before any write: a renderer built or recreated
 /// mid-level draws fog on its first frame.
 const DEFAULT_FLUID_FOG_WEIGHT: f32 = 1.0;
 
-/// Scene depth, loaded under the pass's read-only depth attachment, and the
-/// scene uniform. A texture and a uniform, never storage: the shared groups
-/// already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 2] {
+/// Scene depth, loaded under the pass's read-only depth attachment, the
+/// scene uniform, and (SPIKE) the precomputed lobe-ratio uniform. Textures and
+/// uniforms, never storage: the shared groups already spend the whole
+/// FRAGMENT storage budget.
+pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 3] {
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -64,6 +96,16 @@ pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroup
             },
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: FLUID_RATIO_LOBES_BINDING,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(FLUID_RATIO_LOBES_BYTES as u64),
+            },
+            count: None,
+        },
     ]
 }
 
@@ -73,9 +115,12 @@ pub(crate) struct FluidSceneInputs {
     layout: wgpu::BindGroupLayout,
     /// Written only when the fog weight or the reflection style changes.
     uniform_buffer: wgpu::Buffer,
+    /// SPIKE: the precomputed lobe ratios, written per frame in that mode.
+    ratio_lobes_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     fog_weight: f32,
     reflection_style: FluidReflectionStyle,
+    blend: FluidReflectionBlend,
     /// The uniform as last written.
     uploaded: FluidSceneUniform,
     /// The scene depth the bind group was last built over; tests read it.
@@ -91,6 +136,7 @@ fn create_bind_group(
     layout: &wgpu::BindGroupLayout,
     scene_depth: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
+    ratio_lobes_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fluid Surface Scene Inputs Bind Group (group 5)"),
@@ -103,6 +149,10 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: FLUID_RATIO_LOBES_BINDING,
+                resource: ratio_lobes_buffer.as_entire_binding(),
             },
         ],
     })
@@ -120,19 +170,34 @@ impl FluidSceneInputs {
         let initial = FluidSceneUniform::from_inputs(
             DEFAULT_FLUID_FOG_WEIGHT,
             FluidReflectionStyle::default(),
+            FluidReflectionBlend::default(),
         );
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Scene Uniform"),
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = create_bind_group(device, &layout, scene_depth, &uniform_buffer);
+        let ratio_lobes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Surface Ratio Lobes (spike)"),
+            size: FLUID_RATIO_LOBES_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = create_bind_group(
+            device,
+            &layout,
+            scene_depth,
+            &uniform_buffer,
+            &ratio_lobes_buffer,
+        );
         Self {
             layout,
             uniform_buffer,
+            ratio_lobes_buffer,
             bind_group,
             fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
             reflection_style: FluidReflectionStyle::default(),
+            blend: FluidReflectionBlend::default(),
             uploaded: initial,
             #[cfg(test)]
             scene_depth: scene_depth.clone(),
@@ -152,8 +217,13 @@ impl FluidSceneInputs {
     /// Rebuild over a recreated scene depth. The scene-target rebuild is the
     /// only caller: the frame never builds a bind group.
     pub fn rebuild(&mut self, device: &wgpu::Device, scene_depth: &wgpu::TextureView) {
-        self.bind_group =
-            create_bind_group(device, &self.layout, scene_depth, &self.uniform_buffer);
+        self.bind_group = create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            &self.ratio_lobes_buffer,
+        );
         #[cfg(test)]
         {
             self.scene_depth = scene_depth.clone();
@@ -176,9 +246,37 @@ impl FluidSceneInputs {
         self.reflection_style = style;
     }
 
+    /// SPIKE: store the debug reflection blend lever; it uploads before the
+    /// next fluid pass, change-driven with the rest of the uniform. A
+    /// non-finite or negative band keeps the last one.
+    pub fn set_reflection_blend(
+        &mut self,
+        mode: FluidReflectionBlendMode,
+        coverage: bool,
+        band: f32,
+    ) {
+        self.blend.mode = mode;
+        self.blend.coverage = coverage;
+        if band.is_finite() && band >= 0.0 {
+            self.blend.band = band;
+        }
+    }
+
+    pub fn reflection_blend(&self) -> FluidReflectionBlend {
+        self.blend
+    }
+
+    /// SPIKE: write this frame's precomputed lobe ratios (probe-major, five
+    /// `vec4` per probe) at the start of the binding.
+    pub fn write_ratio_lobes(&self, queue: &crate::render::uploads::UploadQueue, data: &[f32]) {
+        if !data.is_empty() {
+            queue.write_buffer(&self.ratio_lobes_buffer, 0, bytemuck::cast_slice(data));
+        }
+    }
+
     /// The uniform as the next upload writes it.
     pub fn pending(&self) -> FluidSceneUniform {
-        FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style)
+        FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style, self.blend)
     }
 
     /// Write the uniform if the fog weight or the reflection style changed

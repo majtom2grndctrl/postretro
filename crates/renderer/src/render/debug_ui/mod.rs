@@ -371,7 +371,37 @@ fn draw_tab_selector(ui: &mut egui::Ui, state: &mut DiagnosticsState) {
     });
 }
 
+/// SPIKE (blend-cost spike, never merged): the debug reflection blend lever.
+fn draw_reflection_blend_spike(ui: &mut egui::Ui, renderer: &mut Renderer) {
+    use postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode;
+    let Some((mut mode, mut coverage, mut band)) = renderer.fluid_reflection_blend() else {
+        return;
+    };
+    egui::CollapsingHeader::new("Reflection blend (spike)")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut changed = false;
+            egui::ComboBox::from_label("Blend mode")
+                .selected_text(mode.name())
+                .show_ui(ui, |ui| {
+                    for candidate in FluidReflectionBlendMode::ALL {
+                        changed |= ui
+                            .selectable_value(&mut mode, candidate, candidate.name())
+                            .changed();
+                    }
+                });
+            changed |= ui.checkbox(&mut coverage, "Coverage (3 taps)").changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut band, 0.0_f32..=8.0).text("Band W (m)"))
+                .changed();
+            if changed {
+                renderer.set_fluid_reflection_blend(mode, coverage, band);
+            }
+        });
+}
+
 fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
+    draw_reflection_blend_spike(ui, renderer);
     egui::CollapsingHeader::new("Lighting systems")
         .default_open(true)
         .show(ui, |ui| {

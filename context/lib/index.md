@@ -150,7 +150,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Indirect lighting | SH L2 irradiance volume baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
-| Reflection probes | prl-build (decided, not yet built): probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time |
+| Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |
 
 Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 

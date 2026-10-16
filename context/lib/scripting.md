@@ -57,7 +57,7 @@ Luau manifest validation reject author templates in that namespace before commit
 
 **Fluid declarations.** `ModManifest.fluids` declares the mod's fluids with `defineFluid`, a pure SDK identity helper: `name`, `viscosity` (drag while swimming, 1/s, ≥ 0), `viewTint` (rgb plus strength, each in [0, 1]), `muffle` and `surfaceOpacity` (each in [0, 1]), optional `enterSound` and `exitSound` keys, and the optional reflectivity, fog and wave fields below. A map's `fluid_volume` names a fluid; declaration order assigns its index. Policy is warn-and-drop: a malformed or out-of-range entry, or a later duplicate name, is dropped with a warning naming `fluids[i].<field>`, the first declaration of a name stands, and the rest of the manifest commits. The array holds at most 4,096 slots, holes included; past that the whole field warns once and is ignored. Both runtimes judge each entry through one shared parser. Fluids commit with the manifest and replace on staged reload; a reload that changes the fluid table re-resolves the level's volumes. Fluid declarations stay out of the mod compatibility digest: a client never resolves level fluids against its own registry (`networking.md` §What gates, and what replicates instead), so a differing declaration cannot desync prediction. Every field but `name` and `viscosity` is presentation: it resolves locally by name, stays out of the replicated movement tuning, and never feeds surface drift.
 
-**Fluid reflectivity, fog and wave fields.** Six optional presentation fields declare how strongly the surface reflects, depth fog seen from outside the fluid, and a slow surface wave (`rendering_pipeline.md` §7.3a). Texels count the face's texture texels at its texture scale. TS writes pairs as arrays, Luau as positional tables. Fog and wave are built; `surfaceReflectivity` is decided, not yet built.
+**Fluid reflectivity, fog and wave fields.** Six optional presentation fields declare how strongly the surface reflects, depth fog seen from outside the fluid, and a slow surface wave (`rendering_pipeline.md` §7.3a). Texels count the face's texture texels at its texture scale. TS writes pairs as arrays, Luau as positional tables.
 
 | Field | Meaning | Omitted | Valid |
 |---|---|---|---|
@@ -73,10 +73,11 @@ Validation follows the fluid policy above: a rule broken drops that fluid with a
 **Mod render profile.** `ModManifest.render` is optional static mod data.
 `bloom` accepts `resolution: "half" | "quarter" | "eighth"` and
 `pixelated: boolean`; omitted fields use half and smooth defaults.
-`reflections.style` (decided, not yet built) accepts `"pixel" | "smooth"`,
+`reflections.style` accepts `"pixel" | "smooth"`,
 default pixel, and sets the look of every fluid reflection layer
 (`rendering_pipeline.md` §7.3a). Malformed optional profile fields warn and
-degrade to those defaults without rejecting an otherwise valid manifest. A
+degrade to those defaults without rejecting an otherwise valid manifest;
+`bloom` and `reflections` degrade independently. A
 successful staged mod-init replaces the active profile; failed, rejected, and
 stale attempts preserve it. The profile is not a level script, reaction, or
 player setting.

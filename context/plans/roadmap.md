@@ -191,7 +191,7 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 Water-surface briefs outside a numbered epic.
 
-- [ ] **reflection-probes** — every map's water mirrors its static room from compile-time, box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Builds after `fluid-depth-fog-waves`. Brief: `context/plans/ready/reflection-probes/`.
+- [ ] **reflection-probes** — every map's water mirrors its static room from compile-time, distance-corrected box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Builds after `fluid-depth-fog-waves`. Brief: `context/plans/in-progress/reflection-probes/`.
 
 ---
 

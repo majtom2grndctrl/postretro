@@ -30,11 +30,11 @@ Rates approach the hold asymptotically and release after the state ends, so the 
 
 ## Overlap value blend
 
-A release (weight w_r, values v_r held) and a new vault (w_n, live values v_n) overlap:
+A release (weight w_r, values v_r held) and a new vault or a rewind (w_n, live values v_n) overlap:
 
 presented = max(w_r, w_n) · (w_r·v_r + w_n·v_n) / (w_r + w_n), and 0 when both are 0.
 
-With equal literals and no focus, this equals the shipped max(w_r, w_n) · v. It differs only when the value sets differ, which `ledgeFocus` makes routine (two ledges, two lines) and `movement--vault-entry-feel` makes routine again (two entries, two evaluations). Without the blend, a re-vault at a different ledge steps by roughly w_r · |v_r − v_n| on its first frame.
+With equal literals and no focus, this equals the shipped max(w_r, w_n) · v. A rewind past 5% (or two vaults with no `Normal` frame between them, which present only as a progress drop) is the most frequent overlap. The formula differs from shipped only when the value sets differ, which `ledgeFocus` makes routine (two ledges, two lines) and `movement--vault-entry-feel` makes routine again (two entries, two evaluations). Without the blend, a re-vault at a different ledge steps by roughly w_r · |v_r − v_n| on its first frame.
 
 ## Paths
 
@@ -46,7 +46,7 @@ With equal literals and no focus, this equals the shipped max(w_r, w_n) · v. It
 | Ends on silent exit | yes | yes | no (timer) | yes |
 | Scales with ledge | no | yes | no | yes |
 | Wall-run | roll has no wall-side sign | none | none | a row plus a wall-signed term |
-| Cost | shipped | small | smallest | moderate (two migrations) |
+| Cost | shipped | small | smallest | moderate (slide and vault migrations) |
 
 Rejected:
 
@@ -59,7 +59,7 @@ Rejected:
 
 ## Focus geometry
 
-Ledge line = atan2(top_y − eye_y, max(horizontal, floor)), clamped to ≤ 0, with the landing spot carried into world space through the mover's presented pose when `mover` is set. Without the floor, horizontal distance goes to 0 as the pawn arrives over the landing spot and the angle approaches −90°.
+Ledge line = atan2(top_y − eye_y, max(horizontal, floor)) from the rendered eye (after bob and every row's eye drop), and no focus at all when top_y ≥ eye_y, with the landing spot carried into world space through the mover's presented pose when `mover` is set. Without the floor, horizontal distance goes to 0 as the pawn arrives over the landing spot and the angle approaches −90°.
 
 Reference view = aim + the row's literal `pitch`. Focus offset = max(−maxPitch, strength · min(0, line − reference)). Row output = weight · (pitch + focus), with roll and fov likewise weighted.
 
@@ -99,7 +99,7 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 - **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row, and its P26 (hot reload releases the pose) is false against source.
 - **Sustained FOV draft:** its slide row is superseded. Its `run` tier is input-derived inside `Normal` and targets an absolute FOV, so it does not fit a state row's additive offset; see the open question.
 - **Composition draft:** `pose.<state>` moves to its state layer.
-- **Spectator follow-cam:** evaluates from replicated payload, no wire change.
+- **Spectator follow-cam:** evaluates from the replicated vault payload and that pawn's replicated aim, no wire change.
 
 ## Pins
 
@@ -114,3 +114,7 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 | P7 | Ledge focus with an impulse kick, sway or another row active. | The line bounds aim + row literal pitch + focus; other terms compose after. | "Never past the line" holds for the row's reference view; rendered pitch may pass it by the other terms. |
 | P8 | A mover tilts after vault entry. | Uprightness is checked at entry only; each tick re-resolves the frame. | Focus reads the landing spot through the mover's presented pose; no assumption of uprightness. |
 | P9 | Hot reload or descriptor refresh mid-vault or mid-slide. | The commit replaces the movement component, then clears pose state on the same frame. | The pose snaps to neutral; no release runs. |
+| P10 | Vault A ends and vault B starts with no frame presenting `Normal` between them; or a reconcile rewinds progress past 5%. | The driver reads only the latest tick, so B shows as a progress drop. | The drop captures A's presented values and blends them with B's; no step beyond B's ease-in, ledge focus included. |
+| P11 | Hot reload mid-swim. | The commit keeps `Swim` and clears pose state. | The swim row snaps to neutral on the first frame after the commit and eases back in at `enterRate`. |
+| P12 | Ledge focus on a moving mover. | The eye is assembled before movers are collected for render. | Focus reads the mover pose at the eye's own interpolation share for that frame, never the previous frame's. |
+| P13 | Reconcile corrects a vault's landing target mid-climb. | Focus is a pure function of target, eye and aim. | Focus re-aims within one frame, with a step the size of the correction's angle. Accepted; no slew mechanism. |

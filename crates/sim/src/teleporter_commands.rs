@@ -157,3 +157,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod entry_path_tests;

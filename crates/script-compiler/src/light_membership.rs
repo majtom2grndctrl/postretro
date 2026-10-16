@@ -2644,6 +2644,89 @@ mod tests {
         );
     }
 
+    // The independent wrapper inventory must route the teleporter kind: a
+    // teleporter member answers with identity snapshots and its `arm`, `disarm`
+    // and `on("teleport")` wrappers evaluate at build in both hosts, leaving the
+    // light records as the light step alone reserves them.
+    #[test]
+    fn teleport_members_evaluate_at_build_in_both_hosts() {
+        let quickjs = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              const gate = getMapEntities("teleporter", { tag: "gate" })[0];
+              if (gate.position.z !== 3 || gate.tags[0] !== "gate") throw new Error("snapshot");
+              if (gate.id < 2147483648) throw new Error("member id in the light range");
+              const bind = gate.on("teleport", ["levelLoad"]);
+              return {
+                reactions: [defineReaction("levelLoad", { sequence: [
+                  { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+                  ...gate.arm(),
+                  ...gate.disarm(),
+                ] })],
+                teleportEvents: [bind],
+              };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = getMapEntities("light", { tag = "wave" })[1]
+              local gate = getMapEntities("teleporter", { tag = "gate" })[1]
+              if gate.position.z ~= 3 or gate.tags[1] ~= "gate" then error("snapshot") end
+              if gate.id < 2147483648 then error("member id in the light range") end
+              local bind = gate:on("teleport", { "levelLoad" })
+              return {
+                reactions = { defineReaction("levelLoad", { sequence = {
+                  { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+                  gate:arm()[1],
+                  gate:disarm()[1],
+                } }) },
+                teleportEvents = { bind },
+              }
+            end
+        "#;
+        let baseline = r#"
+            function setupLevel() {
+              const light = getMapEntities("light", { tag: "wave" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: [
+                { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+              ] })] };
+            }
+        "#;
+        let with_members = table().with_map_members(vec![MapMember {
+            kind: MapMemberKind::Teleporter,
+            tags: vec!["gate".to_string()],
+            position: [1.0, 2.0, 3.0],
+            spawned_tags: Vec::new(),
+        }]);
+        let evaluate = |source: &str, path: &str| {
+            emit_light_membership_manifest(source, Path::new(path), Path::new("."), &with_members)
+                .unwrap_or_else(|error| panic!("{path} evaluates with a teleporter: {error:#}"))
+        };
+        let baseline = evaluate(baseline, "fixture.ts");
+        let quickjs_manifest = evaluate(quickjs, "fixture.ts");
+        let luau_manifest = evaluate(luau, "fixture.luau");
+        assert_eq!(baseline.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights, baseline.lights);
+        assert_eq!(luau_manifest.lights, baseline.lights);
+        assert!(
+            quickjs_manifest.stubbed_primitives.is_empty()
+                && luau_manifest.stubbed_primitives.is_empty(),
+            "teleporter members are answered, not stubbed: {:?} / {:?}",
+            quickjs_manifest.stubbed_primitives,
+            luau_manifest.stubbed_primitives,
+        );
+        // Without the member table the kind answers `[]` and indexing throws.
+        assert!(
+            emit_light_membership_manifest(
+                quickjs,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table()
+            )
+            .is_err()
+        );
+    }
+
     // The shared wire type carries `spawnedTags` on any kind; the evaluator
     // rejects it off a spawner, as the runtime snapshot never carries it there.
     #[test]

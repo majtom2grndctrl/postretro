@@ -128,8 +128,8 @@ fn teleport_parser_rejects_invalid_authoring_naming_entity() {
         "\"target\" \" \"",
     ] {
         let error = parse_inline_map(&fixture(extra))
-            .err()
-            .expect("authoring must fail")
+            .map(|_| ())
+            .expect_err("authoring must fail")
             .to_string();
         assert!(error.contains("entity 1 'trigger_teleport'"), "{error}");
     }
@@ -142,7 +142,7 @@ fn teleport_parser_rejects_invalid_authoring_naming_entity() {
             .err()
             .unwrap()
             .to_string()
-            .contains("duplicate")
+            .contains("entity 2 'teleport_destination' duplicate teleport_destination name `out`")
     );
     for (origin, angles) in [
         ("NaN 0 0", "0 0 0"),

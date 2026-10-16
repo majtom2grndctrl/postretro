@@ -1,5 +1,7 @@
 # Movement sustained FOV feel
 
+> **Note (`movement--state-view-pose`):** slide FOV moves to `viewFeel.pose.slide`, an additive offset with its own rates. Before this draft builds, drop its slide row and slide-over-run arbitration, and state how the run target combines with `pose.slide`. Its `impulse.states` own-key repair stays here.
+
 ## Goal
 
 Replace the snap-like slide FOV effect with smooth, sustained FOV targets for

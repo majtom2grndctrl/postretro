@@ -111,7 +111,7 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 - **Wall-run:** a `wallRun` row plus a term signed toward the wall.
 - **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row, and its P26 (hot reload releases the pose) is false against source.
 - **Sustained FOV draft:** its slide row is superseded. Its `run` tier is input-derived inside `Normal` and targets an absolute FOV, so it does not fit a state row's additive offset; it stays with that draft.
-- **Composition draft:** `pose.<state>` moves to its state layer.
+- **Composition draft:** a divergence, not a move. That draft override-merges layers and allows one state layer at a time; `pose` rows ease independently and add, so the composition draft would have to accommodate additive rows.
 - **Spectator follow-cam:** evaluates from the replicated vault payload and that pawn's replicated aim, no wire change.
 
 ## Pins

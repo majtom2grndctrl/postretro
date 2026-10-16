@@ -1519,70 +1519,135 @@ fn update_foot_ground_probes(
                 let ComponentValue::Mesh(mesh) = value else {
                     return None;
                 };
-                let is_legged = hit_zone_store
-                    .get_by_name(&mesh.model)
-                    .is_some_and(|model| !model.legs.is_empty());
-                let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
-                    inputs.foot_count != 0
-                        || inputs
-                            .feet
-                            .iter()
-                            .any(|probe| *probe != FootProbe::default())
-                });
-                (is_legged || has_stale_feet).then_some(id)
+                is_foot_probe_candidate(mesh, hit_zone_store).then_some(id)
             }),
     );
 
     for &id in candidates.iter() {
-        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
-            continue;
-        };
-        let zones = hit_zone_store.get_by_name(&mesh.model);
-        let mut foot_count = 0;
-        let mut feet = [FootProbe::default(); MAX_FEET];
-        if let (Some(zones), Ok(transform)) = (
-            zones,
-            registry
-                .get_component::<postretro_entities::Transform>(id)
-                .copied(),
-        ) && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
-            && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
-        {
-            let world_joints =
-                sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
-            if let Some(world_joints) = world_joints.as_ref() {
-                foot_count = zones.legs.len().min(MAX_FEET);
-                let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
-                let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
-                for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
-                    feet[slot] = probe_foot(
-                        leg.foot_joint,
-                        world_joints,
-                        &model_to_world,
-                        &world_to_model,
-                        downward_reach,
-                        upward_allowance,
-                        collision_world,
-                        mover_colliders,
-                        mover_poses,
-                    );
-                }
+        let transform = registry
+            .get_component::<postretro_entities::Transform>(id)
+            .ok()
+            .copied();
+        write_foot_ground_probes(
+            registry,
+            id,
+            transform,
+            collision_world,
+            mover_colliders,
+            mover_poses,
+            hit_zone_store,
+            anim_time,
+        );
+    }
+}
+
+/// Re-probe one entity's feet from a caller-supplied `transform` instead of its
+/// registry pose. The host seat draws a connected-client pawn from a delayed
+/// presented sample, which can still sit at a teleport's source while the live
+/// pose is at the arrival; probing from the presented transform keeps the foot
+/// contacts on the floor the body is drawn over. Same probe, same RMW of the
+/// aim fields, as the per-tick [`update_foot_ground_probes`] pass.
+#[allow(clippy::too_many_arguments)] // mirrors the per-tick pass's inputs.
+pub fn update_foot_ground_probes_for(
+    registry: &mut EntityRegistry,
+    entity: EntityId,
+    transform: postretro_entities::Transform,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    let Ok(mesh) = registry.get_component::<MeshComponent>(entity) else {
+        return;
+    };
+    if !is_foot_probe_candidate(mesh, hit_zone_store) {
+        return;
+    }
+    write_foot_ground_probes(
+        registry,
+        entity,
+        Some(transform),
+        collision_world,
+        mover_colliders,
+        mover_poses,
+        hit_zone_store,
+        anim_time,
+    );
+}
+
+/// Legged models probe; a mesh still carrying feet from an earlier model clears.
+fn is_foot_probe_candidate(mesh: &MeshComponent, hit_zone_store: &HitZoneStore) -> bool {
+    let is_legged = hit_zone_store
+        .get_by_name(&mesh.model)
+        .is_some_and(|model| !model.legs.is_empty());
+    let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
+        inputs.foot_count != 0
+            || inputs
+                .feet
+                .iter()
+                .any(|probe| *probe != FootProbe::default())
+    });
+    is_legged || has_stale_feet
+}
+
+/// Probe one candidate's feet from `transform` (`None` publishes no contacts)
+/// and write them into its `PoseInputs`.
+#[allow(clippy::too_many_arguments)] // a flat parameter list keeps this a leaf helper.
+fn write_foot_ground_probes(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    transform: Option<postretro_entities::Transform>,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+        return;
+    };
+    let zones = hit_zone_store.get_by_name(&mesh.model);
+    let mut foot_count = 0;
+    let mut feet = [FootProbe::default(); MAX_FEET];
+    if let (Some(zones), Some(transform)) = (zones, transform)
+        && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
+        && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
+    {
+        let world_joints =
+            sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
+        if let Some(world_joints) = world_joints.as_ref() {
+            foot_count = zones.legs.len().min(MAX_FEET);
+            let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+            let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+            for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                feet[slot] = probe_foot(
+                    leg.foot_joint,
+                    world_joints,
+                    &model_to_world,
+                    &world_to_model,
+                    downward_reach,
+                    upward_allowance,
+                    collision_world,
+                    mover_colliders,
+                    mover_poses,
+                );
             }
         }
-
-        // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
-        let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
-        new_inputs.feet = feet;
-        new_inputs.foot_count = foot_count as u8;
-        if mesh.pose_inputs == Some(new_inputs) {
-            continue;
-        }
-        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
-            continue;
-        };
-        mesh.pose_inputs = Some(new_inputs);
-        let _ = registry.set_component(id, mesh);
     }
+
+    // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
+    let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
+    new_inputs.feet = feet;
+    new_inputs.foot_count = foot_count as u8;
+    if mesh.pose_inputs == Some(new_inputs) {
+        return;
+    }
+    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+        return;
+    };
+    mesh.pose_inputs = Some(new_inputs);
+    let _ = registry.set_component(id, mesh);
 }
 
 /// Probe one foot: transform its animated model-space origin to world, cast a

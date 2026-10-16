@@ -5035,13 +5035,10 @@ impl App {
     /// serialization (which reads the authoritative pose) and before the render collectors
     /// read entities. `alpha` is the render sub-tick accumulator, so the presented pose
     /// varies smoothly per render frame rather than stepping once per 60 Hz tick. Thin
-    /// delegation; a no-op for single-player and the client.
-    fn host_present_client_pawns(&mut self, alpha: f32) {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+    /// delegation; a no-op for single-player and the client. The pawns' feet are then
+    /// re-probed from that presented pose at `anim_time`, so contacts match the drawn body.
+    fn host_present_client_pawns(&mut self, alpha: f32, anim_time: f64) {
+        let Some(session) = self.session.as_ref() else {
             return;
         };
         let Some(netcode::NetEndpoint::Host {
@@ -5050,22 +5047,27 @@ impl App {
             allocator,
             tick,
             ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_ref()
         else {
             return;
         };
-        let current_tick = *tick;
-        let mut registry = script_ctx.registry.borrow_mut();
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         netcode::host_present_client_pawns(
             client_pawn_presentation,
             owners,
             allocator,
             &mut registry,
-            current_tick,
+            *tick,
             alpha,
+        );
+        netcode::host_probe_presented_client_pawn_feet(
+            owners,
+            &mut registry,
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+            &session.hit_zone_store,
+            anim_time,
         );
     }
 

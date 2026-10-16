@@ -152,6 +152,7 @@ pub use host::{
 };
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
+    probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
     take_client_pawn_teleports as host_take_client_pawn_teleports,

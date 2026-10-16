@@ -1493,7 +1493,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // BEFORE the render collectors read entities. Clocked off the host's own
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
-    app.host_present_client_pawns(frame_result.alpha);
+    app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
 
     // Advance each reload-endpoint consumer only after it sampled
     // this frame. Catch-up endpoints remain queued in tick order.

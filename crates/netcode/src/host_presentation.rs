@@ -34,6 +34,9 @@ use super::command_queue::{INPUT_BUFFER_TARGET, MovementOwners};
 use super::interpolation::{
     ObservedTeleport, PresentedPose, RemoteInterpolationBuffer, TeleportSample, TransformSample,
 };
+use crate::collision::CollisionWorld;
+use crate::collision::moving::{MoverCollider, MoverPoseSource};
+use crate::scripting_systems::hit_zones::HitZoneStore;
 
 /// Delay, in host authoritative ticks, between a client pawn's newest recorded pose
 /// and the pose the host presents. Reuses the input playout margin (`INPUT_BUFFER_TARGET`,
@@ -177,6 +180,38 @@ pub fn present_client_pawns(
         };
         let _ = registry.set_presentation_transform(pawn, pose.transform);
         present_avatar_pose_inputs(registry, pawn, &pose);
+    }
+}
+
+/// Re-probe each connected-client pawn's feet from the transform it is drawn at.
+/// Call right after [`present_client_pawns`], which wrote the delayed presented pose
+/// into the registry; the fixed tick probed from the live pose, which leads it and
+/// sits at the arrival while the body is still drawn at a teleport's source. A pawn
+/// with no buffered sample keeps its live pose, which is then also what is drawn.
+/// `anim_time` is the render frame's animation clock the body is posed at.
+pub fn probe_presented_client_pawn_feet(
+    owners: &MovementOwners,
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    for (pawn, _client_id) in owners.iter() {
+        let Ok(&transform) = registry.get_component::<Transform>(pawn) else {
+            continue;
+        };
+        crate::sim::update_foot_ground_probes_for(
+            registry,
+            pawn,
+            transform,
+            collision_world,
+            mover_colliders,
+            mover_poses,
+            hit_zone_store,
+            anim_time,
+        );
     }
 }
 
@@ -632,6 +667,156 @@ mod tests {
                 .abs()
                 < POS_EPS,
             "the host's own pawn keeps its live pose"
+        );
+    }
+
+    // Review round 2: the fixed tick probes feet from the live pose, which is at
+    // the arrival while the host seat still draws the pawn at the source. The
+    // re-probe after present must plant the feet on the floor the body is drawn
+    // over: the source floor (contact -1.0), not the arrival's (-0.8).
+    #[test]
+    fn teleport_host_seat_foot_probes_follow_presented_source_not_live_arrival() {
+        use crate::collision::CollisionWorld;
+        use crate::kinematic_mover::MoverTickStateTable;
+        use crate::scripting_systems::hit_zones::{HitZoneStore, ModelHitZones};
+        use postretro_foundation::PlayerMovementComponent;
+        use postretro_model::pose_modifier::{JointMask, LegChain, PoseModifierStack};
+        use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        // Source floor at y=0 around x=0; arrival floor at y=5 around x=100.
+        let patch = |x: f32, y: f32| {
+            [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+                .map(|(dx, dz)| Vec3::new(x + dx, y, dz))
+        };
+        let points = [patch(0.0, 0.0), patch(100.0, 5.0)].concat();
+        let world = CollisionWorld::from_triangles_for_test(
+            points,
+            vec![[0, 2, 1], [0, 3, 2], [4, 6, 5], [4, 7, 6]],
+        );
+        // One leg: a stateless root with its foot joint resting at model (0,-0.7,0).
+        let joint = |parent, translation| Joint {
+            parent,
+            inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            rest_local: RestLocal {
+                translation,
+                ..RestLocal::default()
+            },
+        };
+        let mut chain_mask = JointMask::new();
+        assert!(chain_mask.insert(0) && chain_mask.insert(1));
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(
+            postretro_model::ModelHandle::from("legwalker".to_string()),
+            ModelHitZones::for_test(
+                Arc::new(Skeleton {
+                    joints: vec![
+                        joint(None, Vec3::ZERO),
+                        joint(Some(0), Vec3::new(0.0, -0.7, 0.0)),
+                    ],
+                }),
+                Arc::new(Vec::new()),
+                vec![None, None],
+                HashMap::new(),
+                None,
+                vec![LegChain {
+                    chain_mask,
+                    foot_joint: 1,
+                }],
+                Arc::new(PoseModifierStack::default()),
+            ),
+        );
+
+        let source = Transform {
+            position: Vec3::new(0.0, 1.0, 0.0),
+            ..pose_at(0.0, 0.0)
+        };
+        let arrival = Transform {
+            position: Vec3::new(100.0, 5.8, 0.0),
+            ..pose_at(0.0, 0.0)
+        };
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::default();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::default();
+        let (pawn, _) = spawn_owned_pawn(&mut registry, &mut owners, &mut allocator, 7, source);
+        registry
+            .set_component(pawn, MeshComponent::stateless("legwalker".to_string()))
+            .unwrap();
+        registry
+            .set_component(
+                pawn,
+                crate::predict_reconcile_harness_test_fixtures::component(),
+            )
+            .unwrap();
+        for tick in 0..3 {
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+        }
+        // Tick 3 teleports: the live pose and generation move to the arrival.
+        let mut movement = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        movement.teleport.generation = movement.teleport.generation.wrapping_add(1);
+        registry.set_component(pawn, movement).unwrap();
+        registry.set_component(pawn, arrival).unwrap();
+        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 3);
+
+        // The fixed tick's pose pass probes the live arrival pose.
+        let movers = MoverTickStateTable::default();
+        let empty = HashMap::new();
+        crate::sim::update_presentation_pose_inputs(
+            &mut registry,
+            &world,
+            &[],
+            &movers,
+            &store,
+            0.0,
+            crate::sim::PresentationPoseInputs {
+                camera_aim: (0.0, 0.0),
+                remote_player_aims: &HashMap::new(),
+                remote_aim_pitches: &empty,
+                remote_heading_yaws: &empty,
+                remote_network_ids: &HashMap::new(),
+            },
+        );
+        let foot = |registry: &EntityRegistry| {
+            let inputs = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .pose_inputs
+                .unwrap();
+            assert_eq!(inputs.foot_count, 1);
+            assert!(inputs.feet[0].hit, "the foot finds ground");
+            inputs.feet[0].contact_height
+        };
+        assert!(
+            (foot(&registry) + 0.8).abs() < 1.0e-3,
+            "live probe: arrival floor"
+        );
+
+        // Delayed presentation (target 1.5) still draws the source; the re-probe
+        // follows it.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 4, 0.5);
+        let drawn = registry.get_component::<Transform>(pawn).unwrap().position;
+        assert!(
+            (drawn - source.position).length() < POS_EPS,
+            "drawn at the source"
+        );
+        probe_presented_client_pawn_feet(
+            &owners,
+            &mut registry,
+            &world,
+            &[],
+            &movers,
+            &store,
+            0.25,
+        );
+        let contact = foot(&registry);
+        assert!(
+            (contact + 1.0).abs() < 1.0e-3,
+            "feet plant on the source floor under the drawn body, got {contact}"
         );
     }
 }

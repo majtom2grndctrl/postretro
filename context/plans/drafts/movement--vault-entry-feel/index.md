@@ -1,6 +1,6 @@
 # movement--vault-entry-feel
 
-Brief · compact · reads: `context/lib/movement.md` §1 §2 §4 (Vault), `context/lib/scripting.md` §11, `context/lib/player_options.md` §5 · read at 41f21c8a
+Brief · compact · reads: `context/lib/movement.md` §1 §2 §4 (Vault), `context/lib/scripting.md` §5 §11, `context/lib/player_options.md` §5 · read at 41f21c8a
 
 ## Problem
 
@@ -8,16 +8,16 @@ The project lead asked for vault view feel that answers how the vault began: a s
 
 ## Decisions
 
-- **Fields take expressions directly; no scale sidecar.** `viewFeel.vault`'s `pitch`, `roll`, `fov`, `easeIn` and `easeOut`, and the vault kick row's `tension`, `enter` and `exit` channels, accept a literal or a numeric expression. This is the dash pattern (`movement.md` §2, `plans/done/M14--movement-dash-runtime-values`): a literal stays bit-identical, and the engine pins when the field evaluates. Timing and the enter and exit kicks can each answer the entry, which a magnitude multiplier cannot. It is also the door `movement--state-view-pose` names for `pose.vault`, so its fold carries these fields unchanged.
-- **One `motion` vocabulary for every movement expression.** `motion` is a frozen namespace exported from `"postretro"`, as `activation` is, holding fluent refs that lower to the same input reads dash binds today. Its names keep dash's names and meanings (`speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs`), adds `swimming` and `airborneMs` (time airborne since last grounded or swimming), and adds `climbHeight`, the one vault-only input. A name means the pawn's motion at the field's pinned evaluation moment, so `motion.speed` in a vault field is the speed the vault began with. Each field site binds only the names it can supply. Any other name, or a result type that does not match the field, rejects the descriptor naming the field.
+- **Fields take expressions directly; no scale sidecar.** `viewFeel.vault`'s `pitch`, `roll`, `fov`, `easeIn` and `easeOut`, and the vault kick row's `tension`, `enter` and `exit` channels, accept a literal or a numeric expression. This is the dash pattern (`movement.md` §2, `plans/done/M14--movement-dash-runtime-values`): a literal stays bit-identical, and the engine pins when the field evaluates. Timing and the enter and exit kicks can each answer the entry, which a magnitude multiplier cannot. It is also the door `movement--state-view-pose` names for `pose.vault`, so its fold can carry these fields unchanged.
+- **One `motion` vocabulary for every movement expression.** `motion` is a frozen namespace exported from `"postretro"`, as `activation` is, holding fluent refs that lower to the same input reads dash binds today. It keeps dash's names and meanings (`speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs`), adds `swimming` and `airborneMs` (time since the pawn was last grounded or swimming), and adds `climbHeight`, the one vault-only input. A name means the pawn's motion at the field's pinned evaluation moment, so `motion.speed` in a vault field is the speed the vault began with. Each field site binds only the names it can supply: dash fields the six dash names, vault fields `speed`, `verticalSpeed`, `grounded`, `swimming`, `airborneMs` and `climbHeight`. Any other name, or a result type that does not match the field, rejects the descriptor naming the field.
 - **Not a live store slot.** A live `player.speed` would read the climb path's velocity once the vault has begun, not the run that led into it. Movement and charge expressions also bind closed scopes with no store reads (`scripting.md` §11). A readonly speed slot for HUD or crossings stays a separate door with no consumer yet.
 - **`defineEntity` lowers fluent refs** anywhere in `components.movement`, in TypeScript and Luau, as it already lowers loadout references. Authors write fluent refs in fields with no builder. Raw `runtime.*` IR keeps working. Dash adopts fluent spelling in the same change, which gives the lowering a second consumer from day one.
 - **Vault fields evaluate once per vault, on the first frame that shows it.** That frame is the one with its entry edge, or a pose join (a reconcile or a view-feel reset that shows it in progress, or a rewind read as a new vault). The pose and both kicks of that vault use that one evaluation through the climb and its release, and a later vault evaluates again. A joined vault has no enter kick, as today.
 - **Input sources are render-side; no tick, wire or payload change.** `speed` and `climbHeight` come from the vault payload the local pawn already carries: the entry speed, and the vertical part of the start offset, which is true vertical because vault frames are upright. View-feel state tracks `verticalSpeed`, `grounded`, `swimming` and `airborneMs` from the driver's per-frame pawn facts while the pawn is not vaulting, and freezes them at evaluation. They can lag by the ticks the vault's own frame ran. Placement follows `movement.md` §1: view feel reads the pawn and writes nothing back.
 - **Results follow dash: clamp silently to the literal range.** Pose angles clamp to ±90°, kick channels to ±180°, then the impulse `max`, and kick `tension` to [0.1, 240]. `easeIn` clamps to [0, 1] and `easeOut` to [0, 1 − `easeIn`]. A literal pair summing past 1 still rejects. A non-finite node is excluded by the IR evaluator's finite guard. Composed render pitch stays within ±89°.
-- **Vault row only.** Other kick rows, `normal`'s landing kick among them, stay literal. The vocabulary and the tracked state before the vault are general, so each row extends by pinning its own evaluation moment when asked. The context inputs replace the per-transition map `plans/done/movement--state-transition-feel` named as its extension point: one row reads how it was entered instead of keying rows by source state.
+- **Vault row only.** Other kick rows stay literal. The vocabulary and the tracked state before the vault are general, so each row extends by pinning its own evaluation moment when asked. The context inputs replace the per-transition map `plans/done/movement--state-transition-feel` named as its extension point: one row reads how it was entered instead of keying rows by source state.
 - **Presentation and accessibility unchanged.** `view_feel_scale` and reduced motion multiply the evaluated output (`player_options.md` §5). The viewmodel still never receives the held pose. View feel stays out of the tuning payload, so co-op is untouched.
-- **Non-goals.** New dash inputs: `swimming`, `airborneMs` and `climbHeight` would need tick-side state dash's scope does not have. Inputs that change during the climb: values freeze at the evaluation moment, as dash entry fields do. Remote pawns: view feel follows only the local pawn.
+- **Non-goals.** New dash inputs: `swimming` and `airborneMs` would need tick-side state dash's scope does not have, and `climbHeight` means nothing outside a vault. Any tick-side site that later binds `airborneMs` or `swimming` replaces the render tracker as their single source, rather than adding a second. Inputs that change during the climb: values freeze at the evaluation moment, as dash entry fields do. Remote pawns: view feel follows only the local pawn.
 
 ### Scripting surface
 
@@ -35,7 +35,7 @@ export const playerEntity = defineEntity({
     movement: {
       dash: {
         momentumRetention: motion.grounded.select(0.4, 0.7),
-        // other dash fields unchanged
+        // remaining dash fields as in content/dev/scripts/player.ts
       },
       viewFeel: {
         vault: {
@@ -62,12 +62,12 @@ export const playerEntity = defineEntity({
 });
 ```
 
-Luau ships the same surface through `require("postretro").motion`, with `hard:times(-6)` and bracket spelling for `motion.grounded["or"](...)` as `scripting.md` §5 sets out.
+Luau ships the same surface through `require("postretro").motion`, with method calls such as `hard:times(-6)` and the bracket spelling `scripting.md` §5 sets for reserved words: `motion.grounded["or"](motion.grounded, motion.swimming)`.
 
 ## Acceptance
 
 ### Automated
-- [ ] TypeScript and Luau load the Scripting surface example. Both reject the same cases, naming the field path: an unknown input name; `climbHeight`, `swimming` or `airborneMs` in a dash field; a Bool expression in a number field; an expression on a non-vault kick row; a literal `easeIn` + `easeOut` past 1; a fluent ref in a descriptor not built through `defineEntity`.
+- [ ] TypeScript and Luau load the Scripting surface example, completed with the dev player's remaining fields. Both reject the same cases, naming the field path: an unknown input name; `climbHeight`, `swimming` or `airborneMs` in a dash field; `chargesRemaining`, `cooldownMs` or `elapsedMs` in a vault field; a Bool expression in a number field; an expression on a non-vault kick row; a literal `easeIn` + `easeOut` past 1; a fluent ref in a descriptor not built through `defineEntity`.
 - [ ] A descriptor with only literals presents pose and kick output bit-identical to the same descriptor before this change.
 - [ ] Dash with `motion.grounded.select(0.4, 0.7)` behaves identically to `runtime.select(runtime.read("grounded"), 0.4, 0.7)`, grounded and airborne.
 #### Inputs
@@ -109,8 +109,8 @@ camelCase on script sides, snake_case in Rust. No FGD, no PRL, not on the wire. 
 | Name | Rust | JS / TS | Luau |
 |---|---|---|---|
 | namespace | IR input names, bound per field site | `motion` | `motion` |
-| shared inputs | `speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs` (existing read names) | same, `NumberRef` / `BoolRef` | same |
-| new inputs | `swimming`, `airborneMs`, `climbHeight`; vault view sites only | same | same |
+| dash inputs | `speed`, `verticalSpeed`, `grounded`, `chargesRemaining`, `cooldownMs`, `elapsedMs` (existing read names) | same, `NumberRef` / `BoolRef` | same |
+| vault view inputs | `speed`, `verticalSpeed`, `grounded` (shared names), `swimming`, `airborneMs`, `climbHeight` (new) | same | same |
 | vault pose fields | `VaultViewParams` `pitch`/`roll`/`fov`/`ease_in`/`ease_out` as `NumberOrIr` | `viewFeel.vault.*` | same |
 | vault kick fields | vault `ImpulseStateParams` `tension`, `enter`, `exit` channels as `NumberOrIr` | `impulse.states.vault.*` | same |
 

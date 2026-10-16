@@ -342,12 +342,14 @@
 "origin" "192 -28 16"
 "angles" "0 180 0"
 "_tags" "enemy closet teleport_closet"
+"enabled_on_spawn" "0"
 }
 {
 "classname" "reference_enemy"
 "origin" "208 28 16"
 "angles" "0 180 0"
 "_tags" "enemy closet teleport_closet"
+"enabled_on_spawn" "0"
 }
 {
 "classname" "light"

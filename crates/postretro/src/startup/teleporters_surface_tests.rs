@@ -695,6 +695,18 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     // The plate disarms it and reveals the closet.
     let residents = level.residents();
     assert_eq!(residents.len(), 2, "two map-placed closet monsters");
+    for &npc in &residents {
+        assert!(
+            !level
+                .ctx
+                .registry
+                .borrow()
+                .get_component::<BrainComponent>(npc)
+                .unwrap()
+                .aggro_armed,
+            "the closet monsters start passive until the plate"
+        );
+    }
     level.place(level.trigger_center("closet_plate", None), height);
     level.frame();
     level.frame();

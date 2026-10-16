@@ -1,0 +1,479 @@
+// Game: Postretro
+// Format: Standard
+// Reflection blend-cost spike fixture. SPIKE BRANCH claude/blend-cost-spike.
+// Axis-aligned box brushes; 1 map unit = 0.0254 m; map coordinates, Z up.
+// Keep comments free of braces and quotes, and never leave a blank line
+// inside an entity block. Fluid water is declared in content/dev/start-script.ts.
+// ----
+// Compile: cargo run --release -p postretro-level-compiler --bin prl-build -- content/dev/maps/reflection-blend-spike.map -o content/dev/maps/reflection-blend-spike.prl
+// Brief:   context/plans/drafts/reflection-probe-seams--blend-cost-spike/index.md
+// ----
+// ROOM A, spike worst case: x 0 to 960, y 0 to 960, floor z 0, ceiling z 320,
+//   about 24.4 by 24.4 by 8.1 m. ONE fluid_volume, pool x 96 to 864, y 96 to 864,
+//   surface z 0, pit floor z -96, made of three abutting brushes split along x
+//   at 352 and 608. Three authored reflection_volume boxes x 0 to 352, 352 to 608,
+//   608 to 960, each y 0 to 960, z -96 to 320, abut and cover the room, so the
+//   level has three probes on one plane. Four curve-animated lights, periods
+//   900, 1300, 1700, 2300 ms, light every capture, so each probe stores K = 4.
+//   Two static fills, three pillars in the water, rim crates, coloured walls.
+// ROOM B, typical pose: canal hall B1 x 1024 to 1536 and B2 x 1552 to 2064,
+//   y 0 to 512, ceiling z 320, wall x 1536 to 1552 with a doorway y 192 to 320,
+//   z 0 to 128. ONE fluid_volume x 1088 to 2000, y 224 to 288, surface z -16, as
+//   three brushes split at the doorway faces x 1536 and 1552: B1 run, doorway
+//   piece, B2 run. No authored boxes; the derived probes bind B1, the doorway
+//   piece and B2, three probes on one plane. One unsplit brush is one face
+//   and so one derived probe for the whole canal, with no seam to blend.
+//   Static lights only. A door x 960 to 1024, y 32 to 96 joins A and B1.
+// ----
+// CAPTURE POSES, engine coordinates: x = -map y, y = map z, z = -map x, metres.
+//   Yaw 0 looks along map +x, yaw 90 along map +y. Capture pitch is limited to 89.
+//   Worst case: room A centre, map 480 480 300, high, looking straight down:
+//     position -12.192 7.62 -12.192, yaw_deg 0, pitch_deg -89, water fills the view.
+//   Typical: room B1, map 1112 256 48, low eye over the canal looking east
+//     along it through the doorway: position -6.5024 1.2192 -28.2448, yaw_deg 0, pitch_deg -6.
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// sub-slab, pit floors at z -96
+{
+( -16 976 -112 ) ( -16 -16 -96 ) ( -16 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -112 ) ( 2080 -16 -96 ) ( 2080 -16 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 -112 ) ( 2080 976 -112 ) ( -16 976 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 976 -96 ) ( 2080 -16 -96 ) ( -16 -16 -96 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 2080 976 -112 ) ( -16 976 -96 ) ( -16 976 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2080 -16 -112 ) ( 2080 976 -96 ) ( 2080 976 -112 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// roof at z 320
+{
+( -16 976 320 ) ( -16 -16 336 ) ( -16 -16 320 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 320 ) ( 2080 -16 336 ) ( 2080 -16 320 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( -16 -16 320 ) ( 2080 976 320 ) ( -16 976 320 ) DebugTextures/debug_ceiling_grey 0 0 0 1 1
+( -16 976 336 ) ( 2080 -16 336 ) ( -16 -16 336 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2080 976 320 ) ( -16 976 336 ) ( -16 976 320 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2080 -16 320 ) ( 2080 976 336 ) ( 2080 976 320 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// outer walls
+{
+( -16 976 -96 ) ( -16 -16 320 ) ( -16 -16 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( -16 -16 -96 ) ( 0 -16 320 ) ( 0 -16 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( -16 -16 -96 ) ( 0 976 -96 ) ( -16 976 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( -16 976 320 ) ( 0 -16 320 ) ( -16 -16 320 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 0 976 -96 ) ( -16 976 320 ) ( -16 976 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 0 -16 -96 ) ( 0 976 320 ) ( 0 976 -96 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+{
+( 2064 976 -96 ) ( 2064 -16 320 ) ( 2064 -16 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2064 -16 -96 ) ( 2080 -16 320 ) ( 2080 -16 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2064 -16 -96 ) ( 2080 976 -96 ) ( 2064 976 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2064 976 320 ) ( 2080 -16 320 ) ( 2064 -16 320 ) metal/metal_rough_046a 0 0 0 1 1
+( 2080 976 -96 ) ( 2064 976 320 ) ( 2064 976 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 2080 -16 -96 ) ( 2080 976 320 ) ( 2080 976 -96 ) metal/metal_rough_046a 0 0 0 1 1
+}
+{
+( 0 0 -96 ) ( 0 -16 320 ) ( 0 -16 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 -16 -96 ) ( 2064 -16 320 ) ( 2064 -16 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 -16 -96 ) ( 2064 0 -96 ) ( 0 0 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 0 0 320 ) ( 2064 -16 320 ) ( 0 -16 320 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 2064 0 -96 ) ( 0 0 320 ) ( 0 0 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 2064 -16 -96 ) ( 2064 0 320 ) ( 2064 0 -96 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+{
+( 0 976 -96 ) ( 0 960 320 ) ( 0 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 960 -96 ) ( 2064 960 320 ) ( 2064 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 960 -96 ) ( 2064 976 -96 ) ( 0 976 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 976 320 ) ( 2064 960 320 ) ( 0 960 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 976 -96 ) ( 0 976 320 ) ( 0 976 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 960 -96 ) ( 2064 976 320 ) ( 2064 976 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+// wall between room A and room B, with the door y 32 to 96, z 0 to 112
+{
+( 960 960 -96 ) ( 960 96 320 ) ( 960 96 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 96 -96 ) ( 1024 96 320 ) ( 1024 96 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 96 -96 ) ( 1024 960 -96 ) ( 960 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 960 320 ) ( 1024 96 320 ) ( 960 96 320 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 960 -96 ) ( 960 960 320 ) ( 960 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 96 -96 ) ( 1024 960 320 ) ( 1024 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 960 32 -96 ) ( 960 0 320 ) ( 960 0 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 0 -96 ) ( 1024 0 320 ) ( 1024 0 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 0 -96 ) ( 1024 32 -96 ) ( 960 32 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 32 320 ) ( 1024 0 320 ) ( 960 0 320 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 32 -96 ) ( 960 32 320 ) ( 960 32 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 0 -96 ) ( 1024 32 320 ) ( 1024 32 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 960 96 -96 ) ( 960 32 0 ) ( 960 32 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 32 -96 ) ( 1024 32 0 ) ( 1024 32 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 32 -96 ) ( 1024 96 -96 ) ( 960 96 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 96 0 ) ( 1024 32 0 ) ( 960 32 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 96 -96 ) ( 960 96 0 ) ( 960 96 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 32 -96 ) ( 1024 96 0 ) ( 1024 96 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+{
+( 960 96 112 ) ( 960 32 320 ) ( 960 32 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 32 112 ) ( 1024 32 320 ) ( 1024 32 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 32 112 ) ( 1024 96 112 ) ( 960 96 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 96 320 ) ( 1024 32 320 ) ( 960 32 320 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 96 112 ) ( 960 96 320 ) ( 960 96 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 32 112 ) ( 1024 96 320 ) ( 1024 96 112 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// solid fill north of room B
+{
+( 1024 960 -96 ) ( 1024 512 320 ) ( 1024 512 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 512 -96 ) ( 2064 512 320 ) ( 2064 512 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 512 -96 ) ( 2064 960 -96 ) ( 1024 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1024 960 320 ) ( 2064 512 320 ) ( 1024 512 320 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2064 960 -96 ) ( 1024 960 320 ) ( 1024 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2064 512 -96 ) ( 2064 960 320 ) ( 2064 960 -96 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// room A floor around the pit, z -96 to 0
+{
+( 0 96 -96 ) ( 0 0 0 ) ( 0 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -96 ) ( 960 0 0 ) ( 960 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -96 ) ( 960 96 -96 ) ( 0 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 96 0 ) ( 960 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 96 -96 ) ( 0 96 0 ) ( 0 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 0 -96 ) ( 960 96 0 ) ( 960 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 960 -96 ) ( 0 864 0 ) ( 0 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 864 -96 ) ( 960 864 0 ) ( 960 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 864 -96 ) ( 960 960 -96 ) ( 0 960 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 960 0 ) ( 960 864 0 ) ( 0 864 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 960 -96 ) ( 0 960 0 ) ( 0 960 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 864 -96 ) ( 960 960 0 ) ( 960 960 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 0 864 -96 ) ( 0 96 0 ) ( 0 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 96 -96 ) ( 96 96 0 ) ( 96 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 96 -96 ) ( 96 864 -96 ) ( 0 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 864 0 ) ( 96 96 0 ) ( 0 96 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 96 864 -96 ) ( 0 864 0 ) ( 0 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 96 96 -96 ) ( 96 864 0 ) ( 96 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 864 864 -96 ) ( 864 96 0 ) ( 864 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 864 96 -96 ) ( 960 96 0 ) ( 960 96 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 864 96 -96 ) ( 960 864 -96 ) ( 864 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 864 864 0 ) ( 960 96 0 ) ( 864 96 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 864 -96 ) ( 864 864 0 ) ( 864 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 960 96 -96 ) ( 960 864 0 ) ( 960 864 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// room A pillars standing in the water
+{
+( 160 736 -96 ) ( 160 704 192 ) ( 160 704 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 704 -96 ) ( 192 704 192 ) ( 192 704 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 704 -96 ) ( 192 736 -96 ) ( 160 736 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 160 736 192 ) ( 192 704 192 ) ( 160 704 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 192 736 -96 ) ( 160 736 192 ) ( 160 736 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 192 704 -96 ) ( 192 736 192 ) ( 192 736 -96 ) metal/metal_rough_046a 0 0 0 1 1
+}
+{
+( 528 256 -96 ) ( 528 224 192 ) ( 528 224 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 528 224 -96 ) ( 560 224 192 ) ( 560 224 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 528 224 -96 ) ( 560 256 -96 ) ( 528 256 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 528 256 192 ) ( 560 224 192 ) ( 528 224 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 560 256 -96 ) ( 528 256 192 ) ( 528 256 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 560 224 -96 ) ( 560 256 192 ) ( 560 256 -96 ) metal/metal_rough_046a 0 0 0 1 1
+}
+{
+( 768 704 -96 ) ( 768 672 192 ) ( 768 672 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 768 672 -96 ) ( 800 672 192 ) ( 800 672 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 768 672 -96 ) ( 800 704 -96 ) ( 768 704 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 768 704 192 ) ( 800 672 192 ) ( 768 672 192 ) metal/metal_rough_046a 0 0 0 1 1
+( 800 704 -96 ) ( 768 704 192 ) ( 768 704 -96 ) metal/metal_rough_046a 0 0 0 1 1
+( 800 672 -96 ) ( 800 704 192 ) ( 800 704 -96 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// room A rim crates and a ledge
+{
+( 40 560 0 ) ( 40 400 48 ) ( 40 400 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 40 400 0 ) ( 88 400 48 ) ( 88 400 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 40 400 0 ) ( 88 560 0 ) ( 40 560 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 40 560 48 ) ( 88 400 48 ) ( 40 400 48 ) metal/metal_brushed_012 0 0 0 1 1
+( 88 560 0 ) ( 40 560 48 ) ( 40 560 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 88 400 0 ) ( 88 560 48 ) ( 88 560 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+{
+( 880 260 0 ) ( 880 200 72 ) ( 880 200 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 880 200 0 ) ( 940 200 72 ) ( 940 200 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 880 200 0 ) ( 940 260 0 ) ( 880 260 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 880 260 72 ) ( 940 200 72 ) ( 880 200 72 ) metal/metal_brushed_012 0 0 0 1 1
+( 940 260 0 ) ( 880 260 72 ) ( 880 260 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 940 200 0 ) ( 940 260 72 ) ( 940 260 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+{
+( 300 944 0 ) ( 300 900 120 ) ( 300 900 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 300 900 0 ) ( 660 900 120 ) ( 660 900 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 300 900 0 ) ( 660 944 0 ) ( 300 944 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 300 944 120 ) ( 660 900 120 ) ( 300 900 120 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 660 944 0 ) ( 300 944 120 ) ( 300 944 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+( 660 900 0 ) ( 660 944 120 ) ( 660 944 0 ) DebugTextures/debug_wall_green 0 0 0 1 1
+}
+{
+( 600 72 0 ) ( 600 16 96 ) ( 600 16 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 600 16 0 ) ( 680 16 96 ) ( 680 16 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 600 16 0 ) ( 680 72 0 ) ( 600 72 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 600 72 96 ) ( 680 16 96 ) ( 600 16 96 ) metal/metal_brushed_012 0 0 0 1 1
+( 680 72 0 ) ( 600 72 96 ) ( 600 72 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 680 16 0 ) ( 680 72 96 ) ( 680 72 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// room B floor around the canal trench, z -96 to 0
+{
+( 1024 224 -96 ) ( 1024 0 0 ) ( 1024 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 0 -96 ) ( 2064 0 0 ) ( 2064 0 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 0 -96 ) ( 2064 224 -96 ) ( 1024 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 224 0 ) ( 2064 0 0 ) ( 1024 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 224 -96 ) ( 1024 224 0 ) ( 1024 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 0 -96 ) ( 2064 224 0 ) ( 2064 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1024 512 -96 ) ( 1024 288 0 ) ( 1024 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 288 -96 ) ( 2064 288 0 ) ( 2064 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 288 -96 ) ( 2064 512 -96 ) ( 1024 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 512 0 ) ( 2064 288 0 ) ( 1024 288 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 512 -96 ) ( 1024 512 0 ) ( 1024 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 288 -96 ) ( 2064 512 0 ) ( 2064 512 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 1024 288 -96 ) ( 1024 224 0 ) ( 1024 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 224 -96 ) ( 1088 224 0 ) ( 1088 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 224 -96 ) ( 1088 288 -96 ) ( 1024 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1024 288 0 ) ( 1088 224 0 ) ( 1024 224 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1088 288 -96 ) ( 1024 288 0 ) ( 1024 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1088 224 -96 ) ( 1088 288 0 ) ( 1088 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+{
+( 2000 288 -96 ) ( 2000 224 0 ) ( 2000 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 224 -96 ) ( 2064 224 0 ) ( 2064 224 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 224 -96 ) ( 2064 288 -96 ) ( 2000 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2000 288 0 ) ( 2064 224 0 ) ( 2000 224 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 288 -96 ) ( 2000 288 0 ) ( 2000 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 2064 224 -96 ) ( 2064 288 0 ) ( 2064 288 -96 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// B1 to B2 wall, doorway y 192 to 320, z 0 to 128
+{
+( 1536 192 0 ) ( 1536 0 320 ) ( 1536 0 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 0 0 ) ( 1552 0 320 ) ( 1552 0 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 0 0 ) ( 1552 192 0 ) ( 1536 192 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 192 320 ) ( 1552 0 320 ) ( 1536 0 320 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 192 0 ) ( 1536 192 320 ) ( 1536 192 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 0 0 ) ( 1552 192 320 ) ( 1552 192 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+{
+( 1536 512 0 ) ( 1536 320 320 ) ( 1536 320 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 320 0 ) ( 1552 320 320 ) ( 1552 320 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 320 0 ) ( 1552 512 0 ) ( 1536 512 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 512 320 ) ( 1552 320 320 ) ( 1536 320 320 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 512 0 ) ( 1536 512 320 ) ( 1536 512 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 320 0 ) ( 1552 512 320 ) ( 1552 512 0 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+{
+( 1536 320 128 ) ( 1536 192 320 ) ( 1536 192 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 192 128 ) ( 1552 192 320 ) ( 1552 192 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 192 128 ) ( 1552 320 128 ) ( 1536 320 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1536 320 320 ) ( 1552 192 320 ) ( 1536 192 320 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 320 128 ) ( 1536 320 320 ) ( 1536 320 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+( 1552 192 128 ) ( 1552 320 320 ) ( 1552 320 128 ) DebugTextures/debug_wall_red 0 0 0 1 1
+}
+// B2 east wall panel and a B1 bench
+{
+( 2040 352 0 ) ( 2040 160 200 ) ( 2040 160 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2040 160 0 ) ( 2064 160 200 ) ( 2064 160 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2040 160 0 ) ( 2064 352 0 ) ( 2040 352 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2040 352 200 ) ( 2064 160 200 ) ( 2040 160 200 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 352 0 ) ( 2040 352 200 ) ( 2040 352 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 2064 160 0 ) ( 2064 352 200 ) ( 2064 352 0 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+{
+( 1150 400 0 ) ( 1150 360 24 ) ( 1150 360 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1150 360 0 ) ( 1300 360 24 ) ( 1300 360 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1150 360 0 ) ( 1300 400 0 ) ( 1150 400 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1150 400 24 ) ( 1300 360 24 ) ( 1150 360 24 ) metal/metal_brushed_012 0 0 0 1 1
+( 1300 400 0 ) ( 1150 400 24 ) ( 1150 400 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1300 360 0 ) ( 1300 400 24 ) ( 1300 400 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+}
+// player start: room A south rim, facing north across the pool
+{
+"classname" "player_spawn"
+"origin" "480 48 24"
+"angles" "0 90 0"
+"_tags" "player"
+}
+// room A pool: ONE fluid entity, three abutting brushes at one height, surface z 0
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 96 864 -96 ) ( 96 96 0 ) ( 96 96 -96 ) fluids/water_64 0 0 0 1 1
+( 96 96 -96 ) ( 352 96 0 ) ( 352 96 -96 ) fluids/water_64 0 0 0 1 1
+( 96 96 -96 ) ( 352 864 -96 ) ( 96 864 -96 ) fluids/water_64 0 0 0 1 1
+( 96 864 0 ) ( 352 96 0 ) ( 96 96 0 ) fluids/water_64 0 0 0 1 1
+( 352 864 -96 ) ( 96 864 0 ) ( 96 864 -96 ) fluids/water_64 0 0 0 1 1
+( 352 96 -96 ) ( 352 864 0 ) ( 352 864 -96 ) fluids/water_64 0 0 0 1 1
+}
+{
+( 352 864 -96 ) ( 352 96 0 ) ( 352 96 -96 ) fluids/water_64 0 0 0 1 1
+( 352 96 -96 ) ( 608 96 0 ) ( 608 96 -96 ) fluids/water_64 0 0 0 1 1
+( 352 96 -96 ) ( 608 864 -96 ) ( 352 864 -96 ) fluids/water_64 0 0 0 1 1
+( 352 864 0 ) ( 608 96 0 ) ( 352 96 0 ) fluids/water_64 0 0 0 1 1
+( 608 864 -96 ) ( 352 864 0 ) ( 352 864 -96 ) fluids/water_64 0 0 0 1 1
+( 608 96 -96 ) ( 608 864 0 ) ( 608 864 -96 ) fluids/water_64 0 0 0 1 1
+}
+{
+( 608 864 -96 ) ( 608 96 0 ) ( 608 96 -96 ) fluids/water_64 0 0 0 1 1
+( 608 96 -96 ) ( 864 96 0 ) ( 864 96 -96 ) fluids/water_64 0 0 0 1 1
+( 608 96 -96 ) ( 864 864 -96 ) ( 608 864 -96 ) fluids/water_64 0 0 0 1 1
+( 608 864 0 ) ( 864 96 0 ) ( 608 96 0 ) fluids/water_64 0 0 0 1 1
+( 864 864 -96 ) ( 608 864 0 ) ( 608 864 -96 ) fluids/water_64 0 0 0 1 1
+( 864 96 -96 ) ( 864 864 0 ) ( 864 864 -96 ) fluids/water_64 0 0 0 1 1
+}
+}
+// room A probe box 1
+{
+"classname" "reflection_volume"
+{
+( 0 960 -96 ) ( 0 0 320 ) ( 0 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 -96 ) ( 352 0 320 ) ( 352 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 0 -96 ) ( 352 960 -96 ) ( 0 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 0 960 320 ) ( 352 0 320 ) ( 0 0 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 352 960 -96 ) ( 0 960 320 ) ( 0 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 352 0 -96 ) ( 352 960 320 ) ( 352 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// room A probe box 2
+{
+"classname" "reflection_volume"
+{
+( 352 960 -96 ) ( 352 0 320 ) ( 352 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 352 0 -96 ) ( 608 0 320 ) ( 608 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 352 0 -96 ) ( 608 960 -96 ) ( 352 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 352 960 320 ) ( 608 0 320 ) ( 352 0 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 608 960 -96 ) ( 352 960 320 ) ( 352 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 608 0 -96 ) ( 608 960 320 ) ( 608 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// room A probe box 3
+{
+"classname" "reflection_volume"
+{
+( 608 960 -96 ) ( 608 0 320 ) ( 608 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 608 0 -96 ) ( 960 0 320 ) ( 960 0 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 608 0 -96 ) ( 960 960 -96 ) ( 608 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 608 960 320 ) ( 960 0 320 ) ( 608 0 320 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 960 960 -96 ) ( 608 960 320 ) ( 608 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+( 960 0 -96 ) ( 960 960 320 ) ( 960 960 -96 ) DebugTextures/debug_wall_purple 0 0 0 1 1
+}
+}
+// room B canal: ONE fluid entity, three brushes split at the doorway faces, surface z -16
+{
+"classname" "fluid_volume"
+"fluid" "water"
+{
+( 1088 288 -96 ) ( 1088 224 -16 ) ( 1088 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 224 -96 ) ( 1536 224 -16 ) ( 1536 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 224 -96 ) ( 1536 288 -96 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1088 288 -16 ) ( 1536 224 -16 ) ( 1088 224 -16 ) fluids/water_64 0 0 0 1 1
+( 1536 288 -96 ) ( 1088 288 -16 ) ( 1088 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1536 224 -96 ) ( 1536 288 -16 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
+}
+{
+( 1536 288 -96 ) ( 1536 224 -16 ) ( 1536 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1536 224 -96 ) ( 1552 224 -16 ) ( 1552 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1536 224 -96 ) ( 1552 288 -96 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1536 288 -16 ) ( 1552 224 -16 ) ( 1536 224 -16 ) fluids/water_64 0 0 0 1 1
+( 1552 288 -96 ) ( 1536 288 -16 ) ( 1536 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1552 224 -96 ) ( 1552 288 -16 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
+}
+{
+( 1552 288 -96 ) ( 1552 224 -16 ) ( 1552 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1552 224 -96 ) ( 2000 224 -16 ) ( 2000 224 -96 ) fluids/water_64 0 0 0 1 1
+( 1552 224 -96 ) ( 2000 288 -96 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
+( 1552 288 -16 ) ( 2000 224 -16 ) ( 1552 224 -16 ) fluids/water_64 0 0 0 1 1
+( 2000 288 -96 ) ( 1552 288 -16 ) ( 1552 288 -96 ) fluids/water_64 0 0 0 1 1
+( 2000 224 -96 ) ( 2000 288 -16 ) ( 2000 288 -96 ) fluids/water_64 0 0 0 1 1
+}
+}
+// room A curve light 1, amber, period 900
+{
+"classname" "light"
+"origin" "160 160 280"
+"light" "300"
+"_color" "255 170 90"
+"_falloff_range" "1400"
+"delay" "0"
+"brightness_curve" "[0, 1.0] [300, 0.2] [600, 1.6] [900, 1.0]"
+"period_ms" "900"
+}
+// room A curve light 2, cyan, period 1300
+{
+"classname" "light"
+"origin" "800 160 280"
+"light" "300"
+"_color" "90 200 255"
+"_falloff_range" "1400"
+"delay" "0"
+"brightness_curve" "[0, 0.4] [650, 1.8] [1300, 0.4]"
+"period_ms" "1300"
+}
+// room A curve light 3, magenta, period 1700
+{
+"classname" "light"
+"origin" "160 800 280"
+"light" "300"
+"_color" "255 60 160"
+"_falloff_range" "1400"
+"delay" "0"
+"brightness_curve" "[0, 1.2] [400, 0.1] [900, 1.4] [1700, 1.2]"
+"period_ms" "1700"
+}
+// room A curve light 4, green, period 2300
+{
+"classname" "light"
+"origin" "800 800 280"
+"light" "300"
+"_color" "120 255 120"
+"_falloff_range" "1400"
+"delay" "0"
+"brightness_curve" "[0, 0.8] [1150, 1.5] [1800, 0.2] [2300, 0.8]"
+"period_ms" "2300"
+}
+// room A static fill west
+{
+"classname" "light"
+"origin" "240 480 300"
+"light" "160"
+"_color" "255 236 214"
+"_falloff_range" "900"
+"delay" "0"
+}
+// room A static fill east
+{
+"classname" "light"
+"origin" "720 480 300"
+"light" "160"
+"_color" "235 240 255"
+"_falloff_range" "900"
+"delay" "0"
+}
+// room B1 static light
+{
+"classname" "light"
+"origin" "1280 256 280"
+"light" "260"
+"_color" "255 220 200"
+"_falloff_range" "700"
+"delay" "0"
+}
+// room B2 static light
+{
+"classname" "light"
+"origin" "1800 256 280"
+"light" "260"
+"_color" "235 255 235"
+"_falloff_range" "700"
+"delay" "0"
+}

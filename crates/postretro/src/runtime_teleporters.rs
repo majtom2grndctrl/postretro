@@ -274,6 +274,9 @@ pub(crate) fn host_observed_arrival_cues(
 /// identity: a plain teleport-class correction of three metres or more keeps the
 /// platform's yaw carry. Of several cues in one frame, only the last plays, at its
 /// own arrival point, since unseen teleports coalesce to the last cue.
+/// `first_record_hold` holds the camera the same way and nothing more: the pawn's
+/// first record was written over a stale gated pose, which the eye must not blend
+/// from, yet that record is adopted silently, with no cue, turn or carry change.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_local_adoptions(
     camera: &mut crate::camera::Camera,
@@ -283,8 +286,9 @@ pub(crate) fn apply_local_adoptions(
     teleporters: &postretro_physics::teleporters::Teleporters,
     registry: &EntityRegistry,
     adoptions: &[postretro_netcode::LocalTeleportAdoption],
+    first_record_hold: Option<postretro_entities::EntityId>,
 ) {
-    let mut cut = None;
+    let mut cut = first_record_hold;
     let mut cue = None;
     for adoption in adoptions {
         camera.yaw += adoption.yaw_delta;
@@ -320,6 +324,9 @@ mod client_tick;
 
 #[cfg(test)]
 pub(crate) mod app_tests;
+
+#[cfg(test)]
+mod first_record_hold_tests;
 
 #[cfg(test)]
 mod tests {
@@ -507,6 +514,7 @@ mod tests {
                 arrival,
                 cue_teleporter: Some(0),
             }],
+            None,
         );
         assert!((camera.yaw - 1.2).abs() < 0.0001);
         assert!((camera.pitch - 0.3).abs() < 0.0001);

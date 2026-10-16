@@ -101,6 +101,8 @@ mod predict_reconcile_harness_immersion;
 #[cfg(test)]
 mod predict_reconcile_harness_teleport;
 #[cfg(test)]
+mod predict_reconcile_harness_teleport_join;
+#[cfg(test)]
 mod predict_reconcile_harness_teleport_rig;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
@@ -1050,15 +1052,12 @@ pub fn client_receive_and_apply(
                 tick_dt,
             );
         }
-        // A record that could not merge (no tuning yet) leaves the pawn without
-        // its teleport record; prediction stays inert and a full baseline is
-        // requested until one merges.
-        if outcome.local_reconcile.is_some() && prediction.first_record_pending() {
-            replication.rebaseline_unmerged_local_pawn(&mut outcome);
-        }
         frame_outcome
             .local_teleport_adoptions
             .append(&mut prediction.teleport_adoptions);
+        if let Some(pawn) = prediction.first_record_hold.take() {
+            frame_outcome.local_first_record_hold = Some(pawn);
+        }
         for buffer in client::encode_client_messages(&outcome) {
             client.send_input(buffer);
         }
@@ -1073,6 +1072,23 @@ pub fn client_receive_and_apply(
         rtt_micros,
         presentation_bindings,
     );
+
+    // A record that could not merge (no tuning yet) leaves the pawn without its
+    // teleport record; prediction stays inert and a full baseline is requested
+    // until one merges. Judged per frame, not per received record: an idle pawn's
+    // stream may carry no record once its tuning lands. Nothing is asked for while
+    // no merge could succeed: without tuning, or while the host's tuning gives the
+    // pawn no movement component.
+    let unmerged_wanted = prediction.first_record_pending()
+        && client_environment_view(host_tuning, environment_volumes).is_some()
+        && prediction.armed().is_some_and(|pawn| {
+            registry
+                .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                .is_ok()
+        });
+    if let Some(req) = replication.refresh_unmerged_local_pawn(unmerged_wanted) {
+        client.send_input(wire::encode(&wire::ClientMessage::BaselineRefresh(req)));
+    }
 
     // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
     // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
@@ -1293,7 +1309,9 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
 }
 
 /// Zero-tick sends must sample the same pawn teleport frame as their facing.
-/// Before its first record the prediction identity is absent and the stamp is zero.
+/// The prediction identity is armed throughout the first-record gate; until that
+/// record merges the pawn's movement component is absent or descriptor-default,
+/// so the stamp is zero.
 pub fn client_send_input_command_in_registry(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,

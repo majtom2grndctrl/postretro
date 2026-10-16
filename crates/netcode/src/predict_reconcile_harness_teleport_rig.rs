@@ -6,8 +6,9 @@
 //
 // Test infrastructure only (`#[cfg(test)]`). The app-side reactions the rig models
 // (`camera.yaw += yaw_delta` on a predicted event or an adoption, one cue per
-// predicted event or `cue_teleporter`) mirror `frame_loop` and
-// `runtime_teleporters::apply_local_adoptions`; they are not re-proved here.
+// predicted event or `cue_teleporter`, a first-record camera hold) mirror
+// `frame_loop` and `runtime_teleporters::apply_local_adoptions`; they are not
+// re-proved here.
 
 #![cfg(test)]
 
@@ -168,6 +169,9 @@ pub(super) struct Rig {
     pub(super) ticks: Vec<ClientTick>,
     pub(super) cues: Vec<Cue>,
     pub(super) adoptions: Vec<LocalTeleportAdoption>,
+    /// First-record camera holds, each as the count of client ticks sent before
+    /// the receive that raised it.
+    pub(super) holds: Vec<usize>,
     pub(super) corrections: Vec<Correction>,
     /// The first command tick the client sent after its first pawn record.
     pub(super) first_record_client_tick: Option<u32>,
@@ -228,6 +232,7 @@ impl Rig {
             ticks: Vec::new(),
             cues: Vec::new(),
             adoptions: Vec::new(),
+            holds: Vec::new(),
             corrections: Vec::new(),
             first_record_client_tick: None,
             host_nudge: Vec3::ZERO,
@@ -326,6 +331,9 @@ impl Rig {
                 self.cues.push(Cue::Adopted(teleporter));
             }
             self.adoptions.push(adoption);
+        }
+        if self.h.prediction.first_record_hold.take().is_some() {
+            self.holds.push(self.ticks.len());
         }
         if self.first_record_client_tick.is_none() && self.h.client_pawn.is_some() {
             self.first_record_client_tick = Some(self.h.prediction.peek_next_client_tick());

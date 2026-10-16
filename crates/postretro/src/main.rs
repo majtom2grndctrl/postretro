@@ -4400,6 +4400,7 @@ impl App {
                     &self.collision_world.teleporters,
                     &registry,
                     &apply_outcome.local_teleport_adoptions,
+                    apply_outcome.local_first_record_hold,
                 );
                 sound_events::observed_arrival_sounds(
                     &self.collision_world.teleporters,

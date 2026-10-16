@@ -281,7 +281,7 @@ fn run_host_seat_on_turntable(yaw_per_tick: f32) -> HostSeatRun {
     run
 }
 
-// AC4 / P2: a teleport off a turning platform keeps none of its rotation after
+// A teleport off a turning platform keeps none of its rotation after
 // arrival, neither in the view (tick-rate carry or render residual) nor in motion.
 #[test]
 fn teleport_detaches_turntable_carry_in_view_and_motion() {
@@ -504,7 +504,7 @@ pub(crate) fn sounded(mut record: TeleporterRecord, sound: &str) -> TeleporterRe
     record
 }
 
-// AC23 / P8 on the host seat: every tick is one host sample, so a connected
+// On the host seat every tick is one host sample, so a connected
 // client's pawn crossing two teleporters on consecutive catch-up ticks of one host
 // frame is two observed generation changes and two cues, each the teleporter's own
 // at its arrival point, while the delayed presentation still shows the traveller at
@@ -574,7 +574,7 @@ fn teleport_host_seat_hears_each_tick_arrival_once_while_presenting_source() {
     }
 }
 
-// AC24 / P9 and AC26 on the host seat: a teleport the host refuses (here, a disarmed
+// On the host seat a teleport the host refuses (here, a disarmed
 // teleporter the client could have predicted through) never advances the generation,
 // so no observer hears it; a teleport through a teleporter with no `arrival_sound`
 // is observed and still plays nothing.
@@ -635,7 +635,7 @@ fn teleport_host_seat_stays_silent_for_refused_and_unsounded_teleports() {
     assert!(arrivals.is_empty() && observed.is_empty() && sounds.is_empty());
 }
 
-// AC22, AC24 and AC25 (app half) and AC23 on a connected client. Netcode decides
+// Traveller and observer cues on a connected client, app half. Netcode decides
 // which adoption names a cue and which remote changes are accepted; the app plays the
 // forward-predicted cue on its tick, an adoption's cue only when one is named, and
 // one cue per accepted remote change, each at its fixed arrival point.
@@ -678,10 +678,11 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
             &teleporters,
             &registry,
             &[adoption],
+            None,
         );
     };
 
-    // AC22: the forward-predicted crossing starts its cue on that tick.
+    // The forward-predicted crossing starts its cue on that tick.
     apply_predicted_teleport(
         &mut camera,
         &mut carry,
@@ -704,10 +705,11 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
         &teleporters,
         &registry,
         &[],
+        None,
     );
     assert_eq!(sounds.len(), 1, "reconcile replay never repeats the cue");
 
-    // AC24: the host refused it; the cut back restores the yaw silently.
+    // The host refused it; the cut back restores the yaw silently.
     adopt(
         &mut sounds,
         &mut camera,
@@ -728,7 +730,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
     );
     assert_eq!(sounds.len(), 1, "the cut back plays nothing");
 
-    // AC25: a same-generation replacement through another teleporter with another
+    // A same-generation replacement through another teleporter with another
     // cue retains the speculative cue without a second playback.
     adopt(
         &mut sounds,
@@ -746,7 +748,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
     );
     assert_eq!(sounds.len(), 1, "replacement adds no cue");
 
-    // AC25: an ahead adoption (unseen teleports, coalesced to the last) plays the
+    // An ahead adoption (unseen teleports, coalesced to the last) plays the
     // authoritative last teleporter's cue once at the adopted arrival.
     adopt(
         &mut sounds,
@@ -776,7 +778,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
         );
     }
 
-    // AC23 on a client: one cue per accepted remote change, the last teleporter's, at
+    // As an observer: one cue per accepted remote change, the last teleporter's, at
     // the sample's arrival point; a silent or unknown last teleporter plays nothing.
     let observed = [
         postretro_netcode::ObservedTeleport {
@@ -806,7 +808,7 @@ fn teleport_client_cues_follow_forward_tick_adoption_cue_and_observed_changes() 
     assert_eq!(observer_sounds.len(), 1);
 }
 
-// AC26: a teleporter with no `arrival_sound` plays nothing through any app cue path:
+// A teleporter with no `arrival_sound` plays nothing through any app cue path:
 // forward prediction, adoption, the host seat's own crossing, or an observed change.
 #[test]
 fn teleport_without_arrival_sound_plays_nothing_on_any_cue_path() {
@@ -857,6 +859,7 @@ fn teleport_without_arrival_sound_plays_nothing_on_any_cue_path() {
                 arrival,
                 cue_teleporter: Some(index),
             }],
+            None,
         );
         assert_eq!(sounds.len(), expected, "adoption, teleporter {index}");
 
@@ -883,7 +886,7 @@ fn teleport_without_arrival_sound_plays_nothing_on_any_cue_path() {
     }
 }
 
-// AC33 / P14 and AC32 on a connected client, through the frame loop's own predicted
+// On a connected client, through the frame loop's own predicted
 // tick seam: a forward-predicted teleport on the first, middle or last of three
 // catch-up ticks turns the view on that tick, starts its cue once, detaches carry,
 // and holds the camera on the arrival eye, so neither camera nor pawn mesh renders
@@ -1029,6 +1032,7 @@ fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identit
             adoption(0.5, true, first, Some(0)),
             adoption(0.25, true, last, Some(1)),
         ],
+        None,
     );
     assert_eq!(
         sounds.len(),
@@ -1054,6 +1058,7 @@ fn teleport_frame_adoptions_coalesce_to_the_last_cue_and_detach_carry_on_identit
         &teleporters,
         &registry,
         &[adoption(0.0, false, last, None)],
+        None,
     );
     assert_eq!(
         carry,
@@ -1094,7 +1099,7 @@ fn avatar_mesh() -> postretro_entities::components::mesh::MeshComponent {
     mesh
 }
 
-// AC32 / P13 on the host seat, through the full authoritative tick: the teleport
+// On the host seat, through the full authoritative tick: the teleport
 // tick's yaw delta reaches every aim captured before movement. The host seat's
 // presentation aim and a remote pawn's aim and facing turn for the avatar pose pass,
 // and a remote shot's delivered start aim turns with them, so that shot leaves the

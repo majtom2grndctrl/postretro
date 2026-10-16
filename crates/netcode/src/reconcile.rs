@@ -225,12 +225,16 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     // The first record for a newly armed pawn is adopted silently: no cue, cut or
     // view turn. Only a merged movement payload carries the pawn's teleport record,
     // so only it consumes the flag; a movement-less record before it is silent too
-    // rather than classified against a record the client has never held.
+    // rather than classified against a record the client has never held. Each such
+    // write moves the pawn from a pose the client never predicted (the gated pawn
+    // may have walked or teleported on the host), so it asks the app to hold the
+    // camera at the written eye instead of blending to it from the stale one.
     if prediction.first_record_pending() {
         if movement.is_some() {
             prediction.mark_first_record_adopted();
         }
         prediction.clear_presentation_offset();
+        prediction.first_record_hold = Some(entity_id);
         return Some(CorrectionClass::Ordinary);
     }
 

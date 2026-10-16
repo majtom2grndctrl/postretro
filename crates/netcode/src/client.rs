@@ -108,7 +108,7 @@ const REFRESH_REASON_STALE_MAPPING: u8 = 1;
 const REFRESH_REASON_LEVEL_RELOAD: u8 = 2;
 /// Reason: the armed local pawn's first record has not merged (its host tuning
 /// installed after the record arrived), so the client asks for it again.
-const REFRESH_REASON_UNMERGED_LOCAL_PAWN: u8 = 3;
+pub(crate) const REFRESH_REASON_UNMERGED_LOCAL_PAWN: u8 = 3;
 
 /// Repair-request resend cadence: one `BaselineRefreshRequest` per pending entity
 /// every 200 ms (5 Hz) until the matching full baseline arrives and clears it. The
@@ -249,6 +249,9 @@ pub struct ClientReplication {
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
     pending_repairs: HashMap<NetworkId, PendingRepair>,
+    /// The local pawn whose unmerged-first-record refresh has already sent its one
+    /// immediate request; later requests for it wait on the resend cadence.
+    unmerged_refresh_sent: Option<NetworkId>,
     /// Highest accepted snapshot sequence. Late first entity baselines may apply
     /// without advancing this cursor or any snapshot-wide state.
     latest_sequence: Option<u32>,
@@ -622,6 +625,7 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
+        self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
         self.bindings.teleporter_network_ids.clear();
         self.bindings.clear_presentation();
@@ -669,6 +673,7 @@ impl ClientReplication {
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
+        self.unmerged_refresh_sent = None;
         self.bindings.mover_network_ids.clear();
         self.bindings.teleporter_network_ids.clear();
         self.bindings.clear_presentation();
@@ -1680,6 +1685,7 @@ impl ClientReplication {
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
             self.local_pawn_entity_class = None;
+            self.unmerged_refresh_sent = None;
         }
         entity_id
     }
@@ -2002,25 +2008,58 @@ impl ClientReplication {
     /// of it requested. A record that arrives before the host tuning installs
     /// cannot merge, since reconcile replays with that tuning, and an idle pawn's
     /// later deltas carry no movement; without a fresh baseline the client would
-    /// predict from no teleport record at all. Rides the pending-repair resend:
-    /// the answering full baseline clears it, and a refresh already pending is
-    /// left to the resend cadence.
-    pub(crate) fn rebaseline_unmerged_local_pawn(&mut self, outcome: &mut ApplyOutcome) {
-        let Some(network_id) = self.local_pawn else {
-            return;
-        };
+    /// predict from no teleport record at all.
+    ///
+    /// `wanted` is false once the record has merged, and while no merge could
+    /// succeed (no host tuning, or tuning with no movement leaves the pawn without a
+    /// movement component); either way a pending request of this kind is dropped.
+    /// Only the first request for a pawn sends now, returned for the caller to
+    /// send. The answering full baseline clears the pending entry, so a merge that
+    /// still fails re-enters it without sending and the 5 Hz resend cadence paces
+    /// the retries: a forced refresh bypasses the join baseline budget, and must
+    /// not repeat every round trip. Called once per frame.
+    pub(crate) fn refresh_unmerged_local_pawn(
+        &mut self,
+        wanted: bool,
+    ) -> Option<BaselineRefreshRequest> {
+        let network_id = self.local_pawn?;
+        if !wanted {
+            if self
+                .pending_repairs
+                .get(&network_id)
+                .is_some_and(|repair| repair.reason == REFRESH_REASON_UNMERGED_LOCAL_PAWN)
+            {
+                self.pending_repairs.remove(&network_id);
+            }
+            return None;
+        }
         if self.pending_repairs.contains_key(&network_id) {
-            return;
+            return None;
         }
         let sequence = self.latest_sequence.unwrap_or(0);
         let baseline = self.baselines.get(&network_id).copied().unwrap_or(0);
+        if self.unmerged_refresh_sent == Some(network_id) {
+            self.pending_repairs.insert(
+                network_id,
+                PendingRepair {
+                    missing_baseline_ref: baseline,
+                    snapshot_sequence: sequence,
+                    reason: REFRESH_REASON_UNMERGED_LOCAL_PAWN,
+                    since_last_request_ms: 0.0,
+                },
+            );
+            return None;
+        }
+        self.unmerged_refresh_sent = Some(network_id);
+        let mut requests = Vec::with_capacity(1);
         self.queue_repair(
-            &mut outcome.refresh_requests,
+            &mut requests,
             sequence,
             network_id,
             baseline,
             REFRESH_REASON_UNMERGED_LOCAL_PAWN,
         );
+        requests.pop()
     }
 
     /// Advance the pending-repair cadence by `dt_ms` and return the refresh requests

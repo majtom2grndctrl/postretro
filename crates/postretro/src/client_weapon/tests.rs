@@ -1984,7 +1984,7 @@ fn resolved_launch(app: &mut crate::App) -> (Vec3, Vec3) {
 // The host fires each shot after that tick's movement, so a shot a predicting
 // client fires on the tick before a teleport later in the same frame leaves that
 // tick's eye along that tick's view, not the frame's presented arrival; a shot on
-// the teleport tick itself leaves the arrival eye along the rotated view (AC32).
+// the teleport tick itself leaves the arrival eye along the rotated view.
 #[test]
 fn teleport_client_shot_keeps_its_firing_tick_aim_across_a_later_catchup_teleport() {
     let mut app = teleporting_shooter();

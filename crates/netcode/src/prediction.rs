@@ -201,6 +201,10 @@ pub struct LocalTeleportAdoption {
 pub struct ClientPrediction {
     first_record_pending: bool,
     pub(crate) teleport_adoptions: Vec<LocalTeleportAdoption>,
+    /// Set when a reconcile wrote the pawn while its first record was still
+    /// pending: the camera snaps to that authoritative eye rather than blending
+    /// from the stale gated pose. A hold only — no cue, view turn or carry change.
+    pub(crate) first_record_hold: Option<EntityId>,
     /// The armed local-pawn identity, or `None` until a `local_player` baseline
     /// has been applied AND mapped. Prediction does nothing while this is `None`.
     armed: Option<ArmedPawn>,
@@ -238,6 +242,7 @@ impl ClientPrediction {
     pub(crate) fn reset_for_level_unload(&mut self) {
         self.first_record_pending = false;
         self.teleport_adoptions.clear();
+        self.first_record_hold = None;
         self.armed = None;
         self.history.clear();
         self.presentation_offset = Vec3::ZERO;
@@ -260,6 +265,7 @@ impl ClientPrediction {
         self.armed = Some(next);
         self.first_record_pending = true;
         self.teleport_adoptions.clear();
+        self.first_record_hold = None;
         self.history.clear();
     }
 

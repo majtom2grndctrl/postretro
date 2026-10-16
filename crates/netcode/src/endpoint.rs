@@ -264,6 +264,9 @@ pub struct ClientApplyFrameOutcome {
     pub observed_teleports: Vec<crate::netcode::interpolation::ObservedTeleport>,
     /// Ordered adopted cuts from this frame's accepted own-pawn records.
     pub local_teleport_adoptions: Vec<crate::netcode::prediction::LocalTeleportAdoption>,
+    /// The local pawn, when a reconcile this frame wrote it before its first record
+    /// had merged: a camera hold at its eye, with no cue, view turn or carry change.
+    pub local_first_record_hold: Option<EntityId>,
     pub materialized_remote_entity_presentation: bool,
     pub armed_local_pawn: Option<ClientArmedLocalPawn>,
     /// At least one replicated state-slot value was committed this frame.

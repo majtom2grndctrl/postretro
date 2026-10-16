@@ -572,6 +572,9 @@ pub(crate) struct LoopbackHarness {
     pub(crate) client_tuning_generation: u64,
     /// Tuning payloads the client installed, in arrival order.
     pub(crate) client_tuning_installs: u32,
+    /// Every baseline refresh request the client sent, immediate and resent, in
+    /// send order.
+    pub(crate) sent_refresh_requests: Vec<wire::BaselineRefreshRequest>,
     /// The shared descriptor table the client materializes its LOCAL pawn from on
     /// arming — the SAME table both peers load in production. Drives the real
     /// `materialize_net_local_movement_component` path (no harness stub).
@@ -725,6 +728,7 @@ impl LoopbackHarness {
             client_replication: ClientReplication::new(),
             prediction: ClientPrediction::new(),
             client_tuning: None,
+            sent_refresh_requests: Vec::new(),
             client_tuning_generation: 0,
             client_tuning_installs: 0,
             descriptors: entity_descriptors(),
@@ -1353,14 +1357,9 @@ impl LoopbackHarness {
                         .push((before - after.position).length());
                 }
             }
-            // Production's unmerged-first-record rebaseline, and every refresh
-            // request it or apply raised, ride the uplink to the host.
-            let mut outcome = outcome;
-            if outcome.local_reconcile.is_some() && self.prediction.first_record_pending() {
-                self.client_replication
-                    .rebaseline_unmerged_local_pawn(&mut outcome);
-            }
+            // Every refresh request apply raised rides the uplink to the host.
             for request in &outcome.refresh_requests {
+                self.sent_refresh_requests.push(*request);
                 self.to_server
                     .enqueue(wire::encode(&ClientMessage::BaselineRefresh(*request)));
             }
@@ -1369,6 +1368,32 @@ impl LoopbackHarness {
                     self.client_acked_server_tick.max(ack.acked_server_tick);
                 acks.push(ack);
             }
+        }
+        // Production's once-per-frame unmerged-first-record refresh, then the
+        // pending-repair resend cadence.
+        let unmerged_wanted = self.prediction.first_record_pending()
+            && client_environment_view(
+                self.client_tuning.as_deref(),
+                &self.client_environment_volumes,
+            )
+            .is_some()
+            && self.prediction.armed().is_some_and(|pawn| {
+                self.client_registry
+                    .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                    .is_ok()
+            });
+        if let Some(request) = self
+            .client_replication
+            .refresh_unmerged_local_pawn(unmerged_wanted)
+        {
+            self.sent_refresh_requests.push(request);
+            self.to_server
+                .enqueue(wire::encode(&ClientMessage::BaselineRefresh(request)));
+        }
+        for request in self.client_replication.tick_pending_repairs(DT * 1000.0) {
+            self.sent_refresh_requests.push(request);
+            self.to_server
+                .enqueue(wire::encode(&ClientMessage::BaselineRefresh(request)));
         }
         acks
     }

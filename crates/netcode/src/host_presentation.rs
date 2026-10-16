@@ -95,8 +95,6 @@ pub fn record_client_pawn_poses(
 /// audio step. Each recorded tick is one host sample, so every generation change
 /// between consecutive ticks is its own observed change, reported at that sample's
 /// authoritative arrival pose.
-/// Drain once after the frame's authoritative ticks and before the audio step.
-/// Multiple generation changes of one pawn coalesce to its last observed sample.
 pub fn take_client_pawn_teleports(
     buffer: &mut RemoteInterpolationBuffer,
     owners: &MovementOwners,
@@ -262,7 +260,7 @@ mod tests {
         assert!((presentation_target_tick(103, 1.0, 2) - 101.0).abs() < 1e-9);
     }
 
-    // AC23 / P8 on the host seat: each recorded tick is one sample, so draining
+    // The host seat hears each change: each recorded tick is one sample, so draining
     // after each tick's record reports every generation change (a wrap included)
     // once, at that sample's authoritative arrival, while the delayed presentation
     // still shows the source. The first sample reports nothing.
@@ -330,7 +328,7 @@ mod tests {
         );
     }
 
-    // AC44 / P21 on the host seat: the avatar's aim, body heading and pitch come
+    // On the host seat the avatar's aim, body heading and pitch come
     // from the same delayed sample as its pose. The fixed tick's pose pass writes
     // the live, already-rotated aim and travel heading; while the delayed pose
     // still shows the source, the avatar keeps the source's facing and heading,

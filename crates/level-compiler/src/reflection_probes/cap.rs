@@ -1,36 +1,66 @@
-// Reflection-probe cap: at most the probe array's layer limit, run after splitting.
+// Reflection-probe cap: at most the probe array's layer limit, once on placement before capture and once after splitting.
 // See: context/lib/resource_management.md §5.1
 
+use super::placement::PlacedProbe;
 use super::split::StageProbe;
 
-/// Keep at most `cap` probes. The first `authored` always stay: placement
-/// refused the build past the cap. The rest, derived and split, rank by
-/// bound surface area as splitting left it, largest first, ties to the
-/// earlier probe in wire order. A dropped split probe's water returns to its
-/// nearest kept ancestor; a dropped derived probe's binds nothing. Returns
-/// the kept probes' indices, ascending, and how many dropped.
+/// Which of `count` probes stay under `cap`, or `None` when all fit. The
+/// first `authored` always stay: placement refused the build past the cap.
+/// The rest rank by `area`, largest first, ties to the earlier probe in wire
+/// order.
+fn largest_first(
+    count: usize,
+    authored: usize,
+    cap: usize,
+    area: impl Fn(usize) -> f64,
+) -> Option<Vec<bool>> {
+    let room = cap.saturating_sub(authored);
+    let mut ranked: Vec<usize> = (authored..count).collect();
+    if ranked.len() <= room {
+        return None;
+    }
+    ranked.sort_by(|&a, &b| area(b).total_cmp(&area(a)).then(a.cmp(&b)));
+    let mut keep = vec![false; count];
+    keep[..authored].fill(true);
+    for &i in &ranked[..room] {
+        keep[i] = true;
+    }
+    Some(keep)
+}
+
+/// The pre-capture cap: derived probes past `cap`, ranked by the bound area
+/// placement gave them, drop before any capture, so the stage never captures
+/// more probes than the cap before splitting. A dropped derived probe's
+/// faces bind nothing. Returns how many dropped.
+pub(crate) fn cap_placed_probes(
+    probes: &mut Vec<PlacedProbe>,
+    authored: usize,
+    cap: usize,
+) -> usize {
+    let Some(keep) = largest_first(probes.len(), authored, cap, |i| probes[i].bound_area) else {
+        return 0;
+    };
+    let before = probes.len();
+    let mut keep = keep.into_iter();
+    probes.retain(|_| keep.next().expect("one flag per probe"));
+    before - probes.len()
+}
+
+/// The post-split cap: keep at most `cap` probes. The first `authored` always
+/// stay. The rest, derived and split, rank by bound surface area as
+/// splitting left it, largest first, ties to the earlier probe in wire order.
+/// A dropped split probe's water returns to its nearest kept ancestor; a
+/// dropped derived probe's binds nothing. Returns the kept probes' indices,
+/// ascending, and how many dropped.
 pub(crate) fn apply_probe_cap(
     probes: &mut [StageProbe],
     authored: usize,
     cap: usize,
 ) -> (Vec<usize>, usize) {
-    let room = cap.saturating_sub(authored);
-    let mut ranked: Vec<usize> = (authored..probes.len()).collect();
-    if ranked.len() <= room {
+    let Some(keep) = largest_first(probes.len(), authored, cap, |i| probes[i].placed.bound_area)
+    else {
         return ((0..probes.len()).collect(), 0);
-    }
-    ranked.sort_by(|&a, &b| {
-        probes[b]
-            .placed
-            .bound_area
-            .total_cmp(&probes[a].placed.bound_area)
-            .then(a.cmp(&b))
-    });
-    let mut keep = vec![false; probes.len()];
-    keep[..authored].fill(true);
-    for &i in &ranked[..room] {
-        keep[i] = true;
-    }
+    };
     for i in 0..probes.len() {
         if keep[i] {
             continue;
@@ -55,8 +85,9 @@ pub(crate) fn apply_probe_cap(
     (kept, dropped)
 }
 
-/// The one cap warning, naming the dropped count. A warm build replays it
-/// from the cache entry.
+/// The one cap warning, naming the total dropped count: before capture and
+/// after splitting. A warm build replays it: placement reruns the first, and
+/// the cache entry carries the second.
 pub(crate) fn warn_capped(dropped: usize, cap: usize) {
     if dropped > 0 {
         log::warn!(
@@ -69,7 +100,6 @@ pub(crate) fn warn_capped(dropped: usize, cap: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::placement::PlacedProbe;
     use super::*;
 
     fn probe(area: f64, face: u32, parent: Option<usize>) -> StageProbe {

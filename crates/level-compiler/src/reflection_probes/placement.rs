@@ -10,6 +10,7 @@ use crate::map_data::MapReflectionVolume;
 
 use super::authored::place_authored;
 use super::box_fit::WorldBounds;
+use super::cap::cap_placed_probes;
 use super::capture_point::PointClassifier;
 use super::derived::derive_probes;
 use super::hit::SceneTracer;
@@ -165,20 +166,25 @@ pub(crate) struct PlacementScene<'a> {
     pub governor: &'a Governor,
 }
 
-/// Placement's output: authored probes in map entity order, then derived
-/// probes in fluid entity order. Splitting and the cap act on it next.
+/// Placement's output: authored probes in map entity order, then the derived
+/// probes the pre-capture cap kept, in fluid entity order. Capture,
+/// splitting and the post-split cap act on it next.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Placement {
     pub probes: Vec<PlacedProbe>,
     /// How many of `probes`, from the front, are authored.
     pub authored: usize,
+    /// Derived probes the pre-capture cap dropped: they count in the one cap
+    /// warning.
+    pub dropped_past_cap: usize,
 }
 
 /// Every probe placement keeps. In order: authored capture points and their
 /// drops, binding among the kept boxes, dropping boxes that bind nothing,
-/// then derived probes for the unclaimed faces and their drops. Authored
-/// probes past `cap` refuse the build; derived probes past it drop only
-/// after splitting ([`super::cap::apply_probe_cap`]).
+/// derived probes for the unclaimed faces and their drops, then derived
+/// probes past `cap` by bound area, so none of them is ever captured.
+/// Authored probes past `cap` refuse the build. Split probes face the cap
+/// again after splitting ([`super::cap::apply_probe_cap`]).
 pub(crate) fn place_probes(
     volumes: &EnvironmentVolumesSection,
     authored: &[MapReflectionVolume],
@@ -203,9 +209,11 @@ pub(crate) fn place_probes(
     let count = authored.probes.len();
     let mut probes = authored.probes;
     probes.extend(derived);
+    let dropped_past_cap = cap_placed_probes(&mut probes, count, cap);
     Ok(Placement {
         probes,
         authored: count,
+        dropped_past_cap,
     })
 }
 
@@ -230,7 +238,7 @@ pub(crate) fn place_and_cap(
         })
         .collect();
     let (kept, dropped) = apply_probe_cap(&mut probes, placement.authored, cap);
-    warn_capped(dropped, cap);
+    warn_capped(placement.dropped_past_cap + dropped, cap);
     Ok(kept.into_iter().map(|i| probes[i].placed.clone()).collect())
 }
 

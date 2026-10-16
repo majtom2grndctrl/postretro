@@ -11,7 +11,7 @@ use postretro_level_format::reflection_probes::{
 };
 
 use super::capture::SUPERSAMPLE_OFFSETS;
-use super::capture_visibility::{MIN_SEEN_FRACTION, SUBDIVISIONS};
+use super::capture_visibility::SUBDIVISIONS;
 use super::placement::Placement;
 use super::reference::REFERENCE_MEAN_SAMPLES;
 use super::sdf_lights::SdfLights;
@@ -210,9 +210,7 @@ pub(super) fn cache_key(
     split.extend_from_slice(&limits.rounds.to_le_bytes());
     split.extend_from_slice(&(limits.cap as u64).to_le_bytes());
     split.extend_from_slice(&SUBDIVISIONS.to_le_bytes());
-    for value in [MIN_SEEN_FRACTION, ADJACENT_FACE_M] {
-        split.extend_from_slice(&value.to_le_bytes());
-    }
+    split.extend_from_slice(&ADJACENT_FACE_M.to_le_bytes());
     section("split", &split);
     drop(section);
     // Id 22 streams into the hasher: it can be the largest input.

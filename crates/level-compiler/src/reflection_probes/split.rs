@@ -46,11 +46,12 @@ pub(crate) struct SplitScene<'a> {
 
 /// Test each probe in `batch` against its own distance tile (`tiles`, the
 /// batch's in order) and append the probes its failing water makes, in parent
-/// order, then group order; return their index range. Each parent keeps its
-/// box, point and capture, and only its bound faces shrink: the faces it
-/// keeps passed against that capture, so retesting it would change nothing.
-/// Verdicts are computed in parallel and decided serially in probe order,
-/// so the result never depends on the worker count.
+/// order, then group order; return their index range. The parent keeps its
+/// box, its capture and the water that passed, and is never retested: that
+/// water passed against that capture, so a retest would change nothing. Only
+/// the new probes enter the next round. Verdicts are computed in parallel and
+/// decided serially in probe order, so the result never depends on the worker
+/// count.
 pub(crate) fn split_round(
     probes: &mut Vec<StageProbe>,
     batch: Range<usize>,
@@ -102,11 +103,13 @@ pub(crate) fn split_round(
 }
 
 /// The probes `probe`'s failing water makes: one per connected group of its
-/// failing faces, in order of each group's first face. When every face
-/// fails, the parent keeps the face its point serves the largest fraction
-/// of (ties to the earlier face), so it still binds water, and the water a
-/// new point can serve better leaves. A split whose capture point
-/// would drop is never made; its water stays with the parent.
+/// failing faces, in order of each group's first face. A face fails when
+/// over half of its area fails, sample by sample ([`failing_faces`]). A
+/// probe all of whose water fails keeps the face its point serves best (the
+/// largest passing share, then the largest served fraction, ties to the
+/// earlier face), so it still binds water, and the water a new point can
+/// serve better leaves. A split whose capture point would drop is never
+/// made; its water stays with the parent.
 fn split_probe(
     index: usize,
     probe: &StageProbe,
@@ -117,18 +120,20 @@ fn split_probe(
     for (verdict, fails) in verdicts.iter().zip(&failing) {
         log::debug!(
             "[ReflectionProbes] split test, probe of entity {} at {:?}: face {:?} seen {:.2}, \
-             hidden rays {:.3}{}",
+             unserved rays {:.3}, failing area {:.2}{}",
             probe.placed.source_entity,
             probe.placed.capture_point,
             verdict.key,
             verdict.seen_fraction(),
-            verdict.hidden_share(),
+            verdict.unserved_share(),
+            1.0 - verdict.passing_fraction(),
             if *fails { ", fails" } else { "" },
         );
     }
     if failing.iter().all(|&f| f) {
+        let serves = |v: &FaceVerdict| (v.passing_fraction(), v.served_fraction());
         let best = (1..verdicts.len()).fold(0, |best, i| {
-            if verdicts[i].served_fraction() > verdicts[best].served_fraction() {
+            if serves(&verdicts[i]) > serves(&verdicts[best]) {
                 i
             } else {
                 best

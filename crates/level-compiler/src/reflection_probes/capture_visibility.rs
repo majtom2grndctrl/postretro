@@ -11,11 +11,15 @@ use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use super::placement::{UpFacingFace, up_facing_faces};
 use crate::bc6h::f16_bits_to_f32;
 
-/// A bound face whose capture point sees less than this fraction of it
-/// splits off (the sight trigger), and a probe still seeing less than this
-/// fraction of its bound water after splitting warns: the runtime draws no
-/// probe term on water its point cannot see.
+/// A probe still seeing less than this fraction of its bound water after
+/// splitting warns: the runtime draws no probe term on water its point
+/// cannot see. Splitting itself reads per-sample sight, not this fraction.
 pub(crate) const MIN_SEEN_FRACTION: f64 = 0.5;
+/// κ: the fluid shader's capture-shadow depth margin, in
+/// `h = |v|₁ · w(v) − 1`. Water with h < κ draws a probe term (faded within
+/// the margin and beside the shadow's edge); water at or past it draws none.
+/// A parity test pins it to render-cpu's `FLUID_REFLECTION_SHADOW_MARGIN`.
+pub(crate) const CAPTURE_SHADOW_MARGIN: f32 = 0.05;
 /// Each fan triangle of a bound face splits into `SUBDIVISIONS²` equal
 /// sub-triangles, one sample at each centroid: 128 samples on a quad.
 pub(crate) const SUBDIVISIONS: u32 = 8;
@@ -25,16 +29,15 @@ pub(crate) const AT_CAPTURE_POINT_M: f32 = 1.0e-6;
 /// Warn, naming the probe and its source entity, for every probe of the
 /// finished section whose capture point still sees less than
 /// [`MIN_SEEN_FRACTION`] of the water it binds: splitting stopped short of
-/// it, at the round limit, at a single face, or at the cap.
+/// it, at the round limit, the minimum piece (a whole face until face cuts),
+/// the cap, or the all-fail rule (a probe all of whose water fails keeps the
+/// face its point serves best).
 ///
-/// "Sees" is the runtime's own capture-shadow test read from the stored
-/// distance tile: a water point P is seen when `|v|₁ · w(v) < 1`, with `v`
-/// the offset from the capture point clamped to the horizon and `w` the
-/// tile's bilinear inverse L1 distance. That is exactly the water the fluid
-/// shader draws a probe term on, so the warning predicts the dark water and
-/// nothing else. It runs from the section and id 52 alone, so a warm build
-/// warns as a cold one does. Samples sit at fixed points of each face and
-/// sum in fixed order, so the result is deterministic.
+/// "Sees" is [`DistanceTile::sees`], the shader's capture-shadow cutoff, so
+/// the warning predicts the water that draws no probe term. It runs from the
+/// section and id 52 alone, so a warm build warns as a cold one does.
+/// Samples sit at fixed points of each face and sum in fixed order, so the
+/// result is deterministic.
 pub(crate) fn warn_hidden_water(
     section: &ReflectionProbesSection,
     volumes: &EnvironmentVolumesSection,
@@ -54,9 +57,10 @@ pub(crate) fn warn_hidden_water(
         if seen < MIN_SEEN_FRACTION {
             log::warn!(
                 "[ReflectionProbes] probe {index} of entity {}: its capture point {:?} sees \
-                 {:.0}% of the water it binds after splitting, and water it cannot see draws no \
-                 reflection; move the point with `_capture_offset`, or bound the hidden water \
-                 with its own reflection_volume",
+                 {:.0}% of the water it binds after splitting (stopped by the round limit, the \
+                 minimum piece, the probe cap, or all of its water failing), and water it cannot \
+                 see draws no reflection; move the point with `_capture_offset`, or bound the \
+                 hidden water with its own reflection_volume",
                 record.source_entity,
                 record.capture_point,
                 seen * 100.0,
@@ -182,14 +186,16 @@ impl DistanceTile {
         top * (1.0 - ty) + bottom * ty
     }
 
-    /// Whether the capture point sees `point`: the offset, clamped to the
-    /// horizon as the shader clamps every tap, lies in front of the surface
-    /// the capture stored in its direction. A miss stores 0, so open sky is
-    /// always seen.
+    /// Whether the capture point sees `point`, meaning the fluid shader draws
+    /// a probe term there: with `v` the offset clamped to the horizon as the
+    /// shader clamps every tap, `h = |v|₁ · w(v) − 1 < κ`
+    /// ([`CAPTURE_SHADOW_MARGIN`]). The shader fades that term within κ and
+    /// beside the shadow's edge; past κ it draws none. A miss stores 0, so
+    /// open sky is always seen.
     pub(crate) fn sees(&self, capture: Vec3, point: Vec3) -> bool {
         let offset = point - capture;
         let level = Vec3::new(offset.x, offset.y.max(0.0), offset.z);
         let l1 = level.abs().element_sum();
-        l1 < AT_CAPTURE_POINT_M || l1 * self.sample(level) < 1.0
+        l1 < AT_CAPTURE_POINT_M || l1 * self.sample(level) < 1.0 + CAPTURE_SHADOW_MARGIN
     }
 }

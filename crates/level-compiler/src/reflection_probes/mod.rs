@@ -93,7 +93,10 @@ const STAGE_ID: &str = "reflection_probes";
 /// 4: the distance tile (mean inverse L1 hit distance per texel).
 /// 5: splitting by sight and hidden mirror hits, then the cap; a finite hit
 /// never stores distance 0.
-const STAGE_VERSION: u32 = 5;
+/// 6: split triggers per sample (sight at h < κ, parallax by hidden or
+/// coarse hits), faces failing by area majority; derived probes past the cap
+/// drop before capture.
+const STAGE_VERSION: u32 = 6;
 
 /// How far the stage splits and how many probes it keeps. Production runs
 /// [`MAX_SPLIT_ROUNDS`] under the array's layer cap; tests hold either.
@@ -155,8 +158,9 @@ pub(crate) fn bake_or_load_reflection_probes(
     bake_or_load_with_limits(inputs, stage_cache, control, StageLimits::PRODUCTION)
 }
 
-/// [`bake_or_load_reflection_probes`] under `limits`. In order: placement,
-/// capture, splitting (capture and retest, round by round), the cap.
+/// [`bake_or_load_reflection_probes`] under `limits`. In order: placement
+/// (its derived probes capped by placement area), capture, splitting
+/// (capture the new probes and test them, round by round), the cap.
 pub(crate) fn bake_or_load_with_limits(
     inputs: &ReflectionProbeInputs<'_>,
     stage_cache: Option<&StageCache>,
@@ -215,6 +219,7 @@ pub(crate) fn bake_or_load_with_limits(
         })
     {
         log::info!("[cache] reflection_probes hit");
+        let capped = placement.dropped_past_cap + capped;
         report(&section, &reports, capped, limits.cap, inputs);
         return Ok(Some(section));
     }
@@ -300,6 +305,7 @@ pub(crate) fn bake_or_load_with_limits(
     if let Some(cache) = stage_cache {
         cache.put(&key, &cache_payload(&section, capped, &reports));
     }
+    let capped = placement.dropped_past_cap + capped;
     report(&section, &reports, capped, limits.cap, inputs);
     Ok(Some(section))
 }

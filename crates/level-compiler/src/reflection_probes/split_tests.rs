@@ -1,8 +1,9 @@
-// Reflection-probe splitting tests: sight and parallax triggers, split placement, rounds, the cap and the sky substrate.
+// Reflection-probe splitting tests: per-sample sight and parallax triggers, split placement, rounds, both caps and the sky substrate.
 // See: context/lib/resource_management.md §5.1 · rendering_pipeline.md §7.3a
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use glam::Vec3;
 use log::Level;
@@ -19,7 +20,7 @@ use postretro_test_log_capture::LogCapture;
 use super::capture::{
     F16_MIN_POSITIVE, TILE_INTERIOR, distance_bits, encode_distance_tile, inverse_l1_distance,
 };
-use super::capture_visibility::{DistanceTile, seen_fraction};
+use super::capture_visibility::{CAPTURE_SHADOW_MARGIN, DistanceTile, seen_fraction};
 use super::distance_tests::distance_texel;
 use super::hit::SceneTracer;
 use super::placement::up_facing_faces;
@@ -28,7 +29,10 @@ use super::reflection_probes_test_fixtures::{
     GeometryBuilder, fluid_volume, rect, up_rect, volumes,
 };
 use super::split::MAX_SPLIT_ROUNDS;
-use super::split_triggers::{HIDDEN_HIT_MARGIN, hit_is_hidden, judge_face, mirror_fan};
+use super::split_triggers::{
+    FaceVerdict, PLAYER_EYE_HEIGHT_M, SampleVerdict, failing_faces, hit_is_coarse, hit_is_hidden,
+    judge_face, mirror_fan,
+};
 use super::tests::{
     CEILING, LitFloorRoom, bake, bake_limited, lit_floor_room, lit_floor_room_with, pool,
     with_inputs,
@@ -37,7 +41,9 @@ use super::{STAGE_ID, StageLimits, bake_or_load_with_limits};
 use crate::bake_control::BakeControl;
 use crate::bc6h::f16_bits_to_f32;
 use crate::cache::StageCache;
+use crate::governor::Governor;
 use crate::map_data::MapReflectionVolume;
+use crate::reporter::StageProgress;
 
 const NO_ROUNDS: StageLimits = StageLimits {
     rounds: 0,
@@ -522,7 +528,12 @@ fn the_parallax_trigger_passes_capture_misses_and_fan_rays_that_hit_nothing() {
         let capture = Vec3::from(section.probes[0].capture_point);
         let tile = DistanceTile::decode(&section, 0);
         let verdict = judge_face(&tracer, &tile, capture, &faces[0], &fan, 100.0);
-        assert!(verdict.samples.iter().all(|s| s.seen && s.hidden_rays == 0));
+        assert!(
+            verdict
+                .samples
+                .iter()
+                .all(|s| s.seen && s.unserved_rays == 0)
+        );
         // The steep rays do leave through the top unhit.
         let origin = capture + Vec3::new(0.5, 0.0, 0.5);
         let misses = fan
@@ -533,20 +544,226 @@ fn the_parallax_trigger_passes_capture_misses_and_fan_rays_that_hit_nothing() {
     });
 }
 
-// The hidden-hit test measures in the fluid shader's units: its depth margin
-// is the capture shadow's κ, and its capture texel is the angle the shader's
-// capture-shadow fade counts in.
+// Sight and the hidden-hit test measure in the fluid shader's units: their
+// depth margin is the capture shadow's κ, and the capture texel is the angle
+// the shader's capture-shadow fade counts in.
 #[test]
 fn the_hidden_hit_test_reads_the_tile_in_the_shaders_capture_shadow_units() {
     use postretro_render_cpu::fluid_surface::reflection_search::{
         FLUID_REFLECTION_SHADOW_FADE_TEXELS, FLUID_REFLECTION_SHADOW_MARGIN,
         reflection_shadow_fade_angle,
     };
-    assert_eq!(HIDDEN_HIT_MARGIN, FLUID_REFLECTION_SHADOW_MARGIN);
+    assert_eq!(CAPTURE_SHADOW_MARGIN, FLUID_REFLECTION_SHADOW_MARGIN);
     let tile = tile_of(|_| 0.0);
     let shader = reflection_shadow_fade_angle([
         REFLECTION_PROBE_TILE_DIMENSION,
         REFLECTION_PROBE_TILE_BORDER,
     ]) / FLUID_REFLECTION_SHADOW_FADE_TEXELS;
     assert!((tile.texel_angle() - shader).abs() < 1e-7);
+}
+
+// Sight means "the shader draws a probe term": h < κ, not h < 0. Water a
+// little behind the stored surface, inside the margin, draws a faded term
+// and is seen; water past the margin draws none.
+#[test]
+fn sight_holds_inside_the_capture_shadow_margin_and_fails_past_it() {
+    // A surface at L1 2 in every direction: h = l1 / 2 − 1.
+    let shell = tile_of(|_| 0.5);
+    let seen = |l1: f32| shell.sees(Vec3::ZERO, at(l1, 20.0));
+    assert!(seen(1.9), "in front of the surface");
+    assert!(seen(2.0 * (1.0 + 0.5 * CAPTURE_SHADOW_MARGIN)), "h = κ/2");
+    assert!(!seen(2.0 * (1.0 + 2.0 * CAPTURE_SHADOW_MARGIN)), "h = 2κ");
+}
+
+// ------------------------------------------------------------- per-sample fail bit
+
+fn sample(area: f64, seen: bool, unserved_rays: u32) -> SampleVerdict {
+    SampleVerdict {
+        point: glam::DVec2::ZERO,
+        area,
+        seen,
+        unserved_rays,
+        fan_rays: 24,
+    }
+}
+
+fn face_of(samples: Vec<SampleVerdict>) -> FaceVerdict {
+    FaceVerdict {
+        key: (0, 0),
+        samples,
+    }
+}
+
+// A sample fails when its capture point does not see it, or when more than a
+// quarter of its fan rays are unserved; a face fails when more than half of
+// its area fails. The face verdict reads the samples' bits alone: water whose
+// rays fail in one half and pass in the other passes, though its face-wide
+// unserved share (0.5) is twice the per-sample limit.
+#[test]
+fn a_face_fails_by_the_area_majority_of_its_failing_samples() {
+    assert!(
+        !sample(1.0, true, 6).fails(),
+        "6 of 24 is not past a quarter"
+    );
+    assert!(sample(1.0, true, 7).fails());
+    assert!(sample(1.0, false, 0).fails(), "unseen water fails by sight");
+
+    let unseen_and_unserved = face_of(vec![
+        sample(1.0, false, 0),
+        sample(1.0, true, 7),
+        sample(1.0, true, 0),
+    ]);
+    assert!(unseen_and_unserved.fails());
+    let half = face_of(vec![sample(1.0, false, 0), sample(1.0, true, 0)]);
+    assert!(!half.fails(), "exactly half fails: not over half");
+    let area_weighted = face_of(vec![sample(1.5, true, 24), sample(1.0, true, 0)]);
+    assert!(area_weighted.fails(), "60% of the area fails");
+    let split_rays = face_of(vec![sample(1.0, true, 24), sample(1.0, true, 0)]);
+    assert!((split_rays.unserved_share() - 0.5).abs() < 1e-12);
+    assert!(!split_rays.fails());
+
+    assert_eq!(
+        failing_faces(&[unseen_and_unserved, half, area_weighted, split_rays]),
+        vec![true, false, true, false]
+    );
+}
+
+// ------------------------------------------------------------- coarse hits
+
+/// The fan direction at `elevation` degrees toward +X.
+fn toward_x(elevation: f32) -> Vec3 {
+    let (sin, cos) = elevation.to_radians().sin_cos();
+    Vec3::new(cos, sin, 0.0)
+}
+
+/// The capture texels one capture texel at the hit spans from the eye the
+/// ray stands for: `|H − C| / (eye / sin e + t)`.
+fn texel_span(capture: Vec3, origin: Vec3, elevation: f32, distance: f32) -> f32 {
+    let direction = toward_x(elevation);
+    let hit = origin + direction * distance;
+    hit.distance(capture) / (PLAYER_EYE_HEIGHT_M / direction.y + distance)
+}
+
+// The coarse-hit term separates a dock's underside from a pool's coping. A
+// plain dock deck 0.5 m over the lake, its capture point 10 m out: under the
+// deck the 30° and 60° rays hit the underside within a metre, magnified 2.5
+// and 4.3 texels from the eye they stand for, while the grazing 10° ray's
+// longer path keeps it under budget. A 0.15 m coping 1.2 m from the pool's
+// capture point stays under 0.7 texels at every elevation, from a sample
+// 0.3 m off the rim (10°) to one at its foot (60°).
+#[test]
+fn a_hit_near_the_water_far_from_the_capture_point_is_coarse_and_a_pools_coping_is_not() {
+    let lake = Vec3::new(-10.0, 0.002, 0.0);
+    let under_deck = Vec3::new(0.0, 0.002, 0.0);
+    let deck = 0.5;
+    for (elevation, coarse) in [(10.0, false), (30.0, true), (60.0, true)] {
+        let distance = (deck - under_deck.y) / toward_x(elevation).y;
+        let hit = under_deck + toward_x(elevation) * distance;
+        assert_eq!(
+            hit_is_coarse(lake, toward_x(elevation), distance, hit),
+            coarse,
+            "{elevation}°: {} texels",
+            texel_span(lake, under_deck, elevation, distance)
+        );
+    }
+    assert!(texel_span(lake, under_deck, 60.0, 0.498 / toward_x(60.0).y) > 4.0);
+
+    let pool = Vec3::new(-1.2, 0.002, 0.0);
+    for (elevation, off_rim) in [(10.0, 0.3), (30.0, 0.2), (60.0, 0.05)] {
+        let origin = Vec3::new(-off_rim, 0.002, 0.0);
+        let distance = off_rim / toward_x(elevation).x;
+        let hit = origin + toward_x(elevation) * distance;
+        assert!(hit.y < 0.15, "{elevation}° hits the coping");
+        let span = texel_span(pool, origin, elevation, distance);
+        assert!(span <= 0.7, "{elevation}°: {span} texels");
+        assert!(!hit_is_coarse(pool, toward_x(elevation), distance, hit));
+    }
+}
+
+// The eye the coarse term places on the view ray is the standing player's
+// eye above its feet, from the reference player descriptor: the engine has
+// no eye-height constant of its own, so the mirror is pinned to that source.
+#[test]
+fn the_coarse_terms_eye_height_is_the_reference_players_standing_eye() {
+    let source = include_str!("../../../../content/dev/scripts/player.ts");
+    let line = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("capsule:"))
+        .expect("player.ts declares the player capsule");
+    let field = |name: &str| -> f32 {
+        line.split(&format!("{name}:"))
+            .nth(1)
+            .and_then(|rest| rest.split([',', '}']).next())
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or_else(|| panic!("the capsule declares {name}: {line}"))
+    };
+    let eye = field("halfHeight") + field("radius") + field("eyeHeight");
+    assert!((PLAYER_EYE_HEIGHT_M - eye).abs() < 1e-6, "{eye}");
+}
+
+// ------------------------------------------------------------- cap before capture
+
+/// Three pools in [`lit_floor_room`], each its own fluid entity and so its
+/// own derived probe: 4, 4.14 and 1 m².
+fn three_pools() -> EnvironmentVolumesSection {
+    volumes(vec![
+        fluid_volume(5, &[up_rect(-2.8, -2.8, -0.8, -0.8, 0.5)]),
+        fluid_volume(7, &[up_rect(0.5, -2.8, 2.8, -1.0, 0.5)]),
+        fluid_volume(9, &[up_rect(-2.8, 1.5, -1.8, 2.5, 0.5)]),
+    ])
+}
+
+// S9: derived probes past the cap by placement area drop before capture.
+// Under a 2-probe cap the stage captures exactly two tiles' rows, the two
+// largest pools' probes are kept, the smallest pool binds nothing, and the
+// one cap warning names the drop, on the cold build and on the warm one.
+#[test]
+fn derived_probes_past_the_cap_by_placement_area_are_never_captured() {
+    let room = lit_floor_room([255, 255, 255, 255]);
+    let environment = three_pools();
+    let limits = StageLimits {
+        cap: 2,
+        ..NO_ROUNDS
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let cache = StageCache::new(dir.path()).unwrap();
+    let progress = StageProgress::indeterminate();
+    let control = BakeControl::new(Arc::new(Governor::new(usize::MAX, false)), &progress);
+    let logs = LogCapture::start();
+    let (cold, warm) = with_inputs(&room, &environment, |inputs| {
+        (
+            bake_or_load_with_limits(inputs, Some(&cache), &control, limits).unwrap(),
+            bake_or_load_with_limits(inputs, Some(&cache), &control, limits).unwrap(),
+        )
+    });
+    assert_eq!(
+        progress.completed(),
+        2 * TILE_INTERIOR as usize,
+        "two probes captured, cold and warm together"
+    );
+    let section = cold.expect("two probes kept");
+    assert_eq!(Some(&section), warm.as_ref());
+    let sources: Vec<u32> = section.probes.iter().map(|p| p.source_entity).collect();
+    assert_eq!(sources, vec![5, 7]);
+    assert!(section.bindings.iter().all(|b| b.volume != 2));
+    let count = logs
+        .records()
+        .into_iter()
+        .filter(|r| {
+            r.level == Level::Warn
+                && r.message
+                    .contains("1 derived or split probe(s) past the 2-probe cap dropped")
+        })
+        .count();
+    assert_eq!(count, 2, "one cap warning per build");
+
+    // Under the production cap all three are captured.
+    let progress = StageProgress::indeterminate();
+    let control = BakeControl::new(Arc::new(Governor::new(usize::MAX, false)), &progress);
+    let all = with_inputs(&room, &environment, |inputs| {
+        bake_or_load_with_limits(inputs, None, &control, NO_ROUNDS).unwrap()
+    })
+    .unwrap();
+    assert_eq!(all.probes.len(), 3);
+    assert_eq!(progress.completed(), 3 * TILE_INTERIOR as usize);
 }

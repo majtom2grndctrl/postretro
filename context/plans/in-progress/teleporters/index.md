@@ -107,8 +107,11 @@ resident on arrival.
   into the teleporter record. It plays on the traveller's machine from forward
   prediction, never from reconcile replay, as landing and jumping do
   (`audio.md` §4). A cut whose post-replay generation is ahead of the
-  prediction plays it once more for the teleport the client missed, such as an
-  unpredicted scripted shift. It defaults to none, which keeps seamless silent.
+  prediction plays the authoritative last teleporter's cue once for the teleport
+  the client missed, such as an unpredicted scripted shift. A same-generation
+  authoritative replacement retains the speculative cue without another playback,
+  even if the teleporter or its cue differs. Several unseen teleports coalesce to
+  the last cue. It defaults to none, which keeps seamless silent.
 - **Host-fired gameplay event.** The authoritative teleport fires the teleporter's
   `teleport` event once per pawn per teleport, never from prediction. It
   publishes `activators` and a `teleporter` token (`arm`/`disarm`), and no
@@ -214,7 +217,7 @@ Sound:
 - [ ] A predicting client starts `arrival_sound` on its teleport tick and does not play it again when reconcile replays that tick.
 - [ ] Every non-traveller machine, the host seat included, hears `arrival_sound` once per observed generation change, at the arrival point, even on frames where it still renders the traveller at the source. Several teleports between one observer's samples play one sound, the last teleporter's (P8).
 - [ ] When the host refuses a teleport the client predicted (a disarm it had not seen, a blocked arrival, a pawn already dead), the client's sound has played once, the cut back plays none, and no observer hears it (P9).
-- [ ] A teleport the client adopts through reconcile plays its sound once, on adoption. With a one-tick skew between client and host, or different teleporters taken on one tick, the traveller hears one sound per teleport the host took (P10, P32).
+- [ ] An adoption whose post-replay generation is ahead of the prediction plays the authoritative last teleporter's cue once. A one-tick skew of the same crossing never sounds twice. A same-generation authoritative replacement retains the speculative cue without another playback, even if the teleporter or cue differs. Several unseen teleports coalesce to the last cue (P10, P32).
 - [ ] A teleporter with no `arrival_sound` plays nothing on any machine.
 
 Compiler and format:

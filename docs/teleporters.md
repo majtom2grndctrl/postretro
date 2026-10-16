@@ -52,11 +52,20 @@ it ignores walls, so keep it inside the space you mean it for.
 | Key | Type | What it does |
 |-----|------|--------------|
 | `name` | string | Required, and unique among destinations. Teleporters name it in `target` or `landmark`. |
-| `angles` | pitch yaw roll | Only the yaw counts: the direction the arrow points in TrenchBroom. A pitch or roll compiles with a warning and is ignored. |
+| `angle`, `angles` or `mangle` | yaw, or pitch yaw roll | Only the yaw counts: the direction the arrow points in TrenchBroom. They read as on any other point entity; when more than one is set, `angles` or `mangle` wins over `angle`. A pitch or roll compiles with a warning and is ignored. |
 
-The destination's origin is where the player's body arrives, not their feet.
-Place it at standing height, about 40 units above the floor, the way the
-`player_spawn` sits.
+The destination's origin is where the middle of the player's body arrives, not
+their feet. The player arrives exactly there; the engine does not nudge them to
+the floor or out of a wall. Set the origin at least the player's capsule
+`halfHeight` plus `radius` above the floor, plus about one unit of margin. The
+dev mod's player (`halfHeight` 0.8 m, `radius` 0.2 m) needs 1 m, so about 41
+units. A destination set lower than that puts the player inside the floor, and
+the arrival is [refused](#arrival). Set higher, the player arrives in the air
+and falls.
+
+This is not the rule for `player_spawn`, which the engine places for you. Your
+mod's player script sets the capsule (`movement.capsule` on the `player`
+entity); use its numbers if they differ.
 
 ---
 
@@ -117,9 +126,16 @@ a room whose lighting is still streaming in.
 
 ### Arrival
 
-- The player arrives in the air: they fall from the destination if it is above
-  the floor, and a moving platform they stood on does not carry them.
-- A vault in progress stops. A slide or dash carries on in the new direction.
+- **Floor under the arrival, the player is grounded.** The engine checks for
+  static floor beneath the arrival position without moving the player. If it
+  finds some, the player is standing on it: a slide or run carries on across a
+  seamless shift with no moment in the air, and they can jump at once.
+- **No floor, the player is airborne.** They fall from the destination, and
+  there is no grace period for a late jump: a mid-air arrival cannot jump.
+- A moving platform the player stood on never carries them after a teleport,
+  even when the arrival floor is another platform.
+- A vault in progress stops, and the `vault_ended` event fires as for any other
+  end of a climb. A slide or dash carries on in the new direction.
 - **No ping-pong.** A player who arrives inside a teleporter that is on does not
   fire it until they step out of it and back in. This is what lets a two-way
   seamless pair share its region and its points.
@@ -265,13 +281,18 @@ map count; monsters an `entity_spawner` releases do not. See
 | A classic teleporter has a `landmark` | Remove it, or set `mode` to `seamless`. |
 | `landmark` equals `target` | A seamless pair needs two different points. |
 | `mode` is neither `classic` nor `seamless` | Fix the value. |
+| `target` is blank or missing | Set it to a destination's `name`. |
+| `enabled_on_spawn` is not `0` or `1` | Use `0` or `1`. |
+| A `trigger_teleport` has no brushes | Tie at least one brush to it. |
+| A `teleport_destination` has brushes | Make it a point entity; it is not a region. |
 
-A destination with a pitch or roll in `angles` compiles with a warning; only its
-yaw is used.
+A destination with a pitch or roll in `angle`, `angles` or `mangle` compiles
+with a warning; only its yaw is used.
 
 ## Trying it
 
-Compile and run a map with teleporters as any other:
+Compile and run a map with teleporters as any other. From your project root, with `<mod-root>` the mod's folder (`content/dev` in the
+SDK bundle):
 
 ```bash
 bin/prl-build <mod-root>/maps/<name>.map \
@@ -279,6 +300,11 @@ bin/prl-build <mod-root>/maps/<name>.map \
   -o <mod-root>/maps/<name>.prl
 bin/postretro-tool run maps/<name>.prl
 ```
+
+The compiler takes paths from the project root. `postretro-tool run` takes the
+level path relative to the mod's folder, so it drops the `<mod-root>/` prefix.
+`--cache-dir` keeps the compiler's scratch files out of your `maps/` folder; see
+[Compiling Your Map](level_design.md#compiling-your-map) for both flags.
 
 Rebuild the map after editing its data script; the engine runs the copy
 compiled into the `.prl`.

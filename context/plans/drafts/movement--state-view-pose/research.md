@@ -54,6 +54,7 @@ Rejected:
 - **1 alone.** It cannot follow geometry or sign roll by wall side. It ships as the literal half of 4.
 - **2 alone.** A third sustained block, vault-shaped, with no home for other states.
 - **Rates on the vault row.** Asymptotic, and not tied to the climb's end; see above.
+- **Entry-aim reference.** Measure focus against aim at vault entry instead of live aim. Mouse pitch stays 1:1 for the whole climb, but the pull no longer stops at the line: a player who looks further down mid-climb gets it on top, bounded only by `maxPitch` and the ±89° clamp. It is the fallback if the first slice reads as a fought camera.
 - **Pose writes aim.** It would keep the reticle honest. But it writes tick input that is predicted and replicated, steals the mouse, and breaks render-only view feel.
 
 ## Focus geometry
@@ -96,6 +97,6 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 
 - **Wall-run:** a `wallRun` row plus a term signed toward the wall.
 - **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row.
-- **Sustained FOV draft:** its slide row is superseded. Its `run` tier target and absolute-FOV unit are the remaining decisions, to be rebased onto `pose` by owner disposition, outside this brief.
+- **Sustained FOV draft:** its slide row is superseded. Its `run` tier is input-derived inside `Normal` and targets an absolute FOV, so it does not fit a state row's additive offset; see the open question.
 - **Composition draft:** `pose.<state>` moves to its state layer.
 - **Spectator follow-cam:** evaluates from replicated payload, no wire change.

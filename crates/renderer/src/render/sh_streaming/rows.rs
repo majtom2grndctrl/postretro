@@ -51,6 +51,10 @@ impl ShResidencyState {
                     self.direct_compose_epoch,
                 )
             {
+                #[cfg(feature = "dev-tools")]
+                if !installed.patches.is_empty() {
+                    self.probe_readback.sample_words_changed();
+                }
                 let updates: Vec<_> = installed
                     .patches
                     .iter()
@@ -92,6 +96,10 @@ impl ShResidencyState {
         let Some(installed) = self.installed.remove(&cluster_id) else {
             return Ok(());
         };
+        #[cfg(feature = "dev-tools")]
+        if !installed.patches.is_empty() {
+            self.probe_readback.sample_words_changed();
+        }
         let mut sample_updates = Vec::with_capacity(installed.patches.len());
         let mut dense_rows = Vec::with_capacity(installed.patches.len());
         for patch in installed.patches {
@@ -119,6 +127,9 @@ impl ShResidencyState {
         }
         for node in installed.owned_nodes {
             if let Some(range) = self.node_slots.remove(&node) {
+                #[cfg(feature = "dev-tools")]
+                self.probe_readback
+                    .retire_slots(range.start..range.start + range.len);
                 self.dense_slots.release(range)?;
             }
         }

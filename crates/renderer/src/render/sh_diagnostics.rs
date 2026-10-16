@@ -12,6 +12,8 @@ use postretro_level_format::sh_reconstruct::{
 use super::debug_lines::DebugLineRenderer;
 use super::sh_indirection::decode_probe_indirection_word;
 use super::sh_streaming::ShResidencyState;
+mod launch;
+
 use super::sh_volume::{DeltaVolumeMeta, ShVolumeResources};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::sh_compose::f16_bits_to_f32;
@@ -25,7 +27,7 @@ pub enum MarkerMode {
     DensityLevel,
     /// All probes drawn with the same neutral color.
     Uniform,
-    /// Each marker tinted by the probe's averaged baked irradiance.
+    /// Each marker tinted by the probe's averaged live indirect irradiance.
     Irradiance,
     /// Each probe colored by what the renderer's residency mirrors say the
     /// shader can actually sample right now. Only meaningful while a
@@ -121,7 +123,7 @@ pub(super) fn density_level_marker_color(level: u8, scale: u8) -> [u8; 4] {
 /// washing hue toward white the way per-channel tonemap would. The debug-line
 /// target is sRGB and the shader passes vertex color through untouched, so emit
 /// *linear* values here — the hardware encodes.
-fn irradiance_marker_color(irradiance: [f32; 3]) -> [u8; 4] {
+pub(super) fn irradiance_marker_color(irradiance: [f32; 3]) -> [u8; 4] {
     let rgb = [
         irradiance[0].max(0.0),
         irradiance[1].max(0.0),
@@ -247,29 +249,34 @@ pub(super) fn emit_cells(
     // cell is treated as visible to avoid misleadingly cyan overlays.
     let r2 = state.cell_radius * state.cell_radius;
     let draw_all = visible_cell_mask.is_empty();
-    for z in 0..dims[2] {
-        for y in 0..dims[1] {
-            for x in 0..dims[0] {
-                let cell_min =
-                    origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
-                let cell_max = cell_min + cell;
-                let center = (cell_min + cell_max) * 0.5;
-                if (center - camera_pos).length_squared() > r2 {
-                    continue;
-                }
-                let cell_idx = world.locate_cell(center);
-                let visible = if draw_all {
-                    true
-                } else {
-                    visible_cell_mask.get(cell_idx).copied().unwrap_or(false)
-                };
-                let color = if visible {
-                    COLOR_CELL_VISIBLE
-                } else {
-                    COLOR_CELL_CULLED
-                };
-                lines.push_aabb(cell_min, cell_max, color);
-            }
+    let bounds = super::sh_diagnostics_grid::GridBounds::around_sphere(
+        dims,
+        origin + cell * 0.5,
+        cell,
+        camera_pos,
+        state.cell_radius,
+    );
+    for [x, y, z] in bounds.coordinates() {
+        let cell_min = origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
+        let cell_max = cell_min + cell;
+        let center = (cell_min + cell_max) * 0.5;
+        if (center - camera_pos).length_squared() > r2 {
+            continue;
+        }
+        let cell_idx = world.locate_cell(center);
+        let visible = if draw_all {
+            true
+        } else {
+            visible_cell_mask.get(cell_idx).copied().unwrap_or(false)
+        };
+        let color = if visible {
+            COLOR_CELL_VISIBLE
+        } else {
+            COLOR_CELL_CULLED
+        };
+        lines.push_aabb(cell_min, cell_max, color);
+        if lines.depth_tested_overflowed() {
+            break;
         }
     }
 }
@@ -286,58 +293,63 @@ fn emit_markers(
     // Radius gate mirrors `emit_cells`: without it, dense probe grids blow past
     // the debug-line segment cap and whole rooms vanish from the overlay.
     let r2 = state.cell_radius * state.cell_radius;
-    for z in 0..dims[2] {
-        for y in 0..dims[1] {
-            for x in 0..dims[0] {
-                // Probe (x,y,z) sits at the cell corner `origin + (x,y,z)*cell`
-                // — the bake plants probes at integer multiples of cell_size and
-                // the runtime samples them there (see sh_compose.wgsl world_pos
-                // and forward.wgsl sample_sh_indirect). Draw the marker exactly
-                // on the probe it colors, not at the cell center.
-                let pos =
-                    origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
-                if (pos - camera_pos).length_squared() > r2 {
-                    continue;
+    let bounds = super::sh_diagnostics_grid::GridBounds::around_sphere(
+        dims,
+        origin,
+        cell,
+        camera_pos,
+        state.cell_radius,
+    );
+    for [x, y, z] in bounds.coordinates() {
+        // Probe (x,y,z) sits at the cell corner `origin + (x,y,z)*cell`
+        // — the bake plants probes at integer multiples of cell_size and
+        // the runtime samples them there (see sh_compose.wgsl world_pos
+        // and forward.wgsl sample_sh_indirect). Draw the marker exactly
+        // on the probe it colors, not at the cell center.
+        let pos = origin + Vec3::new(x as f32 * cell.x, y as f32 * cell.y, z as f32 * cell.z);
+        if (pos - camera_pos).length_squared() > r2 {
+            continue;
+        }
+        let color = match state.marker_mode {
+            MarkerMode::Uniform => COLOR_PROBE_UNIFORM,
+            MarkerMode::Validity => {
+                let idx = probe_index(x, y, z, dims);
+                // Out-of-range entries (validity slice shorter than the
+                // probe count) are treated as invalid rather than
+                // panicking — keeps the overlay tolerant of partial
+                // bakes.
+                let valid = sh.validity.get(idx).copied().unwrap_or(0) != 0;
+                if valid {
+                    COLOR_PROBE_VALID
+                } else {
+                    COLOR_PROBE_INVALID
                 }
-                let color = match state.marker_mode {
-                    MarkerMode::Uniform => COLOR_PROBE_UNIFORM,
-                    MarkerMode::Validity => {
-                        let idx = probe_index(x, y, z, dims);
-                        // Out-of-range entries (validity slice shorter than the
-                        // probe count) are treated as invalid rather than
-                        // panicking — keeps the overlay tolerant of partial
-                        // bakes.
-                        let valid = sh.validity.get(idx).copied().unwrap_or(0) != 0;
-                        if valid {
-                            COLOR_PROBE_VALID
-                        } else {
-                            COLOR_PROBE_INVALID
-                        }
-                    }
-                    MarkerMode::DensityLevel => {
-                        let idx = probe_index(x, y, z, dims);
-                        // `density_levels` is copied from the validated id-34
-                        // metadata at load. In particular it retains a level
-                        // for invalid probes, unlike the all-zero indirection
-                        // word those probes receive for GPU sampling.
-                        density_level_marker_color(
-                            sh.density_levels.get(idx).copied().unwrap_or_default(),
-                            sh.node_scales.get(idx).copied().unwrap_or_default(),
-                        )
-                    }
-                    MarkerMode::Irradiance => {
-                        let idx = probe_index(x, y, z, dims);
-                        let irradiance = sh.probe_irradiance.get(idx).copied().unwrap_or([0.0; 3]);
-                        irradiance_marker_color(irradiance)
-                    }
-                    // Residency has no meaning against a whole-loaded SH
-                    // volume — it is only reachable while a streaming session
-                    // is active, which never sets `sh.present` (see
-                    // `sh_diagnostics_residency::emit`).
-                    MarkerMode::Residency => continue,
-                };
-                lines.push_marker(pos, state.marker_scale, color);
             }
+            MarkerMode::DensityLevel => {
+                let idx = probe_index(x, y, z, dims);
+                // `density_levels` is copied from the validated id-34
+                // metadata at load. In particular it retains a level
+                // for invalid probes, unlike the all-zero indirection
+                // word those probes receive for GPU sampling.
+                density_level_marker_color(
+                    sh.density_levels.get(idx).copied().unwrap_or_default(),
+                    sh.node_scales.get(idx).copied().unwrap_or_default(),
+                )
+            }
+            MarkerMode::Irradiance => {
+                let idx = probe_index(x, y, z, dims);
+                let irradiance = sh.probe_irradiance.get(idx).copied().unwrap_or([0.0; 3]);
+                irradiance_marker_color(irradiance)
+            }
+            // Residency has no meaning against a whole-loaded SH
+            // volume — it is only reachable while a streaming session
+            // is active, which never sets `sh.present` (see
+            // `sh_diagnostics_residency::emit`).
+            MarkerMode::Residency => continue,
+        };
+        lines.push_marker(pos, state.marker_scale, color);
+        if lines.depth_tested_overflowed() {
+            break;
         }
     }
 }

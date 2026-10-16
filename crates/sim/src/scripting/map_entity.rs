@@ -106,12 +106,8 @@ mod tests {
     use postretro_scripting_core::conv::EulerDegrees;
     use std::collections::HashMap;
 
-    /// Pins the invariant that `MapEntity::rotation_quat` (radians, YXZ via
-    /// `glam`) and `EulerDegrees::to_quat` (degrees, YXZ via `glam`) build
-    /// the same quaternion for the same logical rotation. A future refactor
-    /// that swaps the Euler order or argument layout in either path will
-    /// trip this test before it can silently diverge spawn-time and
-    /// script-facing rotations.
+    /// A placed entity whose angles come from raw KVPs through the compiler's
+    /// own source-format converter.
     fn placed(raw_angles: &[(&str, &str)]) -> MapEntity {
         let props: HashMap<String, String> = raw_angles
             .iter()
@@ -188,6 +184,12 @@ mod tests {
         );
     }
 
+    /// Pins the invariant that `MapEntity::rotation_quat` (radians, YXZ via
+    /// `glam`) and `EulerDegrees::to_quat` (degrees, YXZ via `glam`) build
+    /// the same quaternion for the same logical rotation. A future refactor
+    /// that swaps the Euler order or argument layout in either path will
+    /// trip this test before it can silently diverge spawn-time and
+    /// script-facing rotations.
     #[test]
     fn rotation_quat_matches_euler_degrees_to_quat() {
         // Pick angles that exercise all three axes; nothing on a 90° boundary

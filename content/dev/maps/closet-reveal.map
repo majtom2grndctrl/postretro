@@ -3,9 +3,9 @@
 // E18 reveal-closet set piece.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/closet-reveal.map -o content/dev/maps/closet-reveal.prl
 // Run: cargo run -p xtask -- run content/dev/maps/closet-reveal.prl
-// Sealed room, interior 288 x 256 x 128 units, wall thickness 16, with a
+// Sealed room, interior 288 x 560 x 128 units, wall thickness 16, with a
 // recessed closet nook carved into the solid east block. The nook interior
-// spans x 176 to 272, y 96 to 160, z 0 to 96, entered through a doorway at
+// spans x 176 to 272, y -112 to 80, z 0 to 96, entered through a doorway at
 // x 176 that the sliding door occludes. The nook and main room form a single
 // enclosed interior joined by that internal doorway, so the world hull is
 // sealed with no leak. Worldspawn brush order: floor, ceiling, west, east,

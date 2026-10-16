@@ -188,6 +188,8 @@ pub fn present_client_pawns(
 /// into the registry; the fixed tick probed from the live pose, which leads it and
 /// sits at the arrival while the body is still drawn at a teleport's source. A pawn
 /// with no buffered sample keeps its live pose, which is then also what is drawn.
+/// `mover_poses` are live (end-of-tick), not delayed, so a pawn riding a fast mover
+/// plants its feet on the mover's live surface rather than where it was drawn.
 /// `anim_time` is the render frame's animation clock the body is posed at.
 pub fn probe_presented_client_pawn_feet(
     owners: &MovementOwners,

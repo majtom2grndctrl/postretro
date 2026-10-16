@@ -319,7 +319,7 @@
     = prop_mesh : "Static Mesh Prop"
 [
     origin(origin)
-    angles(angles) : "Orientation (pitch yaw roll, degrees)" : "0 0 0"
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
 ]
 

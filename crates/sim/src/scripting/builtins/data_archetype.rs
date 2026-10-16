@@ -691,21 +691,31 @@ fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
     }
 }
 
-/// Which way a descriptor instance faces at spawn. A placed enemy or prop faces
-/// with its model's `+Z` front; a player pawn's transform carries its camera
-/// yaw, which looks along `-Z`, and a loadout weapon takes its pawn's frame.
-/// Both read the authored arrow; only the local front axis differs.
+/// Which way a descriptor instance faces at spawn. A placed enemy, prop or
+/// pickup faces with its model's `+Z` front; a player pawn's transform carries
+/// its camera yaw, which looks along `-Z`. Both read the authored arrow; only
+/// the local front axis differs. A loadout weapon is a model too: it keeps this
+/// rotation while carried and drops with it, so it must face like a pickup
+/// placed at its pawn's start.
 pub(super) fn descriptor_spawn_rotation(
     entity: &MapEntity,
     spawn_path: DescriptorSpawnPath,
 ) -> Quat {
     match spawn_path {
-        DescriptorSpawnPath::MapPlacement
-        | DescriptorSpawnPath::RuntimeSpawn
-        | DescriptorSpawnPath::ProjectilePresentation => entity.model_rotation_quat(),
-        DescriptorSpawnPath::PlayerSpawn
-        | DescriptorSpawnPath::NetworkSlot
-        | DescriptorSpawnPath::DefaultWeapon => entity.rotation_quat(),
+        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::DefaultWeapon => {
+            entity.model_rotation_quat()
+        }
+        DescriptorSpawnPath::PlayerSpawn | DescriptorSpawnPath::NetworkSlot => {
+            entity.rotation_quat()
+        }
+        // No caller today: an `entity_spawner` copy takes the spawner's own
+        // Transform, and a projectile flight entity spawns through netcode's
+        // `spawn_presentation_entity`. A synthetic `angles: ZERO` placement would
+        // silently face `Ry(π)` here, so a new caller must pick a frame.
+        DescriptorSpawnPath::RuntimeSpawn | DescriptorSpawnPath::ProjectilePresentation => {
+            debug_assert!(false, "no spawn frame chosen for {spawn_path:?}");
+            entity.model_rotation_quat()
+        }
     }
 }
 

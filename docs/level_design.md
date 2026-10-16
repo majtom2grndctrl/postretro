@@ -44,6 +44,8 @@ key, or the middle value of `angles` (`"pitch yaw roll"`). This holds for
 everything that has a front: a `player_spawn` looks along the arrow, and a
 `prop_mesh`, an enemy, a pickup, or the enemies an `entity_spawner` releases
 turn their model's front along it. An entity with no angle key faces yaw `0`.
+When an `entity_spawner` releases several copies, they line up side by side
+to the left of its arrow, starting at the spawner.
 
 Set only the yaw for characters and pickups. Pitch and roll tilt a `prop_mesh`,
 but an enemy keeps only its yaw once it starts turning, and a player start

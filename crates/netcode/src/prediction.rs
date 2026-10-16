@@ -278,7 +278,7 @@ impl ClientPrediction {
     }
 
     /// Diagnostics: one same-frame zero-tick fire `Input` send
-    /// (`client_send_input_command`).
+    /// (`client_send_input_command_in_registry`).
     pub(crate) fn diag_record_fire_send(&mut self) {
         self.send_diag.record_fire_path_send();
     }
@@ -326,10 +326,10 @@ impl ClientPrediction {
             .map(|(transform, movement, _)| (transform, movement))
     }
 
-    /// The production forward-prediction form of [`Self::predict_tick`]. It
-    /// preserves the tick's movement events for the local frame drain; callers
-    /// performing reconciliation continue to use [`replay`] directly and discard
-    /// its events by construction.
+    /// [`Self::predict_tick`] keeping the tick's movement events. Test-only: it
+    /// reads each teleporter's `enabled_on_spawn`, never replicated armed state.
+    /// Production forward prediction (`client_predict_tick`) and reconcile replay
+    /// supply the registry's bound armed state through the `_and_armed` forms.
     #[cfg(test)]
     pub(crate) fn predict_tick_with_events(
         &mut self,
@@ -518,6 +518,8 @@ impl ClientPrediction {
 /// Shared by this module's forward prediction and Task 5's reconciliation replay.
 /// The `position` `movement::tick` consumes/returns is the `Transform.position`;
 /// this helper threads it through so callers only ever see the `Transform`.
+/// Test-only: it reads `enabled_on_spawn`; production replays through
+/// [`replay_with_armed`] with the registry's bound armed state.
 #[cfg(test)]
 pub(crate) fn replay(
     transform: Transform,

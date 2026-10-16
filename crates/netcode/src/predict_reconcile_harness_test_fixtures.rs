@@ -32,18 +32,21 @@ use postretro_net::wire::{
 };
 
 use super::client::{ClientReplication, MoverCorrection};
-use super::command_queue::{HostCommandQueues, MovementOwners, host_resolve_remote_commands};
-use super::prediction::ClientPrediction;
+use super::command_queue::{
+    HostCommandQueues, MovementOwners, ResolvedPawnCommand,
+    host_resolve_remote_commands_in_registry,
+};
+use super::prediction::{ClientPrediction, CorrectionClass};
 use super::reconcile::reconcile_local_pawn_with_mover_history;
 use super::replication::{ReplicableSet, host_register_loaded_movers, produce_owned_snapshots};
-use super::wire_convert::sim_command_to_input;
 use crate::collision::CollisionWorld;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::{MovementEvents, MovementInput};
 use crate::netcode::{
-    NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn, client_environment_view,
-    client_fluid_table, host_handle_client_message, replace_client_tuning,
+    ClientPredictionTickContext, NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn,
+    client_environment_view, client_fluid_table, client_predict_tick_with_sender,
+    host_handle_client_message, replace_client_tuning, stamped_client_input,
     tuning_control_if_changed, tuning_payload_for_pawn,
 };
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
@@ -96,6 +99,18 @@ pub(crate) const PLAYOUT_WARMUP_TICKS: u32 = 7;
 /// effectively-at-rest pose. Bounded + deterministic (vs. waiting for exact stillness,
 /// whose geometric decay tail is unboundedly slow). See `drain_step`.
 pub(crate) const DRAIN_SETTLE_TICKS: u32 = 30;
+
+/// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
+/// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
+/// 5% loss, fixed seed. Matches the Phase 2 latency harness profile exactly.
+pub(crate) fn mandated_link() -> LinkConfig {
+    LinkConfig {
+        delay: 45,
+        jitter: 60,
+        loss_probability: 0.05,
+        seed: 0x1502,
+    }
+}
 
 /// A near-perfect link for scenario tests that exercise the gap policy, stale and
 /// duplicate seams, and exact prediction deterministically without the full
@@ -449,12 +464,53 @@ pub(crate) fn spawn_dead_bystander(registry: &mut EntityRegistry) -> EntityId {
     id
 }
 
+/// One host fixed tick as the client's pawn ended it: the command resolution
+/// that drove it (after the teleport-frame rotation) and the authoritative pose,
+/// avatar yaw and teleport record.
+#[derive(Debug, Clone)]
+pub(crate) struct HostTickTrace {
+    pub(crate) server_tick: u32,
+    pub(crate) resolved: Option<ResolvedPawnCommand>,
+    pub(crate) position: Vec3,
+    pub(crate) yaw: f32,
+    pub(crate) teleport: postretro_foundation::TeleportState,
+}
+
+impl HostTickTrace {
+    fn capture(
+        registry: &EntityRegistry,
+        pawn: EntityId,
+        server_tick: u32,
+        resolved: Option<ResolvedPawnCommand>,
+    ) -> Self {
+        let transform = registry.get_component::<Transform>(pawn).unwrap();
+        // Yaw of `Quat::from_rotation_y(yaw)`: its forward is (-sin, 0, -cos).
+        let forward = transform.rotation * Vec3::NEG_Z;
+        Self {
+            server_tick,
+            resolved,
+            position: transform.position,
+            yaw: (-forward.x).atan2(-forward.z),
+            teleport: registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .teleport
+                .clone(),
+        }
+    }
+}
+
 /// The two-sided, deterministic loopback harness driving the genuine Task 1-5
 /// seams through the in-memory packet conditioner. One conditioner per direction,
 /// both seeded with the same mandated profile. A virtual ms clock the harness
 /// advances drives delivery; no wall-clock time is ever read.
 pub(crate) struct LoopbackHarness {
     pub(crate) world: CollisionWorld,
+    /// The client's own static world, when a scenario needs one: installed
+    /// teleporter bindings name each peer's own entities, so a teleporter
+    /// scenario gives the client its own copy of the level. `None` shares
+    /// [`Self::world`], which every other scenario relies on.
+    pub(crate) client_world: Option<CollisionWorld>,
     /// The level's volume records, fluids by name, identical on both peers as
     /// the digest-bound level file is. Empty by default.
     pub(crate) environment_records: Vec<NamedEnvironmentVolume>,
@@ -534,6 +590,15 @@ pub(crate) struct LoopbackHarness {
     pub(crate) client_mover_states: MoverTickStateTable,
     pub(crate) latest_mover_corrections: Vec<MoverCorrection>,
     pub(crate) latest_local_corrections: Vec<f32>,
+    /// The class of each local reconcile in the latest `client_receive`, in
+    /// order, beside [`Self::latest_local_corrections`].
+    pub(crate) latest_local_correction_classes: Vec<CorrectionClass>,
+    /// The network ids carried as full baselines by the snapshots the latest
+    /// `client_receive` applied — first records and re-baselines alike.
+    pub(crate) latest_full_baselines: Vec<u32>,
+    /// One record per host fixed tick after the playout warmup: the resolved
+    /// command (if any) and the client pawn's authoritative state after the tick.
+    pub(crate) host_trace: Vec<HostTickTrace>,
     /// One `(acked_tick, last_sent_client_tick)` pair per local reconcile in the
     /// latest `client_receive`: the replay window is the client ticks after the
     /// ack up to the last one sent.
@@ -632,6 +697,7 @@ impl LoopbackHarness {
 
         Self {
             world,
+            client_world: None,
             environment_records: Vec::new(),
             host_environment_volumes: EnvironmentVolumes::empty(),
             client_environment_volumes: EnvironmentVolumes::empty(),
@@ -675,6 +741,9 @@ impl LoopbackHarness {
             client_mover_states: MoverTickStateTable::default(),
             latest_mover_corrections: Vec::new(),
             latest_local_corrections: Vec::new(),
+            latest_local_correction_classes: Vec::new(),
+            latest_full_baselines: Vec::new(),
+            host_trace: Vec::new(),
             latest_reconcile_windows: Vec::new(),
             latest_predicted_movement_events: MovementEvents::default(),
             host_bystander,
@@ -954,64 +1023,69 @@ impl LoopbackHarness {
     /// and enqueue it on the to-server conditioner. Mirrors `client_predict_tick`'s
     /// send-then-predict order without needing a live `NetClient`.
     pub(crate) fn client_predict_and_send(&mut self, command: &SimCommand) {
-        let client_tick = self.prediction.next_client_tick();
-        let input = sim_command_to_input(command, client_tick);
+        self.client_predict_and_send_with_delivery(command, true);
+    }
 
+    /// [`Self::client_predict_and_send`], optionally losing the outbound packet
+    /// before the conditioner: the client predicts and logs the command exactly
+    /// as it would, but the host never receives it.
+    pub(crate) fn client_predict_and_send_with_delivery(
+        &mut self,
+        command: &SimCommand,
+        deliver: bool,
+    ) {
         self.client_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);
-        self.latest_predicted_movement_events = MovementEvents::default();
 
-        // Drive prediction if armed and the host's tuning has installed (writing the
-        // predicted pose back to the registry exactly as `client_predict_tick` does).
-        if let Some(pawn) = self.client_pawn
-            && let Some(environment) = client_environment_view(
-                self.client_tuning.as_deref(),
-                &self.client_environment_volumes,
-            )
-        {
-            let prev = (
-                *self
-                    .client_registry
-                    .get_component::<Transform>(pawn)
-                    .unwrap(),
-                self.client_registry
-                    .get_component::<PlayerMovementComponent>(pawn)
-                    .unwrap()
-                    .clone(),
-            );
-            let combined_collision = CombinedCollisionWorld::new(
-                &self.world,
-                &self.mover_colliders,
-                &self.client_mover_states,
-            );
-            if let Some((t, m, events)) = self.prediction.predict_tick_with_events(
-                input,
-                prev,
-                &combined_collision,
-                environment,
-                DT,
-            ) {
-                self.latest_predicted_movement_events = events;
-                // Mirror production `client_predict_tick`: stamp previous = current for
-                // the local pawn BEFORE writing the new predicted pose, so its
-                // transform-history stays coherent each predicted tick (the connected
-                // client skips `simulate_tick`'s registry-wide stage-0 snapshot). The
-                // presented-eye smoothness test depends on this faithful mirror.
-                self.client_registry.snapshot_transform(pawn);
-                self.client_registry.set_component(pawn, t).unwrap();
-                self.client_registry.set_component(pawn, m).unwrap();
+        // The production predicted tick: stamp + send, then (once armed and tuned)
+        // predict with the registry's bound teleporter armed state and write back.
+        let static_world = self.client_world.as_ref().unwrap_or(&self.world);
+        let combined_collision = CombinedCollisionWorld::new(
+            static_world,
+            &self.mover_colliders,
+            &self.client_mover_states,
+        );
+        let mut sent = Vec::new();
+        let result = client_predict_tick_with_sender(
+            &mut self.client_registry,
+            &mut |bytes| sent.push(bytes),
+            &mut self.prediction,
+            ClientPredictionTickContext {
+                command,
+                collision: &combined_collision,
+                environment_volumes: &self.client_environment_volumes,
+                host_tuning: self.client_tuning.as_deref(),
+                tick_dt: DT,
+            },
+        );
+        self.latest_predicted_movement_events = result.movement_events;
+
+        // Enqueue the real wire message through the conditioner.
+        if deliver {
+            for bytes in sent {
+                self.to_server.enqueue(bytes);
             }
         }
-
-        // Encode + enqueue the real wire message through the conditioner.
-        let bytes = wire::encode(&ClientMessage::Input(input));
-        self.to_server.enqueue(bytes);
-        self.last_sent_client_tick = Some(client_tick);
+        self.last_sent_client_tick = Some(result.client_tick);
         // Sending fresh input invalidates any frozen drain target: a later drain must
         // re-freeze against the NEW last-sent tick. (A test may interleave drain steps
         // mid-run to simulate an input gap, then resume sending.)
         self.drain_target_tick = None;
         self.ticks_since_cursor_caught = 0;
+    }
+
+    /// A zero-tick-frame send: one stamped command outside the predicted tick
+    /// cadence, built by the same production helper as
+    /// `client_send_input_command_in_registry`. Nothing is predicted for it.
+    pub(crate) fn client_send_zero_tick(&mut self, command: &SimCommand) -> u32 {
+        let input = stamped_client_input(&mut self.prediction, command, &self.client_registry);
+        let client_tick = input.client_tick;
+        self.to_server
+            .enqueue(wire::encode(&ClientMessage::Input(input)));
+        self.last_sent_client_tick = Some(client_tick);
+        self.drain_target_tick = None;
+        self.ticks_since_cursor_caught = 0;
+        client_tick
     }
 
     /// HOST STEP: deliver any due client->server packets, route each through the
@@ -1086,8 +1160,11 @@ impl LoopbackHarness {
         run_kinematic_mover_tick(&mut self.host_registry, &mut self.host_mover_states, DT);
         let mut trigger_use_edges = HashMap::new();
         if self.host_ticks_elapsed > PLAYOUT_WARMUP_TICKS {
-            let resolved_commands =
-                host_resolve_remote_commands(&self.owners, &mut self.command_queues);
+            let resolved_commands = host_resolve_remote_commands_in_registry(
+                &self.owners,
+                &mut self.command_queues,
+                &self.host_registry,
+            );
             let pawn_inputs = resolved_commands
                 .iter()
                 .map(|resolved| (resolved.pawn, resolved.command.movement.clone()))
@@ -1114,6 +1191,12 @@ impl LoopbackHarness {
                 &pawn_inputs,
                 DT,
             );
+            self.host_trace.push(HostTickTrace::capture(
+                &self.host_registry,
+                self.host_pawn,
+                self.server_tick,
+                resolved_commands.first().cloned(),
+            ));
         }
         self.host_trigger_system.run_authoritative_tick(
             &mut self.host_registry,
@@ -1177,6 +1260,8 @@ impl LoopbackHarness {
     pub(crate) fn client_receive(&mut self) -> Vec<wire::AckMessage> {
         self.latest_mover_corrections.clear();
         self.latest_local_corrections.clear();
+        self.latest_local_correction_classes.clear();
+        self.latest_full_baselines.clear();
         self.latest_reconcile_windows.clear();
         // Control drains before snapshots, as `App::net_poll_and_apply` does.
         self.client_drain_control();
@@ -1188,6 +1273,11 @@ impl LoopbackHarness {
             let Ok(snapshot) = raw.validate() else {
                 continue;
             };
+            self.latest_full_baselines
+                .extend(snapshot.records.iter().filter_map(|record| match record {
+                    wire::EntityRecord::FullBaseline { network_id, .. } => Some(*network_id),
+                    _ => None,
+                }));
             let outcome = self
                 .client_replication
                 .apply_snapshot_with_mover_target_tick(
@@ -1232,7 +1322,7 @@ impl LoopbackHarness {
                     .ok()
                     .map(|transform| transform.position);
                 let combined_collision = CombinedCollisionWorld::new(
-                    &self.world,
+                    self.client_world.as_ref().unwrap_or(&self.world),
                     &self.mover_colliders,
                     &self.client_mover_states,
                 );
@@ -1251,6 +1341,7 @@ impl LoopbackHarness {
                 );
                 self.latest_reconcile_windows
                     .push((reconcile.acked_tick, self.last_sent_client_tick));
+                self.latest_local_correction_classes.extend(class);
                 if class.is_some()
                     && let (Some(before), Ok(after)) = (
                         before,

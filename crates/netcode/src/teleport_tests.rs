@@ -294,3 +294,196 @@ fn teleport_reconcile_refusal_restores_yaw_silently_and_unknown_indices_are_reje
         None
     );
 }
+
+/// One host and one participating client over the real relay transport.
+struct RelaySession {
+    server: postretro_net::transport::NetServer,
+    client: postretro_net::transport::NetClient,
+}
+
+impl RelaySession {
+    const CLIENT: u64 = 7;
+    const STEP: std::time::Duration = std::time::Duration::from_millis(16);
+    const FINGERPRINT: [u8; 32] = [0x5a; 32];
+
+    fn participating() -> Self {
+        use std::net::{Ipv4Addr, UdpSocket};
+        let origin = std::time::Duration::from_secs(1);
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = socket.local_addr().unwrap();
+        let mut server = postretro_net::transport::NetServer::new(
+            socket,
+            address,
+            1,
+            origin,
+            Some(Self::FINGERPRINT),
+        )
+        .unwrap();
+        server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        server.set_mod_digest(Some(Self::FINGERPRINT));
+        server.set_level_parity(Some(("test-level".to_string(), Self::FINGERPRINT)));
+        server.set_revealed_level(Some("test-level".to_string()));
+        let mut client = postretro_net::transport::NetClient::new(
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+            address,
+            Self::CLIENT,
+            origin,
+            Some(Self::FINGERPRINT),
+            None,
+        )
+        .unwrap();
+        client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        client.set_mod_digest(Some(Self::FINGERPRINT));
+        client.set_level_parity(Some(("test-level".to_string(), Self::FINGERPRINT)));
+        client.set_revealed_level(Some("test-level".to_string()));
+        server.add_relay_connection(Self::CLIENT, None);
+        client.set_connected();
+        let mut session = Self { server, client };
+        session.settle();
+        assert!(session.server.is_participating(Self::CLIENT));
+        session
+    }
+
+    fn relay_to_server(&mut self) {
+        self.client.update_connections(Self::STEP);
+        for packet in self.client.packets_to_send() {
+            self.server.process_packet_from(&packet, Self::CLIENT);
+        }
+        self.server.update_connections(Self::STEP);
+        let _ = self.server.poll_handshakes();
+    }
+
+    fn relay_to_client(&mut self) {
+        self.server.update_connections(Self::STEP);
+        for packet in self.server.packets_to_send(Self::CLIENT) {
+            self.client.process_packet(&packet);
+        }
+        self.client.update_connections(Self::STEP);
+        let _ = self.client.drain_control();
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..64 {
+            self.relay_to_server();
+            self.relay_to_client();
+        }
+    }
+
+    fn inputs(&mut self) -> Vec<InputCommand> {
+        self.server
+            .drain_input(Self::CLIENT)
+            .iter()
+            .filter_map(|bytes| match postretro_net::wire::decode(bytes) {
+                Ok(postretro_net::wire::ClientMessage::Input(input)) => Some(input),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn pawn_with_accumulated_yaw(
+    registry: &mut EntityRegistry,
+    yaw: f32,
+) -> postretro_entities::EntityId {
+    let pawn = registry.spawn(Transform::default());
+    let mut movement = component();
+    movement.teleport.generation = 1;
+    movement.teleport.accumulated_yaw = yaw;
+    registry.set_component(pawn, movement).unwrap();
+    pawn
+}
+
+// AC47 / P22 / P33: a command stamped in one session — its pawn had turned 1 rad
+// through teleports — is in flight across a level change or a restart of the
+// same level. The real transport's participation epoch drops it, so the new
+// session's pawn (teleported 0.7 rad through the same indices) never rotates it.
+// The new session's first command, sampled before its first record, carries a
+// zero stamp, never the cached one.
+#[test]
+fn teleport_stale_epoch_input_is_never_rotated_in_the_new_session() {
+    for level_change in [true, false] {
+        let mut session = RelaySession::participating();
+        let mut client_registry = EntityRegistry::new();
+        let old_pawn = pawn_with_accumulated_yaw(&mut client_registry, 1.0);
+        let mut prediction = ClientPrediction::new();
+        prediction.arm(NetworkId(1), old_pawn);
+        let mut sampled =
+            crate::netcode::predict_reconcile_harness_test_fixtures::forward_command(false);
+        sampled.movement.facing_yaw = 0.25;
+        let stale =
+            crate::netcode::stamped_client_input(&mut prediction, &sampled, &client_registry);
+        assert!((stale.teleport_yaw_stamp - 1.0).abs() < 1.0e-6);
+        session.client.send_input(postretro_net::wire::encode(
+            &postretro_net::wire::ClientMessage::Input(stale),
+        ));
+        session.client.update_connections(RelaySession::STEP);
+        let in_flight = session.client.packets_to_send();
+        assert!(!in_flight.is_empty());
+
+        // The host reloads the level (or restarts it) and re-promotes the client.
+        // No client traffic crosses the boundary, so the old command is still in
+        // flight when the new participation begins.
+        if level_change {
+            session.server.set_level_parity(None);
+            let _ = session.server.poll_handshakes();
+            session.relay_to_client();
+            session
+                .server
+                .set_level_parity(Some(("test-level".to_string(), RelaySession::FINGERPRINT)));
+        } else {
+            session.server.set_revealed_level(None);
+            let _ = session.server.poll_handshakes();
+            session.relay_to_client();
+            session
+                .server
+                .set_revealed_level(Some("test-level".to_string()));
+        }
+        let _ = session.server.poll_handshakes();
+        session.relay_to_client();
+        assert!(session.server.is_participating(RelaySession::CLIENT));
+        prediction.reset_for_level_unload();
+
+        // The old session's packets arrive late: the epoch drops them.
+        for packet in &in_flight {
+            session
+                .server
+                .process_packet_from(packet, RelaySession::CLIENT);
+        }
+        assert!(
+            session.inputs().is_empty(),
+            "the stale command never reaches the queue"
+        );
+
+        // New session: the host pawn has its own teleports; the client has no
+        // record yet, so its first command is stamped zero.
+        let mut host_registry = EntityRegistry::new();
+        let new_pawn = pawn_with_accumulated_yaw(&mut host_registry, 0.7);
+        let first =
+            crate::netcode::stamped_client_input(&mut prediction, &sampled, &client_registry);
+        assert_eq!(
+            first.teleport_yaw_stamp, 0.0,
+            "no cached stamp survives the unload"
+        );
+        session.client.send_input(postretro_net::wire::encode(
+            &postretro_net::wire::ClientMessage::Input(first),
+        ));
+        session.relay_to_server();
+        let delivered = session.inputs();
+        assert_eq!(delivered.len(), 1, "only the new session's command arrives");
+        let mut owners = MovementOwners::default();
+        owners.set(new_pawn, RelaySession::CLIENT);
+        let mut queues = HostCommandQueues::default();
+        assert!(queues.ingest(RelaySession::CLIENT, &delivered[0]));
+        queues.ingest(
+            RelaySession::CLIENT,
+            &command(delivered[0].client_tick + 1, 0.25, 0.0),
+        );
+        let resolved =
+            host_resolve_remote_commands_in_registry(&owners, &mut queues, &host_registry);
+        assert_eq!(resolved[0].client_tick, delivered[0].client_tick);
+        assert!(
+            (resolved[0].command.movement.facing_yaw - 0.95).abs() < 1.0e-6,
+            "a zero stamp turns by the new pawn's whole yaw"
+        );
+    }
+}

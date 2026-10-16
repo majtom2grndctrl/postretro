@@ -97,6 +97,11 @@ mod predict_reconcile_harness_vault;
 // replay or the wire merge.
 #[cfg(test)]
 mod predict_reconcile_harness_immersion;
+// Teleporter co-op proofs: prediction, host arming, refusal, stamped frames.
+#[cfg(test)]
+mod predict_reconcile_harness_teleport;
+#[cfg(test)]
+mod predict_reconcile_harness_teleport_rig;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -1140,6 +1145,23 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     prediction: &mut ClientPrediction,
     context: ClientPredictionTickContext<'_, C>,
 ) -> ClientPredictionTickResult {
+    client_predict_tick_with_sender(
+        registry,
+        &mut |bytes| client.send_input(bytes),
+        prediction,
+        context,
+    )
+}
+
+/// [`client_predict_tick`] with the transport send injected. The conditioned-link
+/// harness drives this same body, so its proofs exercise the production stamp,
+/// armed-state read and registry write rather than a mirror of them.
+pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
+    registry: &mut EntityRegistry,
+    send_input: &mut dyn FnMut(Vec<u8>),
+    prediction: &mut ClientPrediction,
+    context: ClientPredictionTickContext<'_, C>,
+) -> ClientPredictionTickResult {
     let ClientPredictionTickContext {
         command,
         collision,
@@ -1150,17 +1172,9 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
-    let client_tick = prediction.next_client_tick();
-    let mut input = sim_command_to_input(command, client_tick);
-    input.teleport_yaw_stamp = prediction
-        .armed()
-        .and_then(|pawn| {
-            registry
-                .get_component::<PlayerMovementComponent>(pawn.entity_id)
-                .ok()
-        })
-        .map_or(0.0, |movement| movement.teleport.accumulated_yaw);
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
+    send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_predict_send();
 
     // 2. Before the local baseline arms prediction, or before the host's tuning
@@ -1269,23 +1283,6 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-pub fn client_send_input_command(
-    endpoint: Option<&mut NetEndpoint>,
-    command: &SimCommand,
-) -> Option<u32> {
-    let Some(NetEndpoint::Client {
-        client, prediction, ..
-    }) = endpoint
-    else {
-        return None;
-    };
-    let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
-    prediction.diag_record_fire_send();
-    Some(client_tick)
-}
-
 /// Zero-tick sends must sample the same pawn teleport frame as their facing.
 /// Before its first record the prediction identity is absent and the stamp is zero.
 pub fn client_send_input_command_in_registry(
@@ -1299,8 +1296,24 @@ pub fn client_send_input_command_in_registry(
     else {
         return None;
     };
-    let client_tick = prediction.next_client_tick();
-    let mut input = sim_command_to_input(command, client_tick);
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
+    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    prediction.diag_record_fire_send();
+    Some(client_tick)
+}
+
+/// Allocate the next command tick and stamp it with the teleport frame its facing
+/// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
+/// registry state the camera follows. Before the client's first record for its pawn
+/// (and after a level unload disarms prediction) nothing has turned the facing, so
+/// the stamp is zero. Every outbound movement command goes through here.
+pub(crate) fn stamped_client_input(
+    prediction: &mut ClientPrediction,
+    command: &SimCommand,
+    registry: &EntityRegistry,
+) -> wire::InputCommand {
+    let mut input = sim_command_to_input(command, prediction.next_client_tick());
     input.teleport_yaw_stamp = prediction
         .armed()
         .and_then(|pawn| {
@@ -1309,9 +1322,7 @@ pub fn client_send_input_command_in_registry(
                 .ok()
         })
         .map_or(0.0, |movement| movement.teleport.accumulated_yaw);
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
-    prediction.diag_record_fire_send();
-    Some(client_tick)
+    input
 }
 
 pub fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<NetworkId> {

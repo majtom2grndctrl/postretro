@@ -111,10 +111,12 @@ fn contains(outline: &[DVec2], p: DVec2) -> bool {
 pub(crate) enum PointFault {
     InSolid,
     /// In open space within [`CAPTURE_CLEARANCE_M`] of a wall, and no move
-    /// that far off it stays in the box and over the water, or clears it.
+    /// that far off it stays in the box and over the water, or clears walls
+    /// along the other axis.
     Crowded,
     /// In open space within [`CAPTURE_CLEARANCE_M`] of walls on both sides
-    /// of an axis.
+    /// of an axis, or between walls closer than twice that, so a move off
+    /// one lands within it of the other.
     Wedged,
     /// Inside a brush of this fluid entity, the probe's own included.
     InFluid(u32),
@@ -175,10 +177,11 @@ impl<'a> PointClassifier<'a> {
     /// which is clear, so a move leaves it at least that far off the wall.
     /// The move must stay in the box and, from a point over `water`, over
     /// `water`: when it cannot, staying over the water wins and the point
-    /// drops as [`PointFault::Crowded`]; crowded on both sides of an axis, it
+    /// drops as [`PointFault::Crowded`]; crowded on both sides of an axis, or
+    /// moved within the clearance of a wall on the side it moved toward, it
     /// drops as [`PointFault::Wedged`]. Either is in open space, so neither
-    /// reads as in solid. The moved point must then pass [`Self::fault`] as
-    /// stored.
+    /// reads as in solid. The moved point must otherwise pass [`Self::fault`]
+    /// as stored.
     pub(crate) fn settle(
         &self,
         raw: DVec3,
@@ -212,9 +215,19 @@ impl<'a> PointClassifier<'a> {
         if !in_box || !keeps_water {
             return Err((stored, PointFault::Crowded));
         }
-        match self.fault(moved.as_dvec3()) {
-            Some(fault) => Err((moved, fault)),
+        let landed = moved.as_dvec3();
+        // Crowded from the side it moved toward, it lies between walls closer
+        // than twice the clearance: no move clears both.
+        let wedged = || {
+            [DVec3::X, DVec3::Z].into_iter().any(|axis| {
+                let along = nudge.dot(axis);
+                along != 0.0 && self.crowded(landed, axis * along.signum())
+            })
+        };
+        match self.fault(landed) {
             None => Ok(moved),
+            Some(PointFault::Crowded) if wedged() => Err((stored, PointFault::Wedged)),
+            Some(fault) => Err((moved, fault)),
         }
     }
 
@@ -292,6 +305,9 @@ fn brush_contains(brush: &EnvironmentBrush, p: DVec3) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reflection_probes::placement_test_fixtures::{
+        PlacementFixture, box_brush, engine, engine_box, fluid, sealed_room,
+    };
 
     fn square(x0: f64, z0: f64, x1: f64, z1: f64) -> Vec<DVec2> {
         vec![
@@ -316,5 +332,49 @@ mod tests {
         // On an edge reads as over it.
         let (_, d) = nearest_point_on_polygon(DVec2::new(2.0, 0.5), &outline);
         assert!(d <= OVER_WATER_EPSILON_M);
+    }
+
+    // Regression: a point moved off one wall into a gap narrower than twice
+    // the clearance landed crowded by the other wall and dropped as Crowded,
+    // though its move stayed in its box and over its water.
+    #[test]
+    fn settle_drops_a_point_between_walls_closer_than_two_clearances_as_wedged() {
+        // Two blocks hanging 1.5 mm above a pool, the west one's east face at
+        // x = 144, the east one's west face at `east`; the point 2 mm over the
+        // water stands level with them, 0.3 units (7.62 mm) east of the west
+        // block, so it is crowded by that block alone.
+        let settle = |east: f64| {
+            let mut world = sealed_room([0.0, 0.0, 0.0], [512.0, 256.0, 192.0]);
+            world.push(box_brush([112.0, 112.0, 32.059], [144.0, 144.0, 192.0]));
+            world.push(box_brush([east, 112.0, 32.059], [176.0, 144.0, 192.0]));
+            let pool = box_brush([64.0, 64.0, 0.0], [192.0, 192.0, 32.0]);
+            let fixture = PlacementFixture::compile(&world, &[fluid("water", &[pool])]);
+            let classifier =
+                PointClassifier::new(&fixture.tree, &fixture.exterior, &fixture.environment);
+            let faces = fixture.up_faces();
+            let water: Vec<&UpFacingFace> = faces.iter().collect();
+            let (box_min, box_max) = engine_box([48.0, 48.0, 0.0], [216.0, 208.0, 96.0]);
+            let raw = engine([144.3, 128.0, 32.0]) + DVec3::Y * CAPTURE_LIFT_M;
+            assert_eq!(classifier.fault(raw), Some(PointFault::Crowded));
+            (
+                raw,
+                classifier.settle(raw, box_min.as_vec3(), box_max.as_vec3(), &water),
+            )
+        };
+
+        // A 0.75-unit (19.05 mm) gap: the move east lands 1.43 mm from the
+        // east block.
+        let (raw, settled) = settle(144.75);
+        assert_eq!(settled, Err((raw.as_vec3(), PointFault::Wedged)));
+
+        // A 1.5-unit (38.1 mm) gap: the move east clears both blocks. East is
+        // lower engine z.
+        let (raw, settled) = settle(145.5);
+        let moved = settled.expect("a point in a wide enough gap moves clear");
+        let expected = raw - DVec3::Z * CAPTURE_CLEARANCE_M;
+        assert!(
+            (moved.as_dvec3() - expected).abs().max_element() < 1e-5,
+            "{moved}"
+        );
     }
 }

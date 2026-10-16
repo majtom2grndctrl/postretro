@@ -327,10 +327,13 @@ fn references(descriptors: &[AnimationDescriptor]) -> Vec<[f32; 3]> {
 }
 
 /// Every light the baked transport names must have a descriptor, and each
-/// shipped descriptor table (ids 27 and 45) must be the identity: a share's
-/// roster index indexes the runtime descriptor buffer directly, so roster
-/// slot `r` must name descriptor `r`. The loader refuses either table
-/// otherwise when section 54 is present; this refuses it at build time.
+/// shipped descriptor table (ids 27 and 45) must be the identity over the
+/// whole roster: a share's roster index indexes the runtime descriptor
+/// buffer directly, so roster slot `r` must name descriptor `r`. This
+/// refuses a table of another length as well as a non-identity entry. The
+/// loader's check of section 54 (`validate_reflection_probe_lights` in
+/// `postretro-level-loader`) is narrower: identity over each table's own
+/// length, and every stored share's light inside the roster.
 fn check_roster(inputs: &ReflectionProbeInputs<'_>, roster: usize) -> anyhow::Result<()> {
     let tables = [
         (

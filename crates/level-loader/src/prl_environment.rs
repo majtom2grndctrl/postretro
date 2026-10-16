@@ -129,7 +129,9 @@ pub(crate) fn decode_reflection_probes(
 /// A share entry names a light by its AnimatedBakedLights roster index and
 /// the fluid shader reads that index straight into the descriptor buffer, so
 /// every entry must fall inside the roster and both roster-to-descriptor
-/// tables must be the identity the compiler writes.
+/// tables must be the identity the compiler writes. Identity is checked over
+/// each table's own length only: a table shorter or longer than the roster
+/// passes here, where the compiler's `check_roster` refuses it at build time.
 ///
 /// The fluid stage binds the descriptors but no index table, so it reads
 /// descriptor `r` for roster `r`. Each compose pass maps roster `r` through

@@ -119,7 +119,6 @@ rayon = "1"
 # Inline small-collection storage that spills to the heap: per-pawn teleport
 # arrival latches clone with the movement component every tick, and almost
 # always hold zero to a few entries, but their count is uncapped by contract.
-# Already in the dependency graph transitively.
 smallvec = "1"
 
 # Image loading

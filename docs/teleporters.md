@@ -60,8 +60,11 @@ the floor or out of a wall. Set the origin at least the player's capsule
 `halfHeight` plus `radius` above the floor, plus about one unit of margin. The
 dev mod's player (`halfHeight` 0.8 m, `radius` 0.2 m) needs 1 m, so about 41
 units. A destination set lower than that puts the player inside the floor, and
-the arrival is [refused](#arrival). Set higher, the player arrives in the air
-and falls.
+the arrival is [refused](#arrival). Up to about two units of margin still lands
+them standing on the floor; set higher, the player arrives in the air and falls.
+The margin is measured from the player's capsule as it is when they arrive, so a
+crouching or sliding player reaching a destination set for standing arrives in
+the air and drops the difference.
 
 This is not the rule for `player_spawn`, which the engine places for you. Your
 mod's player script sets the capsule (`movement.capsule` on the `player`
@@ -115,7 +118,10 @@ a room whose lighting is still streaming in.
   fires when the point the player's gravity and push are measured at is inside
   its region. Brushing the region with a shoulder does not.
 - **One teleport per tick.** Where regions overlap, the one with the smaller
-  total brush volume wins, then the one that comes first in the `.map` file.
+  total brush volume wins. Only an exact tie falls to the one that comes first
+  in the `.map` file: near-identical overlapping teleporters may rank by
+  floating-point rounding, so don't author congruent overlaps whose winner you
+  depend on.
 - **Turning on and off takes effect on the next tick.** A script that turns a
   teleporter off on the tick a player crosses in does not stop that crossing;
   it stops the next one. Several changes in one tick apply in the order they
@@ -126,12 +132,15 @@ a room whose lighting is still streaming in.
 
 ### Arrival
 
-- **Floor under the arrival, the player is grounded.** The engine checks for
-  static floor beneath the arrival position without moving the player. If it
-  finds some, the player is standing on it: a slide or run carries on across a
-  seamless shift with no moment in the air, and they can jump at once.
-- **No floor, the player is airborne.** They fall from the destination, and
-  there is no grace period for a late jump: a mid-air arrival cannot jump.
+- **Feet on the floor, the player is grounded.** The engine checks for static
+  floor beneath the arrival position without moving the player. If their feet
+  are within about two units of it, they are standing on it: a slide or run
+  carries on across a seamless shift with no moment in the air, and they can
+  jump at once.
+- **Otherwise the player is airborne.** They fall from the destination, and
+  there is no grace period for a late jump: a mid-air arrival owes no coyote
+  jump, though double jumps and other air jumps still work. A player arriving
+  while rising, mid-jump, is airborne too.
 - A moving platform the player stood on never carries them after a teleport,
   even when the arrival floor is another platform.
 - A vault in progress stops, and the `vault_ended` event fires as for any other

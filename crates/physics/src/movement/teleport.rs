@@ -1,8 +1,9 @@
 // The single post-movement pawn relocation chokepoint, shared by authority and prediction.
 // See: context/lib/movement.md §6 (Teleport)
 
-use super::substrate::{floor_below, ground_stick_reach};
+use super::substrate::floor_below;
 use super::{MovementEvents, MovementInput, MovementStateEdge};
+use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::CombinedCollisionWorld;
 use glam::{Quat, Vec3};
 use parry3d::shape::Capsule;
@@ -122,17 +123,31 @@ pub(super) fn resolve(
     arrival
 }
 
+/// How far an arrival may sit above its resting height on a floor and still
+/// stand on it: a skin width of probe slop plus one map unit (0.0254 m), the
+/// margin `docs/teleporters.md` asks authors to leave under a destination. The
+/// arrival never drops the pawn onto the floor, so any wider band would ground a
+/// floating pawn: its next tick would take a grounded jump, or a ground-entry
+/// vault, from feet hanging in the air.
+const ARRIVAL_GROUND_TOLERANCE: f32 = SKIN_DISTANCE + 0.0254;
+
 /// Ground the pawn on the static floor under its arrival pose, or leave it
 /// airborne with coyote spent. The capsule never moves: the arrival is exact.
 ///
-/// The ground-stick probe decides, against static geometry only, with the
-/// reach and descent gate the next tick's ground-stick uses, so a walking or
-/// sliding pawn shifted onto a floor takes no air tick and a slide continues.
+/// This is a classification, not the substrate's ground-stick. Ground-stick
+/// only follows a body that was already grounded (or floor-pushed) and needs a
+/// positive step height, and it drops that body up to a step onto the floor in
+/// the same tick. An arrival does neither, so it counts as standing only when
+/// a non-rising pawn already rests on walkable static floor within
+/// [`ARRIVAL_GROUND_TOLERANCE`]. A walking or sliding pawn shifted onto a
+/// matching floor therefore takes no air tick and a slide continues; a crouched
+/// pawn on a pad authored for standing, or a destination set higher, falls.
 /// Mover carry never follows a teleport, so a mover under the arrival counts as
 /// no floor. Without a floor the arrival starts a fresh airborne stretch that
 /// never stood on ground there, so no coyote jump is owed: a pawn grounded at
-/// the source would otherwise jump once from mid-air. Pure position and
-/// component state, so host, prediction and replay agree.
+/// the source would otherwise jump once from mid-air. Air jumps keep their
+/// budget. Pure position and component state, so host, prediction and replay
+/// agree.
 fn settle_arrival_ground(
     component: &mut PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
@@ -146,7 +161,7 @@ fn settle_arrival_ground(
                 &CombinedCollisionWorld::static_only(collision.static_world),
                 &capsule,
                 arrival,
-                ground_stick_reach(component.ground_params.step_height),
+                ARRIVAL_GROUND_TOLERANCE,
             )
         })
         .flatten();

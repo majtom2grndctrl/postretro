@@ -13,10 +13,11 @@ const RELATIVE_PLANE_EPSILON: f32 = 1.0e-6;
 /// `[min, max]`. The box must enclose the solid for the result to be the solid's
 /// own volume; a leaf's AABB does by construction. Build-time only: allocates.
 ///
-/// Clips in the box's own frame, centred on the box, so the result does not
-/// depend on where the solid sits: congruent copies anywhere in a map compute
-/// the same volume, and teleporter overlap ranking falls through to map order
-/// for them instead of to world-coordinate rounding.
+/// Clips in the box's own frame, centred on the box, so the clipping arithmetic
+/// does not grow with distance from the world origin: copies whose stored
+/// planes and bounds are exactly congruent compute the same volume wherever
+/// they sit. Map-scaled coordinates are rarely exact, so near-identical copies
+/// can still differ in the last bits, and overlap ranking sees that difference.
 pub(crate) fn clipped_box_volume(planes: &[LeafPlane], min: Vec3, max: Vec3) -> f32 {
     if !min.cmple(max).all() {
         return 0.0;

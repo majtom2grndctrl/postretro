@@ -701,12 +701,10 @@ pub(super) fn touches_ceiling(
     )
 }
 
-/// Air-jump (double-jump) gate: the airborne jump fires only while a charge
-/// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
 /// How far below a pose the ground-stick probe looks: the step-up lift plus a
 /// skin width and headroom, so a body that stepped down a riser or rode a floor
 /// push still finds its floor.
-pub(super) fn ground_stick_reach(step_height: f32) -> f32 {
+fn ground_stick_reach(step_height: f32) -> f32 {
     step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03
 }
 
@@ -764,6 +762,8 @@ pub(super) fn floor_below(
     })
 }
 
+/// Air-jump (double-jump) gate: the airborne jump fires only while a charge
+/// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
 /// The budget itself replenishes on floor contact via `refresh_on_landing`, so
 /// double-jump and the air-dash budget reset through one mechanism. The
 /// ceiling rule keeps the charge from being spent at the apex of the rising arc.

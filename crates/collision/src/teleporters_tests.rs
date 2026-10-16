@@ -157,10 +157,10 @@ fn teleport_queries_reject_nonfinite_points_invalid_indices_and_empty_regions() 
 }
 
 #[test]
-fn teleport_overlap_winner_ties_offset_congruent_pads_by_map_order() {
-    // Regression: volumes were clipped in world coordinates, so two copies of
-    // one pad computed different rounding wherever they sat and float noise,
-    // not map order, picked the winner.
+fn teleport_overlap_volume_clipping_is_position_independent_for_exactly_congruent_pads() {
+    // Regression: volumes were clipped in world coordinates, so two exactly
+    // congruent pads computed different rounding wherever they sat and float
+    // noise, not map order, picked the winner.
     let pad = |origin: Vec3| {
         let mut pad = axis_box(origin, origin + Vec3::splat(2.0));
         // A slanted face makes clipping cut new vertices, where rounding lives.

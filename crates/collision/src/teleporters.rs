@@ -27,7 +27,9 @@ impl Region {
 
 /// Teleporter geometry installed in map entity order. Each region is the union
 /// of its convex brushes; overlap ranking uses their literal summed volumes,
-/// including the contribution of overlapping brushes, then map order.
+/// including the contribution of overlapping brushes, then map order. Map order
+/// breaks only an exact tie of the computed sums: near-identical regions rank
+/// by whatever floating-point rounding their sums carry.
 ///
 /// A region tree narrows point queries to nearby regions. Each region has its
 /// own brush tree, so exact containment examines only candidate brush bounds and

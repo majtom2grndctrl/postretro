@@ -888,6 +888,154 @@ fn teleport_classic_arrival_onto_a_floor_grounds_in_place_and_can_jump() {
     }
 }
 
+/// Walk a settled pawn into a classic gate whose destination puts its feet
+/// `feet_above_floor` over the copy floor at x = 60; returns the arrival.
+fn walk_into_gate_arriving(
+    descriptor: &postretro_foundation::PlayerMovementDescriptor,
+    feet_above_floor: f32,
+) -> (CollisionWorld, PlayerMovementComponent, Vec3) {
+    let mut world = floor_world();
+    // Canonical capsule: center to feet is half height plus radius.
+    let destination = Vec3::new(60.0, 1.2 + feet_above_floor, 0.0);
+    let mut gate = record(TeleportMode::Classic, destination, 0.0);
+    gate.brushes = vec![brush(Vec3::new(2.0, -1.0, -3.0), Vec3::new(6.0, 4.0, 3.0))];
+    install(&mut world, vec![gate]);
+    let (mut pawn, mut position) = settled(&world, descriptor, Vec3::new(1.0, 1.3, 0.0));
+    pawn.velocity = Vec3::X * 7.0;
+    for _ in 0..20 {
+        let (next, events) = step_with(
+            &world,
+            &mut pawn,
+            &walk(-std::f32::consts::FRAC_PI_2),
+            position,
+            true,
+        );
+        position = next;
+        if events.teleport.is_some() {
+            near(position, destination);
+            return (world, pawn, position);
+        }
+    }
+    panic!("fixture: the walk crosses into the region");
+}
+
+#[test]
+fn teleport_arrival_floating_above_its_floor_is_airborne_and_owes_no_grounded_jump() {
+    // Within the ground-stick reach but above the arrival tolerance: grounding
+    // it in place would let the next tick jump from feet hanging in the air.
+    let mut descriptor = canonical_descriptor();
+    descriptor.forgiveness = Some(postretro_foundation::ForgivenessParams {
+        coyote_ms: 150.0,
+        jump_buffer_ms: 0.0,
+    });
+    let jump = MovementInput {
+        jump_pressed: true,
+        ..idle_input()
+    };
+    // Inside the skin (the dev maps' 40-unit destinations for a 1 m reach) and
+    // one map unit over the floor (the documented margin) both stand there.
+    for (feet_above_floor, grounded) in [(0.016, true), (0.0254, true), (0.3, false)] {
+        let (world, mut pawn, arrival) = walk_into_gate_arriving(&descriptor, feet_above_floor);
+        let expected = if grounded {
+            GroundRef::World
+        } else {
+            GroundRef::Airborne
+        };
+        assert_eq!(pawn.ground, expected, "feet {feet_above_floor} m up");
+        let (next, events) = step_with(&world, &mut pawn, &jump, arrival, true);
+        assert_eq!(events.jumped, grounded, "feet {feet_above_floor} m up");
+        if !grounded {
+            assert!(next.y < arrival.y, "the floating arrival falls");
+        }
+    }
+
+    // Mid-air arrivals keep their air jumps: only the coyote jump is gone.
+    descriptor.air.jumps = 1;
+    let (world, mut pawn, arrival) = walk_into_gate_arriving(&descriptor, 0.3);
+    assert_eq!(pawn.air_jumps_remaining, 1);
+    let (_, events) = step_with(&world, &mut pawn, &jump, arrival, true);
+    assert!(events.jumped, "the air jump fires");
+    assert_eq!(pawn.air_jumps_remaining, 0, "it spent the air charge");
+}
+
+#[test]
+fn teleport_floating_arrival_beside_a_ledge_takes_no_ground_vault() {
+    use crate::movement::vault_tests::{
+        REACH, RISER_X, forward, ground_auto, ledge_world, vault_descriptor,
+    };
+    // The vault enters only from the ground: a floating arrival treated as
+    // grounded would start one from its hanging feet.
+    let descriptor = vault_descriptor(postretro_foundation::VaultEntry {
+        air: None,
+        ..ground_auto()
+    });
+    for (feet_above_floor, vaults) in [(0.02, true), (0.3, false)] {
+        // The capsule surface 5 cm short of the riser.
+        let destination = Vec3::new(RISER_X - 0.45, REACH + feet_above_floor, 0.0);
+        let mut world = ledge_world(1.0, None);
+        install(
+            &mut world,
+            vec![record(TeleportMode::Classic, destination, 0.0)],
+        );
+        let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
+        pawn.ground = GroundRef::World;
+        let (arrival, events) = relocate(&world, &mut pawn, Vec3::new(0.0, REACH, 0.0), 0.0);
+        assert!(events.teleport.is_some());
+        near(arrival, destination);
+        assert_eq!(pawn.is_grounded(), vaults, "feet {feet_above_floor} m up");
+        step_with(&world, &mut pawn, &forward(), arrival, false);
+        assert_eq!(
+            pawn.movement_state.kind() == MovementStateKind::Vault,
+            vaults,
+            "feet {feet_above_floor} m up"
+        );
+    }
+}
+
+#[test]
+fn teleport_crouched_slide_into_a_standing_height_pad_arrives_airborne() {
+    use crate::movement::substrate::{ResizeAnchor, resize_capsule};
+    let mut world = floor_world();
+    // Authored for the standing capsule, with the one-unit margin.
+    let destination = Vec3::new(20.0, 1.2 + 0.0254, 0.0);
+    install(
+        &mut world,
+        vec![record(TeleportMode::Classic, destination, 0.0)],
+    );
+    let mut descriptor = canonical_descriptor();
+    // A crouch 0.25 m shorter than standing: inside the ground-stick reach,
+    // well above the arrival tolerance.
+    descriptor.crouch = Some(postretro_foundation::CrouchParams {
+        half_height: 0.55,
+        eye_height: 0.3,
+        transition_rate: 15.0,
+    });
+    for crouched in [false, true] {
+        let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
+        let mut source = Vec3::new(0.0, 1.22, 0.0);
+        if crouched {
+            source.y += resize_capsule(&mut pawn, 0.55, 0.3, ResizeAnchor::Feet);
+            pawn.movement_state = MovementState::Sliding {
+                elapsed_ms: 0.0,
+                boost: Vec3::X * 4.0,
+                eye_current: 0.3,
+            };
+        }
+        pawn.ground = GroundRef::World;
+        pawn.velocity = Vec3::X * 12.0;
+        let (arrival, events) = relocate(&world, &mut pawn, source, 0.0);
+        assert!(events.teleport.is_some());
+        near(arrival, destination);
+        if crouched {
+            assert_eq!(pawn.ground, GroundRef::Airborne, "the crouched feet hang");
+            assert_eq!(pawn.last_floor_normal, None);
+            assert!(pawn.jump_spent, "no coyote jump from the source floor");
+        } else {
+            assert_eq!(pawn.ground, GroundRef::World, "standing fits the pad");
+        }
+    }
+}
+
 #[test]
 fn teleport_vault_abort_reports_vault_ended_on_the_start_tick_and_mid_vault() {
     use crate::movement::vault_tests::{

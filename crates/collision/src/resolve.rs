@@ -509,7 +509,7 @@ mod tests {
     // Regression: identical copies at different positions round their summed
     // volumes differently, so an exact comparison let float noise pick the later one.
     #[test]
-    fn resolve_gravity_ties_identical_copies_at_different_positions_by_map_order() {
+    fn resolve_gravity_ranks_near_identical_sizes_by_computed_volume_not_map_order() {
         const MAP_SCALE: f32 = 0.0254;
         // Volumes are computed in each brush's own frame, but map-scale
         // conversion still rounds a copy's stored extent a few ulps apart from

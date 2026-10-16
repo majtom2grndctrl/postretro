@@ -26,7 +26,7 @@ Read at 3409c2fc. Symbols, not lines.
 
 ## Why the vault row keeps progress timing
 
-Rates approach the hold asymptotically and release after the state ends, so the pose would still be easing out once the pawn stands on the top. Progress shares reach exactly 0 on the tick the path reaches the top, which the owner's feel pass tuned for. The rate rows keep rates because slide, crouch, dash and swim have no known length.
+Rates approach the hold asymptotically and release after the state ends, so the pose would still be easing out once the pawn stands on the top. Progress shares reach exactly 0 on the tick the path reaches the top, which the owner's feel pass tuned for. Slide keeps rates because a slide has no known length; so would any later state row.
 
 ## Overlap value blend
 
@@ -118,8 +118,8 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
-| P1 | Row handoff: dash or swim into a vault; a swim edge pre-empting a land-entered vault. Crouch and slide never vault. | Kind changes on one tick. The leaving row eases out on its own timing (rate or release) while the entering row eases in on its own. | Rows add. Both present during the overlap. No frame steps. No single weight is handed between rows. |
-| P2 | Two rows with `eyeDrop` at once (crouch↔slide, swim→vault). | Bob, then the summed drop of every row, then the 0.05 m floor once. | Eye stays at least 0.05 m above the feet. The floor bounds the sum, not each row. |
+| P1 | Row handoff: a slide exit followed at once by a vault. Slide never vaults directly. | Kind changes across ticks. The leaving row eases out at its rate while the vault row eases in on its progress timing. | Rows add. Both present during the overlap. No frame steps. No single weight is handed between rows. |
+| P2 | Two rows with `eyeDrop` at once (slide easing out, vault easing in). | Bob, then the summed drop of every row, then the 0.05 m floor once. | Eye stays at least 0.05 m above the feet. The floor bounds the sum, not each row. |
 | P3 | Vault A releasing; vault B starts; B ends or aborts before A's release finishes. | B's end starts a new release while A's still runs. | The new release starts from the presented weight and blended values. No step on B's end frame. |
 | P4 | View-feel scale 0 across a vault's end, restored mid-release. | Captured values are unscaled; scale multiplies output only. | After restore, the frame presents scale × release weight × captured values. Not neutral, not a restarted release. |
 | P5 | Ledge focus during a release. | Geometry is gone after the end frame; the captured focus is an angle, not a line. | Focus is not re-evaluated. Mouse pitch maps 1:1 through the release. |
@@ -128,7 +128,13 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 | P8 | A mover tilts after vault entry. | Uprightness is checked at entry only; each tick re-resolves the frame. | Focus reads the landing spot through the mover's presented pose; no assumption of uprightness. |
 | P9 | Hot reload or descriptor refresh mid-vault or mid-slide. | The commit replaces the movement component, then clears pose state on the same frame. | The pose snaps to neutral; no release runs. |
 | P10 | Vault A ends and vault B starts with no frame presenting `Normal` between them; or a reconcile rewinds progress past 5%. | The driver reads only the latest tick, so B shows as a progress drop. | The drop captures A's presented values and blends them with B's; no step beyond B's ease-in, ledge focus included. |
-| P11 | Hot reload mid-swim. | The commit keeps `Swim` and clears pose state. | The swim row snaps to neutral on the first frame after the commit and eases back in at `enterRate`. |
 | P12 | Ledge focus on a moving mover. | The eye is assembled before movers are collected for render. | Focus reads the mover pose at the eye's own interpolation share for that frame, never the previous frame's. |
-| P13 | Reconcile corrects a vault's landing target mid-climb. | Focus is a pure function of target, eye and aim. | Focus re-aims within one frame, with a step the size of the correction's angle. Accepted; no slew mechanism. |
-| P14 | Vault reference capture: a vault starts, the pose joins one mid-climb, or a rewind past 5% | the reference is taken on the first frame the pose follows the vault | one reference per vault; live aim never re-enters it |
+| P13 | Reconcile corrects a vault's landing target mid-climb. | Focus is a pure function of target, eye and the vault's reference. | Focus re-aims within one frame, with a step the size of the correction's angle. Accepted; no slew mechanism. |
+| P14 | Vault reference capture: a vault starts, the pose joins one mid-climb, or a rewind past 5%. | Each takes a reference on its first frame. | A start, a join or a rewind past 5% each take one reference from that frame's aim. Between them, live aim never re-enters it. |
+| P15 | Reference capture on a frame whose mouse look moves aim. | Look applies in the Input stage; the eye reads that aim; the reference is taken in the same assembly. | The reference is the aim this frame renders, look included. With zero easeIn and the reference above the line, that frame's own look moves the view by (1 − strength) of itself; from the next frame mouse pitch maps 1:1. |
+| P16 | View-feel scale 0 on the frame the pose first follows a vault; scale restored mid-climb. | The reference is taken whatever the scale; scale multiplies output only. | After restore, the frame presents scale × weight × (literal + focus from the entry reference). No reference is taken at restore. |
+| P17 | A zero-length frame is the first frame the pose sees a vault. | The frame marks the join and takes the reference; weights do not advance. | Output equals the previous frame's. The next frame eases in against that reference. |
+| P18 | The pose joins a vault already in progress: a reconcile starts it, or view-feel state clears while the vault runs on. | The clear runs first in the frame's assembly; the vault then joins in the same frame. | That frame presents neutral and takes the reference from its own aim, not the aim the vault started with. Focus eases in over the ease-in time. |
+| P19 | A mover tilts or carries yaw after the reference is taken. | The reference is a world aim pitch; the mover moves the landing spot and so the line. | The reference stays fixed; only the line follows the mover. |
+| P20 | A vault row with eyeDrop and ledgeFocus. | Bob, every row's eye drop, then the 0.05 m floor compose the eye; the line is measured from that eye; focus never feeds back into the eye. | A larger eyeDrop steepens the line that same frame. A tall ledge counts as below the eye once the dropped eye is under it. |
+| P21 | A vault aborts early and a new one starts with no frame between them, progress dropping less than 5%. | The pose reads one continuing vault; no vault identity exists. | The first reference is kept; focus re-aims within one frame as P13 does; no overlap blend runs. |

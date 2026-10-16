@@ -77,7 +77,7 @@ Walk/run/jump/air-control is the baseline `Normal` state. `Dash`, `Crouch`, `Sli
 
 ### Environment resolution
 
-The tick resolves the pawn's environment once, at its tick-start position, before the state intent: gravity (signed vertical), push (a vector), the winning fluid, its viscosity, immersion, and whether the tick eye is inside that fluid. Resolution is one pure function of position, capsule, the level's static volumes and the level gravity (`entity_model.md` §7, Environment Volumes). Host movement, client prediction and reconcile replay all call it through the tick, so they agree by construction. Intents receive the resolved value and never query it. The forward-contact rule above does not govern it: environment is a function of position and static data, not of a collision result.
+The tick resolves the pawn's environment once, at its tick-start position, before the state intent: gravity (signed vertical), push (a vector), the winning fluid, its viscosity, immersion, and whether the tick eye is inside that fluid. Resolution is one pure function of position, capsule, the level's static environment volumes and the level gravity (`entity_model.md` §7, Environment Volumes). Host movement, client prediction and reconcile replay all call it through the tick, so they agree by construction. Intents receive the resolved value and never query it. The forward-contact rule above does not govern it: environment is a function of position and static data, not of a collision result.
 
 Gravity keeps its meaning in every state. Push never defines "down": ground classification, the capsule, step-up, ground-stick, camera and navmesh keep +Y as up. Slide's slope boost reads gravity only, so push never feeds it.
 
@@ -189,10 +189,24 @@ Player grounded state is a `GroundRef`: `Airborne`, `World`, or `Mover(mover_id)
 
 The movement query surface combines static world collision with active mover colliders. When the player stands on `Mover(id)`, the substrate revolves the planted position by the mover's tick rotation about its origin, then applies its linear tick delta. Carry is predicted and reconciled with the pawn. `carry_yaw` is an authored mover toggle, default off: when set, world-up rotation carries view yaw on the owning client; pitch and roll never tilt the FPS camera. Leaving a mover preserves player-controlled velocity and adds linear base velocity plus tangential spin velocity (`angular_velocity × radius`) once. The player gains no angular momentum. Movers react to what they hit through a per-mover **block policy** — `displace` (default: push out of overlap, never yield), `reverse`, `stop`, or `crush` — applied to players and enemies. Because the reaction depends on live entity positions, the block decision is host-authoritative and reconciled, never pure-phase-predicted like mover motion (`networking.md`); crush deals damage through the entity damage chokepoint, with presentation and overkill effects left to mod policy. A mover never blocks, reverses for, or crushes a player *riding* it: a player grounded on a mover — or briefly airborne just after leaving it, for a bounded host-side grace — is not an obstruction to that mover. Only the free-riding contact is exempt; a rider carried into static geometry it cannot be pushed clear of (crushed against a ceiling) is still crushed. The grace is host-only decision state, never replicated.
 
+### Teleport (decided, not yet built)
+
+One substrate chokepoint relocates a pawn: position, every velocity channel, a yaw delta, a movement-state reset and a presentation cut, alike on host, prediction and replay. Teleporters are its first consumer (`entity_model.md` §7, Teleporter regions).
+
+- **Firing.** After the movement step, a teleporter fires when the body point lies inside an armed, unlatched region. Capsule overlap alone never fires. Overlaps pick one winner (`entity_model.md` §7). A pawn teleports at most once per tick, and the tick ends at the arrival pose.
+- **One rotation rule.** Both modes rotate view yaw and every velocity channel — base, knockback, drift — by one world-up yaw delta, on the teleport tick itself. Speeds and pitch are unchanged; roll is never touched. Classic keeps momentum, unlike Quake's fixed exit speed.
+  - Classic: the body point lands on the destination origin; the delta is destination yaw minus facing yaw.
+  - Seamless: the delta is target yaw minus landmark yaw, and the body's offset from the landmark, vertical included, rotates onto the target.
+- **Arrival state.** A vault aborts; slide and dash continue on the rotated velocity. The pawn is airborne, and no mover carry follows it. An arrival capsule blocked by world geometry or a mover at its pose this tick refuses the teleport: no move, event or sound, and one warning per teleporter.
+- **Arrival latch.** Arrival latches the pawn against every armed teleporter containing its body point. A latched teleporter drops out before the winner pick until the body point leaves it. Arming a disarmed teleporter clears every latch against it, so occupants fire; arming an armed one changes nothing.
+- **Dead pawns.** The bar that keeps a dead pawn out of a vault (§4 Vault) keeps it from teleporting too.
+
+The teleport record — generation, accumulated teleport yaw, last teleporter and arrival latch — is wire-mirrored tick state, predicted and reconciled (`networking.md` §Snapshot apply ordering).
+
 ## 7. Non-goals
 
 - Rigid-body dynamics for the player (forces, mass, restitution, constraint solving).
 - Per-tick script-authored movement (imperative callbacks). The author surface is declarative.
-- Map-overridable per-archetype movement tuning — movement physics, swim and vault tuning included, is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes (`entity_model.md` §4).
+- Map-overridable per-archetype movement tuning — movement physics, swim and vault tuning included, is descriptor-owned. A map may only seed level-wide world gravity at load and place static regional gravity, push and fluid volumes and script-armable teleporters (`entity_model.md` §4).
 - Rollback or deterministic lockstep. Pawn and mover prediction/reconciliation are in scope for authoritative co-op, but not rollback.
 - Vault variants: hurdling to an obstacle's far side, mantling into a crouch-only gap, NPC vaulting (enemies use their own static-only controller), and a third-person vault pose (observers animate from velocity).

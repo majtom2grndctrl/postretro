@@ -454,4 +454,184 @@ mod tests {
             near(arrival, if blocked { Vec3::ZERO } else { Vec3::X * 20.0 });
         }
     }
+
+    /// One whole movement tick through the production entry, every region armed.
+    fn step(
+        world: &CollisionWorld,
+        pawn: &mut PlayerMovementComponent,
+        position: Vec3,
+    ) -> (Vec3, MovementEvents) {
+        let (next, events, _) = crate::movement::tick_with_immersion_and_armed(
+            pawn,
+            &idle_input(),
+            world,
+            postretro_collision::EnvironmentView::level_only(0.0),
+            1.0 / 60.0,
+            position,
+            |_| true,
+        );
+        (next, events)
+    }
+
+    #[test]
+    fn teleport_body_point_union_fires_on_the_post_step_point_never_on_capsule_overlap() {
+        let mut world = CollisionWorld::new();
+        let destination = Vec3::new(40.0, 0.0, 0.0);
+        // One entity, two disjoint brushes: x in [-3, 3] and [9, 15]. The gap
+        // between them is inside the union's bounds but outside the union.
+        let mut gate = record(TeleportMode::Classic, destination, 0.0);
+        gate.brushes = vec![
+            brush(Vec3::splat(-3.0), Vec3::splat(3.0)),
+            brush(Vec3::new(9.0, -3.0, -3.0), Vec3::new(15.0, 3.0, 3.0)),
+        ];
+        install(&mut world, vec![gate]);
+        let fresh = |velocity: Vec3| {
+            let mut pawn = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+            pawn.velocity = velocity;
+            pawn
+        };
+        // 12 m/s for one 60 Hz tick is a 0.2 m step.
+        let inward = Vec3::X * 12.0;
+
+        // Body point outside at tick start, inside after the step: fires.
+        let mut pawn = fresh(inward);
+        let (arrival, events) = step(&world, &mut pawn, Vec3::new(-3.1, 0.0, 0.0));
+        assert!(events.teleport.is_some(), "post-step body point is inside");
+        near(arrival, destination);
+
+        // Body point inside at tick start, outside after the step: no fire.
+        let mut pawn = fresh(inward);
+        let (after, events) = step(&world, &mut pawn, Vec3::new(2.9, 0.0, 0.0));
+        assert!(
+            events.teleport.is_none(),
+            "tick-start containment never fires"
+        );
+        assert!(
+            after.x > 3.0,
+            "fixture: the step carried the body point out"
+        );
+
+        // Capsule (radius 0.4) overlapping the region, body point outside: never.
+        let mut pawn = fresh(Vec3::ZERO);
+        let mut position = Vec3::new(3.3, 0.0, 0.0);
+        for _ in 0..5 {
+            let (next, events) = step(&world, &mut pawn, position);
+            assert!(
+                events.teleport.is_none(),
+                "capsule overlap alone never fires"
+            );
+            position = next;
+        }
+        assert!(
+            position.x - pawn.capsule.radius < 3.0,
+            "fixture: the capsule still overlaps the region"
+        );
+
+        // Anywhere in the union fires; the gap between brushes does not.
+        for (point, fires) in [
+            (Vec3::new(-2.5, 1.0, 2.0), true),
+            (Vec3::new(12.0, -2.0, 0.5), true),
+            (Vec3::new(14.9, 2.9, -2.9), true),
+            (Vec3::new(6.0, 0.0, 0.0), false),
+        ] {
+            let mut pawn = fresh(Vec3::ZERO);
+            let (next, events) = step(&world, &mut pawn, point);
+            assert_eq!(events.teleport.is_some(), fires, "body point {point:?}");
+            near(next, if fires { destination } else { point });
+        }
+    }
+
+    #[test]
+    fn teleport_movement_state_carry_aborts_vault_keeps_dash_and_slide_rotated_and_airborne() {
+        let mut world = CollisionWorld::new();
+        let yaw = std::f32::consts::FRAC_PI_2;
+        let destination = Vec3::new(40.0, 0.0, 0.0);
+        install(
+            &mut world,
+            vec![record(TeleportMode::Classic, destination, yaw)],
+        );
+        let turn = Quat::from_rotation_y(yaw);
+        let boost = Vec3::new(12.0, 0.0, 3.0);
+        for state in [
+            MovementState::Dash {
+                elapsed_ms: 32.0,
+                boost,
+            },
+            MovementState::Sliding {
+                elapsed_ms: 64.0,
+                boost,
+                eye_current: 0.3,
+            },
+            MovementState::Vault {
+                elapsed_ms: 48.0,
+                target: Vec3::new(1.0, 2.0, 0.0),
+                start_offset: Vec3::new(-0.8, -0.7, 0.0),
+                mover: None,
+                entry_speed: 4.0,
+            },
+        ] {
+            let mut pawn = pawn();
+            pawn.ground = GroundRef::World;
+            pawn.movement_state = state;
+            let before = pawn.clone();
+            let (arrival, events) = relocate(&world, &mut pawn, Vec3::ZERO, 0.0);
+            assert!(events.teleport.is_some(), "{state:?}");
+            near(arrival, destination);
+            assert_eq!(pawn.ground, GroundRef::Airborne, "{state:?}");
+            near(pawn.velocity, turn * before.velocity);
+            near(pawn.knockback_velocity, turn * before.knockback_velocity);
+            near(pawn.push_velocity, turn * before.push_velocity);
+            match (&state, &pawn.movement_state) {
+                (
+                    MovementState::Dash { elapsed_ms, .. },
+                    MovementState::Dash {
+                        elapsed_ms: kept,
+                        boost: rotated,
+                    },
+                )
+                | (
+                    MovementState::Sliding { elapsed_ms, .. },
+                    MovementState::Sliding {
+                        elapsed_ms: kept,
+                        boost: rotated,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(kept, elapsed_ms, "the dash/slide clock carries");
+                    near(*rotated, turn * boost);
+                }
+                (MovementState::Vault { .. }, MovementState::Normal) => {}
+                (from, to) => panic!("{from:?} arrived as {to:?}"),
+            }
+        }
+
+        // A dash survives the arrival and keeps driving the pawn along the
+        // rotated heading on the following tick.
+        let mut descriptor = canonical_descriptor();
+        descriptor.dash = Some(postretro_foundation::DashParams {
+            boost_speed: 18.0.into(),
+            momentum_retention: 0.65.into(),
+            steer_control: 0.0.into(),
+            dash_drag: 4.0.into(),
+            cooldown_ms: 250.0.into(),
+            air_dashes: 1,
+            preserve_vertical: false.into(),
+        });
+        let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
+        pawn.velocity = Vec3::X * 20.0;
+        pawn.movement_state = MovementState::Dash {
+            elapsed_ms: 16.0,
+            boost: Vec3::X * 14.0,
+        };
+        let (arrival, events) = step(&world, &mut pawn, Vec3::new(-3.2, 0.0, 0.0));
+        assert!(events.teleport.is_some());
+        let heading = turn * Vec3::X;
+        let (after, _) = step(&world, &mut pawn, arrival);
+        assert!(matches!(pawn.movement_state, MovementState::Dash { .. }));
+        let travelled = (after - arrival).normalize();
+        assert!(
+            travelled.dot(heading) > 0.99,
+            "dash continues along {heading:?}, moved {travelled:?}"
+        );
+    }
 }

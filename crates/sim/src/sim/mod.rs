@@ -1702,6 +1702,8 @@ pub(crate) mod determinism_tests;
 mod divergence_spike_tests;
 #[cfg(test)]
 pub(crate) mod predict_reconcile;
+#[cfg(test)]
+mod teleport_tick_tests;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via
 /// the registry marker, then drives it through the shared host multi-pawn seam

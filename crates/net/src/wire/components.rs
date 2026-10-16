@@ -657,9 +657,15 @@ impl RawComponentPayload {
 
         match self.component_kind {
             COMPONENT_KIND_TELEPORTER => match self.teleporter {
-                Some(state) if populated == 1 && state.index != super::NO_WIRE_TELEPORTER => Ok(ComponentPayload::TeleporterState(state)),
-                Some(_) => Err(ValidationError::MismatchedComponentPayload(self.component_kind)),
-                None => Err(ValidationError::MissingComponentPayload(self.component_kind)),
+                Some(state) if populated == 1 && state.index != super::NO_WIRE_TELEPORTER => {
+                    Ok(ComponentPayload::TeleporterState(state))
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
             },
             COMPONENT_KIND_TRANSFORM => match self.transform {
                 Some(t) if populated == 1 => {
@@ -680,7 +686,8 @@ impl RawComponentPayload {
                 Some(m) if populated == 1 => {
                     if !m.all_finite() {
                         Err(ValidationError::NonFiniteMovementState)
-                    } else if !m.movement_state.has_valid_state_contract() || !m.teleport.is_valid() {
+                    } else if !m.movement_state.has_valid_state_contract() || !m.teleport.is_valid()
+                    {
                         Err(ValidationError::InvalidMovementState)
                     } else {
                         Ok(ComponentPayload::PlayerMovementState(m.clone()))

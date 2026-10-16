@@ -2323,6 +2323,7 @@ pub(crate) mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
+            teleporters: Default::default(),
             environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,
@@ -5169,7 +5170,6 @@ pub(crate) mod tests {
         value: &serde_json::Value,
         luau: bool,
     ) -> postretro_scripting_core::data_descriptors::LevelManifest {
-        teleport_events: Vec::new(),
         fn lua(value: &serde_json::Value) -> String {
             use serde_json::Value;
             match value {

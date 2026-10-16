@@ -1063,6 +1063,7 @@ mod tests {
         start: Option<ActivationToken>,
     ) -> wire::InputCommand {
         wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick,
             movement: wire::WireMovementInput {
                 wish_dir: [0.0; 2],

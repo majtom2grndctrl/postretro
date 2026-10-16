@@ -3891,6 +3891,7 @@ impl App {
                 host_pawn: _,
                 descriptor_entities: _,
                 loaded_movers: _,
+                loaded_teleporters: _,
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
@@ -4704,6 +4705,7 @@ impl App {
             host_pawn,
             descriptor_entities: _,
             loaded_movers: _,
+            loaded_teleporters: _,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -9246,6 +9248,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9286,6 +9289,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9373,6 +9377,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],

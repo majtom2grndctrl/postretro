@@ -639,12 +639,12 @@ where
         teleports.push((pawn, event));
     }
     let mut teleport_residuals = Vec::new();
-    if let Some(context) = trigger_context.as_ref() {
-        if let (Some(bindings), Some(ctx)) = (context.teleporters, context.script_ctx.as_ref()) {
-            for (pawn, event) in &teleports {
-                if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn) {
-                    teleport_residuals.push(residual);
-                }
+    if let Some(context) = trigger_context.as_ref()
+        && let (Some(bindings), Some(ctx)) = (context.teleporters, context.script_ctx.as_ref())
+    {
+        for (pawn, event) in &teleports {
+            if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn) {
+                teleport_residuals.push(residual);
             }
         }
     }

@@ -327,9 +327,10 @@ mod tests {
         );
     }
     #[test]
-    fn teleport_refuses_arrival_wholly_inside_solid_runtime_cell() {
+    fn teleport_refuses_arrival_wholly_inside_solid_or_exterior_runtime_cell() {
         use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
-        let cell = |min, max, is_solid| CellData {
+        // No triangles at all: only the cell locator can see the enclosure.
+        let cell = |min, max, is_solid, is_exterior| CellData {
             bounds_min: min,
             bounds_max: max,
             face_start: 0,
@@ -337,34 +338,52 @@ mod tests {
             portal_ref_start: 0,
             portal_ref_count: 0,
             is_solid,
-            is_exterior: false,
+            is_exterior,
             is_drawable: false,
         };
-        let mut level = LevelWorld::new_visibility_only(
-            vec![
-                cell(Vec3::splat(-100.0), Vec3::new(10.0, 100.0, 100.0), false),
-                cell(Vec3::new(10.0, -100.0, -100.0), Vec3::splat(100.0), true),
-            ],
-            Vec::new(),
-            CellLocatorChild::Node(0),
-            vec![CellLocatorNodeData {
-                plane_normal: Vec3::X,
-                plane_distance: 10.0,
-                front: CellLocatorChild::Cell(1),
-                back: CellLocatorChild::Cell(0),
-            }],
-            Vec::new(),
-            false,
-        )
-        .unwrap();
-        level.teleporters = TeleportersSection {
-            teleporters: vec![record(TeleportMode::Classic, Vec3::X * 20.0, 0.0)],
-        };
-        let world = CollisionWorld::from_level(&level).unwrap();
-        let mut pawn = pawn();
-        let (arrival, events) = relocate(&world, &mut pawn, Vec3::ZERO, 0.0);
-        near(arrival, Vec3::ZERO);
-        assert!(events.teleport.is_none());
+        for (is_solid, is_exterior) in [(true, false), (false, true)] {
+            let mut level = LevelWorld::new_visibility_only(
+                vec![
+                    cell(
+                        Vec3::splat(-100.0),
+                        Vec3::new(10.0, 100.0, 100.0),
+                        false,
+                        false,
+                    ),
+                    cell(
+                        Vec3::new(10.0, -100.0, -100.0),
+                        Vec3::splat(100.0),
+                        is_solid,
+                        is_exterior,
+                    ),
+                ],
+                Vec::new(),
+                CellLocatorChild::Node(0),
+                vec![CellLocatorNodeData {
+                    plane_normal: Vec3::X,
+                    plane_distance: 10.0,
+                    front: CellLocatorChild::Cell(1),
+                    back: CellLocatorChild::Cell(0),
+                }],
+                Vec::new(),
+                false,
+            )
+            .unwrap();
+            for (destination, blocked) in [(Vec3::X * 20.0, true), (Vec3::X * -20.0, false)] {
+                level.teleporters = TeleportersSection {
+                    teleporters: vec![record(TeleportMode::Classic, destination, 0.0)],
+                };
+                let world = CollisionWorld::from_level(&level).unwrap();
+                let mut pawn = pawn();
+                let (arrival, events) = relocate(&world, &mut pawn, Vec3::ZERO, 0.0);
+                assert_eq!(
+                    events.teleport.is_none(),
+                    blocked,
+                    "solid {is_solid} exterior {is_exterior} destination {destination:?}"
+                );
+                near(arrival, if blocked { Vec3::ZERO } else { destination });
+            }
+        }
     }
 
     #[test]

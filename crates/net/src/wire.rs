@@ -32,7 +32,6 @@ use bitcode::{Decode, Encode};
 
 mod components;
 mod teleport;
-pub use teleport::{NO_WIRE_TELEPORTER, WireTeleportState, WireTeleporterState, teleport_yaw_is_valid};
 pub use components::{
     COMPONENT_KIND_AGENT, COMPONENT_KIND_AMMO_RESERVE, COMPONENT_KIND_BILLBOARD_EMITTER,
     COMPONENT_KIND_BRAIN, COMPONENT_KIND_DEFERRED_EFFECT, COMPONENT_KIND_DESCRIPTOR_PROVENANCE,
@@ -41,11 +40,14 @@ pub use components::{
     COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT, COMPONENT_KIND_MAP_ORDINAL,
     COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
     COMPONENT_KIND_PROJECTILE, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
-    COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_TELEPORTER,
-    COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
-    WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef, WireKinematicMoverState,
-    WireLightAnimation, WireLightState, WireMeshAnimationState, WireMovementState,
-    WirePlayerMovementState, WireSpinAnimation, WireTransform,
+    COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM,
+    COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS,
+    RawComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef,
+    WireKinematicMoverState, WireLightAnimation, WireLightState, WireMeshAnimationState,
+    WireMovementState, WirePlayerMovementState, WireSpinAnimation, WireTransform,
+};
+pub use teleport::{
+    NO_WIRE_TELEPORTER, WireTeleportState, WireTeleporterState, teleport_yaw_is_valid,
 };
 
 mod control;
@@ -921,7 +923,9 @@ impl RawEntityRecord {
             }
             let carries_finite_transform = components.iter().any(|c| match c {
                 ComponentPayload::Transform(t) => t.all_finite(),
-                ComponentPayload::PlayerMovementState(_) | ComponentPayload::TeleporterState(_) => false,
+                ComponentPayload::PlayerMovementState(_) | ComponentPayload::TeleporterState(_) => {
+                    false
+                }
                 ComponentPayload::MeshAnimationState(_) => false,
                 ComponentPayload::KinematicMoverState(_)
                 | ComponentPayload::LightState(_)
@@ -3709,12 +3713,17 @@ mod tests {
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
             ComponentPayload::TeleporterState(state) => RawComponentPayload {
-            component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
-            teleporter: Some(*state),
-            transform: None, player_movement: None, mesh_animation_state: None,
-            kinematic_mover: None, light: None, emitter: None, fog: None,
-        },
-        ComponentPayload::Transform(t) => RawComponentPayload {
+                component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
+                teleporter: Some(*state),
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
+            },
+            ComponentPayload::Transform(t) => RawComponentPayload {
                 teleporter: None,
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(*t),

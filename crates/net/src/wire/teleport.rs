@@ -32,14 +32,24 @@ impl Default for WireTeleportState {
 }
 
 impl WireTeleportState {
-    pub fn new(generation: u8, accumulated_yaw: f32, last_teleporter: u16, latches: &[u16]) -> Option<Self> {
+    pub fn new(
+        generation: u8,
+        accumulated_yaw: f32,
+        last_teleporter: u16,
+        latches: &[u16],
+    ) -> Option<Self> {
         let count = u16::try_from(latches.len()).ok()?;
         let mut arrival_latches = Vec::with_capacity(2 + latches.len() * 2);
         arrival_latches.extend_from_slice(&count.to_le_bytes());
         for index in latches {
             arrival_latches.extend_from_slice(&index.to_le_bytes());
         }
-        let state = Self { generation, accumulated_yaw, last_teleporter, arrival_latches };
+        let state = Self {
+            generation,
+            accumulated_yaw,
+            last_teleporter,
+            arrival_latches,
+        };
         state.is_valid().then_some(state)
     }
 
@@ -62,7 +72,13 @@ impl WireTeleportState {
     /// Only consume after validation; malformed tails are deliberately ignored
     /// here and rejected by `is_valid` before typed apply.
     pub fn latches(&self) -> impl Iterator<Item = u16> + '_ {
-        self.arrival_latches.get(2..).unwrap_or_default().chunks_exact(2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        self.arrival_latches
+            .get(2..)
+            .unwrap_or_default()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| u16::from_le_bytes(*bytes))
     }
 }
 
@@ -79,11 +95,15 @@ mod tests {
 
     #[test]
     fn teleport_wire_preserves_u16_count_indices_and_wrapped_yaw() {
-        let state = WireTeleportState::new(255, std::f32::consts::PI, 2, &[0, 2, u16::MAX - 1]).unwrap();
+        let state =
+            WireTeleportState::new(255, std::f32::consts::PI, 2, &[0, 2, u16::MAX - 1]).unwrap();
         assert_eq!(state.arrival_latches, vec![3, 0, 0, 0, 2, 0, 254, 255]);
         let decoded: WireTeleportState = crate::wire::decode(&crate::wire::encode(&state)).unwrap();
         assert!(decoded.is_valid());
-        assert_eq!(decoded.latches().collect::<Vec<_>>(), vec![0, 2, u16::MAX - 1]);
+        assert_eq!(
+            decoded.latches().collect::<Vec<_>>(),
+            vec![0, 2, u16::MAX - 1]
+        );
         assert_eq!(decoded.generation, 255);
         assert!((decoded.accumulated_yaw - std::f32::consts::PI).abs() < 1.0e-6);
     }
@@ -91,12 +111,26 @@ mod tests {
     #[test]
     fn teleport_wire_rejects_invalid_counts_order_indices_and_yaw() {
         let valid = WireTeleportState::new(1, 0.0, 0, &[0, 3]).unwrap();
-        for bytes in [vec![], vec![0], vec![2, 0, 0, 0], vec![1, 0, 0, 0, 3, 0], vec![2, 0, 3, 0, 0, 0], vec![2, 0, 0, 0, 0, 0], vec![1, 0, 255, 255]] {
+        for bytes in [
+            vec![],
+            vec![0],
+            vec![2, 0, 0, 0],
+            vec![1, 0, 0, 0, 3, 0],
+            vec![2, 0, 3, 0, 0, 0],
+            vec![2, 0, 0, 0, 0, 0],
+            vec![1, 0, 255, 255],
+        ] {
             let mut bad = valid.clone();
             bad.arrival_latches = bytes;
             assert!(!bad.is_valid());
         }
-        for yaw in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -std::f32::consts::PI, std::f32::consts::TAU] {
+        for yaw in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -std::f32::consts::PI,
+            std::f32::consts::TAU,
+        ] {
             let mut bad = valid.clone();
             bad.accumulated_yaw = yaw;
             assert!(!bad.is_valid());

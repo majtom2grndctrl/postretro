@@ -626,8 +626,13 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
         ComponentPayload::TeleporterState(state) => RawComponentPayload {
             component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
             teleporter: Some(*state),
-            transform: None, player_movement: None, mesh_animation_state: None,
-            kinematic_mover: None, light: None, emitter: None, fog: None,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
         },
         ComponentPayload::Transform(t) => RawComponentPayload {
             teleporter: None,

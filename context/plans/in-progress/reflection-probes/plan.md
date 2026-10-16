@@ -22,6 +22,8 @@ branch: feature/reflection-probes
 
 - 2026-10-15 — **A8 restated as a share bound** (owner delegated the choice). As first worded (every fragment within one texel) it failed on 5 of 3072 fragments per probe, worst 2.75 / 3.92 texels, all rays passing behind the bench's or stump's silhouette as seen from that capture point (A4's thin-object class). An exclusion "except where the ray passes within a texel of a silhouette" removed 97% of cases (every ray rises past the coping's edge); a narrower "behind the occluder" exclusion covered all 10 at ≈5% excluded but needed a three-constant analytic helper and 3.4 s of tracing. Chosen: ≥ 99% within one capture texel and none beyond five (headroom over 3.92), the form A4's false-pillar share already uses.
 
+- 2026-10-15 — **two review-panel owner calls** (owner: yes to both, applied to `index.md`). (1) Light shares and the top-K ranking count only the upper hemisphere: every runtime lookup is horizon-clamped, so lower-hemisphere light (a pool floor) inflated horizontal-lobe shares and could take a slot (found by two lenses). The tile itself still traces the full sphere. Restates row 14. (2) The reflection weight fades to 0 over `FLUID_FOG_BAND` as the eye nears the plane from above (the fog's proximity rule), so a bobbing eye no longer flips a near-mirror surface; from below it stays 0. Restates row 22.
+
 ## Corrections
 
 Compiler
@@ -118,7 +120,7 @@ Compiler
 | 11 Lower hemisphere traced (red floor) | capture unit test | achievable as stated |
 | 12 Reference state P18, P9, inactive light, bounce at production weight | capture unit tests + curve-mean parity test | achievable as stated |
 | 13 SDF P19, >4 lights matches selection reference | capture tests vs CPU selection, selection pinned to WGSL | achievable as stated |
-| 14 Light share fractions, references, P6, P22, P10, P20 | share-table tests + log capture | achievable as stated |
+| 14 Light share fractions (upper hemisphere), references, P6, P22, P10, P20 | share-table tests + log capture | achievable as restated |
 | 15 Emissive and indirect-weight parity | parity tests (render-data dep; renderer constant mirrored) | achievable as stated |
 | 16 Tile mapping = SH atlas mapping, borders | shared mapping test generalized to 128 | achievable as stated |
 
@@ -130,7 +132,7 @@ Runtime (CPU references pinned to shader bodies)
 | 19 Live lighting P5, P4, P25 source-order; no SH read | reference + source-order test + source scan | achievable as stated |
 | 20 Promotion P1; no promotion weight / crossfade / override read | reference + source scan | achievable as stated |
 | 21 Fresnel values | render-cpu Fresnel reference | achievable as stated |
-| 22 Underside | reference + shader pin | achievable as stated |
+| 22 Underside (+ eye band above the plane) | reference + shader pin | achievable as restated |
 | 23 Composite | render-cpu composite reference (extends `fog_fragment`) | achievable as stated |
 | 24 Zero-opacity P2, P23, P24 | collector / draw-set tests | achievable as stated |
 | 25 Light-term mask | reference + shader pin | achievable as stated (literal reading, see Corrections) |

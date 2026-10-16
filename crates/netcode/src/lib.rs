@@ -1050,6 +1050,12 @@ pub fn client_receive_and_apply(
                 tick_dt,
             );
         }
+        // A record that could not merge (no tuning yet) leaves the pawn without
+        // its teleport record; prediction stays inert and a full baseline is
+        // requested until one merges.
+        if outcome.local_reconcile.is_some() && prediction.first_record_pending() {
+            replication.rebaseline_unmerged_local_pawn(&mut outcome);
+        }
         frame_outcome
             .local_teleport_adoptions
             .append(&mut prediction.teleport_adoptions);

@@ -892,7 +892,7 @@ mod tests {
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
         );
-        assert!(out.is_none(), "teleport: no prediction before the first record");
+        assert!(out.is_none(), "no prediction before the first record");
         assert!(prediction.history().is_empty());
 
         // Once it has, the same call drives the pawn and records history.

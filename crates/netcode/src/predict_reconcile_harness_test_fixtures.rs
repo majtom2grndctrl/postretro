@@ -1310,7 +1310,7 @@ impl LoopbackHarness {
                     armed.entity_id,
                 );
             }
-            if let Some(reconcile) = outcome.local_reconcile
+            if let Some(reconcile) = &outcome.local_reconcile
                 && let Some(environment) = client_environment_view(
                     self.client_tuning.as_deref(),
                     &self.client_environment_volumes,
@@ -1352,6 +1352,17 @@ impl LoopbackHarness {
                     self.latest_local_corrections
                         .push((before - after.position).length());
                 }
+            }
+            // Production's unmerged-first-record rebaseline, and every refresh
+            // request it or apply raised, ride the uplink to the host.
+            let mut outcome = outcome;
+            if outcome.local_reconcile.is_some() && self.prediction.first_record_pending() {
+                self.client_replication
+                    .rebaseline_unmerged_local_pawn(&mut outcome);
+            }
+            for request in &outcome.refresh_requests {
+                self.to_server
+                    .enqueue(wire::encode(&ClientMessage::BaselineRefresh(*request)));
             }
             if let Some(ack) = outcome.ack {
                 self.client_acked_server_tick =

@@ -1151,15 +1151,24 @@ fn rig_idle_input() -> crate::movement::MovementInput {
 // The joiner's host tuning installs after its arming baseline: the reliable
 // Control payload was lost and retransmitted, and lands in a frame that
 // carries no snapshot. The arming record could not merge without tuning, and
-// the client predicts before any record has. That prediction must not consume
-// the first record: the movement record that merges next, carrying a teleport
-// the pawn took before the join, is still adopted silently.
+// the idle pawn's later deltas carry no movement. The pawn stands where a
+// teleport before the join left it, latched in a second armed region. The
+// client must neither predict from its empty record (which would fire that
+// region and then cut back) nor wait for movement to change: it asks for a
+// full baseline, whose record is the first to merge and adopts silently.
 #[test]
-fn teleport_join_first_record_stays_silent_when_tuning_trails_the_arming_baseline() {
+fn teleport_join_unmerged_arming_record_rebaselines_before_predicting() {
     use postretro_net::harness::{LinkConfig, PacketConditioner};
 
-    let mut rig = Rig::new(clean_link(), &[spawn_room()]);
+    // The spawn room sends its traveller into a second region's interior.
+    let arrival_region = Spec::classic(
+        region((37.0, 43.0), (-3.0, 3.0)),
+        Vec3::new(80.0, 1.25, 0.0),
+        0.0,
+    );
+    let mut rig = Rig::new(clean_link(), &[spawn_room(), arrival_region]);
     teleport_host_pawn_before_join(&mut rig);
+    assert_eq!(&rig.host_teleport().arrival_latches[..], &[1]);
     // The tuning send is lost: it waits on the Control lane until retransmitted.
     rig.h.to_client_control = PacketConditioner::new(LinkConfig {
         delay: 1_000_000,
@@ -1175,10 +1184,8 @@ fn teleport_join_first_record_stays_silent_when_tuning_trails_the_arming_baselin
     rig.idle(3);
     assert!(rig.h.client_tuning.is_none(), "armed before its tuning");
     assert!(rig.corrections.is_empty(), "nothing merged without tuning");
-    assert_eq!(rig.client_teleport().generation, 0);
 
-    // The retransmit lands in a frame with no snapshot; the next fixed tick
-    // predicts with the installed tuning before any record merges.
+    // The retransmit lands in a frame with no snapshot.
     let mut lost = std::mem::replace(
         &mut rig.h.to_client_control,
         PacketConditioner::new(LinkConfig::perfect()),
@@ -1189,30 +1196,28 @@ fn teleport_join_first_record_stays_silent_when_tuning_trails_the_arming_baselin
     }
     rig.h.client_drain_control();
     assert!(rig.h.client_tuning.is_some());
-    rig.predict(FORWARD, true);
-    assert!(
-        !rig.h.prediction.history().is_empty(),
-        "the joiner predicted before its first record merged"
-    );
-    rig.h.advance_clock();
-    rig.host_ticks(1);
-    rig.receive();
-    // The idle pawn's acked movement is unchanged, so deltas carry none; the
-    // walk changes it and the next movement record merges.
     for _ in 0..60 {
         if rig.client_teleport() == rig.host_teleport() {
             break;
         }
-        rig.step(FORWARD);
+        rig.step(IDLE);
+        assert!(
+            rig.h.prediction.history().is_empty(),
+            "no prediction before the first record merges"
+        );
     }
     assert_eq!(
         rig.client_teleport(),
         rig.host_teleport(),
-        "the record was adopted"
+        "a full baseline merged the record, latch included"
     );
-    // The host trails by its playout delay; let both decelerate to rest.
-    rig.idle(90);
+    rig.idle(60);
 
+    assert!(
+        rig.ticks.iter().all(|tick| tick.teleport.is_none()),
+        "the latched region never fires in prediction"
+    );
+    assert!(rig.host_teleports().is_empty(), "nor on the host");
     assert!(rig.adoptions.is_empty(), "no cut or view turn");
     assert!(rig.cues.is_empty(), "no cue");
     assert_eq!(rig.camera_yaw, 0.0);

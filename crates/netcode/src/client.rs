@@ -106,6 +106,9 @@ const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 const REFRESH_REASON_STALE_MAPPING: u8 = 1;
 /// Reason: local level unload cleared registry-backed entities but kept the transport.
 const REFRESH_REASON_LEVEL_RELOAD: u8 = 2;
+/// Reason: the armed local pawn's first record has not merged (its host tuning
+/// installed after the record arrived), so the client asks for it again.
+const REFRESH_REASON_UNMERGED_LOCAL_PAWN: u8 = 3;
 
 /// Repair-request resend cadence: one `BaselineRefreshRequest` per pending entity
 /// every 200 ms (5 Hz) until the matching full baseline arrives and clears it. The
@@ -1993,6 +1996,31 @@ impl ClientReplication {
             missing_baseline_ref,
             reason,
         });
+    }
+
+    /// Until the armed local pawn's first record has merged, keep a full baseline
+    /// of it requested. A record that arrives before the host tuning installs
+    /// cannot merge, since reconcile replays with that tuning, and an idle pawn's
+    /// later deltas carry no movement; without a fresh baseline the client would
+    /// predict from no teleport record at all. Rides the pending-repair resend:
+    /// the answering full baseline clears it, and a refresh already pending is
+    /// left to the resend cadence.
+    pub(crate) fn rebaseline_unmerged_local_pawn(&mut self, outcome: &mut ApplyOutcome) {
+        let Some(network_id) = self.local_pawn else {
+            return;
+        };
+        if self.pending_repairs.contains_key(&network_id) {
+            return;
+        }
+        let sequence = self.latest_sequence.unwrap_or(0);
+        let baseline = self.baselines.get(&network_id).copied().unwrap_or(0);
+        self.queue_repair(
+            &mut outcome.refresh_requests,
+            sequence,
+            network_id,
+            baseline,
+            REFRESH_REASON_UNMERGED_LOCAL_PAWN,
+        );
     }
 
     /// Advance the pending-repair cadence by `dt_ms` and return the refresh requests

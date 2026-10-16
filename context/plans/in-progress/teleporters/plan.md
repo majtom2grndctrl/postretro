@@ -160,6 +160,9 @@ The brief does not authorize landing before manual proof. After automated checks
 
 ## Implementation checkpoint (active)
 
+- **Review round 1 complete (2026-10-16), HEAD `7657186ad`.** 12-lens panel → six fix groups (physics/collision/foundation, netcode, app, sim scripting/SDK, engine yaw/compiler, docs). Findings and grouping in session scratch (not durable); every fix landed with focused proofs and mutation checks. Combined retest, `CARGO_INCREMENTAL=0`, full suites: collision 79, physics 356 (+1 ign), foundation 138, entities 298, level-format 615, level-loader 302, net 268, netcode 763 (+1 ign), sim 1461, scripting-core 888, script-compiler 51, level-compiler 1750 (+28 ign), tool 157; postretro `dev-tools` teleport 19, `startup::` 314. All pass; `cargo fmt --check` clean.
+- Next: optional review round 2 (only if warranted), preflight once, AC results column, runtime runbook placement, then report for manual checks. Open owner follow-up (outside this branch): entity pitch sign vs TrenchBroom (positive pitch nose-up in engine; TrenchBroom draws non-MDL models nose-down) — near-zero content exposure today.
+
 - Session 2 (2026-10-15) took over after the first executor hit a usage limit; its uncommitted tree became WIP commit `86bec6c83`.
 - All touched crates pass `cargo check --tests` (postretro with and without `dev-tools`). Teleport-filtered tests: collision 7, physics 9, entities 1, level-format 5, level-loader 3, net 3, sim 4, scripting-core 2, netcode 15, level-compiler (`--bin prl-build`) 9, postretro `dev-tools` 5 — all pass. Full physics lib 348 pass.
 - Enclosed-capsule clearance gap fixed: `physics/src/collision/solid_cells.rs` point-in-solid over the cell locator; `moving.rs::point_inside_mover` winding-number test at current pose; regression tests with open controls.

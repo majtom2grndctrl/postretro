@@ -118,36 +118,78 @@ pub fn reflection_cell_normal(outward: Vec3, axes: FluidTexelAxes, offset: IVec2
     (outward + tilt * FLUID_REFLECTION_PIXEL_TILT).normalize()
 }
 
+/// The pixel style's rim inset, relative: a pulled cell centre lands this
+/// fraction of its horizontal L1 distance from the capture point inside the
+/// box, never on the face. On the face the stored wall puts h at 0 give or
+/// take its f16 rounding (half an ulp is ≈2.4e-4 relative; on a wall the
+/// bilinear filter reconstructs exactly, the sign flips in runs along it),
+/// and a ray into that wall leaves its slab at t = 0: the search either
+/// takes the capture-shadow branch's box hit partway up the wall or
+/// collapses onto its start. Moving the start inward by `m` moves it about
+/// `m · (1 + tan φ) ≥ m` of L1 in front of a wall seen at φ from its normal,
+/// so h falls to about −1e-3, four half-ulps clear of the rounding, and the
+/// ray meets its wall `m` ahead, at the foot. A cell 10 m from the capture
+/// point moves 1 cm, a third of a 16-texel-a-metre cell's half side. A
+/// concave corner, where the filter reads the stored distance near across
+/// the crease (0.1% at the canal fixture's far corners, 0.9% at the empty
+/// room's), keeps its lookup at the foot but may stay inside the depth
+/// margin and dim (95% in the empty room's): clearing that would take 5e-3,
+/// 4.5 cm there, more than half a cell.
+pub const FLUID_REFLECTION_RIM_INSET: f32 = 1.0e-3;
+/// The rim inset's floor in metres: a cell within 10 cm of the capture
+/// point still lands 0.1 mm inside, well above f32's step at map
+/// coordinates (≈6e-5 m at 1 km) and well below the compiler's 1 cm capture
+/// clearance from walls.
+pub const FLUID_REFLECTION_RIM_INSET_MIN: f32 = 1.0e-4;
+
 /// The pixel style's cell centre held to the probe's box at a wall rim:
-/// pulled back toward the box along its horizontal overshoot past it. With
-/// `h` half the cell's diagonal, an overshoot up to `h` is pulled back whole
-/// (the centre lands on the box face), and the pull then tapers linearly to
-/// nothing at `2h`, one full cell: `min(|o|, max(0, 2h − |o|))`. A cell
-/// straddling a wall the box fits (a derived box's wall), its centre inside
-/// the wall, starts its reflection on the wall's face rather than behind the
-/// surface the capture stored there, so the rim keeps its term with no
-/// threshold. A centre inside the box, below a derived box's floor (the
-/// capture plane 2 mm above the water), or a cell or more past the box
-/// (water well outside an authored box) stays put. Continuous in the
-/// centre, and a function of the centre, the cell's axes and the box alone,
-/// so every fragment of a cell still reads one search.
+/// pulled toward the box inset horizontally by `m`
+/// ([`FLUID_REFLECTION_RIM_INSET`] of the centre's horizontal L1 distance
+/// from the capture point, at least [`FLUID_REFLECTION_RIM_INSET_MIN`]). With
+/// `h` half the cell's farthest overshoot, `0.5 · max(|u + v|, |u − v|)`
+/// (half its longer diagonal, sheared axes included), a centre up to `h`
+/// past a face (`|o|`, measured against the face) is pulled whole onto the
+/// inset box, `m` inside the face, and the pull then tapers linearly to
+/// nothing at `2h`, one full cell: the pull to the inset box scaled by
+/// `clamp((2h − |o|) / h, 0, 1)`. Measuring the taper against the face keeps
+/// every cell that straddles the face (`|o| ≤ h`) on the full pull; the
+/// taper crosses the face only for a cell wholly past it, which is water
+/// outside an authored box. A cell straddling a wall the box fits (a derived
+/// box's wall), its centre inside the wall, starts its reflection just in
+/// front of the wall's face rather than behind the surface the capture
+/// stored there, so the rim keeps its term with no threshold. A centre
+/// inside the box within `m` of a face moves at most `m` inward; one deeper
+/// inside, below a derived box's floor (the capture plane 2 mm above the
+/// water), or a cell or more past the box (water well outside an authored
+/// box) stays put. While `m` is under the capture point's clearance from the
+/// box (1 cm from a wall the compiler fits, so any cell within 10 m), the
+/// capture point lies inside the inset box and the pull, toward a convex set
+/// holding it, never reaches it; a cell farther out moves at most `h + m`,
+/// metres from it. Continuous in the
+/// centre, and a function of the centre, the cell's axes, the box and the
+/// capture point alone, so every fragment of a cell still reads one search.
 pub fn reflection_cell_within_box(
     centre: Vec3,
     axes: FluidTexelAxes,
     box_min: Vec3,
     box_max: Vec3,
+    capture_point: Vec3,
 ) -> Vec3 {
     let past = centre - centre.clamp(box_min, box_max);
-    let overshoot = Vec3::new(past.x, 0.0, past.z);
-    let half_cell = 0.5 * (axes.u.dot(axes.u) + axes.v.dot(axes.v)).sqrt();
-    let length_past = overshoot.length();
-    let pull_length = length_past.min((2.0 * half_cell - length_past).max(0.0));
-    let pull = if length_past > 0.0 {
-        overshoot * (pull_length / length_past)
+    let length_past = Vec3::new(past.x, 0.0, past.z).length();
+    let half_cell = 0.5 * (axes.u + axes.v).length().max((axes.u - axes.v).length());
+    let toward = centre - capture_point;
+    let inset = (FLUID_REFLECTION_RIM_INSET * (toward.x.abs() + toward.z.abs()))
+        .max(FLUID_REFLECTION_RIM_INSET_MIN);
+    let margin = Vec3::new(inset, 0.0, inset);
+    let target_point = centre.min(box_max - margin).max(box_min + margin);
+    let pull = Vec3::new(centre.x - target_point.x, 0.0, centre.z - target_point.z);
+    let keep = if half_cell > 0.0 {
+        ((2.0 * half_cell - length_past) / half_cell).clamp(0.0, 1.0)
     } else {
-        Vec3::ZERO
+        0.0
     };
-    centre - pull
+    centre - pull * keep
 }
 
 /// Where the fragment reflects from. Smooth: the fragment itself, about the
@@ -167,6 +209,7 @@ pub fn reflection_point(
     texels_per_pixel: f32,
     box_min: Vec3,
     box_max: Vec3,
+    capture_point: Vec3,
 ) -> FluidReflectionPoint {
     if style == FLUID_REFLECTION_STYLE_SMOOTH {
         return FluidReflectionPoint {
@@ -177,7 +220,7 @@ pub fn reflection_point(
     let offset = displayed_offset(texel_cell(texel_uv), time, texels_per_pixel);
     let centre = reflection_cell_centre(texel_uv, world_position, axes);
     FluidReflectionPoint {
-        position: reflection_cell_within_box(centre, axes, box_min, box_max),
+        position: reflection_cell_within_box(centre, axes, box_min, box_max, capture_point),
         normal: reflection_cell_normal(outward, axes, offset),
     }
 }

@@ -465,24 +465,45 @@ fn a_section_with_a_bad_tile_header_or_probe_layer_is_unusable() {
     }
 }
 
-// The usable range of tile dimensions is the section 54 decoder's own: it
-// decodes a section at the least and the greatest dimension and refuses the
-// next one past each (the decoder takes whole 4×4 blocks only), so this
-// copy of level-format's private bound cannot drift from it.
+// The usable tile dimensions are the section 54 decoder's own, in either
+// colour format: it decodes a section at the least and the greatest
+// dimension and refuses the next one past each, so this copy of
+// level-format's private bound cannot drift from it; and it takes whole 4×4
+// blocks only, RGBA16F included, so a dimension between them that is not a
+// multiple of 4 is refused by both. Every dimension around the bounds and a
+// stretch between agrees.
 #[test]
 fn the_usable_tile_dimensions_are_the_decoders() {
     let one = section(
         vec![room_probe([0.0, 0.002, 0.0], 0)],
         vec![binding(0, 0, 0)],
     );
-    let decodes = |dimension: u32| {
-        let tiled = retiled(&one, IRRADIANCE_FORMAT_BC6H, dimension);
-        ReflectionProbesSection::from_bytes(&tiled.to_bytes()).is_ok()
-    };
-    assert!(decodes(FLUID_PROBE_MIN_TILE_DIMENSION));
-    assert!(decodes(FLUID_PROBE_MAX_TILE_DIMENSION));
-    assert!(!decodes(FLUID_PROBE_MIN_TILE_DIMENSION - 4));
-    assert!(!decodes(FLUID_PROBE_MAX_TILE_DIMENSION + 4));
+    for format in [IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F] {
+        let decodes = |dimension: u32| {
+            let tiled = retiled(&one, format, dimension);
+            ReflectionProbesSection::from_bytes(&tiled.to_bytes()).is_ok()
+        };
+        let usable = |dimension: u32| {
+            usable_probe_section(Some(&retiled(&one, format, dimension))).is_some()
+        };
+        assert!(decodes(FLUID_PROBE_MIN_TILE_DIMENSION), "{format}");
+        assert!(decodes(FLUID_PROBE_MAX_TILE_DIMENSION), "{format}");
+        assert!(!decodes(FLUID_PROBE_MIN_TILE_DIMENSION - 4), "{format}");
+        assert!(!decodes(FLUID_PROBE_MAX_TILE_DIMENSION + 4), "{format}");
+        let dimensions = (1..=40)
+            .chain(120..=136)
+            .chain(FLUID_PROBE_MAX_TILE_DIMENSION - 8..=FLUID_PROBE_MAX_TILE_DIMENSION + 8);
+        for dimension in dimensions {
+            assert_eq!(
+                usable(dimension),
+                decodes(dimension),
+                "format {format}, dimension {dimension}"
+            );
+        }
+        for odd in [5, 6, 7, 1021] {
+            assert!(!usable(odd), "format {format}, dimension {odd}");
+        }
+    }
 }
 
 // --- Acceptance row 17: box projection --------------------------------------

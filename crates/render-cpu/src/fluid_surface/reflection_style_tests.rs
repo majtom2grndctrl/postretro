@@ -47,6 +47,11 @@ fn probe_box() -> (Vec3, Vec3) {
     (Vec3::from(probe.box_min), Vec3::from(probe.box_max))
 }
 
+/// The room probe's capture point.
+fn capture() -> Vec3 {
+    Vec3::from(room_probe().capture_point)
+}
+
 /// The pool's texture map, world `(x, z)` to texel UV: rotated, sheared and
 /// offset, so no test leans on axis-aligned texels. About 10 texels a metre.
 fn texel_of(world: Vec3) -> Vec2 {
@@ -200,6 +205,7 @@ fn smooth_style_varies_per_fragment_within_one_cell() {
             fragment.texels_per_pixel,
             probe_box().0,
             probe_box().1,
+            capture(),
         );
         assert_eq!(point.position, fragment.world_position);
         assert_eq!(point.normal, Vec3::Y);
@@ -232,6 +238,7 @@ fn cells_with_different_displayed_offsets_read_different_directions() {
             NEAR_FOOTPRINT,
             probe_box().0,
             probe_box().1,
+            capture(),
         );
         let along = reflection_unit_or_zero(fragment.axes.u) * offset.x as f32
             + reflection_unit_or_zero(fragment.axes.v) * offset.y as f32;
@@ -368,50 +375,72 @@ fn texel_axes_recover_the_faces_texel_to_world_map() {
         NEAR_FOOTPRINT,
         probe_box().0,
         probe_box().1,
+        capture(),
     );
     assert_eq!(point.position, world);
     assert_eq!(point.normal, Vec3::Y);
 }
 
-// The pixel style holds a cell centre to the probe's box at a wall rim. A
-// centre inside the box, or only below its floor (a derived box's floor is
-// the capture plane 2 mm above the water), stays put; one past a wall by up
-// to half the cell's diagonal moves onto the wall's face; past that the pull
-// tapers off, so a centre one cell (a whole diagonal) or more out stays put.
-// Only the horizontal overshoot counts, the held point moves continuously
-// with the centre across both knees, and the smooth style never moves.
+// The pixel style holds a cell centre to the probe's box at a wall rim,
+// landing it the rim inset m (a pinned fraction of its horizontal L1
+// distance from the capture point, floored) inside the box rather than on
+// the face, where the stored wall's h is 0 and a ray into it leaves at
+// t = 0. A centre deeper inside the box than m, or only below its floor (a
+// derived box's floor is the capture plane 2 mm above the water), stays
+// put; one on a face or within m inside it moves at most m inward; one past
+// a wall by up to h, half the cell's farthest overshoot (its longer
+// diagonal, sheared axes included), lands m inside the face; past that the
+// pull tapers off, so a centre one cell (2h) or more out stays put. Only
+// the horizontal overshoot counts, the held point moves continuously with
+// the centre across both knees, it never reaches the capture point, and the
+// smooth style never moves.
 #[test]
-fn a_pixel_cell_centre_past_the_box_is_pulled_back_at_most_half_a_cell_and_never_beyond_one() {
+fn a_pixel_cell_centre_past_the_box_lands_the_rim_inset_inside_and_never_moves_beyond_one_cell() {
     let axes = FluidTexelAxes {
         u: Vec3::X / 16.0,
         v: Vec3::Z / 16.0,
     };
     let half_cell = 0.5 * 2.0f32.sqrt() / 16.0;
     let (box_min, box_max) = (Vec3::new(-2.0, 0.002, -2.0), Vec3::new(2.0, 3.0, 2.0));
-    let held = |centre: Vec3| reflection_cell_within_box(centre, axes, box_min, box_max);
-    for centre in [
-        Vec3::new(0.5, 0.0, -1.0),
-        Vec3::new(1.99, 0.0, 1.99),
-        Vec3::new(-2.0, 0.0, 0.3),
-    ] {
+    let capture_point = Vec3::new(0.0, 0.002, 0.0);
+    let held =
+        |centre: Vec3| reflection_cell_within_box(centre, axes, box_min, box_max, capture_point);
+    let inset = |centre: Vec3| {
+        (FLUID_REFLECTION_RIM_INSET * (centre.x.abs() + centre.z.abs()))
+            .max(FLUID_REFLECTION_RIM_INSET_MIN)
+    };
+    for centre in [Vec3::new(0.5, 0.0, -1.0), Vec3::new(1.99, 0.0, 1.99)] {
         assert_eq!(held(centre), centre, "inside, below the floor");
     }
-    for past in [0.001, 0.02, 0.9 * half_cell] {
+    let on_face = Vec3::new(-2.0, 0.0, 0.3);
+    assert!(
+        held(on_face).abs_diff_eq(Vec3::new(-2.0 + inset(on_face), 0.0, 0.3), 1.0e-6),
+        "on the face: m inside it, {}",
+        held(on_face)
+    );
+    for past in [0.0005, 0.001, 0.02, 0.9 * half_cell, half_cell] {
         let centre = Vec3::new(0.3, 0.0, 2.0 + past);
+        let landed = Vec3::new(0.3, 0.0, 2.0 - inset(centre));
         assert!(
-            held(centre).abs_diff_eq(Vec3::new(0.3, 0.0, 2.0), 1.0e-6),
-            "{past} m past the wall: {}",
+            held(centre).abs_diff_eq(landed, 1.0e-6),
+            "{past} m past the wall: {} vs {landed}",
             held(centre)
         );
+        assert!(held(centre).z < box_max.z, "inside the face");
     }
+    let past_corner = Vec3::new(2.02, 0.0, -2.02);
+    let m = inset(past_corner);
     assert!(
-        held(Vec3::new(2.02, 0.0, -2.02)).abs_diff_eq(Vec3::new(2.0, 0.0, -2.0), 1.0e-6),
-        "past a corner within half a diagonal: onto the corner"
+        held(past_corner).abs_diff_eq(Vec3::new(2.0 - m, 0.0, -2.0 + m), 1.0e-6),
+        "past a corner within half a diagonal: m inside both faces, {}",
+        held(past_corner)
     );
-    // On the taper, an overshoot of 1.5 h is pulled back 0.5 h.
+    // On the taper, an overshoot of 1.5 h keeps half the pull to the inset
+    // box: half of 1.5 h + m.
     let tapered = Vec3::new(0.3, 0.0, 2.0 + 1.5 * half_cell);
+    let expected = 2.0 + 0.75 * half_cell - 0.5 * inset(tapered);
     assert!(
-        held(tapered).abs_diff_eq(Vec3::new(0.3, 0.0, 2.0 + half_cell), 1.0e-6),
+        held(tapered).abs_diff_eq(Vec3::new(0.3, 0.0, expected), 1.0e-6),
         "on the taper: {}",
         held(tapered)
     );
@@ -427,24 +456,64 @@ fn a_pixel_cell_centre_past_the_box_is_pulled_back_at_most_half_a_cell_and_never
             held(far)
         );
     }
-    // Swept from inside across both knees (h at 2.044, 2h at 2.088) to well
-    // past them: the held point moves at most twice the centre's step (the
-    // taper's slope), never jumps, and the pull never exceeds h.
+    // Swept from inside across the inset, the face and both knees (h at
+    // 2.044, 2h at 2.088) to well past them: the held point moves at most
+    // the taper's steepest slope, 3 + m / h (here under 3.1), times the
+    // centre's step, never jumps, and the pull never exceeds h + m.
     let step = 0.0005;
     let mut last = held(Vec3::new(0.3, 0.0, 1.9));
     for i in 1..=500 {
         let centre = Vec3::new(0.3, 0.0, 1.9 + i as f32 * step);
         let now = held(centre);
         assert!(
-            now.distance(last) <= 2.0 * step + 1.0e-5,
+            now.distance(last) <= 3.1 * step + 1.0e-5,
             "continuous: {last} → {now}"
         );
         assert!(
-            centre.distance(now) <= half_cell + 1.0e-5,
+            centre.distance(now) <= half_cell + inset(centre) + 1.0e-5,
             "{centre} → {now}"
         );
         last = now;
     }
+
+    // Sheared texel axes (a Valve 220 projection): a cell's farthest
+    // overshoot is half its longer diagonal, |u + v| / 2, beyond the
+    // root-sum-square half diagonal. A centre past a corner by 95% of it
+    // straddles both walls and lands whole on the inset corner, not on the
+    // taper.
+    let sheared = FluidTexelAxes {
+        u: Vec3::X / 16.0,
+        v: Vec3::new(0.5, 0.0, 1.0) / 16.0,
+    };
+    let diagonal = sheared.u + sheared.v;
+    assert!(0.5 * diagonal.length() > 0.5 * (2.25f32).sqrt() / 16.0);
+    let straddling = Vec3::new(2.0, 0.0, 2.0) + 0.95 * 0.5 * diagonal;
+    assert!(
+        (straddling - diagonal).cmplt(Vec3::splat(2.0)).all(),
+        "its far corner lies inside both faces"
+    );
+    let m = inset(straddling);
+    assert!(
+        reflection_cell_within_box(straddling, sheared, box_min, box_max, capture_point)
+            .abs_diff_eq(Vec3::new(2.0 - m, 0.0, 2.0 - m), 1.0e-6),
+        "{}",
+        reflection_cell_within_box(straddling, sheared, box_min, box_max, capture_point)
+    );
+
+    // A capture point 1 cm from the +z face: a rim cell right beside it
+    // lands the floor's 0.1 mm inside the face, between the face and the
+    // capture point, never past it.
+    let near_capture = Vec3::new(0.0, 0.002, 1.99);
+    let beside = Vec3::new(0.01, 0.0, 2.03);
+    let landed = reflection_cell_within_box(beside, axes, box_min, box_max, near_capture);
+    assert!(
+        landed.abs_diff_eq(
+            Vec3::new(0.01, 0.0, 2.0 - FLUID_REFLECTION_RIM_INSET_MIN),
+            1.0e-6
+        ),
+        "{landed}"
+    );
+    assert!(landed.z > near_capture.z);
 
     // Through the style switch: a cell centred 2.8 cm into the +z wall.
     let world = Vec3::new(0.3, 0.0, 1.998);
@@ -460,13 +529,14 @@ fn a_pixel_cell_centre_past_the_box_is_pulled_back_at_most_half_a_cell_and_never
             NEAR_FOOTPRINT,
             box_min,
             box_max,
+            capture_point,
         )
     };
     let centre = reflection_cell_centre(texel_uv, world, axes);
     assert!(centre.z > 2.02, "{centre}");
     assert_eq!(
         point(FLUID_REFLECTION_STYLE_PIXEL).position,
-        Vec3::new(centre.x, centre.y, 2.0)
+        Vec3::new(centre.x, centre.y, 2.0 - inset(centre))
     );
     assert_eq!(point(FLUID_REFLECTION_STYLE_SMOOTH).position, world);
 }

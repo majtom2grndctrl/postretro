@@ -23,8 +23,9 @@ use crate::fluid_surface::reflection::{
     reflection_lookup, reflection_mirror,
 };
 use crate::fluid_surface::reflection_style::{
-    FLUID_REFLECTION_STYLE_PIXEL, FluidTexelAxes, reflection_cell_centre,
-    reflection_cell_within_box, reflection_point,
+    FLUID_REFLECTION_RIM_INSET, FLUID_REFLECTION_RIM_INSET_MIN, FLUID_REFLECTION_STYLE_PIXEL,
+    FluidReflectionPoint, FluidTexelAxes, reflection_cell_centre, reflection_cell_within_box,
+    reflection_point,
 };
 use crate::frame_uniforms::LightTermMask;
 
@@ -433,10 +434,10 @@ fn water_outside_an_authored_box_hidden_behind_an_occluder_draws_no_term() {
 
 // A pixel-style cell straddling a wall at the water's rim, its centre inside
 // the wall (a box fitting the room, so the centre lies past the box): the
-// style pulls the centre back onto the wall's face, at most half a cell,
-// where the capture stored the wall. The raw centre lies behind the stored
-// wall within the depth margin and would fade; the pulled cell keeps its
-// term, and its search reads the wall's foot. Swept from inside the water
+// style pulls the centre back to just inside the wall's face (the rim inset
+// m), where the capture stored the wall. The raw centre lies behind the
+// stored wall within the depth margin and would fade; the pulled cell keeps
+// its term, and its search reads the wall's foot. Swept from inside the water
 // to three cells into the wall, the cell's weight changes continuously: full
 // up to half a cell in, then falling smoothly over the pull's taper (gone a
 // full cell in, where the raw centre takes over) into the capture shadow,
@@ -470,11 +471,16 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
         fragment.texels_per_pixel,
         scene.box_min,
         scene.box_max,
+        scene.capture,
     );
     assert_eq!(
         point.position,
-        Vec3::new(centre.x, centre.y, scene.box_max.z),
-        "pulled onto the wall's face"
+        Vec3::new(
+            centre.x,
+            centre.y,
+            scene.box_max.z - rim_inset(centre, scene.capture)
+        ),
+        "pulled to just inside the wall's face"
     );
 
     let view = (eye - point.position).normalize();
@@ -487,7 +493,7 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
         result.status,
         h(point.position)
     );
-    let foot = Vec3::new(point.position.x, 0.0, point.position.z)
+    let foot = Vec3::new(point.position.x, 0.0, scene.box_max.z)
         - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
     let apart = texels_apart(result.lookup, foot);
     assert!(apart <= 1.0, "the wall's foot: {apart} texels off");
@@ -509,7 +515,7 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
     // The sweep: a cell centre on the cell's line, from 4 cm inside the
     // water to three cells into the wall, 0.34 mm a step.
     let axes = fragment.axes;
-    let half_cell = 0.5 * (axes.u.length_squared() + axes.v.length_squared()).sqrt();
+    let half_cell = 0.5 * (axes.u + axes.v).length().max((axes.u - axes.v).length());
     let weight_from = |start: Vec3| {
         let view = (eye - start).normalize();
         search(
@@ -526,6 +532,7 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
             axes,
             scene.box_min,
             scene.box_max,
+            scene.capture,
         ))
     };
     let (from, to) = (1.96, 2.0 + 3.0 / 16.0 + half_cell);
@@ -550,6 +557,233 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
     // Unpulled, the cell half a cell in would dim: the pull is what keeps it.
     let raw = Vec3::new(centre.x, 0.0, 2.0 + half_cell);
     assert!(weight_from(raw) < 1.0, "{}", weight_from(raw));
+}
+
+/// The rim inset a pulled cell centre lands inside the box by: the pinned
+/// fraction of its horizontal L1 distance from the capture point, floored.
+fn rim_inset(centre: Vec3, capture: Vec3) -> f32 {
+    let toward = centre - capture;
+    (FLUID_REFLECTION_RIM_INSET * (toward.x.abs() + toward.z.abs()))
+        .max(FLUID_REFLECTION_RIM_INSET_MIN)
+}
+
+/// A pixel-style rim fragment 2 mm short of the wall face on `axis` (0 for
+/// x, 2 for z) at `side` (+1 the box's max face, −1 its min), at `lateral`
+/// along the wall, the texel grid shifted a twentieth of a texel toward the
+/// wall so the fragment's cell straddles the face, its centre 2.8 cm past
+/// it. Returns the cell's centre, the eye (2 m back from the wall, 1.5 m
+/// along it and 1.6 m up), the style's point and the search from it.
+fn rim_read(
+    scene: &Scene,
+    axis: usize,
+    side: f32,
+    lateral: f32,
+) -> (Vec3, Vec3, FluidReflectionPoint, FluidReflectionSearch) {
+    let other = 2 - axis;
+    let face = if side > 0.0 {
+        scene.box_max[axis]
+    } else {
+        scene.box_min[axis]
+    };
+    let mut world = Vec3::ZERO;
+    world[axis] = face - side * 0.002;
+    world[other] = lateral;
+    let mut back = Vec3::new(0.0, 1.6, 0.0);
+    back[axis] = -side * 2.0;
+    back[other] = -1.5;
+    let mut fragment = smooth_fragment(world + back, world);
+    fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
+    let mut shift = Vec2::ZERO;
+    shift[axis / 2] = side * 0.05;
+    fragment.texel_uv += shift;
+    let point = reflection_point(
+        fragment.style,
+        fragment.texel_uv,
+        world,
+        Vec3::Y,
+        fragment.axes,
+        fragment.time,
+        fragment.texels_per_pixel,
+        scene.box_min,
+        scene.box_max,
+        scene.capture,
+    );
+    let view = (fragment.camera - point.position).normalize();
+    let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
+    (
+        reflection_cell_centre(fragment.texel_uv, world, fragment.axes),
+        fragment.camera,
+        point,
+        search(scene, point.position, ray),
+    )
+}
+
+// Rim cells swept along walls of both orientations, the canal's and the
+// empty room's: on an x-facing wall the filter reconstructs the stored wall
+// exactly, so h on the face itself is 0 give or take f16 rounding and flips
+// sign in runs along the wall. Every cell straddling the wall, its centre
+// past the face, lands the rim inset inside it, keeps its full term, and
+// its lookup reads the wall's foot within a texel: no run of cells takes the
+// capture-shadow branch's box hit up the wall or collapses onto its start.
+// Landed on the face itself, as before the inset, some cell misreads.
+#[test]
+fn rim_cells_along_x_and_z_facing_walls_read_the_walls_foot() {
+    let mut misread_on_the_face = 0;
+    for (name, scene) in [("canal", canal()), ("empty room", empty_room())] {
+        for (axis, side) in [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)] {
+            let other = 2 - axis;
+            let face = if side > 0.0 {
+                scene.box_max[axis]
+            } else {
+                scene.box_min[axis]
+            };
+            // Two cells short of each corner (the corner's cells are the next
+            // test's), and within 65° of the wall's normal from the capture
+            // point: past the fade gate's ≈68°, a wall seen that obliquely
+            // dims its foot by design, pixel or not.
+            let reach = 65.0f32.to_radians().tan() * (face - scene.capture[axis]).abs();
+            let (from, to) = (
+                (scene.box_min[other] + 2.0 / 16.0).max(scene.capture[other] - reach),
+                (scene.box_max[other] - 2.0 / 16.0).min(scene.capture[other] + reach),
+            );
+            let steps = 600;
+            for i in 0..=steps {
+                let lateral = from + (to - from) * i as f32 / steps as f32;
+                let (centre, eye, point, result) = rim_read(scene, axis, side, lateral);
+                let at = format!("{name}, axis {axis} side {side}, at {lateral}");
+                assert!(
+                    side * (centre[axis] - face) > 0.02,
+                    "{at}: the centre lies past the face: {centre}"
+                );
+                let inside = side * (face - point.position[axis]);
+                let inset = rim_inset(centre, scene.capture);
+                assert!(
+                    (inside - inset).abs() < 1.0e-5,
+                    "{at}: {inside} m inside, not the inset {inset}"
+                );
+                assert!(
+                    result.weight > 0.99,
+                    "{at}: {} ({:?})",
+                    result.weight,
+                    result.status
+                );
+                let mut foot = point.position;
+                foot[axis] = face;
+                foot.y = 0.0;
+                let foot = foot - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
+                let apart = texels_apart(result.lookup, foot);
+                assert!(apart <= 1.0, "{at}: the wall's foot, {apart} texels off");
+
+                // The same cell started on the face itself.
+                let mut on_face = point.position;
+                on_face[axis] = face;
+                let ray = reflection_above_horizon(reflection_mirror(
+                    (eye - on_face).normalize(),
+                    Vec3::Y,
+                ));
+                let old = search(scene, on_face, ray);
+                if axis == 0 && (old.weight <= 0.99 || texels_apart(old.lookup, foot) > 1.0) {
+                    misread_on_the_face += 1;
+                }
+            }
+        }
+    }
+    // The canal's x walls, h ≈ +2e-4 on the face: the capture-shadow branch's
+    // box hit, a run of cells reading 1 to 18 texels up the wall.
+    assert!(
+        misread_on_the_face > 0,
+        "the face itself is the singular start the inset avoids"
+    );
+}
+
+// Rim cells in a box corner, straddling both walls, swept over the cell
+// grid's phase on each axis: each lands the rim inset inside both faces,
+// off the corner, and its lookup reads the corner's foot within a texel,
+// where landed on the corner itself it read 13 texels up. The filter reads
+// the stored distance near across a concave crease, so a corner start can
+// still lie a little behind the stored surface, within the depth margin:
+// the canal's corners, far down its length, clear it and keep the full term;
+// the empty room's squarer corners stay ≈0.7% behind (the inset would need
+// ≈0.5% of the cell's distance, 4.5 cm there, to clear them) and keep 95%.
+#[test]
+fn rim_cells_in_a_box_corner_read_the_corners_foot() {
+    for (name, scene, weight_floor) in
+        [("canal", canal(), 0.99), ("empty room", empty_room(), 0.94)]
+    {
+        for (sx, sz) in [(1.0f32, 1.0f32), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let corner = Vec3::new(
+                if sx > 0.0 {
+                    scene.box_max.x
+                } else {
+                    scene.box_min.x
+                },
+                0.0,
+                if sz > 0.0 {
+                    scene.box_max.z
+                } else {
+                    scene.box_min.z
+                },
+            );
+            let foot = corner - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
+            let world = corner - Vec3::new(sx, 0.0, sz) * 0.002;
+            let eye = world + Vec3::new(-sx * 1.5, 1.6, -sz * 2.0);
+            let ray_from = |start: Vec3, normal: Vec3| {
+                reflection_above_horizon(reflection_mirror((eye - start).normalize(), normal))
+            };
+            for px in [0.04, 0.1, 0.2, 0.3, 0.45] {
+                for pz in [0.04, 0.1, 0.2, 0.3, 0.45] {
+                    let at = format!("{name}, corner ({sx}, {sz}), phase ({px}, {pz})");
+                    let mut fragment = smooth_fragment(eye, world);
+                    fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
+                    fragment.texel_uv += Vec2::new(sx * px, sz * pz);
+                    let centre = reflection_cell_centre(fragment.texel_uv, world, fragment.axes);
+                    assert!(
+                        sx * (centre.x - corner.x) > 0.0 && sz * (centre.z - corner.z) > 0.0,
+                        "{at}: the centre lies past both faces: {centre}"
+                    );
+                    let point = reflection_point(
+                        fragment.style,
+                        fragment.texel_uv,
+                        world,
+                        Vec3::Y,
+                        fragment.axes,
+                        fragment.time,
+                        fragment.texels_per_pixel,
+                        scene.box_min,
+                        scene.box_max,
+                        scene.capture,
+                    );
+                    let inset = rim_inset(centre, scene.capture);
+                    let landed = corner - Vec3::new(sx, 0.0, sz) * inset;
+                    assert!(
+                        Vec3::new(point.position.x, 0.0, point.position.z)
+                            .abs_diff_eq(landed, 1.0e-5),
+                        "{at}: {} vs the inset corner {landed}",
+                        point.position
+                    );
+                    let result = search(
+                        scene,
+                        point.position,
+                        ray_from(point.position, point.normal),
+                    );
+                    let apart = texels_apart(result.lookup, foot);
+                    assert!(apart <= 1.0, "{at}: the corner's foot, {apart} texels off");
+                    assert!(
+                        result.weight > weight_floor,
+                        "{at}: {} ({:?})",
+                        result.weight,
+                        result.status
+                    );
+                    // Started on the corner itself: the box hit up the wall.
+                    let on_corner = search(scene, corner, ray_from(corner, Vec3::Y));
+                    assert!(
+                        texels_apart(on_corner.lookup, foot) > 1.0,
+                        "{at}: the corner itself reads its foot"
+                    );
+                }
+            }
+        }
+    }
 }
 
 // --- The reflected ray's floor above the horizon ----------------------------------
@@ -605,6 +839,7 @@ fn a_pixel_cell_tilted_past_a_grazing_view_searches_above_the_horizon() {
                 fragment.texels_per_pixel,
                 scene.box_min,
                 scene.box_max,
+                scene.capture,
             );
             let mirrored = reflection_mirror((camera - point.position).normalize(), point.normal);
             (mirrored.y < 0.0).then_some((fragment, point, mirrored))
@@ -1076,6 +1311,7 @@ fn every_fragment_of_a_pixel_cell_reads_one_search() {
         0.5,
         scene.box_min,
         scene.box_max,
+        scene.capture,
     );
     assert!(
         point

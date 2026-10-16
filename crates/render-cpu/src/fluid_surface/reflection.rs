@@ -161,22 +161,23 @@ impl FluidProbeGpu {
 const FLUID_PROBE_MIN_TILE_DIMENSION: u32 = 4;
 const FLUID_PROBE_MAX_TILE_DIMENSION: u32 = 1024;
 
-/// Whether the probe array can upload `section`'s colour tiles: BC6H at a
-/// tile dimension of whole 4×4 blocks, or RGBA16F.
+/// Whether the probe array can upload `section`'s colour tiles: BC6H or
+/// RGBA16F (the header check holds every dimension to whole 4×4 blocks).
 fn probe_tile_format_usable(section: &ReflectionProbesSection) -> bool {
-    match section.atlas_format {
-        IRRADIANCE_FORMAT_BC6H => section.tile_dimension.is_multiple_of(4),
-        IRRADIANCE_FORMAT_RGBA16F => true,
-        _ => false,
-    }
+    matches!(
+        section.atlas_format,
+        IRRADIANCE_FORMAT_BC6H | IRRADIANCE_FORMAT_RGBA16F
+    )
 }
 
 /// Whether `section`'s tile header is one the decoder accepts and the
-/// shader can map: a dimension in the decoder's range and the octahedral
-/// border, so the tile keeps an interior to map directions onto.
+/// shader can map: a dimension of whole 4×4 blocks in the decoder's range,
+/// whatever the colour format, and the octahedral border, so the tile keeps
+/// an interior to map directions onto.
 fn probe_tile_header_usable(section: &ReflectionProbesSection) -> bool {
     (FLUID_PROBE_MIN_TILE_DIMENSION..=FLUID_PROBE_MAX_TILE_DIMENSION)
         .contains(&section.tile_dimension)
+        && section.tile_dimension.is_multiple_of(4)
         && section.tile_border == REFLECTION_PROBE_TILE_BORDER
 }
 
@@ -590,6 +591,7 @@ pub fn reflection_fragment(
         fragment.texels_per_pixel,
         Vec3::from(probe.box_min),
         Vec3::from(probe.box_max),
+        Vec3::from(probe.capture_point),
     );
     let view = (fragment.camera - point.position).normalize_or_zero();
     let ray = reflection_above_horizon(reflection_mirror(view, point.normal));

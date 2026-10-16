@@ -1535,7 +1535,8 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
          letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
          in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
-         fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max);\
+         fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+         fluid_probes.probes[in.probe].capture_point);\
          letview=normalize(uniforms.camera_position-point.position);\
          letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
          letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;\
@@ -1622,8 +1623,13 @@ fn the_install_filter_and_the_bound_face_predicate_agree() {
         ("BC6H", bc6h, true),
         (
             "RGBA16F",
-            section(IRRADIANCE_FORMAT_RGBA16F, 6, 6 * 6 * 8),
+            section(IRRADIANCE_FORMAT_RGBA16F, 8, 8 * 8 * 8),
             true,
+        ),
+        (
+            "RGBA16F tile of partial 4×4 blocks",
+            section(IRRADIANCE_FORMAT_RGBA16F, 6, 6 * 6 * 8),
+            false,
         ),
         (
             "colour payload a byte short",
@@ -1934,7 +1940,7 @@ fn fluid_reflection_wgsl_bodies_match_the_cpu_reference() {
          letprobe=&probes[fragment.probeasusize];\
          letpoint=reflection_point(fragment.style,fragment.texel_uv,fragment.world_position,\
          outward,fragment.axes,fragment.time,fragment.texels_per_pixel,\
-         Vec3::from(probe.box_min),Vec3::from(probe.box_max),);\
+         Vec3::from(probe.box_min),Vec3::from(probe.box_max),Vec3::from(probe.capture_point),);\
          letview=(fragment.camera-point.position).normalize_or_zero();\
          letray=reflection_above_horizon(reflection_mirror(view,point.normal));\
          letsearch=reflection_search(point.position,ray,Vec3::from(probe.box_min),\
@@ -2154,6 +2160,14 @@ fn fluid_reflection_style_shader_constants_match_the_cpu_reference() {
         shader_f32("FLUID_REFLECTION_AXES_EPSILON"),
         r::FLUID_REFLECTION_AXES_EPSILON
     );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RIM_INSET"),
+        r::FLUID_REFLECTION_RIM_INSET
+    );
+    assert_eq!(
+        shader_f32("FLUID_REFLECTION_RIM_INSET_MIN"),
+        r::FLUID_REFLECTION_RIM_INSET_MIN
+    );
     for style in r::FluidReflectionStyle::ALL {
         let shader = match style {
             r::FluidReflectionStyle::Pixel => shader_u32("FLUID_REFLECTION_STYLE_PIXEL"),
@@ -2221,47 +2235,56 @@ fn fluid_reflection_style_wgsl_bodies_match_the_cpu_reference() {
         (
             "fluid_reflection_cell_within_box",
             "fnfluid_reflection_cell_within_box(centre:vec3<f32>,axes:FluidTexelAxes,\
-             box_min:vec3<f32>,box_max:vec3<f32>)->vec3<f32>{\
+             box_min:vec3<f32>,box_max:vec3<f32>,capture_point:vec3<f32>)->vec3<f32>{\
              letpast=centre-clamp(centre,box_min,box_max);\
-             letovershoot=vec3<f32>(past.x,0.0,past.z);\
-             lethalf_cell=0.5*sqrt(dot(axes.u,axes.u)+dot(axes.v,axes.v));\
-             letlength_past=length(overshoot);\
-             letpull_length=min(length_past,max(2.0*half_cell-length_past,0.0));\
-             varpull=vec3<f32>(0.0);\
-             iflength_past>0.0{pull=overshoot*(pull_length/length_past);}\
-             returncentre-pull;}",
+             letlength_past=length(vec3<f32>(past.x,0.0,past.z));\
+             lethalf_cell=0.5*max(length(axes.u+axes.v),length(axes.u-axes.v));\
+             lettoward=centre-capture_point;\
+             letinset=max(FLUID_REFLECTION_RIM_INSET*(abs(toward.x)+abs(toward.z)),\
+             FLUID_REFLECTION_RIM_INSET_MIN);\
+             letmargin=vec3<f32>(inset,0.0,inset);\
+             lettarget_point=max(min(centre,box_max-margin),box_min+margin);\
+             letpull=vec3<f32>(centre.x-target_point.x,0.0,centre.z-target_point.z);\
+             varkeep=0.0;\
+             ifhalf_cell>0.0{keep=clamp((2.0*half_cell-length_past)/half_cell,0.0,1.0);}\
+             returncentre-pull*keep;}",
             "reflection_cell_within_box",
             "fnreflection_cell_within_box(centre:Vec3,axes:FluidTexelAxes,box_min:Vec3,\
-             box_max:Vec3,)->Vec3{\
+             box_max:Vec3,capture_point:Vec3,)->Vec3{\
              letpast=centre-centre.clamp(box_min,box_max);\
-             letovershoot=Vec3::new(past.x,0.0,past.z);\
-             lethalf_cell=0.5*(axes.u.dot(axes.u)+axes.v.dot(axes.v)).sqrt();\
-             letlength_past=overshoot.length();\
-             letpull_length=length_past.min((2.0*half_cell-length_past).max(0.0));\
-             letpull=iflength_past>0.0{overshoot*(pull_length/length_past)}else{Vec3::ZERO};\
-             centre-pull}",
+             letlength_past=Vec3::new(past.x,0.0,past.z).length();\
+             lethalf_cell=0.5*(axes.u+axes.v).length().max((axes.u-axes.v).length());\
+             lettoward=centre-capture_point;\
+             letinset=(FLUID_REFLECTION_RIM_INSET*(toward.x.abs()+toward.z.abs()))\
+             .max(FLUID_REFLECTION_RIM_INSET_MIN);\
+             letmargin=Vec3::new(inset,0.0,inset);\
+             lettarget_point=centre.min(box_max-margin).max(box_min+margin);\
+             letpull=Vec3::new(centre.x-target_point.x,0.0,centre.z-target_point.z);\
+             letkeep=ifhalf_cell>0.0{((2.0*half_cell-length_past)/half_cell).clamp(0.0,1.0)\
+             }else{0.0};\
+             centre-pull*keep}",
         ),
         (
             "fluid_reflection_point",
             "fnfluid_reflection_point(style:u32,texel_uv:vec2<f32>,world_position:vec3<f32>,\
              outward:vec3<f32>,axes:FluidTexelAxes,time:f32,texels_per_pixel:f32,\
-             box_min:vec3<f32>,box_max:vec3<f32>)->FluidReflectionPoint{\
+             box_min:vec3<f32>,box_max:vec3<f32>,capture_point:vec3<f32>)->FluidReflectionPoint{\
              ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{\
              returnFluidReflectionPoint(world_position,outward);}\
              letoffset=fluid_displayed_offset(vec2<i32>(floor(texel_uv)),time,texels_per_pixel);\
              letcentre=fluid_reflection_cell_centre(texel_uv,world_position,axes);\
              returnFluidReflectionPoint(fluid_reflection_cell_within_box(centre,axes,box_min,\
-             box_max),fluid_reflection_cell_normal(outward,axes,offset));}",
+             box_max,capture_point),fluid_reflection_cell_normal(outward,axes,offset));}",
             "reflection_point",
             "fnreflection_point(style:u32,texel_uv:Vec2,world_position:Vec3,outward:Vec3,\
              axes:FluidTexelAxes,time:f32,texels_per_pixel:f32,box_min:Vec3,box_max:Vec3,\
-             )->FluidReflectionPoint{\
+             capture_point:Vec3,)->FluidReflectionPoint{\
              ifstyle==FLUID_REFLECTION_STYLE_SMOOTH{returnFluidReflectionPoint{\
              position:world_position,normal:outward,};}\
              letoffset=displayed_offset(texel_cell(texel_uv),time,texels_per_pixel);\
              letcentre=reflection_cell_centre(texel_uv,world_position,axes);\
              FluidReflectionPoint{position:reflection_cell_within_box(centre,axes,box_min,\
-             box_max),normal:reflection_cell_normal(outward,axes,offset),}}",
+             box_max,capture_point),normal:reflection_cell_normal(outward,axes,offset),}}",
         ),
     ];
     for (wgsl_name, wgsl_body, cpu_name, cpu_body) in pinned {
@@ -3136,21 +3159,20 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
 
     // Every table read is indexed by the face's probe: the `probe`
     // parameter, or in `fs_main`'s tail the varying itself, read there only
-    // for the box the pixel-style cell is held to.
+    // for the box and capture point the pixel-style cell is held to.
     let table_reads = code.matches("fluid_probes.probes[").count();
     assert!(table_reads >= 7, "{table_reads}");
     assert_eq!(
         tail.matches("fluid_probes.probes[in.probe]").count(),
-        2,
+        3,
         "{tail}"
     );
-    assert!(
-        tail.contains(
-            "fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max);"
-        )
-    );
+    assert!(tail.contains(
+        "fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
+         fluid_probes.probes[in.probe].capture_point);"
+    ));
     assert_eq!(
-        code.matches("fluid_probes.probes[probe]").count() + 2,
+        code.matches("fluid_probes.probes[probe]").count() + 3,
         table_reads
     );
     for function in ["fluid_reflection_sample", "fluid_reflection_ratio"] {

@@ -15,12 +15,12 @@ Read at 3409c2fc. Symbols, not lines.
 | `RenderCamera::new` clamps the composed pitch (aim + every view-feel term) to ±89°. Aim is clamped separately. | `camera.rs` `PITCH_LIMIT`, `RenderCamera::new`, `Camera::rotate` |
 | Tick input and host aim read `camera.pitch`, never the render camera. | `MovementInput.facing_pitch` in `main.rs`; `host_aim_pitch` in `net_serialize_and_send` |
 | The driver carries kind, velocity, grounded, eye clearance and `VaultViewInput { progress, path_s }`. No aim pitch, no vault payload. | `frame_eye::ViewFeelDriver`; `frame_loop` `presented_vault` |
-| `clear_state_effects` resets impulse springs, slide blend and vault state; called on descriptor refresh and staged manifest commit. Pawn change, no driver and level install reset all state. | `ViewFeelState::clear_state_effects`; `sync_view_feel_driver`; `invalidate_refreshed_view_feel_state_effects`; `startup/lifecycle.rs` |
+| `clear_state_effects` resets impulse springs, slide blend and vault state with no release; called on a view-feel descriptor change and on a staged manifest commit that changed the followed pawn's movement. Hot reload is such a commit: it replaces the movement component, dropping dash, crouch, slide and vault to `Normal` (swim kept), so slide and vault snap today. Pawn change, no driver and level install reset all state. | `ViewFeelState::clear_state_effects`; `sync_view_feel_driver`; `invalidate_refreshed_view_feel_state_effects`; `refresh_plan` movement replace; `startup/lifecycle.rs`. `movement.md` §1 and the `vault::evaluate` doc claim a hot-reload release; both are stale |
 | View feel follows the local pawn only. | `followed_player_pawn` → `local_player_movement_pawn` |
 | `view_feel` is excluded from the tuning payload. `ViewFeelParams` is serde without `deny_unknown_fields`. | `movement_state_to_wire` doc comment; `foundation` `data_descriptors/types/movement.rs` |
 | Vault payload: `target` = landing feet, `start_offset` = entry feet − target, mover-local when `mover` is set. `VaultPath` is `pub(super)` to physics movement. | `MovementState::Vault`; `physics::movement::vault_path::VaultPath` |
-| Vault frames are upright within ~0.8°, so vertical and horizontal-magnitude parts of frame-local offsets hold in world space. | `UPRIGHT_MIN_UP_Y`, `VaultFrame::is_upright` |
-| Unknown top-level `viewFeel` keys are ignored. A retired-key precedent exists: "`components.ai` has been retired; author `components.behavior` instead". | `view_feel_params_from_js`/`_lua`; `js/entity.rs`, `lua/entity.rs` |
+| Uprightness (within ~0.8°) is checked only at entry. Each tick re-resolves the mover frame with no check and follows the path through it, so a mover may tilt mid-vault. | `UPRIGHT_MIN_UP_Y`, `VaultFrame::is_upright` in `vault_entry`; `VaultFrame::resolve` in `intents::vault` |
+| Unknown top-level `viewFeel` keys are ignored. Impulse rows skip inherited rows rather than reject them. A retired-key precedent exists: "`components.ai` has been retired; author `components.behavior` instead". | `view_feel_params_from_js`/`_lua`; `js/entity.rs`, `lua/entity.rs` |
 | Dev player: eye 1.5 m above feet (`halfHeight` 0.8, `radius` 0.2, `eyeHeight` 0.5 above the capsule centre), `vault.maxHeight` 1.6 m, `durationMs` 800, `allowFire: false`; vault pose `pitch −38.5, roll 10, fov −30, easeIn 0.33, easeOut 0.33`. The twins `movement-vault.ts`/`.luau` author no view feel. | `content/dev/scripts/player.ts` |
 | Human docs for both blocks live only in `docs/scripting-reference.md` (§Slide camera feel, §Vault camera pose, the accessibility table). | `docs/scripting-reference.md` |
 
@@ -59,7 +59,7 @@ Rejected:
 
 ## Focus geometry
 
-Ledge line = atan2(top_y − eye_y, max(horizontal, floor)), clamped to ≤ 0. Without the floor, horizontal distance goes to 0 as the pawn arrives over the landing spot and the angle approaches −90°.
+Ledge line = atan2(top_y − eye_y, max(horizontal, floor)), clamped to ≤ 0, with the landing spot carried into world space through the mover's presented pose when `mover` is set. Without the floor, horizontal distance goes to 0 as the pawn arrives over the landing spot and the angle approaches −90°.
 
 Reference view = aim + the row's literal `pitch`. Focus offset = max(−maxPitch, strength · min(0, line − reference)). Row output = weight · (pitch + focus), with roll and fov likewise weighted.
 
@@ -96,7 +96,21 @@ Pattern: an additive, short, bounded offset with the mouse kept live is accepted
 ## Doors
 
 - **Wall-run:** a `wallRun` row plus a term signed toward the wall.
-- **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row.
+- **Vault entry feel:** `movement--vault-entry-feel` widens `pose.vault` angles to `motion` expressions evaluated at the entry edge. It rebases its pose fields, overlap rule and pins P12, P22 and P24 onto `pose.vault`; its first Decision's line that this brief times rows by rates is stale for the vault row, and its P26 (hot reload releases the pose) is false against source.
 - **Sustained FOV draft:** its slide row is superseded. Its `run` tier is input-derived inside `Normal` and targets an absolute FOV, so it does not fit a state row's additive offset; see the open question.
 - **Composition draft:** `pose.<state>` moves to its state layer.
 - **Spectator follow-cam:** evaluates from replicated payload, no wire change.
+
+## Pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Row handoff: dash or swim into a vault; a swim edge pre-empting a land-entered vault. Crouch and slide never vault. | Kind changes on one tick. The leaving row eases out on its own timing (rate or release) while the entering row eases in on its own. | Rows add. Both present during the overlap. No frame steps. No single weight is handed between rows. |
+| P2 | Two rows with `eyeDrop` at once (crouch↔slide, swim→vault). | Bob, then the summed drop of every row, then the 0.05 m floor once. | Eye stays at least 0.05 m above the feet. The floor bounds the sum, not each row. |
+| P3 | Vault A releasing; vault B starts; B ends or aborts before A's release finishes. | B's end starts a new release while A's still runs. | The new release starts from the presented weight and blended values. No step on B's end frame. |
+| P4 | View-feel scale 0 across a vault's end, restored mid-release. | Captured values are unscaled; scale multiplies output only. | After restore, the frame presents scale × release weight × captured values. Not neutral, not a restarted release. |
+| P5 | Ledge focus during a release. | Geometry is gone after the end frame; the captured focus is an angle, not a line. | Focus is not re-evaluated against live aim. Mouse pitch maps 1:1 through the release. |
+| P6 | Ledge focus on a full climb and on a joined vault. | Focus is computed, then scaled by the one row weight. | A join's first frame is near neutral. A full climb starts and ends at neutral. Focus never presents outside the row weight. |
+| P7 | Ledge focus with an impulse kick, sway or another row active. | The line bounds aim + row literal pitch + focus; other terms compose after. | "Never past the line" holds for the row's reference view; rendered pitch may pass it by the other terms. |
+| P8 | A mover tilts after vault entry. | Uprightness is checked at entry only; each tick re-resolves the frame. | Focus reads the landing spot through the mover's presented pose; no assumption of uprightness. |
+| P9 | Hot reload or descriptor refresh mid-vault or mid-slide. | The commit replaces the movement component, then clears pose state on the same frame. | The pose snaps to neutral; no release runs. |

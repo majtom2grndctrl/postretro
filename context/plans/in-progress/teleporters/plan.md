@@ -1,7 +1,7 @@
 # teleporters — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 08231a583
 
 ## Checkpoint
@@ -11,7 +11,7 @@ read at: 08231a583
 - Active checkout: `/Users/dhiester/.codex/worktrees/teleporters/postretro`. The primary checkout contains unrelated owner edits; leave them untouched.
 - Source verification completed against the claim commit; no engine implementation changes exist yet. No Cargo builds or tests have run in this planning checkpoint.
 - Owner approved the traveller-sound amendment in this chat on 2026-10-15: retain the speculative cue for a same-generation authoritative replacement; no second playback even if the teleporter/cue differs. Ahead adoptions play the authoritative last cue once; several unseen teleports coalesce. Applied to the brief and research P32. No other Decision or Acceptance meaning changed.
-- This proposed plan still needs the resumable owner skim before implementation. On approval, change status to `approved` and commit before starting task 1.
+- Owner approved this plan in chat on 2026-10-15. Approval recorded before implementation; execute tasks in dependency order.
 
 ## Corrections
 
@@ -112,7 +112,7 @@ Integrating executor owns shared types, integration, plan, commits and all Cargo
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin host-seat classic path: minimal id55 record/load/install and indexed region; pawn relocation result/state; exact arrival clearance; host same-tick yaw/aim/presentation write and camera hold. Prove AC1, basic AC5/14/32/33 and short-distance cut identity premise before widening. | integrating executor | — | pending owner plan approval |
+| 1 | Thin host-seat classic path: minimal id55 record/load/install and indexed region; pawn relocation result/state; exact arrival clearance; host same-tick yaw/aim/presentation write and camera hold. Prove AC1, basic AC5/14/32/33 and short-distance cut identity premise before widening. | integrating executor | — | in progress |
 | 2 | Complete strict FGD/parser/format and tag companion; seamless transforms, union/ranking, all arrival latches, state/mover detachment; digest; hot reload/tuning state carry. Focused placement/compiler/codec proofs. | integrating executor | 1 | pending |
 | 3 | Full TS/Luau member/event/token/manifests/SDK surface; authoritative ordered mutation queue at next tick start; in-tick teleport dispatch after all pawn movement; role/lifecycle/death/trigger/progress proofs. | integrating executor | 2 | pending |
 | 4 | Teleporter armed replication/binding; pawn record codec/merge and protocol bumps; sampled yaw stamp through every input path; prediction/replay/adoption/identity cut retaining unacked ring; first-record and epoch handling. Focused net tests. | integrating executor | 2, 3 | pending |

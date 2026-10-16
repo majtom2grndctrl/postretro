@@ -299,13 +299,17 @@ fn collect_payloads(
         payloads.push(payload);
     }
     if let Ok(teleporter) = registry.get_component::<postretro_entities::TeleporterComponent>(id) {
-        payloads.push(ComponentPayload::TeleporterState(
-            postretro_net::wire::WireTeleporterState {
-                index: teleporter.index,
-                source_entity: teleporter.source_entity,
-                armed: teleporter.armed,
-            },
-        ));
+        let payload = ComponentPayload::TeleporterState(postretro_net::wire::WireTeleporterState {
+            index: teleporter.index,
+            source_entity: teleporter.source_entity,
+            armed: teleporter.armed,
+        });
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::Teleporter),
+            payload.kind(),
+            "engine/wire teleporter discriminant diverged"
+        );
+        payloads.push(payload);
     }
     payloads
 }

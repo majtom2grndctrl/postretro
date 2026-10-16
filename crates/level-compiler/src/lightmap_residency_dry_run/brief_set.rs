@@ -163,7 +163,7 @@ pub(crate) fn check_against_direct(
 ) -> (usize, usize) {
     let mismatched = camera_cells
         .par_iter()
-        .map(|&camera| mismatches(map, sources, camera, leads_fixed))
+        .map(|&camera| mismatches(map, sources, camera, leads_fixed, BakedRelation::Equal))
         .sum();
     (camera_cells.len() * leads_fixed.len(), mismatched)
 }
@@ -179,6 +179,40 @@ pub(crate) struct LeadCheck {
     pub distinct_leads: usize,
 }
 
+/// How a PRL's baked id 51 must relate to direct evaluation of the formula.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BakedRelation {
+    /// No teleporters: the bake is the formula, at every lead.
+    Equal,
+    /// Teleporters (id 55) add arrival origins the dry run cannot rebuild:
+    /// routes classify cells against compile-time BSP half-spaces a PRL does
+    /// not carry. The bake must hold every directly evaluated cell at no
+    /// greater lead; what it holds beyond that is reported as arrival delta.
+    Superset,
+}
+
+impl BakedRelation {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            BakedRelation::Equal => "equal",
+            BakedRelation::Superset => "superset (teleporters)",
+        }
+    }
+}
+
+/// The PRL's baked id 51 against direct evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BakedCheck {
+    pub relation: BakedRelation,
+    /// `mismatched` counts `(camera, lead)` pairs that break `relation`.
+    pub check: LeadCheck,
+    /// Baked entries absent from direct evaluation at the entry's own lead:
+    /// cells teleport arrivals add, or pull to a nearer lead.
+    pub arrival_entries: usize,
+    /// Camera cells holding at least one arrival entry.
+    pub arrival_cameras: usize,
+}
+
 /// Both sides are step functions of `L` that change only at one of the
 /// camera's own map leads or one of its hub-metric partner distances, so
 /// comparing at each of those breakpoints compares every `L` up to the map's
@@ -187,6 +221,37 @@ pub(crate) fn check_every_breakpoint(
     map: &LeadMap,
     sources: &BriefSetSources<'_>,
     camera_cells: &[u32],
+) -> LeadCheck {
+    check_breakpoints(map, sources, camera_cells, BakedRelation::Equal)
+}
+
+/// [`check_every_breakpoint`] under `relation`, plus the arrival delta.
+pub(crate) fn check_baked(
+    map: &LeadMap,
+    sources: &BriefSetSources<'_>,
+    camera_cells: &[u32],
+    relation: BakedRelation,
+) -> BakedCheck {
+    let (arrival_entries, arrival_cameras) = camera_cells
+        .par_iter()
+        .map(|&camera| {
+            let entries = arrival_entries(map, sources, camera);
+            (entries, usize::from(entries > 0))
+        })
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    BakedCheck {
+        relation,
+        check: check_breakpoints(map, sources, camera_cells, relation),
+        arrival_entries,
+        arrival_cameras,
+    }
+}
+
+fn check_breakpoints(
+    map: &LeadMap,
+    sources: &BriefSetSources<'_>,
+    camera_cells: &[u32],
+    relation: BakedRelation,
 ) -> LeadCheck {
     let (checked, mismatched) = camera_cells
         .par_iter()
@@ -205,7 +270,10 @@ pub(crate) fn check_every_breakpoint(
                 .collect();
             leads.sort_unstable();
             leads.dedup();
-            (leads.len(), mismatches(map, sources, camera, &leads))
+            (
+                leads.len(),
+                mismatches(map, sources, camera, &leads, relation),
+            )
         })
         .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
     let mut distinct: Vec<u32> = map.entries.iter().map(|&(_, lead)| lead).collect();
@@ -218,11 +286,38 @@ pub(crate) fn check_every_breakpoint(
     }
 }
 
-fn mismatches(map: &LeadMap, sources: &BriefSetSources<'_>, camera: u32, leads: &[u32]) -> usize {
+fn mismatches(
+    map: &LeadMap,
+    sources: &BriefSetSources<'_>,
+    camera: u32,
+    leads: &[u32],
+    relation: BakedRelation,
+) -> usize {
     leads
         .iter()
         .filter(|&&lead| {
-            map.mandatory(camera, lead, sources.pinned) != direct_set(sources, camera, lead)
+            let baked = map.mandatory(camera, lead, sources.pinned);
+            let direct = direct_set(sources, camera, lead);
+            match relation {
+                BakedRelation::Equal => baked != direct,
+                BakedRelation::Superset => {
+                    direct.iter().any(|cell| baked.binary_search(cell).is_err())
+                }
+            }
         })
         .count()
+}
+
+/// A camera's entries arrive in ascending lead; each lead run is compared
+/// once against direct evaluation at that lead.
+fn arrival_entries(map: &LeadMap, sources: &BriefSetSources<'_>, camera: u32) -> usize {
+    map.entries_of(camera)
+        .chunk_by(|a, b| a.1 == b.1)
+        .map(|run| {
+            let direct = direct_set(sources, camera, run[0].1);
+            run.iter()
+                .filter(|(cell, _)| direct.binary_search(cell).is_err())
+                .count()
+        })
+        .sum()
 }

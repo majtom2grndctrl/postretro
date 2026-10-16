@@ -134,7 +134,8 @@ fn teleport_same_generation_replacement_cuts_short_distance_and_keeps_ring_witho
     registry.set_component(pawn, movement.clone()).unwrap();
     let mut prediction = ClientPrediction::new();
     prediction.arm(NetworkId(7), pawn);
-    assert!(prediction.take_first_record());
+    assert!(prediction.first_record_pending());
+    prediction.mark_first_record_adopted();
     let (transform, movement, _) = prediction
         .predict_tick_with_events(
             command(1, 0.0, 0.0),
@@ -256,7 +257,7 @@ fn teleport_reconcile_refusal_restores_yaw_silently_and_unknown_indices_are_reje
     registry.set_component(pawn, movement.clone()).unwrap();
     let mut prediction = ClientPrediction::new();
     prediction.arm(NetworkId(7), pawn);
-    prediction.take_first_record();
+    prediction.mark_first_record_adopted();
     let mut wire = movement_state_to_wire(&movement, 0.0);
     wire.teleport = Default::default();
     assert_eq!(
@@ -393,7 +394,7 @@ fn pawn_with_accumulated_yaw(
     pawn
 }
 
-// AC47 / P22 / P33: a command stamped in one session — its pawn had turned 1 rad
+// A command stamped in one session — its pawn had turned 1 rad
 // through teleports — is in flight across a level change or a restart of the
 // same level. The real transport's participation epoch drops it, so the new
 // session's pawn (teleported 0.7 rad through the same indices) never rotates it.

@@ -15,7 +15,8 @@ use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
 
 use super::brief_set::{
-    BriefSetSources, Dilation, check_every_breakpoint, direct_set, pinned_cells, visible_sources,
+    BakedRelation, BriefSetSources, Dilation, check_baked, check_every_breakpoint, direct_set,
+    pinned_cells, visible_sources,
 };
 use super::{read_dry_run_input, run_dry_run};
 use crate::bake_control::BakeControl;
@@ -100,6 +101,133 @@ fn residency_set_bake_matches_direct_evaluation() {
     assert!(map.mandatory(0, 0, &[far]).contains(&far));
 }
 
+/// With a teleporter, id 51 holds arrival cells the formula cannot rebuild
+/// from a PRL, so strict equality fails; the superset relation the dry run
+/// applies to teleporter PRLs passes and counts them as arrival delta.
+#[test]
+fn teleport_residency_baked_set_checks_as_superset_with_arrival_delta() {
+    use crate::cell_residency_bake::teleport_routes::TeleportResidencyInput;
+    use crate::partition::{Aabb, BspLeaf, BspTree};
+    use glam::DVec3;
+    use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
+    use postretro_level_format::teleporters::{TeleportMode, TeleporterRecord, TeleportersSection};
+
+    let (cells, portals, locator) = l_corridor_sections();
+    let tree = BspTree {
+        nodes: Vec::new(),
+        leaves: cells
+            .cells
+            .iter()
+            .map(|cell| BspLeaf {
+                face_indices: Vec::new(),
+                bounds: Aabb {
+                    min: DVec3::from(cell.bounds_min.map(f64::from)),
+                    max: DVec3::from(cell.bounds_max.map(f64::from)),
+                },
+                is_solid: false,
+                defining_planes: Vec::new(),
+            })
+            .collect(),
+    };
+    let (min, max) = ([1.0f32, 0.5, 0.5], [2.0f32, 3.0, 3.0]);
+    let pad = EnvironmentBrush {
+        aabb_min: min,
+        aabb_max: max,
+        planes: (0..3)
+            .flat_map(|axis| {
+                [-1.0f32, 1.0].map(move |sign| {
+                    let mut normal = [0.0; 3];
+                    normal[axis] = sign;
+                    EnvironmentPlane {
+                        normal,
+                        distance: if sign > 0.0 { max[axis] } else { -min[axis] },
+                    }
+                })
+            })
+            .collect(),
+    };
+    // From the start of the X leg to the far end of the Z leg: out of lead
+    // and view of the pad's cameras without the teleporter.
+    let section = TeleportersSection {
+        teleporters: vec![TeleporterRecord {
+            source_entity: 1,
+            mode: TeleportMode::Classic,
+            enabled_on_spawn: true,
+            brushes: vec![pad],
+            destination_origin: [45.0, 2.0, 59.0],
+            destination_yaw: 0.0,
+            landmark_origin: [0.0; 3],
+            landmark_yaw: 0.0,
+            arrival_sound: String::new(),
+            on_teleport: String::new(),
+        }],
+    };
+    let bake = |teleporters: Option<TeleportResidencyInput<'_>>| {
+        let baked = cell_residency_set_bake_cached(
+            &cells,
+            &portals,
+            &locator,
+            teleporters,
+            None,
+            &BakeControl::unrestricted(),
+        )
+        .expect("the bake succeeds")
+        .expect("usable portals");
+        CellResidencySetSection::from_bytes(&baked.to_bytes(), cells.cells.len())
+            .expect("the baked section decodes")
+    };
+    let with_teleporter = bake(Some(TeleportResidencyInput {
+        section: &section,
+        tree: &tree,
+    }));
+    let without = bake(None);
+
+    let graph = portal_graph_from_sections(&cells, &portals);
+    let world = LevelWorld::visibility_only_from_sections(&cells, &portals, &locator)
+        .expect("loader world");
+    let cameras = camera_cells(&cells);
+    let neighbors = Neighbors::from_pairs(
+        cells.cells.len(),
+        &recompute_pairs(&graph, meters_fixed(MAX_LEAD_METERS)),
+    );
+    let pvs = sample_pvs(&world, &cameras, &BakeControl::unrestricted());
+    let visible = visible_sources(&pvs.dense, &portal_neighbours(&graph), Dilation::OneHop);
+    let sources = BriefSetSources {
+        neighbors: &neighbors,
+        visible: &visible,
+        pinned: &[],
+        cell_count: cells.cells.len(),
+    };
+
+    let map = LeadMap::from_section(&with_teleporter);
+    let strict = check_every_breakpoint(&map, &sources, &cameras);
+    assert!(
+        strict.mismatched > 0,
+        "arrivals must break equality: {strict:?}"
+    );
+    let superset = check_baked(&map, &sources, &cameras, BakedRelation::Superset);
+    assert_eq!(superset.check.mismatched, 0, "{superset:?}");
+    assert!(
+        superset.arrival_entries > 0 && superset.arrival_cameras > 0,
+        "{superset:?}"
+    );
+    let plain = check_baked(
+        &LeadMap::from_section(&without),
+        &sources,
+        &cameras,
+        BakedRelation::Superset,
+    );
+    assert_eq!(
+        (
+            plain.check.mismatched,
+            plain.arrival_entries,
+            plain.arrival_cameras
+        ),
+        (0, 0, 0),
+        "{plain:?}"
+    );
+}
+
 /// On the hinted doorway fixture, end to end: a compiled PRL's id 51 equals
 /// the dry run's direct evaluation (read through the dry run's own PRL reader
 /// and report), a pinned cell enters no camera cell's baked set merely for
@@ -124,7 +252,10 @@ fn compiled_residency_set_matches_direct_evaluation_and_ignores_pins() {
         .as_ref()
         .expect("portal graph and world present")
         .brief_set;
-    let check = brief.baked.expect("the report checks the baked section");
+    let baked_check = brief.baked.expect("the report checks the baked section");
+    assert!(!input.teleporters_present);
+    assert_eq!(baked_check.relation, BakedRelation::Equal);
+    let check = baked_check.check;
     assert_eq!(check.mismatched, 0, "{check:?}");
     assert!(check.checked >= report.camera_cells.len(), "{check:?}");
     assert!(report.render().contains("baked id 51 vs direct evaluation"));

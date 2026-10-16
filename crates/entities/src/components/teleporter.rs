@@ -1,5 +1,5 @@
 // Engine-owned map teleporter identity, arming state and presentation metadata.
-// See: context/lib/entity_model.md §7 (Environment Volumes)
+// See: context/lib/entity_model.md §7 (Teleporter regions)
 
 use serde::{Deserialize, Serialize};
 

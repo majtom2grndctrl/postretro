@@ -10,13 +10,16 @@ use postretro_level_loader::LevelWorld;
 
 pub(crate) fn spawn_loaded_teleporters(registry: &mut EntityRegistry, world: &LevelWorld) {
     for (index, record) in world.teleporters.teleporters.iter().enumerate() {
-        let companion = world.map_entities.iter().enumerate().find(|(_, entity)| {
-            entity.classname == "trigger_teleport"
-                && entity.key_values.iter().any(|(key, value)| {
-                    key == TELEPORTER_SOURCE_ENTITY_KEY
-                        && value.parse::<u32>().ok() == Some(record.source_entity)
-                })
-        });
+        let companion = teleporter_companion(world, record.source_entity);
+        if companion.is_none() {
+            // The compiler always writes one; a PRL without it still loads, but the
+            // teleporter has no tags for scripts to find and no authored origin.
+            log::warn!(
+                "[Loader] teleporter entity {} has no map-entity companion; it has no tags \
+                 and sits at its first brush's centre",
+                record.source_entity
+            );
+        }
         let position = companion.map_or_else(
             || {
                 record.brushes.first().map_or(Vec3::ZERO, |brush| {
@@ -58,6 +61,21 @@ pub(crate) fn spawn_loaded_teleporters(registry: &mut EntityRegistry, world: &Le
     }
 }
 
+/// The id-29 map-entity record carrying a teleporter's name, tags and pairing keys,
+/// with its map ordinal. The compiler writes one per teleporter, keyed by source entity.
+fn teleporter_companion(
+    world: &LevelWorld,
+    source_entity: u32,
+) -> Option<(usize, &postretro_level_format::map_entity::MapEntityRecord)> {
+    world.map_entities.iter().enumerate().find(|(_, entity)| {
+        entity.classname == "trigger_teleport"
+            && entity.key_values.iter().any(|(key, value)| {
+                key == TELEPORTER_SOURCE_ENTITY_KEY
+                    && value.parse::<u32>().ok() == Some(source_entity)
+            })
+    })
+}
+
 pub(crate) fn bind_loaded_teleporters(
     world: &mut postretro_physics::teleporters::Teleporters,
     registry: &EntityRegistry,
@@ -69,15 +87,36 @@ pub(crate) fn bind_loaded_teleporters(
     }
 }
 
-pub(crate) fn local_teleport_identity(registry: &EntityRegistry) -> Option<(u8, f32)> {
+/// The local pawn's replicated teleport state: what changes when it teleports, is
+/// cut back, or adopts a teleport it did not predict.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TeleportIdentity {
+    pub generation: u8,
+    pub accumulated_yaw: f32,
+    pub last_teleporter: u16,
+}
+
+pub(crate) fn local_teleport_identity(registry: &EntityRegistry) -> Option<TeleportIdentity> {
     let pawn = registry.local_player_movement_pawn()?;
     let movement = registry
         .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
         .ok()?;
-    Some((
-        movement.teleport.generation,
-        movement.teleport.accumulated_yaw,
-    ))
+    Some(TeleportIdentity {
+        generation: movement.teleport.generation,
+        accumulated_yaw: movement.teleport.accumulated_yaw,
+        last_teleporter: movement.teleport.last_teleporter,
+    })
+}
+
+/// Whether the local pawn teleported across one authoritative tick: the host seat
+/// holds its camera on the arrival eye instead of pushing it.
+pub(crate) fn local_teleported_since(
+    registry: &EntityRegistry,
+    before: Option<TeleportIdentity>,
+) -> bool {
+    before.is_some_and(|before| {
+        local_teleport_identity(registry).is_some_and(|after| before != after)
+    })
 }
 
 pub(crate) fn hash_content(hasher: &mut blake3::Hasher, world: &LevelWorld) {
@@ -126,13 +165,7 @@ pub(crate) fn hash_content(hasher: &mut blake3::Hasher, world: &LevelWorld) {
             }
             hasher.update(&landmark_yaw.to_le_bytes());
         }
-        let companion = world.map_entities.iter().find(|entity| {
-            entity.classname == "trigger_teleport"
-                && entity.key_values.iter().any(|(key, value)| {
-                    key == TELEPORTER_SOURCE_ENTITY_KEY
-                        && value.parse::<u32>().ok() == Some(*source_entity)
-                })
-        });
+        let companion = teleporter_companion(world, *source_entity).map(|(_, entity)| entity);
         for key in ["target", "landmark"] {
             let value = companion
                 .and_then(|entity| entity.key_values.iter().find(|(name, _)| name == key))
@@ -146,10 +179,11 @@ pub(crate) fn hash_content(hasher: &mut blake3::Hasher, world: &LevelWorld) {
 pub(crate) fn apply_local_camera_turn(
     camera: &mut crate::camera::Camera,
     registry: &EntityRegistry,
-    before: Option<(u8, f32)>,
+    before: Option<TeleportIdentity>,
 ) {
-    if let (Some((_, before)), Some((_, after))) = (before, local_teleport_identity(registry)) {
-        camera.yaw += postretro_foundation::wrap_teleport_yaw(after - before);
+    if let (Some(before), Some(after)) = (before, local_teleport_identity(registry)) {
+        camera.yaw +=
+            postretro_foundation::wrap_teleport_yaw(after.accumulated_yaw - before.accumulated_yaw);
     }
 }
 
@@ -208,10 +242,10 @@ pub(crate) fn push_local_traveller_cues(
     }
 }
 
-/// Host-seat observer cues for connected-client pawns. Drain once after the frame's
-/// authoritative ticks and before the audio step: each pawn's generation changes
-/// since the last drain coalesce to its last authoritative sample, at that sample's
-/// pose, whatever delayed pose the host still presents. No-op off the host.
+/// Host-seat observer cues for connected-client pawns. Drain after each authoritative
+/// tick's pose record and before the audio step: each tick is one host sample, so each
+/// generation change plays one cue at that sample's arrival pose, whatever delayed
+/// pose the host still presents. No-op off the host.
 pub(crate) fn host_observed_arrival_cues(
     endpoint: Option<&mut postretro_netcode::NetEndpoint>,
     teleporters: &postretro_physics::teleporters::Teleporters,
@@ -234,6 +268,12 @@ pub(crate) fn host_observed_arrival_cues(
     crate::sound_events::observed_arrival_sounds(teleporters, &observed, sounds);
 }
 
+/// Present one frame's own-pawn adoptions, drained after its snapshots apply. Each
+/// turns the view by its yaw delta; any camera cut holds the final adopted eye.
+/// Mover carry detaches only for an adoption that changed the pawn's teleport
+/// identity: a plain teleport-class correction of three metres or more keeps the
+/// platform's yaw carry. Of several cues in one frame, only the last plays, at its
+/// own arrival point, since unseen teleports coalesce to the last cue.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_local_adoptions(
     camera: &mut crate::camera::Camera,
@@ -244,31 +284,42 @@ pub(crate) fn apply_local_adoptions(
     registry: &EntityRegistry,
     adoptions: &[postretro_netcode::LocalTeleportAdoption],
 ) {
+    let mut cut = None;
+    let mut cue = None;
     for adoption in adoptions {
         camera.yaw += adoption.yaw_delta;
         if adoption.camera_cut {
-            if let (Ok(pose), Ok(movement)) = (
-                registry.get_component::<Transform>(adoption.entity_id),
-                registry.get_component::<postretro_foundation::PlayerMovementComponent>(
-                    adoption.entity_id,
-                ),
-            ) {
-                camera.position = pose.position + Vec3::Y * movement.capsule.eye_height;
-            }
-            hold_local_arrival(camera, timing, carry);
+            cut = Some(adoption.entity_id);
+        }
+        if adoption.identity_changed {
+            *carry = postretro_foundation::GroundRef::Airborne;
         }
         if let Some(index) = adoption.cue_teleporter {
-            sounds.extend(crate::sound_events::arrival_sound(
-                teleporters,
-                index,
-                adoption.arrival,
-            ));
+            cue = Some((index, adoption.arrival));
         }
+    }
+    if let Some(entity) = cut {
+        if let (Ok(pose), Ok(movement)) = (
+            registry.get_component::<Transform>(entity),
+            registry.get_component::<postretro_foundation::PlayerMovementComponent>(entity),
+        ) {
+            camera.position = pose.position + Vec3::Y * movement.capsule.eye_height;
+        }
+        timing.hold_state(crate::frame_timing::InterpolableState::new(camera.position));
+    }
+    if let Some((index, arrival)) = cue {
+        sounds.extend(crate::sound_events::arrival_sound(
+            teleporters,
+            index,
+            arrival,
+        ));
     }
 }
 
+mod client_tick;
+
 #[cfg(test)]
-mod app_tests;
+pub(crate) mod app_tests;
 
 #[cfg(test)]
 mod tests {
@@ -452,6 +503,7 @@ mod tests {
                 entity_id: pawn,
                 yaw_delta: 1.0,
                 camera_cut: true,
+                identity_changed: true,
                 arrival,
                 cue_teleporter: Some(0),
             }],

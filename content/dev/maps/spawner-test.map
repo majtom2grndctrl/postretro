@@ -300,7 +300,7 @@
 {
 "classname" "prop_mesh"
 "origin" "128 -112 0"
-"angles" "0 45 0"
+"angles" "0 315 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }
 // entity 14

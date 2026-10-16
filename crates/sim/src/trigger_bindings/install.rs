@@ -134,12 +134,18 @@ impl TriggerBindingTable {
         }
         // `on.player` as a target, read owner or presentation audience exists
         // only in a player event's fire; a trigger publishes no event player.
-        if let Some(reaction) = matched.iter().find(|reaction| {
-            reaction_uses_event_player(&reaction.descriptor)
-                || crate::teleporter_system::reaction_uses_teleporter(&reaction.descriptor)
+        // `on.teleporter` likewise exists only in a teleport event's fire.
+        if let Some((reaction, token, source)) = matched.iter().find_map(|reaction| {
+            if reaction_uses_event_player(&reaction.descriptor) {
+                Some((reaction, "on.player", "a player event"))
+            } else if crate::teleporter_system::reaction_uses_teleporter(&reaction.descriptor) {
+                Some((reaction, "on.teleporter", "a teleport event"))
+            } else {
+                None
+            }
         }) {
             log::error!(
-                "[Trigger] {edge:?} event `{event_name}` on {trigger}: reaction `{}` uses `on.player`, which only a player event publishes; not binding it for this trigger",
+                "[Trigger] {edge:?} event `{event_name}` on {trigger}: reaction `{}` uses `{token}`, which only {source} publishes; not binding it for this trigger",
                 reaction.name
             );
             return;

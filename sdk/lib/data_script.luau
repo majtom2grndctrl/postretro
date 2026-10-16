@@ -65,8 +65,9 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
---- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity
+--- subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`) carries `target = "@activators"`, `"@trigger"`,
+--- `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity
 --- carrying it (fog, emitter and animation primitives have no typed builder).
 --- True system reactions carry neither and enqueue typed engine commands such
 --- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
@@ -96,10 +97,11 @@ export type GroupCommand = {
 }
 
 --- The subject a token command addresses: this fire's activators, the volume
---- that fired, or the event's player.
+--- that fired, the teleporter that fired, or the event's player.
 export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
 
---- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
+--- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = {

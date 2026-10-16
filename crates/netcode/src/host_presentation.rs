@@ -24,12 +24,15 @@
 //                 write it via `set_presentation_transform` (which seeds `previous ==
 //                 current`, so the render blend reproduces the sampled pose at any alpha).
 
-use postretro_entities::{EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform,
+    components::mesh::MeshComponent,
+};
 
 use super::NetworkIdAllocator;
 use super::command_queue::{INPUT_BUFFER_TARGET, MovementOwners};
 use super::interpolation::{
-    ObservedTeleport, RemoteInterpolationBuffer, TeleportSample, TransformSample,
+    ObservedTeleport, PresentedPose, RemoteInterpolationBuffer, TeleportSample, TransformSample,
 };
 
 /// Delay, in host authoritative ticks, between a client pawn's newest recorded pose
@@ -44,10 +47,11 @@ pub(crate) const PRESENTATION_DELAY_TICKS: u32 = INPUT_BUFFER_TARGET as u32;
 /// so `tick` names the tick whose end-of-tick pose this sample carries.
 ///
 /// A pawn with no allocated `NetworkId` or no live `Transform` (a stale id racing a
-/// despawn) contributes no sample. `intrinsic_velocity`/`aim_pitch` are unused by the
-/// host presentation write (which is `Transform`-only), so they are left absent/zero;
-/// dense per-tick samples keep the presentation in the buffer's interpolate branch, never
-/// the velocity-extrapolation branch.
+/// despawn) contributes no sample. Each sample also keeps the tick's player velocity
+/// and avatar aim pitch, so the presented avatar's heading and aim come from the same
+/// delayed sample as its pose (see [`present_client_pawns`]). Dense per-tick samples
+/// keep the presentation in the buffer's interpolate branch, never the
+/// velocity-extrapolation branch.
 pub fn record_client_pawn_poses(
     buffer: &mut RemoteInterpolationBuffer,
     owners: &MovementOwners,
@@ -62,25 +66,35 @@ pub fn record_client_pawn_poses(
         let Ok(transform) = registry.get_component::<Transform>(pawn) else {
             continue;
         };
+        let movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .ok();
+        // This tick's pose pass has already written the remote aim pitch.
+        let aim_pitch = registry
+            .get_component::<MeshComponent>(pawn)
+            .ok()
+            .and_then(|mesh| mesh.pose_inputs)
+            .map_or(0.0, |inputs| inputs.aim_pitch);
         buffer.record(
             network_id,
             TransformSample {
-                teleport: registry
-                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-                    .ok()
-                    .map(|movement| TeleportSample {
-                        generation: movement.teleport.generation,
-                        last_teleporter: movement.teleport.last_teleporter,
-                    }),
+                teleport: movement.map(|movement| TeleportSample {
+                    generation: movement.teleport.generation,
+                    last_teleporter: movement.teleport.last_teleporter,
+                }),
                 server_tick: tick,
                 transform: *transform,
-                intrinsic_velocity: None,
-                aim_pitch: 0.0,
+                intrinsic_velocity: movement.map(|movement| movement.velocity),
+                aim_pitch,
             },
         );
     }
 }
 
+/// Drain after each authoritative tick's [`record_client_pawn_poses`] and before the
+/// audio step. Each recorded tick is one host sample, so every generation change
+/// between consecutive ticks is its own observed change, reported at that sample's
+/// authoritative arrival pose.
 /// Drain once after the frame's authoritative ticks and before the audio step.
 /// Multiple generation changes of one pawn coalesce to its last observed sample.
 pub fn take_client_pawn_teleports(
@@ -164,6 +178,35 @@ pub fn present_client_pawns(
             continue;
         };
         let _ = registry.set_presentation_transform(pawn, pose.transform);
+        present_avatar_pose_inputs(registry, pawn, &pose);
+    }
+}
+
+/// Rewrite the avatar's aim and heading from the presented sample. The fixed tick's
+/// pose pass reads the live command aim and velocity, which lead the delayed pose
+/// and would turn the body at the source before a teleport's cut reaches it. The
+/// pawn's transform yaw is its aim, and travel heading comes from the sample's
+/// player velocity, as a connected client presents a remote player.
+fn present_avatar_pose_inputs(registry: &mut EntityRegistry, pawn: EntityId, pose: &PresentedPose) {
+    let (aim_yaw, _, _) = pose.transform.rotation.to_euler(glam::EulerRot::YXZ);
+    if !aim_yaw.is_finite() {
+        return;
+    }
+    let heading_yaw = pose
+        .intrinsic_velocity
+        .filter(|velocity| velocity.is_finite())
+        .map_or(aim_yaw, |velocity| {
+            crate::sim::player_travel_heading_yaw(velocity, aim_yaw)
+        });
+    if let Ok(ComponentValue::Mesh(mesh)) =
+        registry.get_component_value_mut(pawn, ComponentKind::Mesh)
+        && let Some(inputs) = mesh.pose_inputs.as_mut()
+    {
+        inputs.aim_yaw = aim_yaw;
+        inputs.heading_yaw = heading_yaw;
+        if pose.aim_pitch.is_finite() {
+            inputs.aim_pitch = pose.aim_pitch;
+        }
     }
 }
 
@@ -219,8 +262,12 @@ mod tests {
         assert!((presentation_target_tick(103, 1.0, 2) - 101.0).abs() < 1e-9);
     }
 
+    // AC23 / P8 on the host seat: each recorded tick is one sample, so draining
+    // after each tick's record reports every generation change (a wrap included)
+    // once, at that sample's authoritative arrival, while the delayed presentation
+    // still shows the source. The first sample reports nothing.
     #[test]
-    fn teleport_host_observer_cuts_and_coalesces_cues_at_authoritative_sample_points() {
+    fn teleport_host_observer_reports_each_tick_change_at_its_authoritative_sample() {
         use postretro_foundation::PlayerMovementComponent;
         let mut registry = EntityRegistry::new();
         let mut owners = MovementOwners::default();
@@ -251,9 +298,15 @@ mod tests {
             registry.set_component(pawn, movement).unwrap();
             registry.set_component(pawn, pose_at(x, 0.5)).unwrap();
             record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+            let cues = take_client_pawn_teleports(&mut buffer, &owners, &allocator);
+            assert_eq!(cues.len(), 1, "tick {tick}: one change, one cue");
+            assert_eq!(cues[0].entity_id, pawn);
+            assert_eq!(cues[0].generation, generation);
+            assert_eq!(cues[0].last_teleporter, last);
+            assert!((cues[0].arrival.x - x).abs() < 1.0e-6);
         }
-        // Host delay still displays the source, while cues report the accepted
-        // authoritative arrival sample. No entity anchor can substitute for it.
+        // Host delay still displays the source, while cues reported the accepted
+        // authoritative arrival samples. No entity anchor can substitute for them.
         present_client_pawns(&buffer, &owners, &allocator, &mut registry, 3, 0.5);
         assert!(
             registry
@@ -263,12 +316,6 @@ mod tests {
                 .length()
                 < 1.0e-6
         );
-        let cues = take_client_pawn_teleports(&mut buffer, &owners, &allocator);
-        assert_eq!(cues.len(), 1);
-        assert_eq!(cues[0].entity_id, pawn);
-        assert_eq!(cues[0].generation, 0);
-        assert_eq!(cues[0].last_teleporter, 1);
-        assert!((cues[0].arrival.x - 200.0).abs() < 1.0e-6);
         assert!(take_client_pawn_teleports(&mut buffer, &owners, &allocator).is_empty());
         restore_client_pawn_authoritative_poses(&buffer, &owners, &allocator, &mut registry);
         assert!(
@@ -281,6 +328,121 @@ mod tests {
                 .abs()
                 < 1.0e-6
         );
+    }
+
+    // AC44 / P21 on the host seat: the avatar's aim, body heading and pitch come
+    // from the same delayed sample as its pose. The fixed tick's pose pass writes
+    // the live, already-rotated aim and travel heading; while the delayed pose
+    // still shows the source, the avatar keeps the source's facing and heading,
+    // and turns only once the presentation reaches the arrival side of the cut.
+    #[test]
+    fn teleport_host_avatar_aim_and_heading_stay_on_the_presented_side_of_the_cut() {
+        use postretro_entities::components::mesh::MeshComponent;
+        use postretro_foundation::{PlayerMovementComponent, PoseInputs};
+        use std::f32::consts::FRAC_PI_2;
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::new();
+        let (pawn, _) = spawn_owned_pawn(
+            &mut registry,
+            &mut owners,
+            &mut allocator,
+            7,
+            pose_at(0.0, 0.0),
+        );
+        registry
+            .set_component(
+                pawn,
+                crate::predict_reconcile_harness_test_fixtures::component(),
+            )
+            .unwrap();
+        let mut mesh = MeshComponent::stateless("avatar".into());
+        mesh.pose_inputs = Some(PoseInputs::default());
+        registry.set_component(pawn, mesh).unwrap();
+        // One authoritative tick: pose, movement, and the pose pass's live inputs.
+        let tick = |registry: &mut EntityRegistry, x: f32, yaw: f32, generation: u8| {
+            let travel = Quat::from_rotation_y(yaw) * Vec3::NEG_Z * 6.0;
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone();
+            movement.velocity = travel;
+            movement.teleport.generation = generation;
+            movement.teleport.last_teleporter = 0;
+            registry.set_component(pawn, movement).unwrap();
+            registry.set_component(pawn, pose_at(x, yaw)).unwrap();
+            let mut mesh = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .clone();
+            mesh.pose_inputs = Some(PoseInputs {
+                aim_pitch: 0.1 * f32::from(generation + 1),
+                aim_yaw: yaw,
+                heading_yaw: crate::sim::player_travel_heading_yaw(travel, yaw),
+                ..PoseInputs::default()
+            });
+            registry.set_component(pawn, mesh).unwrap();
+        };
+        // Facing -Z and walking forward at the source, then a quarter-turn teleport.
+        for t in 0..4u32 {
+            tick(&mut registry, t as f32 * 0.1, 0.0, 0);
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, t);
+        }
+        tick(&mut registry, 100.0, FRAC_PI_2, 1);
+        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 4);
+        let inputs = |registry: &EntityRegistry| {
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .pose_inputs
+                .unwrap()
+        };
+        let source_heading = crate::sim::player_travel_heading_yaw(Vec3::NEG_Z, 0.0);
+        let arrival_heading = crate::sim::player_travel_heading_yaw(
+            Quat::from_rotation_y(FRAC_PI_2) * Vec3::NEG_Z,
+            0.0,
+        );
+        // current_tick 5: the delayed target spans ticks 2..3, still the source.
+        for alpha in [0.0, 0.5, 0.99] {
+            present_client_pawns(&buffer, &owners, &allocator, &mut registry, 5, alpha);
+            assert!(
+                registry
+                    .get_component::<Transform>(pawn)
+                    .unwrap()
+                    .position
+                    .x
+                    < 1.0
+            );
+            let shown = inputs(&registry);
+            assert!(
+                shown.aim_yaw.abs() < 1.0e-5,
+                "aim turned at the source: {}",
+                shown.aim_yaw
+            );
+            assert!((shown.heading_yaw - source_heading).abs() < 1.0e-5);
+            assert!((shown.aim_pitch - 0.1).abs() < 1.0e-5);
+        }
+        // Two ticks later the delayed target reaches the arrival sample.
+        for t in 5..7u32 {
+            tick(&mut registry, 100.0, FRAC_PI_2, 1);
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, t);
+        }
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 7, 0.0);
+        assert!(
+            (registry
+                .get_component::<Transform>(pawn)
+                .unwrap()
+                .position
+                .x
+                - 100.0)
+                .abs()
+                < 1.0e-4
+        );
+        let shown = inputs(&registry);
+        assert!((shown.aim_yaw - FRAC_PI_2).abs() < 1.0e-5);
+        assert!((shown.heading_yaw - arrival_heading).abs() < 1.0e-5);
+        assert!((shown.aim_pitch - 0.2).abs() < 1.0e-5);
     }
 
     #[test]

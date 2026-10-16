@@ -22,6 +22,9 @@ use crate::presentation_state::apply_presentation_payload;
 
 #[derive(Debug, Default)]
 pub(super) struct ClientBindings {
+    /// Network ids bound to installed local teleporter regions, with their
+    /// map-order index. Their records carry armed state only: the region is never
+    /// interpolated, materialized from a baseline, or despawned on unbinding.
     pub(super) teleporter_network_ids: HashMap<NetworkId, u16>,
     /// Network ids bound to PRL-loaded local kinematic movers, with their stable
     /// compile-time mover id. These entities are predicted/reconciled in place and

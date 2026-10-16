@@ -333,6 +333,19 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
     let mut disabled = section.clone();
     disabled.teleporters[0].enabled_on_spawn = false;
     assert_eq!(bake(&disabled, None), cold);
+    // Non-vacuous: the teleporter changes the bake, so parity above is not
+    // two teleporter-blind bakes agreeing.
+    let without = cell_residency_set_bake_cached(
+        &cells,
+        &portals,
+        &locator,
+        None,
+        None,
+        &crate::bake_control::BakeControl::unrestricted(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(without.to_bytes(), cold.to_bytes());
     let key = |s: &TeleportersSection, t: &BspTree| {
         cell_residency_set_cache_key(&cells, &portals, &locator, s, Some(t)).as_filename()
     };
@@ -359,4 +372,55 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
         base,
         "f64 classification inputs must be keyed"
     );
+}
+#[test]
+fn teleport_residency_leaf_prefilter_matches_exhaustive_routes() {
+    let (cells, portals, corridor_locator, tree, classic) = corridor_fixture();
+    let corridor =
+        LevelWorld::visibility_only_from_sections(&cells, &portals, &corridor_locator).unwrap();
+    let mut seamless = classic.clone();
+    for yaw in [0.0f32, 90.0, -135.0] {
+        let mut t = classic.teleporters[0].clone();
+        t.mode = TeleportMode::Seamless;
+        t.landmark_origin = [1.5, 1.75, 1.75];
+        t.landmark_yaw = 0.3;
+        t.destination_yaw = 0.3 + yaw.to_radians();
+        seamless.teleporters.push(t);
+    }
+    // A destination in no playable cell still keeps the source route.
+    let mut nowhere = classic.clone();
+    nowhere.teleporters[0].destination_origin = [-500.0, -500.0, -500.0];
+    let mut checked_arrivals = 0;
+    for section in [&classic, &seamless, &nowhere] {
+        let input = TeleportResidencyInput {
+            section,
+            tree: &tree,
+        };
+        let filtered = build_routes_with(input, &cells, &corridor, LeafPrefilter::On).unwrap();
+        let exhaustive = build_routes_with(input, &cells, &corridor, LeafPrefilter::Off).unwrap();
+        assert_eq!(filtered, exhaustive);
+        assert!(filtered.iter().all(|route| !route.source_cells.is_empty()));
+        checked_arrivals += filtered
+            .iter()
+            .filter(|route| !route.arrival_cells.is_empty())
+            .count();
+    }
+    assert!(checked_arrivals >= 4, "{checked_arrivals}");
+    let (contact_cells, contact_tree) = cells_tree(&[
+        ([0.0; 3], [1.0; 3]),
+        ([1.0, 0.0, 0.0], [2.0, 1.0, 1.0]),
+        ([1.0; 3], [2.0; 3]),
+        ([5.0; 3], [6.0; 3]),
+    ]);
+    let contact = TeleportersSection {
+        teleporters: vec![record(vec![box_brush([0.25; 3], [1.0; 3])])],
+    };
+    let input = TeleportResidencyInput {
+        section: &contact,
+        tree: &contact_tree,
+    };
+    let contact_world = world(&contact_cells, &locator());
+    let filtered = build_routes_with(input, &contact_cells, &contact_world, LeafPrefilter::On);
+    let exhaustive = build_routes_with(input, &contact_cells, &contact_world, LeafPrefilter::Off);
+    assert_eq!(filtered.unwrap(), exhaustive.unwrap());
 }

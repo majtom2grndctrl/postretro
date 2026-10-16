@@ -26454,84 +26454,84 @@
 {
 "classname" "reference_enemy"
 "origin" "3958 -3208 1360"
-"angles" "0 69 0"
+"angles" "0 291 0"
 "_tags" "enemy"
 }
 // entity 766
 {
 "classname" "reference_enemy"
 "origin" "857 1543 720"
-"angles" "0 123 0"
+"angles" "0 237 0"
 "_tags" "enemy"
 }
 // entity 767
 {
 "classname" "reference_enemy"
 "origin" "2393 185 1360"
-"angles" "0 237 0"
+"angles" "0 123 0"
 "_tags" "enemy"
 }
 // entity 768
 {
 "classname" "reference_enemy"
 "origin" "-2622 3515 80"
-"angles" "0 287 0"
+"angles" "0 73 0"
 "_tags" "enemy"
 }
 // entity 769
 {
 "classname" "reference_enemy"
 "origin" "-4003 -1843 80"
-"angles" "0 57 0"
+"angles" "0 303 0"
 "_tags" "enemy"
 }
 // entity 770
 {
 "classname" "reference_enemy"
 "origin" "-741 3126 80"
-"angles" "0 157 0"
+"angles" "0 203 0"
 "_tags" "enemy"
 }
 // entity 771
 {
 "classname" "reference_enemy"
 "origin" "-656 -3348 720"
-"angles" "0 303 0"
+"angles" "0 57 0"
 "_tags" "enemy"
 }
 // entity 772
 {
 "classname" "reference_enemy"
 "origin" "2726 -3463 720"
-"angles" "0 311 0"
+"angles" "0 49 0"
 "_tags" "enemy"
 }
 // entity 773
 {
 "classname" "reference_enemy"
 "origin" "1077 184 720"
-"angles" "0 267 0"
+"angles" "0 93 0"
 "_tags" "enemy"
 }
 // entity 774
 {
 "classname" "reference_enemy"
 "origin" "2657 -3511 1360"
-"angles" "0 324 0"
+"angles" "0 36 0"
 "_tags" "enemy"
 }
 // entity 775
 {
 "classname" "reference_enemy"
 "origin" "760 -1701 720"
-"angles" "0 19 0"
+"angles" "0 341 0"
 "_tags" "enemy"
 }
 // entity 776
 {
 "classname" "reference_enemy"
 "origin" "-2257 -1535 1360"
-"angles" "0 350 0"
+"angles" "0 10 0"
 "_tags" "enemy"
 }
 // entity 777

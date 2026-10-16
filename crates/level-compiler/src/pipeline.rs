@@ -1530,8 +1530,10 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
 
-    // Lightmap residency set (id 51): reads only the partition plan's Cells and
-    // Portals and the encoded locator, all final here. It never feeds a bake.
+    // Lightmap residency set (id 51): reads the partition plan's Cells and
+    // Portals, the encoded locator, and for teleporter routes the id-55 section
+    // plus the f64 BSP leaves (bounds and defining planes), all final here. It
+    // never feeds a bake.
     let stage_start = begin_stage(reporter.as_ref(), StageId::CellResidencySet);
     let cell_residency_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::CellResidencySet, cell_residency_progress.clone());

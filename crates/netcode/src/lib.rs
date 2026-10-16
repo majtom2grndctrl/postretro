@@ -131,10 +131,11 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
+#[cfg(any(test, feature = "test-support"))]
+pub use command_queue::host_resolve_remote_commands;
 pub use command_queue::{
     CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
-    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
-    host_resolve_remote_commands_in_registry,
+    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands_in_registry,
 };
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
@@ -759,7 +760,9 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
     match payload {
         ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
-        ComponentPayload::TeleporterState(state) => state.index != u16::MAX,
+        ComponentPayload::TeleporterState(state) => {
+            state.index != postretro_net::wire::NO_WIRE_TELEPORTER
+        }
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is

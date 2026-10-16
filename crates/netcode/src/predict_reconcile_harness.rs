@@ -573,6 +573,8 @@ fn install_armed_reconcile_pawn(
     let pawn = h.client_registry.spawn(transform);
     h.client_registry.set_component(pawn, movement).unwrap();
     h.prediction.arm(h.host_pawn_network_id, pawn);
+    // Installed as if its first record had already merged.
+    h.prediction.mark_first_record_adopted();
     h.client_pawn = Some(pawn);
     pawn
 }

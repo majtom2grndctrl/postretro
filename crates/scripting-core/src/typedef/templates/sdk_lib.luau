@@ -89,19 +89,33 @@ export type TriggerVolumeHandle = {
   on: (self: TriggerVolumeHandle, event: "enter" | "exit", fire: {Reaction<any> | string}) -> VolumeTriggerEventDescriptor,
 }
 
+--- Snapshot of a map-placed teleporter: id, position and tags.
+export type TeleporterEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- Teleporter member returned by `getMapEntities("teleporter")`. Arming state
+--- is host-authoritative and replicated; methods return closed command steps.
+export type TeleporterHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  --- Arm the teleporter. Applies on the host at the start of its next
+  --- movement tick.
+  arm: (self: TeleporterHandle) -> {ArmTeleporterStep},
+  --- Disarm the teleporter. Applies on the host at the start of its next
+  --- movement tick.
+  disarm: (self: TeleporterHandle) -> {DisarmTeleporterStep},
+  --- Fire `fire` once per pawn per authoritative teleport through this
+  --- teleporter, and for no sibling sharing its tag. Return the entry from
+  --- `setupLevel`'s `teleportEvents`.
+  on: (self: TeleporterHandle, event: "teleport", fire: {Reaction<any> | string}) -> TeleportEventDescriptor,
+}
+--- A teleporter member binding: the reactions named by `fire` run on the
+--- teleporter's `teleport` event.
+export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport", fire: {string} }
+--- What a teleporter member's `on("teleport", ...)` accepts: a sourceless or
+--- teleport-scoped reaction, or a reaction's name.
+export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
+
 --- Snapshot of a map-placed spawner: id, position, its own tags, and
 --- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
 --- pass to its spawns.
-export type TeleporterEntity = { id: EntityId, position: Vec3, tags: {string} }
-export type TeleporterHandle = {
-  id: EntityId, position: Vec3, tags: {string},
-  arm: (self: TeleporterHandle) -> {ArmTeleporterStep},
-  disarm: (self: TeleporterHandle) -> {DisarmTeleporterStep},
-  on: (self: TeleporterHandle, event: "teleport", fire: {Reaction<any> | string}) -> TeleportEventDescriptor,
-}
-export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport", fire: {string} }
-export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
-
 export type SpawnerEntity = {
   id: EntityId,
   position: Vec3,
@@ -273,8 +287,9 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
---- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with
+--- subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`) carries `target = "@activators"`, `"@trigger"`,
+--- `"@teleporter"` or `"@player"`. A raw descriptor with
 --- only a non-empty `tag` resolves over every entity carrying it — the form for fog,
 --- emitter and animation primitives (`setFogGlow`, `setEmitterRate`,
 --- `setAnimationState`), which have no typed builder. True system reactions
@@ -398,8 +413,13 @@ export type MoverSetBlockPolicyStep = {
   args: { policy: "displace" | "reverse" | "stop" | "crush" },
 }
 
+--- Sequence step that arms one teleporter (`t:arm()`). Applies on the host at
+--- the start of its next movement tick.
 export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args: {} }
+--- Sequence step that disarms one teleporter (`t:disarm()`). Applies on the
+--- host at the start of its next movement tick.
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Sequence step that arms one trigger volume.
 export type ArmTriggerStep = {
   id: EntityId,
   primitive: "armTrigger",
@@ -796,9 +816,10 @@ export type GroupKind = "npc" | "player"
 --- effect, so NPCs spawned or players joined before then are included.
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
 --- The subject a token command addresses: this fire's activators, the volume
---- that fired, or the event's player.
+--- that fired, the teleporter that fired, or the event's player.
 export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
---- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
+--- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = { primitive: string, target: SubjectTokenTarget, args: { [string]: any } }

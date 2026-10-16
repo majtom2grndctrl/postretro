@@ -1087,17 +1087,19 @@ impl DataRegistry {
         self.global_trigger_pools = pools;
     }
 
-    /// Level member trigger events (`t.on`), in authored order. They bind after
-    /// the active mod-global [`Self::trigger_events`] on a shared edge.
-    /// Append the level's teleporter bindings; retained through recomposition.
+    /// Append the level's teleporter member bindings (`t.on("teleport", …)`).
+    /// Retained through recomposition.
     pub fn set_level_teleport_events(&mut self, events: Vec<TeleportEventDescriptor>) {
         self.level_teleport_events.extend(events);
     }
 
+    /// Level teleporter member bindings, in authored order.
     pub fn teleport_events(&self) -> &[TeleportEventDescriptor] {
         &self.level_teleport_events
     }
 
+    /// Level member trigger events (`t.on`), in authored order. They bind after
+    /// the active mod-global [`Self::trigger_events`] on a shared edge.
     pub fn volume_trigger_events(&self) -> &[VolumeTriggerEventDescriptor] {
         &self.level_trigger_events
     }

@@ -16,7 +16,21 @@ pub(crate) struct QueuedShot {
     pub presentation: weapon::ClientPullPresentation,
     pub cooldown_before: f32,
     pub cooldown_after: f32,
+    /// The settled aim at the end of this shot's firing tick, frozen by
+    /// [`ClientWeaponFrame::close_tick_aim`]. `None` until that tick ends.
+    pub tick_aim: Option<TickAim>,
 }
+
+/// The camera aim at the end of a firing tick and the local pawn's teleport
+/// identity then. A later tick of the same frame can teleport the pawn; a shot
+/// from before it resolves from this aim, the eye and view the host fires it
+/// from, rather than the frame's presented arrival view.
+#[derive(Clone, Copy)]
+pub(crate) struct TickAim {
+    pub pose: crate::PresentedAimPose,
+    pub teleport: Option<crate::runtime_teleporters::TeleportIdentity>,
+}
+
 #[derive(Default)]
 pub(crate) struct ClientWeaponFrame {
     pub due: Vec<QueuedShot>,
@@ -206,6 +220,7 @@ impl ClientWeaponFrame {
                 presentation,
                 cooldown_before: before,
                 cooldown_after: component.cooldown_remaining_ms,
+                tick_aim: None,
             });
         }
         if self
@@ -215,6 +230,17 @@ impl ClientWeaponFrame {
             self.suppressed = None;
         }
         advanced.initiated.or(command.activation.initiation)
+    }
+    /// Freeze the end-of-tick aim onto every shot this tick queued. Call once per
+    /// predicted tick, after the camera has followed the predicted pawn.
+    pub fn close_tick_aim(&mut self, aim: TickAim) {
+        for queued in self
+            .due
+            .iter_mut()
+            .filter(|queued| queued.tick_aim.is_none())
+        {
+            queued.tick_aim = Some(aim);
+        }
     }
     /// Retract what a rejected activation predicted on `owner_weapon`: its shots
     /// still due this frame, and every live predicted projectile of `token`.

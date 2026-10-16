@@ -657,8 +657,12 @@ impl RawComponentPayload {
 
         match self.component_kind {
             COMPONENT_KIND_TELEPORTER => match self.teleporter {
-                Some(state) if populated == 1 && state.index != super::NO_WIRE_TELEPORTER => {
-                    Ok(ComponentPayload::TeleporterState(state))
+                Some(state) if populated == 1 => {
+                    if state.index == super::NO_WIRE_TELEPORTER {
+                        Err(ValidationError::InvalidTeleporterState)
+                    } else {
+                        Ok(ComponentPayload::TeleporterState(state))
+                    }
                 }
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,

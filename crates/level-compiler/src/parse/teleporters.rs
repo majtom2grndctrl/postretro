@@ -1,4 +1,5 @@
 //! Quake teleporter authoring; downstream data uses engine axes and metres.
+//! See: context/lib/build_pipeline.md §Custom FGD, §PRL section IDs (Teleporters, id 55)
 use crate::map_data::MapEntityRecord;
 use anyhow::{Result, bail};
 use glam::DVec3;
@@ -52,18 +53,15 @@ impl TeleporterParser {
             if origin.iter().any(|v| !v.is_finite()) {
                 bail!("{entity} origin exceeds engine precision");
             }
-            let angles = optional(props, "angles")
-                .map(|raw| numbers::<3>(raw, "angles", &entity))
-                .transpose()?
-                .unwrap_or([0.0; 3]);
-            if angles[0] != 0.0 || angles[2] != 0.0 {
+            // The point-entity angle converter, so `angle`, `angles` and `mangle`
+            // face where TrenchBroom draws the arrow, as on any other entity.
+            // Unlike map entities, a malformed value fails the build.
+            let [pitch, yaw, roll] = crate::format::quake_map::try_quake_to_engine_angles(props)
+                .map_err(|reason| anyhow::anyhow!("{entity} {reason}"))?;
+            if pitch != 0.0 || roll != 0.0 {
                 log::warn!(
                     "[Compiler] {entity} angles pitch and roll are ignored; only yaw is used"
                 );
-            }
-            let yaw = -angles[1].to_radians();
-            if !yaw.is_finite() {
-                bail!("{entity} angles yaw exceeds engine precision");
             }
             if self
                 .destinations
@@ -112,8 +110,7 @@ impl TeleporterParser {
             .map(|(b, id)| {
                 let leaf = super::environment_volumes::resolve_leaf(
                     geo, *id, scale, classname, &entity, b,
-                )
-                .map_err(|error| anyhow::anyhow!("{entity} brush {b}: {error}"))?;
+                )?;
                 Ok(EnvironmentBrush {
                     aabb_min: leaf.min,
                     aabb_max: leaf.max,

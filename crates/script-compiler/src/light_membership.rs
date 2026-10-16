@@ -116,7 +116,7 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
 
 /// First build-side id of a non-light map member (mover, trigger volume,
-/// spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
+/// teleporter, spawner). Map-light ids are their raw `MapData::lights` indexes, so the two
 /// ranges never meet: a member id cannot resolve to a light, or change which
 /// light a step names. Members answer identity snapshots (`id`, `position`,
 /// `tags`, plus `spawnedTags` on a spawner) so a script that indexes one
@@ -126,7 +126,7 @@ pub const MAP_MEMBER_ID_BASE: u32 = 0x8000_0000;
 /// Evaluate a compiled data script against `light_table` and derive the
 /// map-light membership sidecar. The script path selects QuickJS for `.ts` /
 /// `.js` input and Luau for `.luau` input; callers pass the already compiled
-/// bytes represented as UTF-8 source. Mover, trigger and spawner queries
+/// bytes represented as UTF-8 source. Mover, trigger, teleporter and spawner queries
 /// answer from `light_table.map_members` when the table supplies them (a
 /// lights-only table stubs them); light records do not depend on it.
 pub fn emit_light_membership_manifest(
@@ -1212,7 +1212,7 @@ fn collect_membership(
             let light = lights_by_id.get(&id).ok_or_else(|| {
                 if id >= MAP_MEMBER_ID_BASE {
                     anyhow!(
-                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume or spawner), not a light; animate a member from getMapEntities(\"light\")"
+                        "setLightAnimation targets id {id}, which names a map member (mover, trigger volume, teleporter or spawner), not a light; animate a member from getMapEntities(\"light\")"
                     )
                 } else {
                     anyhow!(
@@ -1885,7 +1885,7 @@ mod tests {
     }
 
     // Kinds the build carries no table for (fog, emitter) degrade to `[]` and
-    // land in the stub inventory. Mover, trigger and spawner queries answer
+    // land in the stub inventory. Mover, trigger, teleporter and spawner queries answer
     // from the member table, so an empty one is an authoritative `[]`, not a
     // stub.
     #[test]

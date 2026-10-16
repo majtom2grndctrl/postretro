@@ -416,53 +416,19 @@ pub(super) fn integrate_collision(
     // floating-point round-off even when the player is plainly grounded.
     if (previous_ground.is_grounded() || floor_push_fired) && component.velocity.y <= 1.0e-3 {
         let step_height = component.ground_params.step_height;
-        if step_height > 0.0 {
-            // covers step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + headroom
-            let max_down = step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03;
-            let down_hit =
-                cast_capsule_query(collision, current_pos, &capsule, Vec3::NEG_Y, max_down);
-            let mut snapped = false;
-            if let Some(h) = down_hit {
-                let n = h.normal;
-                if n.y >= component.cos_walkable {
-                    current_pos.y -= h.time_of_impact;
-                    hit_floor_this_tick = true;
-                    last_floor_normal = Some(n);
-                    ground_ref_this_tick = ground_ref_from_hit(h);
-                    snapped = true;
-                }
-            }
-            // Wall-normal preference fallback: when the capsule is pressed
-            // against a wall the swept downcast may report the wall's normal
-            // first (n.y ≈ 0). Without a fallback that silently latches the
-            // player above the floor. A thin ray from the capsule center
-            // straight down ignores wall geometry on the side and finds the
-            // floor below.
-            if !snapped {
-                let half_height = component.capsule.half_height;
-                let radius = component.capsule.radius;
-                let ray_max = max_down + half_height + radius;
-                let ray_hit = cast_ray_query(collision, current_pos, Vec3::NEG_Y, ray_max);
-                if let Some(h) = ray_hit
-                    && h.normal.y >= component.cos_walkable
-                {
-                    // Ray TOI is distance from capsule center to the
-                    // surface; the capsule rests with its lower hemisphere
-                    // at `half_height + radius` below center, separated by
-                    // SKIN_DISTANCE.
-                    let target_gap = half_height + radius + SKIN_DISTANCE;
-                    let drop = h.time_of_impact - target_gap;
-                    // Only snap downward, and only if the floor is within
-                    // the same envelope the swept downcast would have
-                    // covered.
-                    if drop > 0.0 && drop <= max_down {
-                        current_pos.y -= drop;
-                        hit_floor_this_tick = true;
-                        last_floor_normal = Some(h.normal);
-                        ground_ref_this_tick = ground_ref_from_hit(h);
-                    }
-                }
-            }
+        if step_height > 0.0
+            && let Some(floor) = floor_below(
+                component,
+                collision,
+                &capsule,
+                current_pos,
+                ground_stick_reach(step_height),
+            )
+        {
+            current_pos.y -= floor.drop;
+            hit_floor_this_tick = true;
+            last_floor_normal = Some(floor.normal);
+            ground_ref_this_tick = floor.ground;
         }
     }
 
@@ -737,6 +703,67 @@ pub(super) fn touches_ceiling(
 
 /// Air-jump (double-jump) gate: the airborne jump fires only while a charge
 /// remains in the budget AND upward velocity is still under `air.jump_ceiling`.
+/// How far below a pose the ground-stick probe looks: the step-up lift plus a
+/// skin width and headroom, so a body that stepped down a riser or rode a floor
+/// push still finds its floor.
+pub(super) fn ground_stick_reach(step_height: f32) -> f32 {
+    step_height + STEP_UP_LIFT_MARGIN + SKIN_DISTANCE + 0.03
+}
+
+/// A walkable floor the ground-stick probe found below a pose.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FloorBelow {
+    /// How far the capsule drops to rest a skin width above the floor.
+    pub(super) drop: f32,
+    pub(super) normal: Vec3,
+    pub(super) ground: GroundRef,
+}
+
+/// The ground-stick probe: a swept capsule down-cast within `max_down`, then a
+/// centre-ray fallback. Reads collision only; the caller decides whether to
+/// drop onto the floor (the substrate's ground-stick) or only to classify
+/// against it (a teleport arrival, which never relocates).
+pub(super) fn floor_below(
+    component: &PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &Capsule,
+    position: Vec3,
+    max_down: f32,
+) -> Option<FloorBelow> {
+    if let Some(h) = cast_capsule_query(collision, position, capsule, Vec3::NEG_Y, max_down)
+        && h.normal.y >= component.cos_walkable
+    {
+        return Some(FloorBelow {
+            drop: h.time_of_impact,
+            normal: h.normal,
+            ground: ground_ref_from_hit(h),
+        });
+    }
+    // Wall-normal preference fallback: when the capsule is pressed against a
+    // wall the swept downcast may report the wall's normal first (n.y ≈ 0).
+    // Without a fallback that silently latches the player above the floor. A
+    // thin ray from the capsule center straight down ignores wall geometry on
+    // the side and finds the floor below.
+    let half_height = component.capsule.half_height;
+    let radius = component.capsule.radius;
+    let ray_max = max_down + half_height + radius;
+    let h = cast_ray_query(collision, position, Vec3::NEG_Y, ray_max)?;
+    if h.normal.y < component.cos_walkable {
+        return None;
+    }
+    // Ray TOI is distance from capsule center to the surface; the capsule
+    // rests with its lower hemisphere at `half_height + radius` below center,
+    // separated by SKIN_DISTANCE.
+    let drop = h.time_of_impact - (half_height + radius + SKIN_DISTANCE);
+    // Only downward, and only within the same envelope the swept downcast
+    // would have covered.
+    (drop > 0.0 && drop <= max_down).then(|| FloorBelow {
+        drop,
+        normal: h.normal,
+        ground: ground_ref_from_hit(h),
+    })
+}
+
 /// The budget itself replenishes on floor contact via `refresh_on_landing`, so
 /// double-jump and the air-dash budget reset through one mechanism. The
 /// ceiling rule keeps the charge from being spent at the apex of the rising arc.

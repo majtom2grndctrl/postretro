@@ -201,7 +201,8 @@ pub(super) fn resolve_leaf(
         scale,
         classname,
         false,
-    )?
+    )
+    .map_err(|error| anyhow::anyhow!("{brush}: {error}"))?
     .ok_or_else(|| anyhow::anyhow!("{brush} has no usable vertices"))?;
     if (bounds.max - bounds.min).min_element() <= 0.0 {
         anyhow::bail!("{brush} has zero volume");

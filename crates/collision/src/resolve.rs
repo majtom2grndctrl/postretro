@@ -511,22 +511,24 @@ mod tests {
     #[test]
     fn resolve_gravity_ties_identical_copies_at_different_positions_by_map_order() {
         const MAP_SCALE: f32 = 0.0254;
-        let copy = |x_units: f32, gravity: f32| {
-            gravity_volume(
-                Vec3::new(x_units, 16.0, -48.0) * MAP_SCALE,
-                Vec3::new(x_units + 64.0, 64.0, 48.0) * MAP_SCALE,
-                0,
-                gravity,
-            )
+        // Volumes are computed in each brush's own frame, but map-scale
+        // conversion still rounds a copy's stored extent a few ulps apart from
+        // the original's; the later copy here comes out a hair narrower.
+        let copy = |x_units: f32, gravity: f32, narrower_ulps: u32| {
+            let mut max = Vec3::new(x_units + 64.0, 64.0, 48.0) * MAP_SCALE;
+            for _ in 0..narrower_ulps {
+                max.x = max.x.next_down();
+            }
+            gravity_volume(Vec3::new(x_units, 16.0, -48.0) * MAP_SCALE, max, 0, gravity)
         };
         let point = Vec3::new(52.0, 40.0, 0.0) * MAP_SCALE;
-        let volumes = EnvironmentVolumes::build(vec![copy(0.0, -1.0), copy(40.0, -3.0)]);
+        let volumes = EnvironmentVolumes::build(vec![copy(0.0, -1.0, 0), copy(40.0, -3.0, 4)]);
         assert!(
             volumes.summed_brush_volume(1).unwrap() < volumes.summed_brush_volume(0).unwrap(),
             "fixture: the later copy rounds smaller"
         );
         assert!((resolve_at(&volumes, point).gravity + 1.0).abs() < EPS);
-        let swapped = EnvironmentVolumes::build(vec![copy(40.0, -3.0), copy(0.0, -1.0)]);
+        let swapped = EnvironmentVolumes::build(vec![copy(40.0, -3.0, 4), copy(0.0, -1.0, 0)]);
         assert!((resolve_at(&swapped, point).gravity + 3.0).abs() < EPS);
     }
 

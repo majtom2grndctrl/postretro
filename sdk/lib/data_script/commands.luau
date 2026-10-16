@@ -1,6 +1,6 @@
 --!nocheck
 -- Command targets: the `npcs` and `players` groups and the subject tokens
--- (`on.activators`, `on.trigger`, `on.player`). Each carries exactly the verbs
+-- (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`). Each carries exactly the verbs
 -- its kind supports, called with colon syntax; a verb builds the closed wire
 -- descriptor.
 -- Part chunk of `data_script.luau`: evaluated after `player_events.luau`

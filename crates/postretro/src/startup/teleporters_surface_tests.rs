@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 
 use glam::{Quat, Vec3};
 use postretro_entities::components::brain::BrainComponent;
@@ -55,10 +56,31 @@ fn workspace() -> PathBuf {
 }
 
 /// Compile `content/dev/maps/<map>.map` with the real `prl-build`, as an author
-/// does, into `out`, and load the PRL the engine would load.
-fn compile(map: &str, out: &Path) -> LevelWorld {
-    let source = workspace().join(format!("content/dev/maps/{map}.map"));
+/// does, and load the PRL the engine would load from its own copy in `out`.
+///
+/// The compiler pipeline lives in the `prl-build` binary, not the library, so each
+/// compile is a nested `cargo run`. One compile per map per test process: tests
+/// running in parallel would otherwise contend on cargo's build lock and rebuild
+/// the same map. Each test still writes and loads its own PRL, since a loaded
+/// level may keep its file open for streaming.
+fn compile(map: &'static str, out: &Path) -> LevelWorld {
+    static COMPILED: OnceLock<Mutex<HashMap<&'static str, Vec<u8>>>> = OnceLock::new();
+    let bytes = COMPILED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(map)
+        .or_insert_with(|| run_prl_build(map))
+        .clone();
     let prl = out.join(format!("{map}.prl"));
+    std::fs::write(&prl, bytes).expect("write the compiled PRL");
+    postretro_level_loader::load_prl(prl.to_str().unwrap()).expect("compiled PRL loads")
+}
+
+fn run_prl_build(map: &str) -> Vec<u8> {
+    let out = tempfile::tempdir().unwrap();
+    let source = workspace().join(format!("content/dev/maps/{map}.map"));
+    let prl = out.path().join(format!("{map}.prl"));
     let output = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
             "run",
@@ -75,7 +97,7 @@ fn compile(map: &str, out: &Path) -> LevelWorld {
         .arg("--no-tui")
         .arg("--no-cache")
         .arg("--baked-root")
-        .arg(out.join("baked"))
+        .arg(out.path().join("baked"))
         .current_dir(workspace())
         .output()
         .expect("launch prl-build");
@@ -85,7 +107,7 @@ fn compile(map: &str, out: &Path) -> LevelWorld {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    postretro_level_loader::load_prl(prl.to_str().unwrap()).expect("compiled PRL loads")
+    std::fs::read(&prl).expect("read the compiled PRL")
 }
 
 /// Keys sorted; values untouched, so an explicit `null` is a divergence. The
@@ -789,12 +811,12 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     assert_eq!(shifted[0].1.teleporter, level.component(era_a_to_b).index);
     let record = level.record(era_a_to_b);
     let delta = record.destination_yaw - record.landmark_yaw;
-    // The authored landmark pair (`angles` 0 and 90) is a quarter turn; its
-    // sign is the engine's yaw convention for TrenchBroom angles.
+    // The authored landmark pair (`angles` 0 and 90) is a quarter turn to the
+    // left, as the TrenchBroom arrows show it.
     assert!((shifted[0].1.yaw_delta - delta).abs() < 1.0e-6);
     assert!(
-        (delta.abs() - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
-        "the landmark pair turns the player 90°: {delta}"
+        (delta - std::f32::consts::FRAC_PI_2).abs() < 1.0e-4,
+        "the landmark pair turns the player 90° left: {delta}"
     );
     // No horizontal input, so the step moved the pawn only by one tick of fall:
     // the horizontal offset is exact and the vertical one within that fall.
@@ -815,6 +837,13 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     assert!(
         arrival.cmpge(min_b).all() && arrival.cmple(max_b).all(),
         "the shift lands inside room B's copy of the region"
+    );
+    // The authored layout: room B's plate is room A's plate carried by the pair,
+    // so a player standing on A's plate lands on B's (TrenchBroom (8192, 64)).
+    let plate_b = level.trigger_center("era_plate", Some((min_b, max_b)));
+    assert!(
+        Vec3::new(arrival.x - plate_b.x, 0.0, arrival.z - plate_b.z).length() < 1.0e-3,
+        "the shift lands on room B's plate: {arrival} vs {plate_b}"
     );
     assert_eq!(
         after.arrival_latches,

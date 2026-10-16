@@ -470,7 +470,7 @@ fn near(a: Vec3, b: Vec3) {
 
 const DEST: Vec3 = Vec3::new(40.0, 0.0, 0.0);
 
-// AC7 / P23: a change applies at the start of the next tick, before the firing
+// a change applies at the start of the next tick, before the firing
 // test, so it never governs the tick that issued it.
 #[test]
 fn teleport_next_tick_mutation_arm_inside_fires_next_tick_and_crossing_disarm_stops_only_the_next()
@@ -502,7 +502,7 @@ fn teleport_next_tick_mutation_arm_inside_fires_next_tick_and_crossing_disarm_st
     near(rig.position(local), Vec3::ZERO);
 }
 
-// AC9 / P23: arrival in a teleporter armed at the start of the teleport tick
+// arrival in a teleporter armed at the start of the teleport tick
 // latches; exit then re-entry fires it.
 #[test]
 fn teleport_arrival_latch_same_tick_arm_latches_and_exit_reentry_fires() {
@@ -532,7 +532,7 @@ fn teleport_arrival_latch_same_tick_arm_latches_and_exit_reentry_fires() {
     near(rig.position(pawn), onward);
 }
 
-// AC12 / P3: batches apply in listed order at the next tick start; only an
+// batches apply in listed order at the next tick start; only an
 // armed edge clears latches, and an arm/disarm pair on a disarmed one is inert.
 #[test]
 fn teleport_ordered_mutation_batch_clears_latches_once_and_leaves_inert_pairs_disarmed() {
@@ -582,7 +582,7 @@ fn teleport_ordered_mutation_batch_clears_latches_once_and_leaves_inert_pairs_di
     near(rig.position(bystander), side);
 }
 
-// AC13 / P4: every pawn crossing on one tick teleports, one event each, and
+// every pawn crossing on one tick teleports, one event each, and
 // arming an occupied seamless region shifts all occupants on the next tick.
 #[test]
 fn teleport_two_pawn_entry_and_arm_moves_both_and_fires_the_event_once_each() {
@@ -637,7 +637,7 @@ fn teleport_two_pawn_entry_and_arm_moves_both_and_fires_the_event_once_each() {
     }
 }
 
-// AC14 / P5: a world-blocked arrival is refused with no move, event or sound
+// a world-blocked arrival is refused with no move, event or sound
 // edge, and each teleporter warns once however often it refuses.
 #[test]
 fn teleport_blocked_arrival_by_world_refuses_silently_and_warns_once_per_teleporter() {
@@ -688,7 +688,7 @@ fn teleport_blocked_arrival_by_world_refuses_silently_and_warns_once_per_telepor
     );
 }
 
-// AC14 / P5: the mover stage runs before player movement, so the arrival
+// the mover stage runs before player movement, so the arrival
 // clearance sees each mover where it ends this tick.
 #[test]
 fn teleport_blocked_arrival_by_mover_refuses_one_moving_in_and_accepts_one_moving_out() {
@@ -764,7 +764,7 @@ fn teleport_blocked_arrival_by_mover_refuses_one_moving_in_and_accepts_one_movin
     }
 }
 
-// AC16 / P25: only live player pawns teleport. Liveness is read before
+// only live player pawns teleport. Liveness is read before
 // movement, after deferred health writes land; a later kill keeps the teleport.
 #[test]
 fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills() {
@@ -882,7 +882,7 @@ fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills
     near(rig.position(late), DEST);
 }
 
-// AC17 / P24: the trigger tick runs after player movement, so it sees the
+// the trigger tick runs after player movement, so it sees the
 // arrival pose on the teleport tick.
 #[test]
 fn teleport_trigger_arrival_edges_enter_at_arrival_and_exit_at_source_on_the_teleport_tick() {
@@ -918,7 +918,7 @@ fn teleport_trigger_arrival_edges_enter_at_arrival_and_exit_at_source_on_the_tel
     );
 }
 
-// AC19 / P6: the event's disarm runs in-tick and applies at the next tick
+// the event's disarm runs in-tick and applies at the next tick
 // start, so catch-up ticks in one frame cannot admit a second player. The
 // frame driver lives in the app; a frame here is N ticks then the drain.
 #[test]
@@ -961,7 +961,7 @@ fn teleport_one_way_catchup_gate_never_admits_the_second_player_in_any_tick_posi
     }
 }
 
-// AC20 / P7: arm and disarm from frame-end sources (a kill `progress`, a state
+// arm and disarm from frame-end sources (a kill `progress`, a state
 // crossing) queue at the drain and govern the first tick after it. The app owns
 // where that drain sits in the frame; this proves the sim side of the seam.
 #[test]

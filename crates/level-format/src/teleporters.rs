@@ -24,8 +24,11 @@ pub struct TeleporterRecord {
     pub mode: TeleportMode,
     pub enabled_on_spawn: bool,
     pub brushes: Vec<EnvironmentBrush>,
+    /// Engine metres.
     pub destination_origin: [f32; 3],
+    /// Engine yaw in radians, the same convention as id-29 entity angles.
     pub destination_yaw: f32,
+    /// Seamless only; classic writes zeros.
     pub landmark_origin: [f32; 3],
     pub landmark_yaw: f32,
     pub arrival_sound: String,
@@ -34,7 +37,9 @@ pub struct TeleporterRecord {
 
 /// Little-endian u16 epoch, u32 record count. Each record: source u32,
 /// mode u8, enabled u8, u32 brush count and id52 brush encoding, destination
-/// xyz/yaw and landmark xyz/yaw f32, then two u32-length UTF-8 strings.
+/// xyz/yaw and landmark xyz/yaw f32, then two u32-length UTF-8 strings. A
+/// classic record's landmark must still be finite to decode, and is then
+/// ignored: it decodes as zeros.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TeleportersSection {
     pub teleporters: Vec<TeleporterRecord>,
@@ -155,6 +160,7 @@ impl TeleportersSection {
             let destination_yaw = r.finite_f32("destination yaw")?;
             let mut landmark_origin = r.finite_vec3("landmark origin")?;
             let mut landmark_yaw = r.finite_f32("landmark yaw")?;
+            // Every f32 field is validated alike; classic then ignores its landmark.
             if mode == TeleportMode::Classic {
                 landmark_origin = [0.0; 3];
                 landmark_yaw = 0.0;

@@ -31,6 +31,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
 /// Removal of the particle component renumbers later component kinds at 30.
 /// `WireMovementState::Vault` advances it to 31.
+/// Teleporters advance it to 32: the pawn teleport record in player movement
+/// state, the replicated teleporter armed state, and the input command's
+/// teleport yaw stamp share the bump.
 pub const WIRE_VERSION: u32 = 32;
 
 #[must_use]
@@ -452,7 +455,7 @@ mod tests {
         };
         assert_eq!(
             WIRE_VERSION, 32,
-            "the vault movement state extends the shipped layout"
+            "the teleport record, teleporter arming and input yaw stamp extend the shipped layout"
         );
         let previous = ProtocolVersion {
             app_protocol_id: PRE_COMMAND_PROTOCOL_ID,
@@ -629,8 +632,7 @@ mod switch_tick_epoch_tests {
     // refuses it before any snapshot decode.
     #[test]
     fn vault_movement_state_refuses_wire_30_peers() {
-        assert_eq!(WIRE_VERSION, 32);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        const { assert!(WIRE_VERSION > 30) };
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 30,
@@ -640,6 +642,23 @@ mod switch_tick_epoch_tests {
             Err(ClosingCause::Protocol { .. })
         ));
         assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 30);
+    }
+
+    // A pre-teleporter peer cannot decode the pawn teleport record, teleporter
+    // arming, or the input yaw stamp, so gate 1 refuses it before any decode.
+    #[test]
+    fn teleport_record_refuses_wire_31_peers() {
+        assert_eq!(WIRE_VERSION, 32);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
+        let previous = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: 31,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), previous),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(transport_protocol_id(), ((PROTOCOL_ID as u64) << 32) | 31);
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.

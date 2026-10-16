@@ -4,11 +4,11 @@
 use super::*;
 use crate::teleporter_system::TeleporterBindingTable;
 use crate::trigger_commands::{BoundTarget, BoundTriggerCommand, TriggerFireContext};
-use postretro_entities::{
-    NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
-    TeleportEventDescriptor, Transform,
-};
+use crate::trigger_system::PlayerId;
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::{
+    NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TeleportEventDescriptor, Transform,
+};
 use postretro_scripting_core::ir_scopes::DispatchScope;
 
 fn teleporter(ctx: &ScriptCtx, armed: bool, on_teleport: &str) -> EntityId {
@@ -97,19 +97,34 @@ fn teleport_event_fires_once_per_authoritative_execute_and_never_on_client() {
             fire: vec!["heal".into()],
         }]);
     let host = TeleporterBindingTable::build(&ctx, Default::default(), Default::default());
-    host.execute(&ctx, 0, teleported);
+    host.execute(&ctx, 0, teleported, PlayerId::Local(teleported));
     // `on_teleport` plus the member event name one reaction twice: both run, once each.
     assert_eq!(health(&ctx, teleported), 70.0);
-    assert_eq!(health(&ctx, bystander), 50.0, "activators is the teleported pawn only");
-    host.execute(&ctx, 0, teleported);
-    assert_eq!(health(&ctx, teleported), 90.0, "one fire per authoritative teleport");
+    assert_eq!(
+        health(&ctx, bystander),
+        50.0,
+        "activators is the teleported pawn only"
+    );
+    host.execute(&ctx, 0, teleported, PlayerId::Local(teleported));
+    assert_eq!(
+        health(&ctx, teleported),
+        90.0,
+        "one fire per authoritative teleport"
+    );
 
     // Client: prediction never calls `execute` with authority; the gate refuses it
     // even for a table that was built on the host, and a client-built table is empty.
     ctx.owner_slot_writes_enabled.set(false);
-    assert!(host.execute(&ctx, 0, teleported).is_none());
+    assert!(
+        host.execute(&ctx, 0, teleported, PlayerId::Local(teleported))
+            .is_none()
+    );
     let client = TeleporterBindingTable::build(&ctx, Default::default(), Default::default());
-    assert!(client.execute(&ctx, 0, teleported).is_none());
+    assert!(
+        client
+            .execute(&ctx, 0, teleported, PlayerId::Local(teleported))
+            .is_none()
+    );
     assert_eq!(health(&ctx, teleported), 90.0);
 }
 
@@ -166,7 +181,10 @@ fn teleport_client_mutation_role_guard_covers_member_primitive_and_token_paths()
             assert!(armed(&ctx, id));
         } else {
             assert_eq!(queued, 0, "client queues nothing on any entry path");
-            assert!(!armed(&ctx, id), "client armed state follows replication only");
+            assert!(
+                !armed(&ctx, id),
+                "client armed state follows replication only"
+            );
         }
     }
 }

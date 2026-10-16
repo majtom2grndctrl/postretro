@@ -1,5 +1,5 @@
 //! Authoritative teleporter event bindings and frame-end presentation residuals.
-//! See: context/lib/scripting.md §12 (Teleport events)
+//! See: context/lib/scripting.md §12 (Teleport events), context/lib/movement.md §6 (Teleport)
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -8,6 +8,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, FireOrigin, FireSubject, ReactionDescriptor,
     ScriptCtx, SequenceTarget, SystemCommandFireContext, TeleporterComponent,
 };
+use postretro_foundation::Seat;
 use postretro_scripting_core::group_resolution::group_commands_apply_here;
 use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::player_event_scope::{
@@ -41,11 +42,18 @@ pub struct TeleporterBindingTable {
     spawn_context: SpawnContext,
 }
 
+/// Presentation/wait work saved at fire time for the frame-end drain. The
+/// teleported player's identity is captured here, while the pawn is known to be
+/// theirs: a remote pawn keys its waits under `PlayerId::Remote(client_id)`,
+/// and recipients resolve from the seat recorded at fire time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TeleportResidual {
     pub index: u16,
     pub teleporter: EntityId,
     pub pawn: EntityId,
+    pub player: PlayerId,
+    /// `None` for an unseated pawn (single player's local pawn).
+    pub seat: Option<Seat>,
 }
 
 pub(crate) fn reaction_uses_teleporter(descriptor: &ReactionDescriptor) -> bool {
@@ -59,11 +67,13 @@ pub(crate) fn reaction_uses_teleporter(descriptor: &ReactionDescriptor) -> bool 
 }
 
 fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
+    // A positioned `at` is not rejected here: a teleport event publishes no
+    // emitter, so `playSound` skips it at dispatch with one warning per
+    // source and sound (scripting.md §12) and the rest of the reaction runs.
     fn invalid_args(args: &serde_json::Value) -> bool {
         ["@occupancy", "@rising", "@dt"]
             .iter()
             .any(|name| reads_dispatch_input(args, name))
-            || args.get("at").is_some()
             || matches!(
                 args.get("audience").and_then(serde_json::Value::as_str),
                 Some("@trigger" | "@player")
@@ -104,6 +114,11 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
 }
 
 impl TeleporterBindingTable {
+    /// No teleporter is bound: the default table a level unload leaves.
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
     pub fn build(
         ctx: &ScriptCtx,
         diagnostics: MoverCommandDiagnostics,
@@ -198,9 +213,18 @@ impl TeleporterBindingTable {
         table
     }
 
-    /// Call once per successful authoritative teleport, after every pawn moved.
-    /// Commands only enqueue arm state for the next tick. Prediction never calls it.
-    pub fn execute(&self, ctx: &ScriptCtx, index: u16, pawn: EntityId) -> Option<TeleportResidual> {
+    /// Call once per successful authoritative teleport, after every pawn moved,
+    /// remote pawns first and then the local pawn (the sim tick's order).
+    /// Bound commands run now, but a teleporter `arm`/`disarm` they issue only
+    /// enqueues a mutation that applies at the start of the next tick; every
+    /// other command applies in-tick. Prediction never calls it.
+    pub fn execute(
+        &self,
+        ctx: &ScriptCtx,
+        index: u16,
+        pawn: EntityId,
+        player: PlayerId,
+    ) -> Option<TeleportResidual> {
         if !group_commands_apply_here(ctx) {
             return None;
         }
@@ -231,10 +255,13 @@ impl TeleporterBindingTable {
                 &fire,
             );
         }
+        let seat = registry.seat_for_pawn(pawn);
         (!binding.residual.is_empty()).then_some(TeleportResidual {
             index,
             teleporter: entity,
             pawn,
+            player,
+            seat,
         })
     }
 }
@@ -259,9 +286,15 @@ pub fn drain_teleport_residuals(
         if binding.entity != Some(residual.teleporter) {
             continue;
         }
-        let _origin =
-            scheduler.begin_origin(residual.teleporter, PlayerId::Local(residual.pawn), false);
-        let player = ctx.registry.borrow().seat_for_pawn(residual.pawn);
+        // A seated player who left before the drain has nobody to present to;
+        // skip rather than let the default recipient route to the host screen.
+        if residual.seat.is_some()
+            && ctx.registry.borrow().seat_for_pawn(residual.pawn) != residual.seat
+        {
+            continue;
+        }
+        let _origin = scheduler.begin_origin(residual.teleporter, residual.player, false);
+        let player = residual.seat;
         let previous = ctx
             .system_commands
             .replace_fire_context(SystemCommandFireContext {
@@ -289,8 +322,145 @@ mod tests {
     use super::*;
     use crate::teleporter_commands::apply_pending_teleporter_mutations;
     use postretro_entities::{
-        NamedReaction, PrimitiveDescriptor, TeleportEventDescriptor, Transform,
+        NamedReaction, PrimitiveDescriptor, Recipients, SystemReactionCommand,
+        TeleportEventDescriptor, Transform,
     };
+    fn presentation(name: &str, primitive: &str, args: serde_json::Value) -> NamedReaction {
+        NamedReaction {
+            name: name.into(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: primitive.into(),
+                target: None,
+                args,
+                kind: None,
+                tag: None,
+                on_complete: None,
+            }),
+        }
+    }
+
+    /// A teleporter whose event runs a positioned sound and a flash, one
+    /// pawn bound to `seat`.
+    fn presentation_rig(seat: Seat) -> (ScriptCtx, TeleporterBindingTable, EntityId) {
+        let ctx = ScriptCtx::new();
+        let (gate, pawn) = {
+            let mut registry = ctx.registry.borrow_mut();
+            let gate = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    gate,
+                    TeleporterComponent {
+                        index: 0,
+                        source_entity: 1,
+                        armed: true,
+                        arrival_sound: String::new(),
+                        on_teleport: String::new(),
+                    },
+                )
+                .unwrap();
+            let pawn = registry.spawn(Transform::default());
+            registry.bind_pawn_seat(pawn, seat);
+            (gate, pawn)
+        };
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![
+                presentation(
+                    "snd",
+                    "playSound",
+                    serde_json::json!({ "sound": "sfx/hum", "at": "@emitter" }),
+                ),
+                presentation(
+                    "fx",
+                    "flashScreen",
+                    serde_json::json!({ "color": [1.0, 1.0, 1.0, 1.0], "durationMs": 30.0 }),
+                ),
+            ],
+            vec![],
+            &[],
+        );
+        ctx.data_registry
+            .borrow_mut()
+            .set_level_teleport_events(vec![TeleportEventDescriptor {
+                teleporter: gate,
+                event: "teleport".into(),
+                fire: vec!["snd".into(), "fx".into()],
+            }]);
+        let bindings = TeleporterBindingTable::build(&ctx, Default::default(), Default::default());
+        (ctx, bindings, pawn)
+    }
+
+    fn drain_one(ctx: &ScriptCtx, bindings: &TeleporterBindingTable, residual: TeleportResidual) {
+        let mut system = postretro_scripting_core::reaction_registry::SystemReactionRegistry::new();
+        crate::scripting_systems::system_reactions::register_system_reaction_primitives(
+            &mut system,
+        );
+        drain_teleport_residuals(
+            &[residual],
+            bindings,
+            &ReactionScheduler::default(),
+            ResidualRegistries {
+                sequence: &postretro_scripting_core::sequence::SequencedPrimitiveRegistry::new(),
+                reaction:
+                    &postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry::new(),
+                system: &system,
+            },
+            ctx,
+            &mut Vec::new(),
+        );
+    }
+
+    #[test]
+    fn teleport_positioned_sound_is_skipped_without_dropping_the_reaction() {
+        let positioned = ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: "playSound".into(),
+            target: None,
+            args: serde_json::json!({ "sound": "sfx/hum", "at": "@emitter" }),
+            kind: None,
+            tag: None,
+            on_complete: None,
+        });
+        assert!(!invalid_scope(&positioned));
+        let (ctx, bindings, pawn) = presentation_rig(Seat(4));
+        let residual = bindings
+            .execute(&ctx, 0, pawn, PlayerId::Remote(9))
+            .expect("presentation leaves a residual");
+        drain_one(&ctx, &bindings, residual);
+        let queued = ctx.system_commands.take_ordered();
+        assert_eq!(queued.len(), 1, "only the flash plays: {queued:?}");
+        assert!(matches!(
+            queued[0].1,
+            SystemReactionCommand::FlashScreen { .. }
+        ));
+    }
+
+    #[test]
+    fn teleport_residual_records_player_and_seat_at_fire_time() {
+        let (ctx, bindings, pawn) = presentation_rig(Seat(4));
+        let residual = bindings
+            .execute(&ctx, 0, pawn, PlayerId::Remote(9))
+            .expect("presentation leaves a residual");
+        assert_eq!(residual.player, PlayerId::Remote(9));
+        assert_eq!(residual.seat, Some(Seat(4)));
+        drain_one(&ctx, &bindings, residual);
+        let queued = ctx.system_commands.take_ordered();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].0, Recipients::Seats(vec![Seat(4)]));
+    }
+
+    #[test]
+    fn teleport_residual_for_a_departed_seat_is_skipped_not_routed_to_the_host() {
+        let (ctx, bindings, pawn) = presentation_rig(Seat(4));
+        let residual = bindings
+            .execute(&ctx, 0, pawn, PlayerId::Remote(9))
+            .expect("presentation leaves a residual");
+        ctx.registry.borrow_mut().clear_pawn_seat(pawn);
+        drain_one(&ctx, &bindings, residual);
+        assert!(
+            ctx.system_commands.take_ordered().is_empty(),
+            "a departed player's presentation must not fall back to the host screen"
+        );
+    }
+
     #[test]
     fn teleport_event_disarms_before_next_catchup_tick_and_rejects_occupancy() {
         let ctx = ScriptCtx::new();
@@ -333,7 +503,7 @@ mod tests {
                 fire: vec!["used".into()],
             }]);
         let bindings = TeleporterBindingTable::build(&ctx, Default::default(), Default::default());
-        bindings.execute(&ctx, 0, pawn);
+        bindings.execute(&ctx, 0, pawn, PlayerId::Local(pawn));
         assert!(
             ctx.registry
                 .borrow()
@@ -359,7 +529,7 @@ mod tests {
         });
         assert!(invalid_scope(&bad));
         ctx.owner_slot_writes_enabled.set(false);
-        bindings.execute(&ctx, 0, pawn);
+        bindings.execute(&ctx, 0, pawn, PlayerId::Local(pawn));
         assert!(ctx.pending_teleporter_mutations.borrow().is_empty());
     }
 }

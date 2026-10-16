@@ -1011,6 +1011,9 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Per-level `teleport` event bindings, rebuilt with the trigger bindings from
+    /// the composed reaction set. The authoritative fixed tick dispatches each
+    /// teleport's reactions through it, and the frame-end residual drain reads it.
     teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
@@ -1021,6 +1024,9 @@ pub(crate) struct App {
 
     client_weapon: client_weapon::ClientWeaponFrame,
     observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
+    /// This frame's teleport arrival cues at fixed points: the local traveller's
+    /// (forward prediction, adoption, or the host seat's own crossing) and every
+    /// observed remote arrival. Played and cleared by the frame's audio step.
     pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,

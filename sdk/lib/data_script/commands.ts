@@ -1,5 +1,5 @@
 // Command targets: the `npcs` and `players` groups and the subject tokens
-// (`on.activators`, `on.trigger`, `on.player`). Each carries exactly the verbs
+// (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`). Each carries exactly the verbs
 // its kind supports; a verb builds the closed wire descriptor.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
@@ -70,7 +70,7 @@ export interface PlayerGroup {
   on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
 }
 
-/** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
+/** The subject a token command addresses: this fire's activators, the volume that fired, the teleporter that fired, or the event's player. */
 export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
 
 /**

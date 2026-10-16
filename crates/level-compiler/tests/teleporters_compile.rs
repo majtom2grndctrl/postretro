@@ -202,7 +202,11 @@ fn teleport_invalid_authoring_fails_prl_build_naming_entity() {
     for (case, entities, entity) in cases {
         let temp = TempBuildDir::new();
         let (output, _) = run(&temp, "bad", &two_room_map(&entities), None, "warn");
-        assert!(!output.status.success(), "{case} must fail\n{}", logs(&output));
+        assert!(
+            !output.status.success(),
+            "{case} must fail\n{}",
+            logs(&output)
+        );
         assert!(
             stderr(&output).contains(entity),
             "{case}: stderr must name `{entity}`\n{}",
@@ -229,7 +233,7 @@ fn teleport_destination_pitch_roll_warns_through_prl_build_and_uses_yaw_only() {
     );
     assert!(text.contains("entity 3 'teleport_destination'"), "{text}");
     let section = teleporters(&prl);
-    assert_eq!(section.teleporters[0].destination_yaw, -90.0f32.to_radians());
+    assert_eq!(section.teleporters[0].destination_yaw, 90.0f32.to_radians());
     assert_eq!(section.teleporters[0].mode, TeleportMode::Classic);
 }
 
@@ -266,7 +270,12 @@ fn teleport_residency_cache_rebakes_id51_on_pose_shape_and_mode_edits() {
     let seamless_base = seamless("128 0 32", "-128 0 32");
     let (cold, _) = run(&temp, "base", &base, Some(&cache), "info");
     assert!(cold.status.success(), "{}", logs(&cold));
-    assert_eq!(residency_cache_state(&cold), Some("miss"), "{}", logs(&cold));
+    assert_eq!(
+        residency_cache_state(&cold),
+        Some("miss"),
+        "{}",
+        logs(&cold)
+    );
     let (warm, _) = run(&temp, "base", &base, Some(&cache), "info");
     assert_eq!(residency_cache_state(&warm), Some("hit"), "{}", logs(&warm));
     let (seamless_cold, _) = run(&temp, "base", &seamless_base, Some(&cache), "info");
@@ -300,11 +309,24 @@ fn teleport_residency_cache_rebakes_id51_on_pose_shape_and_mode_edits() {
     for (edit, edited, baseline) in edits {
         // Re-warm the baseline so the edit is judged against a populated cache.
         let (rewarm, _) = run(&temp, "base", baseline, Some(&cache), "info");
-        assert_eq!(residency_cache_state(&rewarm), Some("hit"), "{edit}: baseline");
+        assert_eq!(
+            residency_cache_state(&rewarm),
+            Some("hit"),
+            "{edit}: baseline"
+        );
         let (first, _) = run(&temp, "base", &edited, Some(&cache), "info");
         assert!(first.status.success(), "{edit}\n{}", logs(&first));
-        assert_eq!(residency_cache_state(&first), Some("miss"), "{edit}\n{}", logs(&first));
+        assert_eq!(
+            residency_cache_state(&first),
+            Some("miss"),
+            "{edit}\n{}",
+            logs(&first)
+        );
         let (second, _) = run(&temp, "base", &edited, Some(&cache), "info");
-        assert_eq!(residency_cache_state(&second), Some("hit"), "{edit}: then warm");
+        assert_eq!(
+            residency_cache_state(&second),
+            Some("hit"),
+            "{edit}: then warm"
+        );
     }
 }

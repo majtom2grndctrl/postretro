@@ -194,12 +194,12 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
     }
 }
 
-/// Advance one pawn one fixed tick. `environment` is the level gravity plus the
-/// installed volumes; the tick resolves it once, at the tick-start `position`,
-/// and hands the result to the state intent, which never queries it.
-///
-/// Prediction and reconcile replay call this form: it reports nothing they
-/// could carry into a later tick beyond the pose, the component and events.
+/// Test convenience for [`tick_with_immersion_and_armed`]: one fixed tick that
+/// discards the immersion and arms every teleporter as its map spawned it
+/// (`enabled_on_spawn`). Production movement never calls it: host movement,
+/// client prediction and reconcile replay all supply the installed armed state,
+/// which scripts change at runtime.
+#[cfg(test)]
 pub fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -213,12 +213,8 @@ pub fn tick(
     (position, events)
 }
 
-/// [`tick`], also reporting the tick's resolved immersion (0..=1): the
-/// tick-start resolve the state intent used, after any swim entry re-resolved
-/// it for the standing capsule. Authoritative host movement stores it in the
-/// pawn's output-only `ImmersionComponent` for the `player.immersion` slot.
-/// Nothing feeds it back into a tick: the next tick resolves afresh from its
-/// own position.
+/// [`tick`], also reporting the tick's immersion; test-only for the same reason.
+#[cfg(test)]
 pub fn tick_with_immersion(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -239,7 +235,18 @@ pub fn tick_with_immersion(
     )
 }
 
-/// Authority and prediction supply the installed armed state; replay uses the same path.
+/// Advance one pawn one fixed tick: the movement entry for host movement, client
+/// prediction and reconcile replay alike. `environment` is the level gravity
+/// plus the installed volumes; the tick resolves it once, at the tick-start
+/// `position`, and hands the result to the state intent, which never queries it.
+/// `armed` reports whether teleporter `index` (map order) is armed this tick;
+/// callers read the installed armed state, so all three agree.
+///
+/// Also returns the tick's resolved immersion (0..=1): the tick-start resolve
+/// the state intent used, after any swim entry re-resolved it for the standing
+/// capsule. Authoritative host movement stores it in the pawn's output-only
+/// `ImmersionComponent` for the `player.immersion` slot. Nothing feeds it back
+/// into a tick: the next tick resolves afresh from its own position.
 #[allow(clippy::too_many_arguments)]
 pub fn tick_with_immersion_and_armed(
     component: &mut PlayerMovementComponent,

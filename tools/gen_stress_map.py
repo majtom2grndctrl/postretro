@@ -1547,7 +1547,11 @@ def generate(nx, ny, nz, seed, braid_prob, shaft_prob, lights_mode, light_every,
                 rect = place_rects[e % len(place_rects)]
             enemy_rooms[rect[1:6]] = enemy_rooms.get(rect[1:6], 0) + 1
             px, py, zf = floor_point(rect)
-            entities.append(enemy_entity((px, py, zf + 16), prng.randint(0, 359)))
+            # Emitted mirrored: the compiler once mirrored entity yaw, and
+            # mirroring the same draw keeps committed maps' enemy facings (and
+            # the RNG stream) unchanged now that yaw follows the TrenchBroom arrow.
+            yaw = (360 - prng.randint(0, 359)) % 360
+            entities.append(enemy_entity((px, py, zf + 16), yaw))
         for w in range(max(0, n_weapons)):
             if zoned and arena_rects and w % 2 == 0:
                 # Half the pickups lie among the arena's pools.

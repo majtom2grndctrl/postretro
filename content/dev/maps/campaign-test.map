@@ -1489,7 +1489,7 @@
 {
 "classname" "player_spawn"
 "origin" "1808 2592 72"
-"angle" "90"
+"angle" "270"
 }
 // entity 14
 {

@@ -733,81 +733,95 @@ pub const RESERVED_MAP_ENTITY_KEYS: &[&str] =
 /// (pitch, yaw, roll), reading whichever of `angles` / `mangle` / `angle` is
 /// present in `props`. Returns `[0.0; 3]` when no angle key is set.
 ///
+/// Malformed values log a `[Loader]`-style warning and fall back to zeros so
+/// the compile keeps going; bad angle data is recoverable. A caller that must
+/// refuse bad angles instead uses [`try_quake_to_engine_angles`].
+pub fn quake_to_engine_angles(
+    props: &std::collections::HashMap<String, String>,
+    diagnostic_ref: &str,
+) -> [f32; 3] {
+    try_quake_to_engine_angles(props).unwrap_or_else(|reason| {
+        log::warn!("[Loader] {diagnostic_ref}: {reason}; using zeros");
+        [0.0; 3]
+    })
+}
+
+/// The one Quake-angle conversion point for point entities: the fallible form
+/// of [`quake_to_engine_angles`]. `Err` carries a reason naming the key.
+///
 /// Quake authoring conventions:
 /// - `angles "pitch yaw roll"` (degrees): full three-axis orientation. `mangle`
-///   is the same shape; some editors emit one or the other.
+///   is the same shape; some editors emit one or the other. Either wins over
+///   `angle`.
 /// - `angle <yaw>` (degrees): legacy single-axis form, yaw only. Two reserved
 ///   sentinel values pre-date `angles`: `-1` = straight up, `-2` = straight
 ///   down (encoded as ±90° pitch).
 ///
 /// Engine convention: a `Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll)`
-/// rotation around (engine) +Y, +X, then -Z. The axis swizzle from Quake
-/// (Z-up, +X forward, +Y left) to engine (Y-up, -Z forward, +X right) inverts
-/// the sign of yaw — a positive Quake yaw rotates left around Z-up, which is a
-/// negative rotation around engine +Y. Pitch and roll keep their sign.
-///
-/// Malformed values log a `[Loader]`-style warning and fall back to zeros so
-/// the compile keeps going; bad angle data is recoverable.
-pub fn quake_to_engine_angles(
+/// rotation, whose forward is `-Z`. Yaw keeps its sign. The axis swizzle
+/// (`parse::quake_to_engine`: engine = (-qy, qz, -qx)) is a proper rotation that
+/// takes Quake up (+Z) to engine up (+Y), so a counter-clockwise turn about up
+/// stays counter-clockwise: Quake yaw θ faces (cos θ, sin θ, 0), which swizzles
+/// to (-sin θ, 0, -cos θ) — exactly engine yaw θ applied to `-Z`. Yaw 90 faces
+/// Quake +Y, the way TrenchBroom draws the arrow. Pitch and roll also keep their
+/// sign; engine pitch is positive nose-up, matching the spotlight `angles`
+/// convention (`"-90 0 0"` points down).
+pub fn try_quake_to_engine_angles(
     props: &std::collections::HashMap<String, String>,
-    diagnostic_ref: &str,
-) -> [f32; 3] {
+) -> Result<[f32; 3], String> {
+    let to_radians = |key: &str, raw: &str, deg: [f32; 3]| {
+        let radians = deg.map(f32::to_radians);
+        if radians.iter().all(|v| v.is_finite()) {
+            Ok(radians)
+        } else {
+            Err(format!("'{key}' has non-finite component(s) '{raw}'"))
+        }
+    };
     // Prefer `angles`/`mangle` (full 3-axis) over the legacy `angle` (yaw only).
-    if let Some(raw) = props.get("angles").or_else(|| props.get("mangle")) {
+    let three_axis = props
+        .get("angles")
+        .map(|raw| ("angles", raw))
+        .or_else(|| props.get("mangle").map(|raw| ("mangle", raw)));
+    if let Some((key, raw)) = three_axis {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return [0.0; 3];
+            return Ok([0.0; 3]);
         }
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() != 3 {
-            log::warn!(
-                "[Loader] {diagnostic_ref}: 'angles' has {} components, expected 3; using zeros",
+            return Err(format!(
+                "'{key}' has {} components, expected 3",
                 parts.len()
-            );
-            return [0.0; 3];
+            ));
         }
-        let nums: Option<Vec<f32>> = parts.iter().map(|p| p.parse::<f32>().ok()).collect();
-        let Some(nums) = nums else {
-            log::warn!(
-                "[Loader] {diagnostic_ref}: 'angles' contains non-numeric component(s) '{raw}'; using zeros"
-            );
-            return [0.0; 3];
-        };
-        let pitch_deg = nums[0];
-        let yaw_deg = nums[1];
-        let roll_deg = nums[2];
-        return [
-            pitch_deg.to_radians(),
-            -yaw_deg.to_radians(),
-            roll_deg.to_radians(),
-        ];
+        let mut deg = [0.0f32; 3];
+        for (slot, part) in deg.iter_mut().zip(&parts) {
+            *slot = part
+                .parse()
+                .map_err(|_| format!("'{key}' contains non-numeric component(s) '{raw}'"))?;
+        }
+        return to_radians(key, raw, deg);
     }
 
     if let Some(raw) = props.get("angle") {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return [0.0; 3];
+            return Ok([0.0; 3]);
         }
-        let yaw_deg: f32 = match trimmed.parse() {
-            Ok(v) => v,
-            Err(_) => {
-                log::warn!(
-                    "[Loader] {diagnostic_ref}: 'angle' is not numeric ('{raw}'); using zero"
-                );
-                return [0.0; 3];
-            }
-        };
+        let yaw_deg: f32 = trimmed
+            .parse()
+            .map_err(|_| format!("'angle' is not numeric ('{raw}')"))?;
         // Quake sentinels: -1 = up, -2 = down. Encoded as pitch alone.
         if (yaw_deg + 1.0).abs() < f32::EPSILON {
-            return [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+            return Ok([std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
         }
         if (yaw_deg + 2.0).abs() < f32::EPSILON {
-            return [-std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+            return Ok([-std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
         }
-        return [0.0, -yaw_deg.to_radians(), 0.0];
+        return to_radians("angle", raw, [0.0, yaw_deg, 0.0]);
     }
 
-    [0.0; 3]
+    Ok([0.0; 3])
 }
 
 /// Parse three finite `angles` components into a normalized engine-space direction.
@@ -2013,11 +2027,11 @@ mod tests {
     }
 
     #[test]
-    fn quake_to_engine_angles_three_axis_inverts_yaw() {
+    fn quake_to_engine_angles_three_axis_keeps_yaw_sign() {
         let p = props(&[("angles", "10 90 0")]);
         let got = quake_to_engine_angles(&p, "ent");
         assert!((got[0] - 10.0_f32.to_radians()).abs() < 1e-6);
-        assert!((got[1] - (-90.0_f32).to_radians()).abs() < 1e-6);
+        assert!((got[1] - 90.0_f32.to_radians()).abs() < 1e-6);
         assert_eq!(got[2], 0.0);
     }
 
@@ -2026,8 +2040,57 @@ mod tests {
         let p = props(&[("angle", "180")]);
         let got = quake_to_engine_angles(&p, "ent");
         assert_eq!(got[0], 0.0);
-        assert!((got[1] - (-180.0_f32).to_radians()).abs() < 1e-6);
+        assert!((got[1] - 180.0_f32.to_radians()).abs() < 1e-6);
         assert_eq!(got[2], 0.0);
+    }
+
+    /// Pins entity yaw to Quake's `AngleVectors` (forward = (cos yaw, sin yaw, 0)
+    /// at zero pitch) carried through the compiler's axis swizzle, for every
+    /// angle key: yaw 90 must face Quake +Y, the direction TrenchBroom draws.
+    #[test]
+    fn quake_to_engine_angles_yaw_faces_quake_angle_vectors_forward() {
+        use glam::{EulerRot, Quat, Vec3};
+        for key in ["angle", "angles", "mangle"] {
+            for yaw_deg in [0.0f32, 30.0, 90.0, 135.0, 180.0, 270.0, 315.0] {
+                let raw = if key == "angle" {
+                    format!("{yaw_deg}")
+                } else {
+                    format!("0 {yaw_deg} 0")
+                };
+                let got = try_quake_to_engine_angles(&props(&[(key, &raw)])).unwrap();
+                let engine_forward =
+                    Quat::from_euler(EulerRot::YXZ, got[1], got[0], got[2]) * Vec3::NEG_Z;
+                let yaw = f64::from(yaw_deg).to_radians();
+                let quake_forward = DVec3::new(yaw.cos(), yaw.sin(), 0.0);
+                let expected = crate::parse::quake_to_engine_for_test(quake_forward).as_vec3();
+                assert!(
+                    engine_forward.abs_diff_eq(expected, 1e-5),
+                    "{key} {raw}: engine forward {engine_forward} != swizzled Quake forward {expected}"
+                );
+            }
+        }
+        let east = try_quake_to_engine_angles(&props(&[("angle", "90")])).unwrap();
+        let forward = Quat::from_euler(EulerRot::YXZ, east[1], east[0], east[2]) * Vec3::NEG_Z;
+        // Quake +Y (left of +X forward) is engine -X.
+        assert!(forward.abs_diff_eq(Vec3::NEG_X, 1e-6), "{forward}");
+    }
+
+    #[test]
+    fn try_quake_to_engine_angles_names_the_malformed_key() {
+        for (key, raw, needle) in [
+            ("angles", "1 2", "'angles' has 2 components"),
+            ("mangle", "0 x 0", "'mangle' contains non-numeric"),
+            ("angle", "east", "'angle' is not numeric"),
+            ("angles", "0 inf 0", "'angles' has non-finite"),
+            ("angle", "1e39", "'angle' has non-finite"),
+        ] {
+            let error = try_quake_to_engine_angles(&props(&[(key, raw)])).unwrap_err();
+            assert!(error.contains(needle), "{key} {raw}: {error}");
+            assert_eq!(
+                quake_to_engine_angles(&props(&[(key, raw)]), "ent"),
+                [0.0; 3]
+            );
+        }
     }
 
     #[test]
@@ -2058,7 +2121,7 @@ mod tests {
         let p = props(&[("angle", "180"), ("angles", "0 45 0")]);
         let got = quake_to_engine_angles(&p, "ent");
         // `angles` wins.
-        assert!((got[1] - (-45.0_f32).to_radians()).abs() < 1e-6);
+        assert!((got[1] - 45.0_f32.to_radians()).abs() < 1e-6);
     }
 
     /// Task 2c: `_animated 1` parses with `is_animated == true` and the

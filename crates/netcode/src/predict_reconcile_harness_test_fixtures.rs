@@ -100,7 +100,7 @@ pub(crate) const PLAYOUT_WARMUP_TICKS: u32 = 7;
 /// whose geometric decay tail is unboundedly slow). See `drain_step`.
 pub(crate) const DRAIN_SETTLE_TICKS: u32 = 30;
 
-/// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
+/// The mandated automated harness profile, applied in BOTH directions:
 /// 45 ms base + up to 60 ms jitter (a 45..105 ms one-way range, ≈150 ms mean RTT),
 /// 5% loss, fixed seed. Matches the Phase 2 latency harness profile exactly.
 pub(crate) fn mandated_link() -> LinkConfig {
@@ -1566,7 +1566,7 @@ impl LoopbackHarness {
         self.apply_acks(&acks);
     }
 
-    /// The explicit drain condition (Task 6 §B): no packets in flight in EITHER
+    /// The explicit drain condition: no packets in flight in EITHER
     /// direction, AND the host input queue is drained (its resolved cursor has reached
     /// the final sent command tick), AND the client has processed a snapshot acking
     /// that cursor (its acked server tick reached the frozen drain *target* — the

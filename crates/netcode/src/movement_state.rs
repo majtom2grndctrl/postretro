@@ -11,6 +11,8 @@ use postretro_net::wire::{WireGroundRef, WireMovementState, WirePlayerMovementSt
 
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
+/// A wire teleport record is valid and every index it names — last teleporter
+/// and each latch — names one of this client's `count` installed teleporters.
 pub(crate) fn teleport_indices_fit(
     wire: &postretro_net::wire::WireTeleportState,
     count: usize,
@@ -45,7 +47,10 @@ pub(crate) fn movement_state_to_wire(
             component.teleport.last_teleporter,
             &component.teleport.arrival_latches,
         )
-        .expect("validated pawn teleport state must fit the u16 latch envelope"),
+        .expect(
+            "pawn teleport state must be wire-valid: yaw wrapped to (-pi, pi], at most \
+             u16::MAX latches, strictly ascending, none the no-teleporter index",
+        ),
         velocity: [
             component.velocity.x,
             component.velocity.y,

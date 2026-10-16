@@ -1,4 +1,5 @@
 //! Optional teleporter section: malformed bytes fail the level load.
+//! See: context/lib/build_pipeline.md §PRL section IDs (Teleporters, id 55)
 use crate::prl::PrlLoadError;
 use crate::prl_loader::section_validation_from_error;
 use postretro_level_format::teleporters::TeleportersSection;

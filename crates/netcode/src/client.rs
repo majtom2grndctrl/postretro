@@ -50,7 +50,7 @@ use postretro_entities::{
 };
 
 use super::interpolation::{
-    ObservedTeleport, PoseSource, RemoteInterpolationBuffer, TeleportSample, TransformSample,
+    ObservedTeleport, RemoteInterpolationBuffer, TeleportSample, TransformSample,
 };
 use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
@@ -63,6 +63,8 @@ mod late_baselines;
 #[cfg(test)]
 mod presentation_tests;
 mod replay_poses;
+#[cfg(test)]
+mod teleporter_tests;
 mod teleporters;
 use bindings::{ClientBindings, is_presentation_payload};
 use late_baselines::LateBaselineHistory;
@@ -194,6 +196,13 @@ pub(crate) enum IgnoredPayload {
     /// A movement payload referenced a ground mover id this client did not load.
     /// The ground reference is engine-owned validation for the same reason.
     UnknownGroundMover { network_id: u32, mover_id: u32 },
+    /// A teleporter baseline named an index and source entity no installed
+    /// teleporter carries. Nothing binds; the region keeps its local armed state.
+    UnknownTeleporter {
+        network_id: u32,
+        index: u16,
+        source_entity: u32,
+    },
 }
 
 /// One pending baseline-repair entry: the entity needs a full baseline re-sent and
@@ -552,6 +561,9 @@ pub struct MoverCorrection {
 }
 
 impl ClientReplication {
+    /// Generation changes accepted since the last call, for observer arrival
+    /// cues: one per accepted sample whose generation changed, in arrival order
+    /// per pawn. Allocates nothing when none arrived.
     pub fn take_observed_teleports(&mut self) -> Vec<ObservedTeleport> {
         let mappings = &self.map;
         self.interp
@@ -1210,31 +1222,14 @@ impl ClientReplication {
             // without one is invalid and does not spawn.
             None => {
                 if let Some(state) = teleporters::first_state(components) {
-                    let Some(id) = teleporters::find_loaded(registry, state) else {
-                        log::warn!(
-                            "[Net] teleporter baseline names unknown index/source {}/{}",
-                            state.index,
-                            state.source_entity
-                        );
-                        return false;
-                    };
-                    if self.reverse_map.contains_key(&id) {
-                        return false;
-                    }
-                    self.insert_mapping(network_id, id);
-                    self.baselines.insert(network_id, baseline_id);
-                    self.pending_repairs.remove(&network_id);
-                    self.bindings
-                        .teleporter_network_ids
-                        .insert(network_id, state.index);
-                    self.interp.forget(network_id);
-                    return self.apply_components_to(
+                    return self.bind_teleporter_baseline(
                         registry,
                         network_id,
+                        baseline_id,
+                        state,
                         server_tick,
                         mover_target_tick,
                         mover_tick_dt,
-                        id,
                         components,
                         outcome,
                     );
@@ -2120,7 +2115,7 @@ impl ClientReplication {
             }
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
-            if matches!(pose.source, PoseSource::HeldNewest) {
+            if pose.holds_newest {
                 stats.held_newest += 1;
                 if self
                     .interp
@@ -2493,7 +2488,7 @@ impl ClientReplication {
         &self,
         network_id: NetworkId,
         render_server_tick: f64,
-    ) -> Option<PoseSource> {
+    ) -> Option<super::interpolation::PoseSource> {
         self.interp
             .presented_pose(network_id, render_server_tick)
             .map(|p| p.source)
@@ -2767,6 +2762,7 @@ fn collect_presentation_payloads(
 
 #[cfg(test)]
 mod tests {
+    use super::super::interpolation::PoseSource;
     use super::*;
     use glam::Quat;
     use glam::Vec3;
@@ -3154,10 +3150,14 @@ mod tests {
         client.sample_into_registry(&mut registry, 15.0, 0.0);
         let entity = client.entity_for_network_id(NetworkId(7)).unwrap();
         assert!(entity_pos(&registry, entity).length() < 1.0e-6);
+        // Two accepted generation changes in one frame are two cues, in order,
+        // each at its own accepted arrival point.
         let cues = client.take_observed_teleports();
-        assert_eq!(cues.len(), 1);
-        assert_eq!(cues[0].last_teleporter, 1);
-        assert!((cues[0].arrival.x - 200.0).abs() < 1.0e-6);
+        assert_eq!(cues.len(), 2);
+        assert_eq!((cues[0].generation, cues[0].last_teleporter), (1, 0));
+        assert!((cues[0].arrival.x - 100.0).abs() < 1.0e-6);
+        assert_eq!((cues[1].generation, cues[1].last_teleporter), (2, 1));
+        assert!((cues[1].arrival.x - 200.0).abs() < 1.0e-6);
         assert!(client.take_observed_teleports().is_empty());
         client.apply_snapshot(
             &mut registry,

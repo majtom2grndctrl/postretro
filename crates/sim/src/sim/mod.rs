@@ -642,8 +642,16 @@ where
     if let Some(context) = trigger_context.as_ref()
         && let (Some(bindings), Some(ctx)) = (context.teleporters, context.script_ctx.as_ref())
     {
+        // Event order: remote pawns in command order, then the local pawn
+        // (the order `teleports` was built in above); residuals keep it.
         for (pawn, event) in &teleports {
-            if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn) {
+            let player = remote_pawn_commands
+                .iter()
+                .find(|remote| remote.pawn == *pawn)
+                .map_or(PlayerId::Local(*pawn), |remote| {
+                    PlayerId::Remote(remote.owner_client_id)
+                });
+            if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn, player) {
                 teleport_residuals.push(residual);
             }
         }

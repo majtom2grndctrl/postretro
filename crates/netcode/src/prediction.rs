@@ -1,17 +1,17 @@
-// Client-side movement prediction state for M15 Phase 3: the command-log ring for
-// the local pawn (commands only — the registry is the pose chain), the armed
+// Client-side movement prediction state: the command-log ring for the local pawn
+// (commands only — the registry is the pose chain), the armed
 // `NetworkId -> EntityId` baseline, the forward-prediction tick, prune-through-ack,
-// and the side-effect-free movement-only replay helper shared with Task 5's
-// reconciliation.
+// and the side-effect-free movement-only replay helper shared with reconciliation.
 // See: context/lib/networking.md · context/lib/movement.md
 //
 // Boundary: the replay helper lives HERE (not in `sim/`) because production
-// movement prediction is a netcode concern and `movement::tick` is reachable from
-// this module via `crate::movement`. Co-locating it with the prediction storage
-// keeps the whole prediction seam in one place. It is the inverse of `sim/`'s
-// `predict_reconcile.rs` dev harness: that one drives the FULL `simulate_tick`
-// (AI/weapons/death) through two local sims; this is the movement-only production
-// path that NEVER runs those systems and NEVER touches the `EntityRegistry`.
+// movement prediction is a netcode concern. Co-locating it with the prediction
+// storage keeps the whole prediction seam in one place. It is the inverse of
+// `sim/`'s `predict_reconcile.rs` dev harness: that one drives the FULL
+// `simulate_tick` (AI/weapons/death) through two local sims; this is the
+// movement-only production path that NEVER runs those systems. Its only registry
+// read is the caller's teleporter armed-state closure (replicated armed state);
+// it never writes the registry.
 
 use std::collections::VecDeque;
 
@@ -43,7 +43,7 @@ pub(crate) fn client_tick_le(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) <= 0
 }
 
-// --- Correction classification thresholds (M15 Phase 3 Task 5 AC) ---
+// --- Correction classification thresholds ---
 //
 // A reconcile correction is the displacement between the pre-reconcile predicted
 // pose and the post-reconcile authoritative pose. Its magnitude classifies how the
@@ -80,11 +80,11 @@ const DECAY_PER_FRAME: f32 = 0.7;
 /// sub-visible bias on the rendered eye.
 const OFFSET_SETTLED_EPSILON_M: f32 = 1e-4;
 
-/// How a reconcile correction was classified by displacement magnitude. The
-/// classification drives whether the registry-snapped correction is smoothed
-/// (seeded as a decaying presentation offset) or snapped hard (teleport: offset
-/// cleared, history cleared, prev == current stamped). Returned by the reconcile
-/// entry point so Task 6's harness can assert the class directly.
+/// How a reconcile correction was classified. The classification drives whether
+/// the registry-snapped correction is smoothed (seeded as a decaying presentation
+/// offset) or snapped hard (teleport: offset cleared, prev == current stamped).
+/// Returned by the reconcile entry point so the harness can assert the class
+/// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CorrectionClass {
     /// `<= ORDINARY_CORRECTION_MAX_M`: a small mispredict, smoothed.
@@ -92,7 +92,12 @@ pub(crate) enum CorrectionClass {
     /// `<= DASH_CORRECTION_MAX_M` on an `included_dash` tick: a larger but expected
     /// wider-tolerance-state correction, smoothed.
     Dash,
-    /// `>= TELEPORT_CORRECTION_MIN_M`: snapped, not smoothed.
+    /// Snapped, not smoothed. Taken at any distance when the post-replay teleport
+    /// record (generation, accumulated yaw or last teleporter) differs from the
+    /// prediction: that identity change keeps the unacked history, since stamped
+    /// rotation keeps its replay valid. A plain correction at or past
+    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. Either
+    /// way reconcile reports a [`LocalTeleportAdoption`] for the app's camera hold.
     Teleport,
     /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
     /// correction on a non-dash tick): smoothed like an ordinary correction, but the
@@ -135,7 +140,7 @@ pub(crate) fn classify_correction(magnitude: f32, included_dash: bool) -> Correc
 /// next prediction chained off the stale pre-reconcile pose).
 //
 // `client_tick`/`command`/`included_dash` are read by this module's tests and the
-// Task 5 reconciliation (`reconcile.rs`) that walks the history.
+// reconciliation (`reconcile.rs`) that walks the history.
 #[derive(Debug, Clone)]
 pub(crate) struct PredictedTick {
     /// The monotonic client command-frame number this tick was predicted at.
@@ -161,14 +166,23 @@ pub(crate) struct ArmedPawn {
     pub(crate) entity_id: EntityId,
 }
 
-/// App-facing presentation facts from an adopted own-pawn correction. A fixed
-/// arrival point prevents cues from resolving a delayed render pose.
+/// App-facing presentation facts from a teleport-class own-pawn correction. A
+/// fixed arrival point prevents cues from resolving a delayed render pose.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalTeleportAdoption {
     pub entity_id: EntityId,
+    /// View turn: post-replay accumulated teleport yaw minus the prediction's.
     pub yaw_delta: f32,
+    /// The camera holds across the snap rather than blending to it.
     pub camera_cut: bool,
+    /// The post-replay teleport record (generation, accumulated yaw or last
+    /// teleporter) differs from the prediction: the pawn was relocated by a
+    /// teleport the client mispredicted, so mover carry detaches. `false` for a
+    /// plain correction at or past the teleport floor, which keeps its carry.
+    pub identity_changed: bool,
     pub arrival: Vec3,
+    /// The authoritative last teleporter whose cue plays once, for an adoption
+    /// whose generation is ahead of the prediction.
     pub cue_teleporter: Option<u16>,
 }
 
@@ -201,7 +215,7 @@ pub struct ClientPrediction {
     /// increasing `client_tick` stream. Lives here (not on `App`) so the send-stamp
     /// allocator stays with the prediction state it feeds.
     next_client_tick: u32,
-    /// Local-pawn correction smoothing (Task 5). The decaying difference between the
+    /// Local-pawn correction smoothing. The decaying difference between the
     /// pre-reconcile predicted pose and the reconciled authoritative pose, in world
     /// space. The registry transform always snaps to the authoritative result
     /// (gameplay/collision/AI read it); only the local first-person *presentation*
@@ -249,8 +263,14 @@ impl ClientPrediction {
         self.history.clear();
     }
 
-    pub(crate) fn take_first_record(&mut self) -> bool {
-        std::mem::take(&mut self.first_record_pending)
+    /// Whether the newly armed pawn's first record is still to be adopted.
+    /// Arming sets it; only reconcile's first merged movement record clears it.
+    pub(crate) fn first_record_pending(&self) -> bool {
+        self.first_record_pending
+    }
+
+    pub(crate) fn mark_first_record_adopted(&mut self) {
+        self.first_record_pending = false;
     }
 
     /// The armed local-pawn identity, or `None` if prediction is not yet armed.
@@ -299,7 +319,7 @@ impl ClientPrediction {
     }
 
     /// Advance the local pawn one predicted fixed tick: run the movement-only
-    /// [`replay`] from `prev` through `command`, log the command in the history
+    /// [`replay_with_armed`] from `prev` through `command`, log the command in the history
     /// ring, and return the resulting `(Transform, PlayerMovementComponent)` for the
     /// caller to write back into the registry. Returns `None` (and records nothing)
     /// when prediction is not armed — the before-baseline inert contract.
@@ -310,9 +330,8 @@ impl ClientPrediction {
     /// N wrote, and a reconcile that snapped the registry to the authoritative pose
     /// is the pose the very next prediction builds on (the history ring stores no
     /// pose to chain off, so a correction can no longer be silently overwritten).
-    /// Pure with respect to the registry: the caller owns reading `prev` and writing
-    /// the result back; this never touches the registry, AI, weapons, death, or
-    /// reactions.
+    /// The caller owns reading `prev` and writing the result back; this never
+    /// writes the registry or runs AI, weapons, death, or reactions.
     #[cfg(test)]
     pub(crate) fn predict_tick(
         &mut self,
@@ -361,8 +380,15 @@ impl ClientPrediction {
         armed: impl FnMut(usize) -> bool,
     ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
         // Inert until armed: before the local_player baseline, drive no pawn.
+        // Inert too until the pawn's first record has merged: a joiner whose
+        // arming record could not merge (its tuning installed later) holds no
+        // teleport record yet, and predicting from an empty one would fire an
+        // arrival region the host has it latched in, then cut back. Reconcile
+        // alone clears the flag, so that record still adopts silently.
         self.armed?;
-        self.first_record_pending = false;
+        if self.first_record_pending {
+            return None;
+        }
 
         let (start_transform, start_movement) = prev;
 
@@ -403,8 +429,8 @@ impl ClientPrediction {
 
         if self.history.len() == MAX_HISTORY {
             // Drop the oldest unacked tick: a stalled ack must never grow history
-            // unbounded. Task 5's reconciliation tolerates an ack older than the
-            // ring (it simply finds no matching entry and trusts the authority).
+            // unbounded. Reconciliation tolerates an ack older than the ring (it
+            // simply finds no matching entry and trusts the authority).
             self.history.pop_front();
         }
         self.history.push_back(PredictedTick {
@@ -419,8 +445,7 @@ impl ClientPrediction {
     /// Prune every history entry whose `client_tick` is at or below `acked_tick`.
     /// The host has resolved those commands authoritatively, so their predictions
     /// are settled and need not be replayed again. Entries *after* the ack remain
-    /// for Task 5 to replay on top of the authoritative baseline. Mechanism only:
-    /// this task builds the prune; Task 5 invokes it as part of reconciliation.
+    /// for reconciliation to replay on top of the authoritative baseline.
     pub(crate) fn prune_through_ack(&mut self, acked_tick: u32) {
         while self
             .history
@@ -434,8 +459,9 @@ impl ClientPrediction {
     /// Clear all predicted history. Used by the reconcile path for the two cases that
     /// invalidate every retained prediction at once: an authoritative `None`-ack
     /// reset (the host has not resolved any of the client's commands, so the baseline
-    /// supersedes the whole ring) and a teleport-class correction (the predicted
-    /// trajectory diverged too far to replay onto).
+    /// supersedes the whole ring) and a teleport-floor-sized plain correction (the
+    /// predicted trajectory diverged too far to replay onto). A teleport identity
+    /// change keeps the ring.
     pub(crate) fn clear_history(&mut self) {
         self.history.clear();
     }
@@ -508,18 +534,8 @@ impl ClientPrediction {
     }
 }
 
-/// Movement-only replay: advance one `(Transform, PlayerMovementComponent)` pair
-/// through a single `movement::tick` and return the new pair plus the tick's
-/// `MovementEvents`. Side-effect-free and registry-blind by construction — it
-/// takes OWNED state and has NO `EntityRegistry` parameter, so it provably cannot
-/// run AI, weapons, the death sweep, or reactions (the guard the plan asks for is
-/// the signature itself).
-///
-/// Shared by this module's forward prediction and Task 5's reconciliation replay.
-/// The `position` `movement::tick` consumes/returns is the `Transform.position`;
-/// this helper threads it through so callers only ever see the `Transform`.
-/// Test-only: it reads `enabled_on_spawn`; production replays through
-/// [`replay_with_armed`] with the registry's bound armed state.
+/// [`replay_with_armed`] reading each teleporter's `enabled_on_spawn`. Test-only:
+/// production replays with the registry's bound, replicated armed state.
 #[cfg(test)]
 pub(crate) fn replay(
     transform: Transform,
@@ -541,6 +557,17 @@ pub(crate) fn replay(
     )
 }
 
+/// Movement-only replay: advance one `(Transform, PlayerMovementComponent)` pair
+/// through a single `movement::tick_with_immersion_and_armed` and return the new
+/// pair plus the tick's `MovementEvents`. Side-effect-free — it takes OWNED state
+/// and has NO `EntityRegistry` parameter, so it cannot run AI, weapons, the death
+/// sweep, or reactions (the guard is the signature itself). Teleporter armed state
+/// comes from `armed`, which production backs with the registry's replicated state.
+///
+/// Shared by forward prediction and reconciliation replay. The movement position
+/// is the `Transform.position`; this helper threads it through so callers only
+/// ever see the `Transform`. A tick that teleports writes the arrival rotation
+/// (facing plus the teleport's yaw delta).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_with_armed(
     transform: Transform,
@@ -799,6 +826,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(7), EntityId::from_raw(3));
+        prediction.mark_first_record_adopted();
 
         // Chain `prev` forward each tick exactly as `client_predict_tick` does
         // (read current state, predict, write back). The registry — here the local
@@ -854,8 +882,21 @@ mod tests {
             "unarmed prediction records no history (no local pawn driven)"
         );
 
-        // After arming, the same call drives the pawn and records history.
+        // Armed, it stays inert until the pawn's first record has merged: the
+        // client holds no authoritative teleport record to predict from yet.
         prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        let out = prediction.predict_tick(
+            forward_command(0, false),
+            prev.clone(),
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        assert!(out.is_none(), "teleport: no prediction before the first record");
+        assert!(prediction.history().is_empty());
+
+        // Once it has, the same call drives the pawn and records history.
+        prediction.mark_first_record_adopted();
         let out = prediction.predict_tick(
             forward_command(0, false),
             prev,
@@ -873,6 +914,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(2), EntityId::from_raw(1));
+        prediction.mark_first_record_adopted();
 
         let prev = (start_transform(), component());
         for tick in 0..6u32 {
@@ -917,6 +959,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(9), EntityId::from_raw(4));
+        prediction.mark_first_record_adopted();
 
         // A dash command advances movement state to Dash WITHOUT any weapon/AI/death
         // system running — there is no registry to run them against. The recorded
@@ -953,6 +996,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(10), EntityId::from_raw(5));
+        prediction.mark_first_record_adopted();
 
         let output = prediction.predict_tick(
             forward_command(0, false),
@@ -980,6 +1024,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(11), EntityId::from_raw(6));
+        prediction.mark_first_record_adopted();
 
         let mut vaulting = component();
         vaulting.movement_state = MovementState::Vault {
@@ -1092,6 +1137,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(1), EntityId::from_raw(0));
+        prediction.mark_first_record_adopted();
         prediction.predict_tick(
             forward_command(0, false),
             (start_transform(), component()),
@@ -1118,6 +1164,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(5), EntityId::from_raw(2));
+        prediction.mark_first_record_adopted();
 
         let prev = (start_transform(), component());
         prediction.predict_tick(
@@ -1138,6 +1185,7 @@ mod tests {
 
         // A periodic re-baseline for the SAME pawn must not wipe unacked predictions.
         prediction.arm(NetworkId(5), EntityId::from_raw(2));
+        prediction.mark_first_record_adopted();
         assert_eq!(
             prediction.history().len(),
             2,
@@ -1146,6 +1194,7 @@ mod tests {
 
         // Arming a DIFFERENT pawn drops the stale ring.
         prediction.arm(NetworkId(6), EntityId::from_raw(8));
+        prediction.mark_first_record_adopted();
         assert!(
             prediction.history().is_empty(),
             "arming a new pawn clears the old pawn's history"
@@ -1184,6 +1233,7 @@ mod tests {
         let world = floor_world();
         let mut prediction = ClientPrediction::new();
         prediction.arm(NetworkId(11), EntityId::from_raw(5));
+        prediction.mark_first_record_adopted();
 
         // Log commands straddling the wrap: u32::MAX-1, u32::MAX, 0, 1.
         let ticks = [u32::MAX - 1, u32::MAX, 0, 1];

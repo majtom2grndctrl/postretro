@@ -1,5 +1,6 @@
 //! Offline teleporter source/image cell couplings for id51.
 //! Convex SAT preserves closed contacts; AABBs only reject candidates.
+//! See: context/lib/build_pipeline.md §PRL section IDs (CellResidencySet, Teleporters)
 use super::portal_distance::Neighbors;
 use crate::partition::{Aabb, BspTree, region_polytope::RegionPolytope};
 use glam::{DQuat, DVec3, Vec3};
@@ -29,6 +30,31 @@ pub(crate) fn build_routes(
     cells: &CellsSection,
     world: &LevelWorld,
 ) -> anyhow::Result<Vec<TeleportResidencyRoute>> {
+    build_routes_with(input, cells, world, LeafPrefilter::On)
+}
+
+/// Whether cell hulls are built only for leaves a teleporter region can reach.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafPrefilter {
+    On,
+    /// Every playable leaf: the exhaustive reference the prefilter must match.
+    #[cfg(test)]
+    Off,
+}
+
+/// A teleporter's arrival before cell matching: a located cell, or the
+/// source union carried onto the target.
+enum Arrival {
+    Cell(usize),
+    Image(Vec<Hull>),
+}
+
+fn build_routes_with(
+    input: TeleportResidencyInput<'_>,
+    cells: &CellsSection,
+    world: &LevelWorld,
+    prefilter: LeafPrefilter,
+) -> anyhow::Result<Vec<TeleportResidencyRoute>> {
     if input.section.teleporters.is_empty() {
         return Ok(Vec::new());
     }
@@ -36,12 +62,73 @@ pub(crate) fn build_routes(
         input.tree.leaves.len() == cells.cells.len(),
         "teleporter residency: BSP leaf count differs from runtime cells"
     );
+    // Regions first: they need no cell geometry.
+    let regions: Vec<(Vec<Hull>, Arrival)> = input
+        .section
+        .teleporters
+        .iter()
+        .map(|teleporter| {
+            let source: Vec<Hull> = teleporter.brushes.iter().filter_map(brush_hull).collect();
+            let arrival = match teleporter.mode {
+                TeleportMode::Classic => {
+                    Arrival::Cell(world.locate_cell(Vec3::from(teleporter.destination_origin)))
+                }
+                TeleportMode::Seamless => {
+                    let yaw = teleporter.destination_yaw - teleporter.landmark_yaw;
+                    let rotation = DQuat::from_rotation_y(f64::from(yaw));
+                    let landmark = DVec3::from(teleporter.landmark_origin.map(f64::from));
+                    let target = DVec3::from(teleporter.destination_origin.map(f64::from));
+                    Arrival::Image(
+                        source
+                            .iter()
+                            .map(|hull| hull.transformed(rotation, target - rotation * landmark))
+                            .collect(),
+                    )
+                }
+            };
+            (source, arrival)
+        })
+        .collect();
+    // Clipping every leaf dominates on large maps. A leaf's hull lies inside
+    // its bounds, so a leaf whose bounds miss every region's (with margin over
+    // the SAT's own AABB reject) cannot touch one: skipping it changes nothing.
+    let needed: Vec<bool> = match prefilter {
+        LeafPrefilter::On => {
+            let reach: Vec<&Aabb> = regions
+                .iter()
+                .flat_map(|(source, arrival)| {
+                    let image = match arrival {
+                        Arrival::Image(image) => image.as_slice(),
+                        Arrival::Cell(_) => &[],
+                    };
+                    source.iter().chain(image).map(|hull| &hull.bounds)
+                })
+                .collect();
+            let mut needed: Vec<bool> = input
+                .tree
+                .leaves
+                .iter()
+                .map(|leaf| reach.iter().any(|region| may_touch(&leaf.bounds, region)))
+                .collect();
+            for (_, arrival) in &regions {
+                if let &Arrival::Cell(cell) = arrival
+                    && let Some(slot) = needed.get_mut(cell)
+                {
+                    *slot = true;
+                }
+            }
+            needed
+        }
+        #[cfg(test)]
+        LeafPrefilter::Off => vec![true; cells.cells.len()],
+    };
     let hulls: Vec<Option<Hull>> = cells
         .cells
         .iter()
         .zip(&input.tree.leaves)
-        .map(|(cell, leaf)| {
-            if cell.is_solid() || cell.is_exterior() {
+        .zip(&needed)
+        .map(|((cell, leaf), &needed)| {
+            if !needed || cell.is_solid() || cell.is_exterior() {
                 return None;
             }
             let mut polytope = RegionPolytope::from_aabb(&leaf.bounds);
@@ -51,40 +138,29 @@ pub(crate) fn build_routes(
             Hull::from_polytope(&polytope, leaf.defining_planes.iter().map(|&(n, _)| n))
         })
         .collect();
-    input
-        .section
-        .teleporters
+    Ok(regions
         .iter()
-        .map(|teleporter| {
-            let source: Vec<Hull> = teleporter.brushes.iter().filter_map(brush_hull).collect();
-            let source_cells = touched_cells(&source, &hulls);
-            let arrival_cells = match teleporter.mode {
-                TeleportMode::Classic => {
-                    let cell = world.locate_cell(Vec3::from(teleporter.destination_origin));
-                    if hulls.get(cell).is_some_and(Option::is_some) {
-                        vec![cell as u32]
+        .map(|(source, arrival)| TeleportResidencyRoute {
+            source_cells: touched_cells(source, &hulls),
+            arrival_cells: match arrival {
+                Arrival::Cell(cell) => {
+                    if hulls.get(*cell).is_some_and(Option::is_some) {
+                        vec![*cell as u32]
                     } else {
                         Vec::new()
                     }
                 }
-                TeleportMode::Seamless => {
-                    let yaw = teleporter.destination_yaw - teleporter.landmark_yaw;
-                    let rotation = DQuat::from_rotation_y(f64::from(yaw));
-                    let landmark = DVec3::from(teleporter.landmark_origin.map(f64::from));
-                    let target = DVec3::from(teleporter.destination_origin.map(f64::from));
-                    let image: Vec<_> = source
-                        .iter()
-                        .map(|hull| hull.transformed(rotation, target - rotation * landmark))
-                        .collect();
-                    touched_cells(&image, &hulls)
-                }
-            };
-            Ok(TeleportResidencyRoute {
-                source_cells,
-                arrival_cells,
-            })
+                Arrival::Image(image) => touched_cells(image, &hulls),
+            },
         })
-        .collect()
+        .collect())
+}
+
+/// Conservative AABB overlap: twice the SAT contact epsilon, so a clipped
+/// hull's rounding past its leaf bounds can never be culled here.
+fn may_touch(leaf: &Aabb, region: &Aabb) -> bool {
+    let margin = DVec3::splat(2.0 * CONTACT_EPSILON);
+    !((leaf.max + margin).cmplt(region.min).any() || (region.max + margin).cmplt(leaf.min).any())
 }
 
 /// Extra origins per camera cell. One source→arrival edge only: arriving at

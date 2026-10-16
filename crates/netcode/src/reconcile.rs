@@ -1,5 +1,5 @@
 // Client-side reconciliation of the local predicted pawn against an authoritative
-// snapshot record (M15 Phase 3 Task 5): merge the authoritative movement subset,
+// snapshot record: merge the authoritative movement subset,
 // restore the authoritative transform, prune command history through the host ack,
 // replay the unacked tail, snap the reconciled gameplay state into the registry, and
 // classify the resulting correction to seed (or skip) the decaying presentation
@@ -9,9 +9,9 @@
 // Boundary: this is the registry-touching orchestration; the durable prediction
 // state (history ring, presentation offset, classification thresholds) lives in
 // `prediction.rs`. `client.rs` only surfaces the authoritative record
-// (`LocalReconcileInput`); this glue reconciles it. The movement-only `replay`
-// helper (also in `prediction.rs`) is the sole movement path — no AI/weapons/death,
-// guaranteed by its registry-blind signature.
+// (`LocalReconcileInput`); this glue reconciles it. The movement-only
+// `replay_with_armed` helper (also in `prediction.rs`) is the sole movement path —
+// no AI/weapons/death, guaranteed by its registry-free signature.
 
 use postretro_net::wire::WirePlayerMovementState;
 
@@ -31,8 +31,8 @@ use postretro_foundation::PlayerMovementComponent;
 /// snapshot. Returns the [`CorrectionClass`] of the applied correction, or `None`
 /// when nothing was reconciled (prediction not armed to this pawn, the pawn is
 /// missing/has no movement component, or the record was for a different pawn). The
-/// returned class is the Task 6 harness seam — it asserts the engine took the
-/// expected smoothed/snapped path.
+/// returned class is the harness seam — it asserts the engine took the expected
+/// smoothed/snapped path.
 ///
 /// Steps (the AC contract):
 /// 1. **Merge** the `PlayerMovementState` subset onto the EXISTING descriptor-derived
@@ -42,12 +42,15 @@ use postretro_foundation::PlayerMovementComponent;
 ///    Special case: `acked_tick == None` after prediction has started is an
 ///    authoritative RESET — clear history and apply the baseline WITHOUT pruning by
 ///    tick.
-/// 4. **Replay** the remaining (unacked) commands with the movement-only [`replay`].
+/// 4. **Replay** the remaining (unacked) commands with the movement-only
+///    [`replay_with_armed`], each rotated into the pawn's replayed teleport frame.
 /// 5. **Write back** the reconciled `(Transform, PlayerMovementComponent)` to the
 ///    registry — the gameplay-authoritative snap, read by collision/AI/future prediction.
 /// 6. **Classify + smooth** the correction (`predicted_pose - reconciled_pose`):
 ///    seed a decaying presentation offset for a smoothed correction; for a teleport,
-///    clear history + offset and stamp the registry transform prev == current.
+///    clear the offset, report a [`LocalTeleportAdoption`], and clear history only
+///    for a plain teleport-floor correction (an identity change keeps it). The
+///    newly armed pawn's first merged record skips this: it adopts silently.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn reconcile_local_pawn(
@@ -219,7 +222,14 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     //    `set_presentation_transform` call) after clearing history.
     let _ = registry.set_presentation_transform(entity_id, reconciled_transform);
     let _ = registry.set_component(entity_id, component.clone());
-    if prediction.take_first_record() {
+    // The first record for a newly armed pawn is adopted silently: no cue, cut or
+    // view turn. Only a merged movement payload carries the pawn's teleport record,
+    // so only it consumes the flag; a movement-less record before it is silent too
+    // rather than classified against a record the client has never held.
+    if prediction.first_record_pending() {
+        if movement.is_some() {
+            prediction.mark_first_record_adopted();
+        }
         prediction.clear_presentation_offset();
         return Some(CorrectionClass::Ordinary);
     }
@@ -246,12 +256,13 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
 
     match class {
         CorrectionClass::Teleport => {
-            // Snap hard: no smoothed glide. Clear the predicted ring (the trajectory
-            // diverged too far to replay onto) and the presentation offset. The
-            // prev == current stamp that leaves no render-blend slide across the
-            // teleport already happened in step 5 (`set_presentation_transform`); a
-            // teleport differs from a smoothed correction only in clearing history +
-            // the offset, not in how the transform is stamped.
+            // Snap hard: no smoothed glide. A plain teleport-floor correction clears
+            // the predicted ring (the trajectory diverged too far to replay onto); a
+            // teleport identity change keeps it, since every retained command's
+            // stamp already rotated it into the replayed frame. Both clear the
+            // presentation offset. The prev == current stamp that leaves no
+            // render-blend slide across the cut already happened in step 5
+            // (`set_presentation_transform`).
             if !teleport_changed {
                 prediction.clear_history();
             }
@@ -264,6 +275,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 entity_id,
                 yaw_delta: component.teleport.accumulated_yaw - predicted_teleport.1,
                 camera_cut: true,
+                identity_changed: teleport_changed,
                 arrival: reconciled_transform.position,
                 cue_teleporter: (generation_advance > 0
                     && generation_advance < 128
@@ -420,7 +432,7 @@ mod tests {
         });
         registry.set_component(id, component()).unwrap();
         prediction.arm(network_id, id);
-        let _ = prediction.take_first_record();
+        prediction.mark_first_record_adopted();
         id
     }
 

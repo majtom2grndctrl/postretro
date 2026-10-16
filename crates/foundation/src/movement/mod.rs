@@ -9,4 +9,4 @@ pub use player_movement::{
 pub use scope::MovementScope;
 
 pub mod teleport;
-pub use teleport::{NO_TELEPORTER, TeleportState, wrap_teleport_yaw};
+pub use teleport::{NO_TELEPORTER, TeleportLatches, TeleportState, wrap_teleport_yaw};

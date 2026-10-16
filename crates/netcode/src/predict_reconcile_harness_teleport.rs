@@ -71,7 +71,7 @@ fn assert_converged(rig: &Rig) {
     );
 }
 
-// AC36: a walk-in on a clean 100 ms link teleports host and client on the same
+// A walk-in on a clean 100 ms link teleports host and client on the same
 // client tick with no correction past the ordinary band; the view ends on the
 // host's avatar yaw. Classic and seamless both.
 #[test]
@@ -114,7 +114,7 @@ fn teleport_walkin_conditioned_link_clean_same_tick_ordinary_band() {
     }
 }
 
-// AC36: under the harness's lossy profile corrections stay in the ordinary band
+// Under the harness's lossy profile corrections stay in the ordinary band
 // and the view still ends on the host's yaw.
 #[test]
 fn teleport_walkin_conditioned_link_lossy_ordinary_band() {
@@ -187,7 +187,7 @@ fn scripted_shift(offset: usize) -> Rig {
     rig
 }
 
-// AC37 / P17: at 100 ms a script arms the occupied seamless room at a 90°
+// At 100 ms a script arms the occupied seamless room at a 90°
 // landmark delta while the client holds forward. On the host every command the
 // client sampled before it knew of the shift faces and moves along the rotated
 // frame. On the client the shift lands once — as one teleport-class cut when the
@@ -290,7 +290,7 @@ fn two_way_pair() -> [Spec; 2] {
     ]
 }
 
-// AC11 / P29: one call arms both directions of a two-way seamless pair while
+// One call arms both directions of a two-way seamless pair while
 // the remote client stands latched in B. The host fires once (B to A, latched
 // against A on arrival); the client shifts once — by adoption, since it never
 // clears a latch on an observed armed change — with no ping-pong, no cut back
@@ -352,7 +352,7 @@ fn teleport_arm_pair_latched_remote_shifts_once_without_ping_pong() {
     assert_converged(&rig);
 }
 
-// AC22: the predicting client's cue comes from forward prediction once; the
+// The predicting client's cue comes from forward prediction once; the
 // reconciles that replay the teleport tick, and the one that adopts the host's
 // agreeing record, add no adoption and no cue.
 #[test]
@@ -452,7 +452,7 @@ fn assert_host_never_faces(rig: &Rig, yaw: f32) {
     }
 }
 
-// AC38 / P18 + AC41 / P27 (refusal): the host refuses an entry the client
+// The host refuses an entry the client
 // predicted (a disarm it had not seen). The client cuts back once, through the
 // teleport identity although the arrival was 1 m away, with its yaw restored.
 // In-flight commands, stamped in the predicted frame, run in the pawn's actual
@@ -535,7 +535,7 @@ fn walk_through_back_to_back(rig: &mut Rig, refuse_second: bool) -> (usize, usiz
     (first, second)
 }
 
-// AC39 / P19: two predicted teleports inside one round trip. With the second
+// Two predicted teleports inside one round trip. With the second
 // refused the client takes exactly one cut and its yaw ends at the host's;
 // with both agreed it takes none.
 #[test]
@@ -585,7 +585,7 @@ fn chained_rooms() -> [Spec; 2] {
     ]
 }
 
-// AC39 / P19 + AC25 / P10 / P32 (coalescing): two teleports the client never
+// Two teleports the client never
 // predicted reach it in one snapshot. Script arms S1, then S2 once the pawn
 // stands in it, then disarms both, all inside one host frame, so the client
 // never holds armed state to predict from. One adoption lands both: the view
@@ -636,7 +636,7 @@ fn overlapping(y_target_yaw: f32) -> [Spec; 2] {
     ]
 }
 
-// AC39 / P19 + AC25 / P32 (replacement): the client predicts X while the host,
+// The client predicts X while the host,
 // having disarmed X unseen, takes Y on the same client tick with the same yaw
 // delta and arrivals 1.5 m apart. Generation and yaw agree, the last teleporter
 // differs: one teleport-class cut, no view turn, and no second cue.
@@ -666,7 +666,7 @@ fn teleport_reconcile_identity_sequences_same_tick_different_teleporters_cut() {
     assert_converged(&rig);
 }
 
-// AC41 / P27 (divergent): as above, but Y turns 45° where X turned 90°. Commands
+// As above, but Y turns 45° where X turned 90°. Commands
 // stamped in X's frame run in Y's on the host and in replay, the host avatar
 // never shows X's facing, and nothing corrects the client after the cut.
 #[test]
@@ -704,7 +704,7 @@ fn teleport_divergent_command_frames_different_teleporters_run_in_actual_frame()
     assert_yaw(rig.camera_yaw, FRAC_PI_4, "client view");
 }
 
-// AC41 / P27 (skew) + AC25 / P32 (skew): the client predicts a classic entry one
+// The client predicts a classic entry one
 // tick before the host takes it (a host-only shove the client never predicted
 // holds the host pawn back). The command after the client's crossing, stamped
 // in the arrival frame, runs on the host in the source frame, so the host
@@ -773,7 +773,7 @@ fn teleport_divergent_command_frames_one_tick_skew_takes_no_cut_or_second_cue() 
     assert_converged(&rig);
 }
 
-// AC40 / P20: under the lossy profile the client's commands around its seamless
+// Under the lossy profile the client's commands around its seamless
 // teleport tick never reach the host. The host's held and neutral commands
 // (reusing the last real, pre-teleport facing and stamp) and the late real
 // commands after the gap all face and move in the post-teleport frame; the
@@ -874,7 +874,7 @@ fn multi_tick_walk(spec: Spec, lead: usize) -> Option<(Rig, usize, usize)> {
     None
 }
 
-// AC42 / P31: commands sampled on a later tick of a multi-tick client frame, and
+// Commands sampled on a later tick of a multi-tick client frame, and
 // a command sent on a zero-tick frame, carry the teleport frame their facing was
 // sampled in, so the host runs them exactly as forward prediction did.
 #[test]
@@ -970,7 +970,7 @@ fn held_crossing(spec: Spec, turn: f32) -> Rig {
     rig
 }
 
-// AC43 / P35: the client turns on the very command that crosses a classic
+// The client turns on the very command that crosses a classic
 // teleporter, and that command is lost, so the host crosses on the held earlier
 // facing. Adoption turns the view by exactly the turn that command missed; a
 // seamless crossing, whose delta ignores facing, takes no extra turn.
@@ -1002,7 +1002,7 @@ fn deep_classic() -> Spec {
     )
 }
 
-// AC45 / P26: a joiner whose teleporter a script re-armed (or disarmed) before
+// A joiner whose teleporter a script re-armed (or disarmed) before
 // it joined predicts from `enabled_on_spawn` until the armed record arrives —
 // held back here as the join baseline budget defers it — and converges with
 // one cut once it does.
@@ -1050,45 +1050,53 @@ fn teleport_join_first_record_and_armed_binding_predicts_spawn_state_until_armed
     assert_converged(&disarmed);
 }
 
-// AC45 / P30 / P33: the joiner's pawn teleported on the host before the
-// client's first record. That record is adopted silently — no cue, cut or view
-// turn. Commands sampled before it carry a zero stamp (rotated on the host by
-// the whole accumulated yaw); those after carry the record's yaw (unrotated).
-#[test]
-fn teleport_join_first_record_and_armed_binding_adopts_prior_teleport_silently() {
-    let spawn_room = Spec::classic(
+/// A classic teleporter around the spawn, turning its traveller 1 rad.
+fn spawn_room() -> Spec {
+    Spec::classic(
         region((-3.0, 3.0), (-3.0, 3.0)),
         Vec3::new(40.0, 1.25, 0.0),
         1.0,
+    )
+}
+
+/// One host movement tick before the client has joined: the pawn standing in
+/// [`spawn_room`] teleports on the host alone.
+fn teleport_host_pawn_before_join(rig: &mut Rig) {
+    let h = &mut rig.h;
+    let collision = crate::collision::moving::CombinedCollisionWorld::new(
+        &h.world,
+        &h.mover_colliders,
+        &h.host_mover_states,
     );
-    let mut rig = Rig::new(clean_link(), &[spawn_room]);
-    {
-        let h = &mut rig.h;
-        let collision = crate::collision::moving::CombinedCollisionWorld::new(
-            &h.world,
-            &h.mover_colliders,
-            &h.host_mover_states,
-        );
-        let environment = postretro_collision::EnvironmentView::new(
-            h.host_level_gravity,
-            &h.host_environment_volumes,
-            h.host_fluid_table.viscosities(),
-        );
-        let mut input = rig_idle_input();
-        input.facing_yaw = 0.0;
-        crate::sim::run_host_movement_tick(
-            &mut h.host_registry,
-            &collision,
-            environment,
-            &[(h.host_pawn, input)],
-            super::predict_reconcile_harness_test_fixtures::DT,
-        );
-    }
-    let prior = rig.host_teleport();
+    let environment = postretro_collision::EnvironmentView::new(
+        h.host_level_gravity,
+        &h.host_environment_volumes,
+        h.host_fluid_table.viscosities(),
+    );
+    let mut input = rig_idle_input();
+    input.facing_yaw = 0.0;
+    crate::sim::run_host_movement_tick(
+        &mut h.host_registry,
+        &collision,
+        environment,
+        &[(h.host_pawn, input)],
+        super::predict_reconcile_harness_test_fixtures::DT,
+    );
     assert_eq!(
-        prior.generation, 1,
+        rig.host_teleport().generation,
+        1,
         "the pawn teleported before the client joined"
     );
+}
+
+// The joiner's pawn teleported on the host before the client's first record.
+// That record is adopted silently — no cue, cut or view turn. Commands sampled
+// before it carry a zero stamp (rotated on the host by the whole accumulated
+// yaw); those after carry the record's yaw (unrotated).
+#[test]
+fn teleport_join_first_record_and_armed_binding_adopts_prior_teleport_silently() {
+    let mut rig = Rig::new(clean_link(), &[spawn_room()]);
+    teleport_host_pawn_before_join(&mut rig);
     rig.join();
 
     assert_eq!(
@@ -1140,7 +1148,79 @@ fn rig_idle_input() -> crate::movement::MovementInput {
     super::predict_reconcile_harness_test_fixtures::idle_command().movement
 }
 
-// AC46 / P34: a scripted shift arrives in a periodic full re-baseline of the
+// The joiner's host tuning installs after its arming baseline: the reliable
+// Control payload was lost and retransmitted, and lands in a frame that
+// carries no snapshot. The arming record could not merge without tuning, and
+// the client predicts before any record has. That prediction must not consume
+// the first record: the movement record that merges next, carrying a teleport
+// the pawn took before the join, is still adopted silently.
+#[test]
+fn teleport_join_first_record_stays_silent_when_tuning_trails_the_arming_baseline() {
+    use postretro_net::harness::{LinkConfig, PacketConditioner};
+
+    let mut rig = Rig::new(clean_link(), &[spawn_room()]);
+    teleport_host_pawn_before_join(&mut rig);
+    // The tuning send is lost: it waits on the Control lane until retransmitted.
+    rig.h.to_client_control = PacketConditioner::new(LinkConfig {
+        delay: 1_000_000,
+        ..clean_link()
+    });
+    for _ in 0..200 {
+        if rig.h.client_pawn.is_some() {
+            break;
+        }
+        rig.step(IDLE);
+    }
+    assert!(rig.h.client_pawn.is_some(), "the client armed its pawn");
+    rig.idle(3);
+    assert!(rig.h.client_tuning.is_none(), "armed before its tuning");
+    assert!(rig.corrections.is_empty(), "nothing merged without tuning");
+    assert_eq!(rig.client_teleport().generation, 0);
+
+    // The retransmit lands in a frame with no snapshot; the next fixed tick
+    // predicts with the installed tuning before any record merges.
+    let mut lost = std::mem::replace(
+        &mut rig.h.to_client_control,
+        PacketConditioner::new(LinkConfig::perfect()),
+    );
+    lost.advance(2_000_000);
+    for packet in lost.take_ready() {
+        rig.h.to_client_control.enqueue(packet);
+    }
+    rig.h.client_drain_control();
+    assert!(rig.h.client_tuning.is_some());
+    rig.predict(FORWARD, true);
+    assert!(
+        !rig.h.prediction.history().is_empty(),
+        "the joiner predicted before its first record merged"
+    );
+    rig.h.advance_clock();
+    rig.host_ticks(1);
+    rig.receive();
+    // The idle pawn's acked movement is unchanged, so deltas carry none; the
+    // walk changes it and the next movement record merges.
+    for _ in 0..60 {
+        if rig.client_teleport() == rig.host_teleport() {
+            break;
+        }
+        rig.step(FORWARD);
+    }
+    assert_eq!(
+        rig.client_teleport(),
+        rig.host_teleport(),
+        "the record was adopted"
+    );
+    // The host trails by its playout delay; let both decelerate to rest.
+    rig.idle(90);
+
+    assert!(rig.adoptions.is_empty(), "no cut or view turn");
+    assert!(rig.cues.is_empty(), "no cue");
+    assert_eq!(rig.camera_yaw, 0.0);
+    assert!(rig.teleport_corrections().is_empty());
+    assert_converged(&rig);
+}
+
+// A scripted shift arrives in a periodic full re-baseline of the
 // client's own pawn. Only the first record for a new pawn is silent: this one
 // plays the cue and turns the view.
 #[test]
@@ -1173,7 +1253,7 @@ fn teleport_periodic_rebaseline_adoption_plays_cue_and_turns_view() {
     assert_converged(&rig);
 }
 
-// AC35 / P16: a correction still settling (the host shoves the pawn a little
+// A correction still settling (the host shoves the pawn a little
 // every tick, so every reconcile seeds a presentation offset) when a predicted
 // seamless teleport fires. The teleport tick drops the offset: the presented eye
 // is the arrival pose, never the arrival plus a source-room-frame vector.

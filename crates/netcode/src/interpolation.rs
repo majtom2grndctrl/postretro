@@ -262,10 +262,11 @@ fn crosses_teleport(a: &TransformSample, b: &TransformSample) -> bool {
         .is_some_and(|(a, b)| a.generation != b.generation)
 }
 
-fn cut_pose(sample: &TransformSample) -> PresentedPose {
+fn cut_pose(sample: &TransformSample, holds_newest: bool) -> PresentedPose {
     PresentedPose {
         transform: sample.transform,
         source: PoseSource::TeleportCut,
+        holds_newest,
         speed_xz: 0.0,
         horizontal_velocity: Vec3::ZERO,
         intrinsic_velocity: sample.intrinsic_velocity,
@@ -281,6 +282,10 @@ fn cut_pose(sample: &TransformSample) -> PresentedPose {
 pub(crate) struct PresentedPose {
     pub(crate) transform: Transform,
     pub(crate) source: PoseSource,
+    /// The target is at or past the newest sample and this pose holds it: a
+    /// `HeldNewest` hold, or a cut onto the newest sample when it arrived through
+    /// a teleport. Adaptive delay reads both as a starved buffer.
+    pub(crate) holds_newest: bool,
     /// Horizontal speed of the motion represented by `transform`. This is the
     /// displayed motion, rather than a host-side simulation velocity: interpolated
     /// Transform-only enemies derive it from their bracketing samples, and held
@@ -380,6 +385,7 @@ impl EntityBuffer {
             return Some(PresentedPose {
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
+                holds_newest: false,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(oldest.server_tick),
@@ -401,11 +407,14 @@ impl EntityBuffer {
         for b in samples {
             if f64::from(a.server_tick) <= target_tick && target_tick <= f64::from(b.server_tick) {
                 if crosses_teleport(a, b) {
-                    return Some(cut_pose(if target_tick < f64::from(b.server_tick) {
-                        a
-                    } else {
-                        b
-                    }));
+                    return Some(cut_pose(
+                        if target_tick < f64::from(b.server_tick) {
+                            a
+                        } else {
+                            b
+                        },
+                        false,
+                    ));
                 }
                 let span = f64::from(b.server_tick) - f64::from(a.server_tick);
                 // Equal-tick neighbors (span 0) cannot happen — insert dedupes ticks —
@@ -418,6 +427,7 @@ impl EntityBuffer {
                 return Some(PresentedPose {
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
+                    holds_newest: false,
                     speed_xz: xz_speed_between(a, b),
                     horizontal_velocity: xz_velocity_between(a, b),
                     intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
@@ -432,6 +442,7 @@ impl EntityBuffer {
         Some(PresentedPose {
             transform: newest.transform,
             source: PoseSource::HeldNewest,
+            holds_newest: true,
             speed_xz: 0.0,
             horizontal_velocity: Vec3::ZERO,
             intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -451,7 +462,7 @@ impl EntityBuffer {
             .nth(1)
             .is_some_and(|previous| crosses_teleport(previous, newest))
         {
-            return cut_pose(newest);
+            return cut_pose(newest, true);
         }
         let overshoot_ticks = target_tick - f64::from(newest.server_tick);
         let overshoot_micros = overshoot_ticks * crate::netcode::SERVER_TICK_MICROS as f64;
@@ -476,6 +487,7 @@ impl EntityBuffer {
                 PresentedPose {
                     transform: predicted,
                     source: PoseSource::Extrapolated,
+                    holds_newest: false,
                     speed_xz: xz_speed(velocity),
                     horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
                     intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -487,6 +499,7 @@ impl EntityBuffer {
             _ => PresentedPose {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
+                holds_newest: true,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -603,7 +616,7 @@ fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Optio
 #[derive(Debug, Default)]
 pub struct RemoteInterpolationBuffer {
     buffers: HashMap<NetworkId, EntityBuffer>,
-    pending_teleports: HashMap<NetworkId, TransformSample>,
+    pending_teleports: observed_teleports::PendingObservedTeleports,
 }
 
 impl RemoteInterpolationBuffer {
@@ -629,29 +642,18 @@ impl RemoteInterpolationBuffer {
         if buffer.samples.back().is_some_and(|previous| {
             sample.server_tick >= previous.server_tick && crosses_teleport(previous, &sample)
         }) {
-            self.pending_teleports.insert(network_id, sample);
+            self.pending_teleports.push(network_id, sample);
         }
         buffer.insert(sample);
     }
 
+    /// One cue per accepted sample whose generation changed since the last
+    /// drain, per pawn in acceptance order; see [`observed_teleports`].
     pub(crate) fn take_observed_teleports(
         &mut self,
-        mut resolve: impl FnMut(NetworkId) -> Option<postretro_entities::EntityId>,
+        resolve: impl FnMut(NetworkId) -> Option<postretro_entities::EntityId>,
     ) -> Vec<ObservedTeleport> {
-        let mut pending: Vec<_> = self.pending_teleports.drain().collect();
-        pending.sort_unstable_by_key(|(network_id, _)| network_id.0);
-        pending
-            .into_iter()
-            .filter_map(|(network_id, sample)| {
-                let teleport = sample.teleport?;
-                Some(ObservedTeleport {
-                    entity_id: resolve(network_id)?,
-                    generation: teleport.generation,
-                    last_teleporter: teleport.last_teleporter,
-                    arrival: sample.transform.position,
-                })
-            })
-            .collect()
+        self.pending_teleports.take(resolve)
     }
 
     /// Record a movement-only snapshot delta against the latest known transform.
@@ -685,7 +687,7 @@ impl RemoteInterpolationBuffer {
     /// Drop an entity's buffer (it despawned). Idempotent.
     pub fn forget(&mut self, network_id: NetworkId) {
         self.buffers.remove(&network_id);
-        self.pending_teleports.remove(&network_id);
+        self.pending_teleports.forget(network_id);
     }
 
     /// Resolve the presented pose for `network_id` at render server tick
@@ -746,6 +748,9 @@ impl RemoteInterpolationBuffer {
         self.buffers.get(&network_id).map_or(0, |b| b.samples.len())
     }
 }
+
+#[path = "interpolation_observed_teleports.rs"]
+mod observed_teleports;
 
 #[cfg(test)]
 #[path = "interpolation_teleport_tests.rs"]

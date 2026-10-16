@@ -110,7 +110,7 @@ fn teleport_parser_resolves_forward_references_union_axes_and_tag_companion() {
         t.destination_origin,
         [-128.0 * unit, 64.0 * unit, -256.0 * unit]
     );
-    assert_eq!(t.destination_yaw, -90.0f32.to_radians());
+    assert_eq!(t.destination_yaw, 90.0f32.to_radians());
     let base = parse_inline_map(&volume_map(&[])).unwrap();
     assert_eq!(map.brush_volumes.len(), base.brush_volumes.len());
     assert_eq!(map.environment_volumes.len(), 0);
@@ -178,7 +178,60 @@ fn teleport_parser_warns_for_pitch_roll_and_uses_only_yaw() {
     .unwrap();
     capture.assert_logged_once(log::Level::Warn, "pitch and roll are ignored");
     let t = &map.teleporters.teleporters[0];
-    assert_eq!(t.destination_yaw, -90.0f32.to_radians());
+    assert_eq!(t.destination_yaw, 90.0f32.to_radians());
     assert_eq!(t.landmark_origin, [0.0; 3]);
     assert!(t.enabled_on_spawn);
+}
+#[test]
+fn teleport_destination_reads_angle_angles_and_mangle_like_point_entities() {
+    let with = |angle_keys: &str| {
+        let point = volume_entity(
+            "teleport_destination",
+            &format!("\"name\" \"out\"\n\"origin\" \"0 0 0\"\n{angle_keys}"),
+            &[],
+        );
+        let map = parse_inline_map(&volume_map(&[gate("\"target\" \"out\""), point])).unwrap();
+        map.teleporters.teleporters[0].destination_yaw
+    };
+    // Yaw 90 faces Quake +Y, the way TrenchBroom draws the arrow.
+    assert_eq!(with("\"angle\" \"90\""), 90.0f32.to_radians());
+    assert_eq!(with("\"mangle\" \"0 270 0\""), 270.0f32.to_radians());
+    assert_eq!(
+        with("\"angle\" \"180\"\n\"angles\" \"0 45 0\""),
+        45.0f32.to_radians(),
+        "`angles` wins over `angle`"
+    );
+    assert_eq!(with(""), 0.0);
+    let error = parse_inline_map(&volume_map(&[
+        gate("\"target\" \"out\""),
+        volume_entity(
+            "teleport_destination",
+            "\"name\" \"out\"\n\"origin\" \"0 0 0\"\n\"angle\" \"east\"",
+            &[],
+        ),
+    ]))
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(
+        error.contains("entity 2 'teleport_destination' 'angle' is not numeric"),
+        "{error}"
+    );
+}
+#[test]
+fn teleport_brush_error_names_the_brush_once() {
+    let flat = volume_entity(
+        "trigger_teleport",
+        "\"target\" \"out\"",
+        &[box_brush([0, 0, 0], [32, 32, 0], "teleport_tex")],
+    );
+    let error = parse_inline_map(&volume_map(&[flat, destination("out", "0 0 0", "0 0 0")]))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.contains("entity 1 'trigger_teleport' brush 0"),
+        "{error}"
+    );
+    assert_eq!(error.matches("brush 0").count(), 1, "{error}");
 }

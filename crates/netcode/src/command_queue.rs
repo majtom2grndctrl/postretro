@@ -402,6 +402,11 @@ pub struct ResolvedPawnCommand {
     pub pawn: EntityId,
     pub client_id: u64,
     pub command: SimCommand,
+    /// The accumulated teleport yaw the client held when it sampled `command`'s
+    /// facing; a held or neutral command keeps its source command's stamp.
+    /// [`host_resolve_remote_commands_in_registry`] has already consumed it to turn
+    /// `command` into the pawn's current frame, so the stamp is read afterwards
+    /// only to observe which frame the client sampled in.
     pub teleport_yaw_stamp: f32,
     /// Camera pitch from the resolved, host-authorized input command. Presentation
     /// consumes it locally; snapshot production reads the same queue state.
@@ -867,7 +872,20 @@ impl HostCommandQueues {
 /// the host's substitute for `local_movement_pawn`: every authoritative pawn is named
 /// explicitly, including the listen host's own pawn (which the caller appends
 /// separately with its locally-sampled input).
+///
+/// Each command keeps the facing the client sampled, unrotated, beside its
+/// `teleport_yaw_stamp`. Test seam only: production resolves through
+/// [`host_resolve_remote_commands_in_registry`], which turns every command into its
+/// pawn's current teleport frame before movement or aim reads it.
+#[cfg(any(test, feature = "test-support"))]
 pub fn host_resolve_remote_commands(
+    owners: &MovementOwners,
+    command_queues: &mut HostCommandQueues,
+) -> Vec<ResolvedPawnCommand> {
+    resolve_remote_commands_in_sampled_frame(owners, command_queues)
+}
+
+fn resolve_remote_commands_in_sampled_frame(
     owners: &MovementOwners,
     command_queues: &mut HostCommandQueues,
 ) -> Vec<ResolvedPawnCommand> {
@@ -900,13 +918,17 @@ pub fn host_resolve_remote_commands_in_registry(
     command_queues: &mut HostCommandQueues,
     registry: &EntityRegistry,
 ) -> Vec<ResolvedPawnCommand> {
-    let mut commands = host_resolve_remote_commands(owners, command_queues);
+    let mut commands = resolve_remote_commands_in_sampled_frame(owners, command_queues);
     for remote in &mut commands {
         if let Ok(movement) =
             registry.get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
         {
-            remote.command.movement.facing_yaw +=
-                movement.teleport.accumulated_yaw - remote.teleport_yaw_stamp;
+            remote.command.movement.facing_yaw =
+                crate::netcode::wire_convert::facing_in_teleport_frame(
+                    remote.command.movement.facing_yaw,
+                    movement.teleport.accumulated_yaw,
+                    remote.teleport_yaw_stamp,
+                );
         }
     }
     commands

@@ -131,7 +131,7 @@ impl MapMemberKind {
     }
 }
 
-/// One runtime-placed mover, trigger volume or spawner, in authored order
+/// One runtime-placed mover, trigger volume, teleporter or spawner, in authored order
 /// within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.

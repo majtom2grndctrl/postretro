@@ -357,7 +357,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
         drop_pressed: false,
     };
     for _ in 0..120 {
-        transform.position = movement::tick(
+        transform.position = movement::tick_with_immersion_and_armed(
             &mut component,
             &input,
             &floor,
@@ -366,6 +366,7 @@ fn real_dummy_splash_direct_settled_player_eye_aim_hits_local_and_display_copy()
             ),
             1.0 / 60.0,
             transform.position,
+            |_| false,
         )
         .0;
     }

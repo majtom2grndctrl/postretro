@@ -332,6 +332,9 @@ impl HostCommandQueues {
             .and_then(|state| state.activation_edges.delivered_aim(token))
     }
 
+    /// [`Self::start_aim`] turned into `pawn`'s current teleport frame by the
+    /// start's own yaw stamp. Host FIRE reads this form; the raw aim is still in
+    /// the frame the client sampled it in.
     pub fn start_aim_in_registry(
         &self,
         client_id: u64,
@@ -347,7 +350,7 @@ impl HostCommandQueues {
             .ok()?
             .teleport
             .accumulated_yaw;
-        aim.yaw += yaw - stamp;
+        aim.yaw = crate::netcode::wire_convert::facing_in_teleport_frame(aim.yaw, yaw, stamp);
         Some(aim)
     }
 

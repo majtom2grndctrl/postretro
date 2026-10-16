@@ -86,6 +86,15 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
     }
 }
 
+/// The one teleport-frame rule every consumer of a stamped facing applies — host
+/// command resolution, a retained start's captured aim, and client prediction and
+/// replay: a facing sampled under `stamp` turns by the pawn's current
+/// `accumulated_yaw` minus that stamp. The arithmetic order is part of the rule, so
+/// host and replay produce bit-identical facings.
+pub(crate) fn facing_in_teleport_frame(facing_yaw: f32, accumulated_yaw: f32, stamp: f32) -> f32 {
+    facing_yaw + (accumulated_yaw - stamp)
+}
+
 /// The intent axes are relative to facing, so rotating facing rotates the world
 /// movement intent once while leaving right/forward input magnitudes unchanged.
 pub(crate) fn input_command_to_sim_at_yaw(
@@ -93,7 +102,11 @@ pub(crate) fn input_command_to_sim_at_yaw(
     accumulated_yaw: f32,
 ) -> SimCommand {
     let mut sim = input_command_to_sim(input);
-    sim.movement.facing_yaw += accumulated_yaw - input.teleport_yaw_stamp;
+    sim.movement.facing_yaw = facing_in_teleport_frame(
+        sim.movement.facing_yaw,
+        accumulated_yaw,
+        input.teleport_yaw_stamp,
+    );
     sim
 }
 

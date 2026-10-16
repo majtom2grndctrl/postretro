@@ -155,3 +155,43 @@ fn teleport_queries_reject_nonfinite_points_invalid_indices_and_empty_regions() 
         empty.visit_containing(Vec3::ZERO, |_| panic!("empty set visited a region"));
     }
 }
+
+#[test]
+fn teleport_overlap_winner_ties_offset_congruent_pads_by_map_order() {
+    // Regression: volumes were clipped in world coordinates, so two copies of
+    // one pad computed different rounding wherever they sat and float noise,
+    // not map order, picked the winner.
+    let pad = |origin: Vec3| {
+        let mut pad = axis_box(origin, origin + Vec3::splat(2.0));
+        // A slanted face makes clipping cut new vertices, where rounding lives.
+        let normal = Vec3::new(1.0, 0.0, 0.375);
+        pad.planes.push(LeafPlane {
+            normal,
+            distance: normal.dot(origin + Vec3::new(1.5, 0.0, 1.5)),
+        });
+        pad
+    };
+    // Dyadic coordinates keep both copies' stored planes exactly congruent.
+    let offset = Vec3::new(0.75, 0.0, 0.5);
+    for base in [
+        Vec3::new(3.5, 0.0, 1.25),
+        Vec3::new(517.25, 3.0, -211.5),
+        Vec3::new(-1024.5, 40.25, 77.75),
+        Vec3::new(4096.125, -96.5, 2048.25),
+    ] {
+        let point = base + Vec3::new(0.9, 1.0, 0.6);
+        let (first, second) = (pad(base), pad(base + offset));
+        for order in [
+            vec![vec![first.clone()], vec![second.clone()]],
+            vec![vec![second.clone()], vec![first.clone()]],
+        ] {
+            let regions = TeleporterRegions::build(order);
+            assert!(regions.contains(0, point) && regions.contains(1, point));
+            assert_eq!(
+                regions.winner(point, |_| true),
+                Some(0),
+                "congruent pads at {base:?} tie, so the earlier map entity wins"
+            );
+        }
+    }
+}

@@ -81,6 +81,7 @@ pub(crate) use postretro_sim::{
 mod render;
 mod render_preparation;
 mod runtime_movers;
+mod runtime_teleporters;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -1010,6 +1011,7 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,
@@ -1019,6 +1021,7 @@ pub(crate) struct App {
 
     client_weapon: client_weapon::ClientWeaponFrame,
     observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
+    pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -4382,6 +4385,15 @@ impl App {
                         time_sync.rtt_micros(),
                     )
                 };
+                crate::runtime_teleporters::apply_local_adoptions(
+                    &mut self.camera,
+                    &mut self.frame_timing,
+                    &mut self.mover_yaw_carry_ground,
+                    &mut self.pending_teleport_sounds,
+                    &self.collision_world.teleporters,
+                    &registry,
+                    &apply_outcome.local_teleport_adoptions,
+                );
                 // This owner projection can arrive on a zero-tick frame. Death
                 // clears charge feedback/input immediately, without changing
                 // the local health simulation or previously produced flights.
@@ -5066,7 +5078,11 @@ impl App {
         else {
             return Vec::new();
         };
-        let resolved = netcode::host_resolve_remote_commands(owners, command_queues);
+        let resolved = netcode::host_resolve_remote_commands_in_registry(
+            owners,
+            command_queues,
+            &session.scripting.script_ctx.registry.borrow(),
+        );
         netcode::host_apply_switch_deliveries(
             &mut session.scripting.script_ctx.registry.borrow_mut(),
             server,
@@ -5581,6 +5597,7 @@ impl App {
             allocator,
             replicable,
             loaded_movers,
+            loaded_teleporters,
             ..
         }) = self
             .session
@@ -5591,6 +5608,12 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_loaded_movers(&registry, allocator, replicable, loaded_movers);
+        netcode::host_register_loaded_teleporters(
+            &registry,
+            allocator,
+            replicable,
+            loaded_teleporters,
+        );
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation

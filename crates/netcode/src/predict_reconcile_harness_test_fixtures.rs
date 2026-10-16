@@ -402,6 +402,7 @@ pub(crate) fn use_command() -> SimCommand {
 /// `host_handle_client_message` drain seam without going through the conditioner.
 pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
     InputCommand {
+        teleport_yaw_stamp: 0.0,
         secondary_button: postretro_net::wire::WireFireButtonState {
             pressed: false,
             active: false,

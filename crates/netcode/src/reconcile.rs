@@ -19,10 +19,10 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverPose, MoverPoseSourc
 use crate::movement::MovementCollisionSource;
 use crate::netcode::client::MoverHistoryBuffer;
 use crate::netcode::movement_state::merge_wire_into_movement_state_checked;
-use crate::netcode::prediction::replay;
 use crate::netcode::prediction::{
     ArmedPawn, ClientPrediction, CorrectionClass, classify_correction,
 };
+use crate::netcode::prediction::{LocalTeleportAdoption, replay_with_armed};
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::PlayerMovementComponent;
@@ -111,6 +111,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         .get_component::<PlayerMovementComponent>(entity_id)
         .ok()?
         .clone();
+    let predicted_teleport = (
+        component.teleport.generation,
+        component.teleport.accumulated_yaw,
+        component.teleport.last_teleporter,
+    );
 
     // The pre-reconcile predicted pose: what the client currently shows for the pawn
     // (the latest forward-predicted state in the registry). The correction is measured
@@ -121,6 +126,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     // 1. Merge the authoritative movement subset onto the existing component.
     if let Some(wire) = movement {
         let base_collision = collision.combined_collision();
+        let teleporter_count = base_collision.static_world.teleporters.records().len();
+        if !crate::netcode::movement_state::teleport_indices_fit(&wire.teleport, teleporter_count) {
+            log::warn!("[Net] skipping local reconcile with unknown teleporter reference");
+            return None;
+        }
         if !merge_wire_into_movement_state_checked(&mut component, wire, |mover_id| {
             mover_history
                 .as_deref()
@@ -157,7 +167,10 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     if !is_reset {
         let base_collision = collision.combined_collision();
         for (index, entry) in prediction.history().iter().enumerate() {
-            let sim = crate::netcode::wire_convert::input_command_to_sim(&entry.command);
+            let sim = crate::netcode::wire_convert::input_command_to_sim_at_yaw(
+                &entry.command,
+                component.teleport.accumulated_yaw,
+            );
             let server_tick = authoritative_server_tick.wrapping_add(index as u32 + 1);
             // Resolve every mover once for this tick; the replayed movement's
             // queries then read the memo instead of re-extrapolating per cast.
@@ -168,13 +181,19 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
                 base: base_collision,
                 mover_history: mover_history.as_deref(),
             };
-            let (next_transform, next_movement, _events) = replay(
+            let (next_transform, next_movement, _events) = replay_with_armed(
                 reconciled_transform,
                 component,
                 sim.movement,
                 &replay_collision,
                 environment,
                 dt,
+                |index| {
+                    base_collision
+                        .static_world
+                        .teleporters
+                        .armed(registry, index)
+                },
             );
             reconciled_transform = next_transform;
             component = next_movement;
@@ -200,6 +219,10 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     //    `set_presentation_transform` call) after clearing history.
     let _ = registry.set_presentation_transform(entity_id, reconciled_transform);
     let _ = registry.set_component(entity_id, component.clone());
+    if prediction.take_first_record() {
+        prediction.clear_presentation_offset();
+        return Some(CorrectionClass::Ordinary);
+    }
 
     // 6. Classify the correction (predicted - reconciled) and smooth or snap. With no
     //    prior predicted pose (first arming snapshot) there is nothing to correct.
@@ -209,7 +232,17 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     let correction = predicted.position - reconciled_transform.position;
     let magnitude = correction.length();
     let included_dash = prediction.unacked_window_included_dash();
-    let class = classify_correction(magnitude, included_dash);
+    let teleport_changed = predicted_teleport
+        != (
+            component.teleport.generation,
+            component.teleport.accumulated_yaw,
+            component.teleport.last_teleporter,
+        );
+    let class = if teleport_changed {
+        CorrectionClass::Teleport
+    } else {
+        classify_correction(magnitude, included_dash)
+    };
 
     match class {
         CorrectionClass::Teleport => {
@@ -219,8 +252,24 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
             // teleport already happened in step 5 (`set_presentation_transform`); a
             // teleport differs from a smoothed correction only in clearing history +
             // the offset, not in how the transform is stamped.
-            prediction.clear_history();
+            if !teleport_changed {
+                prediction.clear_history();
+            }
             prediction.clear_presentation_offset();
+            let generation_advance = component
+                .teleport
+                .generation
+                .wrapping_sub(predicted_teleport.0);
+            prediction.teleport_adoptions.push(LocalTeleportAdoption {
+                entity_id,
+                yaw_delta: component.teleport.accumulated_yaw - predicted_teleport.1,
+                camera_cut: true,
+                arrival: reconciled_transform.position,
+                cue_teleporter: (generation_advance > 0
+                    && generation_advance < 128
+                    && component.teleport.last_teleporter != postretro_foundation::NO_TELEPORTER)
+                    .then_some(component.teleport.last_teleporter),
+            });
         }
         CorrectionClass::Ordinary | CorrectionClass::Dash | CorrectionClass::OversizedSmoothed => {
             // Smooth: the registry snapped to the reconciled pose; seed the decaying
@@ -371,11 +420,13 @@ mod tests {
         });
         registry.set_component(id, component()).unwrap();
         prediction.arm(network_id, id);
+        let _ = prediction.take_first_record();
         id
     }
 
     fn forward_command(client_tick: u32, dash_pressed: bool) -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: postretro_net::wire::WireFireButtonState {
                 pressed: false,
                 active: false,
@@ -404,6 +455,7 @@ mod tests {
 
     fn neutral_command(client_tick: u32) -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: postretro_net::wire::WireFireButtonState {
                 pressed: false,
                 active: false,

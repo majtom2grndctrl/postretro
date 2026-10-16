@@ -446,7 +446,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
             );
             command.activation.cancel = Some(token);
-            let _ = netcode::client_send_input_command(session.net_endpoint.as_mut(), &command);
+            let _ = netcode::client_send_input_command_in_registry(
+                session.net_endpoint.as_mut(),
+                &command,
+                &session.scripting.script_ctx.registry.borrow(),
+            );
         }
     }
 
@@ -502,6 +506,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // never enqueue host-local mover audio.
     let mut pending_mover_events = Vec::new();
     let mut pending_trigger_residuals = Vec::new();
+    let mut pending_teleport_residuals = Vec::new();
     let mut pending_player_event_residuals = Vec::new();
     let mut repointed_pawns = Vec::new();
 
@@ -730,6 +735,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     app.predict_client_weapon_command(&mut command, input_tick, tick_dt);
                     app.client_predict_movement_tick(&command, tick_dt)
                 };
+                let predicted_teleport = prediction_tick
+                    .as_ref()
+                    .and_then(|tick| tick.movement_events.teleport);
+                if let Some(event) = predicted_teleport {
+                    app.camera.yaw += event.yaw_delta;
+                    app.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
+                    if let Some(request) = sound_events::arrival_sound(
+                        &app.collision_world.teleporters,
+                        event.teleporter,
+                        event.arrival,
+                    ) {
+                        app.pending_teleport_sounds.push(request);
+                    }
+                }
                 if let Some(prediction_tick) = prediction_tick {
                     // Predicted movement sounds from the local pawn, swim
                     // entry and exit included. Forward prediction is the
@@ -798,8 +817,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                 );
-                app.frame_timing
-                    .push_state(InterpolableState::new(app.camera.position));
+                if predicted_teleport.is_some() {
+                    crate::runtime_teleporters::hold_local_arrival(
+                        &app.camera,
+                        &mut app.frame_timing,
+                        &mut app.mover_yaw_carry_ground,
+                    );
+                } else {
+                    app.frame_timing
+                        .push_state(InterpolableState::new(app.camera.position));
+                }
                 continue;
             }
 
@@ -882,6 +909,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let touch_system = &mut session.touch_system;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
             let trigger_bindings = &app.trigger_bindings;
+            let teleport_before =
+                crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let presentation_camera_aim = (app.camera.pitch, app.camera.yaw);
             let camera = &mut app.camera;
             #[cfg(feature = "dev-tools")]
@@ -910,6 +939,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     // weapon fire resolves its aim ray.
                     if has_player_pawn {
                         let registry_ref = registry.borrow();
+                        crate::runtime_teleporters::apply_local_camera_turn(
+                            camera,
+                            &registry_ref,
+                            teleport_before,
+                        );
                         // Host / single-player: no client-side correction
                         // offset (the host pawn is authoritative).
                         follow_camera_to_local_pawn(camera, &registry_ref, Vec3::ZERO);
@@ -937,6 +971,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &trigger_use_edges,
                 &touch_drop_edges,
                 Some(sim::TriggerTickContext {
+                    teleporters: Some(&app.teleporter_bindings),
                     system: trigger_system,
                     bridge: trigger_volume_bridge,
                     bindings: trigger_bindings,
@@ -1099,9 +1134,34 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             repointed_pawns.extend(tick_events.repointed_pawns);
             pending_death_events.extend(tick_events.death);
             pending_trigger_residuals.extend(tick_events.trigger_residuals);
+            pending_teleport_residuals.extend(tick_events.teleport_residuals);
 
-            app.frame_timing
-                .push_state(InterpolableState::new(app.camera.position));
+            let local_pawn = script_ctx.registry.borrow().local_player_movement_pawn();
+            for (pawn, event) in &tick_events.teleports {
+                if Some(*pawn) == local_pawn {
+                    if let Some(request) = sound_events::arrival_sound(
+                        &app.collision_world.teleporters,
+                        event.teleporter,
+                        event.arrival,
+                    ) {
+                        app.pending_teleport_sounds.push(request);
+                    }
+                }
+            }
+            let local_arrived = teleport_before.is_some_and(|before| {
+                crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow())
+                    .is_some_and(|after| before != after)
+            });
+            if local_arrived {
+                crate::runtime_teleporters::hold_local_arrival(
+                    &app.camera,
+                    &mut app.frame_timing,
+                    &mut app.mover_yaw_carry_ground,
+                );
+            } else {
+                app.frame_timing
+                    .push_state(InterpolableState::new(app.camera.position));
+            }
             // Fix B: capture each connected-client pawn's authoritative pose
             // for this tick before the tick stamp advances, so the buffered
             // sample is keyed to the tick whose end-of-tick pose it carries.
@@ -1213,6 +1273,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
         }
         requests.append(&mut client_sounds);
+        requests.append(&mut app.pending_teleport_sounds);
         (edges, requests, listener_attached)
     };
     if let Some(audio) = app
@@ -1273,6 +1334,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     .as_ref()
                     .and_then(|seats| seats.seat_for_client(client_id)),
             },
+        );
+        postretro_sim::teleporter_system::drain_teleport_residuals(
+            &pending_teleport_residuals,
+            &app.teleporter_bindings,
+            &session.scripting.scheduler,
+            postretro_sim::residual_drain::ResidualRegistries {
+                sequence: &session.scripting.sequence_registry,
+                reaction: &session.scripting.reaction_registry,
+                system: &session.scripting.system_registry,
+            },
+            &script_ctx,
+            &mut pending_trigger_follow_ups,
         );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and

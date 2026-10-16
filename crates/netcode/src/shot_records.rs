@@ -302,6 +302,7 @@ mod activation_tests {
             assert!(queues.ingest(
                 7,
                 &wire::InputCommand {
+                    teleport_yaw_stamp: 0.0,
                     client_tick: tick,
                     movement: wire::WireMovementInput {
                         wish_dir: [0.0, 0.0],

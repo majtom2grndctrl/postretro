@@ -33,6 +33,7 @@ export type { FogVolumeHandle } from "./entities/fog_volumes";
 export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
+export type { TeleporterEntity, TeleporterHandle, TeleportEventDescriptor, TeleportEventReaction } from "./entities/teleporters";
 
 export type { SpawnerEntityHandle } from "./entities/spawners";
 
@@ -66,6 +67,10 @@ export type {
   CrossingParams,
   TickParams,
   TriggerEventParams,
+  TeleportEventParams,
+  TeleporterTarget,
+  ArmTeleporterStep,
+  DisarmTeleporterStep,
   EmitterParams,
   EmitterTarget,
   PlayerEventParams,

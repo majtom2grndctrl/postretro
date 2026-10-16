@@ -213,6 +213,7 @@ struct ClientCommandState {
     /// Latest finite facing yaw accepted by authoritative command playout. Long
     /// outages neutralize gameplay intent without snapping the replicated body aim.
     latest_facing_yaw: Option<f32>,
+    latest_teleport_yaw_stamp: f32,
     /// Consecutive ticks the previous command has been held across a gap. Reset to 0
     /// whenever a real command resolves; once it reaches [`INPUT_HOLD_TICKS`] the gap
     /// policy synthesizes neutral input.
@@ -380,6 +381,7 @@ pub struct HostCommandQueues {
 pub(crate) struct ResolvedCommand {
     /// The sim command to feed the movement seam this tick.
     pub(crate) command: SimCommand,
+    pub(crate) teleport_yaw_stamp: f32,
     /// The client tick this resolution advances the cursor to (unchanged on a
     /// frontier freeze). Stamped into `ResolvedPawnCommand` by
     /// `host_resolve_remote_commands` and asserted in this module's tests.
@@ -400,6 +402,7 @@ pub struct ResolvedPawnCommand {
     pub pawn: EntityId,
     pub client_id: u64,
     pub command: SimCommand,
+    pub teleport_yaw_stamp: f32,
     /// Camera pitch from the resolved, host-authorized input command. Presentation
     /// consumes it locally; snapshot production reads the same queue state.
     pub aim_pitch: f32,
@@ -590,6 +593,7 @@ impl HostCommandQueues {
             let mut sim = input_command_to_sim(&cmd);
             state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
             state.latest_facing_yaw = Some(cmd.movement.facing_yaw);
+            state.latest_teleport_yaw_stamp = cmd.teleport_yaw_stamp;
             state.last_resolved = Some(cmd);
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
@@ -612,6 +616,7 @@ impl HostCommandQueues {
             });
             return Some(ResolvedCommand {
                 command: sim,
+                teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
                 rejected_activation,
                 source: ResolutionSource::Real,
@@ -662,6 +667,7 @@ impl HostCommandQueues {
             });
             return Some(ResolvedCommand {
                 command: sim,
+                teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
                 rejected_activation: None,
                 source,
@@ -722,6 +728,7 @@ impl HostCommandQueues {
             });
             return Some(ResolvedCommand {
                 command: sim,
+                teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
                 client_tick: expected,
                 rejected_activation: None,
                 source,
@@ -785,6 +792,7 @@ impl HostCommandQueues {
         });
         Some(ResolvedCommand {
             command: sim,
+            teleport_yaw_stamp: state.latest_teleport_yaw_stamp,
             client_tick: expected,
             rejected_activation: None,
             source,
@@ -874,11 +882,31 @@ pub fn host_resolve_remote_commands(
                 pawn,
                 client_id,
                 command: resolved.command,
+                teleport_yaw_stamp: resolved.teleport_yaw_stamp,
                 aim_pitch,
                 client_tick: resolved.client_tick,
                 rejected_activation: resolved.rejected_activation,
                 source: resolved.source,
             });
+        }
+    }
+    commands
+}
+
+/// Resolve in the pawn's current teleport frame before either movement or aim
+/// captures the command. Queue storage retains its original facing/stamp pair.
+pub fn host_resolve_remote_commands_in_registry(
+    owners: &MovementOwners,
+    command_queues: &mut HostCommandQueues,
+    registry: &EntityRegistry,
+) -> Vec<ResolvedPawnCommand> {
+    let mut commands = host_resolve_remote_commands(owners, command_queues);
+    for remote in &mut commands {
+        if let Ok(movement) =
+            registry.get_component::<postretro_foundation::PlayerMovementComponent>(remote.pawn)
+        {
+            remote.command.movement.facing_yaw +=
+                movement.teleport.accumulated_yaw - remote.teleport_yaw_stamp;
         }
     }
     commands
@@ -956,6 +984,7 @@ mod tests {
     /// the intent so a held/neutral resolution is distinguishable from a real one.
     fn command(client_tick: u32, wish_forward: f32) -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: postretro_net::wire::WireFireButtonState {
                 pressed: false,
                 active: false,

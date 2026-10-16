@@ -15,6 +15,8 @@ read at: 08231a583
 
 ## Corrections
 
+- Observer arrival audio uses the authoritative pose of the accepted generation-change sample, independently of delayed rendering. The specified pawn record has no frozen original arrival point; later catch-up movement may precede that sample. No additional wire field or cue lane is introduced.
+
 - Generation and accumulated yaw alone can agree when client and host take different teleporters. For AC39/P19 and AC41/P27, also compare the already-specified `last_teleporter` after replay. A mismatch takes teleport class even when yaw/generation agree and arrivals are less than 3 m apart. This clarifies the sufficient mismatch rule without adding wire data or changing Acceptance.
 - `sdk/lib/map_entities.{ts,luau}` routes wrappers; trigger `.on`, arm and disarm live in `sdk/lib/entities/triggers.{ts,luau}`. Implement corresponding teleporter wrappers and all exports/converters, including the script compiler's independent light-membership wrapper inventory.
 - The suggested semantic brush parser exits before generic map records are appended. Preserve teleporter name/tags through a `MapEntityRecord` companion in existing id29, keyed by source entity, while keeping id55's specified record layout. Install one entity per teleporter; never duplicate it from the companion. Destinations remain compile-time only.
@@ -148,3 +150,11 @@ The brief does not authorize landing before manual proof. After automated checks
 - Owner then decides the brief's resource question: keep full mandatory arrival origins or amend the distant-origin policy. The existing all-resident gate does not resolve this decision.
 - Run the two-peer loop at approximately 100 ms RTT, using the established clean/lossy harness profiles; verify walk-in immediacy, scripted shift agreement and the closet loop. Record visual/sound outcomes separately from automated sample/anchor proofs.
 - Replace runbook placeholders with actual map/script paths and exact runnable commands before requesting external testing. Keep human-facing `docs/` commands runnable from an SDK bundle alone.
+
+## Implementation checkpoint (active)
+
+- Shared teleporter geometry, id55 parser/loader, pawn relocation state, host movement and camera/aim cuts are implemented in the worktree. SDK/core event/queue and net input/reconcile slices are integrated; observer interpolation and app audio adoption are still being completed. Residency routing is implemented pending focused tests and measurement.
+- Focused lower gate: 7 collision tests, 5 format tests and 3 real loader tests passed (15 total). `cargo check -p postretro-physics` passed.
+- Coordinated checks for sim, netcode, level compiler and script compiler passed. Remaining warnings are test-only wrapper/accessor hygiene, queued for repair before final clippy.
+- Focused movement/script/net tests are currently being built; their outcomes are not recorded as passes. App/camera tests and runnable fixtures are still pending.
+- Worktree target is isolated and builds use `CARGO_INCREMENTAL=0`; free space was 73 GiB at this checkpoint.

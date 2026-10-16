@@ -22,6 +22,7 @@ use crate::presentation_state::apply_presentation_payload;
 
 #[derive(Debug, Default)]
 pub(super) struct ClientBindings {
+    pub(super) teleporter_network_ids: HashMap<NetworkId, u16>,
     /// Network ids bound to PRL-loaded local kinematic movers, with their stable
     /// compile-time mover id. These entities are predicted/reconciled in place and
     /// must never be remote-interpolated or materialized from a baseline.

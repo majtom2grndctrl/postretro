@@ -623,7 +623,14 @@ impl ServerReplication {
 /// the engine glue's `payload_to_raw`; kept here so the tracker is self-contained.
 fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
     match payload {
+        ComponentPayload::TeleporterState(state) => RawComponentPayload {
+            component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
+            teleporter: Some(*state),
+            transform: None, player_movement: None, mesh_animation_state: None,
+            kinematic_mover: None, light: None, emitter: None, fog: None,
+        },
         ComponentPayload::Transform(t) => RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(*t),
             player_movement: None,
@@ -634,9 +641,10 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
-            player_movement: Some(*m),
+            player_movement: Some(m.clone()),
             mesh_animation_state: None,
             kinematic_mover: None,
             light: None,
@@ -644,6 +652,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
             transform: None,
             player_movement: None,
@@ -654,6 +663,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
             transform: None,
             player_movement: None,
@@ -664,6 +674,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::LightState(state) => RawComponentPayload {
+            teleporter: None,
             component_kind: crate::wire::COMPONENT_KIND_LIGHT,
             transform: None,
             player_movement: None,
@@ -674,6 +685,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::EmitterState(state) => RawComponentPayload {
+            teleporter: None,
             component_kind: crate::wire::COMPONENT_KIND_BILLBOARD_EMITTER,
             transform: None,
             player_movement: None,
@@ -684,6 +696,7 @@ fn raw_from_payload(payload: &ComponentPayload) -> RawComponentPayload {
             fog: None,
         },
         ComponentPayload::FogState(state) => RawComponentPayload {
+            teleporter: None,
             component_kind: crate::wire::COMPONENT_KIND_FOG_VOLUME,
             transform: None,
             player_movement: None,
@@ -778,6 +791,7 @@ mod tests {
 
     fn movement(velocity_x: f32) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
             velocity: [velocity_x, 0.0, 0.0],

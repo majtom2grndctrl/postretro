@@ -92,6 +92,16 @@ export type TriggerVolumeHandle = {
 --- Snapshot of a map-placed spawner: id, position, its own tags, and
 --- `spawnedTags`, the tags each NPC it spawns carries. Its own tags never
 --- pass to its spawns.
+export type TeleporterEntity = { id: EntityId, position: Vec3, tags: {string} }
+export type TeleporterHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  arm: (self: TeleporterHandle) -> {ArmTeleporterStep},
+  disarm: (self: TeleporterHandle) -> {DisarmTeleporterStep},
+  on: (self: TeleporterHandle, event: "teleport", fire: {Reaction<any> | string}) -> TeleportEventDescriptor,
+}
+export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport", fire: {string} }
+export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
+
 export type SpawnerEntity = {
   id: EntityId,
   position: Vec3,
@@ -111,7 +121,7 @@ export type SpawnerEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -124,6 +134,7 @@ export type MapEntityFilter = { tag: string? }
 --- raises. `"emitter"` yields the snapshot only, with no verbs.
 declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEntityHandle})
   & ((kind: "trigger", filter: MapEntityFilter?) -> {TriggerVolumeHandle})
+  & ((kind: "teleporter", filter: MapEntityFilter?) -> {TeleporterHandle})
   & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
   & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
@@ -387,6 +398,8 @@ export type MoverSetBlockPolicyStep = {
   args: { policy: "displace" | "reverse" | "stop" | "crush" },
 }
 
+export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args: {} }
+export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
 export type ArmTriggerStep = {
   id: EntityId,
   primitive: "armTrigger",
@@ -429,7 +442,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Sequence reaction body: ordered member, group, subject-token and control
 --- steps. Steps begin in array order; `fire` queues a named dispatch, while
@@ -467,6 +480,11 @@ export type TriggerTarget = {
   --- Disarm the volume that fired.
   disarm: (self: TriggerTarget) -> SubjectTokenCommand,
 }
+export type TeleporterTarget = {
+  arm: (self: TeleporterTarget) -> SubjectTokenCommand,
+  disarm: (self: TeleporterTarget) -> SubjectTokenCommand,
+}
+export type TeleportEventParams = { activators: ActivatorsTarget, teleporter: TeleporterTarget }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
 --- only as `playSound`'s `at`.
@@ -715,6 +733,7 @@ export type LevelManifest = {
   --- member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents`
   --- (`defineTriggerEvent`) and is rejected here.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
+  teleportEvents: {TeleportEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-player events, built with `players():on`. A level's entries belong
   --- to that level; an entry carrying `levels` is skipped with a warning (its
@@ -739,6 +758,8 @@ declare defineReaction: (
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
   & ((tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
+  & ((tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TeleportEventParams>)
+  & ((name: string, tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TeleportEventParams>)
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
@@ -776,7 +797,7 @@ export type GroupKind = "npc" | "player"
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
 --- The subject a token command addresses: this fire's activators, the volume
 --- that fired, or the event's player.
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@player"
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
 --- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.

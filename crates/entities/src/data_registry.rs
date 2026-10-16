@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::data_descriptors::{
     ComposedPlayerEvent, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
-    PlayerEventDescriptor, PlayerEventSource, TriggerEventDescriptor, TriggerPoolDescriptor,
-    VolumeTriggerEventDescriptor,
+    PlayerEventDescriptor, PlayerEventSource, TeleportEventDescriptor, TriggerEventDescriptor,
+    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
 };
 use postretro_foundation::{FluidRegistry, ModMapEntry, WeaponPlacementDescriptor};
 
@@ -737,6 +737,7 @@ pub struct DataRegistry {
     /// volume. Never filtered by `levels` — they belong to the level that
     /// declared them — so the retained list is also the active one.
     level_trigger_events: Vec<VolumeTriggerEventDescriptor>,
+    level_teleport_events: Vec<TeleportEventDescriptor>,
     level_trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Level player events from `setupLevel()`. They belong to their level,
     /// so the retained list composes unfiltered.
@@ -1088,6 +1089,15 @@ impl DataRegistry {
 
     /// Level member trigger events (`t.on`), in authored order. They bind after
     /// the active mod-global [`Self::trigger_events`] on a shared edge.
+    /// Append the level's teleporter bindings; retained through recomposition.
+    pub fn set_level_teleport_events(&mut self, events: Vec<TeleportEventDescriptor>) {
+        self.level_teleport_events.extend(events);
+    }
+
+    pub fn teleport_events(&self) -> &[TeleportEventDescriptor] {
+        &self.level_teleport_events
+    }
+
     pub fn volume_trigger_events(&self) -> &[VolumeTriggerEventDescriptor] {
         &self.level_trigger_events
     }
@@ -1111,6 +1121,7 @@ impl DataRegistry {
         self.level_reactions.clear();
         self.level_crossings.clear();
         self.level_trigger_events.clear();
+        self.level_teleport_events.clear();
         self.level_trigger_pools.clear();
         self.level_player_events.clear();
     }
@@ -1134,6 +1145,7 @@ impl DataRegistry {
             && self.level_reactions.is_empty()
             && self.level_crossings.is_empty()
             && self.level_trigger_events.is_empty()
+            && self.level_teleport_events.is_empty()
             && self.level_trigger_pools.is_empty()
             && self.level_player_events.is_empty()
             && self.entities.is_empty()

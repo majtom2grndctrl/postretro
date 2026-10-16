@@ -661,6 +661,8 @@ pub struct MapData {
     /// Static regional gravity, push and fluid volumes in source map entity
     /// order, which is the overlap rule's final tiebreak.
     pub environment_volumes: Vec<MapEnvironmentVolume>,
+    /// Predictive teleporter records, in source entity order.
+    pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.

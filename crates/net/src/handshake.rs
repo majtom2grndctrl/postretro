@@ -31,7 +31,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C42; // "PRLB"
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
 /// Removal of the particle component renumbers later component kinds at 30.
 /// `WireMovementState::Vault` advances it to 31.
-pub const WIRE_VERSION: u32 = 31;
+pub const WIRE_VERSION: u32 = 32;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -451,7 +451,7 @@ mod tests {
             );
         };
         assert_eq!(
-            WIRE_VERSION, 31,
+            WIRE_VERSION, 32,
             "the vault movement state extends the shipped layout"
         );
         let previous = ProtocolVersion {
@@ -629,8 +629,8 @@ mod switch_tick_epoch_tests {
     // refuses it before any snapshot decode.
     #[test]
     fn vault_movement_state_refuses_wire_30_peers() {
-        assert_eq!(WIRE_VERSION, 31);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 20);
+        assert_eq!(WIRE_VERSION, 32);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 21);
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: 30,

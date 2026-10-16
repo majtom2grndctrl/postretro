@@ -20,7 +20,7 @@ use glam::Vec3;
 use postretro_net::wire::{InputCommand, NetworkId};
 
 use crate::movement::{self, MovementCollisionSource, MovementEvents, MovementInput};
-use crate::netcode::wire_convert::input_command_to_sim;
+use crate::netcode::wire_convert::input_command_to_sim_at_yaw;
 use postretro_collision::EnvironmentView;
 use postretro_entities::{EntityId, Transform};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -161,6 +161,17 @@ pub(crate) struct ArmedPawn {
     pub(crate) entity_id: EntityId,
 }
 
+/// App-facing presentation facts from an adopted own-pawn correction. A fixed
+/// arrival point prevents cues from resolving a delayed render pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalTeleportAdoption {
+    pub entity_id: EntityId,
+    pub yaw_delta: f32,
+    pub camera_cut: bool,
+    pub arrival: Vec3,
+    pub cue_teleporter: Option<u16>,
+}
+
 /// Client-side movement prediction state for the local pawn. Owns the outbound
 /// command-log ring and the armed baseline identity. Long-lived prediction state
 /// lives here, not on `App` — the source-layout gate keeps it out of the 6k-line
@@ -174,6 +185,8 @@ pub(crate) struct ArmedPawn {
 /// `history` and `replay` seams this module exposes.
 #[derive(Debug, Default)]
 pub struct ClientPrediction {
+    first_record_pending: bool,
+    pub(crate) teleport_adoptions: Vec<LocalTeleportAdoption>,
     /// The armed local-pawn identity, or `None` until a `local_player` baseline
     /// has been applied AND mapped. Prediction does nothing while this is `None`.
     armed: Option<ArmedPawn>,
@@ -209,6 +222,8 @@ impl ClientPrediction {
     /// Drop level-scoped prediction state after a connected-client level unload.
     /// The outbound command tick is connection-scoped and remains monotonic.
     pub(crate) fn reset_for_level_unload(&mut self) {
+        self.first_record_pending = false;
+        self.teleport_adoptions.clear();
         self.armed = None;
         self.history.clear();
         self.presentation_offset = Vec3::ZERO;
@@ -229,7 +244,13 @@ impl ClientPrediction {
             return;
         }
         self.armed = Some(next);
+        self.first_record_pending = true;
+        self.teleport_adoptions.clear();
         self.history.clear();
+    }
+
+    pub(crate) fn take_first_record(&mut self) -> bool {
+        std::mem::take(&mut self.first_record_pending)
     }
 
     /// The armed local-pawn identity, or `None` if prediction is not yet armed.
@@ -309,6 +330,7 @@ impl ClientPrediction {
     /// preserves the tick's movement events for the local frame drain; callers
     /// performing reconciliation continue to use [`replay`] directly and discard
     /// its events by construction.
+    #[cfg(test)]
     pub(crate) fn predict_tick_with_events(
         &mut self,
         command: InputCommand,
@@ -317,12 +339,34 @@ impl ClientPrediction {
         environment: EnvironmentView<'_>,
         dt: f32,
     ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
+        let world = collision.combined_collision();
+        self.predict_tick_with_events_and_armed(
+            command,
+            prev,
+            collision,
+            environment,
+            dt,
+            |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn predict_tick_with_events_and_armed(
+        &mut self,
+        command: InputCommand,
+        prev: (Transform, PlayerMovementComponent),
+        collision: &impl MovementCollisionSource,
+        environment: EnvironmentView<'_>,
+        dt: f32,
+        armed: impl FnMut(usize) -> bool,
+    ) -> Option<(Transform, PlayerMovementComponent, MovementEvents)> {
         // Inert until armed: before the local_player baseline, drive no pawn.
         self.armed?;
+        self.first_record_pending = false;
 
         let (start_transform, start_movement) = prev;
 
-        let sim = input_command_to_sim(&command);
+        let sim = input_command_to_sim_at_yaw(&command, start_movement.teleport.accumulated_yaw);
         // The command's dash request and the movement states around this tick
         // together cover every wider-tolerance window: the request bit catches a
         // dash's entry tick (before the state has transitioned), the resulting
@@ -331,14 +375,18 @@ impl ClientPrediction {
         // allow these states' larger visible correction during a rewound replay.
         let dash_requested = command.movement.dash_pressed;
         let started_in_vault = matches!(start_movement.movement_state, MovementState::Vault { .. });
-        let (transform, movement, events) = replay(
+        let (transform, movement, events) = replay_with_armed(
             start_transform,
             start_movement,
             sim.movement,
             collision,
             environment,
             dt,
+            armed,
         );
+        if events.teleport.is_some() {
+            self.clear_presentation_offset();
+        }
 
         // A vault's path follows movers and death, so it shares dash's wider
         // tolerance for a replay that lands it somewhere a little different. The
@@ -470,26 +518,56 @@ impl ClientPrediction {
 /// Shared by this module's forward prediction and Task 5's reconciliation replay.
 /// The `position` `movement::tick` consumes/returns is the `Transform.position`;
 /// this helper threads it through so callers only ever see the `Transform`.
+#[cfg(test)]
 pub(crate) fn replay(
+    transform: Transform,
+    movement: PlayerMovementComponent,
+    input: MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> (Transform, PlayerMovementComponent, MovementEvents) {
+    let world = collision.combined_collision();
+    replay_with_armed(
+        transform,
+        movement,
+        input,
+        collision,
+        environment,
+        dt,
+        |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn replay_with_armed(
     transform: Transform,
     mut movement: PlayerMovementComponent,
     input: MovementInput,
     collision: &impl MovementCollisionSource,
     environment: EnvironmentView<'_>,
     dt: f32,
+    armed: impl FnMut(usize) -> bool,
 ) -> (Transform, PlayerMovementComponent, MovementEvents) {
-    let (new_position, events) = movement::tick(
+    let (new_position, events, _) = movement::tick_with_immersion_and_armed(
         &mut movement,
         &input,
         collision,
         environment,
         dt,
         transform.position,
+        armed,
     );
     let mut new_transform = transform;
     new_transform.position = new_position;
     if input.facing_yaw.is_finite() {
-        new_transform.rotation = glam::Quat::from_rotation_y(input.facing_yaw);
+        new_transform.rotation = glam::Quat::from_rotation_y(
+            input.facing_yaw
+                + events
+                    .teleport
+                    .as_ref()
+                    .map_or(0.0, |event| event.yaw_delta),
+        );
     }
     (new_transform, movement, events)
 }
@@ -620,6 +698,7 @@ mod tests {
     /// Forward command at the given monotonic client tick, dash optional.
     fn forward_command(client_tick: u32, dash_pressed: bool) -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: postretro_net::wire::WireFireButtonState {
                 pressed: false,
                 active: false,

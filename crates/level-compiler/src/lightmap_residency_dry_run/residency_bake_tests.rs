@@ -40,6 +40,7 @@ fn residency_set_bake_matches_direct_evaluation() {
         &portals,
         &locator,
         None,
+        None,
         &BakeControl::unrestricted(),
     )
     .expect("the bake succeeds")

@@ -14,6 +14,11 @@ use super::luau_virtual_modules::LuauVirtualModuleRegistry;
 /// `(wrapper global, source, sdk/lib-relative path)`.
 const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
     (
+        "wrapTeleporterEntity",
+        include_str!("../../../sdk/lib/entities/teleporters.luau"),
+        "entities/teleporters.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "entities/lights.luau",

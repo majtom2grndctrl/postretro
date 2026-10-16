@@ -1774,6 +1774,15 @@ declare module "postretro" {
   }
 
   /** Snapshot of a map-placed spawner: id, position, its own tags, and `spawnedTags`, the tags each NPC it spawns carries. Its own tags never pass to its spawns. */
+  export type TeleporterEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  export interface TeleporterHandle extends TeleporterEntity {
+    arm(): SequenceStep[];
+    disarm(): SequenceStep[];
+    on(event: "teleport", fire: TeleportEventReaction[]): TeleportEventDescriptor;
+  }
+  export type TeleportEventDescriptor = { teleporter: EntityId; event: "teleport"; fire: string[] };
+  export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
+
   export type SpawnerEntity = {
     id: EntityId;
     position: Vec3;
@@ -1788,12 +1797,13 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
     K extends "mover" ? MoverEntityHandle :
     K extends "trigger" ? TriggerVolumeHandle :
+    K extends "teleporter" ? TeleporterHandle :
     K extends "light" ? LightEntityHandle :
     K extends "fog" ? FogVolumeHandle :
     K extends "emitter" ? EmitterEntity :
@@ -1927,6 +1937,8 @@ declare module "postretro" {
   export type MoverSetBlockPolicyStep = { id: EntityId; primitive: "moverSetBlockPolicy"; args: { policy: "displace" | "reverse" | "stop" | "crush" } };
 
   /** Sequence step that arms one trigger volume. */
+  export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
+  export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
   export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
   export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
@@ -1958,6 +1970,8 @@ declare module "postretro" {
     | MoverGoToPathNodeStep
     | MoverSetSpinRateStep
     | MoverSetBlockPolicyStep
+    | ArmTeleporterStep
+    | DisarmTeleporterStep
     | ArmTriggerStep
     | DisarmTriggerStep
     | SpawnFromSpawnerStep
@@ -2001,6 +2015,9 @@ declare module "postretro" {
     /** Disarm the volume that fired. */
     disarm(): SubjectTokenCommand;
   }
+  const teleporterTargetBrand: unique symbol;
+  export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -2177,6 +2194,7 @@ declare module "postretro" {
     crossings?: CrossingDescriptor[];
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
+    teleportEvents?: TeleportEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -2197,6 +2215,7 @@ declare module "postretro" {
   export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -2212,6 +2231,7 @@ declare module "postretro" {
   export function defineReaction<S = {}>(name: string, descriptor: ReactionBody<S>): Reaction<S>;
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
+  export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -2233,7 +2253,7 @@ declare module "postretro" {
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@player";
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
   /** One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
@@ -2973,7 +2993,7 @@ declare module "postretro/ui" {
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
   export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
   export type PresentationOptions = { audience?: PresentationAudience };
-  export type AudienceScope<A> = (Extract<A, ActivatorsTarget | TriggerTarget> extends never ? {} : TriggerEventParams) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
+  export type AudienceScope<A> = (Extract<A, ActivatorsTarget> extends never ? {} : Pick<TriggerEventParams, "activators">) & (Extract<A, TriggerTarget> extends never ? {} : Pick<TriggerEventParams, "trigger">) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
   export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
   export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
   export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;

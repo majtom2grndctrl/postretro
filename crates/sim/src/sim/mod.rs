@@ -294,6 +294,7 @@ pub struct RemoteProjectileFireRejection {
 /// per-player map, never an action snapshot; local and remote use edges are
 /// keyed by `PlayerId` at this boundary.
 pub struct TriggerTickContext<'a> {
+    pub teleporters: Option<&'a crate::teleporter_system::TeleporterBindingTable>,
     pub system: &'a mut TriggerSystem,
     pub bridge: &'a TriggerVolumeBridge,
     pub bindings: &'a TriggerBindingTable,
@@ -318,6 +319,9 @@ pub struct TickEvents {
     /// This is frame-local, never serialized, and deliberately separate from
     /// the script-address drain above.
     pub movement_edges: Vec<crate::movement::MovementStateEdge>,
+    /// Authoritative arrivals retained separately from local-only movement emissions.
+    pub teleports: Vec<(EntityId, crate::movement::TeleportEvent)>,
+    pub teleport_residuals: Vec<crate::teleporter_system::TeleportResidual>,
     /// AI events raised this tick, each on its enemy: attacks fired and
     /// activities entered (an entry with no authored `on_enter` fires nothing
     /// but still plays its sound).
@@ -496,7 +500,7 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     environment: EnvironmentView<'_>,
     mod_block_during_reload: bool,
     anim_time: f64,
-    presentation_camera_aim: (f32, f32),
+    mut presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
@@ -534,6 +538,12 @@ where
         environment
     };
     registry.borrow_mut().snapshot_transforms();
+    if let Some(ctx) = trigger_context
+        .as_ref()
+        .and_then(|context| context.script_ctx.as_ref())
+    {
+        crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
+    }
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
     // (ready remote-hit ingest, AI, and local weapon fire), so every newly
@@ -571,7 +581,7 @@ where
         .iter()
         .map(|remote| (remote.pawn, remote.command.movement.clone()))
         .collect();
-    let remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
+    let mut remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
         .iter()
         .map(|remote| {
             (
@@ -583,7 +593,7 @@ where
 
     let combined_collision =
         CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states);
-    {
+    let remote_movement = {
         let mut registry = registry.borrow_mut();
         host_movement::run_host_movement_tick(
             &mut registry,
@@ -602,6 +612,42 @@ where
         &command.movement,
         tick_dt,
     );
+    let mut remote_pawn_commands = std::borrow::Cow::Borrowed(remote_pawn_commands);
+    let mut teleports: Vec<_> = remote_movement
+        .into_iter()
+        .filter_map(|(pawn, events)| {
+            events.teleport.map(|event| {
+                if let Some(aim) = remote_player_aims.get_mut(&pawn) {
+                    aim.1 += event.yaw_delta;
+                }
+                if let Some(command) = remote_pawn_commands
+                    .to_mut()
+                    .iter_mut()
+                    .find(|command| command.pawn == pawn)
+                {
+                    command.command.movement.facing_yaw += event.yaw_delta;
+                    if let Some(aim) = &mut command.start_aim {
+                        aim.yaw += event.yaw_delta;
+                    }
+                }
+                (pawn, event)
+            })
+        })
+        .collect();
+    if let Some((pawn, event)) = movement.teleport {
+        presentation_camera_aim.1 += event.yaw_delta;
+        teleports.push((pawn, event));
+    }
+    let mut teleport_residuals = Vec::new();
+    if let Some(context) = trigger_context.as_ref() {
+        if let (Some(bindings), Some(ctx)) = (context.teleporters, context.script_ctx.as_ref()) {
+            for (pawn, event) in &teleports {
+                if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn) {
+                    teleport_residuals.push(residual);
+                }
+            }
+        }
+    }
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
@@ -864,7 +910,7 @@ where
     weapon_stage::tick_weapon_resources(&mut registry.borrow_mut(), tick_dt);
     let remote_weapon_result = weapon_stage::run_remote_weapon_commands(
         &registry,
-        remote_pawn_commands,
+        &remote_pawn_commands,
         descriptors,
         default_weapon_placement,
         collision_world,
@@ -950,6 +996,8 @@ where
         cpu,
         movement: movement.emissions,
         movement_edges: movement.state_edges,
+        teleports,
+        teleport_residuals,
         ai,
         weapon,
         weapon_fluid_splashes,
@@ -995,6 +1043,7 @@ fn trigger_fire_context(
     }
     TriggerFireContext {
         fired_trigger: Some(event.fire.trigger),
+        fired_teleporter: None,
         activator,
         occupancy,
         event_player: None,
@@ -1661,6 +1710,7 @@ pub(crate) mod predict_reconcile;
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
+    teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
     emissions: Vec<crate::emission::MovementEmission>,
     state_edges: Vec<crate::movement::MovementStateEdge>,
 }
@@ -1678,6 +1728,7 @@ fn run_movement_tick(
     };
     let Some(id) = local else {
         return LocalMovementTickEvents {
+            teleport: None,
             emissions: Vec::new(),
             state_edges: Vec::new(),
         };
@@ -1695,13 +1746,16 @@ fn run_movement_tick(
     let emitter = crate::emission::entity_emitter(&registry, id);
     let mut emissions = Vec::new();
     let mut state_edges = Vec::new();
+    let mut teleport = None;
     for (pawn, movement_events) in events {
         if pawn == id {
+            teleport = movement_events.teleport.map(|event| (pawn, event));
             crate::emission::append_movement_emissions(&movement_events, &emitter, &mut emissions);
             state_edges = movement_events.state_edges;
         }
     }
     LocalMovementTickEvents {
+        teleport,
         emissions,
         state_edges,
     }
@@ -2763,6 +2817,7 @@ mod tests {
             &use_edges,
             &HashMap::new(),
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -2996,6 +3051,7 @@ mod tests {
                 },
                 1.0 / 60.0,
                 Some(TriggerTickContext {
+                    teleporters: None,
                     system: trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,
@@ -3294,6 +3350,7 @@ mod tests {
             },
             1.0 / 60.0,
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -3416,6 +3473,7 @@ mod tests {
             },
             1.0 / 60.0,
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -3555,6 +3613,7 @@ mod tests {
                 },
                 1.0 / 60.0,
                 Some(TriggerTickContext {
+                    teleporters: None,
                     system: &mut trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,

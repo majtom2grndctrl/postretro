@@ -298,6 +298,15 @@ fn collect_payloads(
         );
         payloads.push(payload);
     }
+    if let Ok(teleporter) = registry.get_component::<postretro_entities::TeleporterComponent>(id) {
+        payloads.push(ComponentPayload::TeleporterState(
+            postretro_net::wire::WireTeleporterState {
+                index: teleporter.index,
+                source_entity: teleporter.source_entity,
+                armed: teleporter.armed,
+            },
+        ));
+    }
     payloads
 }
 
@@ -573,6 +582,35 @@ pub fn host_register_loaded_movers(
     }
     if count > 0 {
         log::info!("[Net] host registered {count} kinematic mover/movers for replication");
+    }
+}
+
+/// Register installed regions so every joiner receives authoritative arming.
+/// The client binds these records to its installed region rather than spawning.
+pub fn host_register_loaded_teleporters(
+    registry: &EntityRegistry,
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    tracked: &mut HashSet<EntityId>,
+) {
+    let stale: Vec<_> = tracked
+        .iter()
+        .copied()
+        .filter(|&entity| {
+            !registry
+                .has_component_kind(entity, ComponentKind::Teleporter)
+                .unwrap_or(false)
+        })
+        .collect();
+    for entity in stale {
+        tracked.remove(&entity);
+        replicable.unregister(entity);
+        allocator.forget(entity);
+    }
+    for (entity, _) in registry.iter_with_kind(ComponentKind::Teleporter) {
+        allocator.stamp(entity);
+        replicable.register(entity);
+        tracked.insert(entity);
     }
 }
 

@@ -11,6 +11,16 @@ use postretro_net::wire::{WireGroundRef, WireMovementState, WirePlayerMovementSt
 
 use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 
+pub(crate) fn teleport_indices_fit(
+    wire: &postretro_net::wire::WireTeleportState,
+    count: usize,
+) -> bool {
+    wire.is_valid()
+        && (wire.last_teleporter == postretro_net::wire::NO_WIRE_TELEPORTER
+            || usize::from(wire.last_teleporter) < count)
+        && wire.latches().all(|index| usize::from(index) < count)
+}
+
 /// Extract the mutable tick subset of a `PlayerMovementComponent` into its wire
 /// mirror. Snapshots carry only fields that change tick-to-tick. Descriptor
 /// tuning arrives separately in `TuningPayload` on Control, except `view_feel`,
@@ -29,6 +39,13 @@ pub(crate) fn movement_state_to_wire(
             .map(|normal| [normal.x, normal.y, normal.z]);
     }
     WirePlayerMovementState {
+        teleport: postretro_net::wire::WireTeleportState::new(
+            component.teleport.generation,
+            component.teleport.accumulated_yaw,
+            component.teleport.last_teleporter,
+            &component.teleport.arrival_latches,
+        )
+        .expect("validated pawn teleport state must fit the u16 latch envelope"),
         velocity: [
             component.velocity.x,
             component.velocity.y,
@@ -80,6 +97,17 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     {
         return false;
     }
+    if !wire.teleport.is_valid() {
+        return false;
+    }
+    component.teleport.generation = wire.teleport.generation;
+    component.teleport.accumulated_yaw = wire.teleport.accumulated_yaw;
+    component.teleport.last_teleporter = wire.teleport.last_teleporter;
+    component.teleport.arrival_latches.clear();
+    component
+        .teleport
+        .arrival_latches
+        .extend(wire.teleport.latches());
     component.velocity = Vec3::new(wire.velocity[0], wire.velocity[1], wire.velocity[2]);
     component.knockback_velocity = Vec3::from_array(wire.knockback_velocity);
     component.push_velocity = Vec3::from_array(wire.push_velocity);
@@ -317,6 +345,7 @@ mod tests {
 
     fn sample_wire_state() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
             velocity: [1.0, -2.0, 3.5],

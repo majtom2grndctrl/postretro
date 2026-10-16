@@ -71,6 +71,9 @@ fn direct_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> 
             "reads per-player slot `{slot}` without an owner, which outside the event's condition names no player; read it with `byPlayer(on.player)`"
         ));
     }
+    if crate::teleporter_system::reaction_uses_teleporter(descriptor) {
+        return Some("uses `on.teleporter`, which only teleport events publish".to_string());
+    }
     if let Some(token) = trigger_token(descriptor) {
         return Some(format!("uses `{token}`, which only trigger events publish"));
     }

@@ -72,6 +72,8 @@ pub(crate) struct LeadSources<'a> {
     /// dilated or not.
     pub visible: &'a [Vec<u32>],
     pub cell_count: usize,
+    /// Offline source→arrival origins per camera cell; empty on maps without teleporters.
+    pub arrival_origins: &'a [Vec<(u32, u32)>],
 }
 
 /// The baked relation: CSR over every cell id (non-camera cells have empty
@@ -114,8 +116,19 @@ pub(crate) fn build_lead_map(
             |(stamp, generation), &camera| {
                 *generation += 1;
                 let mut entries = Vec::new();
-                let origins = std::iter::once((camera, 0))
-                    .chain(sources.neighbors.within_distances(camera, max_lead_fixed));
+                let mut origins: Vec<_> = std::iter::once((camera, 0))
+                    .chain(sources.neighbors.within_distances(camera, max_lead_fixed))
+                    .chain(
+                        sources
+                            .arrival_origins
+                            .get(camera as usize)
+                            .into_iter()
+                            .flatten()
+                            .copied(),
+                    )
+                    .collect();
+                origins.sort_unstable_by_key(|&(origin, lead)| (lead, origin));
+                origins.dedup();
                 for (origin, lead) in origins {
                     let reached = std::iter::once(origin)
                         .chain(sources.visible[origin as usize].iter().copied());

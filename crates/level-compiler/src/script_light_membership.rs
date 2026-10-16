@@ -125,7 +125,20 @@ pub(crate) fn map_members_from_map(
                 .map(|(_, raw)| raw.split_whitespace().map(str::to_owned).collect())
                 .unwrap_or_default(),
         });
-    movers.chain(triggers).chain(spawners).collect()
+    let teleporters = entities
+        .iter()
+        .filter(|entity| entity.classname == "trigger_teleport")
+        .map(|entity| MapMember {
+            kind: MapMemberKind::Teleporter,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
+    movers
+        .chain(triggers)
+        .chain(spawners)
+        .chain(teleporters)
+        .collect()
 }
 
 /// Validate and apply script-derived membership before namespaces are formed.

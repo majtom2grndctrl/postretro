@@ -4,6 +4,8 @@
 use glam::{Vec2, Vec3};
 
 mod carry;
+mod teleport;
+pub use teleport::TeleportEvent;
 mod dispatch;
 mod environment;
 mod intents;
@@ -87,7 +89,7 @@ pub struct MovementStateEdge {
 
 /// Events the movement tick emits for the same-frame dispatch layer to fire
 /// into the reaction registry.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MovementEvents {
     pub landed: bool,
     pub jumped: bool,
@@ -96,6 +98,7 @@ pub struct MovementEvents {
     /// the active fluid table; `None` on a tick with no swim edge. Lets the
     /// swim enter and exit sounds name their fluid after the pawn is dry.
     pub swim_fluid: Option<u16>,
+    pub teleport: Option<TeleportEvent>,
 }
 
 impl MovementEvents {
@@ -223,6 +226,29 @@ pub fn tick_with_immersion(
     environment: EnvironmentView<'_>,
     dt: f32,
     position: Vec3,
+) -> (Vec3, MovementEvents, f32) {
+    let world = collision.combined_collision();
+    tick_with_immersion_and_armed(
+        component,
+        input,
+        collision,
+        environment,
+        dt,
+        position,
+        |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+    )
+}
+
+/// Authority and prediction supply the installed armed state; replay uses the same path.
+#[allow(clippy::too_many_arguments)]
+pub fn tick_with_immersion_and_armed(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+    position: Vec3,
+    armed: impl FnMut(usize) -> bool,
 ) -> (Vec3, MovementEvents, f32) {
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
@@ -440,6 +466,14 @@ pub fn tick_with_immersion(
     // jump buffer down toward a silent drop if it expires before landing.
     advance_forgiveness(component, dt);
 
+    let current_pos = teleport::resolve(
+        component,
+        input,
+        &collision,
+        current_pos,
+        &mut events,
+        armed,
+    );
     (current_pos, events, resolved_environment.immersion)
 }
 
@@ -477,7 +511,7 @@ mod tests {
     const ENV: EnvironmentView<'static> = EnvironmentView::level_only(GRAVITY);
 
     /// Canonical player descriptor mirroring `content/dev/scripts/player.ts`.
-    fn canonical_descriptor() -> PlayerMovementDescriptor {
+    pub(super) fn canonical_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             sounds: None,
             capsule: CapsuleParams {
@@ -2810,7 +2844,7 @@ mod tests {
         desc
     }
 
-    fn idle_input() -> MovementInput {
+    pub(super) fn idle_input() -> MovementInput {
         MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -5618,6 +5652,7 @@ mod tests {
                 },
             ],
             swim_fluid: None,
+            teleport: None,
         };
         let mut addresses = Vec::new();
         events.append_named_events(&mut addresses);

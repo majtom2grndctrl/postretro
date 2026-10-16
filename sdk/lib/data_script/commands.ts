@@ -71,7 +71,7 @@ export interface PlayerGroup {
 }
 
 /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@player";
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
 
 /**
  * One subject-token command: a primitive descriptor whose `target` names the
@@ -87,6 +87,7 @@ export type SubjectTokenCommand = {
 
 declare const activatorsTargetBrand: unique symbol;
 declare const triggerTargetBrand: unique symbol;
+declare const teleporterTargetBrand: unique symbol;
 declare const playerTargetBrand: unique symbol;
 
 /** The pawns that caused the current trigger edge. Legal only before any `wait`. */
@@ -117,6 +118,12 @@ export interface PlayerTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
+}
+
+export interface TeleporterTarget {
+  readonly [teleporterTargetBrand]: true;
+  arm(): SubjectTokenCommand;
+  disarm(): SubjectTokenCommand;
 }
 
 /** The trigger volume that fired the current edge. Legal only before any `wait`. */
@@ -184,3 +191,11 @@ const triggerTarget = {
 };
 Object.defineProperty(triggerTarget, "__wire", { value: "@trigger", enumerable: false });
 export const TRIGGER_TARGET = Object.freeze(triggerTarget) as unknown as TriggerTarget;
+
+const teleporterCommand = tokenCommand("@teleporter");
+const teleporterTarget = {
+  arm: () => teleporterCommand("armTeleporter", {}),
+  disarm: () => teleporterCommand("disarmTeleporter", {}),
+};
+Object.defineProperty(teleporterTarget, "__wire", { value: "@teleporter", enumerable: false });
+export const TELEPORTER_TARGET = Object.freeze(teleporterTarget) as unknown as TeleporterTarget;

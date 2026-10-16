@@ -162,7 +162,14 @@ local TRIGGER_TARGET = opaqueTarget("on.trigger", {
   end,
 }, "@trigger")
 
+local teleporterCommand = tokenCommand("@teleporter")
+local TELEPORTER_TARGET = opaqueTarget("on.teleporter", {
+  arm = function(_self) return teleporterCommand("armTeleporter", {}) end,
+  disarm = function(_self) return teleporterCommand("disarmTeleporter", {}) end,
+}, "@teleporter")
+
 return {
+  TELEPORTER_TARGET = TELEPORTER_TARGET,
   builders = CommandsSdk,
   ACTIVATORS_TARGET = ACTIVATORS_TARGET,
   PLAYER_TARGET = PLAYER_TARGET,

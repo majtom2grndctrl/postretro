@@ -63,6 +63,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::HitVolume,
     ComponentKind::MapOrdinal,
     ComponentKind::Immersion,
+    ComponentKind::Teleporter,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -98,6 +99,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::HitVolume => "hit_volume",
         ComponentKind::MapOrdinal => "map_ordinal",
         ComponentKind::Immersion => "immersion",
+        ComponentKind::Teleporter => "teleporter",
     }
 }
 
@@ -424,6 +426,15 @@ mod tests {
             ComponentKind::MapOrdinal => ComponentValue::MapOrdinal(
                 postretro_entities::components::map_ordinal::MapOrdinal(0),
             ),
+            ComponentKind::Teleporter => {
+                ComponentValue::Teleporter(postretro_entities::TeleporterComponent {
+                    index: 0,
+                    source_entity: 0,
+                    armed: true,
+                    arrival_sound: String::new(),
+                    on_teleport: String::new(),
+                })
+            }
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
             ),

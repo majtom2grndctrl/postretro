@@ -123,8 +123,8 @@ pub use postretro_entities::data_descriptors::{
     GroupTarget, InventoryDescriptor, LocomotionDescriptor, MeshDescriptor, NamedReaction,
     PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
     ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
-    SequenceTarget, TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
-    VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
+    SequenceTarget, TeleportEventDescriptor, TriggerEventDescriptor, TriggerPoolArm,
+    TriggerPoolDescriptor, VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{

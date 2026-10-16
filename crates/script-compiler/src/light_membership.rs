@@ -38,6 +38,11 @@ const SDK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/lib");
 /// `MEMBER_WRAPPER_SOURCES`. `(wrapper global, source, path)`.
 const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
     (
+        "wrapTeleporterEntity",
+        include_str!("../../../sdk/lib/entities/teleporters.luau"),
+        "sdk/lib/entities/teleporters.luau",
+    ),
+    (
         "wrapLightEntity",
         include_str!("../../../sdk/lib/entities/lights.luau"),
         "sdk/lib/entities/lights.luau",
@@ -1028,6 +1033,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "fog_volume",
     "kinematic_mover",
     "trigger_volume",
+    "teleporter",
     "spawner",
     "particle",
     "sprite_visual",
@@ -1335,9 +1341,11 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 /// Mirrors the runtime parser's `validate_subject_token_primitive`.
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
+    let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
     match target {
-        "@activators" | "@player" => !arms_a_trigger,
+        "@activators" | "@player" => !arms_a_trigger && !arms_a_teleporter,
         "@trigger" => arms_a_trigger,
+        "@teleporter" => arms_a_teleporter,
         _ => false,
     }
 }
@@ -2354,11 +2362,11 @@ mod tests {
         assert_eq!(baseline_js, baseline_luau);
 
         let sdk_js = evaluate(
-            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(),"),
+            &quickjs("on.activators.grantHealth(5), on.trigger.disarm(), on.teleporter.arm(),"),
             "fixture.ts",
         );
         let sdk_luau = evaluate(
-            &luau("on.activators:grantHealth(5), on.trigger:disarm(),"),
+            &luau("on.activators:grantHealth(5), on.trigger:disarm(), on.teleporter:arm(),"),
             "fixture.luau",
         );
         assert_eq!(sdk_js, baseline_js);

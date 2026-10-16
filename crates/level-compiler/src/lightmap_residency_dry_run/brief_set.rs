@@ -78,6 +78,7 @@ impl BriefSetSources<'_> {
             neighbors: self.neighbors,
             visible: self.visible,
             cell_count: self.cell_count,
+            arrival_origins: &[],
         }
     }
 }

@@ -355,6 +355,8 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "applyDamage"
             | "armTrigger"
             | "disarmTrigger"
+            | "armTeleporter"
+            | "disarmTeleporter"
             | "setState"
             | "addSlot"
             | "setAnimationState"

@@ -172,7 +172,7 @@ fn compile_adjacent_stages(
         portals.portals[2].vertex_count = 2;
     }
     let control = BakeControl::unrestricted();
-    let id51 = cell_residency_set_bake_cached(&cells, &portals, &locator, cache, &control)?;
+    let id51 = cell_residency_set_bake_cached(&cells, &portals, &locator, None, cache, &control)?;
     assert_eq!(id51.is_some(), usable_portals);
     let layers =
         gate_runtime_pool_with_floor(&prepared, !static_lights.is_empty(), id51.is_some(), 0)?;

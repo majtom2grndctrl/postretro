@@ -28,7 +28,9 @@ use postretro_entities::{EntityRegistry, Transform};
 
 use super::NetworkIdAllocator;
 use super::command_queue::{INPUT_BUFFER_TARGET, MovementOwners};
-use super::interpolation::{RemoteInterpolationBuffer, TransformSample};
+use super::interpolation::{
+    ObservedTeleport, RemoteInterpolationBuffer, TeleportSample, TransformSample,
+};
 
 /// Delay, in host authoritative ticks, between a client pawn's newest recorded pose
 /// and the pose the host presents. Reuses the input playout margin (`INPUT_BUFFER_TARGET`,
@@ -63,6 +65,13 @@ pub fn record_client_pawn_poses(
         buffer.record(
             network_id,
             TransformSample {
+                teleport: registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()
+                    .map(|movement| TeleportSample {
+                        generation: movement.teleport.generation,
+                        last_teleporter: movement.teleport.last_teleporter,
+                    }),
                 server_tick: tick,
                 transform: *transform,
                 intrinsic_velocity: None,
@@ -70,6 +79,19 @@ pub fn record_client_pawn_poses(
             },
         );
     }
+}
+
+/// Drain once after the frame's authoritative ticks and before the audio step.
+/// Multiple generation changes of one pawn coalesce to its last observed sample.
+pub fn take_client_pawn_teleports(
+    buffer: &mut RemoteInterpolationBuffer,
+    owners: &MovementOwners,
+    allocator: &NetworkIdAllocator,
+) -> Vec<ObservedTeleport> {
+    buffer.take_observed_teleports(|network_id| {
+        let pawn = allocator.entity_for_network_id(network_id)?;
+        owners.owner_of(pawn).map(|_| pawn)
+    })
 }
 
 /// Rewrite each connected-client pawn's registry `Transform` from the buffer's newest
@@ -195,6 +217,70 @@ mod tests {
         assert!((presentation_target_tick(103, 0.0, 2) - 100.0).abs() < 1e-9);
         assert!((presentation_target_tick(103, 0.5, 2) - 100.5).abs() < 1e-9);
         assert!((presentation_target_tick(103, 1.0, 2) - 101.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn teleport_host_observer_cuts_and_coalesces_cues_at_authoritative_sample_points() {
+        use postretro_foundation::PlayerMovementComponent;
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::default();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::default();
+        let (pawn, _) = spawn_owned_pawn(
+            &mut registry,
+            &mut owners,
+            &mut allocator,
+            7,
+            pose_at(0.0, 0.0),
+        );
+        registry
+            .set_component(
+                pawn,
+                crate::predict_reconcile_harness_test_fixtures::component(),
+            )
+            .unwrap();
+        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 0);
+        assert!(take_client_pawn_teleports(&mut buffer, &owners, &allocator).is_empty());
+        for (tick, generation, last, x) in [(1, 255, 0, 100.0), (2, 0, 1, 200.0)] {
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .clone();
+            movement.teleport.generation = generation;
+            movement.teleport.last_teleporter = last;
+            registry.set_component(pawn, movement).unwrap();
+            registry.set_component(pawn, pose_at(x, 0.5)).unwrap();
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+        }
+        // Host delay still displays the source, while cues report the accepted
+        // authoritative arrival sample. No entity anchor can substitute for it.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 3, 0.5);
+        assert!(
+            registry
+                .get_component::<Transform>(pawn)
+                .unwrap()
+                .position
+                .length()
+                < 1.0e-6
+        );
+        let cues = take_client_pawn_teleports(&mut buffer, &owners, &allocator);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].entity_id, pawn);
+        assert_eq!(cues[0].generation, 0);
+        assert_eq!(cues[0].last_teleporter, 1);
+        assert!((cues[0].arrival.x - 200.0).abs() < 1.0e-6);
+        assert!(take_client_pawn_teleports(&mut buffer, &owners, &allocator).is_empty());
+        restore_client_pawn_authoritative_poses(&buffer, &owners, &allocator, &mut registry);
+        assert!(
+            (registry
+                .get_component::<Transform>(pawn)
+                .unwrap()
+                .position
+                .x
+                - 200.0)
+                .abs()
+                < 1.0e-6
+        );
     }
 
     #[test]

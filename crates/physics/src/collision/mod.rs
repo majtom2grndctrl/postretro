@@ -80,6 +80,7 @@ impl CollisionMeshError {
 #[derive(Debug)]
 pub struct CollisionWorld {
     pub(crate) mesh: TriMesh,
+    pub teleporters: crate::teleporters::Teleporters,
 }
 
 impl CollisionWorld {
@@ -89,6 +90,7 @@ impl CollisionWorld {
     pub fn from_triangles_for_test(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
         Self {
             mesh: TriMesh::new(vertices, triangles).expect("test collision mesh must be valid"),
+            teleporters: Default::default(),
         }
     }
 
@@ -115,6 +117,7 @@ impl CollisionWorld {
         Self {
             mesh: TriMesh::new(placeholder_points, placeholder_indices)
                 .expect("the one-triangle placeholder mesh is always valid"),
+            teleporters: Default::default(),
         }
     }
 
@@ -138,7 +141,10 @@ impl CollisionWorld {
 
         let triangles: Vec<[u32; 3]> = world.indices.as_chunks::<3>().0.to_vec();
         if triangles.is_empty() {
-            return Ok(Self::new());
+            let mut collision = Self::new();
+            collision.teleporters =
+                crate::teleporters::Teleporters::from_section(&world.teleporters);
+            return Ok(collision);
         }
 
         let points: Vec<Vec3> = world
@@ -148,6 +154,7 @@ impl CollisionWorld {
             .collect();
         Ok(Self {
             mesh: TriMesh::new(points, triangles).map_err(CollisionMeshError::from_parry)?,
+            teleporters: crate::teleporters::Teleporters::from_section(&world.teleporters),
         })
     }
 
@@ -634,4 +641,21 @@ mod tests {
             "a zero-length sightline is never considered clear"
         );
     }
+}
+
+/// Exact arrival clearance: checks the current capsule without grounding or moving it.
+pub fn capsule_fits_combined(
+    world: &moving::CombinedCollisionWorld<'_>,
+    position: Vec3,
+    capsule: &postretro_foundation::CapsuleParams,
+) -> bool {
+    let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
+    intersection_test(
+        &Pose::from_translation(position),
+        &shape,
+        &Pose::IDENTITY,
+        &world.static_world.mesh,
+    )
+    .is_ok_and(|hit| !hit.intersecting)
+        && moving::deepest_mover_penetration(world.movers, world.poses, position, &shape).is_none()
 }

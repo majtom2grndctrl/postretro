@@ -406,7 +406,7 @@ fn a_derived_centroid_within_the_clearance_of_a_wall_moves_clear_and_is_kept() {
     assert_eq!(classifier.fault(p), None);
     assert_eq!(
         classifier.fault(centroid),
-        Some(PointFault::InSolid),
+        Some(PointFault::Crowded),
         "crowded where it started"
     );
     capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
@@ -633,6 +633,40 @@ fn an_offset_point_in_a_wall_drops_and_one_just_beside_it_moves_clear() {
     let p = kept_clear("16.5 0").expect("a point clear of the wall is kept");
     assert!((p.z - engine([144.5, 0.0, 0.0]).z).abs() < 1e-5, "{p}");
     capture.assert_not_logged(Level::Warn, "[ReflectionProbes]");
+}
+
+// A point beside a wall, closer than the clearance, whose move off it would
+// leave its box, drops; it is in open space, so its warning says it cannot
+// clear the wall rather than that it is in solid.
+#[test]
+fn an_offset_point_that_cannot_clear_a_wall_within_its_box_drops_saying_so() {
+    let capture = LogCapture::start();
+    // The block of the test above; the point 0.5 mm east of its east face,
+    // x = 144, and the box's east wall 2.5 mm past the point, short of the
+    // 1 cm move.
+    let block = box_brush([112.0, 112.0, 32.059], [144.0, 144.0, 192.0]);
+    let fixture = PlacementFixture::compile(
+        &room_with(&[block]),
+        &[
+            water(&[([64.0, 64.0, 0.0], [192.0, 192.0, 32.0])]),
+            reflection_volume(
+                "\"_capture_offset\" \"16.02 0\"",
+                [48.0, 48.0, 0.0],
+                [144.1, 208.0, 96.0],
+            ),
+        ],
+    );
+    let probes = fixture.place().unwrap();
+    assert!(probes.iter().all(|p| p.source_entity != 2), "{probes:?}");
+    capture.assert_logged_once(Level::Warn, "entity 2 'reflection_volume' capture point");
+    capture.assert_logged_once(
+        Level::Warn,
+        "is too close to a wall to move clear of it within its box and over its water; dropped",
+    );
+    // Only the derived probe its faces fall to, whose point is inside the
+    // block, is in solid.
+    capture.assert_logged_once(Level::Warn, "derived probe of fluid entity 1");
+    capture.assert_logged_once(Level::Warn, "is in solid; dropped");
 }
 
 // Acceptance row 5, authored half of the in-fluid and outside-hull drops:

@@ -518,16 +518,21 @@ fn fluid_reflection_mirror(view: vec3<f32>, outward: vec3<f32>) -> vec3<f32> {
     return outward * (2.0 * dot(view, outward)) - view;
 }
 
-// The reflected ray kept in the upper hemisphere, azimuth kept: a pixel
-// cell's tilt can mirror a grazing view below the water.
+// The reflected ray kept in the upper hemisphere: unchanged at or above the
+// floor, else lifted to it and renormalized, azimuth kept. A pixel cell's
+// tilt, or a flat mirror's grazing view, can reach the floor.
 fn fluid_reflection_above_horizon(ray: vec3<f32>) -> vec3<f32> {
-    return normalize(vec3<f32>(ray.x, max(ray.y, FLUID_REFLECTION_RAY_MIN_Y), ray.z));
+    if ray.y >= FLUID_REFLECTION_RAY_MIN_Y {
+        return ray;
+    }
+    return normalize(vec3<f32>(ray.x, FLUID_REFLECTION_RAY_MIN_Y, ray.z));
 }
 
-// The runtime slab test: where the reflected ray from an origin inside the
-// projection box, or on it, leaves the box. A component near zero is nudged
-// off it rather than divided by. A slab whose exit lies at or behind the
-// origin (an origin on a face the ray leaves through) does not stop the ray.
+// The runtime slab test: where the reflected ray leaves the projection box.
+// A component near zero is nudged off it rather than divided by. The origin
+// may lie past the box (water outside an authored box, below a derived
+// box's floor); a slab whose exit lies at or behind it (past a face the ray
+// leaves through) does not stop the ray, which ends at another slab's exit.
 fn fluid_reflection_box_hit(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>,
                             box_max: vec3<f32>) -> vec3<f32> {
     let nudged = select(vec3<f32>(FLUID_REFLECTION_DIRECTION_EPSILON),
@@ -679,7 +684,7 @@ fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
 // box projection corrected against the probe's stored per-texel distance.
 // K sphere steps then M false-position estimates, both constant bounds; at
 // most 2 + K + M - 1 distance taps, beside the capture-shadow fade's two to
-// four, which depend on the search's start alone. Its state lives only inside
+// four, which depend on the origin alone. Its state lives only inside
 // `fluid_reflection_search`, which runs to its end before the colour tap and
 // the light-share loop, so only the lookup and the weight outlive it.
 const FLUID_REFLECTION_SEARCH_STEPS: u32 = 3u;
@@ -778,50 +783,42 @@ fn fluid_reflection_shadow_fade(origin: vec3<f32>, capture_point: vec3<f32>, til
     return smoothstep(0.0, angle, edge);
 }
 
-// The search along unit `ray` from `origin`, started from the origin clamped
-// into the probe's box: an origin past a side face starts on it, and a start
-// the clamp moved there lies on what the capture saw (a derived box's wall),
-// so within the depth margin it reads as on that surface, never behind it.
-// Two independent taps (start, box hit); a start behind the stored surface is
-// in the capture shadow, drawing nothing past the depth margin. Else the fade
-// beside the shadow weighs the term, and up to K sphere steps close a
-// bracket, or the box hit does, or nothing stored lies inside the box (the
-// box hit, plain box projection); then M false-position estimates on the
-// bracket.
+// The search along unit `ray` from `origin` (the fragment, or the pixel
+// cell's point), inside the probe's box or past it: two independent taps
+// (origin, box hit); an origin behind the stored surface is in the capture
+// shadow, drawing nothing past the depth margin. Else the fade beside the
+// shadow weighs the term, and up to K sphere steps close a bracket, or the
+// box hit does, or nothing stored lies inside the box (the box hit, plain
+// box projection); then M false-position estimates on the bracket.
 fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>,
                            box_max: vec3<f32>, capture_point: vec3<f32>, tile: vec2<u32>,
                            layer: u32) -> FluidReflectionSearch {
-    let start = clamp(origin, box_min, box_max);
-    let on_side = start.x != origin.x || start.z != origin.z;
-    let box_hit = fluid_reflection_box_hit(start, ray, box_min, box_max);
-    let t_box = dot(box_hit - start, ray);
-    let h_start = fluid_reflection_search_h(start, capture_point, tile, layer);
+    let box_hit = fluid_reflection_box_hit(origin, ray, box_min, box_max);
+    let t_box = dot(box_hit - origin, ray);
+    let h_origin = fluid_reflection_search_h(origin, capture_point, tile, layer);
     let h_box = fluid_reflection_search_h(box_hit, capture_point, tile, layer);
-    let h_origin = select(h_start, min(h_start, 0.0),
-        on_side && h_start < FLUID_REFLECTION_SHADOW_MARGIN);
     if h_origin >= FLUID_REFLECTION_SHADOW_MARGIN {
         return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), 0.0);
     }
-    let weight = fluid_reflection_shadow_fade(start, capture_point, tile, h_origin, layer)
+    let weight = fluid_reflection_shadow_fade(origin, capture_point, tile, h_origin, layer)
         * (1.0 - smoothstep(0.0, FLUID_REFLECTION_SHADOW_MARGIN, h_origin));
-    if h_origin >= 0.0 && !on_side {
+    if h_origin >= 0.0 {
         return FluidReflectionSearch(fluid_reflection_lookup(box_hit, capture_point, ray), weight);
     }
 
-    // Front end of the bracket: the last sample in front of a surface (or,
-    // for a start on a side face, on it). The back end starts at the box hit
-    // and moves to the first sample behind one.
+    // Front end of the bracket: the last sample in front of a surface. The
+    // back end starts at the box hit and moves to the first sample behind one.
     var t_front = 0.0;
     var h_front = h_origin;
     var t_back = t_box;
     var h_back = h_box;
-    let from_capture = start - capture_point;
+    let from_capture = origin - capture_point;
     let b = dot(from_capture, ray);
     for (var i: u32 = 0u; i < FLUID_REFLECTION_SEARCH_STEPS; i = i + 1u) {
         if h_front <= -1.0 {
             break;
         }
-        let q = start + ray * t_front;
+        let q = origin + ray * t_front;
         let toward = q - capture_point;
         let level = vec3<f32>(toward.x, max(toward.y, 0.0), toward.z);
         let radius = length(level) / (h_front + 1.0);
@@ -833,7 +830,7 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
         if t_next <= t_front || t_next >= t_box {
             break;
         }
-        let h_next = fluid_reflection_search_h(start + ray * t_next, capture_point, tile, layer);
+        let h_next = fluid_reflection_search_h(origin + ray * t_next, capture_point, tile, layer);
         if h_next >= 0.0 {
             t_back = t_next;
             h_back = h_next;
@@ -857,7 +854,7 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
         if refinement + 1u == FLUID_REFLECTION_SEARCH_REFINEMENTS {
             break;
         }
-        let h_hit = fluid_reflection_search_h(start + ray * t_hit, capture_point, tile, layer);
+        let h_hit = fluid_reflection_search_h(origin + ray * t_hit, capture_point, tile, layer);
         if h_hit >= 0.0 {
             t_back = t_hit;
             h_back = h_hit;
@@ -866,7 +863,7 @@ fn fluid_reflection_search(origin: vec3<f32>, ray: vec3<f32>, box_min: vec3<f32>
             h_front = h_hit;
         }
     }
-    return FluidReflectionSearch(fluid_reflection_lookup(start + ray * t_hit, capture_point, ray),
+    return FluidReflectionSearch(fluid_reflection_lookup(origin + ray * t_hit, capture_point, ray),
         weight);
 }
 
@@ -881,7 +878,7 @@ struct FluidReflectionSample {
 // The search runs first and ends; only its lookup and weight reach the colour
 // tap and the ratio loop. The layer comes from the face's probe index alone,
 // and the distance taps read that same layer; the lookup picks only the texel
-// and the share. The mirrored ray is kept above the horizon first.
+// and the share. A mirrored ray at the horizon is lifted above it first.
 fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32>,
                            outward: vec3<f32>) -> FluidReflectionSample {
     let ray = fluid_reflection_above_horizon(fluid_reflection_mirror(view, outward));
@@ -897,8 +894,9 @@ fn fluid_reflection_sample(probe: u32, world_position: vec3<f32>, view: vec3<f32
 
 // Reflection style. Mirrors `postretro_render_cpu::fluid_surface::reflection_style`:
 // smooth reflects the flat face per fragment; pixel reflects once per water
-// texel cell, from the cell's world-space centre about a normal tilted by the
-// cell's displayed offset, so every fragment of a cell reads one sample.
+// texel cell, from the cell's world-space centre (held to the probe's box at
+// a wall rim) about a normal tilted by the cell's displayed offset, so every
+// fragment of a cell reads one sample.
 // Unlike the warp, this look is the author's (`render.reflections.style`).
 const FLUID_REFLECTION_STYLE_PIXEL: u32 = 0u;
 const FLUID_REFLECTION_STYLE_SMOOTH: u32 = 1u;
@@ -936,6 +934,25 @@ fn fluid_reflection_cell_centre(texel_uv: vec2<f32>, world_position: vec3<f32>,
     return world_position + axes.u * to_centre.x + axes.v * to_centre.y;
 }
 
+// The cell centre pulled back toward the probe's box along its horizontal
+// overshoot o past it: whole up to h, half the cell's diagonal, then
+// tapering to nothing at 2h, min(|o|, max(0, 2h - |o|)). A cell straddling a
+// wall the box fits starts on the wall's face, not behind the stored wall; a
+// cell a full cell or more outside the box stays put.
+fn fluid_reflection_cell_within_box(centre: vec3<f32>, axes: FluidTexelAxes,
+                                    box_min: vec3<f32>, box_max: vec3<f32>) -> vec3<f32> {
+    let past = centre - clamp(centre, box_min, box_max);
+    let overshoot = vec3<f32>(past.x, 0.0, past.z);
+    let half_cell = 0.5 * sqrt(dot(axes.u, axes.u) + dot(axes.v, axes.v));
+    let length_past = length(overshoot);
+    let pull_length = min(length_past, max(2.0 * half_cell - length_past, 0.0));
+    var pull = vec3<f32>(0.0);
+    if length_past > 0.0 {
+        pull = overshoot * (pull_length / length_past);
+    }
+    return centre - pull;
+}
+
 fn fluid_reflection_unit_or_zero(v: vec3<f32>) -> vec3<f32> {
     let length_sq = dot(v, v);
     return select(vec3<f32>(0.0), v * inverseSqrt(length_sq), length_sq > 0.0);
@@ -949,15 +966,18 @@ fn fluid_reflection_cell_normal(outward: vec3<f32>, axes: FluidTexelAxes, offset
 }
 
 // Where the fragment reflects from, and about which normal. The pixel
-// offset is the albedo's own shimmer and rings, never drift or the wave.
+// offset is the albedo's own shimmer and rings, never drift or the wave; the
+// pixel centre is held to the probe's box at a wall rim.
 fn fluid_reflection_point(style: u32, texel_uv: vec2<f32>, world_position: vec3<f32>,
                           outward: vec3<f32>, axes: FluidTexelAxes, time: f32,
-                          texels_per_pixel: f32) -> FluidReflectionPoint {
+                          texels_per_pixel: f32, box_min: vec3<f32>,
+                          box_max: vec3<f32>) -> FluidReflectionPoint {
     if style == FLUID_REFLECTION_STYLE_SMOOTH {
         return FluidReflectionPoint(world_position, outward);
     }
     let offset = fluid_displayed_offset(vec2<i32>(floor(texel_uv)), time, texels_per_pixel);
-    return FluidReflectionPoint(fluid_reflection_cell_centre(texel_uv, world_position, axes),
+    let centre = fluid_reflection_cell_centre(texel_uv, world_position, axes);
+    return FluidReflectionPoint(fluid_reflection_cell_within_box(centre, axes, box_min, box_max),
         fluid_reflection_cell_normal(outward, axes, offset));
 }
 
@@ -1167,7 +1187,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
     let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
-        outward, axes, uniforms.time, texels_per_pixel);
+        outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
+        fluid_probes.probes[in.probe].box_max);
     let view = normalize(uniforms.camera_position - point.position);
     let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
     let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight;

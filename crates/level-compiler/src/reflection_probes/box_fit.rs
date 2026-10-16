@@ -114,20 +114,29 @@ const SIDES: [(usize, f64); 5] = [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0), (1, 
 const CEILING: usize = 4;
 
 /// The box a face's water sees, from `origin` just above it: the room shell.
-/// Walls vote by azimuth column: walking a column up from the horizon, the
-/// last wall its rays hit before its first ceiling-facing hit is the shell
-/// there, and each side takes the plane most columns vote for (ties to the
-/// farther). A wall a column meets only above a ceiling hit is ceiling
-/// detail, such as the side of a beam spanning the room or the riser of a
-/// tray ceiling, and is no shell, unless another column meets the same plane
-/// below any ceiling: then it is a wall with an opening under it, and a
-/// column seeing through a doorway tops out on the lintel. A sunken pool's
-/// column tops out on the room wall above its pit, and a column over a low
-/// prop on the wall beyond it, so none of them pulls the box off the room.
-/// The ceiling is the downward-facing plane the most sky ends on. A side
-/// nothing votes for falls back to the farthest point reached that way,
-/// misses counting where they leave the world bounds; the box is clamped to
-/// those bounds and always holds the origin.
+/// Walls vote by azimuth column, walking each column up from the horizon.
+/// Each wall hit tops the column in turn until its first ceiling-facing
+/// (downward) hit closes it. After that, a wall tops the column only when it
+/// lies farther out than the top, along the top's side: the side of a beam
+/// spanning the room, or the riser of a tray ceiling, is nearer than the
+/// room wall the column met below it, so it is ceiling detail and no shell;
+/// the room wall seen over a coping lip overhanging a sunken pool is farther
+/// than the pit wall met under the lip, so it tops the column although the
+/// lip's underside closed it. Then a column whose last wall lies on a plane
+/// another column met before its own first ceiling hit takes that last wall
+/// instead: the plane is a wall with an opening in it, so a column seeing
+/// through a doorway tops out on the lintel. An opening spanning a room's
+/// whole side leaves no column to meet its plane below a ceiling: it is a
+/// beam with a room beyond it, so the box reaches the far room's wall (the
+/// runtime's distance search still finds the lintel). A sunken pool's column
+/// tops out on the room wall above its pit, and a column over a low prop on
+/// the wall beyond it. Each side takes the plane most columns vote for (ties
+/// to the farther). The ceiling is the downward-facing plane the most sky
+/// ends on. A side nothing votes for falls back to the farthest point
+/// reached that way, misses counting where they leave the world bounds; the
+/// box is clamped to those bounds and always holds the origin. Rays run in
+/// their pinned order and every rule is a fixed comparison over them, so the
+/// box depends on nothing but the geometry.
 pub(crate) fn fit_box(
     tracer: &SceneTracer<'_>,
     origin: DVec3,
@@ -137,9 +146,10 @@ pub(crate) fn fit_box(
     let origin = bounds.clamp(origin);
     let reach = bounds.diagonal() as f32 + 1.0;
     let origin_f32 = origin.as_vec3();
-    // Per column: the last wall below its first ceiling hit, and the last
-    // wall at all.
+    // Per column: the wall that tops it, the last wall below its first
+    // ceiling hit, and the last wall at all.
     let mut column_top: [Option<(usize, f64)>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_open: [Option<(usize, f64)>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
     let mut column_last: [Option<(usize, f64)>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
     let mut column_closed = [false; FIT_AZIMUTHS];
     let mut ceiling: Vec<(f64, f64)> = Vec::new();
@@ -171,14 +181,22 @@ pub(crate) fn fit_box(
                 column_last[column] = wall;
                 if !column_closed[column] {
                     column_top[column] = wall;
+                    column_open[column] = wall;
+                } else if let Some((top_side, top)) = column_top[column] {
+                    // Past the ceiling, only a wall farther out than the top
+                    // replaces it; one on the top's plane or nearer is detail.
+                    let (axis, sign) = SIDES[top_side];
+                    if (point[axis] - top) * sign > FIT_PLANE_MERGE_M {
+                        column_top[column] = wall;
+                    }
                 }
             }
             _ => {}
         }
     }
-    // A plane some column meets below any ceiling is a wall.
+    // A plane some column meets below its first ceiling is a wall.
     let is_wall = |side: usize, coordinate: f64| {
-        column_top
+        column_open
             .iter()
             .flatten()
             .any(|&(s, c)| s == side && (c - coordinate).abs() < FIT_PLANE_MERGE_M)
@@ -326,6 +344,55 @@ mod tests {
         let water = -0.4;
         let fitted = fit(&geometry, DVec3::new(0.3, water + 0.002, -0.2));
         assert_box(fitted, [-6.0, water + 0.002, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// The pit of a 4 m pool sunk into a 12 m room, under a 0.2 m coping lip
+    /// overhanging the water 0.5 m on all four sides. Every column meets the
+    /// pit wall under the lip, then the lip's underside, so no column meets
+    /// the room wall before a ceiling hit; the room wall seen over the lip is
+    /// farther out than the pit wall, and the box reaches it.
+    #[test]
+    fn fit_box_of_a_sunken_pool_under_an_overhanging_lip_reaches_the_room() {
+        let (lo, hi) = (Vec3::new(-6.0, -1.5, -6.0), Vec3::new(6.0, 6.0, 6.0));
+        let (pit, lip, coping) = (2.0, 1.5, 0.2);
+        let mut b = GeometryBuilder::default();
+        // Room shell above the floor line. Rays rising from the water never
+        // reach the floor, the lip's top or its outer edge, so none is built.
+        open_floor_room(&mut b, Vec3::new(lo.x, 0.0, lo.z), hi);
+        // The pit's walls, facing its centre.
+        let (plo, phi) = (Vec3::new(-pit, lo.y, -pit), Vec3::new(pit, 0.0, pit));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, -pit),
+            (Vec3::NEG_X, 0, pit),
+            (Vec3::Z, 2, -pit),
+            (Vec3::NEG_Z, 2, pit),
+        ] {
+            quad(&mut b, normal, rect(plo, phi, axis, value));
+        }
+        // The lip's underside over the water, as four strips.
+        let underside = |b: &mut GeometryBuilder, x0: f32, z0: f32, x1: f32, z1: f32| {
+            let r = rect(Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1), 1, 0.0);
+            quad(b, Vec3::NEG_Y, r);
+        };
+        underside(&mut b, -pit, -pit, pit, -lip);
+        underside(&mut b, -pit, lip, pit, pit);
+        underside(&mut b, -pit, -lip, -lip, lip);
+        underside(&mut b, lip, -lip, pit, lip);
+        // The lip's inner edge, facing the pool's centre.
+        let (elo, ehi) = (Vec3::new(-lip, 0.0, -lip), Vec3::new(lip, coping, lip));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, -lip),
+            (Vec3::NEG_X, 0, lip),
+            (Vec3::Z, 2, -lip),
+            (Vec3::NEG_Z, 2, lip),
+        ] {
+            quad(&mut b, normal, rect(elo, ehi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let water = -0.6;
+        let fitted = fit(&geometry, DVec3::new(0.3, water + 0.002, -0.2));
+        assert_box(fitted, [-6.0, water + 0.002, -6.0], [6.0, 6.0, 6.0]);
     }
 
     /// Two 6 m rooms joined by a 2 m doorway in the wall at x = 0: a pool in

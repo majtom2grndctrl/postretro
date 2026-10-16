@@ -121,7 +121,8 @@ impl ShareSums {
     /// that captured nothing in a channel stores 0 there. A light whose
     /// reference has a negative channel is never stored, since the section
     /// refuses a negative reference: it stays at reference, so the ratio is
-    /// unaffected, and counts toward the uncovered share.
+    /// unaffected, and counts toward the uncovered share. The stage logs such
+    /// lights once, through [`log_negative_references`].
     pub(crate) fn finish(&self, references: &[[f32; 3]]) -> ProbeShares {
         let measure = |sums: &LobeSums| sums.iter().flatten().sum::<f64>();
         let mut ranked: Vec<(u32, &LobeSums, f64)> = self
@@ -133,17 +134,7 @@ impl ShareSums {
         ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
         let animated_total: f64 = ranked.iter().map(|r| r.2).sum();
         let captured_total = measure(&self.captured);
-        let storable = |light: u32| {
-            let negative = reference(references, light).iter().any(|c| *c < 0.0);
-            if negative {
-                log::info!(
-                    "[ReflectionProbes] animated light {light} has a negative reference {:?}; \
-                     it stays at reference in reflections",
-                    reference(references, light)
-                );
-            }
-            !negative
-        };
+        let storable = |light: u32| !negative(reference(references, light));
 
         let mut entries = [ReflectionProbeLightShare::UNUSED; K];
         let mut totals = [0.0f32; K];
@@ -184,6 +175,24 @@ impl ShareSums {
             },
         }
     }
+}
+
+/// Log each animated light whose reference has a negative channel, once per
+/// stage, in roster order. No probe stores such a light (see
+/// [`ShareSums::finish`]), so this covers every probe and every rank.
+pub(crate) fn log_negative_references(references: &[[f32; 3]]) {
+    for (light, value) in references.iter().enumerate() {
+        if negative(*value) {
+            log::info!(
+                "[ReflectionProbes] animated light {light} has a negative reference {value:?}; \
+                 no probe stores it, so it stays at reference in reflections"
+            );
+        }
+    }
+}
+
+fn negative(reference: [f32; 3]) -> bool {
+    reference.iter().any(|c| *c < 0.0)
 }
 
 /// A light past the reference table adds nothing; the stage checks every
@@ -389,6 +398,47 @@ mod tests {
             (shares.report.covered - 0.5).abs() < 1e-6,
             "{:?}",
             shares.report
+        );
+    }
+
+    // Every negative-reference light is logged once, in roster order, the
+    // one ranked past the K stored included; ranking itself logs nothing.
+    #[test]
+    fn negative_reference_lights_log_once_each_in_roster_order() {
+        use postretro_test_log_capture::LogCapture;
+
+        let mut references = [[1.0f32; 3]; K + 2];
+        references[1] = [-0.25, 1.0, 1.0];
+        references[K + 1] = [1.0, 1.0, -1.0];
+        // Lower roster indices contribute more, so light K + 1 ranks last.
+        let animated: Vec<(u32, Vec3)> = (0..K as u32 + 2)
+            .map(|light| (light, Vec3::splat(10.0 - light as f32)))
+            .collect();
+        let capture = LogCapture::start();
+        let sums = sums_of(&[(Vec3::Y, Vec3::splat(100.0), animated)], &references);
+        for _ in 0..3 {
+            sums.finish(&references);
+        }
+        let negative_logs = || -> Vec<String> {
+            capture
+                .records()
+                .into_iter()
+                .filter(|r| r.message.contains("negative reference"))
+                .map(|r| r.message)
+                .collect()
+        };
+        assert_eq!(
+            negative_logs(),
+            Vec::<String>::new(),
+            "ranking logs nothing"
+        );
+        log_negative_references(&references);
+        let logged = negative_logs();
+        assert_eq!(logged.len(), 2, "{logged:?}");
+        assert!(logged[0].contains("animated light 1 "), "{logged:?}");
+        assert!(
+            logged[1].contains(&format!("animated light {} ", K + 1)),
+            "{logged:?}"
         );
     }
 

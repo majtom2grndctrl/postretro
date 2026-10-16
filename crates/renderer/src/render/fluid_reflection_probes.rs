@@ -58,7 +58,8 @@ pub(crate) fn fluid_probe_bind_group_layout_entries() -> [wgpu::BindGroupLayoutE
 }
 
 /// The section whose probes this renderer installs: render-cpu's usable one
-/// (some probe within the cap, a tile format the array uploads, colour and
+/// (some probe within the cap, a tile dimension and border the decoder
+/// accepts, one probe per layer, a tile format the array uploads, colour and
 /// distance payloads matching the header), mapped to a texture format. The
 /// loader refuses anything else; a hand-built section that slips past is
 /// dropped whole and reflects nothing rather than failing texture creation.

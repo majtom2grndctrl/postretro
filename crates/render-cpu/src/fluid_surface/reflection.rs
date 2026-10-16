@@ -9,9 +9,9 @@ use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT
 use postretro_level_format::octahedral::encode_unquantized_uv;
 use postretro_level_format::reflection_probes::{
     MAX_REFLECTION_PROBES, REFLECTION_PROBE_LIGHTS_PER_PROBE, REFLECTION_PROBE_LOBE_COUNT,
-    REFLECTION_PROBE_NO_LIGHT, ReflectionProbeLightShare, ReflectionProbeRecord,
-    ReflectionProbesSection, reflection_probe_distance_tile_bytes, reflection_probe_lobe_weights,
-    reflection_probe_tile_bytes,
+    REFLECTION_PROBE_NO_LIGHT, REFLECTION_PROBE_TILE_BORDER, ReflectionProbeLightShare,
+    ReflectionProbeRecord, ReflectionProbesSection, reflection_probe_distance_tile_bytes,
+    reflection_probe_lobe_weights, reflection_probe_tile_bytes,
 };
 
 use super::FluidFaceDriftMap;
@@ -155,6 +155,12 @@ impl FluidProbeGpu {
     }
 }
 
+/// Smallest and largest tile dimension the section 54 decoder accepts:
+/// one 4×4 block, and level-format's bound (private there; a test pins this
+/// copy to the decoder's refusals). Packing-only.
+const FLUID_PROBE_MIN_TILE_DIMENSION: u32 = 4;
+const FLUID_PROBE_MAX_TILE_DIMENSION: u32 = 1024;
+
 /// Whether the probe array can upload `section`'s colour tiles: BC6H at a
 /// tile dimension of whole 4×4 blocks, or RGBA16F.
 fn probe_tile_format_usable(section: &ReflectionProbesSection) -> bool {
@@ -165,14 +171,36 @@ fn probe_tile_format_usable(section: &ReflectionProbesSection) -> bool {
     }
 }
 
+/// Whether `section`'s tile header is one the decoder accepts and the
+/// shader can map: a dimension in the decoder's range and the octahedral
+/// border, so the tile keeps an interior to map directions onto.
+fn probe_tile_header_usable(section: &ReflectionProbesSection) -> bool {
+    (FLUID_PROBE_MIN_TILE_DIMENSION..=FLUID_PROBE_MAX_TILE_DIMENSION)
+        .contains(&section.tile_dimension)
+        && section.tile_border == REFLECTION_PROBE_TILE_BORDER
+}
+
+/// Whether every probe names its own array layer, below the probe count:
+/// each layer is one probe's tile in the arrays install builds. At most
+/// [`MAX_REFLECTION_PROBES`] probes, checked first; no allocation.
+fn probe_layers_distinct(section: &ReflectionProbesSection) -> bool {
+    let mut taken = [false; MAX_REFLECTION_PROBES];
+    let count = section.probes.len();
+    section.probes.iter().all(|probe| {
+        let layer = probe.layer as usize;
+        layer < count && !std::mem::replace(&mut taken[layer], true)
+    })
+}
+
 /// Whether the renderer can install `section`'s probes: some probe, no more
-/// than the cap, a colour format the probe array uploads, and colour and
-/// distance payloads of exactly one tile per probe. The loader already
-/// refuses anything else; a hand-built section past it reflects nothing
-/// rather than overrunning the table or failing texture creation. Every
-/// consumer reads this one answer (the table, the probe indices, the draw
-/// predicate's bound face, and the renderer's install), so no face draws or
-/// samples a probe that is not there.
+/// than the cap, a tile dimension and border the decoder accepts, every
+/// probe on its own layer below the probe count, a colour format the probe
+/// array uploads, and colour and distance payloads of exactly one tile per
+/// probe. The loader already refuses anything else; a hand-built section
+/// past it reflects nothing rather than overrunning the table or failing
+/// texture creation. Every consumer reads this one answer (the table, the
+/// probe indices, the draw predicate's bound face, and the renderer's
+/// install), so no face draws or samples a probe that is not there.
 pub fn usable_probe_section(
     section: Option<&ReflectionProbesSection>,
 ) -> Option<&ReflectionProbesSection> {
@@ -180,6 +208,8 @@ pub fn usable_probe_section(
         let probes = section.probes.len();
         probes > 0
             && probes <= MAX_REFLECTION_PROBES
+            && probe_tile_header_usable(section)
+            && probe_layers_distinct(section)
             && probe_tile_format_usable(section)
             && reflection_probe_tile_bytes(section.atlas_format, section.tile_dimension)
                 .is_some_and(|bytes| bytes * probes == section.tiles.len())
@@ -301,20 +331,30 @@ pub fn reflection_mirror(view: Vec3, outward: Vec3) -> Vec3 {
     outward * (2.0 * view.dot(outward)) - view
 }
 
-/// The reflected unit ray kept in the upper hemisphere: its height floored
-/// at [`FLUID_REFLECTION_RAY_MIN_Y`], renormalized, its azimuth kept. Smooth
-/// style's flat mirror never reaches the floor; a pixel-style cell's tilt
-/// can push a grazing view's ray below the water.
+/// The reflected unit ray kept in the upper hemisphere. A ray at or above
+/// [`FLUID_REFLECTION_RAY_MIN_Y`] returns unchanged, so every ray clear of
+/// the horizon searches exactly as mirrored; a lower one has its height
+/// raised to the floor and is renormalized, its azimuth kept. A pixel-style
+/// cell's tilt can mirror a grazing view below the water, and a flat
+/// mirror's grazing ray reaches the floor too (an eye 8 cm above the plane
+/// looking 80 m or more away).
 pub fn reflection_above_horizon(ray: Vec3) -> Vec3 {
-    Vec3::new(ray.x, ray.y.max(FLUID_REFLECTION_RAY_MIN_Y), ray.z).normalize()
+    if ray.y >= FLUID_REFLECTION_RAY_MIN_Y {
+        return ray;
+    }
+    Vec3::new(ray.x, FLUID_REFLECTION_RAY_MIN_Y, ray.z).normalize()
 }
 
-/// Where the reflected ray from `origin`, inside the projection box or on
-/// it, leaves the box: the runtime slab test, nearest exit over the three
-/// slabs. A component near zero is nudged off it rather than divided by. A
-/// slab whose exit lies at or behind the origin (an origin on a face the ray
-/// leaves through) does not stop the ray, which leaves through another; an
-/// origin on such faces of all three slabs keeps itself.
+/// Where the reflected ray from `origin` leaves the projection box: the
+/// runtime slab test, nearest exit over the three slabs. A component near
+/// zero is nudged off it rather than divided by. The origin may lie past
+/// the box (water outside an authored box; every fragment of a derived box,
+/// whose floor is the capture plane 2 mm above the water). A slab whose exit
+/// lies at or behind the origin (past a face the ray leaves through) does
+/// not stop the ray, which ends at another slab's exit, so an outward ray
+/// never collapses onto its origin; an inward ray, and one rising through a
+/// floor it starts below, exits every slab ahead. An origin past such faces
+/// of all three slabs keeps itself.
 pub fn reflection_box_hit(origin: Vec3, ray: Vec3, box_min: Vec3, box_max: Vec3) -> Vec3 {
     let nudged = Vec3::select(
         ray.cmplt(Vec3::ZERO),
@@ -512,10 +552,11 @@ pub struct FluidReflectionFragment {
 /// ([`fog_proximity`]), reaching 0 at the plane, so an eye bobbing there
 /// never flips the mirror.
 /// The reflection starts from the style's point (the fragment, or its texel
-/// cell's centre about the cell's tilted normal) and sees the eye from
-/// there, so every fragment of a pixel-style cell reads one search, one
-/// sample and one weight; the mirrored ray is kept above the horizon
-/// ([`reflection_above_horizon`]) before the search. `sample(layer, uv)`
+/// cell's centre, held to the probe's box at a wall rim, about the cell's
+/// tilted normal) and sees the eye from there, so every fragment of a
+/// pixel-style cell reads one search, one sample and one weight; a mirrored
+/// ray at the horizon is lifted above it ([`reflection_above_horizon`])
+/// before the search. `sample(layer, uv)`
 /// reads the colour tile and `distance(layer, uv)` the distance tile, both
 /// at level 0. The layer comes from the face's probe index alone.
 pub fn reflection_fragment(
@@ -538,6 +579,7 @@ pub fn reflection_fragment(
     ) {
         return surface;
     }
+    let probe = &probes[fragment.probe as usize];
     let point = reflection_point(
         fragment.style,
         fragment.texel_uv,
@@ -546,9 +588,10 @@ pub fn reflection_fragment(
         fragment.axes,
         fragment.time,
         fragment.texels_per_pixel,
+        Vec3::from(probe.box_min),
+        Vec3::from(probe.box_max),
     );
     let view = (fragment.camera - point.position).normalize_or_zero();
-    let probe = &probes[fragment.probe as usize];
     let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
     let search = reflection_search(
         point.position,

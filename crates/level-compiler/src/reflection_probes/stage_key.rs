@@ -151,6 +151,20 @@ pub(super) fn cache_key(
             .map(DeltaShVolumesSection::to_bytes)
             .unwrap_or_default(),
     );
+    // Id 45's descriptor table, which only the roster check reads: it runs
+    // on a miss, so a table that stops being the identity must miss. The
+    // rest of id 45 never reaches the capture and stays out of the key.
+    // Absent and empty differ, as the check skips an absent table.
+    let animated_direct_table: Vec<u8> = inputs
+        .animated_direct_sh
+        .map(|section| {
+            std::iter::once(section.animation_descriptor_indices.len() as u32)
+                .chain(section.animation_descriptor_indices.iter().copied())
+                .flat_map(u32::to_le_bytes)
+                .collect()
+        })
+        .unwrap_or_default();
+    section("animated direct descriptor table", &animated_direct_table);
     let mut descriptors = Vec::new();
     for d in &inputs.sh_volume.animation_descriptors {
         for v in [d.period, d.phase]

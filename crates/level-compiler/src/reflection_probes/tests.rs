@@ -8,6 +8,7 @@ use glam::Vec3;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightRecord, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_weight_maps::{
     AnimatedBlock, AnimatedLightWeightMapsSection, ChunkAtlasRect, TexelLight, TexelLightEntry,
 };
@@ -116,6 +117,7 @@ pub(super) struct Extras {
     pub sh: OctahedralShVolumeSection,
     pub delta: Option<DeltaShVolumesSection>,
     pub weight_maps: Option<AnimatedLightWeightMapsSection>,
+    pub animated_direct: Option<AnimatedDirectShDeltaVolumesSection>,
     pub alpha_lights: AlphaLightsSection,
     pub chunk_list: ChunkLightListSection,
     pub authored: Vec<MapReflectionVolume>,
@@ -127,6 +129,7 @@ impl Default for Extras {
             sh: OctahedralShVolumeSection::placeholder(),
             delta: None,
             weight_maps: None,
+            animated_direct: None,
             alpha_lights: AlphaLightsSection::default(),
             chunk_list: ChunkLightListSection::placeholder(),
             authored: Vec::new(),
@@ -218,6 +221,7 @@ pub(super) fn with_inputs<R>(
         sh_volume: &extras.sh,
         delta_sh: extras.delta.as_ref(),
         animated_weight_maps: extras.weight_maps.as_ref(),
+        animated_direct_sh: extras.animated_direct.as_ref(),
         alpha_lights: &extras.alpha_lights,
         chunk_light_list: &extras.chunk_list,
         texture_keys: &room.keys,
@@ -361,6 +365,23 @@ pub(super) fn uniform_delta(
         affinity_offsets: offsets,
         affinity_lights: lights,
         delta_subblocks: payload,
+    }
+}
+
+/// Id 45 carrying only `descriptors`, its descriptor table: the stage reads
+/// nothing else of it.
+pub(super) fn animated_direct_table(descriptors: Vec<u32>) -> AnimatedDirectShDeltaVolumesSection {
+    AnimatedDirectShDeltaVolumesSection {
+        affinity_factor: AFFINITY_FACTOR,
+        affinity_dims: [0; 3],
+        tile_dimension: 0,
+        tile_border: 0,
+        animation_descriptor_indices: descriptors,
+        valid_probe_masks: Vec::new(),
+        cell_levels: Vec::new(),
+        affinity_offsets: vec![0],
+        affinity_lights: Vec::new(),
+        delta_subblocks: Vec::new(),
     }
 }
 
@@ -637,6 +658,34 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
     expect_miss(&room, &environment, "animated weight map");
     room.extras.weight_maps = maps;
 
+    // Id 45 enters by its descriptor table alone, which the roster check
+    // reads on a miss: a table that changes misses; the rest of id 45, which
+    // the capture never reads, keeps the key.
+    room.extras.animated_direct = Some(animated_direct_table((0..5).collect()));
+    let with_table = stage_key(&room, &environment);
+    expect_miss(&room, &environment, "animated direct descriptor table");
+    room.extras
+        .animated_direct
+        .as_mut()
+        .unwrap()
+        .delta_subblocks = vec![1, 2, 3];
+    assert_eq!(
+        with_table,
+        stage_key(&room, &environment),
+        "id 45's payload"
+    );
+    room.extras
+        .animated_direct
+        .as_mut()
+        .unwrap()
+        .animation_descriptor_indices[4] = u32::MAX;
+    assert_ne!(
+        with_table,
+        stage_key(&room, &environment),
+        "a non-identity id-45 table"
+    );
+    room.extras.animated_direct = None;
+
     room.extras.sh.animation_descriptors[0].brightness[1] = 0.5;
     expect_miss(&room, &environment, "animated light curve");
     room.extras.sh.animation_descriptors[0].brightness[1] = 0.0;
@@ -708,7 +757,7 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
         room.extras.authored.clear();
         stage_key(&room, &environment)
     });
-    assert_eq!(misses, 11);
+    assert_eq!(misses, 12);
 }
 
 #[test]
@@ -741,4 +790,55 @@ fn unchanged_inputs_hit_the_stage_cache_with_the_same_section() {
         .collect();
     assert_eq!(covered.len(), 2, "{covered:?}");
     assert_eq!(covered[0], covered[1]);
+}
+
+/// The stage's error for `room`, or `None` when it bakes.
+fn bake_error(room: &LitFloorRoom) -> Option<String> {
+    with_inputs(room, &pool(), |inputs| {
+        bake_or_load_reflection_probes(inputs, None, &BakeControl::unrestricted())
+            .err()
+            .map(|e| format!("{e:#}"))
+    })
+}
+
+// A share's roster index indexes the runtime descriptor buffer directly, so
+// the loader refuses section 54 over a non-identity descriptor table in id
+// 27 or id 45; the build refuses it first, naming the table.
+#[test]
+fn a_non_identity_descriptor_table_in_either_delta_section_refuses_the_build() {
+    let mut room = every_term_room();
+    room.extras.animated_direct = Some(animated_direct_table((0..5).collect()));
+    assert_eq!(bake_error(&room), None, "identity tables bake");
+
+    room.extras
+        .animated_direct
+        .as_mut()
+        .unwrap()
+        .animation_descriptor_indices[4] = u32::MAX;
+    let message = bake_error(&room).expect("a non-identity id-45 table refuses");
+    assert!(
+        message.contains(
+            "AnimatedDirectShDeltaVolumes (id 45) maps animated light 4 to descriptor 4294967295"
+        ) && message.contains("need the identity roster"),
+        "{message}"
+    );
+
+    room.extras.animated_direct = Some(animated_direct_table((0..4).collect()));
+    let message = bake_error(&room).expect("a short id-45 table refuses");
+    assert!(
+        message.contains("AnimatedDirectShDeltaVolumes (id 45) has 4 animated light(s)"),
+        "{message}"
+    );
+
+    room.extras.animated_direct = Some(animated_direct_table((0..5).collect()));
+    room.extras
+        .delta
+        .as_mut()
+        .unwrap()
+        .animation_descriptor_indices[0] = 1;
+    let message = bake_error(&room).expect("a non-identity id-27 table refuses");
+    assert!(
+        message.contains("DeltaShVolumes (id 27) maps animated light 0 to descriptor 1"),
+        "{message}"
+    );
 }

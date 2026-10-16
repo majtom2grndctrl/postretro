@@ -339,7 +339,7 @@ When the fitted box is wrong, draw a `reflection_volume` brush around the room. 
 - **The box is the reflection's room and its reach.** The reflection projects onto the box's walls, and the box claims the up-facing fluid surfaces inside it. A surface binds the smallest box that contains the centre of its area. On a tie, the entity that comes first in the `.map` file wins. A surface no box claims keeps its derived probe.
 - **Offset errors.** An offset with three numbers (the third would be vertical), one that is not two numbers, or one that moves the capture point outside the box fails the build, and the error names the entity.
 - **Too many boxes.** A level holds at most 256 reflection probes. `reflection_volume` boxes past that cap refuse the build; derived probes past it are dropped with a warning instead.
-- **Warnings.** A box with no water inside draws nothing and warns. A capture point inside solid, inside a fluid or outside the level drops its box with a warning, so a pillar standing in the water at the capture point needs an offset. A capture point that sees less than half of its box's water warns, naming the probe.
+- **Warnings.** A box with no water inside draws nothing and warns. A capture point inside solid, inside a fluid or outside the level drops its box with a warning, so a pillar standing in the water at the capture point needs an offset. A capture point within 1 cm of a wall moves 1 cm clear of it, and drops with a warning if it cannot stay inside its box and over its water. A capture point that sees less than half of its box's water warns, naming the probe.
 
 ### Tips
 

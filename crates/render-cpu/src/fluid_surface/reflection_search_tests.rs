@@ -1,6 +1,7 @@
 // Tests: the reflection distance search. Acceptance row 17 (box projection
-// and distance search), the crate and pillar fixtures, and the search as a
-// function of the fragment or cell alone.
+// and distance search), water past the probe's box, the reflected ray's
+// floor, the crate and pillar fixtures, and the search as a function of the
+// fragment or cell alone.
 // See: context/lib/testing_guide.md · content/dev/maps/reflection-probes-test.map
 
 use std::cell::RefCell;
@@ -22,7 +23,8 @@ use crate::fluid_surface::reflection::{
     reflection_lookup, reflection_mirror,
 };
 use crate::fluid_surface::reflection_style::{
-    FLUID_REFLECTION_STYLE_PIXEL, FluidTexelAxes, reflection_point,
+    FLUID_REFLECTION_STYLE_PIXEL, FluidTexelAxes, reflection_cell_centre,
+    reflection_cell_within_box, reflection_point,
 };
 use crate::frame_uniforms::LightTermMask;
 
@@ -273,7 +275,7 @@ fn a_capture_miss_on_a_sphere_step_never_ends_the_search_early() {
     );
 }
 
-// --- The search starts inside the box -----------------------------------------
+// --- Water past the probe's box -------------------------------------------------
 
 /// The probe record of `scene`'s probe, at layer 0 with no lights.
 fn probe_record(scene: &Scene) -> ReflectionProbeRecord {
@@ -287,18 +289,31 @@ fn probe_record(scene: &Scene) -> ReflectionProbeRecord {
     }
 }
 
+/// An authored box over the middle of the empty room (and of
+/// [`pillar_room`]'s), its east face 2 m short of the east wall.
+const AUTHORED_BOX: (Vec3, Vec3) = (Vec3::new(-3.0, -1.0, -2.5), Vec3::new(3.0, 2.5, 2.5));
+
 // Water outside an authored box (a face straddling the box, its centroid
-// inside): the search starts from the fragment clamped onto the box face it
-// lies past, and a ray leaving through that face leaves the box through
-// another, so the reflection resolves along the ray to the wall the capture
-// saw past the box and follows the view, rather than collapsing onto the
-// horizon at the fragment's own azimuth.
+// inside) searches from the fragment itself. Seen outward, the ray leaves
+// through the face the fragment lies past; that slab's exit lies behind the
+// fragment and does not stop the box hit, so the reflection resolves along
+// the ray to the wall the capture saw past the box and follows the view,
+// rather than collapsing onto the horizon at the fragment's own azimuth.
+// Seen inward, every slab's exit lies ahead, so the search is the plain one
+// from the fragment: the ray keeps its parallax and leaves the box where it
+// crosses the box's top, not on a parallel ray through the box face.
 #[test]
 fn water_outside_an_authored_box_resolves_along_its_ray() {
     let room = empty_room();
-    let (box_min, box_max) = (Vec3::new(-3.0, -1.0, -2.5), Vec3::new(3.0, 2.5, 2.5));
+    let (box_min, box_max) = AUTHORED_BOX;
     let fragment = Vec3::new(3.5, 0.0, 0.0);
-    let start = Vec3::new(3.0, 0.0, 0.0);
+    let search_authored = |ray: Vec3| {
+        reflection_search(fragment, ray, box_min, box_max, room.capture, TILE, |uv| {
+            room.distance(uv)
+        })
+    };
+
+    // Outward: the east wall at x = 5, reflected 0.41 m and 0.82 m up.
     let mut heights = Vec::new();
     for eye in [Vec3::new(-2.0, 1.5, 0.0), Vec3::new(-2.0, 3.0, 0.0)] {
         let ray = reflected(eye, fragment);
@@ -306,9 +321,7 @@ fn water_outside_an_authored_box_resolves_along_its_ray() {
             ray.x > 0.0,
             "the ray leaves through the face the fragment lies past"
         );
-        let result = reflection_search(fragment, ray, box_min, box_max, room.capture, TILE, |uv| {
-            room.distance(uv)
-        });
+        let result = search_authored(ray);
         assert_eq!(result.status, FluidReflectionSearchStatus::Hit, "eye {eye}");
         assert_eq!(result.weight, 1.0, "eye {eye}");
         assert!(
@@ -316,10 +329,10 @@ fn water_outside_an_authored_box_resolves_along_its_ray() {
             "the east wall past the box: {}",
             result.point
         );
-        let along = (result.point - start).normalize();
+        let along = (result.point - fragment).normalize();
         assert!(
             along.abs_diff_eq(ray, 1.0e-3),
-            "on the ray from the clamped start: {along} vs {ray}"
+            "on the ray from the fragment: {along} vs {ray}"
         );
         let lookup = result.lookup;
         let elevation = lookup.y.atan2(lookup.x.hypot(lookup.z)).to_degrees();
@@ -333,25 +346,120 @@ fn water_outside_an_authored_box_resolves_along_its_ray() {
         heights[1] > heights[0] + 0.3,
         "the reflection follows the view: {heights:?}"
     );
+
+    // Inward: from an eye east of the fragment the ray climbs back over the
+    // box and leaves it through its top, short of the room's ceiling, so
+    // nothing stored lies inside the box along it: the box hit, on the ray
+    // from the fragment itself.
+    let eye = Vec3::new(4.5, 1.5, 0.0);
+    let ray = reflected(eye, fragment);
+    assert!(ray.x < 0.0, "the ray crosses back into the box");
+    let result = search_authored(ray);
+    assert_eq!(result.status, FluidReflectionSearchStatus::BeyondBox);
+    assert_eq!(result.weight, 1.0);
+    let exit = fragment + ray * ((box_max.y - fragment.y) / ray.y);
+    assert!(
+        result.point.abs_diff_eq(exit, 1.0e-4),
+        "where the ray from the fragment leaves the box's top: {} vs {exit}",
+        result.point
+    );
+    let face = fragment.clamp(box_min, box_max);
+    let through_face = face + ray * ((box_max.y - face.y) / ray.y);
+    assert!(
+        result.point.distance(through_face) > 0.4,
+        "not the parallel ray through the box face: {} vs {through_face}",
+        result.point
+    );
 }
 
-// A pixel-style cell straddling a wall at the water's rim: its centre lies
-// inside the wall, behind the surface the capture stored there, where the
-// depth margin alone would fade the term to about 0.8. The search starts
-// from the centre clamped onto the box (a derived box's wall), on the stored
-// surface: the cell keeps its full term, and its search reads the wall's
-// foot where the cell meets it.
+// Water outside an authored box, hidden from the capture point behind an
+// occluder that also stands outside the box, is in the capture shadow and
+// draws no term, whatever the view: the shadow test reads the fragment
+// itself, as the compiler's hidden-water warning reads the raw water point,
+// never the box face, which the capture point sees in front of the pillar.
+#[test]
+fn water_outside_an_authored_box_hidden_behind_an_occluder_draws_no_term() {
+    // The pillar's capture-facing face 0.2 m east of the box, the water
+    // 0.8 m past that face.
+    let scene = pillar_room(3.2);
+    let (box_min, box_max) = AUTHORED_BOX;
+    let fragment = Vec3::new(4.4, 0.0, 0.0);
+    let h = |q: Vec3| reflection_search_h(q, scene.capture, TILE, &|uv| scene.distance(uv));
+    assert!(
+        h(fragment) >= FLUID_REFLECTION_SHADOW_MARGIN,
+        "the water lies behind the pillar: {}",
+        h(fragment)
+    );
+    let face = fragment.clamp(box_min, box_max);
+    assert!(h(face) < 0.0, "the box face is seen: {}", h(face));
+
+    let probe = ReflectionProbeRecord {
+        box_min: box_min.to_array(),
+        box_max: box_max.to_array(),
+        ..probe_record(&scene)
+    };
+    let surface = Vec4::new(0.1, 0.2, 0.3, 0.6);
+    for eye in [
+        Vec3::new(-2.0, 1.5, 0.0),
+        Vec3::new(-2.0, 3.0, 0.5),
+        Vec3::new(4.8, 1.6, -1.0),
+    ] {
+        let ray = reflected(eye, fragment);
+        let result =
+            reflection_search(fragment, ray, box_min, box_max, scene.capture, TILE, |uv| {
+                scene.distance(uv)
+            });
+        assert_eq!(
+            result.status,
+            FluidReflectionSearchStatus::CaptureShadow,
+            "eye {eye}"
+        );
+        assert_eq!(result.weight, 0.0, "eye {eye}");
+        let out = reflection_fragment(
+            surface,
+            &smooth_fragment(eye, fragment),
+            &[probe],
+            TILE,
+            &FluidReflectionLights::NONE,
+            |_, _| Vec3::new(4.0, 4.0, 4.0),
+            |_, uv| scene.distance(uv),
+        );
+        assert!(
+            out.abs_diff_eq(surface, 1.0e-6),
+            "eye {eye}: {out} vs {surface}"
+        );
+    }
+}
+
+// A pixel-style cell straddling a wall at the water's rim, its centre inside
+// the wall (a box fitting the room, so the centre lies past the box): the
+// style pulls the centre back onto the wall's face, at most half a cell,
+// where the capture stored the wall. The raw centre lies behind the stored
+// wall within the depth margin and would fade; the pulled cell keeps its
+// term, and its search reads the wall's foot. Swept from inside the water
+// to three cells into the wall, the cell's weight changes continuously: full
+// up to half a cell in, then falling smoothly over the pull's taper (gone a
+// full cell in, where the raw centre takes over) into the capture shadow,
+// with no jump where the raw centre crosses the stored surface or κ.
 #[test]
 fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
     let scene = canal();
     let probe = probe_record(scene);
     let eye = Vec3::new(-1.5, 1.6, 0.0);
-    // The rim's last 3 mm of water before the +z wall, in a cell (16 texels
+    let h = |q: Vec3| reflection_search_h(q, scene.capture, TILE, &|uv| scene.distance(uv));
+    // The rim's last 2 mm of water before the +z wall, in a cell (16 texels
     // a metre, offset a twentieth of a texel) whose centre lies 2.8 cm in.
     let world = Vec3::new(0.0, 0.0, 1.998);
     let mut fragment = smooth_fragment(eye, world);
     fragment.style = FLUID_REFLECTION_STYLE_PIXEL;
     fragment.texel_uv = Vec2::new(world.x * 16.0, world.z * 16.0 + 0.05);
+    let centre = reflection_cell_centre(fragment.texel_uv, world, fragment.axes);
+    assert!(centre.z > 2.02, "inside the wall: {centre}");
+    let h_centre = h(centre);
+    assert!(
+        h_centre > 0.0 && h_centre < FLUID_REFLECTION_SHADOW_MARGIN,
+        "the raw centre lies behind the stored wall, within the depth margin: {h_centre}"
+    );
     let point = reflection_point(
         fragment.style,
         fragment.texel_uv,
@@ -360,31 +468,32 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
         fragment.axes,
         fragment.time,
         fragment.texels_per_pixel,
+        scene.box_min,
+        scene.box_max,
     );
-    assert!(
-        point.position.z > 2.02,
-        "inside the wall: {}",
-        point.position
-    );
-    let h_centre = reflection_search_h(point.position, scene.capture, TILE, &|uv| {
-        scene.distance(uv)
-    });
-    assert!(
-        h_centre > 0.0 && h_centre < FLUID_REFLECTION_SHADOW_MARGIN,
-        "the centre lies behind the stored wall, within the depth margin: {h_centre}"
+    assert_eq!(
+        point.position,
+        Vec3::new(centre.x, centre.y, scene.box_max.z),
+        "pulled onto the wall's face"
     );
 
     let view = (eye - point.position).normalize();
     let ray = reflection_above_horizon(reflection_mirror(view, point.normal));
     let result = search(scene, point.position, ray);
-    assert_eq!(result.weight, 1.0, "{:?}", result.status);
-    let start = point.position.clamp(scene.box_min, scene.box_max);
-    let foot = Vec3::new(start.x, 0.0, start.z) - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
+    assert!(
+        result.weight > 0.99,
+        "{} ({:?}), h at the face {}",
+        result.weight,
+        result.status,
+        h(point.position)
+    );
+    let foot = Vec3::new(point.position.x, 0.0, point.position.z)
+        - Vec3::new(scene.capture.x, 0.0, scene.capture.z);
     let apart = texels_apart(result.lookup, foot);
     assert!(apart <= 1.0, "the wall's foot: {apart} texels off");
 
     // The whole fragment reference: over a zero-alpha surface its coverage
-    // is the cell's undimmed Fresnel weight.
+    // is the cell's Fresnel weight at the search's weight.
     let out = reflection_fragment(
         Vec4::new(0.1, 0.2, 0.3, 0.0),
         &fragment,
@@ -394,8 +503,81 @@ fn a_pixel_cell_centred_inside_a_wall_at_the_rim_is_not_dimmed() {
         |_, _| Vec3::ONE,
         |_, uv| scene.distance(uv),
     );
-    let fresnel = reflection_fresnel(view.dot(Vec3::Y), 1.0);
+    let fresnel = reflection_fresnel(view.dot(Vec3::Y), 1.0) * result.weight;
     assert!((out.w - fresnel).abs() < 1.0e-6, "{} vs {fresnel}", out.w);
+
+    // The sweep: a cell centre on the cell's line, from 4 cm inside the
+    // water to three cells into the wall, 0.34 mm a step.
+    let axes = fragment.axes;
+    let half_cell = 0.5 * (axes.u.length_squared() + axes.v.length_squared()).sqrt();
+    let weight_from = |start: Vec3| {
+        let view = (eye - start).normalize();
+        search(
+            scene,
+            start,
+            reflection_above_horizon(reflection_mirror(view, Vec3::Y)),
+        )
+        .weight
+    };
+    let pulled_weight = |z: f32| {
+        let centre = Vec3::new(centre.x, 0.0, z);
+        weight_from(reflection_cell_within_box(
+            centre,
+            axes,
+            scene.box_min,
+            scene.box_max,
+        ))
+    };
+    let (from, to) = (1.96, 2.0 + 3.0 / 16.0 + half_cell);
+    let steps = 800;
+    let mut last = pulled_weight(from);
+    for i in 1..=steps {
+        let z = from + (to - from) * i as f32 / steps as f32;
+        let weight = pulled_weight(z);
+        if z <= 2.0 + half_cell {
+            assert!(weight > 0.99, "centre z {z}: {weight}");
+        }
+        assert!(
+            (weight - last).abs() < 0.02,
+            "centre z {z}: the weight jumps {last} → {weight}"
+        );
+        last = weight;
+    }
+    assert_eq!(
+        last, 0.0,
+        "three cells in, the cell is in the capture shadow"
+    );
+    // Unpulled, the cell half a cell in would dim: the pull is what keeps it.
+    let raw = Vec3::new(centre.x, 0.0, 2.0 + half_cell);
+    assert!(weight_from(raw) < 1.0, "{}", weight_from(raw));
+}
+
+// --- The reflected ray's floor above the horizon ----------------------------------
+
+// A reflected ray at or above the floor searches exactly as mirrored: the
+// floor returns it bit for bit, so only a ray at the horizon changes. A ray
+// just under is lifted to the floor, its azimuth kept, at unit length.
+#[test]
+fn a_ray_clear_of_the_floor_is_returned_unchanged() {
+    let fragment = Vec3::new(1.0, 0.0, -0.5);
+    for ray in [
+        Vec3::Y,
+        reflected(Vec3::new(-2.0, 1.5, 0.3), fragment),
+        reflected(Vec3::new(40.0, 0.1, -20.0), fragment),
+        Vec3::new(0.6, FLUID_REFLECTION_RAY_MIN_Y, 0.8),
+    ] {
+        assert!(ray.y >= FLUID_REFLECTION_RAY_MIN_Y, "{ray}");
+        assert_eq!(reflection_above_horizon(ray).to_array(), ray.to_array());
+    }
+    // An eye 8 cm above the plane looking 100 m away: a flat mirror's ray
+    // reaches the floor too.
+    let grazing = reflected(Vec3::new(0.0, 0.08, -100.0), Vec3::ZERO);
+    assert!(grazing.y < FLUID_REFLECTION_RAY_MIN_Y, "{grazing}");
+    let lifted = reflection_above_horizon(grazing);
+    assert!(lifted.y >= 0.99 * FLUID_REFLECTION_RAY_MIN_Y && lifted.y < 0.01);
+    assert!((lifted.length() - 1.0).abs() < 1.0e-6);
+    let level = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize();
+    assert!(level(lifted).abs_diff_eq(level(grazing), 1.0e-6));
 }
 
 // A grazing pixel-style view: a cell whose displayed offset tilts its normal
@@ -421,6 +603,8 @@ fn a_pixel_cell_tilted_past_a_grazing_view_searches_above_the_horizon() {
                 fragment.axes,
                 fragment.time,
                 fragment.texels_per_pixel,
+                scene.box_min,
+                scene.box_max,
             );
             let mirrored = reflection_mirror((camera - point.position).normalize(), point.normal);
             (mirrored.y < 0.0).then_some((fragment, point, mirrored))
@@ -762,7 +946,7 @@ const CROSS_PROBE_MISS_SHARE: f32 = 0.01;
 const CROSS_PROBE_WORST_TEXELS: f32 = 5.0;
 
 #[test]
-fn two_probes_over_one_room_resolve_a_wall_point_both_see_within_one_texel() {
+fn two_probes_over_one_room_resolve_a_wall_point_both_see_to_within_a_texel_nearly_always() {
     let probes = pool_room_probes();
     let eyes: Vec<Vec3> = [
         (152.0, 224.0),
@@ -890,6 +1074,8 @@ fn every_fragment_of_a_pixel_cell_reads_one_search() {
         smooth_fragment(camera, Vec3::ZERO).axes,
         0.0,
         0.5,
+        scene.box_min,
+        scene.box_max,
     );
     assert!(
         point

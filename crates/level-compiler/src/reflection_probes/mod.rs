@@ -40,6 +40,7 @@ use std::path::Path;
 
 use bvh::bvh::Bvh;
 use postretro_level_format::alpha_lights::AlphaLightsSection;
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
@@ -74,7 +75,7 @@ use reference::reference_value;
 use sdf_lights::SdfLights;
 use sh_sample::{PRODUCTION_PROBE_OCCLUSION, ShVolumeSampler};
 use shading::CaptureScene;
-use share::{ShareReport, ShareSums};
+use share::{ShareReport, ShareSums, log_negative_references};
 use stage_key::{cache_key, cache_payload, parse_cache_payload};
 
 /// Cache stage identity for the whole id-54 section.
@@ -86,8 +87,13 @@ const STAGE_ID: &str = "reflection_probes";
 /// 5, 6: unused; never reuse them, as their entries may sit in local caches.
 /// 7: a finite hit never stores distance 0.
 /// 8: shares over the upper hemisphere; derived box fit stops at the ceiling;
-/// ties within tolerance; SH clamped after the deltas, as the runtime does.
-const STAGE_VERSION: u32 = 8;
+/// ties within tolerance; SH clamped after the deltas, as the runtime does;
+/// the emissive mip from its own texel footprint; a light with a negative
+/// reference never stored.
+/// 9: a wall past a column's first ceiling hit still tops it when farther
+/// out (a sunken pool under an overhanging lip fits the room); the key
+/// gains id 45's descriptor table.
+const STAGE_VERSION: u32 = 9;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -114,6 +120,10 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     pub delta_sh: Option<&'a DeltaShVolumesSection>,
     /// Id 25 as the level ships it: each animated light's direct.
     pub animated_weight_maps: Option<&'a AnimatedLightWeightMapsSection>,
+    /// Id 45 as the level ships it. The capture reads none of it; the roster
+    /// check refuses a descriptor table that is not the identity, as the
+    /// loader does, so only that table enters the key.
+    pub animated_direct_sh: Option<&'a AnimatedDirectShDeltaVolumesSection>,
     /// Id 18: the runtime's lights, whose non-dynamic records are the spec
     /// lights the forward sdf loop shades.
     pub alpha_lights: &'a AlphaLightsSection,
@@ -170,6 +180,12 @@ pub(crate) fn bake_or_load_reflection_probes(
         return Ok(None);
     }
 
+    // References are a cheap function of the keyed descriptors; computed
+    // before the lookup so a warm build logs the lights no probe stores, as
+    // a cold one does.
+    let references = references(&inputs.sh_volume.animation_descriptors);
+    log_negative_references(&references);
+
     // Capture is a pure function of the keyed inputs, so a hit skips it.
     let key = cache_key(inputs, &probes)?;
     if let Some((section, reports)) =
@@ -190,7 +206,6 @@ pub(crate) fn bake_or_load_reflection_probes(
     }
     log::info!("[cache] reflection_probes miss");
 
-    let references = references(&inputs.sh_volume.animation_descriptors);
     check_roster(inputs, references.len())?;
     let sh = ShVolumeSampler::new(inputs.sh_volume, PRODUCTION_PROBE_OCCLUSION)?;
     let deltas = inputs
@@ -311,21 +326,48 @@ fn references(descriptors: &[AnimationDescriptor]) -> Vec<[f32; 3]> {
     descriptors.iter().map(reference_value).collect()
 }
 
-/// Every light the baked transport names must have a descriptor, and the
-/// delta's descriptor table must be the identity: a share's roster index
-/// indexes the runtime descriptor buffer directly, so the delta roster's
-/// slot `r` must name descriptor `r`.
+/// Every light the baked transport names must have a descriptor, and each
+/// shipped descriptor table (ids 27 and 45) must be the identity: a share's
+/// roster index indexes the runtime descriptor buffer directly, so roster
+/// slot `r` must name descriptor `r`. The loader refuses either table
+/// otherwise when section 54 is present; this refuses it at build time.
 fn check_roster(inputs: &ReflectionProbeInputs<'_>, roster: usize) -> anyhow::Result<()> {
-    if let Some(delta) = inputs.delta_sh {
+    let tables = [
+        (
+            "DeltaShVolumes (id 27)",
+            inputs
+                .delta_sh
+                .map(|delta| delta.animation_descriptor_indices.as_slice()),
+        ),
+        (
+            "AnimatedDirectShDeltaVolumes (id 45)",
+            inputs
+                .animated_direct_sh
+                .map(|section| section.animation_descriptor_indices.as_slice()),
+        ),
+    ];
+    for (table, indices) in tables {
+        let Some(indices) = indices else {
+            continue;
+        };
         anyhow::ensure!(
-            delta.animation_descriptor_indices.len() == roster
-                && delta
-                    .animation_descriptor_indices
-                    .iter()
-                    .enumerate()
-                    .all(|(slot, &descriptor)| descriptor as usize == slot),
-            "reflection probes need the identity animated-light roster in DeltaShVolumes"
+            indices.len() == roster,
+            "{table} has {} animated light(s) over the {roster}-light roster; reflection \
+             probes need the identity roster",
+            indices.len(),
         );
+        if let Some((slot, descriptor)) = indices
+            .iter()
+            .enumerate()
+            .find(|&(slot, &descriptor)| descriptor as usize != slot)
+        {
+            anyhow::bail!(
+                "{table} maps animated light {slot} to descriptor {descriptor}; reflection \
+                 probes need the identity roster"
+            );
+        }
+    }
+    if let Some(delta) = inputs.delta_sh {
         anyhow::ensure!(
             delta.affinity_lights.iter().all(|&l| (l as usize) < roster),
             "DeltaShVolumes names an animated light past the {roster}-light roster"

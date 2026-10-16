@@ -340,6 +340,151 @@ fn a_section_with_a_bad_payload_or_tile_format_is_unusable() {
     }
 }
 
+/// `base`'s probes and bindings over tiles of `dimension` in `atlas_format`,
+/// with payloads that match.
+fn retiled(
+    base: &ReflectionProbesSection,
+    atlas_format: u32,
+    dimension: u32,
+) -> ReflectionProbesSection {
+    let probes = base.probes.len();
+    let tile = postretro_level_format::reflection_probes::reflection_probe_tile_bytes(
+        atlas_format,
+        dimension,
+    )
+    .expect("a known colour format");
+    ReflectionProbesSection {
+        tile_dimension: dimension,
+        atlas_format,
+        tiles: vec![0; tile * probes],
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            probes, dimension,
+        ),
+        ..base.clone()
+    }
+}
+
+// A hand-built section whose tile header the decoder would refuse (a
+// dimension under one 4×4 block or past level-format's bound, a border off
+// the octahedral convention), or whose probes do not each own a layer below
+// the probe count, is unusable whole, as its payloads match: no table, no
+// probe index and no bound face. Any one-to-one assignment of layers is
+// usable.
+#[test]
+fn a_section_with_a_bad_tile_header_or_probe_layer_is_unusable() {
+    let volumes = vec![fluid(vec![
+        level_top(0.0, 0.0, 1.0),
+        level_top(1.0, 0.0, 1.0),
+    ])];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let two = section(
+        vec![
+            room_probe([0.0, 0.002, 0.0], 0),
+            room_probe([2.0, 0.002, 0.0], 1),
+        ],
+        vec![binding(0, 0, 0), binding(0, 1, 1)],
+    );
+    let mut swapped = two.clone();
+    swapped.probes[0].layer = 1;
+    swapped.probes[1].layer = 0;
+    for (what, section) in [
+        ("layers in order", two.clone()),
+        ("layers swapped", swapped),
+        (
+            "RGBA16F at the least dimension",
+            retiled(
+                &two,
+                IRRADIANCE_FORMAT_RGBA16F,
+                FLUID_PROBE_MIN_TILE_DIMENSION,
+            ),
+        ),
+        (
+            "BC6H at the greatest dimension",
+            retiled(&two, IRRADIANCE_FORMAT_BC6H, FLUID_PROBE_MAX_TILE_DIMENSION),
+        ),
+    ] {
+        assert!(usable_probe_section(Some(&section)).is_some(), "{what}");
+        assert!(volume_has_bound_face(Some(&section), 0), "{what}");
+    }
+
+    let mut layer_past = two.clone();
+    layer_past.probes[1].layer = 2;
+    let mut layer_reused = two.clone();
+    layer_reused.probes[1].layer = 0;
+    let malformed = [
+        (
+            "tile dimension 0",
+            retiled(&two, IRRADIANCE_FORMAT_RGBA16F, 0),
+        ),
+        (
+            "tile dimension 2, no interior",
+            retiled(&two, IRRADIANCE_FORMAT_RGBA16F, 2),
+        ),
+        (
+            "tile dimension past the decoder's bound",
+            retiled(
+                &two,
+                IRRADIANCE_FORMAT_BC6H,
+                FLUID_PROBE_MAX_TILE_DIMENSION + 4,
+            ),
+        ),
+        (
+            "tile border 0",
+            ReflectionProbesSection {
+                tile_border: 0,
+                ..two.clone()
+            },
+        ),
+        (
+            "tile border 2",
+            ReflectionProbesSection {
+                tile_border: 2,
+                ..two.clone()
+            },
+        ),
+        ("a layer past the probe count", layer_past),
+        ("a layer reused", layer_reused),
+    ];
+    for (what, section) in &malformed {
+        assert!(usable_probe_section(Some(section)).is_none(), "{what}");
+        assert!(!volume_has_bound_face(Some(section), 0), "{what}");
+        assert!(
+            pack_probe_table(Some(section))
+                .iter()
+                .all(|&byte| byte == 0),
+            "{what}"
+        );
+        let mut indices = vec![7; mesh.vertices.len()];
+        fill_probe_indices(&volumes, &mesh.face_drift_maps, Some(section), &mut indices);
+        assert!(
+            indices
+                .iter()
+                .all(|&index| index == FLUID_REFLECTION_NO_PROBE),
+            "{what}"
+        );
+    }
+}
+
+// The usable range of tile dimensions is the section 54 decoder's own: it
+// decodes a section at the least and the greatest dimension and refuses the
+// next one past each (the decoder takes whole 4×4 blocks only), so this
+// copy of level-format's private bound cannot drift from it.
+#[test]
+fn the_usable_tile_dimensions_are_the_decoders() {
+    let one = section(
+        vec![room_probe([0.0, 0.002, 0.0], 0)],
+        vec![binding(0, 0, 0)],
+    );
+    let decodes = |dimension: u32| {
+        let tiled = retiled(&one, IRRADIANCE_FORMAT_BC6H, dimension);
+        ReflectionProbesSection::from_bytes(&tiled.to_bytes()).is_ok()
+    };
+    assert!(decodes(FLUID_PROBE_MIN_TILE_DIMENSION));
+    assert!(decodes(FLUID_PROBE_MAX_TILE_DIMENSION));
+    assert!(!decodes(FLUID_PROBE_MIN_TILE_DIMENSION - 4));
+    assert!(!decodes(FLUID_PROBE_MAX_TILE_DIMENSION + 4));
+}
+
 // --- Acceptance row 17: box projection --------------------------------------
 
 // A low eye at the pool's near end: the near edge's reflected ray climbs the

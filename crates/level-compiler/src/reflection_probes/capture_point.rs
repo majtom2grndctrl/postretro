@@ -25,7 +25,7 @@ pub(crate) const NEAREST_POINT_INSET_M: f64 = 0.02;
 /// crowded on a side when a step this long along ±X or ±Z lands in solid or
 /// outside the hull; [`PointClassifier::settle`] moves a crowded point this
 /// far off the crowding side, and [`PointClassifier::fault`] counts a point
-/// still crowded as in solid.
+/// still crowded as [`PointFault::Crowded`].
 pub(crate) const CAPTURE_CLEARANCE_M: f64 = 0.01;
 /// A centroid within this horizontal distance of a face counts as over it,
 /// so one lying on the shared edge of two pieces stays put.
@@ -110,6 +110,12 @@ fn contains(outline: &[DVec2], p: DVec2) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointFault {
     InSolid,
+    /// In open space within [`CAPTURE_CLEARANCE_M`] of a wall, and no move
+    /// that far off it stays in the box and over the water, or clears it.
+    Crowded,
+    /// In open space within [`CAPTURE_CLEARANCE_M`] of walls on both sides
+    /// of an axis.
+    Wedged,
     /// Inside a brush of this fluid entity, the probe's own included.
     InFluid(u32),
     OutsideHull,
@@ -119,6 +125,11 @@ impl fmt::Display for PointFault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InSolid => write!(f, "in solid"),
+            Self::Crowded => write!(
+                f,
+                "too close to a wall to move clear of it within its box and over its water"
+            ),
+            Self::Wedged => write!(f, "too close to walls on both sides to move clear of them"),
             Self::InFluid(entity) => write!(f, "inside fluid entity {entity}"),
             Self::OutsideHull => write!(f, "outside the hull"),
         }
@@ -164,8 +175,10 @@ impl<'a> PointClassifier<'a> {
     /// which is clear, so a move leaves it at least that far off the wall.
     /// The move must stay in the box and, from a point over `water`, over
     /// `water`: when it cannot, staying over the water wins and the point
-    /// drops as in solid, as it does when crowded on both sides of an axis.
-    /// The moved point must then pass [`Self::fault`] as stored.
+    /// drops as [`PointFault::Crowded`]; crowded on both sides of an axis, it
+    /// drops as [`PointFault::Wedged`]. Either is in open space, so neither
+    /// reads as in solid. The moved point must then pass [`Self::fault`] as
+    /// stored.
     pub(crate) fn settle(
         &self,
         raw: DVec3,
@@ -187,7 +200,7 @@ impl<'a> PointClassifier<'a> {
                 (false, false) => {}
                 (true, false) => nudge -= axis * CAPTURE_CLEARANCE_M,
                 (false, true) => nudge += axis * CAPTURE_CLEARANCE_M,
-                (true, true) => return Err((stored, PointFault::InSolid)),
+                (true, true) => return Err((stored, PointFault::Wedged)),
             }
         }
         if nudge == DVec3::ZERO {
@@ -197,7 +210,7 @@ impl<'a> PointClassifier<'a> {
         let in_box = moved.cmpge(box_min).all() && moved.cmple(box_max).all();
         let keeps_water = !over_water(point, water) || over_water(moved.as_dvec3(), water);
         if !in_box || !keeps_water {
-            return Err((stored, PointFault::InSolid));
+            return Err((stored, PointFault::Crowded));
         }
         match self.fault(moved.as_dvec3()) {
             Some(fault) => Err((moved, fault)),
@@ -205,9 +218,9 @@ impl<'a> PointClassifier<'a> {
         }
     }
 
-    /// The first fault of `point`, solid before hull before fluid; `None`
-    /// when it can hold a probe. A point crowded on any side (see
-    /// [`CAPTURE_CLEARANCE_M`]) is in solid.
+    /// The first fault of `point`, solid before hull before crowding before
+    /// fluid; `None` when it can hold a probe. A point crowded on any side
+    /// (see [`CAPTURE_CLEARANCE_M`]) is [`PointFault::Crowded`].
     pub(crate) fn fault(&self, point: DVec3) -> Option<PointFault> {
         match self.leaf_fault(point) {
             Some(fault) => Some(fault),
@@ -215,7 +228,7 @@ impl<'a> PointClassifier<'a> {
                 .into_iter()
                 .any(|step| self.crowded(point, step)) =>
             {
-                Some(PointFault::InSolid)
+                Some(PointFault::Crowded)
             }
             None => self.fluid_fault(point),
         }

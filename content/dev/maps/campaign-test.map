@@ -1898,7 +1898,7 @@
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1720 2344 72"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 52
 {
@@ -1909,7 +1909,7 @@
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1240 2136 88"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 54
 {
@@ -5639,19 +5639,19 @@
 {
 "classname" "sci_fi_trooper_m"
 "origin" "-1240 2024 88"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 321
 {
 "classname" "sci_fi_trooper_m"
 "origin" "-1128 2136 88"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 322
 {
 "classname" "cyberpunk_warrior_f"
 "origin" "-1128 2024 88"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 323
 {
@@ -5670,28 +5670,28 @@
 "classname" "prop_mesh"
 "origin" "440 2232 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 325
 {
 "classname" "prop_mesh"
 "origin" "440 2120 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 326
 {
 "classname" "prop_mesh"
 "origin" "552 2120 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 327
 {
 "classname" "prop_mesh"
 "origin" "552 2232 8"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
-"angles" "0 180 0"
+"angles" "0 0 0"
 }
 // entity 328
 {

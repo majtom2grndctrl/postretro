@@ -161,7 +161,7 @@ Manual (owner, in-engine)
 | 40 Flicker, no lobe seam; script switch-off incl. vista; neon reflects | owner, in-engine | manual | outstanding — owner, in-engine |
 | 41 Pixel vs smooth follow the manifest | owner, in-engine | manual | outstanding — owner, in-engine |
 | 42 Canal boundary: step, never a geometry jump | owner, in-engine | manual | outstanding — owner, in-engine |
-| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual | partial — 1660 GPU, stage and VRAM measured (9b, 11f; predate review rounds 1–3); owner Mac 5300M Metal trace outstanding |
+| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual | partial — 1660 GPU re-timed after the review rounds (e24 reflecting 5.43 ms vs main 3.16; test map 2.79 vs 1.66; reflection-free = main), stage and VRAM measured (9b, 11f); owner Mac 5300M Metal trace outstanding |
 
 
 ## Task 9b measurements (clean rerun, 2026-10-15)
@@ -266,7 +266,18 @@ Recorded, not fixed (box fit is a heuristic; an authored `reflection_volume` ove
 
 ## Final gate (2026-10-16, HEAD `295a0d70e`)
 
-Full preflight: `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, `cargo test` (11 413 passed, 0 failed, 51 ignored), `cargo check --release` (no warnings), `crate-graph --check` — all clean. Feature-gated: clippy `-p postretro --features dev-tools,capture --all-targets` clean; `postretro` bin tests with `dev-tools,capture` 1 874 passed; level-loader with `load-prl` 305 passed. Fresh `--no-cache --release` rebakes, no reflection-probe warnings: reflection-probes-test 3 probes / 8 bindings (stage 0.12 s), vault-test 1 / 1 (0.04 s), campaign-test 2 / 2 (0.14 s; its 34 warnings are pre-existing content warnings), e24 12 / 17 (0.36 s). Not run: the ignored stress-map compile (≈30 min; last run at task 4 / 11f), a re-timed 1660 GPU capture after review rounds 1–3 (eye band, start rules, rim pull touch the reflecting variant).
+Full preflight: `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, `cargo test` (11 413 passed, 0 failed, 51 ignored), `cargo check --release` (no warnings), `crate-graph --check` — all clean. Feature-gated: clippy `-p postretro --features dev-tools,capture --all-targets` clean; `postretro` bin tests with `dev-tools,capture` 1 874 passed; level-loader with `load-prl` 305 passed. Fresh `--no-cache --release` rebakes, no reflection-probe warnings: reflection-probes-test 3 probes / 8 bindings (stage 0.12 s), vault-test 1 / 1 (0.04 s), campaign-test 2 / 2 (0.14 s; its 34 warnings are pre-existing content warnings), e24 12 / 17 (0.36 s). Not run: the ignored stress-map compile (≈30 min; last run at task 4 / 11f), a re-timed 1660 GPU capture (since done — see "Re-timed after review rounds").
+
+## Re-timed after review rounds (2026-10-16, HEAD `020b7cc73`)
+
+1660 Super, Vulkan, release `capture,dev-tools` binaries (main = the saved `41f21c8ae` binary on its own PRLs; branch built at `020b7cc73` on fresh `--no-cache --release` PRLs), 11f's capture settings and poses, one process at a time with the machine otherwise idle, kills by PID only (none needed; every run exited 0). Steady = windows 3–6, fluid pass ms, two runs per arm:
+
+| Pose | main | reflection-free (0x13F) | reflecting | reflecting at 11f |
+|---|---|---|---|---|
+| e24 pool, straight down | 3.142 / 3.184 | 3.147 / 3.140 | 5.402 / 5.467 | 5.326 |
+| test-map pool, straight down | 1.655 / 1.661 | 1.657 / 1.661 | 2.773 / 2.798 | 2.696 |
+
+Reflection-free still equals main. The review rounds cost the reflecting variant ≈ +0.11 ms on e24 (+2%) and ≈ +0.09 ms on the test map (+3%) — the eye band, the ray floor, the slab skip and the rim-cell pull. e24's early-window transient persists (window 1 ≈ 6.2–6.3 ms). Graphics clock sat at P0 throughout but dipped to 1530 MHz for a sample or two in most arms, main included. Mac 5300M Metal trace still the owner's.
 
 ## Tasks
 

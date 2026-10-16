@@ -1,6 +1,6 @@
 # Two-trigger probe split — contract wording
 
-Status: applied, then refined — `index.md` is authoritative (see plan.md Resolved blocks, "split triggers restated per sample"). It applies the 2026-10-15 "two-trigger probe split adopted" entry in `plan.md` to `index.md`. Read at `382878754`. Owner chose both §1 recommendations on 2026-10-15: cut faces, and the hidden-hit parallax test.
+Status: **superseded — the split was dropped 2026-10-15** (plan.md Resolved blocks, "probe split dropped"); kept as history. It applies the 2026-10-15 "two-trigger probe split adopted" entry in `plan.md` to `index.md`. Read at `382878754`. Owner chose both §1 recommendations on 2026-10-15: cut faces, and the hidden-hit parallax test.
 
 ## 1. Two points to settle before the wording lands
 

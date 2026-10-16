@@ -1,7 +1,7 @@
 # reflection-probes — plan of record
 
 mode: resumable
-status: approved
+status: approved — results reported; waiting for "land the plane"
 read at: 41f21c8ae
 branch: feature/reflection-probes
 
@@ -105,63 +105,63 @@ Scripting
 ## AC-to-proof
 
 Compiler
-| AC | Proof | Status |
-|---|---|---|
-| 1 Section 54 emitted / absent / pre-section map loads | level-format round-trip + compiler fixture tests; loader test on a pre-54 PRL | achievable as stated |
-| 2 Load refusals (version, out-of-range bindings, face bound twice, roster index) and reserved value loads | level-format `from_bytes` + loader validation tests | achievable as stated |
-| 3 Derived probes P17, P30, P31; two heights; doorway rooms | compiler fixture tests (synthetic brushes) | achievable as stated |
-| 4 Capture point rules, P29, P32, P33, `_capture_offset`, T-junction centroid | compiler unit tests | achievable as stated |
-| 5 Drops P13, P15, P27; wall-side kept; pillar + offset | compiler tests + log capture | achievable as stated |
-| 6 Binding: smallest box, side/sloped none, split pool, P14 | compiler unit tests | achievable as stated |
-| 7 Cap P16, P21, P26; constant assertions | compiler tests; new ignored stress-map compile | achievable as stated |
-| 8 `--jobs 1` vs `--jobs 4`, `--no-cache`, byte-identical id 54 | ignored CLI test after `plain_cli_is_deterministic…` | achievable as stated |
-| 9 Build cache hits / misses per input | stage cache-key tests | achievable as stated |
-| 10 Mover, dynamic light absent; switch present; authored brush leaves geometry/BVH/SH identical | compiler fixture tests | achievable as stated |
-| 11 Lower hemisphere traced (red floor) | capture unit test | achievable as stated |
-| 12 Reference state P18, P9, inactive light, bounce at production weight | capture unit tests + curve-mean parity test | achievable as stated |
-| 13 SDF P19, >4 lights matches selection reference | capture tests vs CPU selection, selection pinned to WGSL | achievable as stated |
-| 14 Light share fractions (upper hemisphere), references, P6, P22, P10, P20 | share-table tests + log capture | achievable as restated |
-| 15 Emissive and indirect-weight parity | parity tests (render-data dep; renderer constant mirrored) | achievable as stated |
-| 16 Tile mapping = SH atlas mapping, borders | shared mapping test generalized to 128 | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 Section 54 emitted / absent / pre-section map loads | level-format round-trip + compiler fixture tests; loader test on a pre-54 PRL | achievable as stated | pass (final full suite) |
+| 2 Load refusals (version, out-of-range bindings, face bound twice, roster index) and reserved value loads | level-format `from_bytes` + loader validation tests | achievable as stated | pass (final full suite) |
+| 3 Derived probes P17, P30, P31; two heights; doorway rooms | compiler fixture tests (synthetic brushes) | achievable as stated | pass (final full suite) |
+| 4 Capture point rules, P29, P32, P33, `_capture_offset`, T-junction centroid | compiler unit tests | achievable as stated | pass (final full suite) |
+| 5 Drops P13, P15, P27; wall-side kept; pillar + offset | compiler tests + log capture | achievable as stated | pass (final full suite) |
+| 6 Binding: smallest box, side/sloped none, split pool, P14 | compiler unit tests | achievable as stated | pass (final full suite) |
+| 7 Cap P16, P21, P26; constant assertions | compiler tests; new ignored stress-map compile | achievable as stated | pass (final full suite) |
+| 8 `--jobs 1` vs `--jobs 4`, `--no-cache`, byte-identical id 54 | ignored CLI test after `plain_cli_is_deterministic…` | achievable as stated | pass (final full suite) |
+| 9 Build cache hits / misses per input | stage cache-key tests | achievable as stated | pass (final full suite) |
+| 10 Mover, dynamic light absent; switch present; authored brush leaves geometry/BVH/SH identical | compiler fixture tests | achievable as stated | pass (final full suite) |
+| 11 Lower hemisphere traced (red floor) | capture unit test | achievable as stated | pass (final full suite) |
+| 12 Reference state P18, P9, inactive light, bounce at production weight | capture unit tests + curve-mean parity test | achievable as stated | pass (final full suite) |
+| 13 SDF P19, >4 lights matches selection reference | capture tests vs CPU selection, selection pinned to WGSL | achievable as stated | pass (final full suite) |
+| 14 Light share fractions (upper hemisphere), references, P6, P22, P10, P20 | share-table tests + log capture | achievable as restated | pass (final full suite) |
+| 15 Emissive and indirect-weight parity | parity tests (render-data dep; renderer constant mirrored) | achievable as stated | pass (final full suite) |
+| 16 Tile mapping = SH atlas mapping, borders | shared mapping test generalized to 128 | achievable as stated | pass (final full suite) |
 
 Runtime (CPU references pinned to shader bodies)
-| AC | Proof | Status |
-|---|---|---|
-| 17 Box projection | render-cpu reference + shader pin | achievable as stated |
-| 18 Ratio P3, P6, P7, P8, P28 | render-cpu ratio reference | achievable as stated |
-| 19 Live lighting P5, P4, P25 source-order; no SH read | reference + source-order test + source scan | achievable as stated |
-| 20 Promotion P1; no promotion weight / crossfade / override read | reference + source scan | achievable as stated |
-| 21 Fresnel values | render-cpu Fresnel reference | achievable as stated |
-| 22 Underside (+ eye band above the plane) | reference + shader pin | achievable as restated |
-| 23 Composite | render-cpu composite reference (extends `fog_fragment`) | achievable as stated |
-| 24 Zero-opacity P2, P23, P24 | collector / draw-set tests | achievable as stated |
-| 25 Light-term mask | reference + shader pin | achievable as stated (literal reading, see Corrections) |
-| 26 Pixel style cells; drift and wave tilt nothing | render-cpu style reference | achievable as stated |
-| 27 Manifest style parse and frame-capture defaults | scripting tests both runtimes + capture look test | achievable as stated |
-| 28 `surfaceReflectivity` validation, digest, drift scan, P12 | scripting + digest + drift scan + slots tests | achievable as stated |
-| 29 Scripting example parses TS + Luau; SDK types regenerate | example test + typedef snapshots | achievable as stated |
-| 30 Binding budgets | `pipeline_budget_tests.rs` + new fluid uniform/sampler count | achievable as stated |
-| 31 Grep gates | source scans | achievable as stated |
-| 32 DX12 FXC | `dx12_fxc_compiles_every_full_init_pipeline` (ignored, Windows) | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 17 Box projection | render-cpu reference + shader pin | achievable as stated | pass (final full suite) |
+| 18 Ratio P3, P6, P7, P8, P28 | render-cpu ratio reference | achievable as stated | pass (final full suite) |
+| 19 Live lighting P5, P4, P25 source-order; no SH read | reference + source-order test + source scan | achievable as stated | pass (final full suite) |
+| 20 Promotion P1; no promotion weight / crossfade / override read | reference + source scan | achievable as stated | pass (final full suite) |
+| 21 Fresnel values | render-cpu Fresnel reference | achievable as stated | pass (final full suite) |
+| 22 Underside (+ eye band above the plane) | reference + shader pin | achievable as restated | pass (final full suite) |
+| 23 Composite | render-cpu composite reference (extends `fog_fragment`) | achievable as stated | pass (final full suite) |
+| 24 Zero-opacity P2, P23, P24 | collector / draw-set tests | achievable as stated | pass (final full suite) |
+| 25 Light-term mask | reference + shader pin | achievable as stated (literal reading, see Corrections) | pass (final full suite) |
+| 26 Pixel style cells; drift and wave tilt nothing | render-cpu style reference | achievable as stated | pass (final full suite) |
+| 27 Manifest style parse and frame-capture defaults | scripting tests both runtimes + capture look test | achievable as stated | pass (final full suite) |
+| 28 `surfaceReflectivity` validation, digest, drift scan, P12 | scripting + digest + drift scan + slots tests | achievable as stated | pass (final full suite) |
+| 29 Scripting example parses TS + Luau; SDK types regenerate | example test + typedef snapshots | achievable as stated | pass (final full suite) |
+| 30 Binding budgets | `pipeline_budget_tests.rs` + new fluid uniform/sampler count | achievable as stated | pass (final full suite) |
+| 31 Grep gates | source scans | achievable as stated | pass (final full suite) |
+| 32 DX12 FXC | `dx12_fxc_compiles_every_full_init_pipeline` (ignored, Windows) | achievable as stated | pass (DX12 FXC ran, round 2 and 3 gates) |
 
 Adapter-backed
-| AC | Proof | Status |
-|---|---|---|
-| 33 Uniform-R probe at grazing view, capture-encoded | `fluid_surface_frame_test.rs` | achievable as restated |
-| 34 Two probes + unbound face in one draw | `fluid_surface_frame_test.rs` | achievable as stated |
-| 35 Unbound face 188 ± 1; lit face capture-encoded within 1/255 | `fluid_surface_frame_test.rs` | achievable as restated |
-| 36 Level change P11 | `fluid_surface_frame_test.rs` | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 33 Uniform-R probe at grazing view, capture-encoded | `fluid_surface_frame_test.rs` | achievable as restated | pass (GPU case ran, final gate) |
+| 34 Two probes + unbound face in one draw | `fluid_surface_frame_test.rs` | achievable as stated | pass (GPU case ran, final gate) |
+| 35 Unbound face 188 ± 1; lit face capture-encoded within 1/255 | `fluid_surface_frame_test.rs` | achievable as restated | pass (GPU case ran, final gate) |
+| 36 Level change P11 | `fluid_surface_frame_test.rs` | achievable as stated | pass (GPU case ran, final gate) |
 
 Manual (owner, in-engine)
-| AC | Proof | Status |
-|---|---|---|
-| 37 Existing map's pool reflects after rebuild | owner, in-engine | manual |
-| 38 Mirrors lit room incl. sdf corner; strafe parallax; low-eye coping | owner, in-engine | manual |
-| 39 Fresnel read: straight down faint, across near-mirror, vista strong | owner, in-engine | manual |
-| 40 Flicker, no lobe seam; script switch-off incl. vista; neon reflects | owner, in-engine | manual |
-| 41 Pixel vs smooth follow the manifest | owner, in-engine | manual |
-| 42 Canal boundary: step, never a geometry jump | owner, in-engine | manual |
-| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 37 Existing map's pool reflects after rebuild | owner, in-engine | manual | outstanding — owner, in-engine (four water maps rebaked with the final compiler) |
+| 38 Mirrors lit room incl. sdf corner; strafe parallax; low-eye coping | owner, in-engine | manual | outstanding — owner, in-engine |
+| 39 Fresnel read: straight down faint, across near-mirror, vista strong | owner, in-engine | manual | outstanding — owner, in-engine |
+| 40 Flicker, no lobe seam; script switch-off incl. vista; neon reflects | owner, in-engine | manual | outstanding — owner, in-engine |
+| 41 Pixel vs smooth follow the manifest | owner, in-engine | manual | outstanding — owner, in-engine |
+| 42 Canal boundary: step, never a geometry jump | owner, in-engine | manual | outstanding — owner, in-engine |
+| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual | partial — 1660 GPU, stage and VRAM measured (9b, 11f; predate review rounds 1–3); owner Mac 5300M Metal trace outstanding |
 
 
 ## Task 9b measurements (clean rerun, 2026-10-15)
@@ -218,24 +218,24 @@ Offscreen comparisons (pixel style, capture's 0.6 opacity; distance vs a zero-di
 
 ## Amendment rows (distance correction)
 
-| Row | Proof | Status |
-|---|---|---|
-| A1 Distance tile in a box room (1/L1 to each wall, miss 0, borders) | compiler capture test | achievable as stated |
-| A2 Capture-visibility warning on a mostly hidden L-shaped pool | compiler test + log capture | achievable as stated |
-| A3 Crate fixture: top edge within 0.5° from the west coping at 0.5/1.6/3 m; x 300–336 within 2° | render-cpu search reference, analytic tile | restated (0.6°) — `reflection_search_tests` crate cases pass: 0.55 / 0.54 / 0.38°, rim within 2° |
-| A4 Pillar fixture (restated to the base-attachment set) | render-cpu search reference | restated — behind-pillar draws no term; 12 base-attachment fragments across three eyes within 0.25 texel and 2 units; 42 of 2041 false-pillar fragments (2.1%) |
-| A5 Search depends on fragment/cell, box, point and distance tile alone (pixel cells read one lookup) | render-cpu + source scan | achievable as stated |
-| A6 Near-wall distance tile: GPU sampled texel matches the CPU lookup | adapter-backed | achievable as stated |
-| Restated 1, 2, 16, 17, 30, 33, Manual 38 | as each original row, extended | achievable as restated |
+| Row | Proof | Status | Result |
+|---|---|---|---|
+| A1 Distance tile in a box room (1/L1 to each wall, miss 0, borders) | compiler capture test | achievable as stated | pass (final full suite) |
+| A2 Capture-visibility warning on a mostly hidden L-shaped pool | compiler test + log capture | achievable as stated | pass (`a_capture_point_that_sees_under_half_its_water_warns`) |
+| A3 Crate fixture: top edge within 0.5° from the west coping at 0.5/1.6/3 m; x 300–336 within 2° | render-cpu search reference, analytic tile | restated (0.6°) — `reflection_search_tests` crate cases pass: 0.55 / 0.54 / 0.38°, rim within 2° | pass (final full suite) |
+| A4 Pillar fixture (restated to the base-attachment set) | render-cpu search reference | restated — behind-pillar draws no term; 12 base-attachment fragments across three eyes within 0.25 texel and 2 units; 42 of 2041 false-pillar fragments (2.1%) | pass (final full suite) |
+| A5 Search depends on fragment/cell, box, point and distance tile alone (pixel cells read one lookup) | render-cpu + source scan | achievable as stated | pass (final full suite) |
+| A6 Near-wall distance tile: GPU sampled texel matches the CPU lookup | adapter-backed | achievable as stated | pass (GPU case ran) |
+| Restated 1, 2, 16, 17, 30, 33, Manual 38 | as each original row, extended | achievable as restated | pass (final full suite) |
 
 ## Amendment rows (two-trigger split — dropped)
 
 S1–S9 (split by sight, room B, dock fixture, within-budget probes, face cuts, cap, dock `--jobs`, sky substrate, cap before capture) left the contract with the split; A2 (capture-visibility warning) stands again. Kept as their own rows:
 
-| Row | Proof | Status |
-|---|---|---|
-| A7 A finite capture hit at any in-level distance stores a non-zero distance; a miss stores 0 | compiler capture test | achievable as stated |
-| A8 Two probes over one room at different capture points that both see a wall point: ≥ 99% of fragments whose true mirror hits it resolve within one capture texel, none beyond five | render-cpu search reference, analytic tiles | restated — `two_probes_over_one_room_resolve_a_wall_point_both_see_to_within_a_texel_nearly_always`: 3072 fragments, 5 per probe over one texel (0.16%), worst 2.75 / 3.92 texels |
+| Row | Proof | Status | Result |
+|---|---|---|---|
+| A7 A finite capture hit at any in-level distance stores a non-zero distance; a miss stores 0 | compiler capture test | achievable as stated | pass (final full suite) |
+| A8 Two probes over one room at different capture points that both see a wall point: ≥ 99% of fragments whose true mirror hits it resolve within one capture texel, none beyond five | render-cpu search reference, analytic tiles | restated — `two_probes_over_one_room_resolve_a_wall_point_both_see_to_within_a_texel_nearly_always`: 3072 fragments, 5 per probe over one texel (0.16%), worst 2.75 / 3.92 texels | pass (final full suite) |
 
 ## Review round 1 (task 10, 2026-10-15)
 
@@ -264,6 +264,10 @@ Lean panel on `02a88d66f`: runtime tracer + compiler adversarial (Opus). No 🔴
 - Compiler: under an overhanging lip the doorway rescue saw only pit walls, so a box escaped through an opening or alcove. A plane now also counts as a wall when a column was raised onto it past a ceiling while unsealed (no ceiling hit farther out than its top) and ends on it. New fixtures fail without the rescue (wide doorway into a deeper room) and without the new rule (lip + opening). `settle` reports `Wedged` for a gap under two clearances. `check_roster` / loader docs state their different strictness. 114 prl-build reflection_probes tests, integration and loader tests, clippy and fmt pass.
 Recorded, not fixed (box fit is a heuristic; an authored `reflection_volume` overrides): lip + tray at some origins snaps the sides the pool lies toward to the tray riser (pinned by a fixture); the beam fixture sits ≈30 cm from a rescue that lands on the beam plane; a column closed before meeting any wall never gets a top; in very tall rooms the lip underside can win the ceiling vote. Runtime: a rim cell in a box corner whose capture sees the corner obliquely still dims to ≈0.95 (bilinear crease; clearing it needs a visible inset or a larger κ). Decision: stop iterating on box fit here.
 
+## Final gate (2026-10-16, HEAD `295a0d70e`)
+
+Full preflight: `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, `cargo test` (11 413 passed, 0 failed, 51 ignored), `cargo check --release` (no warnings), `crate-graph --check` — all clean. Feature-gated: clippy `-p postretro --features dev-tools,capture --all-targets` clean; `postretro` bin tests with `dev-tools,capture` 1 874 passed; level-loader with `load-prl` 305 passed. Fresh `--no-cache --release` rebakes, no reflection-probe warnings: reflection-probes-test 3 probes / 8 bindings (stage 0.12 s), vault-test 1 / 1 (0.04 s), campaign-test 2 / 2 (0.14 s; its 34 warnings are pre-existing content warnings), e24 12 / 17 (0.36 s). Not run: the ignored stress-map compile (≈30 min; last run at task 4 / 11f), a re-timed 1660 GPU capture after review rounds 1–3 (eye band, start rules, rim pull touch the reflecting variant).
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -287,6 +291,6 @@ Recorded, not fixed (box fit is a heuristic; an authored `reflection_volume` ove
 | 12a–12e | Two-trigger probe split (12a split core, 12a2 per-sample triggers, 12b face cuts, 12c dock + colonnade tuning, 12d re-capture, 12e fade reassessment) | — | — | **dropped 2026-10-15** (owner) — 12a (`05e35a6fb`) and 12a2 (`902b92f29`) built and passed, reverted by task 13; 12b stopped mid-task, partial work parked on local branch `wip/reflection-probes-12b-face-cuts` (`18252527b`, unverified); 12c–12e never started |
 | 13 | Split removal: revert the compiler to pre-split (`94e6b8530`) behaviour; keep A7 (finite hit never stores 0) and sight aligned to the shader's h < κ (`CAPTURE_SHADOW_MARGIN` pinned to render-cpu) for the capture-visibility warning; `STAGE_VERSION` 7 (5 and 6 were the split's epochs and may sit in local caches); A8 cross-probe agreement in the render-cpu search reference | delegated (Opus) | — | done — `split.rs`, `split_triggers.rs`, `split_tests.rs`, `cap.rs`, `capture_batch.rs` deleted; `mod.rs`, `placement.rs`, `stage_key.rs` and the placement fixtures/tests restored from `94e6b8530`; code now differs from pre-split only by A7 (`distance_bits` clamps a positive mean to 2⁻²⁴), κ sight in `capture_visibility.rs` (`CAPTURE_SHADOW_MARGIN` pinned to render-cpu), `STAGE_VERSION` 7, and tests. A2 `a_capture_point_that_sees_under_half_its_water_warns`, A7 `a_finite_hit_at_any_distance_stores_non_zero_and_a_miss_stores_zero`, κ `sight_holds_inside_the_capture_shadow_margin_and_fails_past_it` + `capture_shadow_margin_matches_the_fluid_shaders`, A8 (restated) pass. `--bin prl-build reflection_probes` 94, bin total 1627, `environment_volumes_compile` 5, `reflection_probes_compile` 1, CLI contract 6, ignored jobs byte-identity ran; render-cpu lib 437. Test map 3/8, e24 12/17, no warnings; both PRLs byte-identical to a build without the A7 clamp (no texel below 2⁻²⁴) |
 | 11g | Context docs at landing (`rendering_pipeline.md` §7.3a incl. search, capture shadow, fade, two pipelines; §10 "10 of 16"; `resource_management.md` §5; `build_pipeline.md` id 54 v2, `scripting.md` §2; `index.md` §3; SH border visual change) | integrating executor | 11f, 13 || done — `rendering_pipeline.md` §4 (octahedral border convention, its one home), §7.3a (State, Reflection rewritten: binding, search, capture shadow, ratio, Fresnel, Off, Style, two pipelines, references, limits; Install), §10 (group 4 probe resources, `FluidSceneInputs` style, params row, 10 of 16 / 7 / 8 / 2, identity-table refusal); `resource_management.md` §3, §5 (records, VRAM at the cap, dummies, lifetime); `build_pipeline.md` FGD, parse, step 13, Build Cache stage id, id 54 v2 row + format paragraph; `scripting.md` §2; `index.md` §3; roadmap path and wording. Values of κ, gate and tilt are named by symbol only. SH visual change goes in the PR's "Visual changes" section at landing |
-| 10 | `/preflight`, `/review-panel` → `/fix-review-findings` loop, full gate incl. `dev-tools`, `capture`, loader `load-prl` | integrating executor | 9, 11f, 13 | |
+| 10 | `/preflight`, `/review-panel` → `/fix-review-findings` loop, full gate incl. `dev-tools`, `capture`, loader `load-prl` | integrating executor | 9, 11f, 13 | done — three review rounds (see sections above); final gate clean |
 
 Hot paths: the fluid fragment stage (one tap, ≤ K descriptor evaluations, slab test; no per-frame allocation; share uniform and probe-index buffer written at install only; style and reflectivity change-driven through existing dirty paths). Build loop: the stage is cached under its own key and parallel per probe under the `--jobs` governor; its domain is the bound probes' tiles only.

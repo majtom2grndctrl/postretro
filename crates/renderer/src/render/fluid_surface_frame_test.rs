@@ -1848,3 +1848,125 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         "the GPU samples the texel the CPU search looks up: off by {worst} at {at:?}"
     );
 }
+
+// SPIKE honesty gate (blend-cost spike, never merged). With every probe's
+// synthetic neighbours forced to the probe itself and coverage on, so every
+// reflecting fragment takes all three taps, blend, precomputed and
+// stochastic render the same pixels as single within 1/255, in both styles,
+// with a live light off its reference so the precomputed ratio is exercised.
+#[test]
+fn spike_blend_modes_with_self_neighbours_match_single() {
+    use postretro_render_cpu::fluid_surface::reflection_blend::FluidReflectionBlendMode;
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let dimension = 8;
+    let share = |l: usize| ReflectionProbeLightShare {
+        roster_index: 0,
+        reference: [1.0; 3],
+        shares: std::array::from_fn(|lobe| [0.2 + 0.1 * lobe as f32, 0.5, 0.3 + 0.05 * l as f32]),
+    };
+    let probe = |layer: u32, x: f32| {
+        let mut lights = [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE];
+        lights[0] = share(layer as usize);
+        ReflectionProbeRecord {
+            source_entity: layer,
+            box_min: [x - 8.0, -8.0, -8.0],
+            box_max: [x + 8.0, 8.0, 8.0],
+            capture_point: [x, 0.0, 0.0],
+            layer,
+            lights,
+        }
+    };
+    let mut tiles = gradient_rgba16f_tile(dimension);
+    tiles.extend(uniform_rgba16f_tile(dimension, [0x3800, 0x3C00, 0x3400]));
+    let section = ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: vec![probe(0, 0.0), probe(1, 16.0)],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles,
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(
+            2, dimension,
+        ),
+    };
+    let look = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.5)
+    };
+    let pool = coarse_quad();
+    renderer
+        .full_mut()
+        .sh_volume_resources
+        .animation
+        .write_record_for_test(0, &flat_descriptor([0.4, 1.7, 0.9], true));
+    let self_neighbours = [[0, 0], [1, 1]];
+    let mut max_diff = 0u8;
+    for style in [FluidReflectionStyle::Smooth, FluidReflectionStyle::Pixel] {
+        renderer.set_fluid_reflection_style(style);
+        let frame = |renderer: &mut Renderer, mode: FluidReflectionBlendMode| {
+            renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
+            renderer.full().fluid_surface.rewrite_probe_neighbours(
+                renderer.queue.raw(),
+                Some(&section),
+                &self_neighbours,
+            );
+            renderer.set_fluid_reflection_blend(mode, true, 1.0);
+            renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+            capture_from(renderer, GRAZING)
+        };
+        let single = frame(&mut renderer, FluidReflectionBlendMode::Single);
+        let today = {
+            renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
+            renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+            capture_from(&mut renderer, GRAZING)
+        };
+        assert_ne!(single, today, "the probe term draws");
+        for mode in [
+            FluidReflectionBlendMode::Blend,
+            FluidReflectionBlendMode::Precomputed,
+            FluidReflectionBlendMode::Stochastic,
+        ] {
+            let pixels = frame(&mut renderer, mode);
+            let diff = pixels
+                .iter()
+                .zip(&single)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            eprintln!(
+                "[FluidSurfaceProof] spike blend GPU case ran: {style:?} {mode:?} max diff {diff}/255"
+            );
+            max_diff = max_diff.max(diff);
+            assert!(diff <= 1, "{style:?} {mode:?} vs single: {diff}/255");
+        }
+        // The lever is live: with the install-time neighbours (probe 1, a
+        // differently coloured capture) under coverage, blend differs.
+        renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
+        renderer.set_fluid_reflection_blend(FluidReflectionBlendMode::Blend, true, 1.0);
+        renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
+        let blended = capture_from(&mut renderer, GRAZING);
+        let spread = blended
+            .iter()
+            .zip(&single)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "[FluidSurfaceProof] spike blend GPU case ran: {style:?} real neighbours differ by {spread}/255"
+        );
+        assert!(
+            spread >= 2,
+            "real neighbours change the blend: {spread}/255"
+        );
+    }
+    renderer.set_fluid_reflection_blend(FluidReflectionBlendMode::Single, false, 1.0);
+    eprintln!("[FluidSurfaceProof] spike blend GPU case: worst {max_diff}/255");
+}

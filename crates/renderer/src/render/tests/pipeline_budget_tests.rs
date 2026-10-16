@@ -438,15 +438,16 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [0, 5, 1, 0],
             [3, 3, 1, 1],
             [2, 0, 2, 0],
-            [1, 0, 1, 0],
+            // SPIKE: plus the precomputed blend mode's lobe-ratio uniform.
+            [1, 0, 2, 0],
         ],
         "fluid FRAGMENT bindings changed"
     );
     let total = |slot: usize| fragment.iter().map(|group| group[slot]).sum::<u32>();
     assert_eq!(
         total(2),
-        7,
-        "six uniforms before probes, plus the share table"
+        8,
+        "six uniforms before probes, plus the share table, plus (SPIKE) the lobe ratios"
     );
     assert_eq!(
         total(0),

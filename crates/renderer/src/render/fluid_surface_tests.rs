@@ -560,9 +560,15 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
             struct_member_offsets(&module, "FluidProbe"),
             offsets(&[
                 ("box_min", std::mem::offset_of!(FluidProbeGpu, box_min)),
-                ("_pad0", 12),
+                (
+                    "neighbour0",
+                    std::mem::offset_of!(FluidProbeGpu, neighbour0)
+                ),
                 ("box_max", std::mem::offset_of!(FluidProbeGpu, box_max)),
-                ("_pad1", 28),
+                (
+                    "neighbour1",
+                    std::mem::offset_of!(FluidProbeGpu, neighbour1)
+                ),
                 (
                     "capture_point",
                     std::mem::offset_of!(FluidProbeGpu, capture_point)
@@ -1538,7 +1544,13 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
          fluid_probes.probes[in.probe].capture_point);\
          letview=normalize(uniforms.camera_position-point.position);\
-         letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
+         letblend_mode=fluid_scene.blend_mode&FLUID_BLEND_MODE_MASK;\
+         varreflection:FluidReflectionSample;\
+         ifblend_mode==FLUID_BLEND_MODE_SINGLE{\
+         reflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
+         }else{\
+         reflection=fluid_reflection_blend(blend_mode,in.probe,point.position,view,\
+         point.normal,vec2<i32>(floor(in.uv*dims)),in.slot);}\
          letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;\
          letband=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
          returnfluid_reflection_composite(surface,reflection.capture,fresnel*band);}",
@@ -3002,8 +3014,12 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
                     std::mem::offset_of!(FluidSceneUniform, reflection_style) as u32
                 ),
                 (
-                    "spare".to_owned(),
-                    std::mem::offset_of!(FluidSceneUniform, spare) as u32
+                    "blend_mode".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, blend_mode) as u32
+                ),
+                (
+                    "blend_band".to_owned(),
+                    std::mem::offset_of!(FluidSceneUniform, blend_band) as u32
                 ),
             ]
         );
@@ -3018,7 +3034,9 @@ fn fluid_scene_inputs_layout_is_a_depth_texture_and_a_small_uniform() {
     );
     let pending = code_only(wgsl_fn(include_str!("fluid_scene_inputs.rs"), "pending"));
     assert!(
-        pending.contains("FluidSceneUniform::from_inputs(self.fog_weight,self.reflection_style)"),
+        pending.contains(
+            "FluidSceneUniform::from_inputs(self.fog_weight,self.reflection_style,self.blend)"
+        ),
         "{pending}"
     );
     assert_eq!(
@@ -3075,6 +3093,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (4, 3, "fluid_probe_distance"),
         (5, 0, "scene_depth"),
         (5, 1, "fluid_scene"),
+        // SPIKE: the precomputed blend mode's per-probe lobe ratios.
+        (5, 2, "fluid_ratio_lobes"),
     ]
     .into_iter()
     .map(|(group, binding, name)| (group, binding, name.to_owned()))
@@ -3126,7 +3146,11 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         [0, 1, 2, 3],
         "group 4: params, probe array, table, distance array"
     );
-    assert_eq!(bindings(5), [0, 1], "group 5: scene depth, scene inputs");
+    assert_eq!(
+        bindings(5),
+        [0, 1, 2],
+        "group 5: scene depth, scene inputs, (SPIKE) lobe ratios"
+    );
 }
 
 // Acceptance row 31, source scan: the probe's array layer derives from the
@@ -3154,7 +3178,8 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     ] {
         assert!(tail.contains(call), "fs_main passes the varying: `{call}`");
     }
-    assert_eq!(tail.matches("probe,").count(), 2, "{tail}");
+    // SPIKE: the blend lever hands the varying to `fluid_reflection_blend` too.
+    assert_eq!(tail.matches("probe,").count(), 3, "{tail}");
     assert!(!tail.contains("letprobe") && !tail.contains("varprobe"));
 
     // Every table read is indexed by the face's probe: the `probe`
@@ -3172,7 +3197,8 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
          fluid_probes.probes[in.probe].capture_point);"
     ));
     assert_eq!(
-        code.matches("fluid_probes.probes[probe]").count() + 3,
+        // SPIKE: plus the blend falloff's two neighbour box reads.
+        code.matches("fluid_probes.probes[probe]").count() + 3 + 2,
         table_reads
     );
     for function in ["fluid_reflection_sample", "fluid_reflection_ratio"] {
@@ -3184,8 +3210,8 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     // The single array tap, and the layer it reads.
     assert_eq!(
         code.matches("fluid_probe_array").count(),
-        2,
-        "declaration + one tap"
+        3,
+        "declaration + one tap, and (SPIKE) the precomputed sample's tap"
     );
     let sample = code_only(wgsl_fn(source, "fluid_reflection_sample"));
     assert!(sample.contains("textureSampleLevel(fluid_probe_array,sh_atlas_sampler,uv,layer,0.0)"));

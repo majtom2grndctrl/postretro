@@ -345,12 +345,17 @@ impl HostCommandQueues {
         let state = self.clients.get(&client_id)?;
         let mut aim = state.activation_edges.delivered_aim(token)?;
         let stamp = state.activation_edges.delivered_teleport_yaw_stamp(token)?;
-        let yaw = registry
-            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-            .ok()?
-            .teleport
-            .accumulated_yaw;
-        aim.yaw = crate::netcode::wire_convert::facing_in_teleport_frame(aim.yaw, yaw, stamp);
+        // As host command resolution: a pawn without movement holds no teleport
+        // frame, so its start keeps the aim it declared.
+        if let Ok(movement) =
+            registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+        {
+            aim.yaw = crate::netcode::wire_convert::facing_in_teleport_frame(
+                aim.yaw,
+                movement.teleport.accumulated_yaw,
+                stamp,
+            );
+        }
         Some(aim)
     }
 

@@ -36,6 +36,8 @@ mod streaming_hint_source;
 #[cfg(test)]
 #[path = "parse/streaming_hint_tests.rs"]
 mod streaming_hint_tests;
+#[path = "parse/teleporters.rs"]
+mod teleporters;
 
 use authoring_regions::{
     BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
@@ -839,6 +841,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
     let mut environment_volumes = Vec::new();
+    let mut teleporters = teleporters::TeleporterParser::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
@@ -1102,6 +1105,23 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // Semantic brush entities are resolved by dedicated compiler/runtime
         // paths. Editor groups are already flattened into static world brushes.
         let has_brushes = !brush_ids.is_empty();
+
+        if matches!(
+            classname.as_str(),
+            "trigger_teleport" | "teleport_destination"
+        ) {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            teleporters.extract(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
+                &classname,
+                entities.len() - 1,
+                &mut map_entities,
+            )?;
+            continue;
+        }
 
         // Environment volumes are non-solid: their brushes never join the
         // static world set, so they seal no cell and reach no bake.
@@ -1593,6 +1613,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         kinematic_waypoints,
         trigger_volumes,
         environment_volumes,
+        teleporters: teleporters.finish()?,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,

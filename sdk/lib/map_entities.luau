@@ -12,11 +12,12 @@
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "light" | "fog" | "emitter" | "spawner"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "light" | "fog" | "emitter" | "spawner"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
 
+local wrapTeleporterEntity = wrapTeleporterEntity
 local wrapLightEntity = wrapLightEntity
 local wrapFogVolumeEntity = wrapFogVolumeEntity
 local wrapMoverEntity = wrapMoverEntity
@@ -36,12 +37,13 @@ end
 local MAP_KINDS: { [string]: { component: string, wrap: (any) -> any } } = {
   mover = { component = "kinematic_mover", wrap = wrapMoverEntity },
   trigger = { component = "trigger_volume", wrap = wrapTriggerVolumeEntity },
+  teleporter = { component = "teleporter", wrap = wrapTeleporterEntity },
   light = { component = "light", wrap = wrapLightEntity },
   fog = { component = "fog_volume", wrap = wrapFogVolumeEntity },
   emitter = { component = "emitter", wrap = projectEmitter },
   spawner = { component = "spawner", wrap = wrapSpawnerEntity },
 }
-local KIND_NAMES = '"mover", "trigger", "light", "fog", "emitter", "spawner"'
+local KIND_NAMES = '"mover", "trigger", "teleporter", "light", "fog", "emitter", "spawner"'
 
 local MapEntitiesSdk = {}
 

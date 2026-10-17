@@ -71,7 +71,9 @@ fn spawned_tags_from_entity(entity: &MapEntity) -> Vec<String> {
 pub fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Option<EntityId> {
     let transform = Transform {
         position: entity.origin,
-        rotation: entity.rotation_quat(),
+        // The spawner's rotation is the one its `+Z`-front enemies spawn with,
+        // so they face the authored arrow.
+        rotation: entity.model_rotation_quat(),
         scale: Vec3::ONE,
     };
     let id = registry.try_spawn(transform, &entity.tags).or_else(|| {
@@ -112,6 +114,21 @@ mod tests {
             key_values,
             tags: vec!["closet".to_string()],
         }
+    }
+
+    /// Spawned enemies copy the spawner's rotation, so its `+Z` front — theirs —
+    /// faces the map arrow: yaw 90 is engine `-X` (Quake `+Y`).
+    #[test]
+    fn spawner_front_faces_the_map_arrow() {
+        let mut registry = EntityRegistry::new();
+        let mut entity = entity_with_kvps(&[("archetype", "grunt"), ("count", "2")]);
+        entity.angles = Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+        let id = handle(&entity, &mut registry).expect("spawner spawns");
+        let front = registry.get_component::<Transform>(id).unwrap().rotation * Vec3::Z;
+        assert!(
+            front.abs_diff_eq(Vec3::NEG_X, 1e-6),
+            "spawner front {front}"
+        );
     }
 
     #[test]

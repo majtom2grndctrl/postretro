@@ -18,13 +18,13 @@ use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 const DT: f32 = 1.0 / 60.0;
 const ENV: EnvironmentView<'static> = EnvironmentView::level_only(-20.0);
 /// The fixture capsule's reach from center to feet (`half_height + radius`).
-const REACH: f32 = 1.2;
+pub(super) const REACH: f32 = 1.2;
 const RADIUS: f32 = 0.4;
 const STEP_HEIGHT: f32 = 0.3;
 const MAX_HEIGHT: f32 = 1.6;
 const DURATION_MS: f32 = 320.0;
 /// The riser faces -X at this x; the pawn approaches along +X.
-const RISER_X: f32 = 5.0;
+pub(super) const RISER_X: f32 = 5.0;
 
 pub(super) fn vault_params(from: VaultEntry) -> VaultParams {
     VaultParams {
@@ -36,14 +36,14 @@ pub(super) fn vault_params(from: VaultEntry) -> VaultParams {
     }
 }
 
-fn vault_descriptor(from: VaultEntry) -> PlayerMovementDescriptor {
+pub(super) fn vault_descriptor(from: VaultEntry) -> PlayerMovementDescriptor {
     let mut desc = descriptor();
     assert_eq!(desc.ground.step_height, STEP_HEIGHT);
     desc.vault = Some(vault_params(from));
     desc
 }
 
-fn ground_auto() -> VaultEntry {
+pub(super) fn ground_auto() -> VaultEntry {
     VaultEntry {
         ground: Some(VaultTrigger::Auto),
         ..VaultEntry::default()
@@ -66,7 +66,7 @@ fn quad(points: &mut Vec<Vec3>, tris: &mut Vec<[u32; 3]>, corners: [Vec3; 4], no
 
 /// Floor at y = 0 for x < `RISER_X`, a riser facing -X, and a top at `top_y`
 /// beyond it, optionally under a ceiling at `ceiling_y`.
-fn ledge_world(top_y: f32, ceiling_y: Option<f32>) -> CollisionWorld {
+pub(super) fn ledge_world(top_y: f32, ceiling_y: Option<f32>) -> CollisionWorld {
     let mut points = Vec::new();
     let mut tris = Vec::new();
     let (z0, z1) = (-50.0, 50.0);
@@ -119,7 +119,7 @@ fn ledge_world(top_y: f32, ceiling_y: Option<f32>) -> CollisionWorld {
     CollisionWorld::from_triangles_for_test(points, tris)
 }
 
-fn forward() -> MovementInput {
+pub(super) fn forward() -> MovementInput {
     MovementInput {
         // `x` is right; at yaw 0 right is world +X, toward the riser.
         wish_dir: Vec2::new(1.0, 0.0),
@@ -139,7 +139,7 @@ fn step(
 
 /// A pawn resting on the floor with its capsule surface `gap` short of the
 /// riser, after idle ticks settle it.
-fn grounded_at_riser(
+pub(super) fn grounded_at_riser(
     desc: &PlayerMovementDescriptor,
     world: &CollisionWorld,
     gap: f32,

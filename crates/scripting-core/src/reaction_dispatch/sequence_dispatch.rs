@@ -67,6 +67,7 @@ pub(super) fn dispatch_sequence(
             SequenceTarget::Entity(id) => *id,
             SequenceTarget::Activators
             | SequenceTarget::FiredTrigger
+            | SequenceTarget::FiredTeleporter
             | SequenceTarget::EventPlayer => {
                 log::warn!(
                     "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
@@ -161,7 +162,10 @@ fn sequence_primitives_are_valid(
         // reaction.
         if matches!(
             step.id,
-            SequenceTarget::Group(_) | SequenceTarget::Activators | SequenceTarget::FiredTrigger
+            SequenceTarget::Group(_)
+                | SequenceTarget::Activators
+                | SequenceTarget::FiredTrigger
+                | SequenceTarget::FiredTeleporter
         ) {
             continue;
         }

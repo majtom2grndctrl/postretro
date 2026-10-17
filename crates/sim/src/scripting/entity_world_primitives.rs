@@ -73,6 +73,9 @@ enum QueryFilter {
     Spawner {
         tag: Option<String>,
     },
+    Teleporter {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Sprite visuals are engine-managed.
     AlwaysEmpty,
 }
@@ -87,12 +90,13 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
+        "teleporter" => Ok(QueryFilter::Teleporter { tag }),
         "spawner" => Ok(QueryFilter::Spawner { tag }),
         "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"sprite_visual\""
             ),
         }),
     }
@@ -100,7 +104,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"spawner\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"spawner\" | \"sprite_visual\", tag?: string }. \
      `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
@@ -368,6 +372,13 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                         Ok(JsonValue(collect_identity_snapshots_json(
                             &ctx,
                             ComponentKind::KinematicMover,
+                            tag.as_deref(),
+                        )))
+                    }
+                    QueryFilter::Teleporter { tag } => {
+                        Ok(JsonValue(collect_identity_snapshots_json(
+                            &ctx,
+                            ComponentKind::Teleporter,
                             tag.as_deref(),
                         )))
                     }

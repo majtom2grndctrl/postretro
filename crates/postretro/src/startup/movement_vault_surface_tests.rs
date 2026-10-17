@@ -13,7 +13,7 @@ use postretro_foundation::data_descriptors::{
 };
 use postretro_foundation::{MovementStateKind, PlayerMovementComponent};
 use postretro_physics::collision::CollisionWorld;
-use postretro_physics::movement::{MovementInput, tick};
+use postretro_physics::movement::{MovementInput, tick_with_immersion_and_armed};
 
 use super::fluids_swim_surface_tests::{dev_content, dev_manifest, fluids_named_by, run_manifest};
 
@@ -89,13 +89,14 @@ fn vaults_in_a_test_world(movement: &PlayerMovementDescriptor) -> bool {
     };
     let mut vaulted = false;
     for _ in 0..60 {
-        position = tick(
+        position = tick_with_immersion_and_armed(
             &mut component,
             &input,
             &world,
             EnvironmentView::level_only(-20.32),
             1.0 / 60.0,
             position,
+            |_| false,
         )
         .0;
         vaulted |= component.movement_state.kind() == MovementStateKind::Vault;

@@ -124,6 +124,7 @@ impl App {
         self.kinematic_mover_render.clear();
         self.fluid_surface_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
+        self.teleporter_bindings = Default::default();
         self.player_events = Default::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.client_fire_resolutions.clear();
@@ -173,9 +174,16 @@ impl App {
         // the issuer and SH's workers go now, not at the next install.
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
+            session
+                .scripting
+                .script_ctx
+                .pending_teleporter_mutations
+                .borrow_mut()
+                .clear();
         }
 
         self.level = None;
+        self.pending_teleport_sounds.clear();
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
         // No volume of this level may resolve after it unloads; the next install

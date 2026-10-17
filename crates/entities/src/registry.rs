@@ -32,6 +32,7 @@ use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
+use crate::components::teleporter::TeleporterComponent;
 use crate::components::touchable::TouchableComponent;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
@@ -159,6 +160,9 @@ pub enum ComponentKind {
     /// Output-only resolved immersion from the pawn's last authoritative
     /// movement tick (engine-internal; read only by `player.immersion`).
     Immersion = 23,
+    /// Map-authored teleporter identity and host-owned arming state; scripts
+    /// address it through member handles, never raw component attachment.
+    Teleporter = 24,
 }
 
 impl ComponentKind {
@@ -192,6 +196,7 @@ impl ComponentKind {
             ComponentKind::HitVolume,
             ComponentKind::MapOrdinal,
             ComponentKind::Immersion,
+            ComponentKind::Teleporter,
         ];
         VARIANTS.len()
     };
@@ -265,6 +270,7 @@ pub enum ComponentValue {
     HitVolume(HitVolumeComponent),
     MapOrdinal(MapOrdinal),
     Immersion(ImmersionComponent),
+    Teleporter(TeleporterComponent),
 }
 
 impl ComponentValue {
@@ -294,6 +300,7 @@ impl ComponentValue {
             ComponentValue::HitVolume(_) => ComponentKind::HitVolume,
             ComponentValue::MapOrdinal(_) => ComponentKind::MapOrdinal,
             ComponentValue::Immersion(_) => ComponentKind::Immersion,
+            ComponentValue::Teleporter(_) => ComponentKind::Teleporter,
         }
     }
 }
@@ -704,6 +711,19 @@ impl Component for ImmersionComponent {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::Immersion(self)
+    }
+}
+
+impl Component for TeleporterComponent {
+    const KIND: ComponentKind = ComponentKind::Teleporter;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Teleporter(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Teleporter(self)
     }
 }
 

@@ -4,6 +4,8 @@
 use glam::{Vec2, Vec3};
 
 mod carry;
+mod teleport;
+pub use teleport::TeleportEvent;
 mod dispatch;
 mod environment;
 mod intents;
@@ -87,7 +89,7 @@ pub struct MovementStateEdge {
 
 /// Events the movement tick emits for the same-frame dispatch layer to fire
 /// into the reaction registry.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MovementEvents {
     pub landed: bool,
     pub jumped: bool,
@@ -96,6 +98,7 @@ pub struct MovementEvents {
     /// the active fluid table; `None` on a tick with no swim edge. Lets the
     /// swim enter and exit sounds name their fluid after the pawn is dry.
     pub swim_fluid: Option<u16>,
+    pub teleport: Option<TeleportEvent>,
 }
 
 impl MovementEvents {
@@ -191,12 +194,12 @@ impl MovementCollisionSource for CombinedCollisionWorld<'_> {
     }
 }
 
-/// Advance one pawn one fixed tick. `environment` is the level gravity plus the
-/// installed volumes; the tick resolves it once, at the tick-start `position`,
-/// and hands the result to the state intent, which never queries it.
-///
-/// Prediction and reconcile replay call this form: it reports nothing they
-/// could carry into a later tick beyond the pose, the component and events.
+/// Test convenience for [`tick_with_immersion_and_armed`]: one fixed tick that
+/// discards the immersion and arms every teleporter as its map spawned it
+/// (`enabled_on_spawn`). Production movement never calls it: host movement,
+/// client prediction and reconcile replay all supply the installed armed state,
+/// which scripts change at runtime.
+#[cfg(test)]
 pub fn tick(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -210,12 +213,8 @@ pub fn tick(
     (position, events)
 }
 
-/// [`tick`], also reporting the tick's resolved immersion (0..=1): the
-/// tick-start resolve the state intent used, after any swim entry re-resolved
-/// it for the standing capsule. Authoritative host movement stores it in the
-/// pawn's output-only `ImmersionComponent` for the `player.immersion` slot.
-/// Nothing feeds it back into a tick: the next tick resolves afresh from its
-/// own position.
+/// [`tick`], also reporting the tick's immersion; test-only for the same reason.
+#[cfg(test)]
 pub fn tick_with_immersion(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -223,6 +222,40 @@ pub fn tick_with_immersion(
     environment: EnvironmentView<'_>,
     dt: f32,
     position: Vec3,
+) -> (Vec3, MovementEvents, f32) {
+    let world = collision.combined_collision();
+    tick_with_immersion_and_armed(
+        component,
+        input,
+        collision,
+        environment,
+        dt,
+        position,
+        |index| world.static_world.teleporters.records()[index].enabled_on_spawn,
+    )
+}
+
+/// Advance one pawn one fixed tick: the movement entry for host movement, client
+/// prediction and reconcile replay alike. `environment` is the level gravity
+/// plus the installed volumes; the tick resolves it once, at the tick-start
+/// `position`, and hands the result to the state intent, which never queries it.
+/// `armed` reports whether teleporter `index` (map order) is armed this tick;
+/// callers read the installed armed state, so all three agree.
+///
+/// Also returns the tick's resolved immersion (0..=1): the tick-start resolve
+/// the state intent used, after any swim entry re-resolved it for the standing
+/// capsule. Authoritative host movement stores it in the pawn's output-only
+/// `ImmersionComponent` for the `player.immersion` slot. Nothing feeds it back
+/// into a tick: the next tick resolves afresh from its own position.
+#[allow(clippy::too_many_arguments)]
+pub fn tick_with_immersion_and_armed(
+    component: &mut PlayerMovementComponent,
+    input: &MovementInput,
+    collision: &impl MovementCollisionSource,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+    position: Vec3,
+    armed: impl FnMut(usize) -> bool,
 ) -> (Vec3, MovementEvents, f32) {
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
@@ -440,6 +473,14 @@ pub fn tick_with_immersion(
     // jump buffer down toward a silent drop if it expires before landing.
     advance_forgiveness(component, dt);
 
+    let current_pos = teleport::resolve(
+        component,
+        input,
+        &collision,
+        current_pos,
+        &mut events,
+        armed,
+    );
     (current_pos, events, resolved_environment.immersion)
 }
 
@@ -477,7 +518,7 @@ mod tests {
     const ENV: EnvironmentView<'static> = EnvironmentView::level_only(GRAVITY);
 
     /// Canonical player descriptor mirroring `content/dev/scripts/player.ts`.
-    fn canonical_descriptor() -> PlayerMovementDescriptor {
+    pub(super) fn canonical_descriptor() -> PlayerMovementDescriptor {
         PlayerMovementDescriptor {
             sounds: None,
             capsule: CapsuleParams {
@@ -2810,7 +2851,7 @@ mod tests {
         desc
     }
 
-    fn idle_input() -> MovementInput {
+    pub(super) fn idle_input() -> MovementInput {
         MovementInput {
             wish_dir: Vec2::ZERO,
             jump_pressed: false,
@@ -5618,6 +5659,7 @@ mod tests {
                 },
             ],
             swim_fluid: None,
+            teleport: None,
         };
         let mut addresses = Vec::new();
         events.append_named_events(&mut addresses);

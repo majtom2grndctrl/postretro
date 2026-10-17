@@ -386,6 +386,9 @@ pub struct PlayerMovementComponent {
     /// reload) carry it. Neither replicated nor serialized.
     #[serde(skip)]
     pub vault_barred: bool,
+    /// Relocation identity and arrival latches survive prediction and replay.
+    #[serde(default)]
+    pub teleport: crate::movement::TeleportState,
 }
 
 impl PlayerMovementComponent {
@@ -476,6 +479,7 @@ impl PlayerMovementComponent {
             jump_spent: false,
             swim_reentry_latched: false,
             vault_barred: false,
+            teleport: Default::default(),
         }
     }
 

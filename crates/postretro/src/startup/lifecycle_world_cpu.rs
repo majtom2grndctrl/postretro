@@ -128,6 +128,11 @@ pub(crate) fn install_world_cpu(
         trigger_volume_bridge.populate_from_level(&mut registry, &world.trigger_volumes);
     }
 
+    crate::runtime_teleporters::spawn_loaded_teleporters(
+        &mut script_ctx.registry.borrow_mut(),
+        world,
+    );
+
     // Kinematic movers. The caller commits the static collision world (built
     // and validated before any install mutation) ahead of this call.
     let mover_colliders = crate::runtime_movers::build_loaded_mover_colliders(world);
@@ -172,6 +177,7 @@ pub(crate) fn install_world_cpu(
         .collect();
     let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
+        .filter(|entity| entity.classname != "trigger_teleport")
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
     let builtin_handled = {
         let mut registry = script_ctx.registry.borrow_mut();
@@ -215,6 +221,7 @@ pub(crate) fn install_world_cpu(
             // the active set, so the level's player events join this
             // composition.
             data_registry.set_level_player_events(std::mem::take(&mut manifest.player_events));
+            data_registry.set_level_teleport_events(std::mem::take(&mut manifest.teleport_events));
             data_registry.populate_level_with_trigger_events(
                 manifest.reactions,
                 manifest.crossings,
@@ -557,7 +564,13 @@ pub(crate) fn install_world_cpu(
     );
     timings.record("level_load_event");
 
+    let teleporter_bindings = postretro_sim::teleporter_system::TeleporterBindingTable::build(
+        script_ctx,
+        command_diagnostics.clone(),
+        spawn_context.clone(),
+    );
     WorldInstallProducts {
+        teleporter_bindings,
         mover_colliders,
         spawned_mover_entities,
         trigger_bindings,

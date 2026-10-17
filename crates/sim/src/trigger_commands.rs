@@ -46,6 +46,10 @@ pub(crate) enum BoundTriggerCommand {
     Disarm {
         target: BoundTarget,
     },
+    TeleporterArmed {
+        target: BoundTarget,
+        armed: bool,
+    },
     StoreSlot {
         slot: String,
         value: BoundStoreValue,
@@ -88,6 +92,7 @@ pub(crate) enum BoundTarget {
     Entity(EntityId),
     Activators,
     FiredTrigger,
+    FiredTeleporter,
     /// `on.player`: the pawn of the player a player event fires for.
     EventPlayer,
 }
@@ -95,6 +100,7 @@ pub(crate) enum BoundTarget {
 #[derive(Debug, Clone, Default)]
 pub struct TriggerFireContext {
     pub fired_trigger: Option<EntityId>,
+    pub fired_teleporter: Option<EntityId>,
     /// One authoritative player produces each fire. Keeping that identity as
     /// an option lets command dispatch borrow it instead of cloning a vector
     /// for every command in the fixed-tick path.
@@ -130,6 +136,7 @@ pub(crate) enum BoundTriggerCommandKind {
     GrantAmmo,
     Arm,
     Disarm,
+    TeleporterArmed,
     StoreSlot,
     AddOwnerSlot,
     AnimationState,
@@ -204,6 +211,15 @@ impl BoundTriggerCommand {
             return;
         }
         match self {
+            Self::TeleporterArmed { target, armed } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::teleporter_commands::enqueue_teleporter_mutations(
+                    script_ctx,
+                    registry,
+                    targets.as_slice(),
+                    *armed,
+                );
+            }
             Self::StoreSlot { slot, value } => match value {
                 BoundStoreValue::Literal(value) => {
                     let mut slot_table = script_ctx.slot_table.borrow_mut();
@@ -223,8 +239,9 @@ impl BoundTriggerCommand {
                     }
                 }
                 BoundStoreValue::Ir(program) => {
-                    if let Err(error) = dispatch_scope
-                        .seed("@occupancy", IrValue::Number(fire_context.occupancy as f32))
+                    if fire_context.fired_teleporter.is_none()
+                        && let Err(error) = dispatch_scope
+                            .seed("@occupancy", IrValue::Number(fire_context.occupancy as f32))
                     {
                         log::warn!("[Trigger] failed to seed @occupancy: {error:?}");
                         return;
@@ -374,6 +391,7 @@ impl BoundTriggerCommand {
                     BoundTarget::Entity(_)
                     | BoundTarget::Activators
                     | BoundTarget::FiredTrigger
+                    | BoundTarget::FiredTeleporter
                     | BoundTarget::EventPlayer => {
                         log::warn!(
                             "[Trigger] updateNpcState requires a tag or group target; special target is invalid; skipping"
@@ -402,12 +420,16 @@ impl BoundTriggerCommand {
                 BoundTarget::Group(_)
                 | BoundTarget::Activators
                 | BoundTarget::FiredTrigger
+                | BoundTarget::FiredTeleporter
                 | BoundTarget::EventPlayer => {
                     log::warn!(
                         "[Trigger] spawnFromSpawner requires a spawner member or tag target; skipping"
                     );
                 }
             },
+            Self::TeleporterArmed { .. } => {
+                log::warn!("[Teleport] bound command requires a live ScriptCtx queue; skipped")
+            }
             Self::StoreSlot { .. } | Self::AddOwnerSlot { .. } => {
                 unreachable!("store slots execute through their store path")
             }
@@ -423,6 +445,7 @@ impl BoundTriggerCommand {
             | Self::GrantAmmo { target, .. }
             | Self::Arm { target }
             | Self::Disarm { target }
+            | Self::TeleporterArmed { target, .. }
             | Self::AddOwnerSlot { target, .. }
             | Self::AnimationState { target, .. }
             | Self::UpdateNpcState { target, .. }
@@ -444,6 +467,7 @@ impl BoundTriggerCommand {
             Self::GrantAmmo { .. } => BoundTriggerCommandKind::GrantAmmo,
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
+            Self::TeleporterArmed { .. } => BoundTriggerCommandKind::TeleporterArmed,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AddOwnerSlot { .. } => BoundTriggerCommandKind::AddOwnerSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
@@ -480,6 +504,9 @@ impl BoundTarget {
             }
             Self::Activators => ResolvedTargets::Borrowed(fire_context.activator.as_slice()),
             Self::FiredTrigger => ResolvedTargets::Borrowed(fire_context.fired_trigger.as_slice()),
+            Self::FiredTeleporter => {
+                ResolvedTargets::Borrowed(fire_context.fired_teleporter.as_slice())
+            }
             Self::EventPlayer => match fire_context.event_player {
                 Some(pawn) if !registry.exists(pawn) => {
                     log::warn!(

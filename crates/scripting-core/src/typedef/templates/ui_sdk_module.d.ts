@@ -269,7 +269,7 @@ declare module "postretro/ui" {
   /** Options for `playSound`: `bus` routes to a mixer bus (SFX when omitted); `at: on.emitter` positions the sound where the named gameplay event happened, on the SFX bus. */
   export type PresentationAudience = ActivatorsTarget | TriggerTarget | PlayerTarget | "everyone";
   export type PresentationOptions = { audience?: PresentationAudience };
-  export type AudienceScope<A> = (Extract<A, ActivatorsTarget | TriggerTarget> extends never ? {} : TriggerEventParams) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
+  export type AudienceScope<A> = (Extract<A, ActivatorsTarget> extends never ? {} : Pick<TriggerEventParams, "activators">) & (Extract<A, TriggerTarget> extends never ? {} : Pick<TriggerEventParams, "trigger">) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
   export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
   export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
   export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;

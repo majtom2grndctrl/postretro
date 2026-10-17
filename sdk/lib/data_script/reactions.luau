@@ -17,6 +17,7 @@ local commands = __postretroDataScriptParts.commands
 local ACTIVATORS_TARGET = commands.ACTIVATORS_TARGET
 local PLAYER_TARGET = commands.PLAYER_TARGET
 local TRIGGER_TARGET = commands.TRIGGER_TARGET
+local TELEPORTER_TARGET = commands.TELEPORTER_TARGET
 -- The emitter token carries its own wire spelling, so `playSound` (a separate
 -- prelude chunk) lowers it without seeing this chunk's private tokens.
 local EMITTER_TARGET = table.freeze({ __wire = "@emitter" })
@@ -29,6 +30,7 @@ local DISPATCH_PARAMS = table.freeze({
   dt = table.freeze({ op = "input", name = "@dt" }),
   activators = ACTIVATORS_TARGET,
   trigger = TRIGGER_TARGET,
+  teleporter = TELEPORTER_TARGET,
   occupancy = table.freeze({ op = "input", name = "@occupancy" }),
   emitter = EMITTER_TARGET,
   player = PLAYER_TARGET,

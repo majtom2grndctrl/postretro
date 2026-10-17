@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use bitcode::{Decode, Encode};
 
 mod components;
+mod teleport;
 pub use components::{
     COMPONENT_KIND_AGENT, COMPONENT_KIND_AMMO_RESERVE, COMPONENT_KIND_BILLBOARD_EMITTER,
     COMPONENT_KIND_BRAIN, COMPONENT_KIND_DEFERRED_EFFECT, COMPONENT_KIND_DESCRIPTOR_PROVENANCE,
@@ -39,11 +40,14 @@ pub use components::{
     COMPONENT_KIND_KINEMATIC_MOVER_STATE, COMPONENT_KIND_LIGHT, COMPONENT_KIND_MAP_ORDINAL,
     COMPONENT_KIND_MESH_ANIMATION_STATE, COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
     COMPONENT_KIND_PROJECTILE, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
-    COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME,
-    COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload,
-    WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef, WireKinematicMoverState,
-    WireLightAnimation, WireLightState, WireMeshAnimationState, WireMovementState,
-    WirePlayerMovementState, WireSpinAnimation, WireTransform,
+    COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM,
+    COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS,
+    RawComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef,
+    WireKinematicMoverState, WireLightAnimation, WireLightState, WireMeshAnimationState,
+    WireMovementState, WirePlayerMovementState, WireSpinAnimation, WireTransform,
+};
+pub use teleport::{
+    NO_WIRE_TELEPORTER, WireTeleportState, WireTeleporterState, teleport_yaw_is_valid,
 };
 
 mod control;
@@ -349,7 +353,9 @@ impl WeaponCuesMessage {
 /// Bumped to 19 for the protected push-drift velocity in player movement state;
 /// `WireMovementState::Swim` and the swim re-entry latch share that bump.
 /// Bumped to 20 for `WireMovementState::Vault`.
-pub const SNAPSHOT_VERSION: u16 = 20;
+/// Bumped to 21 for teleporters: player movement state gained the pawn teleport
+/// record, and entity records gained the teleporter armed-state payload.
+pub const SNAPSHOT_VERSION: u16 = 21;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -617,6 +623,9 @@ pub enum ValidationError {
     /// A `KinematicMoverState` payload carried an invalid `direction` or `mode`
     /// tag. Loaded-mover existence is intentionally not checked in this crate.
     InvalidKinematicMoverState,
+    /// A teleporter armed-state payload named the no-teleporter sentinel index.
+    /// Whether the index names an installed teleporter is engine-side binding.
+    InvalidTeleporterState,
     InvalidProjectilePresentation,
     NonFinitePresentationState(u16),
     InvalidPresentationState(u16),
@@ -642,6 +651,9 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "unbound presentation state requires a Transform")
             }
             ValidationError::NonFiniteScriptTime => write!(f, "non-finite server script time"),
+            ValidationError::InvalidTeleporterState => {
+                write!(f, "teleporter state names the no-teleporter index")
+            }
             ValidationError::VersionMismatch { expected, received } => write!(
                 f,
                 "snapshot version mismatch: expected {expected}, received {received}"
@@ -919,7 +931,9 @@ impl RawEntityRecord {
             }
             let carries_finite_transform = components.iter().any(|c| match c {
                 ComponentPayload::Transform(t) => t.all_finite(),
-                ComponentPayload::PlayerMovementState(_) => false,
+                ComponentPayload::PlayerMovementState(_) | ComponentPayload::TeleporterState(_) => {
+                    false
+                }
                 ComponentPayload::MeshAnimationState(_) => false,
                 ComponentPayload::KinematicMoverState(_)
                 | ComponentPayload::LightState(_)
@@ -1037,6 +1051,11 @@ pub struct WireFireButtonState {
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
 pub struct InputCommand {
     pub client_tick: u32,
+    /// The accumulated teleport yaw the client held when it sampled this
+    /// command's facing. Host resolution and client replay turn facing, and the
+    /// intent relative to it, by the pawn's current accumulated yaw minus this
+    /// stamp. Same wrapped representation as the pawn teleport record.
+    pub teleport_yaw_stamp: f32,
     pub movement: WireMovementInput,
     pub fire_button: WireFireButtonState,
     pub reload: bool,
@@ -1323,6 +1342,7 @@ mod tests {
 
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
             velocity: [0.0, 3.5, -1.0],
@@ -1347,6 +1367,7 @@ mod tests {
 
     fn raw_transform_payload() -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: None,
@@ -1360,6 +1381,7 @@ mod tests {
 
     fn raw_movement_payload() -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(sample_movement()),
@@ -1373,6 +1395,7 @@ mod tests {
 
     fn raw_mesh_animation_payload(state: &str) -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
             transform: None,
             player_movement: None,
@@ -1409,6 +1432,7 @@ mod tests {
 
     fn raw_mover_payload() -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
             transform: None,
             player_movement: None,
@@ -1473,6 +1497,7 @@ mod tests {
 
     fn sample_input() -> InputCommand {
         InputCommand {
+            teleport_yaw_stamp: 0.0,
             secondary_button: WireFireButtonState {
                 pressed: false,
                 active: false,
@@ -1609,6 +1634,7 @@ mod tests {
         ] {
             for swim_reentry_latched in [false, true] {
                 let movement = WirePlayerMovementState {
+                    teleport: Default::default(),
                     movement_state: state,
                     swim_reentry_latched,
                     ..sample_movement()
@@ -1623,6 +1649,7 @@ mod tests {
     #[test]
     fn swimming_movement_state_round_trips_its_vertical_drift() {
         let movement = WirePlayerMovementState {
+            teleport: Default::default(),
             movement_state: WireMovementState::Swim { fluid: 0 },
             push_velocity: [1.5, -2.25, 0.5],
             ..sample_movement()
@@ -2280,6 +2307,7 @@ mod tests {
                 0,
                 0,
                 vec![RawComponentPayload {
+                    teleporter: None,
                     component_kind: 1234, // not Transform/PlayerMovementState
                     transform: Some(sample_transform()),
                     player_movement: None,
@@ -2305,6 +2333,7 @@ mod tests {
     #[test]
     fn missing_payload_slot_for_kind_rejects() {
         let payload = RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: None, // kind says Transform but slot is empty
             player_movement: None,
@@ -2326,6 +2355,7 @@ mod tests {
     fn duplicate_payload_slots_reject() {
         // Both slots populated: ambiguous which one the kind names.
         let payload = RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_TRANSFORM,
             transform: Some(sample_transform()),
             player_movement: Some(sample_movement()),
@@ -2349,6 +2379,7 @@ mod tests {
         // The named slot (player_movement) is None, so the error is Missing, not
         // Mismatched — even though a different slot is populated.
         let payload = RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: Some(sample_transform()),
             player_movement: None,
@@ -2447,6 +2478,7 @@ mod tests {
                 ComponentPayload::LightState(_) => 1,
                 ComponentPayload::EmitterState(_) => 2,
                 ComponentPayload::FogState(_) => 4,
+                ComponentPayload::TeleporterState(_) => 24,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -2558,6 +2590,7 @@ mod tests {
         // The client_tick is the first field and must survive the wire so the host
         // can echo it back as the movement-authority ack.
         let cmd = InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: 9_001,
             ..sample_input()
         };
@@ -3048,9 +3081,10 @@ mod tests {
             movement.movement_state = WireMovementState::Normal;
             mutate(&mut movement);
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
-                player_movement: Some(movement),
+                player_movement: Some(movement.clone()),
                 mesh_animation_state: None,
                 kinematic_mover: None,
                 light: None,
@@ -3068,6 +3102,7 @@ mod tests {
     #[test]
     fn non_finite_dash_boost_rejects() {
         let movement = WirePlayerMovementState {
+            teleport: Default::default(),
             movement_state: WireMovementState::Dash {
                 elapsed_ms: 10.0,
                 boost: [1.0, f32::NAN, 3.0],
@@ -3075,9 +3110,10 @@ mod tests {
             ..sample_movement()
         };
         let payload = RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
-            player_movement: Some(movement),
+            player_movement: Some(movement.clone()),
             mesh_animation_state: None,
             kinematic_mover: None,
             light: None,
@@ -3092,9 +3128,11 @@ mod tests {
 
     fn vault_payload(state: WireMovementState) -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
             player_movement: Some(WirePlayerMovementState {
+                teleport: Default::default(),
                 movement_state: state,
                 ..sample_movement()
             }),
@@ -3167,6 +3205,7 @@ mod tests {
     #[test]
     fn vertical_sliding_boost_rejects_before_typed_apply() {
         let movement = WirePlayerMovementState {
+            teleport: Default::default(),
             movement_state: WireMovementState::Sliding {
                 elapsed_ms: 10.0,
                 boost: [1.0, 0.25, 3.0],
@@ -3176,9 +3215,10 @@ mod tests {
             ..sample_movement()
         };
         let payload = RawComponentPayload {
+            teleporter: None,
             component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             transform: None,
-            player_movement: Some(movement),
+            player_movement: Some(movement.clone()),
             mesh_animation_state: None,
             kinematic_mover: None,
             light: None,
@@ -3198,6 +3238,7 @@ mod tests {
     fn invalid_sliding_floor_normal_rejects_before_typed_apply() {
         for floor_normal in [[f32::MAX, 1.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.0]] {
             let movement = WirePlayerMovementState {
+                teleport: Default::default(),
                 movement_state: WireMovementState::Sliding {
                     elapsed_ms: 10.0,
                     boost: [1.0, 0.0, 3.0],
@@ -3207,9 +3248,10 @@ mod tests {
                 ..sample_movement()
             };
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
-                player_movement: Some(movement),
+                player_movement: Some(movement.clone()),
                 mesh_animation_state: None,
                 kinematic_mover: None,
                 light: None,
@@ -3233,6 +3275,7 @@ mod tests {
             Some([0.0, 1.000_4, 0.0]),
         ] {
             let movement = WirePlayerMovementState {
+                teleport: Default::default(),
                 movement_state: WireMovementState::Sliding {
                     elapsed_ms: 10.0,
                     boost: [1.0, 0.0, 3.0],
@@ -3242,9 +3285,10 @@ mod tests {
                 ..sample_movement()
             };
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
-                player_movement: Some(movement),
+                player_movement: Some(movement.clone()),
                 mesh_animation_state: None,
                 kinematic_mover: None,
                 light: None,
@@ -3283,6 +3327,7 @@ mod tests {
             let mut mover = sample_mover_state();
             mutate(&mut mover);
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
                 transform: None,
                 player_movement: None,
@@ -3309,6 +3354,7 @@ mod tests {
             let mut mover = sample_mover_state();
             mutate(&mut mover);
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
                 transform: None,
                 player_movement: None,
@@ -3341,6 +3387,7 @@ mod tests {
             let mut transform = sample_transform();
             mutate(&mut transform);
             let payload = RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(transform),
                 player_movement: None,
@@ -3369,6 +3416,7 @@ mod tests {
             0,
             0,
             vec![RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(bad_transform),
                 player_movement: None,
@@ -3398,6 +3446,7 @@ mod tests {
             0,
             0,
             vec![RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(bad_transform),
                 player_movement: None,
@@ -3666,7 +3715,7 @@ mod tests {
         assert!(matches!(
             snapshot.validate(),
             Err(ValidationError::VersionMismatch {
-                expected: 20,
+                expected: 21,
                 received: 19
             })
         ));
@@ -3674,7 +3723,19 @@ mod tests {
 
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
+            ComponentPayload::TeleporterState(state) => RawComponentPayload {
+                component_kind: crate::wire::COMPONENT_KIND_TELEPORTER,
+                teleporter: Some(*state),
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
+            },
             ComponentPayload::Transform(t) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_TRANSFORM,
                 transform: Some(*t),
                 player_movement: None,
@@ -3685,9 +3746,10 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
                 transform: None,
-                player_movement: Some(*m),
+                player_movement: Some(m.clone()),
                 mesh_animation_state: None,
                 kinematic_mover: None,
                 light: None,
@@ -3695,6 +3757,7 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_MESH_ANIMATION_STATE,
                 transform: None,
                 player_movement: None,
@@ -3705,6 +3768,7 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_KINEMATIC_MOVER_STATE,
                 transform: None,
                 player_movement: None,
@@ -3715,6 +3779,7 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::LightState(state) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_LIGHT,
                 transform: None,
                 player_movement: None,
@@ -3725,6 +3790,7 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::EmitterState(state) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_BILLBOARD_EMITTER,
                 transform: None,
                 player_movement: None,
@@ -3735,6 +3801,7 @@ mod tests {
                 fog: None,
             },
             ComponentPayload::FogState(state) => RawComponentPayload {
+                teleporter: None,
                 component_kind: COMPONENT_KIND_FOG_VOLUME,
                 transform: None,
                 player_movement: None,
@@ -3745,6 +3812,72 @@ mod tests {
                 fog: Some(state.clone()),
             },
         }
+    }
+    // --- Teleporters ---
+
+    #[test]
+    fn teleport_record_snapshot_rejects_the_pre_teleport_layout() {
+        const PRE_TELEPORT_SNAPSHOT_VERSION: u16 = 20;
+        assert_eq!(SNAPSHOT_VERSION, PRE_TELEPORT_SNAPSHOT_VERSION + 1);
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.version = PRE_TELEPORT_SNAPSHOT_VERSION;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: PRE_TELEPORT_SNAPSHOT_VERSION,
+            })
+        );
+    }
+
+    #[test]
+    fn teleporter_state_rejects_the_sentinel_index_as_a_value_error() {
+        let raw = |index| RawComponentPayload {
+            teleporter: Some(WireTeleporterState {
+                index,
+                source_entity: 3,
+                armed: true,
+            }),
+            component_kind: COMPONENT_KIND_TELEPORTER,
+            transform: None,
+            player_movement: None,
+            mesh_animation_state: None,
+            kinematic_mover: None,
+            light: None,
+            emitter: None,
+            fog: None,
+        };
+        assert!(matches!(
+            raw(0).validate(),
+            Ok(ComponentPayload::TeleporterState(state)) if state.index == 0
+        ));
+        assert_eq!(
+            raw(NO_WIRE_TELEPORTER).validate(),
+            Err(ValidationError::InvalidTeleporterState)
+        );
+        let mut doubled = raw(0);
+        doubled.transform = Some(sample_transform());
+        assert_eq!(
+            doubled.validate(),
+            Err(ValidationError::MismatchedComponentPayload(
+                COMPONENT_KIND_TELEPORTER
+            ))
+        );
+    }
+
+    #[test]
+    fn teleport_record_movement_payload_rejects_an_invalid_latch_set() {
+        let mut payload = raw_movement_payload();
+        payload.player_movement.as_mut().unwrap().teleport =
+            WireTeleportState::new(4, 1.0, 1, &[0, 2]).unwrap();
+        assert!(payload.validate().is_ok());
+        let mut bad = payload.clone();
+        bad.player_movement
+            .as_mut()
+            .unwrap()
+            .teleport
+            .accumulated_yaw = f32::NAN;
+        assert!(bad.validate().is_err());
     }
 }
 

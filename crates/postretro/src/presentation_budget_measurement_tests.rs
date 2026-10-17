@@ -222,6 +222,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
             &mut ctx.registry.borrow_mut(),
             &ctx,
             &TriggerFireContext {
+                fired_teleporter: None,
                 fired_trigger: Some(trigger),
                 activator: Some(pawn),
                 occupancy: 1,

@@ -59,7 +59,8 @@ pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Optio
 
     let transform = Transform {
         position: entity.origin,
-        rotation: entity.rotation_quat(),
+        // glTF props face `+Z`; turn that front onto the authored arrow.
+        rotation: entity.model_rotation_quat(),
         scale: Vec3::ONE,
     };
     let id = registry.try_spawn(transform, &entity.tags).or_else(|| {
@@ -98,6 +99,19 @@ mod tests {
             key_values: kv,
             tags: vec![],
         }
+    }
+
+    /// Map yaw 90 (engine `-X`, the TrenchBroom arrow along Quake `+Y`) turns
+    /// the prop's `+Z` glTF front along the arrow.
+    #[test]
+    fn prop_front_faces_the_map_arrow() {
+        let mut reg = EntityRegistry::new();
+        let mut entity = entity_with_kvps(&[("model", "models/decraniated/scene.gltf")]);
+        entity.angles = Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+
+        let id = handle(&entity, &mut reg).expect("spawn should succeed");
+        let front = reg.get_component::<Transform>(id).unwrap().rotation * Vec3::Z;
+        assert!(front.abs_diff_eq(Vec3::NEG_X, 1e-6), "prop front {front}");
     }
 
     #[test]

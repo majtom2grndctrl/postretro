@@ -66,6 +66,8 @@ mod remote_materialize;
 mod replication;
 mod seat;
 mod snapshot_apply;
+#[cfg(test)]
+mod teleport_tests;
 pub mod weapon_cues;
 // M15 Phase 3.5: the replicated-slot schema/fingerprint/lowering, the engine
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
@@ -95,6 +97,13 @@ mod predict_reconcile_harness_vault;
 // replay or the wire merge.
 #[cfg(test)]
 mod predict_reconcile_harness_immersion;
+// Teleporter co-op proofs: prediction, host arming, refusal, stamped frames.
+#[cfg(test)]
+mod predict_reconcile_harness_teleport;
+#[cfg(test)]
+mod predict_reconcile_harness_teleport_join;
+#[cfg(test)]
+mod predict_reconcile_harness_teleport_rig;
 // M15 Phase 3 regression: the connected-client boot-spawn gate (the boot → baseline
 // arm sequence the harness above otherwise skips). Pins "client owns no local pawn
 // until baseline".
@@ -124,9 +133,11 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
+#[cfg(any(test, feature = "test-support"))]
+pub use command_queue::host_resolve_remote_commands;
 pub use command_queue::{
     CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
-    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
+    WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands_in_registry,
 };
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
@@ -141,8 +152,10 @@ pub use host::{
 };
 pub use host_presentation::{
     present_client_pawns as host_present_client_pawns,
+    probe_presented_client_pawn_feet as host_probe_presented_client_pawn_feet,
     record_client_pawn_poses as host_record_client_pawn_poses,
     restore_client_pawn_authoritative_poses as host_restore_client_pawn_authoritative_poses,
+    take_client_pawn_teleports as host_take_client_pawn_teleports,
 };
 #[cfg(test)]
 use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
@@ -150,6 +163,7 @@ pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declarati
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};
+pub use interpolation::ObservedTeleport;
 pub(crate) use interpolation::{DemoMover, InterpolationDelayState, RemoteInterpolationBuffer};
 pub use join_seed::{HostJoinSeeds, JoinSeedArrival, ParticipationSeed};
 pub(crate) use lifecycle::{
@@ -168,6 +182,7 @@ pub use state_slots::{HostStateReplication, ReplicatedSlotIdentity};
 // Correction-classification API + thresholds and the reconcile entry point.
 // Re-exported for test consumers (the integrated latency harness asserts classification
 // directly against the pinned AC thresholds); production code uses the direct submodule path.
+pub use prediction::LocalTeleportAdoption;
 #[allow(unused_imports)]
 pub(crate) use prediction::{
     CorrectionClass, DASH_CORRECTION_MAX_M, ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M,
@@ -184,7 +199,8 @@ pub(crate) use replication::produce_owned_snapshots;
 pub use replication::produce_owned_snapshots_with_host_aim;
 pub use replication::{
     ReplicableSet, host_register_descriptor_entities, host_register_descriptor_entity,
-    host_register_loaded_movers, host_register_presentation_overrides,
+    host_register_loaded_movers, host_register_loaded_teleporters,
+    host_register_presentation_overrides,
 };
 pub use seat::{SeatTable, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
@@ -697,6 +713,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::HitVolume => postretro_net::wire::COMPONENT_KIND_HIT_VOLUME,
         ComponentKind::MapOrdinal => postretro_net::wire::COMPONENT_KIND_MAP_ORDINAL,
         ComponentKind::Immersion => postretro_net::wire::COMPONENT_KIND_IMMERSION,
+        ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
     }
 }
 
@@ -746,6 +763,9 @@ fn wire_transform_is_finite(t: &WireTransform) -> bool {
 fn payload_is_finite(payload: &ComponentPayload) -> bool {
     match payload {
         ComponentPayload::Transform(wire) => wire_transform_is_finite(wire),
+        ComponentPayload::TeleporterState(state) => {
+            state.index != postretro_net::wire::NO_WIRE_TELEPORTER
+        }
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is
@@ -773,6 +793,9 @@ fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
 /// wire guard `wire_transform_is_finite` applies to poses.
 fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
+    if !m.teleport.is_valid() {
+        return false;
+    }
     let state_finite = match m.movement_state {
         WireMovementState::Normal | WireMovementState::Swim { .. } => true,
         WireMovementState::Dash { elapsed_ms, boost } => {
@@ -1030,6 +1053,12 @@ pub fn client_receive_and_apply(
                 tick_dt,
             );
         }
+        frame_outcome
+            .local_teleport_adoptions
+            .append(&mut prediction.teleport_adoptions);
+        if let Some(pawn) = prediction.first_record_hold.take() {
+            frame_outcome.local_first_record_hold = Some(pawn);
+        }
         for buffer in client::encode_client_messages(&outcome) {
             client.send_input(buffer);
         }
@@ -1045,6 +1074,23 @@ pub fn client_receive_and_apply(
         presentation_bindings,
     );
 
+    // A record that could not merge (no tuning yet) leaves the pawn without its
+    // teleport record; prediction stays inert and a full baseline is requested
+    // until one merges. Judged per frame, not per received record: an idle pawn's
+    // stream may carry no record once its tuning lands. Nothing is asked for while
+    // no merge could succeed: without tuning, or while the host's tuning gives the
+    // pawn no movement component.
+    let unmerged_wanted = prediction.first_record_pending()
+        && client_environment_view(host_tuning, environment_volumes).is_some()
+        && prediction.armed().is_some_and(|pawn| {
+            registry
+                .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                .is_ok()
+        });
+    if let Some(req) = replication.refresh_unmerged_local_pawn(unmerged_wanted) {
+        client.send_input(wire::encode(&wire::ClientMessage::BaselineRefresh(req)));
+    }
+
     // Resend pending baseline-refresh requests on the 5 Hz cadence. A request is one
     // BaselineRefresh ClientMessage on the reliable Input channel; the matching full
     // baseline clears the pending entry so the resend stops.
@@ -1053,6 +1099,7 @@ pub fn client_receive_and_apply(
         let buffer = wire::encode(&wire::ClientMessage::BaselineRefresh(req));
         client.send_input(buffer);
     }
+    frame_outcome.observed_teleports = replication.take_observed_teleports();
     frame_outcome
 }
 
@@ -1124,6 +1171,23 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     prediction: &mut ClientPrediction,
     context: ClientPredictionTickContext<'_, C>,
 ) -> ClientPredictionTickResult {
+    client_predict_tick_with_sender(
+        registry,
+        &mut |bytes| client.send_input(bytes),
+        prediction,
+        context,
+    )
+}
+
+/// [`client_predict_tick`] with the transport send injected. The conditioned-link
+/// harness drives this same body, so its proofs exercise the production stamp,
+/// armed-state read and registry write rather than a mirror of them.
+pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
+    registry: &mut EntityRegistry,
+    send_input: &mut dyn FnMut(Vec<u8>),
+    prediction: &mut ClientPrediction,
+    context: ClientPredictionTickContext<'_, C>,
+) -> ClientPredictionTickResult {
     let ClientPredictionTickContext {
         command,
         collision,
@@ -1134,9 +1198,9 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
-    let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
+    send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_predict_send();
 
     // 2. Before the local baseline arms prediction, or before the host's tuning
@@ -1177,8 +1241,21 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
 
     // 4. Advance the local pawn one predicted tick through the movement-only helper
     //    and record it in the history ring.
-    let Some((transform, movement, movement_events)) =
-        prediction.predict_tick_with_events(input, prev, collision, environment, tick_dt)
+    let Some((transform, movement, movement_events)) = prediction
+        .predict_tick_with_events_and_armed(
+            input,
+            prev,
+            collision,
+            environment,
+            tick_dt,
+            |index| {
+                collision
+                    .combined_collision()
+                    .static_world
+                    .teleporters
+                    .armed(registry, index)
+            },
+        )
     else {
         return ClientPredictionTickResult {
             client_tick,
@@ -1199,7 +1276,11 @@ pub fn client_predict_tick<C: MovementCollisionSource>(
     // 6. Write the predicted state back to the registry so camera follow, collision,
     //    and the next predicted tick read it. Task 5 reconciles this against the
     //    authoritative snapshot.
-    let _ = registry.set_component(armed.entity_id, transform);
+    if movement_events.teleport.is_some() {
+        let _ = registry.set_presentation_transform(armed.entity_id, transform);
+    } else {
+        let _ = registry.set_component(armed.entity_id, transform);
+    }
     let _ = registry.set_component(armed.entity_id, movement);
     ClientPredictionTickResult {
         client_tick,
@@ -1228,9 +1309,14 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-pub fn client_send_input_command(
+/// Zero-tick sends must sample the same pawn teleport frame as their facing.
+/// The prediction identity is armed throughout the first-record gate; until that
+/// record merges the pawn's movement component is absent or descriptor-default,
+/// so the stamp is zero.
+pub fn client_send_input_command_in_registry(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,
+    registry: &EntityRegistry,
 ) -> Option<u32> {
     let Some(NetEndpoint::Client {
         client, prediction, ..
@@ -1238,11 +1324,33 @@ pub fn client_send_input_command(
     else {
         return None;
     };
-    let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = stamped_client_input(prediction, command, registry);
+    let client_tick = input.client_tick;
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     prediction.diag_record_fire_send();
     Some(client_tick)
+}
+
+/// Allocate the next command tick and stamp it with the teleport frame its facing
+/// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
+/// registry state the camera follows. Before the client's first record for its pawn
+/// (and after a level unload disarms prediction) nothing has turned the facing, so
+/// the stamp is zero. Every outbound movement command goes through here.
+pub(crate) fn stamped_client_input(
+    prediction: &mut ClientPrediction,
+    command: &SimCommand,
+    registry: &EntityRegistry,
+) -> wire::InputCommand {
+    let mut input = sim_command_to_input(command, prediction.next_client_tick());
+    input.teleport_yaw_stamp = prediction
+        .armed()
+        .and_then(|pawn| {
+            registry
+                .get_component::<PlayerMovementComponent>(pawn.entity_id)
+                .ok()
+        })
+        .map_or(0.0, |movement| movement.teleport.accumulated_yaw);
+    input
 }
 
 pub fn client_local_pawn_network_id(endpoint: Option<&NetEndpoint>) -> Option<NetworkId> {
@@ -5193,6 +5301,7 @@ mod tests {
         let mut queues = HostCommandQueues::new();
         let token = fixture.shot_id.activation().token;
         let start = wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick,
             movement: wire::WireMovementInput {
                 wish_dir: [0.0, 0.0],
@@ -5225,6 +5334,7 @@ mod tests {
         };
         assert!(queues.ingest(7, &start));
         let follow = wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick.wrapping_add(1),
             activation: wire::WireActivationInput::default(),
             ..start
@@ -5427,6 +5537,7 @@ mod tests {
         let token = fixture.shot_id.activation().token;
         let command = |client_tick, initiation: Option<postretro_foundation::ActivationToken>| {
             wire::InputCommand {
+                teleport_yaw_stamp: 0.0,
                 client_tick,
                 movement: wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -6414,12 +6525,12 @@ mod tests {
         );
         assert_eq!(
             postretro_net::handshake::WIRE_VERSION,
-            31,
+            32,
             "the vault movement state requires wire version 31"
         );
         assert_eq!(
             postretro_net::wire::SNAPSHOT_VERSION,
-            20,
+            21,
             "the vault movement state requires snapshot version 20"
         );
     }
@@ -6980,7 +7091,8 @@ mod tests {
                 ComponentKind::Projectile => Some(ComponentKind::HitVolume),
                 ComponentKind::HitVolume => Some(ComponentKind::MapOrdinal),
                 ComponentKind::MapOrdinal => Some(ComponentKind::Immersion),
-                ComponentKind::Immersion => None,
+                ComponentKind::Immersion => Some(ComponentKind::Teleporter),
+                ComponentKind::Teleporter => None,
             }
         }
 
@@ -7176,6 +7288,7 @@ mod tests {
     fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                teleport: Default::default(),
                 knockback_velocity: [0.0; 3],
                 push_velocity: [0.0; 3],
                 velocity: [12.0, 0.0, 4.0],
@@ -7791,6 +7904,7 @@ mod tests {
                                     scale: [1.0, 1.0, 1.0],
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    teleport: Default::default(),
                                     knockback_velocity: [0.0; 3],
                                     push_velocity: [0.0; 3],
                                     velocity: [0.0, 0.0, 0.0],

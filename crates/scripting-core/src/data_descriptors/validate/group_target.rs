@@ -79,6 +79,7 @@ pub enum SubjectToken {
     Activators,
     /// `on.trigger`: the volume that fired.
     FiredTrigger,
+    FiredTeleporter,
     /// `on.player`: the player a player event fires for.
     EventPlayer,
 }
@@ -90,6 +91,7 @@ impl SubjectToken {
         match spelling {
             "@activators" => Some(Self::Activators),
             "@trigger" => Some(Self::FiredTrigger),
+            "@teleporter" => Some(Self::FiredTeleporter),
             "@player" => Some(Self::EventPlayer),
             _ => None,
         }
@@ -99,6 +101,7 @@ impl SubjectToken {
         match self {
             Self::Activators => "@activators",
             Self::FiredTrigger => "@trigger",
+            Self::FiredTeleporter => "@teleporter",
             Self::EventPlayer => "@player",
         }
     }
@@ -108,6 +111,7 @@ impl SubjectToken {
         match target {
             SequenceTarget::Activators => Some(Self::Activators),
             SequenceTarget::FiredTrigger => Some(Self::FiredTrigger),
+            SequenceTarget::FiredTeleporter => Some(Self::FiredTeleporter),
             SequenceTarget::EventPlayer => Some(Self::EventPlayer),
             _ => None,
         }
@@ -117,6 +121,7 @@ impl SubjectToken {
         match self {
             Self::Activators => SequenceTarget::Activators,
             Self::FiredTrigger => SequenceTarget::FiredTrigger,
+            Self::FiredTeleporter => SequenceTarget::FiredTeleporter,
             Self::EventPlayer => SequenceTarget::EventPlayer,
         }
     }
@@ -140,12 +145,12 @@ pub fn validate_authored_subject_token(
         AuthoredText::Absent => return Ok(None),
         AuthoredText::Text(spelling) => SubjectToken::from_wire(&spelling).ok_or_else(|| {
             format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\" or \"@player\", got \"{spelling}\""
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"{spelling}\""
             )
         })?,
         AuthoredText::NonString(type_name) => {
             return Err(format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\" or \"@player\", got a {type_name}"
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got a {type_name}"
             ));
         }
     };
@@ -169,10 +174,20 @@ pub fn validate_subject_token_primitive(
     primitive: &str,
 ) -> Result<(), String> {
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
+    let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    if arms_a_teleporter && token != SubjectToken::FiredTeleporter {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` takes `@teleporter` (`on.teleporter`), not `{}`",
+            token.as_wire()
+        ));
+    }
     match token {
         SubjectToken::Activators | SubjectToken::EventPlayer if arms_a_trigger => Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` targets a trigger volume, so it takes `@trigger` (`on.trigger`), not `{}`",
             token.as_wire()
+        )),
+        SubjectToken::FiredTeleporter if !arms_a_teleporter => Err(format!(
+            "reaction `{reaction}` {site}: `@teleporter` (`on.teleporter`) carries only `armTeleporter` and `disarmTeleporter`, not `{primitive}`"
         )),
         SubjectToken::FiredTrigger if !arms_a_trigger => Err(format!(
             "reaction `{reaction}` {site}: `@trigger` (`on.trigger`) carries only `armTrigger` and `disarmTrigger`, not `{primitive}`"

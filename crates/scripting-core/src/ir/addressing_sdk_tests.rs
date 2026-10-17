@@ -345,3 +345,33 @@ fn define_trigger_event_builds_the_tag_keyed_wire_in_both_runtimes() {
         ])
     );
 }
+
+#[test]
+fn teleport_subject_commands_emit_identical_wire_in_both_runtimes() {
+    let ts = quickjs_fixture_value(
+        r#"
+        import { defineReaction, type TeleportEventParams } from "postretro";
+        JSON.stringify([
+          defineReaction("used", (on: TeleportEventParams) => on.teleporter.disarm()),
+          defineReaction("rearm", (on: TeleportEventParams) => on.teleporter.arm()),
+          defineReaction("heal", (on: TeleportEventParams) => on.activators.grantHealth(5)),
+        ]);
+    "#,
+    );
+    let lua = luau_fixture_value(
+        r#"
+        return {
+          defineReaction("used", function(on) return on.teleporter:disarm() end),
+          defineReaction("rearm", function(on) return on.teleporter:arm() end),
+          defineReaction("heal", function(on) return on.activators:grantHealth(5) end),
+        }
+    "#,
+    );
+    assert_eq!(
+        serde_json::to_vec(&ts).unwrap(),
+        serde_json::to_vec(&lua).unwrap()
+    );
+    assert_eq!(ts[0]["target"], "@teleporter");
+    assert_eq!(ts[1]["primitive"], "armTeleporter");
+    assert_eq!(ts[2]["target"], "@activators");
+}

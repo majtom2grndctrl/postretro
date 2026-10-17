@@ -92,3 +92,46 @@ fn trigger_event_from_lua(
         levels: string_array_from_lua(&item, "levels")?,
     })))
 }
+
+/// Luau twin of the level-only teleporter-event drain.
+pub fn drain_level_teleport_events_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<TeleportEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "teleportEvents", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`teleportEvents` field")?;
+    let mut events = Vec::with_capacity(len);
+    for i in 0..len {
+        let parsed = (|| -> Result<TeleportEventDescriptor, DescriptorError> {
+            let item = lua_table(
+                arr.get::<LuaValue>(i + 1).map_err(lua_err)?,
+                "teleport-event entry",
+            )?;
+            if item.contains_key("tag").map_err(lua_err)?
+                || item.contains_key("levels").map_err(lua_err)?
+            {
+                return Err(DescriptorError::InvalidShape { reason: "teleportEvents accepts only level teleporter member ids, without tag or levels".into() });
+            }
+            let event = get_required_string_lua(&item, "event")?;
+            if event != "teleport" {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("unknown teleport event `{event}`"),
+                });
+            }
+            Ok(TeleportEventDescriptor {
+                teleporter: EntityId::from_raw(get_required_u32_lua(&item, "teleporter")?),
+                event,
+                fire: string_array_from_lua(&item, "fire")?,
+            })
+        })();
+        match parsed {
+            Ok(event) => events.push(event),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: teleportEvents[{i}] is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    Ok(events)
+}

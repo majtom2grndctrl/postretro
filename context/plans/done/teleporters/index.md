@@ -59,7 +59,8 @@ resident on arrival.
     from the landmark, vertical included, is rotated onto the target.
 - **Arrival state.**
   - A vault aborts. Slide and dash continue with the rotated velocity.
-  - Ground becomes airborne, and no mover carry follows the pawn.
+  - No mover carry follows the pawn. The arrival is grounded only on static floor
+    under its capsule; otherwise it is airborne and owes no coyote jump.
   - An arrival capsule blocked by world geometry or a mover at its pose this
     tick refuses the teleport with no event and no sound, and warns once per
     teleporter.
@@ -107,8 +108,11 @@ resident on arrival.
   into the teleporter record. It plays on the traveller's machine from forward
   prediction, never from reconcile replay, as landing and jumping do
   (`audio.md` §4). A cut whose post-replay generation is ahead of the
-  prediction plays it once more for the teleport the client missed, such as an
-  unpredicted scripted shift. It defaults to none, which keeps seamless silent.
+  prediction plays the authoritative last teleporter's cue once for the teleport
+  the client missed, such as an unpredicted scripted shift. A same-generation
+  authoritative replacement retains the speculative cue without another playback,
+  even if the teleporter or its cue differs. Several unseen teleports coalesce to
+  the last cue. It defaults to none, which keeps seamless silent.
 - **Host-fired gameplay event.** The authoritative teleport fires the teleporter's
   `teleport` event once per pawn per teleport, never from prediction. It
   publishes `activators` and a `teleporter` token (`arm`/`disarm`), and no
@@ -200,7 +204,7 @@ Firing:
 - [ ] Disarming then arming a latched teleporter, in one tick or across ticks, clears its latches and fires it for occupants on the next tick. `arm()` on an armed one does not. Arm then disarm of a disarmed one in one tick leaves it disarmed and fires nothing (P3).
 - [ ] Two players entering one classic teleporter on the same tick both arrive, and the event fires twice. Arming an occupied seamless teleporter with two players inside shifts both on the next tick, and the event fires once for each (P4).
 - [ ] An arrival blocked by world geometry or a mover is refused: no move, no event, no sound, one warning. A mover moving into the arrival capsule on the teleport tick refuses it, and one moving out of it does not, on host and client alike (P5).
-- [ ] A vault in progress aborts. A slide or dash survives with the rotated velocity. The pawn is airborne after arrival.
+- [ ] A vault in progress aborts and reports `vault_ended`. A slide or dash survives with the rotated velocity. The pawn arrives grounded on static floor and airborne otherwise, never carried by a mover, with no coyote jump in mid-air.
 - [ ] An enemy or projectile inside an armed teleporter is not moved, and no event fires. A player dead at tick start, including one zeroed by a deferred health write that lands before movement, does not teleport. A player killed later in the tick it crosses in still teleports and fires the event (P25).
 - [ ] On the teleport tick, a trigger volume at the arrival point fires its enter edge and one the pawn left at the source fires its exit edge (P24).
 
@@ -214,7 +218,7 @@ Sound:
 - [ ] A predicting client starts `arrival_sound` on its teleport tick and does not play it again when reconcile replays that tick.
 - [ ] Every non-traveller machine, the host seat included, hears `arrival_sound` once per observed generation change, at the arrival point, even on frames where it still renders the traveller at the source. Several teleports between one observer's samples play one sound, the last teleporter's (P8).
 - [ ] When the host refuses a teleport the client predicted (a disarm it had not seen, a blocked arrival, a pawn already dead), the client's sound has played once, the cut back plays none, and no observer hears it (P9).
-- [ ] A teleport the client adopts through reconcile plays its sound once, on adoption. With a one-tick skew between client and host, or different teleporters taken on one tick, the traveller hears one sound per teleport the host took (P10, P32).
+- [ ] An adoption whose post-replay generation is ahead of the prediction plays the authoritative last teleporter's cue once. A one-tick skew of the same crossing never sounds twice. A same-generation authoritative replacement retains the speculative cue without another playback, even if the teleporter or cue differs. Several unseen teleports coalesce to the last cue (P10, P32).
 - [ ] A teleporter with no `arrival_sound` plays nothing on any machine.
 
 Compiler and format:
@@ -230,7 +234,7 @@ Presentation and network:
 - [ ] When a correction takes the teleport class, the camera never renders between the predicted and corrected pose, at any interpolation alpha on that frame or the tick after it (P15).
 - [ ] A correction still settling when a predicted seamless teleport fires never pulls the eye off the arrival pose in the source room's frame (P16).
 - [ ] At 100 ms round trip on a clean link, the predicting client and the host teleport on the same client tick, no correction exceeds the ordinary band, and the client's yaw matches the host. Under the harness's lossy profile, corrections stay within the ordinary band and yaw still matches.
-- [ ] At 100 ms round trip, a script arming an occupied seamless teleporter at a 90° landmark delta reaches a remote client as one teleport-class cut. Its yaw rotates, its sound plays once, its in-flight inputs move it along its new facing on host and client both, and the next snapshot needs no further correction (P17).
+- [ ] At 100 ms round trip, a script arming an occupied seamless teleporter at a 90° landmark delta reaches a remote client as exactly one landing (one teleport-class cut, or an agreeing prediction with no correction). Its yaw rotates, its sound plays once, its in-flight inputs move it along its new facing on host and client both, and the next snapshot needs no further correction (P17).
 - [ ] When the host refuses a predicted entry, the client cuts back with its yaw restored. This cuts at a 1 m teleport distance too (P18).
 - [ ] Two predicted teleports inside one round trip, the second refused, produce exactly one cut, with yaw ending at the host's. Both agreed: no cut. Two unpredicted teleports in one snapshot leave the client's yaw at the host's. Client and host teleporting on the same tick through different teleporters cut (P19).
 - [ ] Under the lossy profile, with the client's input lost across its teleport tick, the host's held, neutral, and late real commands after the teleport face and move in the post-teleport frame, and the remote avatar never turns back to its old facing (P20).

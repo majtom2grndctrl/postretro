@@ -44,8 +44,10 @@ CAPTURE_ONCE_PER_FRAME = ONCE_PER_FRAME + ("Screen Effects Capture Tonemap Pass"
 COMPOSE_LABELS = ("Streamed SH Compose",)
 FLUID_LABEL = "Fluid Surface Pass"
 # Frame marker for the complete-frame reduction: a compute pass whose rows the
-# trace never drops.
-FRAME_MARKER = "BVH Cull Pass"
+# trace never drops. Mac run (owner's 5300M): e24 and reflection-blend-spike
+# record no BVH Cull Pass; Candidate Cull Pass is once per frame on both. The
+# first label with at least two encoders is used.
+FRAME_MARKERS = ("BVH Cull Pass", "Candidate Cull Pass")
 COMPLETE_REQUIRED = ("Depth Pre-Pass", "Textured Pass", "Fluid Surface Pass")
 # A complete-frame figure needs at least this many complete steady frames.
 MIN_COMPLETE_FRAMES = 30
@@ -143,6 +145,13 @@ def reduce_export(src, warmup=None, samples=None):
         tolerance = max(3, expected // 50)
         result["expected_frames"] = expected
         result["frame_count_matches_expected"] = abs(frames - expected) <= tolerance
+        # Mac run: under sync-proof e24 composes SH 5 times, so the compose count
+        # is no frame count. Check the frame marker instead: the capture renders a
+        # few frames before its warmup counter (7-13 seen), plus the output frame.
+        marker = next((m for m in FRAME_MARKERS if count.get(m, 0) >= 2), None)
+        if marker:
+            result["frame_count_marker"] = {"pass": marker, "count": count[marker]}
+            result["frame_count_matches_expected"] = expected <= count[marker] <= expected + max(20, expected // 20)
         reference = next((p for p in COMPOSE_LABELS + CAPTURE_ONCE_PER_FRAME
                           if abs(count.get(p, 0) - expected) <= tolerance), None)
         if reference is None:
@@ -164,15 +173,17 @@ def reduce_export(src, warmup=None, samples=None):
                     "per_encoder_median_ms": round(sorted(inside)[len(inside) // 2] / 1e6, 4) if inside else None,
                 }
             result["steady"] = steady
-    result["complete"] = complete_frames(encoder_rows, warmup)
+    result["complete"] = complete_frames(encoder_rows, warmup, samples)
     return result
 
 
-def complete_frames(encoder_rows, warmup):
+def complete_frames(encoder_rows, warmup, samples=None):
     """The complete-frame reduction (module docstring)."""
+    present = collections.Counter(label for _, label, _, _ in encoder_rows)
+    FRAME_MARKER = next((m for m in FRAME_MARKERS if present[m] >= 2), FRAME_MARKERS[0])
     marks = sorted(start for start, label, _, _ in encoder_rows if label == FRAME_MARKER)
     if len(marks) < 2:
-        return {"available": False, "reason": f"fewer than two {FRAME_MARKER} encoders"}
+        return {"available": False, "reason": f"fewer than two encoders of any of {FRAME_MARKERS}"}
     import bisect
     # Frame i spans [marks[i], marks[i+1]); the last mark opens the capture's
     # output frame, which has no successor and is dropped.
@@ -185,7 +196,9 @@ def complete_frames(encoder_rows, warmup):
             f["labels"][label] += 1
             f["ns"][label] += ns
             f["intervals"].extend(intervals)
-    first = warmup or 0
+    # Mac run: the capture renders a few frames before its warmup counter, so
+    # the timed span is the last `samples` framed frames, not frames[warmup:].
+    first = max(0, len(frames) - samples) if samples else (warmup or 0)
     steady = frames[first:]
     if not steady:
         return {"available": False, "reason": f"no frames after warmup {first} ({len(frames)} framed)"}

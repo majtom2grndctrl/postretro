@@ -455,7 +455,7 @@ def summarize(records, meta):
           f"POSTRETRO_SH_STREAMING=sync-proof, band {BAND} (blendw0: band 0.0)",
           f"- Idle before the batch (ioreg IOAccelerator, one value per accelerator): {json.dumps(meta.get('idle'))}",
           "- `fluid ms` (basis `complete`) is the Fluid Surface Pass GPU time per frame, averaged over steady frames "
-          "(after warmup, framed by the BVH Cull Pass) that hold exactly one depth, forward and fluid encoder; the trace "
+          "(after warmup, framed by the Candidate Cull Pass; the kit named BVH Cull Pass, which this branch never records) that hold exactly one depth, forward and fluid encoder; the trace "
           "drops rows in some frames and shifts labels there. `GPU frame` is the label-independent union of every "
           "labelled interval per frame, over complete / incomplete frames: agreement means only labels were lost. "
           "`whole` is the precedent figure over the whole trace, warmup included. `clock` is the median core clock "

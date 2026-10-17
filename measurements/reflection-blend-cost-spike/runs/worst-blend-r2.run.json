@@ -1,0 +1,1246 @@
+{
+  "label": "worst-blend-r2",
+  "arm": "worst-blend",
+  "round": 2,
+  "pose": "worst",
+  "mode": "blend",
+  "coverage": true,
+  "band": 1.0,
+  "map": "content/dev/maps/reflection-blend-spike.prl",
+  "warmup_frames": 240,
+  "sample_frames": 240,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "command": [
+    "xcrun",
+    "xctrace",
+    "record",
+    "--template",
+    "Metal System Trace",
+    "--output",
+    "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/reflection-blend-cost-traces/worst-blend-r2.trace",
+    "--no-prompt",
+    "--target-stdout",
+    "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/4d4fd180-7651-45c2-9e15-966dc35a45b2/scratchpad/wt-blend/measurements/reflection-blend-cost-spike/runs/worst-blend-r2.log",
+    "--env",
+    "POSTRETRO_SH_STREAMING=sync-proof",
+    "--env",
+    "RUST_LOG=info",
+    "--launch",
+    "--",
+    "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/4d4fd180-7651-45c2-9e15-966dc35a45b2/scratchpad/wt-blend/target/release/postretro",
+    "--capture",
+    "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/4d4fd180-7651-45c2-9e15-966dc35a45b2/scratchpad/wt-blend/measurements/reflection-blend-cost-spike/runs/worst-blend-r2.scene.json"
+  ],
+  "started_utc": "2026-10-17T15:14:56Z",
+  "problems": [],
+  "xctrace_exit": 0,
+  "elapsed_s": 93.3,
+  "clock": {
+    "basis": "busy",
+    "samples": 81,
+    "samples_total": 89,
+    "clock_mhz": {
+      "min": 1046,
+      "median": 1222,
+      "max": 1229
+    },
+    "temp_c": {
+      "min": 73,
+      "median": 78,
+      "max": 83
+    },
+    "power_w": {
+      "min": 22,
+      "median": 31,
+      "max": 36
+    },
+    "activity_pct": {
+      "min": 84,
+      "median": 99,
+      "max": 99
+    }
+  },
+  "gpu_state_samples": [
+    {
+      "t": 0.0,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 66,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 0.74,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 66,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 1.27,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 66,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 1.81,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 67,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 2.34,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 67,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 3.07,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 67,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 3.62,
+      "Core Clock(MHz)": 0,
+      "Memory Clock(MHz)": 190,
+      "Temperature(C)": 67,
+      "Total Power(W)": 4,
+      "GPU Activity(%)": 0,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 4.16,
+      "Core Clock(MHz)": 1221,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 73,
+      "Total Power(W)": 33,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 4.7,
+      "Core Clock(MHz)": 1216,
+      "Memory Clock(MHz)": 416,
+      "Temperature(C)": 73,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 5.46,
+      "Core Clock(MHz)": 1066,
+      "Memory Clock(MHz)": 274,
+      "Temperature(C)": 73,
+      "Total Power(W)": 22,
+      "GPU Activity(%)": 86,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 6.0,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 74,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 6.55,
+      "Core Clock(MHz)": 1221,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 75,
+      "Total Power(W)": 29,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 7.09,
+      "Core Clock(MHz)": 1217,
+      "Memory Clock(MHz)": 970,
+      "Temperature(C)": 75,
+      "Total Power(W)": 34,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 7.86,
+      "Core Clock(MHz)": 1081,
+      "Memory Clock(MHz)": 346,
+      "Temperature(C)": 74,
+      "Total Power(W)": 22,
+      "GPU Activity(%)": 88,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 8.4,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 75,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 8.95,
+      "Core Clock(MHz)": 1222,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 76,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 9.5,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 76,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 10.26,
+      "Core Clock(MHz)": 1121,
+      "Memory Clock(MHz)": 568,
+      "Temperature(C)": 75,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 90,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 10.81,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 75,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 11.35,
+      "Core Clock(MHz)": 1221,
+      "Memory Clock(MHz)": 204,
+      "Temperature(C)": 76,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 11.9,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 812,
+      "Temperature(C)": 76,
+      "Total Power(W)": 34,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 12.68,
+      "Core Clock(MHz)": 1209,
+      "Memory Clock(MHz)": 942,
+      "Temperature(C)": 76,
+      "Total Power(W)": 33,
+      "GPU Activity(%)": 98,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 13.23,
+      "Core Clock(MHz)": 1222,
+      "Memory Clock(MHz)": 288,
+      "Temperature(C)": 76,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 13.77,
+      "Core Clock(MHz)": 1164,
+      "Memory Clock(MHz)": 810,
+      "Temperature(C)": 75,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 94,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 14.31,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 15.07,
+      "Core Clock(MHz)": 1153,
+      "Memory Clock(MHz)": 684,
+      "Temperature(C)": 75,
+      "Total Power(W)": 27,
+      "GPU Activity(%)": 93,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 15.61,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 838,
+      "Temperature(C)": 76,
+      "Total Power(W)": 34,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 16.15,
+      "Core Clock(MHz)": 1052,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 77,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 16.7,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 17.46,
+      "Core Clock(MHz)": 1102,
+      "Memory Clock(MHz)": 568,
+      "Temperature(C)": 76,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 89,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 18.0,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 18.55,
+      "Core Clock(MHz)": 1067,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 77,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 86,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 19.1,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 19.87,
+      "Core Clock(MHz)": 1148,
+      "Memory Clock(MHz)": 684,
+      "Temperature(C)": 76,
+      "Total Power(W)": 27,
+      "GPU Activity(%)": 93,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 20.41,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 20.95,
+      "Core Clock(MHz)": 1221,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 77,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 21.5,
+      "Core Clock(MHz)": 1229,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 77,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 22.27,
+      "Core Clock(MHz)": 1177,
+      "Memory Clock(MHz)": 790,
+      "Temperature(C)": 77,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 95,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 22.81,
+      "Core Clock(MHz)": 1225,
+      "Memory Clock(MHz)": 662,
+      "Temperature(C)": 77,
+      "Total Power(W)": 33,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 23.35,
+      "Core Clock(MHz)": 1061,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 77,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 86,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 23.9,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 78,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 24.67,
+      "Core Clock(MHz)": 1168,
+      "Memory Clock(MHz)": 828,
+      "Temperature(C)": 77,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 94,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 25.21,
+      "Core Clock(MHz)": 1224,
+      "Memory Clock(MHz)": 662,
+      "Temperature(C)": 78,
+      "Total Power(W)": 33,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 25.75,
+      "Core Clock(MHz)": 1049,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 78,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 26.3,
+      "Core Clock(MHz)": 1229,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 78,
+      "Total Power(W)": 34,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 27.07,
+      "Core Clock(MHz)": 1153,
+      "Memory Clock(MHz)": 742,
+      "Temperature(C)": 78,
+      "Total Power(W)": 29,
+      "GPU Activity(%)": 93,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 27.61,
+      "Core Clock(MHz)": 1225,
+      "Memory Clock(MHz)": 838,
+      "Temperature(C)": 79,
+      "Total Power(W)": 34,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 28.15,
+      "Core Clock(MHz)": 1077,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 78,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 87,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 28.7,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 78,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 29.46,
+      "Core Clock(MHz)": 1116,
+      "Memory Clock(MHz)": 522,
+      "Temperature(C)": 77,
+      "Total Power(W)": 24,
+      "GPU Activity(%)": 89,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 30.01,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 79,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 30.55,
+      "Core Clock(MHz)": 1055,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 78,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 31.1,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 79,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 31.86,
+      "Core Clock(MHz)": 1114,
+      "Memory Clock(MHz)": 568,
+      "Temperature(C)": 78,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 90,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 32.41,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 79,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 32.95,
+      "Core Clock(MHz)": 1222,
+      "Memory Clock(MHz)": 200,
+      "Temperature(C)": 79,
+      "Total Power(W)": 31,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 33.5,
+      "Core Clock(MHz)": 1229,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 79,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 34.27,
+      "Core Clock(MHz)": 1158,
+      "Memory Clock(MHz)": 742,
+      "Temperature(C)": 79,
+      "Total Power(W)": 29,
+      "GPU Activity(%)": 94,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 34.81,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 910,
+      "Temperature(C)": 80,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 35.35,
+      "Core Clock(MHz)": 1061,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 79,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 35.9,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 80,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 36.66,
+      "Core Clock(MHz)": 1118,
+      "Memory Clock(MHz)": 522,
+      "Temperature(C)": 79,
+      "Total Power(W)": 24,
+      "GPU Activity(%)": 90,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 37.2,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 79,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 37.75,
+      "Core Clock(MHz)": 1223,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 80,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 38.3,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 80,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 39.06,
+      "Core Clock(MHz)": 1105,
+      "Memory Clock(MHz)": 470,
+      "Temperature(C)": 79,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 90,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 39.6,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 80,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 40.15,
+      "Core Clock(MHz)": 1051,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 80,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 84,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 40.7,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 81,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 41.46,
+      "Core Clock(MHz)": 1046,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 80,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 84,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 42.0,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 81,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 42.55,
+      "Core Clock(MHz)": 1223,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 81,
+      "Total Power(W)": 31,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 43.1,
+      "Core Clock(MHz)": 1229,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 81,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 43.86,
+      "Core Clock(MHz)": 1105,
+      "Memory Clock(MHz)": 470,
+      "Temperature(C)": 80,
+      "Total Power(W)": 24,
+      "GPU Activity(%)": 89,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 44.41,
+      "Core Clock(MHz)": 1226,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 44.95,
+      "Core Clock(MHz)": 1058,
+      "Memory Clock(MHz)": 196,
+      "Temperature(C)": 81,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 85,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 45.5,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 81,
+      "Total Power(W)": 36,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 46.26,
+      "Core Clock(MHz)": 1113,
+      "Memory Clock(MHz)": 522,
+      "Temperature(C)": 80,
+      "Total Power(W)": 25,
+      "GPU Activity(%)": 90,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 46.8,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 36,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 47.35,
+      "Core Clock(MHz)": 1218,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 82,
+      "Total Power(W)": 30,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 47.9,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 36,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 48.66,
+      "Core Clock(MHz)": 1082,
+      "Memory Clock(MHz)": 470,
+      "Temperature(C)": 81,
+      "Total Power(W)": 23,
+      "GPU Activity(%)": 86,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 49.2,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 35,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 49.75,
+      "Core Clock(MHz)": 1223,
+      "Memory Clock(MHz)": 200,
+      "Temperature(C)": 83,
+      "Total Power(W)": 31,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 50.3,
+      "Core Clock(MHz)": 1228,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 36,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 51.06,
+      "Core Clock(MHz)": 1109,
+      "Memory Clock(MHz)": 470,
+      "Temperature(C)": 81,
+      "Total Power(W)": 24,
+      "GPU Activity(%)": 89,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 51.61,
+      "Core Clock(MHz)": 1227,
+      "Memory Clock(MHz)": 988,
+      "Temperature(C)": 82,
+      "Total Power(W)": 36,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 52.15,
+      "Core Clock(MHz)": 1222,
+      "Memory Clock(MHz)": 202,
+      "Temperature(C)": 83,
+      "Total Power(W)": 31,
+      "GPU Activity(%)": 99,
+      "Fan Speed(RPM)": 0
+    },
+    {
+      "t": 52.7,
+      "Core Clock(MHz)": 12,
+      "Memory Clock(MHz)": 264,
+      "Temperature(C)": 79,
+      "Total Power(W)": 5,
+      "GPU Activity(%)": 1,
+      "Fan Speed(RPM)": 0
+    }
+  ],
+  "locked_seen": false,
+  "screensaver_seen": false,
+  "foreign_processes_seen": [],
+  "adapter": {
+    "name": "AMD Radeon Pro 5300M",
+    "backend": "Metal",
+    "device_type": "DiscreteGpu"
+  },
+  "cpu_completion_median_ms": 99.9673105,
+  "capture": {
+    "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/reflection-blend-cost-traces/worst-blend-r2.png",
+    "resolution": [
+      3840,
+      2160
+    ],
+    "camera": {
+      "position": [
+        -12.192,
+        7.62,
+        -12.192
+      ],
+      "yaw_deg": 0.0,
+      "pitch_deg": -89.0,
+      "fov_deg": 100.0
+    },
+    "force_full_resident_sh_compose": false,
+    "animation_time_seconds": 8.0
+  },
+  "engine_revision": "b6a179b9ccf3a4c0aba01952ea3bacfee1cb548c",
+  "gpu": {
+    "source": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/reflection-blend-cost-traces/worst-blend-r2-gpu.xml",
+    "camera_frames": 486,
+    "frame_count_pass": "Streamed SH Compose",
+    "once_per_frame_counts": {
+      "UI Pass": 0,
+      "Screen Effects Resolve Pass": 0,
+      "Textured Pass": 487,
+      "Depth Pre-Pass": 487,
+      "Screen Effects Capture Tonemap Pass": 1,
+      "Streamed SH Compose": 486
+    },
+    "sum_labelled_passes_per_frame_ms": 97.9395,
+    "all_passes_per_frame_ms": {
+      "Fluid Surface Pass": 66.0359,
+      "Textured Pass": 21.6212,
+      "Animated LM Compose": 2.1617,
+      "Bloom Bright Pass": 1.662,
+      "Depth Pre-Pass": 1.3101,
+      "Streamed Animated Direct SH": 0.9833,
+      "(wgpu internal) Signal": 0.9217,
+      "Streamed SH Compose": 0.8908,
+      "Bloom Scene Composite Pass": 0.884,
+      "Bloom Horizontal Gaussian Pass": 0.3206,
+      "Bloom Vertical Gaussian Pass": 0.2953,
+      "Bloom Upsample Pass": 0.2404,
+      "Per-frame Upload Copies": 0.1823,
+      "Bloom Downsample Pass": 0.167,
+      "Capture Measurement Encoder": 0.083,
+      "Candidate Cull Pass": 0.048,
+      "(wgpu internal) PendingWrites": 0.0424,
+      "Billboard Direct Scatter Compose": 0.0246,
+      "PNG Readback Encoder": 0.0162,
+      "(wgpu internal) Transit": 0.0157,
+      "Streamed Lightmap Drain": 0.0141,
+      "Streamed SH Upload Copies": 0.0088,
+      "Screen Effects Capture Tonemap Pass": 0.0051,
+      "Streamed Direct SH Promotion": 0.0051,
+      "Frame Capture Encoder": 0.0001
+    },
+    "encoder_counts": {
+      "(wgpu internal) PendingWrites": 2,
+      "(wgpu internal) Signal": 249,
+      "(wgpu internal) Transit": 14,
+      "Animated LM Compose": 487,
+      "Billboard Direct Scatter Compose": 487,
+      "Bloom Bright Pass": 487,
+      "Bloom Downsample Pass": 1941,
+      "Bloom Horizontal Gaussian Pass": 2372,
+      "Bloom Scene Composite Pass": 239,
+      "Bloom Upsample Pass": 1948,
+      "Bloom Vertical Gaussian Pass": 2375,
+      "Candidate Cull Pass": 487,
+      "Capture Measurement Encoder": 489,
+      "Depth Pre-Pass": 487,
+      "Fluid Surface Pass": 486,
+      "Frame Capture Encoder": 1,
+      "PNG Readback Encoder": 1,
+      "Per-frame Upload Copies": 488,
+      "Screen Effects Capture Tonemap Pass": 1,
+      "Streamed Animated Direct SH": 486,
+      "Streamed Direct SH Promotion": 3,
+      "Streamed Lightmap Drain": 1,
+      "Streamed SH Compose": 486,
+      "Streamed SH Upload Copies": 6,
+      "Textured Pass": 487
+    },
+    "reported": {
+      "Fluid Surface Pass": {
+        "encoders": 486,
+        "total_ms": 32093.459,
+        "per_frame_ms": 66.0359,
+        "per_encoder_ms": 66.0359,
+        "per_encoder_median_ms": 66.2583
+      },
+      "Textured Pass": {
+        "encoders": 487,
+        "total_ms": 10507.909,
+        "per_frame_ms": 21.6212,
+        "per_encoder_ms": 21.5768,
+        "per_encoder_median_ms": 21.5295
+      },
+      "Depth Pre-Pass": {
+        "encoders": 487,
+        "total_ms": 636.698,
+        "per_frame_ms": 1.3101,
+        "per_encoder_ms": 1.3074,
+        "per_encoder_median_ms": 1.457
+      },
+      "Streamed SH Compose": {
+        "encoders": 486,
+        "total_ms": 432.952,
+        "per_frame_ms": 0.8908,
+        "per_encoder_ms": 0.8908,
+        "per_encoder_median_ms": 0.8413
+      },
+      "Fog Raymarch Pass": {
+        "encoders": 0,
+        "total_ms": 0.0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Fog Composite Pass": {
+        "encoders": 0,
+        "total_ms": 0.0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Skinned Mesh Pass": {
+        "encoders": 0,
+        "total_ms": 0.0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Kinematic Brush Pass": {
+        "encoders": 0,
+        "total_ms": 0.0,
+        "per_frame_ms": 0.0,
+        "per_encoder_ms": null,
+        "per_encoder_median_ms": null
+      },
+      "Screen Effects Capture Tonemap Pass": {
+        "encoders": 1,
+        "total_ms": 2.468,
+        "per_frame_ms": 0.0051,
+        "per_encoder_ms": 2.4681,
+        "per_encoder_median_ms": 2.4681
+      }
+    },
+    "expected_frames": 480,
+    "frame_count_matches_expected": true,
+    "steady": {
+      "available": true,
+      "reference_pass": "Streamed SH Compose",
+      "frames": 246,
+      "passes": {
+        "Fluid Surface Pass": {
+          "encoders": 246,
+          "per_frame_ms": 66.0805,
+          "per_encoder_ms": 66.0805,
+          "per_encoder_median_ms": 66.2587
+        },
+        "Textured Pass": {
+          "encoders": 246,
+          "per_frame_ms": 21.5337,
+          "per_encoder_ms": 21.5337,
+          "per_encoder_median_ms": 21.5307
+        },
+        "Depth Pre-Pass": {
+          "encoders": 245,
+          "per_frame_ms": 1.3231,
+          "per_encoder_ms": 1.3285,
+          "per_encoder_median_ms": 1.4488
+        },
+        "Streamed SH Compose": {
+          "encoders": 246,
+          "per_frame_ms": 0.8995,
+          "per_encoder_ms": 0.8995,
+          "per_encoder_median_ms": 0.8427
+        },
+        "Fog Raymarch Pass": {
+          "encoders": 0,
+          "per_frame_ms": 0.0,
+          "per_encoder_ms": null,
+          "per_encoder_median_ms": null
+        },
+        "Fog Composite Pass": {
+          "encoders": 0,
+          "per_frame_ms": 0.0,
+          "per_encoder_ms": null,
+          "per_encoder_median_ms": null
+        },
+        "Skinned Mesh Pass": {
+          "encoders": 0,
+          "per_frame_ms": 0.0,
+          "per_encoder_ms": null,
+          "per_encoder_median_ms": null
+        },
+        "Kinematic Brush Pass": {
+          "encoders": 0,
+          "per_frame_ms": 0.0,
+          "per_encoder_ms": null,
+          "per_encoder_median_ms": null
+        },
+        "Screen Effects Capture Tonemap Pass": {
+          "encoders": 1,
+          "per_frame_ms": 0.01,
+          "per_encoder_ms": 2.4681,
+          "per_encoder_median_ms": 2.4681
+        }
+      }
+    },
+    "frame_count_marker": {
+      "pass": "Candidate Cull Pass",
+      "count": 487
+    },
+    "complete": {
+      "available": true,
+      "marker": "Candidate Cull Pass",
+      "required": [
+        "Depth Pre-Pass",
+        "Textured Pass",
+        "Fluid Surface Pass"
+      ],
+      "framed_frames": 486,
+      "steady_frames": 240,
+      "complete_frames": 240,
+      "gpu_frame_ms_complete": 96.444,
+      "gpu_frame_ms_incomplete": null,
+      "passes": {
+        "(wgpu internal) Signal": {
+          "per_frame_ms": 0.7352,
+          "median_ms": 0.0,
+          "p10_ms": 0.0,
+          "p90_ms": 1.8473
+        },
+        "(wgpu internal) Transit": {
+          "per_frame_ms": 0.0003,
+          "median_ms": 0.0,
+          "p10_ms": 0.0,
+          "p90_ms": 0.0
+        },
+        "Animated LM Compose": {
+          "per_frame_ms": 2.1684,
+          "median_ms": 2.0096,
+          "p10_ms": 1.3906,
+          "p90_ms": 3.0952
+        },
+        "Billboard Direct Scatter Compose": {
+          "per_frame_ms": 0.0251,
+          "median_ms": 0.0231,
+          "p10_ms": 0.0214,
+          "p90_ms": 0.0238
+        },
+        "Bloom Bright Pass": {
+          "per_frame_ms": 1.6698,
+          "median_ms": 1.6776,
+          "p10_ms": 1.6024,
+          "p90_ms": 1.7266
+        },
+        "Bloom Downsample Pass": {
+          "per_frame_ms": 0.1674,
+          "median_ms": 0.1557,
+          "p10_ms": 0.0898,
+          "p90_ms": 0.2487
+        },
+        "Bloom Horizontal Gaussian Pass": {
+          "per_frame_ms": 0.3207,
+          "median_ms": 0.3145,
+          "p10_ms": 0.2576,
+          "p90_ms": 0.4031
+        },
+        "Bloom Scene Composite Pass": {
+          "per_frame_ms": 1.0794,
+          "median_ms": 1.7554,
+          "p10_ms": 0.0,
+          "p90_ms": 1.8867
+        },
+        "Bloom Upsample Pass": {
+          "per_frame_ms": 0.2402,
+          "median_ms": 0.2429,
+          "p10_ms": 0.2135,
+          "p90_ms": 0.2687
+        },
+        "Bloom Vertical Gaussian Pass": {
+          "per_frame_ms": 0.2928,
+          "median_ms": 0.3049,
+          "p10_ms": 0.2374,
+          "p90_ms": 0.3662
+        },
+        "Candidate Cull Pass": {
+          "per_frame_ms": 0.0474,
+          "median_ms": 0.0382,
+          "p10_ms": 0.0311,
+          "p90_ms": 0.0876
+        },
+        "Capture Measurement Encoder": {
+          "per_frame_ms": 0.0807,
+          "median_ms": 0.0608,
+          "p10_ms": 0.0355,
+          "p90_ms": 0.1501
+        },
+        "Depth Pre-Pass": {
+          "per_frame_ms": 1.3239,
+          "median_ms": 1.4486,
+          "p10_ms": 0.9184,
+          "p90_ms": 1.6192
+        },
+        "Fluid Surface Pass": {
+          "per_frame_ms": 66.0984,
+          "median_ms": 66.2663,
+          "p10_ms": 65.4917,
+          "p90_ms": 66.4844
+        },
+        "Frame Capture Encoder": {
+          "per_frame_ms": 0.0002,
+          "median_ms": 0.0,
+          "p10_ms": 0.0,
+          "p90_ms": 0.0
+        },
+        "Per-frame Upload Copies": {
+          "per_frame_ms": 0.181,
+          "median_ms": 0.1815,
+          "p10_ms": 0.1429,
+          "p90_ms": 0.1983
+        },
+        "Streamed Animated Direct SH": {
+          "per_frame_ms": 0.9783,
+          "median_ms": 0.9578,
+          "p10_ms": 0.9404,
+          "p90_ms": 0.9857
+        },
+        "Streamed SH Compose": {
+          "per_frame_ms": 0.8931,
+          "median_ms": 0.8426,
+          "p10_ms": 0.8222,
+          "p90_ms": 1.1275
+        },
+        "Textured Pass": {
+          "per_frame_ms": 21.5237,
+          "median_ms": 21.531,
+          "p10_ms": 21.4821,
+          "p90_ms": 21.5556
+        }
+      }
+    }
+  },
+  "fluid_encoders": 486,
+  "fluid_ms_whole_run": 66.0359,
+  "forward_ms_whole_run": 21.6212,
+  "frames_precedent": 486,
+  "complete_frames": 240,
+  "gpu_frame_ms_complete": 96.444,
+  "gpu_frame_ms_incomplete": null,
+  "basis": "complete",
+  "steady_frames": 240,
+  "fluid_ms": 66.0984,
+  "fluid_ms_p10_p90": [
+    65.4917,
+    66.4844
+  ],
+  "forward_ms": 21.5237,
+  "fluid_ms_steady_slice": 66.0805,
+  "machine_state_ok": true,
+  "valid": true
+}

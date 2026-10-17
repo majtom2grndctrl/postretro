@@ -1,0 +1,28 @@
+{
+  "map": "content/dev/maps/reflection-blend-spike.prl",
+  "camera": {
+    "position": [
+      -6.5024,
+      1.2192,
+      -28.2448
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -6.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/reflection-blend-cost-traces/typ-stochastic-r2.png",
+  "measurement": {
+    "report": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/4d4fd180-7651-45c2-9e15-966dc35a45b2/scratchpad/wt-blend/measurements/reflection-blend-cost-spike/runs/typ-stochastic-r2.report.json",
+    "warmup_frames": 240,
+    "sample_frames": 240
+  },
+  "reflection_blend": {
+    "mode": "stochastic",
+    "coverage": false,
+    "band": 1.0
+  }
+}

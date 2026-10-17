@@ -24,6 +24,12 @@ Ranked by likelihood of the observed vault embed:
 4. **Mover carry** (`apply_mover_carry`, top of `integrate_collision`): not checked against static geometry. Matters only when the ledge is a mover. Mover policy, out of scope.
 5. **Floor push** (one skin plus nudge, budgeted once per tick): negligible (~0.1 mm into a ceiling at worst).
 
+6. **Stuck-stop rollback** (`integrate_collision`, corner-wedge deadzone): restores the start X/Z but keeps the new Y, which can embed on a ramp (from `/validate-plan`).
+
+## Agent controller copies
+
+`crates/sim/src/agent/mod.rs` is a separate kinematic controller (`collide_and_slide`) with its own `step_up_lift`, which has no overhead sweep, and its own `ground_stick`, which uses a centre-ray `cast_ray` drop by ray distance. These are two of the player-side bypasses. `movement.md` §7 records that enemies use their own controller.
+
 ## Reusable checks
 
 - `capsule_fits_combined` (collision/mod.rs): exact `intersection_test` of the capsule against the static trimesh, mover penetration, and core points not in solid cells. Only teleport arrival uses it (movement/teleport.rs).

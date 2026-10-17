@@ -29,16 +29,16 @@ Read at b0a5c0f. All claims cite symbols; re-verify before relying on them.
 
 | Family | Dir | Shape | Dedupe today | Destination |
 |---|---|---|---|---|
-| `ClientMessage::Input` | C→S | per-tick stream with embedded edges | ticks: yes. Edges: only strictly newer ticks observed (`observe_reload_level`, press-edge `observe`). Activation: by token | command stream |
-| `ClientMessage::Ack` | C→S | state, incremental lists | monotonic per id | command stream, re-ack on held-id resend |
-| `BaselineRefresh` / `StateBaselineRefresh` | C→S | idempotent request | `(nid, ref)`. Client resends at 200 ms | command stream |
-| `ClientMessage::TimeSync` / `ServerMessage::TimeSync` | both | probe / echo | `sample_id` | command stream / unreliable echo |
-| `ClientMessage::HitDeclaration` | C→S | event, keyed by shot id | yes | hot, unordered |
-| `ServerMessage::ShotVerdicts`, `HitRefused` | S→C | event, keyed by shot id | keyed | hot, unordered |
-| `ServerMessage::ActivationOutcomes` | S→C | ordered per token | none at intake (`endpoint.rs` push) | hot, ordered per token |
-| `ServerMessage::WeaponCues` | S→C | event | epoch filter only, no dedupe | hot, unordered, add dedupe |
-| `ClientControlMessage::SwitchDeclaration` | C→S | ordered event (`declaration_id`, client tick) | host lane by tick | command stream |
-| `SwitchAccepted` / `SwitchRefused` | S→C | strictly ordered chain (`resolve_switch_outcome`) | no | hot, ordered |
+| `ClientMessage::Input` | C→S | per-tick stream with embedded edges | ticks: yes. Edges: only strictly newer ticks observed (`observe_reload_level`, press-edge `observe`), which in-order delivery keeps correct. Activation: by token | Input, one-tick resend |
+| `ClientMessage::Ack` | C→S | state, incremental lists | monotonic per id | Input, one-tick resend |
+| `BaselineRefresh` / `StateBaselineRefresh` | C→S | idempotent request | `(nid, ref)`. Client resends at 200 ms | Input, one-tick resend |
+| `ClientMessage::TimeSync` / `ServerMessage::TimeSync` | both | probe / echo | `sample_id` | Input, one-tick resend |
+| `ClientMessage::HitDeclaration` | C→S | event, keyed by shot id | yes | Input, one-tick resend |
+| `ServerMessage::ShotVerdicts`, `HitRefused` | S→C | event, keyed by shot id | keyed | Input, one-tick resend |
+| `ServerMessage::ActivationOutcomes` | S→C | ordered per token | none at intake (`endpoint.rs` push) | Input, one-tick resend |
+| `ServerMessage::WeaponCues` | S→C | event | epoch filter only, no dedupe | Input, one-tick resend |
+| `ClientControlMessage::SwitchDeclaration` | C→S | ordered event (`declaration_id`, client tick) | host lane by tick | Input (moves from Control) |
+| `SwitchAccepted` / `SwitchRefused` | S→C | strictly ordered chain (`resolve_switch_outcome`) | no | Input (moves from Control) |
 | Admission, Parity, JoinSeed, Revealed, participation marker, Divergence, Relevel, SessionRoster | both | join/control | various | Control, ~100 ms |
 | `ServerControlMessage::Tuning` | S→C | state, possibly sliced | whole-struct dedupe | bulk, 150–200 ms |
 
@@ -61,6 +61,10 @@ Profile: one-way 45 + U(0,60) ms. RTT ≈ 90–210 ms (~158 ms effective with re
 | SRTT + 4·RTTVAR (~240 ms) | 45–105 | 285–362 | 525–620 | ≈1.05 |
 | QUIC-style NACK + PTO | 45–105 | ≈225–305 | ≈405–505 | ≈1.05–1.1 |
 | Every tick until acked (16–20 ms) | 45–105 | 62–125 | 79–145 | ≈9–10 |
+
+Selected: every-tick resend for the gameplay families, all on Input; ~100 ms for Control; 150–200 ms for a bulk tuning channel. Rejected: a custom unreliable redundant stream. It would bound delivery of edges, starts and switches by the redundancy window and would need an edge-identity rework (`/validate-plan`, Q3 and Q6).
+
+Upstream cost for Input at a one-tick resend: about RTT ÷ tick + 1 ≈ 9–10 copies of each in-flight command, so about 30 KB/s at 60 Hz with ~50 B commands. It is measured and bounded by the executor.
 
 Bandwidth for every-tick resend through renet channels: each frame with anything unacked emits one extra datagram with ≈57 B overhead. At 10 messages/s that is ≈8 KB/s, small next to 30 Hz snapshots. Folding a family into the command stream removes the per-datagram overhead.
 

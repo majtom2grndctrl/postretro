@@ -483,6 +483,18 @@ impl NetEndpoint {
         }
     }
 
+    /// Whether this client has a switch declaration the host has not yet
+    /// answered. `false` on a host.
+    pub fn has_pending_switch_declarations(&self) -> bool {
+        matches!(
+            self,
+            Self::Client {
+                pending_switch_declarations,
+                ..
+            } if !pending_switch_declarations.is_empty()
+        )
+    }
+
     pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
         let Self::Client {
             pending_switch_declarations,

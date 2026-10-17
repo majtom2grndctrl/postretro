@@ -6,8 +6,10 @@
 // the server echoes it as a `TimeSyncEcho`, sampling the current `server_tick`
 // at echo time. The client records its local receive microseconds and feeds the
 // completed round trip to `ClockEstimator`, which maintains a smoothed estimate
-// of the server tick (offset) and the link jitter for the interpolation code
-// (Task 6) to consume.
+// of the server tick (offset), RTT and link jitter for the interpolation code
+// (Task 6) to consume. Only near-minimum-RTT round trips fold into the estimate
+// (see `ClockEstimator`'s min-RTT gate): probes ride a reliable-ordered channel
+// whose head-of-line stalls inflate one direction only.
 //
 // Registry-blind by construction: this module sees only `u32`/`u64`/`f64`
 // scalars and the harness virtual clock — no `EntityId`, no `glam`, no engine
@@ -104,6 +106,23 @@ pub const OFFSET_SMOOTHING: f64 = 0.1;
 /// while the offset itself stays stable.
 pub const JITTER_SMOOTHING: f64 = 0.2;
 
+/// Size of the min-RTT gate's window of recent raw RTT samples: 16 probes, about
+/// 3.2 s at the 5 Hz cadence. Every non-stale echo enters it; the window minimum
+/// is the gate's reference. Because it rolls, a sustained latency increase leaves
+/// the window within this many samples and is then adopted.
+pub const RTT_WINDOW_SAMPLES: usize = 16;
+
+/// Fixed floor of the min-RTT gate's tolerance, in microseconds (20 ms). A
+/// sample folds only if its RTT is at most `window_min + tolerance`. The floor
+/// keeps a near-zero-RTT (LAN) link from gating out ordinary scheduling noise.
+pub const RTT_GATE_FLOOR_US: f64 = 20_000.0;
+
+/// Proportional part of the min-RTT gate's tolerance: `tolerance =
+/// max(RTT_GATE_FLOOR_US, RTT_GATE_FRACTION × window_min)`. At 0.5 a 150 ms link
+/// admits samples up to 225 ms, while a reliable-channel resend stall (~300 ms
+/// added to one direction) lands far outside.
+pub const RTT_GATE_FRACTION: f64 = 0.5;
+
 /// A completed round trip, ready to fold into the estimate. Built by
 /// [`ClockEstimator::ingest_echo`] from the echo plus the client-local receive
 /// microseconds.
@@ -121,6 +140,17 @@ struct Sample {
 /// Pure clock/jitter estimator. Holds the smoothed mapping from client-local
 /// monotonic microseconds to server ticks (an `offset_ticks`) plus smoothed RTT
 /// and jitter, advancing only on the newest accepted sample.
+///
+/// Min-RTT gate: probes and echoes ride the reliable-ordered `Channel::Input`, so
+/// a probe queued behind a lost packet waits out a resend in *one* direction. Its
+/// RTT inflates and the midpoint assumption breaks, biasing the offset by half
+/// the stall. Only near-minimum-RTT samples carry an unbiased midpoint, so every
+/// non-stale echo enters a [`RTT_WINDOW_SAMPLES`] window but folds into
+/// offset/RTT/jitter only when its RTT is at most the window minimum plus
+/// `max(RTT_GATE_FLOOR_US, RTT_GATE_FRACTION × min)`. Gated samples touch nothing
+/// else. Snapshots ride an unreliable channel and see no such stalls, so the
+/// filtered jitter is the right input for the remote interpolation delay. The
+/// first sample still seeds.
 ///
 /// Stale-echo policy: each accepted sample must carry a `sample_id` strictly
 /// greater than the last accepted one. A reordered or duplicated echo (older or
@@ -150,6 +180,47 @@ pub struct ClockEstimator {
     /// Smoothed jitter in microseconds: EWMA of the absolute deviation of each
     /// sample's RTT from the running RTT (mean-absolute-deviation style).
     jitter_us: f64,
+    /// Recent raw RTTs of every non-stale echo, the min-RTT gate's reference.
+    rtt_window: RttWindow,
+}
+
+/// Fixed-capacity ring of the most recent raw RTT samples, in microseconds. No
+/// allocation: [`RTT_WINDOW_SAMPLES`] slots, overwritten oldest-first.
+#[derive(Debug, Clone, Copy)]
+struct RttWindow {
+    samples: [f64; RTT_WINDOW_SAMPLES],
+    /// Filled slots, saturating at the capacity.
+    len: usize,
+    /// Slot the next sample overwrites.
+    next: usize,
+}
+
+impl RttWindow {
+    const fn new() -> Self {
+        Self {
+            samples: [0.0; RTT_WINDOW_SAMPLES],
+            len: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, rtt_us: f64) {
+        self.samples[self.next] = rtt_us;
+        self.next = (self.next + 1) % RTT_WINDOW_SAMPLES;
+        self.len = (self.len + 1).min(RTT_WINDOW_SAMPLES);
+    }
+
+    /// Smallest RTT in the window; `None` while empty.
+    fn min(&self) -> Option<f64> {
+        self.samples[..self.len].iter().copied().reduce(f64::min)
+    }
+
+    /// Does `rtt_us` sit within the gate tolerance of the window minimum? An
+    /// empty window admits everything.
+    fn admits(&self, rtt_us: f64) -> bool {
+        self.min()
+            .is_none_or(|min| rtt_us <= min + (RTT_GATE_FRACTION * min).max(RTT_GATE_FLOOR_US))
+    }
 }
 
 impl ClockEstimator {
@@ -170,6 +241,7 @@ impl ClockEstimator {
             offset_ticks: 0.0,
             rtt_us: 0.0,
             jitter_us: 0.0,
+            rtt_window: RttWindow::new(),
         }
     }
 
@@ -194,8 +266,10 @@ impl ClockEstimator {
     /// Fold one echo into the estimate. `recv_time_us` is the client's local
     /// monotonic microseconds when the echo arrived — RTT is computed purely
     /// from it and the echoed `client_send_time_us`, never from the server's
-    /// clock. Returns `true` if the sample advanced state, `false` if it was a
-    /// stale/duplicate or unsent echo.
+    /// clock. Returns `true` if the echo was accepted, `false` if it was a
+    /// stale/duplicate or unsent echo. An accepted echo always enters the min-RTT
+    /// window but folds into offset/RTT/jitter only if the gate admits it (see
+    /// [`ClockEstimator`]); a gated-out echo still returns `true`.
     ///
     /// Provenance check: rejects an echo whose `sample_id` was never issued by
     /// the local sender (greater than the highest id passed to
@@ -234,7 +308,12 @@ impl ClockEstimator {
             server_tick: f64::from(echo.server_tick),
             recv_midpoint_us,
         };
-        self.fold(sample);
+        // Min-RTT gate: the sample joins the window first, so a new minimum
+        // always folds. The first sample seeds regardless (it is the minimum).
+        self.rtt_window.push(rtt_us);
+        if !self.initialized || self.rtt_window.admits(rtt_us) {
+            self.fold(sample);
+        }
         true
     }
 
@@ -528,13 +607,195 @@ mod tests {
         assert!(est.ingest_echo(&echo(0, 0, 60), 100_000));
         assert!((est.jitter_micros() - 0.0).abs() < EPS);
 
-        // Next sample RTT = 200_000: deviation from current RTT (100_000) is
-        // 100_000; jitter = lerp(0, 100_000, 0.2) = 20_000.
-        assert!(est.ingest_echo(&echo(1, 0, 60), 200_000));
+        // Next sample RTT = 140_000 (inside the min-RTT gate's 50 ms tolerance at
+        // a 100 ms minimum): deviation from current RTT (100_000) is 40_000;
+        // jitter = lerp(0, 40_000, 0.2) = 8_000.
+        assert!(est.ingest_echo(&echo(1, 0, 60), 140_000));
         assert!(
-            (est.jitter_micros() - 20_000.0).abs() < 1e-3,
+            (est.jitter_micros() - 8_000.0).abs() < 1e-3,
             "jitter must EWMA the RTT deviation at weight 0.2, got {}",
             est.jitter_micros()
+        );
+    }
+
+    // --- Min-RTT gate: reliable-channel head-of-line stalls ---
+
+    /// Ticks the test server is ahead of the client clock's tick origin: the true
+    /// offset the estimator must recover.
+    const TRUE_OFFSET_TICKS: f64 = 3_600.0;
+    const MPT: f64 = DEFAULT_MICROS_PER_TICK as f64;
+
+    /// A round trip on a link where the server samples its tick `out_us` after the
+    /// send and the echo lands `out_us + back_us` after it. Returns the echo and the
+    /// client receive microseconds.
+    fn round_trip(sample_id: u32, send_us: u64, out_us: u64, back_us: u64) -> (TimeSyncEcho, u64) {
+        let server_tick = (TRUE_OFFSET_TICKS + (send_us + out_us) as f64 / MPT).round() as u32;
+        (
+            echo(sample_id, send_us, server_tick),
+            send_us + out_us + back_us,
+        )
+    }
+
+    /// Reference model of the pre-gate fold law: every sample EWMA-blends
+    /// offset/RTT at `OFFSET_SMOOTHING` and jitter at `JITTER_SMOOTHING`. Returns
+    /// `(offset_ticks, jitter_us)`.
+    fn ungated_fold(trips: &[(TimeSyncEcho, u64)]) -> (f64, f64) {
+        let mut state: Option<(f64, f64, f64)> = None;
+        for (e, recv_us) in trips {
+            let rtt = recv_us.saturating_sub(e.client_send_time_us) as f64;
+            let offset =
+                f64::from(e.server_tick) - (e.client_send_time_us as f64 + rtt / 2.0) / MPT;
+            state = Some(match state {
+                None => (offset, rtt, 0.0),
+                Some((o, r, j)) => (
+                    lerp(o, offset, OFFSET_SMOOTHING),
+                    lerp(r, rtt, OFFSET_SMOOTHING),
+                    lerp(j, (rtt - r).abs(), JITTER_SMOOTHING),
+                ),
+            });
+        }
+        let (offset, _, jitter) = state.expect("at least one trip");
+        (offset, jitter)
+    }
+
+    fn feed(est: &mut ClockEstimator, trips: &[(TimeSyncEcho, u64)]) {
+        for (e, recv_us) in trips {
+            est.record_sent(e.sample_id);
+            assert!(est.ingest_echo(e, *recv_us), "non-stale echo is accepted");
+        }
+    }
+
+    // Playtest defect: under 5% loss a large share of probes wait out a ~300 ms
+    // reliable resend in one direction. An outbound-stalled probe reports RTT
+    // +300 ms and a server tick 300 ms late, biasing the midpoint offset by
+    // +150 ms (~9 ticks) and inflating jitter.
+    #[test]
+    fn min_rtt_gate_rejects_outbound_stalled_probes() {
+        const STALL_US: u64 = 300_000;
+        let mut all = Vec::new();
+        let mut clean = Vec::new();
+        for i in 0..60u32 {
+            let send_us = u64::from(i) * SAMPLE_PERIOD_US;
+            // Clean link: symmetric 150 ms RTT with ±10 ms of alternating jitter.
+            let half = if i % 2 == 0 { 70_000 } else { 80_000 };
+            let trip = if i % 3 == 2 {
+                // Outbound stall: the probe reaches the server 300 ms late.
+                round_trip(i, send_us, half + STALL_US, half)
+            } else {
+                let trip = round_trip(i, send_us, half, half);
+                clean.push(trip);
+                trip
+            };
+            all.push(trip);
+        }
+
+        let mut gated = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        let mut clean_only = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        let mut max_error = 0.0_f64;
+        for (n, trip) in all.iter().enumerate() {
+            feed(&mut gated, std::slice::from_ref(trip));
+            if n >= 10 {
+                max_error =
+                    max_error.max((gated.estimated_server_tick_at(0) - TRUE_OFFSET_TICKS).abs());
+            }
+        }
+        feed(&mut clean_only, &clean);
+
+        assert!(
+            max_error <= 1.0,
+            "gated offset must track truth within 1 tick, worst error {max_error:.3}"
+        );
+        assert!(
+            (gated.jitter_micros() - clean_only.jitter_micros()).abs() < 1_000.0,
+            "gated jitter {} must match the clean-only jitter {}",
+            gated.jitter_micros(),
+            clean_only.jitter_micros()
+        );
+        assert!(
+            gated.rtt_micros() < 170_000.0,
+            "stalls must not inflate RTT, got {}",
+            gated.rtt_micros()
+        );
+
+        // The pre-gate law, fed the same sequence, is biased by several ticks and
+        // its jitter is inflated far past the clean link's.
+        let (old_offset, old_jitter) = ungated_fold(&all);
+        assert!(
+            old_offset - TRUE_OFFSET_TICKS > 2.0,
+            "reference: the ungated fold is biased, got {:.3} ticks",
+            old_offset - TRUE_OFFSET_TICKS
+        );
+        assert!(
+            old_jitter > 5.0 * clean_only.jitter_micros(),
+            "reference: the ungated jitter {old_jitter} is inflated"
+        );
+    }
+
+    // A genuine sustained latency increase must not be gated out forever: once the
+    // pre-step minimum rolls out of the window, the new RTT is adopted.
+    #[test]
+    fn min_rtt_gate_adopts_sustained_rtt_step_within_one_window() {
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        let mut id = 0u32;
+        let mut send_us = 0u64;
+        let next = |half: u64, id: &mut u32, send_us: &mut u64| {
+            let trip = round_trip(*id, *send_us, half, half);
+            *id += 1;
+            *send_us += SAMPLE_PERIOD_US;
+            trip
+        };
+        for _ in 0..(2 * RTT_WINDOW_SAMPLES) {
+            let trip = next(50_000, &mut id, &mut send_us);
+            feed(&mut est, &[trip]);
+        }
+        assert!((est.rtt_micros() - 100_000.0).abs() < EPS);
+
+        // Step to 250 ms. The first RTT_WINDOW_SAMPLES - 1 step samples still share
+        // the window with a 100 ms minimum and are gated out.
+        for _ in 0..(RTT_WINDOW_SAMPLES - 1) {
+            let trip = next(125_000, &mut id, &mut send_us);
+            feed(&mut est, &[trip]);
+            assert!(
+                (est.rtt_micros() - 100_000.0).abs() < EPS,
+                "a step sample is gated while the old minimum remains in the window"
+            );
+        }
+        // Permit side: the window's last pre-step sample rolls out, so the next
+        // step sample folds.
+        let trip = next(125_000, &mut id, &mut send_us);
+        feed(&mut est, &[trip]);
+        assert!(
+            est.rtt_micros() > 110_000.0,
+            "the step is adopted within one window, RTT {}",
+            est.rtt_micros()
+        );
+
+        for _ in 0..60 {
+            let trip = next(125_000, &mut id, &mut send_us);
+            feed(&mut est, &[trip]);
+        }
+        assert!(
+            (est.rtt_micros() - 250_000.0).abs() < 1_000.0,
+            "RTT converges to the new level, got {}",
+            est.rtt_micros()
+        );
+        assert!(
+            (est.estimated_server_tick_at(0) - TRUE_OFFSET_TICKS).abs() <= 1.0,
+            "the symmetric step leaves the offset unbiased"
+        );
+    }
+
+    #[test]
+    fn min_rtt_gate_floor_admits_lan_scale_noise() {
+        // At a ~1 ms LAN minimum the proportional tolerance is tiny; the 20 ms
+        // floor still admits ordinary scheduling noise.
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        feed(&mut est, &[round_trip(0, 0, 500, 500)]);
+        feed(&mut est, &[round_trip(1, SAMPLE_PERIOD_US, 9_000, 9_000)]);
+        assert!(
+            est.rtt_micros() > 1_000.0,
+            "an 18 ms sample within the floor folds, RTT {}",
+            est.rtt_micros()
         );
     }
 

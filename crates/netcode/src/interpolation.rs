@@ -8,6 +8,19 @@
 // snapshots bracketing that render time have almost always arrived, and the visible
 // pose is a clean lerp/slerp between them rather than a teleport on each packet.
 //
+// `estimated_server_tick` is the server's *current* tick, but a snapshot stamped
+// tick T reaches the client about one-way latency after T. The delay is the larger
+// of two laws, each rounded up to whole ticks:
+//   - Time-sync law: a transit term (smoothed RTT / 2) plus the buffer term
+//     `clamp(50 ms + 2 × jitter + starvation_margin, 50 ms, 250 ms)`.
+//   - Measured-lag law: `lag_peak + one snapshot interval`, where
+//     `lag_peak` is a decaying peak of how far the estimated server tick has run
+//     past each newly accepted newest snapshot's tick. Snapshots ride the
+//     unreliable channel, so this sees the true arrival spread that time sync's
+//     min-RTT gate filters out, and any offset error cancels because the render
+//     target reads the same estimate.
+// On a LAN (RTT ≈ 0, lag ≈ 0) both reduce to the 50 ms buffer floor.
+//
 // Time model: every sample is stamped with the server tick it was valid at (the
 // snapshot's `server_tick`), never a wall-clock instant. The render target is also a
 // server tick, derived from `ClientTimeSync` (Task 5) minus the delay. So this whole
@@ -84,6 +97,19 @@ static STARVATION_MARGIN_DECAY_PER_SEC: std::sync::LazyLock<f64> =
 /// frame add a pathological amount of margin or decay it fully to zero; clamping to
 /// 0.25 s bounds the per-frame influence to a quarter-second of adaptation.
 const MAX_FEEDBACK_DT_SECS: f64 = 0.25;
+/// Half-life of the snapshot-lag peak's decay toward the latest measured lag, in
+/// microseconds of estimated server time (2 s). A new maximum lifts the peak
+/// instantly; a lower lag pulls it down by half the gap every 2 s. Measured on the
+/// server-tick estimate rather than per call or per frame, so it is independent of
+/// frame rate and of how many snapshots happen to land per frame.
+const LAG_PEAK_HALF_LIFE_MICROS: f64 = 2_000_000.0;
+/// Ceiling on a single measured snapshot lag, in microseconds (1 s), so a corrupt
+/// or transiently wild server-tick estimate cannot drive the delay unbounded.
+const MAX_SNAPSHOT_LAG_MICROS: f64 = 1_000_000.0;
+/// Once the decaying lag peak is within this many ticks of the latest lag, it snaps
+/// to it, so a settled link's delay is not held one rounded-up tick high by an
+/// exponential tail that never quite closes.
+const LAG_PEAK_EPSILON_TICKS: f64 = 0.05;
 /// Below this, the starvation margin is treated as settled and snapped to zero.
 const STARVATION_MARGIN_EPSILON_MICROS: f64 = 500.0;
 /// Velocity below this squared magnitude is treated as stationary for starvation
@@ -100,7 +126,8 @@ const MAX_EXTRAPOLATION_MICROS: f64 = 100_000.0;
 /// headroom for reordered/duplicated arrivals without unbounded growth.
 const MAX_SAMPLES_PER_ENTITY: usize = 16;
 
-/// Base interpolation delay in **whole sim ticks**, sized from measured link jitter.
+/// Base interpolation delay in **whole sim ticks**, sized from measured link jitter,
+/// with no transit term (RTT 0, the LAN case).
 ///
 /// The continuous law is `clamp(50 ms + 2 × jitter, 50 ms, 250 ms)`; the result is
 /// then **rounded up** to a whole number of sim ticks, because the render target is a
@@ -114,7 +141,7 @@ const MAX_SAMPLES_PER_ENTITY: usize = 16;
 #[cfg(test)]
 #[must_use]
 pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64) -> u32 {
-    adaptive_interpolation_delay_ticks(jitter_micros, 0.0, micros_per_tick)
+    adaptive_interpolation_delay_ticks(jitter_micros, 0.0, 0.0, micros_per_tick)
 }
 
 /// Client-side feedback state for the remote interpolation delay.
@@ -123,13 +150,32 @@ pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64
 /// signal: if remotes had to hold their newest pose, the current delay was too tight
 /// for recent traffic, so subsequent frames temporarily add headroom.
 ///
-/// Production delay is:
-/// `clamp(50 ms + 2 × jitter + starvation_margin, 50 ms, 250 ms)`,
-/// rounded up to whole sim ticks.
+/// Production delay is the larger of, each rounded up to whole sim ticks:
+/// - `rtt / 2 + clamp(50 ms + 2 × jitter + starvation_margin, 50 ms, 250 ms)`.
+///   `rtt / 2` is the estimated one-way transit latency: the render target is
+///   measured back from the server's *current* tick, and a snapshot reaches the
+///   client that long after it was stamped. The clamp bounds only the buffer term;
+///   a non-finite or negative RTT counts as zero.
+/// - `lag_peak + SNAPSHOT_TICK_INTERVAL`, once a snapshot lag has been
+///   observed ([`Self::observe_newest_snapshot`]). `lag_peak` rises instantly to a
+///   new maximum and decays toward the latest lag with a
+///   [`LAG_PEAK_HALF_LIFE_MICROS`] half-life; each lag is capped at
+///   [`MAX_SNAPSHOT_LAG_MICROS`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterpolationDelayState {
     starvation_margin_micros: f64,
     last_render_server_tick: Option<f64>,
+    lag_peak: Option<SnapshotLagPeak>,
+}
+
+/// Decaying peak of measured snapshot arrival lag, in server ticks.
+#[derive(Debug, Clone, Copy)]
+struct SnapshotLagPeak {
+    peak_ticks: f64,
+    /// Newest snapshot tick already folded, so each one folds once.
+    snapshot_tick: u32,
+    /// Estimated server tick at that fold: the decay clock.
+    observed_at_tick: f64,
 }
 
 impl InterpolationDelayState {
@@ -142,13 +188,75 @@ impl InterpolationDelayState {
         *self = Self::default();
     }
 
-    /// Delay in whole sim ticks using both measured jitter and recent starvation.
-    pub(crate) fn delay_ticks(&self, jitter_micros: f64, micros_per_tick: u64) -> u32 {
-        adaptive_interpolation_delay_ticks(
+    /// Delay in whole sim ticks: the larger of the time-sync law (measured jitter,
+    /// recent starvation, and the one-way transit implied by the smoothed
+    /// `rtt_micros`) and the measured snapshot-lag law.
+    pub(crate) fn delay_ticks(
+        &self,
+        jitter_micros: f64,
+        rtt_micros: f64,
+        micros_per_tick: u64,
+    ) -> u32 {
+        let time_sync_law = adaptive_interpolation_delay_ticks(
             jitter_micros,
             self.starvation_margin_micros,
+            rtt_micros,
             micros_per_tick,
-        )
+        );
+        let Some(lag) = self.lag_peak else {
+            return time_sync_law;
+        };
+        // The lag is read on the first sampled frame after arrival, so it already
+        // over-reads by up to a frame; no margin beyond the snapshot interval.
+        let lag_law = (lag.peak_ticks + f64::from(crate::host::SNAPSHOT_TICK_INTERVAL)).ceil();
+        // The peak is capped and non-negative, so this cast never saturates.
+        time_sync_law.max(lag_law as u32)
+    }
+
+    /// Fold the arrival lag of the newest accepted snapshot: how far the server-tick
+    /// estimate `estimated_tick` has run past `newest_snapshot_tick`. Call once per
+    /// frame with the newest accepted snapshot's tick; a tick already folded is a
+    /// no-op, so per-frame calls fold each new newest snapshot exactly once.
+    ///
+    /// The lag is clamped to `[0, MAX_SNAPSHOT_LAG_MICROS]`. A new maximum lifts the
+    /// peak instantly; otherwise the peak decays toward this lag by the estimated
+    /// server time elapsed since the previous fold.
+    pub(crate) fn observe_newest_snapshot(
+        &mut self,
+        estimated_tick: f64,
+        newest_snapshot_tick: u32,
+        micros_per_tick: u64,
+    ) {
+        if !estimated_tick.is_finite()
+            || self
+                .lag_peak
+                .is_some_and(|lag| lag.snapshot_tick == newest_snapshot_tick)
+        {
+            return;
+        }
+        let micros_per_tick = micros_per_tick as f64;
+        let max_lag_ticks = MAX_SNAPSHOT_LAG_MICROS / micros_per_tick;
+        let lag_ticks =
+            (estimated_tick - f64::from(newest_snapshot_tick)).clamp(0.0, max_lag_ticks);
+        let peak_ticks = match self.lag_peak {
+            None => lag_ticks,
+            Some(previous) => {
+                let elapsed_micros =
+                    (estimated_tick - previous.observed_at_tick).max(0.0) * micros_per_tick;
+                let retained = 0.5_f64.powf(elapsed_micros / LAG_PEAK_HALF_LIFE_MICROS);
+                let excess = (previous.peak_ticks - lag_ticks) * retained;
+                if excess < LAG_PEAK_EPSILON_TICKS {
+                    lag_ticks
+                } else {
+                    lag_ticks + excess
+                }
+            }
+        };
+        self.lag_peak = Some(SnapshotLagPeak {
+            peak_ticks,
+            snapshot_tick: newest_snapshot_tick,
+            observed_at_tick: estimated_tick,
+        });
     }
 
     /// Render target tick for the remote interpolation buffers. Delay changes may
@@ -158,9 +266,10 @@ impl InterpolationDelayState {
         &mut self,
         estimated_tick: f64,
         jitter_micros: f64,
+        rtt_micros: f64,
         micros_per_tick: u64,
     ) -> f64 {
-        let delay_ticks = self.delay_ticks(jitter_micros, micros_per_tick);
+        let delay_ticks = self.delay_ticks(jitter_micros, rtt_micros, micros_per_tick);
         let candidate = estimated_tick - f64::from(delay_ticks);
         let render_tick = self
             .last_render_server_tick
@@ -199,11 +308,17 @@ impl InterpolationDelayState {
     fn starvation_margin_micros(&self) -> f64 {
         self.starvation_margin_micros
     }
+
+    #[cfg(test)]
+    fn lag_peak_ticks(&self) -> Option<f64> {
+        self.lag_peak.map(|lag| lag.peak_ticks)
+    }
 }
 
 fn adaptive_interpolation_delay_ticks(
     jitter_micros: f64,
     starvation_margin_micros: f64,
+    rtt_micros: f64,
     micros_per_tick: u64,
 ) -> u32 {
     debug_assert!(micros_per_tick > 0, "micros_per_tick must be positive");
@@ -218,11 +333,18 @@ fn adaptive_interpolation_delay_ticks(
         } else {
             0.0
         };
-    // Compute the clamped delay in microseconds, then round UP to whole ticks.
+    // One-way transit: half the smoothed RTT. Unclamped — it is measured latency,
+    // not buffering headroom.
+    let transit = if rtt_micros.is_finite() && rtt_micros > 0.0 {
+        rtt_micros / 2.0
+    } else {
+        0.0
+    };
+    // Clamp the buffer term, add transit, then round UP to whole ticks.
     let raw_micros = MIN_DELAY_MICROS as f64 + JITTER_MULTIPLIER * jitter + starvation_margin;
     let clamped = raw_micros.clamp(MIN_DELAY_MICROS as f64, MAX_DELAY_MICROS as f64);
-    let ticks = (clamped / micros_per_tick as f64).ceil();
-    // `clamped` is bounded by MAX_DELAY_MICROS, so this cast never saturates u32.
+    let ticks = ((clamped + transit) / micros_per_tick as f64).ceil();
+    // Finite and non-negative; an absurd RTT saturates the cast rather than wrapping.
     ticks as u32
 }
 
@@ -884,14 +1006,14 @@ mod tests {
     fn adaptive_delay_rises_after_observed_starvation() {
         let mut state = InterpolationDelayState::new();
         assert_eq!(
-            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
             3,
             "clean link starts at the 50 ms floor"
         );
 
         state.observe_sampled_frame(true, DT_60HZ);
         assert_eq!(
-            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
             5,
             "one starved frame adds 25 ms of temporary headroom"
         );
@@ -904,7 +1026,7 @@ mod tests {
             "starvation feedback stays capped"
         );
         assert_eq!(
-            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
             9,
             "capped starvation feedback raises the clean-link delay to 150 ms"
         );
@@ -916,7 +1038,7 @@ mod tests {
         for _ in 0..4 {
             state.observe_sampled_frame(true, DT_60HZ);
         }
-        let raised = state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK);
+        let raised = state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert!(raised > 3, "starvation feedback raised delay");
 
         for _ in 0..64 {
@@ -929,7 +1051,7 @@ mod tests {
             "clean frames settle the starvation margin exactly to zero"
         );
         assert_eq!(
-            state.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
             3,
             "settled state returns to the clean-link 50 ms floor"
         );
@@ -942,7 +1064,7 @@ mod tests {
             state.observe_sampled_frame(true, DT_60HZ);
         }
 
-        let ticks = state.delay_ticks(1_000_000.0, DEFAULT_MICROS_PER_TICK);
+        let ticks = state.delay_ticks(1_000_000.0, 0.0, DEFAULT_MICROS_PER_TICK);
         let expected = (MAX_DELAY_MICROS as f64 / DEFAULT_MICROS_PER_TICK as f64).ceil() as u32;
         assert_eq!(
             ticks, expected,
@@ -979,8 +1101,8 @@ mod tests {
             state_144.starvation_margin_micros()
         );
         assert_eq!(
-            state_60.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
-            state_144.delay_ticks(0.0, DEFAULT_MICROS_PER_TICK),
+            state_60.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
+            state_144.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
             "rise produces the same delay ticks at 60 and 144 fps"
         );
 
@@ -1079,13 +1201,13 @@ mod tests {
     fn adaptive_delay_increase_never_rewinds_render_target() {
         let mut state = InterpolationDelayState::new();
 
-        let first = state.render_server_tick(100.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let first = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert_eq!(first, 97.0, "50 ms floor is 3 ticks");
 
         state.observe_sampled_frame(true, DT_60HZ);
         state.observe_sampled_frame(true, DT_60HZ);
 
-        let next = state.render_server_tick(101.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let next = state.render_server_tick(101.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert!(
             next >= first,
             "render target must not regress after a delay increase: {next} < {first}"
@@ -1095,11 +1217,343 @@ mod tests {
             "presentation may pause while the server estimate catches up"
         );
 
-        let caught_up = state.render_server_tick(104.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let caught_up = state.render_server_tick(104.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert!(
             caught_up > next,
             "render target resumes advancing once the estimate catches up"
         );
+    }
+
+    // --- Transit term: the delay adds half the smoothed RTT. ---
+
+    #[test]
+    fn delay_at_zero_rtt_matches_buffer_only_law() {
+        // LAN is unchanged: with RTT 0 the delay is exactly the buffer term, for
+        // every jitter level and with starvation feedback raised.
+        let mut state = InterpolationDelayState::new();
+        for jitter in [0.0, 5_000.0, 20_000.0, 1_000_000.0] {
+            assert_eq!(
+                state.delay_ticks(jitter, 0.0, DEFAULT_MICROS_PER_TICK),
+                interpolation_delay_ticks(jitter, DEFAULT_MICROS_PER_TICK),
+                "jitter {jitter}"
+            );
+        }
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+        state.observe_sampled_frame(true, DT_60HZ);
+        assert_eq!(
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
+            5,
+            "starvation feedback is unchanged at RTT 0"
+        );
+    }
+
+    #[test]
+    fn delay_adds_half_rtt_rounded_up_to_whole_ticks() {
+        let state = InterpolationDelayState::new();
+        let ticks_for = |micros: f64| (micros / DEFAULT_MICROS_PER_TICK as f64).ceil() as u32;
+
+        // 150 ms RTT -> 75 ms transit. 50 ms + 75 ms = 125 ms = 7.5 ticks -> 8.
+        let ticks = state.delay_ticks(0.0, 150_000.0, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(ticks, ticks_for(50_000.0 + 75_000.0));
+        assert_eq!(ticks, 8);
+
+        // Jitter 20 ms -> buffer 90 ms; + 75 ms = 165 ms = 9.9 ticks -> 10.
+        assert_eq!(
+            state.delay_ticks(20_000.0, 150_000.0, DEFAULT_MICROS_PER_TICK),
+            10
+        );
+
+        // The clamp bounds the buffer term only: 250 ms + 75 ms = 325 ms -> 20.
+        assert_eq!(
+            state.delay_ticks(1_000_000.0, 150_000.0, DEFAULT_MICROS_PER_TICK),
+            ticks_for(MAX_DELAY_MICROS as f64 + 75_000.0)
+        );
+    }
+
+    #[test]
+    fn delay_treats_non_finite_or_negative_rtt_as_zero() {
+        let state = InterpolationDelayState::new();
+        for rtt in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -150_000.0] {
+            assert_eq!(
+                state.delay_ticks(0.0, rtt, DEFAULT_MICROS_PER_TICK),
+                3,
+                "RTT {rtt} counts as zero"
+            );
+        }
+    }
+
+    // Playtest defect: the render target is measured back from the server's
+    // CURRENT tick, but a snapshot stamped T lands one-way latency after T. With
+    // ~75 ms one-way the buffer-only delay (50 ms) sits past the newest sample, so
+    // remotes chronically extrapolate and snap back when the late sample lands.
+    #[test]
+    fn transit_delay_brackets_late_snapshots_in_steady_state() {
+        const SNAPSHOT_INTERVAL_TICKS: u32 = 2;
+        const RTT_MICROS: f64 = 150_000.0;
+        // One-way transit in server ticks (75 ms = 4.5 ticks).
+        let transit_ticks = RTT_MICROS / 2.0 / DEFAULT_MICROS_PER_TICK as f64;
+
+        let id = NetworkId(1);
+        let mut buf = RemoteInterpolationBuffer::new();
+        let mut new_law = InterpolationDelayState::new();
+        let mut old_law = InterpolationDelayState::new();
+        let mut next_snapshot = 0u32;
+        let mut frames = 0;
+
+        // Client frames step the (perfectly synced) server-tick estimate by a
+        // quarter tick. A snapshot is buffered once its transit has elapsed.
+        for step in 0..800u32 {
+            let estimated_tick = f64::from(step) * 0.25;
+            while f64::from(next_snapshot) + transit_ticks <= estimated_tick {
+                buf.record(id, sample(next_snapshot, next_snapshot as f32));
+                next_snapshot += SNAPSHOT_INTERVAL_TICKS;
+            }
+            let new_target = new_law.render_server_tick(
+                estimated_tick,
+                0.0,
+                RTT_MICROS,
+                DEFAULT_MICROS_PER_TICK,
+            );
+            let old_target =
+                old_law.render_server_tick(estimated_tick, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            if estimated_tick < 30.0 {
+                continue; // warm-up: the buffer is still filling
+            }
+            frames += 1;
+
+            let new_pose = buf.presented_pose(id, new_target).expect("buffered");
+            assert_eq!(
+                new_pose.source,
+                PoseSource::Interpolated,
+                "transit-aware target {new_target} must be bracketed at estimate {estimated_tick}"
+            );
+            assert!((new_pose.transform.position.x - new_target as f32).abs() < POS_EPS);
+
+            let old_pose = buf.presented_pose(id, old_target).expect("buffered");
+            assert_eq!(
+                old_pose.source,
+                PoseSource::Extrapolated,
+                "reference: the buffer-only target {old_target} outruns the newest sample"
+            );
+        }
+        assert!(frames > 500, "steady state was exercised ({frames} frames)");
+    }
+
+    // --- Measured snapshot-lag law. ---
+
+    /// Deterministic splitmix64 stream of uniform `[0, 1)` draws.
+    struct Uniform(u64);
+    impl Uniform {
+        fn next(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) as f64 / 2f64.powi(64)
+        }
+    }
+
+    const MICROS_PER_TICK: f64 = DEFAULT_MICROS_PER_TICK as f64;
+
+    /// Harness one-way link: 45 ms + U(0, 60) ms.
+    fn harness_one_way_micros(rng: &mut Uniform) -> f64 {
+        45_000.0 + 60_000.0 * rng.next()
+    }
+
+    /// Smoothed (RTT, jitter) the gated time-sync estimator reports on the harness
+    /// link: 5 Hz probes, each direction 45 ms + U(0, 60) ms.
+    fn harness_time_sync(rng: &mut Uniform) -> (f64, f64) {
+        use postretro_net::timesync::{ClockEstimator, SAMPLE_PERIOD_US, TimeSyncEcho};
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        for id in 0..200u32 {
+            let send_us = u64::from(id) * SAMPLE_PERIOD_US;
+            let rtt = harness_one_way_micros(rng) + harness_one_way_micros(rng);
+            est.record_sent(id);
+            est.ingest_echo(
+                &TimeSyncEcho {
+                    sample_id: id,
+                    client_send_tick: 0,
+                    client_send_time_us: send_us,
+                    server_tick: 0,
+                    server_echo_time_us: 0,
+                },
+                send_us + rtt as u64,
+            );
+        }
+        (est.rtt_micros(), est.jitter_micros())
+    }
+
+    // Follow-up to the transit term: the min-RTT gate admits only near-minimum
+    // round trips, so rtt/2 and jitter under-read the true snapshot arrival
+    // spread. Measuring each newest snapshot's lag directly covers the tail.
+    #[test]
+    fn measured_lag_brackets_jittered_snapshots_on_99_percent_of_frames() {
+        let mut rng = Uniform(0x1502);
+        let (rtt, jitter) = harness_time_sync(&mut rng);
+
+        // 60 s of 30 Hz snapshots on the harness profile: each arrives after its
+        // own one-way delay, and 5% are lost.
+        let mut arrivals: Vec<(f64, u32)> = (0..1_800u32)
+            .filter_map(|i| {
+                let tick = i * crate::host::SNAPSHOT_TICK_INTERVAL;
+                let arrival = f64::from(tick) + harness_one_way_micros(&mut rng) / MICROS_PER_TICK;
+                (rng.next() >= 0.05).then_some((arrival, tick))
+            })
+            .collect();
+        arrivals.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let id = NetworkId(1);
+        let mut buf = RemoteInterpolationBuffer::new();
+        let mut measured = InterpolationDelayState::new();
+        let mut rtt_only = InterpolationDelayState::new();
+        let mut next_arrival = 0;
+        let mut newest: Option<u32> = None;
+        let (mut frames, mut measured_hits, mut rtt_only_hits) = (0u32, 0u32, 0u32);
+
+        // Client frames step the (perfectly synced) server-tick estimate by a
+        // quarter tick; the first 3 s warm the buffer and the lag peak.
+        for step in 0..14_000u32 {
+            let estimated_tick = f64::from(step) * 0.25;
+            while next_arrival < arrivals.len() && arrivals[next_arrival].0 <= estimated_tick {
+                let tick = arrivals[next_arrival].1;
+                buf.record(id, sample(tick, tick as f32));
+                newest = Some(newest.map_or(tick, |n| n.max(tick)));
+                next_arrival += 1;
+            }
+            if let Some(newest) = newest {
+                measured.observe_newest_snapshot(estimated_tick, newest, DEFAULT_MICROS_PER_TICK);
+            }
+            let measured_target =
+                measured.render_server_tick(estimated_tick, jitter, rtt, DEFAULT_MICROS_PER_TICK);
+            let rtt_only_target =
+                rtt_only.render_server_tick(estimated_tick, jitter, rtt, DEFAULT_MICROS_PER_TICK);
+            if estimated_tick < 180.0 {
+                continue;
+            }
+            frames += 1;
+            let bracketed = |target: f64| {
+                buf.presented_pose(id, target)
+                    .is_some_and(|pose| pose.source == PoseSource::Interpolated)
+            };
+            measured_hits += u32::from(bracketed(measured_target));
+            rtt_only_hits += u32::from(bracketed(rtt_only_target));
+        }
+
+        assert!(
+            frames > 13_000,
+            "steady state was exercised ({frames} frames)"
+        );
+        assert!(
+            f64::from(measured_hits) >= 0.99 * f64::from(frames),
+            "measured-lag delay bracketed {measured_hits}/{frames} frames \
+             (rtt {rtt:.0} us, jitter {jitter:.0} us)"
+        );
+        assert!(
+            rtt_only_hits < frames,
+            "reference: the rtt/2 + gated-jitter law alone misses the arrival tail \
+             ({rtt_only_hits}/{frames}, rtt {rtt:.0} us, jitter {jitter:.0} us)"
+        );
+    }
+
+    #[test]
+    fn measured_lag_at_lan_zero_matches_time_sync_law() {
+        let mut state = InterpolationDelayState::new();
+        state.observe_newest_snapshot(100.0, 100, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.lag_peak_ticks(), Some(0.0));
+        for jitter in [0.0, 5_000.0, 20_000.0, 1_000_000.0] {
+            assert_eq!(
+                state.delay_ticks(jitter, 0.0, DEFAULT_MICROS_PER_TICK),
+                interpolation_delay_ticks(jitter, DEFAULT_MICROS_PER_TICK),
+                "jitter {jitter}"
+            );
+        }
+        // A snapshot stamped ahead of the estimate (offset error) clamps to zero lag.
+        state.observe_newest_snapshot(100.0, 104, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+    }
+
+    #[test]
+    fn measured_lag_peak_rises_instantly_then_decays_without_rewinding() {
+        let mut state = InterpolationDelayState::new();
+        state.observe_newest_snapshot(100.0, 98, DEFAULT_MICROS_PER_TICK);
+        let mut last_target = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+
+        // A lag spike of 10 ticks lifts the delay at once: ceil(10 + 2) = 12.
+        state.observe_newest_snapshot(102.0, 92, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.lag_peak_ticks(), Some(10.0));
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 12);
+
+        // The lag then drops back to 1 tick on every snapshot. After 120 ticks (one
+        // ~2 s half-life) the peak has closed half the gap: about 1 + 9 / 2 = 5.5.
+        let mut tick = 102u32;
+        while tick < 222 {
+            tick += 2;
+            state.observe_newest_snapshot(f64::from(tick), tick - 1, DEFAULT_MICROS_PER_TICK);
+            let target =
+                state.render_server_tick(f64::from(tick), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            assert!(
+                target >= last_target,
+                "render target rewound: {target} < {last_target}"
+            );
+            last_target = target;
+        }
+        let retained = 0.5_f64.powf(120.0 * MICROS_PER_TICK / LAG_PEAK_HALF_LIFE_MICROS);
+        let expected = 1.0 + 9.0 * retained;
+        assert!((expected - 5.5).abs() < 0.01);
+        assert!(
+            (state.lag_peak_ticks().unwrap() - expected).abs() < 1e-6,
+            "peak after one half-life: {:?} vs {expected}",
+            state.lag_peak_ticks()
+        );
+
+        // Twenty seconds on, the peak has settled to the 1-tick lag: ceil(1 + 2) = 3.
+        for _ in 0..600 {
+            tick += 2;
+            state.observe_newest_snapshot(f64::from(tick), tick - 1, DEFAULT_MICROS_PER_TICK);
+            let target =
+                state.render_server_tick(f64::from(tick), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            assert!(
+                target >= last_target,
+                "render target rewound: {target} < {last_target}"
+            );
+            last_target = target;
+        }
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+    }
+
+    #[test]
+    fn measured_lag_folds_each_snapshot_once_and_caps_wild_estimates() {
+        let mut state = InterpolationDelayState::new();
+        state.observe_newest_snapshot(110.0, 100, DEFAULT_MICROS_PER_TICK);
+        // The same newest snapshot seen on a later frame is not re-measured.
+        state.observe_newest_snapshot(130.0, 100, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.lag_peak_ticks(), Some(10.0));
+
+        // A corrupt estimate far ahead is capped at 1 s of lag.
+        state.observe_newest_snapshot(1.0e9, 102, DEFAULT_MICROS_PER_TICK);
+        let cap = MAX_SNAPSHOT_LAG_MICROS / MICROS_PER_TICK;
+        assert!((state.lag_peak_ticks().unwrap() - cap).abs() < 1e-9);
+        assert_eq!(
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
+            (cap + 2.0).ceil() as u32
+        );
+
+        // A non-finite estimate is ignored.
+        state.observe_newest_snapshot(f64::NAN, 104, DEFAULT_MICROS_PER_TICK);
+        assert!((state.lag_peak_ticks().unwrap() - cap).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measured_lag_resets_on_level_unload() {
+        let mut state = InterpolationDelayState::new();
+        state.observe_newest_snapshot(120.0, 100, DEFAULT_MICROS_PER_TICK);
+        assert!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK) > 3);
+        state.reset_for_level_unload();
+        assert_eq!(state.lag_peak_ticks(), None);
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+        // The next level's first snapshot is measured fresh, even at a reused tick.
+        state.observe_newest_snapshot(101.0, 100, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.lag_peak_ticks(), Some(1.0));
     }
 
     // --- Sample lookup by server tick: midpoint lands halfway. ---

@@ -23,9 +23,14 @@
 //   - FullBaseline, mapped + live: update in place, clear pending repair, ack.
 //   - FullBaseline, mapped + stale entity: drop the stale mapping, request refresh;
 //     do not ack the entity baseline.
-//   - Delta, baseline_ref held: apply, advance the stored baseline, ack.
-//   - Delta, baseline_ref unknown: request refresh, leave state untouched, and do
-//     not ack the entity baseline.
+//   - Delta, some baseline held, new_baseline_id newer: apply regardless of
+//     baseline_ref (a delta carries the full component set), advance the stored
+//     baseline, ack. Newest wins: the host keeps naming its last acked ref while
+//     the client's acks are in flight.
+//   - Delta, some baseline held, new_baseline_id not newer: skip silently; no
+//     state change, no refresh, no ack.
+//   - Delta, no held baseline or no live mapping: request refresh, leave state
+//     untouched, and do not ack the entity baseline.
 //   - Despawn: retire the network identity and ack its tombstone. Despawn a
 //     replication-created copy; only unbind an authored presentation entity.
 //   - Older snapshot: only a first baseline for an unseen identity may apply.
@@ -115,6 +120,14 @@ pub(crate) const REFRESH_REASON_UNMERGED_LOCAL_PAWN: u8 = 3;
 /// reliable `Channel::Input` makes a single request sufficient in the common case;
 /// the cadence covers the entity falling out of and back into the pending set.
 const REPAIR_RESEND_INTERVAL_MS: f32 = 200.0;
+
+/// Whether `candidate` was issued after `held` by a host baseline allocator. Ids
+/// are `u32` from `wrapping_add` allocators that never restart for an endpoint's
+/// lifetime, so this is a serial-number comparison. Full-state deltas apply on
+/// this rule; a `FullBaseline` replaces the held id unconditionally.
+pub(crate) fn baseline_is_newer(candidate: u32, held: u32) -> bool {
+    (candidate.wrapping_sub(held) as i32) > 0
+}
 
 /// Descriptor-immutable locomotion reference data for a remote enemy. The host
 /// replicates only its changing pose and mesh state; the client reads this from the
@@ -233,8 +246,9 @@ pub struct ClientReplication {
     /// their target on the wire.
     reverse_map: HashMap<EntityId, NetworkId>,
     /// `NetworkId -> stored baseline_id`. The baseline the client currently holds for
-    /// each mapped entity; a `Delta`'s `baseline_ref` must match this to apply, and a
-    /// successful apply advances it. Kept in lockstep with `map`.
+    /// each mapped entity. A `Delta` applies when its `new_baseline_id` is newer than
+    /// this (see [`baseline_is_newer`]), whatever its `baseline_ref`, and a successful
+    /// apply advances it. Kept in lockstep with `map`.
     baselines: HashMap<NetworkId, u32>,
     /// Last active-weapon archetype applied for each replicated movement pawn. This
     /// is presentation state only: it detects shared-visible equip changes without
@@ -996,12 +1010,15 @@ impl ClientReplication {
                             acked_baselines.push((*network_id, *new_baseline_id));
                             continue;
                         }
-                        if self.baselines.get(&nid) == Some(baseline_ref)
+                        let held = self.baselines.get(&nid).copied();
+                        if let Some(held) = held
                             && self.map.get(&nid).is_some_and(|id| registry.exists(*id))
                         {
-                            self.baselines.insert(nid, *new_baseline_id);
-                            collect_presentation_payloads(&mut outcome, nid, components);
-                            acked_baselines.push((*network_id, *new_baseline_id));
+                            if baseline_is_newer(*new_baseline_id, held) {
+                                self.baselines.insert(nid, *new_baseline_id);
+                                collect_presentation_payloads(&mut outcome, nid, components);
+                                acked_baselines.push((*network_id, *new_baseline_id));
+                            }
                         } else {
                             self.queue_repair(
                                 &mut outcome.refresh_requests,
@@ -1330,8 +1347,9 @@ impl ClientReplication {
         }
     }
 
-    /// Apply a `Delta`. Returns `true` if applied (ackable), `false` if it requested
-    /// a refresh (unknown baseline ref). See the module state machine.
+    /// Apply a `Delta`. Returns `true` if applied (ackable), `false` if it was not
+    /// newer than the held baseline (skipped) or requested a refresh (no held
+    /// baseline or live mapping). See the module state machine.
     #[allow(clippy::too_many_arguments)]
     fn apply_delta(
         &mut self,
@@ -1348,25 +1366,28 @@ impl ClientReplication {
         entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
     ) -> bool {
-        // The client must hold the referenced baseline and a live mapped entity. If
-        // the stored baseline does not match (lost/old snapshot), or the entity is
-        // gone, request a refresh and leave current state untouched.
+        // The client must hold some baseline and a live mapped entity; otherwise
+        // request a refresh and leave current state untouched. A delta carries the
+        // full component set, so any held baseline older than `new_baseline_id`
+        // suffices; one not older is a duplicate or reordered record to skip.
         let held = self.baselines.get(&network_id).copied();
         let mapped = self.map.get(&network_id).copied();
-        let appliable = matches!((held, mapped), (Some(b), Some(id))
-            if b == baseline_ref && registry.exists(id));
-        if !appliable {
-            self.queue_repair(
-                &mut outcome.refresh_requests,
-                sequence,
-                network_id,
-                baseline_ref,
-                REFRESH_REASON_UNKNOWN_BASELINE,
-            );
+        let (held, id) = match (held, mapped) {
+            (Some(held), Some(id)) if registry.exists(id) => (held, id),
+            _ => {
+                self.queue_repair(
+                    &mut outcome.refresh_requests,
+                    sequence,
+                    network_id,
+                    baseline_ref,
+                    REFRESH_REASON_UNKNOWN_BASELINE,
+                );
+                return false;
+            }
+        };
+        if !baseline_is_newer(new_baseline_id, held) {
             return false;
         }
-        // Safe: `appliable` proved both are Some and the entity is live.
-        let id = mapped.expect("appliable delta has a mapped entity");
         if !self.apply_components_to(
             registry,
             network_id,
@@ -2576,6 +2597,12 @@ impl ClientReplication {
         self.interp.sample_count(network_id)
     }
 
+    /// The newest interpolation sample's transform for a remote entity (tests).
+    #[cfg(test)]
+    pub(crate) fn newest_sample_transform(&self, network_id: NetworkId) -> Option<Transform> {
+        self.interp.newest_transform(network_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn mover_history_sample_count(&self, mover_id: u32) -> usize {
         self.mover_history.sample_count(mover_id)
@@ -3732,10 +3759,10 @@ mod tests {
         );
     }
 
-    // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,
-    // unrelated state untouched. ---
+    // --- Delta with no held baseline: not applied, pending repair set, refresh
+    // requested, unrelated state untouched. ---
     #[test]
-    fn delta_with_unknown_baseline_requests_refresh_and_leaves_state() {
+    fn delta_without_held_baseline_requests_refresh_and_leaves_state() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         // Spawn entity 7 at baseline 1.
@@ -3749,19 +3776,23 @@ mod tests {
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
 
-        // A delta referencing baseline 5 (the client holds 1): unappliable.
+        // A delta for entity 8, which the client never mapped: unappliable however
+        // new its baseline id is.
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(1, 2, vec![delta(7, 5, 6, vec![transform_payload(99.0)])]),
+            &snapshot(1, 2, vec![delta(8, 5, 6, vec![transform_payload(99.0)])]),
         );
-        // State untouched: position unchanged, baseline still 1.
+        // State untouched: entity 8 not spawned, entity 7 unchanged.
+        assert!(!client.map().contains_key(&NetworkId(8)));
+        assert_eq!(client.stored_baseline(NetworkId(8)), None);
         assert!((entity_pos(&registry, id).x - 0.0).abs() < EPSILON);
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(1));
         // Pending repair + a refresh request emitted, not acked.
-        assert!(client.is_pending_repair(NetworkId(7)));
+        assert!(client.is_pending_repair(NetworkId(8)));
+        assert!(!client.is_pending_repair(NetworkId(7)));
         assert_eq!(out.refresh_requests.len(), 1);
         let req = out.refresh_requests[0];
-        assert_eq!(req.network_id, 7);
+        assert_eq!(req.network_id, 8);
         assert_eq!(req.missing_baseline_ref, 5);
         // The ack carries the sequence advance but NO baseline for the unappliable
         // entity.
@@ -3804,14 +3835,108 @@ mod tests {
         assert!(!client.is_pending_repair(NetworkId(7)));
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 2)]);
 
-        // An empty delta whose ref is NOT held requests a refresh instead.
-        let out2 = client.apply_snapshot(
-            &mut registry,
-            &snapshot(2, 3, vec![delta(7, 99, 100, vec![])]),
-        );
-        assert!(client.is_pending_repair(NetworkId(7)));
-        assert_eq!(out2.refresh_requests.len(), 1);
+        // A repeated empty delta for the baseline already held is skipped silently.
+        let out2 =
+            client.apply_snapshot(&mut registry, &snapshot(2, 3, vec![delta(7, 1, 2, vec![])]));
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert!(out2.refresh_requests.is_empty());
         assert!(out2.ack.unwrap().entity_baselines.is_empty());
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(2));
+    }
+
+    // --- Newest wins: a delta carries the full component set, so the host naming
+    // its last *acked* baseline (while newer client acks are in flight) must not
+    // starve the client. ---
+    #[test]
+    fn deltas_from_one_acked_ref_apply_in_order_without_refresh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+
+        // The host has only seen the ack for baseline 1, so both deltas name it.
+        let out_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 2, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        let out_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 3, vec![delta(7, 1, 3, vec![transform_payload(3.0)])]),
+        );
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
+        assert!(out_b.refresh_requests.is_empty());
+        assert!(out_c.refresh_requests.is_empty());
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert_eq!(out_b.ack.unwrap().entity_baselines, vec![(7, 2)]);
+        assert_eq!(out_c.ack.unwrap().entity_baselines, vec![(7, 3)]);
+    }
+
+    #[test]
+    fn reordered_and_duplicate_deltas_are_skipped_without_refresh() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                1,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).unwrap();
+
+        // C (baseline 3) arrives first and applies.
+        let out_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 3, vec![delta(7, 1, 3, vec![transform_payload(3.0)])]),
+        );
+        assert_eq!(out_c.ack.unwrap().entity_baselines, vec![(7, 3)]);
+
+        // B (baseline 2) in its older snapshot is dropped by the sequence gate.
+        let late_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 2, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        // B's baseline in a newer snapshot is still older than the held one.
+        let stale_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(3, 4, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        // A duplicate C, resent before the host saw the ack for 3.
+        let dup_c = client.apply_snapshot(
+            &mut registry,
+            &snapshot(4, 5, vec![delta(7, 1, 3, vec![transform_payload(30.0)])]),
+        );
+
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        for out in [&late_b, &stale_b, &dup_c] {
+            assert!(out.refresh_requests.is_empty());
+            assert!(
+                out.ack
+                    .as_ref()
+                    .is_none_or(|ack| ack.entity_baselines.is_empty()),
+                "a skipped delta is not acked"
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_newness_wraps_like_the_host_allocators() {
+        assert!(baseline_is_newer(2, 1));
+        assert!(!baseline_is_newer(1, 1));
+        assert!(!baseline_is_newer(1, 2));
+        assert!(baseline_is_newer(1, u32::MAX));
+        assert!(!baseline_is_newer(u32::MAX, 1));
     }
 
     // Known identities never roll back; duplicate snapshots remain ignored.
@@ -4024,22 +4149,16 @@ mod tests {
     fn full_baseline_refresh_response_clears_pending_and_remaps() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        // Spawn, then receive an unknown-baseline delta to enter the pending set.
-        client.apply_snapshot(
-            &mut registry,
-            &snapshot(
-                0,
-                1,
-                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
-            ),
-        );
+        // A delta for an identity whose first baseline was lost enters the pending
+        // set.
         client.apply_snapshot(
             &mut registry,
             &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(5.0)])]),
         );
         assert!(client.is_pending_repair(NetworkId(7)));
+        assert!(!client.map().contains_key(&NetworkId(7)));
 
-        // The refresh response arrives as a FullBaseline: applies in place, clears
+        // The refresh response arrives as a FullBaseline: spawns and maps, clears
         // pending, acks.
         let out = client.apply_snapshot(
             &mut registry,
@@ -4053,6 +4172,7 @@ mod tests {
             !client.is_pending_repair(NetworkId(7)),
             "refresh cleared pending"
         );
+        assert!(client.map().contains_key(&NetworkId(7)));
         assert_eq!(client.stored_baseline(NetworkId(7)), Some(100));
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 100)]);
     }
@@ -4230,15 +4350,7 @@ mod tests {
     fn pending_repair_resends_at_5hz_until_cleared() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        client.apply_snapshot(
-            &mut registry,
-            &snapshot(
-                0,
-                1,
-                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
-            ),
-        );
-        // Enter pending via an unknown-baseline delta.
+        // Enter pending via a delta for an identity with no held baseline.
         client.apply_snapshot(
             &mut registry,
             &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(1.0)])]),
@@ -4311,16 +4423,13 @@ mod tests {
     fn ack_carries_only_applied_records() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
-        // Pre-map entity 9 so its despawn applies, and entity 10 at baseline 1.
+        // Pre-map entity 9 so its despawn applies.
         client.apply_snapshot(
             &mut registry,
             &snapshot(
                 0,
                 1,
-                vec![
-                    full_baseline(9, 1, vec![transform_payload(0.0)]),
-                    full_baseline(10, 2, vec![transform_payload(0.0)]),
-                ],
+                vec![full_baseline(9, 1, vec![transform_payload(0.0)])],
             ),
         );
 
@@ -4332,8 +4441,8 @@ mod tests {
                 vec![
                     // Applies: a fresh spawn.
                     full_baseline(11, 5, vec![transform_payload(1.0)]),
-                    // Does not apply: unknown baseline ref for entity 10 (holds 2).
-                    delta(10, 99, 100, vec![transform_payload(9.0)]),
+                    // Does not apply: entity 12 has no held baseline.
+                    delta(12, 99, 100, vec![transform_payload(9.0)]),
                     // Applies: despawn of mapped entity 9.
                     EntityRecord::Despawn {
                         network_id: 9,
@@ -4355,7 +4464,7 @@ mod tests {
             "applied despawn acked"
         );
         assert!(
-            client.is_pending_repair(NetworkId(10)),
+            client.is_pending_repair(NetworkId(12)),
             "unappliable delta -> pending"
         );
         assert_eq!(out.refresh_requests.len(), 1);
@@ -4401,7 +4510,14 @@ mod tests {
         );
         let out = client.apply_snapshot(
             &mut registry,
-            &snapshot(1, 2, vec![delta(7, 99, 100, vec![transform_payload(1.0)])]),
+            &snapshot(
+                1,
+                2,
+                vec![
+                    delta(7, 1, 2, vec![transform_payload(1.0)]),
+                    delta(8, 99, 100, vec![transform_payload(1.0)]),
+                ],
+            ),
         );
         let buffers = encode_client_messages(&out);
         assert_eq!(buffers.len(), 2, "ack + one refresh");

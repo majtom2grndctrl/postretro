@@ -86,6 +86,7 @@ pub(super) fn compose_wieldable_inventory(
                 .enumerate()
                 .map(|(slot, canonical_name)| (slot, canonical_name.as_deref())),
             Some(carried_loadout),
+            Some(carried_loadout.active_slot),
         )
     } else {
         let loadout = authored_loadout.expect("handled by no-loadout return above");
@@ -100,13 +101,20 @@ pub(super) fn compose_wieldable_inventory(
                 .enumerate()
                 .map(|(slot, canonical_name)| (slot, Some(canonical_name.as_str()))),
             None,
+            None,
         )
     }
 }
 
 /// Compose a local inventory from explicit slot identities. The connected-client
 /// tuning path uses this only when Control arrives before its pawn baseline: the
-/// host has already resolved the slot layout, including interior empty slots.
+/// host has already resolved the slot layout, including interior empty slots,
+/// and names the slot its own copy was composed active with
+/// (`requested_active_slot`, the payload's `spawn_active_slot`). Without that,
+/// a host that restored a carried selection would hold a different weapon than
+/// its owner from the first frame, and nothing would converge them. A requested
+/// slot naming no populated slot falls back to the first populated one; `None`
+/// uses the carried loadout's selection, if any.
 pub(crate) fn compose_wieldable_inventory_from_slots(
     registry: &mut EntityRegistry,
     pawn: EntityId,
@@ -114,6 +122,7 @@ pub(crate) fn compose_wieldable_inventory_from_slots(
     descriptors: &[EntityTypeDescriptor],
     slots: &[Option<String>; WIELDABLE_SLOT_CAPACITY],
     carried_loadout: Option<&CarriedState>,
+    requested_active_slot: Option<usize>,
 ) -> Option<EntityId> {
     compose_wieldable_inventory_slots(
         registry,
@@ -125,6 +134,7 @@ pub(crate) fn compose_wieldable_inventory_from_slots(
             .enumerate()
             .map(|(slot, canonical_name)| (slot, canonical_name.as_deref())),
         carried_loadout,
+        requested_active_slot.or(carried_loadout.map(|loadout| loadout.active_slot)),
     )
 }
 
@@ -135,6 +145,7 @@ fn compose_wieldable_inventory_slots<'a>(
     descriptors: &[EntityTypeDescriptor],
     slots: impl IntoIterator<Item = (usize, Option<&'a str>)>,
     carried_loadout: Option<&CarriedState>,
+    requested_active_slot: Option<usize>,
 ) -> Option<EntityId> {
     let mut inventory = Inventory::default();
     let mut seeded_ammo_types = HashSet::new();
@@ -200,10 +211,10 @@ fn compose_wieldable_inventory_slots<'a>(
             .position(Option::is_some)
             .unwrap_or(0)
     };
-    inventory.active_slot = carried_loadout
-        .map(|loadout| loadout.active_slot)
+    inventory.active_slot = requested_active_slot
         .filter(|slot| inventory.wieldables.get(*slot).is_some_and(Option::is_some))
         .unwrap_or_else(first_populated_slot);
+    inventory.spawn_active_slot = inventory.active_slot;
 
     if let Some(carried_loadout) = carried_loadout {
         for (slot, weapon_id) in inventory.wieldables.iter().enumerate() {

@@ -59,8 +59,11 @@ pub fn restore_carried_health(
 /// movement descriptor gains `vault` tuning, and `swim.fluid_jump_velocity`
 /// becomes nullable (an epoch-11 reader rejects the null). 13: a weapon
 /// action's `charge` gains `interruptedBy`, which the client's vault fire gate
-/// reads (an epoch-12 reader rejects the unknown field).
-pub const TUNING_PAYLOAD_EPOCH: u32 = 13;
+/// reads (an epoch-12 reader rejects the unknown field). 14: the payload
+/// gains `spawn_active_slot`, the slot the host composed the pawn active with,
+/// which the client's install composition selects (an epoch-13 reader rejects
+/// the unknown field).
+pub const TUNING_PAYLOAD_EPOCH: u32 = 14;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -168,6 +171,14 @@ pub struct TuningPayload {
     epoch: u32,
     pub movement: Option<PlayerMovementDescriptor>,
     pub wieldables: [Option<WieldableTuningPayload>; WIELDABLE_SLOT_CAPACITY],
+    /// The wieldable slot the host composed this pawn's inventory active with
+    /// (a carried selection after a level change or rejoin). Fixed at spawn and
+    /// never tracking a later switch, so the host's whole-struct dedupe never
+    /// resends tuning for one. A client composing its own inventory from this
+    /// payload starts on it; one naming no populated slot falls back to the
+    /// first populated slot. Not pawn tuning: [`Self::same_pawn_tuning`]
+    /// ignores it.
+    pub spawn_active_slot: usize,
     pub environment: EnvironmentTuning,
 }
 
@@ -208,8 +219,16 @@ impl TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            spawn_active_slot: 0,
             environment,
         }
+    }
+
+    /// Name the slot the host composed this pawn active with. See
+    /// [`Self::spawn_active_slot`].
+    pub fn with_spawn_active_slot(mut self, slot: usize) -> Self {
+        self.spawn_active_slot = slot;
+        self
     }
 
     /// Whether `other` carries the same pawn-scoped tuning (movement and
@@ -232,6 +251,7 @@ impl TuningPayload {
             epoch: TUNING_PAYLOAD_EPOCH,
             movement,
             wieldables,
+            spawn_active_slot: 0,
             environment,
         }
     }

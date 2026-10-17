@@ -471,10 +471,14 @@ fn resolve_switch_outcome(
         .pop_front()
         .expect("the non-empty declaration chain was checked");
     let (settled_active, settled_last_weapon) = if accepted {
-        (
-            usize::from(settled.target_slot),
-            Some(settled.held_origin_slot),
-        )
+        // A same-slot declaration is the active-slot re-sync: the client held
+        // that weapon throughout, so accepting it makes no last-weapon history.
+        let last_weapon = if usize::from(settled.target_slot) == settled.held_origin_slot {
+            settled.rollback_last_weapon_slot
+        } else {
+            Some(settled.held_origin_slot)
+        };
+        (usize::from(settled.target_slot), last_weapon)
     } else {
         (settled.rollback_slot, settled.rollback_last_weapon_slot)
     };
@@ -1499,8 +1503,11 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 /// buffers) and **before** the render collectors read entities, so the renderer stays
 /// read-only over the registry.
 ///
-/// The render target is `estimated_server_tick - interpolation_delay`. Jitter sets
-/// the baseline delay; recent held-newest starvation temporarily adds headroom.
+/// The render target is `estimated_server_tick - interpolation_delay`. Half the
+/// smoothed RTT covers snapshot transit, jitter sets the buffer delay on top, and
+/// recent held-newest starvation temporarily adds headroom. The delay never drops
+/// below the decaying peak of measured snapshot arrival lag plus one snapshot
+/// interval and a tick (see `InterpolationDelayState`).
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
 /// left unsampled and remote entities stay at their last-applied snapshot pose. Their
@@ -1530,10 +1537,21 @@ pub fn client_sample_interpolation(
         replication.apply_held_remote_player_presentation(registry, frame_anim_time);
         return replication.presented_player_inputs().clone();
     };
-    // Jitter is available whenever the estimate is; default to 0 defensively.
+    // Jitter and RTT are available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
+    let rtt = time_sync.rtt_micros().unwrap_or(0.0);
+    // Measured arrival lag of the newest accepted snapshot. This runs in the same
+    // frame as `client_receive_and_apply`, so the estimate is read at receive time
+    // to within the frame; a snapshot already folded is skipped.
+    if let Some(newest_snapshot_tick) = replication.latest_server_tick() {
+        interpolation_delay.observe_newest_snapshot(
+            estimated_tick,
+            newest_snapshot_tick,
+            SERVER_TICK_MICROS,
+        );
+    }
     let render_server_tick =
-        interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
+        interpolation_delay.render_server_tick(estimated_tick, jitter, rtt, SERVER_TICK_MICROS);
     let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
@@ -1545,8 +1563,9 @@ pub fn client_sample_interpolation(
 /// The wieldable rows come from its live inventory, not the authored loadout: a
 /// descriptor refresh retunes existing instances, while loadout changes wait for
 /// the next pawn install. `environment` is the host's current level state
-/// ([`host_environment_tuning`]), shared by every pawn's payload. The net crate
-/// carries the resulting JSON bytes without learning this vocabulary.
+/// ([`host_environment_tuning`]), shared by every pawn's payload. The payload's
+/// `spawn_active_slot` is the inventory's composition-time selection. The net
+/// crate carries the resulting JSON bytes without learning this vocabulary.
 pub fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -1615,7 +1634,13 @@ pub fn tuning_payload_for_pawn(
             })
         })
         .unwrap_or_else(|| std::array::from_fn(|_| None));
+    // The composition-time selection, not the live active slot: a switch must
+    // never read as changed tuning under the whole-struct dedupe.
+    let spawn_active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .map_or(0, |inventory| inventory.spawn_active_slot);
     TuningPayload::new(movement, wieldables, environment.clone())
+        .with_spawn_active_slot(spawn_active_slot)
 }
 
 /// The host's current level state for the tuning payload, read live at every
@@ -2892,6 +2917,51 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    // The active-slot re-sync declares the slot the client already holds. Its
+    // accept leaves last-weapon memory as it was; its refusal rolls back to
+    // that same slot, so neither outcome changes what the player holds.
+    #[test]
+    fn same_slot_resync_declaration_settles_without_moving_selection_or_history() {
+        let resync = |declaration_id| PendingSwitchDeclaration {
+            declaration_id,
+            target_slot: 0,
+            held_origin_slot: 0,
+            rollback_slot: 0,
+            rollback_last_weapon_slot: Some(2),
+        };
+        let mut pending = VecDeque::from([resync(41)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 41,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Accepted {
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+
+        let mut pending = VecDeque::from([resync(42)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 42,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
     #[test]
     fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {
         // Regression: declaration-time liveness repair repointed the active slot,
@@ -3120,6 +3190,57 @@ mod tests {
         );
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
+    }
+
+    // The payload names the slot the pawn was composed active with, never its
+    // live selection: a switch after spawn must leave the whole-struct dedupe
+    // quiet, or every switch would resend (and reinstall) the pawn's tuning.
+    #[test]
+    fn tuning_payload_spawn_active_slot_is_fixed_at_composition_across_switches() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        for (slot, name) in [(0, "shotgun"), (2, "plasma")] {
+            let weapon_id = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_id, test_weapon(10.0, 96.0))
+                .unwrap();
+            registry
+                .set_component(
+                    weapon_id,
+                    DescriptorProvenance {
+                        canonical_name: name.to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            inventory.wieldables[slot] = Some(weapon_id);
+        }
+        // As composition leaves a carried plasma selection.
+        inventory.active_slot = 2;
+        inventory.spawn_active_slot = 2;
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        let payload = |registry: &EntityRegistry| {
+            tuning_payload_for_pawn(registry, pawn, &[], None, &test_environment())
+        };
+
+        let mut last_sent = HashMap::new();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_some());
+
+        // Mid-switch, then switched to the shotgun: nothing to resend.
+        inventory.switch_target = Some(0);
+        inventory.switch_origin = Some(2);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
+        inventory.active_slot = 0;
+        inventory.switch_target = None;
+        inventory.switch_origin = None;
+        registry.set_component(pawn, inventory).unwrap();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
     }
 
     // Regression: connected clients resolved first-person placement from their

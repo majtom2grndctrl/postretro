@@ -2331,6 +2331,7 @@ mod tests {
             &descriptors,
             &carried.wieldables,
             Some(&carried),
+            None,
         );
 
         let restored = next_level
@@ -2382,6 +2383,7 @@ mod tests {
             &start,
             &descriptors,
             &slots,
+            None,
             None,
         );
         let loadout = registry

@@ -22,6 +22,11 @@ pub struct Inventory {
     /// refusal restore the prior holder even after the local lower has repointed.
     /// The cursor and dwell remain input-only; this is switch lifecycle state.
     pub switch_origin: Option<usize>,
+    /// Slot this inventory was composed active with. Fixed at composition: no
+    /// switch, acquire or release moves it. The host's tuning payload carries
+    /// it so a connected client composes its own copy with the same selection
+    /// (`networking.md` §What gates, and what replicates instead).
+    pub spawn_active_slot: usize,
 }
 
 impl Default for Inventory {
@@ -31,6 +36,7 @@ impl Default for Inventory {
             active_slot: 0,
             switch_target: None,
             switch_origin: None,
+            spawn_active_slot: 0,
         }
     }
 }

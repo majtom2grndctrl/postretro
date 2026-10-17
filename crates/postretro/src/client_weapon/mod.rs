@@ -2,7 +2,9 @@
 // See: context/lib/networking.md §Combat authority · context/lib/input.md
 mod frame;
 mod reconcile;
+mod slot_resync;
 pub(crate) use frame::{ClientWeaponFrame, TickAim};
+pub(crate) use slot_resync::{ActiveSlotResync, ActiveSlotResyncObservation};
 
 use crate::{App, PresentedAimPose, netcode, sim, weapon};
 use postretro_entities::components::weapon::WeaponComponent;

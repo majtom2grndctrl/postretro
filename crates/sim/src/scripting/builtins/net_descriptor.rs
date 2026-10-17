@@ -238,6 +238,7 @@ pub fn materialize_net_local_wieldable_inventory_from_tuning(
                 descriptors,
                 &slots,
                 None,
+                Some(tuning.spawn_active_slot),
             );
         } else if let Some(descriptor) = find_descriptor(descriptors, entity_class) {
             let _ = compose_wieldable_inventory(
@@ -1510,6 +1511,98 @@ mod tests {
             (health - 29.0).abs() <= 1.0e-6,
             "expected carried health 29.0, got {health}"
         );
+    }
+
+    /// Host and client tuning rows for slot 0 `shotgun` and slot 2 `plasma`,
+    /// with slot 1 deliberately empty.
+    fn shotgun_and_plasma_tuning(spawn_active_slot: usize) -> TuningPayload {
+        let mut tuning = tuning_for_slot(0, "shotgun", 40.0, 600.0, 50, 50);
+        tuning.wieldables[2] =
+            tuning_for_slot(2, "plasma", 90.0, 120.0, 50, 50).wieldables[2].take();
+        tuning.with_spawn_active_slot(spawn_active_slot)
+    }
+
+    fn shotgun_and_plasma_descriptors() -> Vec<EntityTypeDescriptor> {
+        vec![
+            player_with_movement("player"),
+            weapon_descriptor("shotgun"),
+            weapon_descriptor("plasma"),
+        ]
+    }
+
+    // Regression: after a level change the host restored the carried selection
+    // (plasma, slot 2) while the client composed from the same slot layout and
+    // started on the first populated slot (shotgun). The client then fired and
+    // reloaded "the shotgun" against a host projecting the plasma rifle.
+    #[test]
+    fn client_install_composes_the_host_carried_spawn_active_slot() {
+        let descriptors = shotgun_and_plasma_descriptors();
+        let mut host = EntityRegistry::new();
+        let carried = CarriedState {
+            wieldables: std::array::from_fn(|slot| match slot {
+                0 => Some("shotgun".to_string()),
+                2 => Some("plasma".to_string()),
+                _ => None,
+            }),
+            active_slot: 2,
+            ..Default::default()
+        };
+        let host_pawn = spawn_net_slot_pawn_with_carried_loadout(
+            &spawn_point(&[]),
+            &descriptors,
+            &mut host,
+            None,
+            Some(&carried),
+        )
+        .expect("descriptor-backed net slot pawn spawns");
+        let host_inventory = host.get_component::<Inventory>(host_pawn).unwrap();
+        assert_eq!(host_inventory.active_slot, 2);
+        assert_eq!(host_inventory.spawn_active_slot, 2);
+
+        let tuning = shotgun_and_plasma_tuning(host_inventory.spawn_active_slot);
+        let mut client = EntityRegistry::new();
+        let client_pawn = client.spawn(Transform::default());
+        assert!(materialize_net_local_wieldable_inventory_from_tuning(
+            "player",
+            &descriptors,
+            &mut client,
+            client_pawn,
+            Some(&tuning),
+        ));
+        let client_inventory = client.get_component::<Inventory>(client_pawn).unwrap();
+        assert_eq!(
+            client_inventory.active_slot, 2,
+            "client starts on the host's slot"
+        );
+        assert_eq!(
+            client
+                .get_component::<DescriptorProvenance>(client_inventory.active_wieldable().unwrap())
+                .unwrap()
+                .canonical_name,
+            "plasma"
+        );
+        assert_eq!(client_inventory.spawn_active_slot, 2);
+    }
+
+    // A spawn slot naming an empty or out-of-range position composes like a
+    // fresh inventory: the first populated slot.
+    #[test]
+    fn client_install_with_an_unpopulated_spawn_slot_starts_on_the_first_populated_slot() {
+        let descriptors = shotgun_and_plasma_descriptors();
+        for spawn_active_slot in [1, WIELDABLE_SLOT_CAPACITY, usize::MAX] {
+            let mut client = EntityRegistry::new();
+            let pawn = client.spawn(Transform::default());
+            assert!(materialize_net_local_wieldable_inventory_from_tuning(
+                "player",
+                &descriptors,
+                &mut client,
+                pawn,
+                Some(&shotgun_and_plasma_tuning(spawn_active_slot)),
+            ));
+            let inventory = client.get_component::<Inventory>(pawn).unwrap();
+            assert_eq!(inventory.active_slot, 0, "spawn slot {spawn_active_slot}");
+            assert_eq!(inventory.spawn_active_slot, 0);
+        }
     }
 
     fn tuning_for_slot(

@@ -67,6 +67,12 @@ impl WieldableSelection {
         self.last_weapon_slot_before_declaration = None;
     }
 
+    /// Current last-weapon memory. The active-slot re-sync declaration carries
+    /// it as its rollback history, since that declaration changes no selection.
+    pub const fn last_weapon_slot(&self) -> Option<usize> {
+        self.last_weapon_slot
+    }
+
     /// Last-weapon memory before the most recently emitted declaration. The
     /// network tracker carries this beside the active rollback slot.
     pub const fn last_weapon_slot_before_latest_declaration(&self) -> Option<usize> {

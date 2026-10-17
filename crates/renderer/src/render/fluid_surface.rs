@@ -78,6 +78,10 @@ const PIPELINE_CELLS: usize = 3;
 /// Two-draw cells: the premultiplied reflection overlay drawn after the
 /// reflection-free surface.
 const PIPELINE_CELL_OVERLAY: usize = 4;
+/// Two-draw per fragment (no cells): the per-fragment reflection overlay,
+/// then its ratio-one variant.
+const PIPELINE_FRAG_OVERLAY: usize = 5;
+const PIPELINE_FRAG_OVERLAY_RATIO_ONE: usize = 6;
 
 /// The fragment stage's override values for `variant`.
 pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static str, f64); 1] {
@@ -252,7 +256,7 @@ pub(crate) struct FluidSurfacePass {
     /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
     /// order, over one layout: the reflection-free variant and the
     /// reflecting one. Each draw takes its row's variant.
-    pipelines: [wgpu::RenderPipeline; 5],
+    pipelines: [wgpu::RenderPipeline; 7],
     /// Cell-rate spike: the cell compute pipeline, then its ratio-one variant.
     cell_pipelines: [wgpu::ComputePipeline; 2],
     cell_probe_bind_group_layout: wgpu::BindGroupLayout,
@@ -318,6 +322,8 @@ impl FluidSurfacePass {
             (FluidShaderVariant::Reflecting, false, true, false),
             (FluidShaderVariant::Reflecting, true, false, false),
             (FluidShaderVariant::Reflecting, true, false, true),
+            (FluidShaderVariant::Reflecting, false, false, true),
+            (FluidShaderVariant::Reflecting, false, true, true),
         ]
         .map(|(variant, cells, ratio_one, overlay)| {
             create_fluid_pipeline(
@@ -718,7 +724,20 @@ impl FluidSurfacePass {
                 bound_window = Some(window);
             }
             // Two-draw cells: the surface reflection-free, then the overlay.
-            let two_draw = pipeline == PIPELINE_CELLS && self.levers.overlay;
+            let overlay_pipeline = if pipeline == PIPELINE_CELLS && self.levers.overlay {
+                Some(PIPELINE_CELL_OVERLAY)
+            } else if (pipeline == PIPELINE_REFLECTING || pipeline == PIPELINE_RATIO_ONE)
+                && self.levers.frag_overlay
+            {
+                Some(if pipeline == PIPELINE_RATIO_ONE {
+                    PIPELINE_FRAG_OVERLAY_RATIO_ONE
+                } else {
+                    PIPELINE_FRAG_OVERLAY
+                })
+            } else {
+                None
+            };
+            let two_draw = overlay_pipeline.is_some();
             if two_draw {
                 pass.set_pipeline(&self.pipelines[PIPELINE_REFLECTION_FREE]);
                 bound_variant = Some(PIPELINE_REFLECTION_FREE);
@@ -726,8 +745,9 @@ impl FluidSurfacePass {
             let passes: &[bool] = if two_draw { &[false, true] } else { &[false] };
             for &overlay_draw in passes {
                 if overlay_draw {
-                    pass.set_pipeline(&self.pipelines[PIPELINE_CELL_OVERLAY]);
-                    bound_variant = Some(PIPELINE_CELL_OVERLAY);
+                    let overlay = overlay_pipeline.expect("two-draw has an overlay");
+                    pass.set_pipeline(&self.pipelines[overlay]);
+                    bound_variant = Some(overlay);
                 }
                 for range in &installed.volumes[slot as usize].material_ranges {
                     if bound_material != Some(range.material_index) {
@@ -957,7 +977,9 @@ fn create_fluid_pipeline(
     };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(match (variant, cells, ratio_one) {
-            _ if overlay => "Fluid Surface Pipeline (cell reflection overlay)",
+            _ if overlay && cells => "Fluid Surface Pipeline (cell reflection overlay)",
+            (_, _, false) if overlay => "Fluid Surface Pipeline (fragment reflection overlay)",
+            _ if overlay => "Fluid Surface Pipeline (fragment reflection overlay, ratio one)",
             (FluidShaderVariant::ReflectionFree, _, _) => {
                 "Fluid Surface Pipeline (reflection-free)"
             }
@@ -1004,8 +1026,10 @@ fn create_fluid_pipeline(
             module: shader,
             // The cells variant draws through its own entry point, which
             // holds no per-fragment reflection code.
-            entry_point: Some(if overlay {
+            entry_point: Some(if overlay && cells {
                 "fs_cells_overlay"
+            } else if overlay {
+                "fs_frag_overlay"
             } else if cells {
                 "fs_cells"
             } else {
@@ -1172,6 +1196,13 @@ impl Renderer {
     /// premultiplied overlay draw.
     pub fn set_fluid_cell_overlay(&mut self, enabled: bool) {
         self.update_fluid_cell_levers(|levers| levers.overlay = enabled);
+    }
+
+    /// Cell-rate spike lever: without the cell buffer, draw the surface
+    /// through the reflection-free pipeline and evaluate the reflection per
+    /// fragment in a second, premultiplied overlay draw.
+    pub fn set_fluid_frag_overlay(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.frag_overlay = enabled);
     }
 
     /// The last frame's cell and fluid-sample counts, read back with a

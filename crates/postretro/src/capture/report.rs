@@ -801,6 +801,7 @@ mod tests {
             fluid_cell_count: false,
             fluid_reflection_off: false,
             fluid_cell_overlay: false,
+            fluid_frag_overlay: false,
             fluid_reflection_style: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),

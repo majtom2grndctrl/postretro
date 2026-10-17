@@ -73,6 +73,10 @@ pub(crate) struct CaptureScene {
     /// surface, then a premultiplied reflection overlay).
     #[serde(default)]
     pub(crate) fluid_cell_overlay: bool,
+    /// Cell-rate spike: per-fragment reflection in two draws (reflection-free
+    /// surface, then a premultiplied per-fragment reflection overlay).
+    #[serde(default)]
+    pub(crate) fluid_frag_overlay: bool,
     /// Fluid reflection style, `"pixel"` or `"smooth"`; omitted keeps
     /// capture's pixel default.
     pub(crate) fluid_reflection_style: Option<String>,
@@ -642,6 +646,7 @@ mod tests {
             fluid_cell_count: false,
             fluid_reflection_off: false,
             fluid_cell_overlay: false,
+            fluid_frag_overlay: false,
             fluid_reflection_style: None,
         };
         assert!(matches!(

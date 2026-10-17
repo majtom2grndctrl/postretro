@@ -195,6 +195,36 @@ fn fs_cells_overlay(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(cell.rgb * fresnel, fresnel);
 }
 
+// Two-draw per fragment, no cells: the same split as fs_cells_overlay, but
+// the overlay evaluates the reflection per fragment exactly as fs_main does
+// (style, point, search, fade, tap, ratio, Fresnel, band). Tests whether the
+// split alone, without the cell buffer, removes the reflecting variant's cost.
+@fragment
+fn fs_frag_overlay(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Derivatives in uniform control flow, as fs_main takes them.
+    let ddx = dpdx(in.uv);
+    let ddy = dpdy(in.uv);
+    let ddx_world = dpdx(in.world_position);
+    let ddy_world = dpdy(in.world_position);
+    let dims = vec2<f32>(textureDimensions(base_texture, 0));
+    let texels_per_pixel = max(length(ddx * dims), length(ddy * dims));
+    let V = normalize(uniforms.camera_position - in.world_position);
+    let outward = normalize(in.world_normal);
+    let reflectivity = fluid_volumes.slots[in.slot].surface.z;
+    if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
+        return vec4<f32>(0.0);
+    }
+    let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
+    let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
+        outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
+        fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);
+    let view = normalize(uniforms.camera_position - point.position);
+    let reflection = fluid_reflection_sample_spike(in.probe, point.position, view, point.normal);
+    let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight
+        * fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+    return vec4<f32>(reflection.capture * fresnel, fresnel);
+}
+
 // The cells pipeline's own fragment entry: fs_main's surface half copied
 // verbatim (generated from it; keep the two identical), then the atlas read in
 // place of the per-fragment reflection. fs_main also reads the atlas under

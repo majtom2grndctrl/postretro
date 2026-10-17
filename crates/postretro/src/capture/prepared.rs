@@ -122,6 +122,7 @@ impl PreparedCapture {
         renderer.set_fluid_cell_count(scene.fluid_cell_count);
         renderer.set_fluid_reflection_off(scene.fluid_reflection_off);
         renderer.set_fluid_cell_overlay(scene.fluid_cell_overlay);
+        renderer.set_fluid_frag_overlay(scene.fluid_frag_overlay);
         if let Some(style) = scene.fluid_reflection_style() {
             renderer.set_fluid_reflection_style(style);
         }

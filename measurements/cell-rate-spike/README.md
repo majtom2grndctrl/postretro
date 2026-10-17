@@ -43,7 +43,7 @@ Findings: `context/plans/drafts/reflection-probe-fluid-pass-performance--cell-ra
    The batch runs in three stages:
    - A 4-frame untraced smoke capture, to prove the binary, maps and scene work.
    - One untraced count capture per view (5 views). Each uses the cell buffer, its cull and the count lever, and records cells, visible fluid pixels and the atlas size.
-   - 30 arms × 2 runs = 60 Metal System Traces. The second round runs in reverse order, with 15 s idle between launches.
+   - 55 arms × 2 runs = 110 Metal System Traces. The second round runs in reverse order, with 15 s idle between launches.
 
    Each trace is exported, reduced and deleted at once, together with its `instruments*.ktrace` temp file. It needs about 25 GB free in `$TMPDIR` (override with `TRACE_DIR=...`). Plan for several hours (the blend-cost kit took a few hours for 28 traces). `--rounds 1`, or `--only` with a subset, gives a quick partial pass.
 6. Results land in `measurements/cell-rate-spike/`:
@@ -64,10 +64,13 @@ All captures use FOV 100, `POSTRETRO_SH_STREAMING=sync-proof` and `RUST_LOG=info
 | probes | reflection-probes-test (the pool) | −6.5024, 1.6, −6.5024; 0; −89 | 3840×2160 |
 | far | e24-environment-test (fluid-motion wing, map 2300 1000 400, 10.6 m above the water, looking south across both rows of pools, 10–26 m away) | −25.4, 10.16, −58.42; −90; −30 | 3840×2160, 1920×1080 |
 
-Each view runs three fluid paths, each with the live-lighting ratio as shipped (`live`) and forced to 1 (`r1`):
+Each view runs five fluid paths, each with the live-lighting ratio as shipped (`live`) and forced to 1 (`r1`), plus one baseline:
 - `frag`: per-fragment pixel style, as on main;
 - `cell`: the cell buffer;
-- `cellcull`: the cell buffer with its per-cell frustum cull.
+- `cellcull`: the cell buffer with its per-cell frustum cull;
+- `cell2`: the cell buffer in two draws (the surface through the reflection-free pipeline, then a premultiplied reflection overlay, `fluid_cell_overlay`);
+- `frag2`: the same two draws without cells, the overlay evaluating the reflection per fragment (`fluid_frag_overlay`);
+- `free` (ratio live only): every draw reflection-free under the all-terms mask (`fluid_reflection_off`), the fluid pass with no reflection.
 
 ## Useful options
 

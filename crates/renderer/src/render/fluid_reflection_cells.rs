@@ -113,6 +113,9 @@ pub(crate) struct FluidCellLevers {
     pub reflection_off: bool,
     /// Two-draw cells: reflection-free surface, then a premultiplied overlay.
     pub overlay: bool,
+    /// Two-draw per fragment: reflection-free surface, then a per-fragment
+    /// reflection overlay (no cells).
+    pub frag_overlay: bool,
 }
 
 /// What the last cell frame dispatched and evaluated (capture only).

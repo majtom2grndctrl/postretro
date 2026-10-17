@@ -76,7 +76,8 @@ POSES = {
 }
 # Fluid path: per-fragment pixel style, the cell buffer, the cell buffer with
 # its per-cell frustum cull.
-MODES = {"frag": (False, False), "cell": (True, False), "cellcull": (True, True), "cell2": (True, False), "free": (False, False)}
+MODES = {"frag": (False, False), "cell": (True, False), "cellcull": (True, True), "cell2": (True, False), "frag2": (False, False),
+         "free": (False, False)}
 # `cell2`: the cell buffer in two draws (the surface through the reflection-free
 # pipeline, then a premultiplied reflection overlay; fluid_cell_overlay).
 # The `free` baseline: every draw takes the reflection-free pipeline under the
@@ -207,6 +208,9 @@ def write_scene(path, arm, png, report, warmup, samples, count=False):
         scene["fluid_reflection_off"] = True
     if arm["mode"] == "cell2":
         scene["fluid_cell_overlay"] = True
+    if arm["mode"] == "frag2":
+        # Per-fragment reflection in two draws: no cells, the split alone.
+        scene["fluid_frag_overlay"] = True
     if count:
         # Untraced count captures only: the atomic and the occlusion query cost GPU time.
         scene["fluid_cell_count"] = True

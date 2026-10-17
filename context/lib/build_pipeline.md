@@ -26,6 +26,8 @@ prl-build accepts idTech2 `.map` files (Quake 1/2 dialect, parsed via shambler/s
 
 Both Standard (axis-aligned) and Valve 220 (explicit UV axes) texture projections are supported. Shalrath auto-detects per face; they can coexist in one `.map` file.
 
+Source layout is free-form within a line's grammar. shalrath separates items by exactly one line ending, so before parsing, `crates/level-compiler/src/parse/map_source.rs` turns CRLF into LF and, outside quoted values, drops blank, whitespace-only and `//` comment lines and trims indentation. The parse must then consume the whole file: an entity shalrath cannot parse is an error naming the source line where parsing stopped, never a silently shortened entity list.
+
 ### Source-format neutrality
 
 > **Key invariant:** PRL and every shared compiler stage are source-format agnostic. Quake and TrenchBroom vocabulary stops at the `format/` adapter.

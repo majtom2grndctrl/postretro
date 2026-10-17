@@ -354,7 +354,28 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
         record["fluid_ms_whole_run"] = fluid_all["per_frame_ms"]
         record["forward_ms_whole_run"] = gpu["reported"][FORWARD_LABEL]["per_frame_ms"]
         record["frames_precedent"] = gpu["camera_frames"]
-        if steady.get("available"):
+        complete = gpu.get("complete") or {}
+        record["complete_frames"] = complete.get("complete_frames")
+        record["gpu_frame_ms_complete"] = complete.get("gpu_frame_ms_complete")
+        record["gpu_frame_ms_incomplete"] = complete.get("gpu_frame_ms_incomplete")
+        if complete.get("available"):
+            # Primary basis (gpu_time.py docstring): frames where the trace kept
+            # every required row, so no label is shifted.
+            record["basis"] = "complete"
+            record["steady_frames"] = complete["steady_frames"]
+            record["fluid_ms"] = complete["passes"][FLUID_LABEL]["per_frame_ms"]
+            record["fluid_ms_p10_p90"] = [complete["passes"][FLUID_LABEL]["p10_ms"],
+                                          complete["passes"][FLUID_LABEL]["p90_ms"]]
+            record["forward_ms"] = complete["passes"][FORWARD_LABEL]["per_frame_ms"]
+            if steady.get("available"):
+                record["fluid_ms_steady_slice"] = steady["passes"][FLUID_LABEL]["per_frame_ms"]
+            gc, gi = complete["gpu_frame_ms_complete"], complete["gpu_frame_ms_incomplete"]
+            if gc and gi and abs(gc - gi) > 0.03 * gc:
+                record["problems"].append(
+                    f"GPU frame time differs between complete ({gc} ms) and incomplete ({gi} ms) frames: "
+                    "dropped rows lost time, not only labels")
+        elif steady.get("available"):
+            record["problems"].append("no complete-frame basis: " + str(complete.get("reason", "not reduced")))
             record["basis"] = "steady"
             record["steady_frames"] = steady["frames"]
             record["fluid_ms"] = steady["passes"][FLUID_LABEL]["per_frame_ms"]
@@ -368,7 +389,7 @@ def run_one(label, arm, round_i, args, trace_dir, flags):
             record["problems"].append("no steady-state slice: " + str(steady.get("reason", "no expected frames")))
         if not fluid_all["encoders"]:
             record["problems"].append("fluid pass absent from the trace (no Fluid Surface Pass encoders)")
-        elif steady.get("available") and steady["passes"][FLUID_LABEL]["encoders"] < 0.95 * steady["frames"]:
+        elif record.get("basis") != "complete" and steady.get("available")                 and steady["passes"][FLUID_LABEL]["encoders"] < 0.95 * steady["frames"]:
             record["problems"].append(
                 f"fluid pass in only {steady['passes'][FLUID_LABEL]['encoders']} of {steady['frames']} steady frames")
         if gpu.get("frame_count_matches_expected") is False:
@@ -433,18 +454,25 @@ def summarize(records, meta):
           f"- Capture: {RESOLUTION[0]}x{RESOLUTION[1]}, warmup {meta['warmup']} + {meta['samples']} frames per run, "
           f"POSTRETRO_SH_STREAMING=sync-proof, band {BAND} (blendw0: band 0.0)",
           f"- Idle before the batch (ioreg IOAccelerator, one value per accelerator): {json.dumps(meta.get('idle'))}",
-          "- `fluid ms` is the Fluid Surface Pass GPU time per frame over the steady slice (after warmup): the union of each "
-          "encoder's intervals, summed, divided by the frames in the slice. `whole` is the same over the whole trace "
-          "(the precedent figure, warmup included). `clock` is the median core clock over the busy samples, "
-          "with min-max.", "",
+          "- `fluid ms` (basis `complete`) is the Fluid Surface Pass GPU time per frame, averaged over steady frames "
+          "(after warmup, framed by the BVH Cull Pass) that hold exactly one depth, forward and fluid encoder; the trace "
+          "drops rows in some frames and shifts labels there. `GPU frame` is the label-independent union of every "
+          "labelled interval per frame, over complete / incomplete frames: agreement means only labels were lost. "
+          "`whole` is the precedent figure over the whole trace, warmup included. `clock` is the median core clock "
+          "over the busy samples, with min-max.", "",
           "## Per run", "",
-          "| arm | run | fluid ms | basis | whole ms | forward ms | frames (steady/total) | clock MHz | temp C | valid |",
-          "|---|---|---|---|---|---|---|---|---|---|"]
+          "| arm | run | fluid ms (p10-p90) | basis | whole ms | forward ms | GPU frame ms complete/incomplete | "
+          "frames complete/steady/total | clock MHz | temp C | valid |",
+          "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in records:
         temp = ((r.get("clock") or {}).get("temp_c") or {}).get("median")
-        md.append(f"| {r['arm']} | {r['round']} | {fmt(r.get('fluid_ms'), 4)} | {r.get('basis', 'n/a')} | "
+        band = r.get("fluid_ms_p10_p90")
+        band_text = f" ({fmt(band[0], 3)}-{fmt(band[1], 3)})" if band else ""
+        md.append(f"| {r['arm']} | {r['round']} | {fmt(r.get('fluid_ms'), 4)}{band_text} | {r.get('basis', 'n/a')} | "
                   f"{fmt(r.get('fluid_ms_whole_run'), 4)} | {fmt(r.get('forward_ms'), 3)} | "
-                  f"{r.get('steady_frames', 'n/a')}/{r.get('frames_precedent', 'n/a')} | {clock_text(r)} | "
+                  f"{fmt(r.get('gpu_frame_ms_complete'), 3)}/{fmt(r.get('gpu_frame_ms_incomplete'), 3)} | "
+                  f"{r.get('complete_frames', 'n/a')}/{r.get('steady_frames', 'n/a')}/{r.get('frames_precedent', 'n/a')} | "
+                  f"{clock_text(r)} | "
                   f"{temp if temp is not None else 'n/a'} | {'yes' if r['valid'] else 'NO'} |")
     md += ["", "## Per arm (valid runs)", "",
            "| arm | fluid ms mean | run spread ms | vs single ms | vs single x | forward ms mean | valid/total |",

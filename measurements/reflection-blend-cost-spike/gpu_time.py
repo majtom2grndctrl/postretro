@@ -22,6 +22,18 @@ whole capture, so its traces held no warmup):
   the expected frame count, and divides each pass's encoder time inside the
   slice by the frames inside the slice. It is absent, never guessed, when no
   reference pass matches.
+
+Primary figure: the complete-frame reduction (`complete`). At low resolution
+the trace drops some frames' Textured Pass row, and in those frames the
+interval labelled Fluid Surface Pass is really forward's, so dividing a pass's
+total by the frame count understates fluid (an owner 720p run read 4.2-4.7 ms
+against a true ~6.0 ms). Frames are bounded by the BVH Cull Pass encoders (a
+compute pass that never drops rows). A steady frame (index >= warmup) counts
+only when it holds exactly one encoder each of Depth Pre-Pass, Textured Pass
+and Fluid Surface Pass. Each pass's figure is its mean per-frame time over
+those complete frames. Cross-check: the union of every labelled interval in a
+frame does not depend on labels, so its mean over complete and over incomplete
+frames should agree; when it does, the dropped rows lost labels, not time.
 """
 import collections, gzip, json, re, sys
 import xml.etree.ElementTree as E
@@ -31,6 +43,12 @@ ONCE_PER_FRAME = ("UI Pass", "Screen Effects Resolve Pass", "Textured Pass", "De
 CAPTURE_ONCE_PER_FRAME = ONCE_PER_FRAME + ("Screen Effects Capture Tonemap Pass",)
 COMPOSE_LABELS = ("Streamed SH Compose",)
 FLUID_LABEL = "Fluid Surface Pass"
+# Frame marker for the complete-frame reduction: a compute pass whose rows the
+# trace never drops.
+FRAME_MARKER = "BVH Cull Pass"
+COMPLETE_REQUIRED = ("Depth Pre-Pass", "Textured Pass", "Fluid Surface Pass")
+# A complete-frame figure needs at least this many complete steady frames.
+MIN_COMPLETE_FRAMES = 30
 FORWARD_LABEL = "Textured Pass"
 # Passes reported beside the fluid pass.
 REPORTED = (FLUID_LABEL, FORWARD_LABEL, "Depth Pre-Pass", "Streamed SH Compose",
@@ -78,11 +96,13 @@ def reduce_export(src, warmup=None, samples=None):
     count = collections.Counter()
     total_ns = collections.Counter()
     encoders = collections.defaultdict(list)  # label -> [(first start, union ns)]
+    encoder_rows = []  # (first start, label, intervals, union ns)
     for (label, _, _), intervals in spans.items():
         ns = union_ns(intervals)
         count[label] += 1
         total_ns[label] += ns
         encoders[label].append((min(a for a, _ in intervals), ns))
+        encoder_rows.append((min(a for a, _ in intervals), label, intervals, ns))
     for label in encoders:
         encoders[label].sort()
 
@@ -144,7 +164,59 @@ def reduce_export(src, warmup=None, samples=None):
                     "per_encoder_median_ms": round(sorted(inside)[len(inside) // 2] / 1e6, 4) if inside else None,
                 }
             result["steady"] = steady
+    result["complete"] = complete_frames(encoder_rows, warmup)
     return result
+
+
+def complete_frames(encoder_rows, warmup):
+    """The complete-frame reduction (module docstring)."""
+    marks = sorted(start for start, label, _, _ in encoder_rows if label == FRAME_MARKER)
+    if len(marks) < 2:
+        return {"available": False, "reason": f"fewer than two {FRAME_MARKER} encoders"}
+    import bisect
+    # Frame i spans [marks[i], marks[i+1]); the last mark opens the capture's
+    # output frame, which has no successor and is dropped.
+    frames = [{"labels": collections.Counter(), "ns": collections.Counter(), "intervals": []}
+              for _ in range(len(marks) - 1)]
+    for start, label, intervals, ns in encoder_rows:
+        i = bisect.bisect_right(marks, start) - 1
+        if 0 <= i < len(frames):
+            f = frames[i]
+            f["labels"][label] += 1
+            f["ns"][label] += ns
+            f["intervals"].extend(intervals)
+    first = warmup or 0
+    steady = frames[first:]
+    if not steady:
+        return {"available": False, "reason": f"no frames after warmup {first} ({len(frames)} framed)"}
+    flags = [all(f["labels"][k] == 1 for k in COMPLETE_REQUIRED) for f in steady]
+    complete = [f for f, ok in zip(steady, flags) if ok]
+    incomplete = [f for f, ok in zip(steady, flags) if not ok]
+    mean = lambda xs: round(sum(xs) / len(xs) / 1e6, 4) if xs else None
+    gpu_frame = lambda fs: mean([union_ns(f["intervals"]) for f in fs])
+    out = {
+        "available": len(complete) >= MIN_COMPLETE_FRAMES,
+        "marker": FRAME_MARKER,
+        "required": list(COMPLETE_REQUIRED),
+        "framed_frames": len(frames),
+        "steady_frames": len(steady),
+        "complete_frames": len(complete),
+        "gpu_frame_ms_complete": gpu_frame(complete),
+        "gpu_frame_ms_incomplete": gpu_frame(incomplete),
+        "passes": {},
+    }
+    if not out["available"]:
+        out["reason"] = f"{len(complete)} complete steady frames (< {MIN_COMPLETE_FRAMES})"
+    labels = sorted({k for f in complete for k in f["ns"]})
+    for label in labels:
+        per = sorted(f["ns"][label] for f in complete)
+        out["passes"][label] = {
+            "per_frame_ms": mean(per),
+            "median_ms": round(per[len(per) // 2] / 1e6, 4),
+            "p10_ms": round(per[len(per) // 10] / 1e6, 4),
+            "p90_ms": round(per[(len(per) * 9) // 10] / 1e6, 4),
+        }
+    return out
 
 
 if __name__ == "__main__":

@@ -204,8 +204,7 @@ mod tests {
     fn parse_rejects_trailing_garbage_with_its_line_number() {
         // WORLD is 11 lines, LIGHT 7, then a blank line: the garbage is line 20.
         let err = parse_map_text(&format!("{WORLD}{LIGHT}\nnot an entity\n{SPAWN}"))
-            .err()
-            .expect("unparsed trailing content must be an error");
+            .expect_err("unparsed trailing content must be an error");
         let message = format!("{err:#}");
         assert!(message.contains("line 20"), "{message}");
         assert!(message.contains("not an entity"), "{message}");
@@ -217,16 +216,14 @@ mod tests {
         // never closes; parsing must stop loudly at the light's opening line.
         let broken_light = LIGHT.trim_end().trim_end_matches('}');
         let err = parse_map_text(&format!("{WORLD}{broken_light}{SPAWN}"))
-            .err()
-            .expect("a malformed entity must not truncate the map silently");
+            .expect_err("a malformed entity must not truncate the map silently");
         assert!(format!("{err:#}").contains("line 12"), "{err:#}");
     }
 
     #[test]
     fn parse_rejects_malformed_first_entity_with_its_line_number() {
-        let err = parse_map_text("\n\nnot a map\n")
-            .err()
-            .expect("an unparseable first entity is an error");
+        let err =
+            parse_map_text("\n\nnot a map\n").expect_err("an unparseable first entity is an error");
         assert!(format!("{err:#}").contains("line 3"), "{err:#}");
     }
 

@@ -2,7 +2,7 @@
 // arming, refusal and divergence, stamped command frames under loss, join and
 // re-baseline adoption. Every scenario drives the production predicted tick,
 // host command resolution, host movement and client reconcile.
-// See: context/plans/in-progress/teleporters/index.md (Acceptance) ·
+// See: context/plans/done/teleporters/index.md (Acceptance) ·
 //      context/lib/networking.md §Host input command queue
 
 #![cfg(test)]

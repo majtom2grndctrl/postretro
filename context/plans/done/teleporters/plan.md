@@ -1,7 +1,7 @@
 # teleporters — plan of record
 
 mode: resumable
-status: done-pending-landing
+status: done
 read at: 08231a583
 
 ## Checkpoint

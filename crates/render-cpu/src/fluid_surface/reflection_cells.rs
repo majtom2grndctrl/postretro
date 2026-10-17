@@ -86,8 +86,7 @@ pub struct FluidCellPassUniform {
     pub _pad: [u32; 3],
 }
 pub const FLUID_CELL_PASS_UNIFORM_BYTES: usize = 128;
-const _: () =
-    assert!(std::mem::size_of::<FluidCellPassUniform>() == FLUID_CELL_PASS_UNIFORM_BYTES);
+const _: () = assert!(std::mem::size_of::<FluidCellPassUniform>() == FLUID_CELL_PASS_UNIFORM_BYTES);
 
 /// The spike's debug levers. All off is the shipped per-fragment path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -117,10 +116,7 @@ pub fn fit_texel_map(positions: &[Vec3], texels: &[Vec2]) -> Option<FluidCellTex
         return None;
     }
     let count = positions.len() as f64;
-    let mean_t = texels
-        .iter()
-        .fold(DVec2::ZERO, |sum, t| sum + t.as_dvec2())
-        / count;
+    let mean_t = texels.iter().fold(DVec2::ZERO, |sum, t| sum + t.as_dvec2()) / count;
     let mean_p = positions
         .iter()
         .fold(DVec3::ZERO, |sum, p| sum + p.as_dvec3())
@@ -138,7 +134,7 @@ pub fn fit_texel_map(positions: &[Vec3], texels: &[Vec2]) -> Option<FluidCellTex
         syp += dp * dt.y;
     }
     let det = sxx * syy - sxy * sxy;
-    if !(det > 1.0e-12 * (sxx * syy).max(1.0e-300)) {
+    if det.is_nan() || det <= 1.0e-12 * (sxx * syy).max(1.0e-300) {
         return None;
     }
     let u = (sxp * syy - syp * sxy) / det;
@@ -166,7 +162,10 @@ pub fn cell_rect(texels: &[Vec2]) -> (glam::IVec2, glam::UVec2) {
     let max = texels.iter().fold(Vec2::NEG_INFINITY, |acc, t| acc.max(*t));
     let cell_min = min.floor().as_ivec2();
     let cell_max = (max.ceil().as_ivec2() - glam::IVec2::ONE).max(cell_min);
-    (cell_min, (cell_max - cell_min + glam::IVec2::ONE).as_uvec2())
+    (
+        cell_min,
+        (cell_max - cell_min + glam::IVec2::ONE).as_uvec2(),
+    )
 }
 
 /// Shelf placements for `rects` (width, height) in an atlas `width` wide and
@@ -204,10 +203,16 @@ pub fn shelf_pack(rects: &[[u32; 2]], width: u32, max_height: u32) -> (Vec<Optio
 /// The atlas width for `rects`: about square by area, at least the widest
 /// rect, a multiple of the tile, at most `max_width`.
 fn atlas_width(rects: &[[u32; 2]], max_width: u32) -> u32 {
-    let area: u64 = rects.iter().map(|[w, h]| u64::from(*w) * u64::from(*h)).sum();
+    let area: u64 = rects
+        .iter()
+        .map(|[w, h]| u64::from(*w) * u64::from(*h))
+        .sum();
     let widest = rects.iter().map(|[w, _]| *w).max().unwrap_or(1);
     let square = ((area as f64 * 1.1).sqrt().ceil() as u32).max(widest);
-    square.div_ceil(FLUID_CELL_TILE).saturating_mul(FLUID_CELL_TILE).clamp(1, max_width)
+    square
+        .div_ceil(FLUID_CELL_TILE)
+        .saturating_mul(FLUID_CELL_TILE)
+        .clamp(1, max_width)
 }
 
 /// Every reflecting face's cell rectangle packed into one atlas, one texel
@@ -310,7 +315,8 @@ pub fn build_cell_atlas(
             let Some(Some(map)) = maps.next() else {
                 continue;
             };
-            let vertices = map.vertex_start as usize..(map.vertex_start + map.vertex_count) as usize;
+            let vertices =
+                map.vertex_start as usize..(map.vertex_start + map.vertex_count) as usize;
             let probe = probe_indices
                 .get(vertices.start)
                 .copied()
@@ -437,7 +443,15 @@ pub fn frustum_planes(view_proj: Mat4) -> [Vec4; 6] {
         view_proj.row(2),
         view_proj.row(3),
     ];
-    [r[3] + r[0], r[3] - r[0], r[3] + r[1], r[3] - r[1], r[2], r[3] - r[2]].map(|plane| {
+    [
+        r[3] + r[0],
+        r[3] - r[0],
+        r[3] + r[1],
+        r[3] - r[1],
+        r[2],
+        r[3] - r[2],
+    ]
+    .map(|plane| {
         let length = plane.xyz().length();
         if length > 0.0 { plane / length } else { plane }
     })
@@ -464,7 +478,7 @@ pub fn cell_radius(u: Vec3, v: Vec3) -> f32 {
 /// `fluid_cell_texels_per_pixel`.
 pub fn cell_texels_per_pixel(view_proj: Mat4, extent: Vec2, centre: Vec3, u: Vec3, v: Vec3) -> f32 {
     let c = view_proj * centre.extend(1.0);
-    if !(c.w > FLUID_CELL_W_EPSILON) {
+    if c.w.is_nan() || c.w <= FLUID_CELL_W_EPSILON {
         return FLUID_CELL_FLAT_TEXELS_PER_PIXEL;
     }
     let cu = view_proj * u.extend(0.0);

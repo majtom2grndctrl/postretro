@@ -346,7 +346,8 @@ impl FluidSurfacePass {
 
     /// The cells lever acts only in pixel style.
     fn cells_on(&self) -> bool {
-        self.cell_levers.cells && self.scene_inputs.reflection_style() == FluidReflectionStyle::Pixel
+        self.cell_levers.cells
+            && self.scene_inputs.reflection_style() == FluidReflectionStyle::Pixel
     }
 
     /// SPIKE: prepare this frame's cell pass (tile list and uniform) from the

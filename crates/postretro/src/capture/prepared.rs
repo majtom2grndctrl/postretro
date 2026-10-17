@@ -86,6 +86,21 @@ pub(super) struct PreparedCapture {
     measurement_animation: CaptureMeasurementAnimationClock,
     resolution: [u32; 2],
     lightmap_residency: CaptureLightmapResidency,
+    /// SPIKE (cell-rate spike): the capture pose's fluid draws, and the
+    /// pre-move pose drawn before it, consumed once.
+    fluid_draws: Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw>,
+    pre_camera: Option<PreCameraPose>,
+}
+
+/// SPIKE: a pose the capture draws for a few frames before jumping to its
+/// camera: its own visibility, projection, eye and fluid draws. Movers and
+/// meshes keep the capture pose's draws.
+struct PreCameraPose {
+    visible_render: VisibleRenderPreparation,
+    view_proj: Mat4,
+    eye: Vec3,
+    fluid_draws: Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw>,
+    frames: u32,
 }
 
 impl PreparedCapture {
@@ -114,6 +129,15 @@ impl PreparedCapture {
         renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
         if let Some(mask) = scene.light_term_mask() {
             renderer.set_light_term_mask(mask);
+        }
+        // SPIKE (cell-rate spike): the reflection style and cell levers.
+        if let Some(style) = scene.fluid_reflection_style {
+            renderer.set_fluid_reflection_style(style.style());
+            log::info!("[Capture] Fluid reflection style: {}", style.name());
+        }
+        if let Some(cells) = scene.fluid_reflection_cells {
+            renderer.set_fluid_reflection_cell_levers(cells.levers());
+            log::info!("[Capture] Fluid reflection cell spike levers: {cells:?}");
         }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
@@ -238,27 +262,31 @@ impl PreparedCapture {
             mover_collector.shadow_instances(),
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
-        // Capture loads no manifest, so every fluid volume draws at the fixed
-        // capture opacity, with no fog or wave, reflecting at reflectivity 1
-        // wherever a face binds a probe.
-        let mut fluid_collector =
-            postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new();
-        renderer.set_fluid_surface_draws(fluid_collector.collect(
-            &world.environment_volumes.volumes,
-            &visible_render.visible_cells,
-            |cell| world.cell_bounds(cell as usize),
-            eye,
-            |volume| {
-                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then(|| {
-                    crate::fluid_presentation::capture_surface_look(
-                        postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
-                            world.reflection_probes.as_ref(),
-                            volume,
-                        ),
-                    )
-                })
-            },
-        ));
+        let fluid_draws = capture_fluid_draws(&world, &visible_render.visible_cells, eye);
+        renderer.set_fluid_surface_draws(&fluid_draws);
+        let pre_camera = scene.pre_camera.as_ref().map(|pose| {
+            let eye = Vec3::from_array(pose.position);
+            let view_proj = capture_view_projection(pose, width, height);
+            let visible_render = VisibleRenderPreparation::for_level(
+                &world,
+                eye,
+                view_proj,
+                &[],
+                CAPTURE_PORTAL_WALK,
+                &mut scratch,
+                postretro_visibility::TimingGate::OFF,
+            );
+            let fluid_draws = capture_fluid_draws(&world, &visible_render.visible_cells, eye);
+            PreCameraPose {
+                visible_render,
+                view_proj,
+                eye,
+                fluid_draws,
+                frames: scene
+                    .pre_camera_frames
+                    .unwrap_or(super::scene::DEFAULT_PRE_CAMERA_FRAMES),
+            }
+        });
         renderer.set_mesh_draws(mesh_collector.instances());
         let mover_sample_regions = mover_collector.sh_sample_regions().to_vec();
 
@@ -273,9 +301,47 @@ impl PreparedCapture {
             measurement_animation: CaptureMeasurementAnimationClock::default(),
             resolution: [width, height],
             lightmap_residency,
+            fluid_draws,
+            pre_camera,
         };
         prepared.preload_visible_sh(max_preload_frames, world.cell_residency_set.as_ref())?;
+        prepared.draw_pre_camera_frames()?;
         Ok(prepared)
+    }
+
+    /// SPIKE (cell-rate spike): draw the pre-move pose's frames, if any, at
+    /// animation time 0, then restore the capture pose.
+    fn draw_pre_camera_frames(&mut self) -> Result<()> {
+        let Some(mut pre) = self.pre_camera.take() else {
+            return Ok(());
+        };
+        std::mem::swap(&mut self.visible_render, &mut pre.visible_render);
+        std::mem::swap(&mut self.view_proj, &mut pre.view_proj);
+        std::mem::swap(&mut self.eye, &mut pre.eye);
+        self.renderer.set_fluid_surface_draws(&pre.fluid_draws);
+        let result = (0..pre.frames)
+            .try_for_each(|_| self.submit_frame_without_readback(false, 0.0).map(|_| ()));
+        std::mem::swap(&mut self.visible_render, &mut pre.visible_render);
+        std::mem::swap(&mut self.view_proj, &mut pre.view_proj);
+        std::mem::swap(&mut self.eye, &mut pre.eye);
+        self.renderer.set_fluid_surface_draws(&self.fluid_draws);
+        log::info!(
+            "[Capture] Drew {} frames at pre_camera before the capture pose",
+            pre.frames
+        );
+        result
+    }
+
+    /// SPIKE: count the next frame's reflection cell stats.
+    pub(super) fn arm_fluid_reflection_cell_stats(&mut self) {
+        self.renderer.arm_fluid_reflection_cell_stats();
+    }
+
+    /// SPIKE: the armed frame's reflection cell stats.
+    pub(super) fn take_fluid_reflection_cell_stats(
+        &mut self,
+    ) -> Option<postretro_renderer::FluidReflectionCellStats> {
+        self.renderer.take_fluid_reflection_cell_stats()
     }
 
     /// Capture is a fixed authored instant, so make its settle set sampleable
@@ -481,6 +547,36 @@ impl PreparedCapture {
     pub(super) const fn resolution(&self) -> [u32; 2] {
         self.resolution
     }
+}
+
+/// Capture loads no manifest, so every fluid volume draws at the fixed
+/// capture opacity, with no fog or wave, reflecting at reflectivity 1
+/// wherever a face binds a probe.
+fn capture_fluid_draws(
+    world: &postretro_level_loader::LevelWorld,
+    visible_cells: &VisibleCells,
+    eye: Vec3,
+) -> Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw> {
+    let mut fluid_collector =
+        postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new();
+    fluid_collector
+        .collect(
+            &world.environment_volumes.volumes,
+            visible_cells,
+            |cell| world.cell_bounds(cell as usize),
+            eye,
+            |volume| {
+                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then(|| {
+                    crate::fluid_presentation::capture_surface_look(
+                        postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
+                            world.reflection_probes.as_ref(),
+                            volume,
+                        ),
+                    )
+                })
+            },
+        )
+        .to_vec()
 }
 
 /// Materialize just the VM-free receivers capture can render at a loaded

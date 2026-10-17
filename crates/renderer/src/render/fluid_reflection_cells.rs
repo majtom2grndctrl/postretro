@@ -17,7 +17,9 @@ use postretro_render_cpu::fluid_surface::reflection_cells::{
     FLUID_CELL_VERTEX_STRIDE, FluidCellAtlas, FluidCellPassUniform, FluidCellTileGpu,
     FluidReflectionCellLevers, build_cell_atlas, cell_dispatch, frustum_planes,
 };
-use postretro_render_cpu::fluid_surface::{FluidShaderVariant, FluidSurfaceMesh, FluidSurfaceSlots};
+use postretro_render_cpu::fluid_surface::{
+    FluidShaderVariant, FluidSurfaceMesh, FluidSurfaceSlots,
+};
 
 use super::fluid_reflection_probes::{
     FLUID_PROBE_ARRAY_BINDING, FLUID_PROBE_DISTANCE_BINDING, FLUID_PROBE_TABLE_BINDING,
@@ -188,7 +190,12 @@ impl FluidCellPipelines {
     }
 
     /// Build the compute pipeline for `levers` if it is not yet built.
-    pub(crate) fn ensure(&mut self, device: &wgpu::Device, shader_source: &str, levers: FluidReflectionCellLevers) {
+    pub(crate) fn ensure(
+        &mut self,
+        device: &wgpu::Device,
+        shader_source: &str,
+        levers: FluidReflectionCellLevers,
+    ) {
         let index = usize::from(levers.ratio_one) * 2 + usize::from(levers.frustum_cull);
         if self.compute[index].is_some() {
             return;
@@ -279,7 +286,12 @@ impl InstalledFluidCells {
         pipelines: &FluidCellPipelines,
     ) -> Self {
         let mut probe_indices = vec![FLUID_REFLECTION_NO_PROBE; mesh.vertices.len()];
-        fill_probe_indices(volumes, &mesh.face_drift_maps, reflection_probes, &mut probe_indices);
+        fill_probe_indices(
+            volumes,
+            &mesh.face_drift_maps,
+            reflection_probes,
+            &mut probe_indices,
+        );
         let layout = build_cell_atlas(
             volumes,
             mesh,
@@ -465,7 +477,11 @@ impl InstalledFluidCells {
             return;
         }
         let groups = cell_dispatch(tiles, max_workgroups);
-        queue.write_buffer(&self.tiles_buffer, 0, bytemuck::cast_slice(&self.frame_tiles));
+        queue.write_buffer(
+            &self.tiles_buffer,
+            0,
+            bytemuck::cast_slice(&self.frame_tiles),
+        );
         let uniform = FluidCellPassUniform {
             planes: frustum_planes(view_proj).map(|plane| plane.to_array()),
             extent: [extent[0] as f32, extent[1] as f32],
@@ -619,8 +635,10 @@ impl FluidCellStatsGpu {
             let data = slice.get_mapped_range().ok()?;
             let evaluated = u32::from_le_bytes(data[0..4].try_into().ok()?);
             let samples = data[8..8 + self.written as usize * 8]
-                .chunks_exact(8)
-                .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8])))
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|chunk| u64::from_le_bytes(*chunk))
                 .sum::<u64>();
             (evaluated, samples)
         };

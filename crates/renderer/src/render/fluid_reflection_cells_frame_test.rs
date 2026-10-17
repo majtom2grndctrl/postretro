@@ -495,9 +495,16 @@ fn cell_rate_reflection_matches_per_fragment_within_two_levels() {
             assert!(stats.cells_evaluated > 0, "the cell pass ran: {stats:?}");
             assert_eq!(u64::from(stats.cells_evaluated), stats.cells_dispatched);
             assert!(stats.reflecting_fragments > 0, "{stats:?}");
-            assert!(result.water * 2 > (SIDE * SIDE) as usize, "the pool fills the view");
+            assert!(
+                result.water * 2 > (SIDE * SIDE) as usize,
+                "the pool fills the view"
+            );
             if case.exact {
-                assert_eq!(result.fade_split, 0, "{}: no cell near its fade", case.pose.name);
+                assert_eq!(
+                    result.fade_split, 0,
+                    "{}: no cell near its fade",
+                    case.pose.name
+                );
                 assert!(
                     result.worst <= 2,
                     "{}: cells match per-fragment within 2/255: {} at {:?}",
@@ -506,7 +513,10 @@ fn cell_rate_reflection_matches_per_fragment_within_two_levels() {
                     result.worst_at
                 );
             } else {
-                assert!(result.fade_split > 0, "the oblique pose crosses the fade band");
+                assert!(
+                    result.fade_split > 0,
+                    "the oblique pose crosses the fade band"
+                );
                 assert!(
                     result.worst_unexplained <= 2,
                     "{}: every mismatch past 2/255 sits on a fade-split cell: {result:?}",
@@ -521,7 +531,10 @@ fn cell_rate_reflection_matches_per_fragment_within_two_levels() {
             .map(|(a, b)| a.abs_diff(*b))
             .max()
             .unwrap_or(0);
-        eprintln!("[FluidCellSpike] gate A {}: the ratio lever moves the frame by {moved}", case.pose.name);
+        eprintln!(
+            "[FluidCellSpike] gate A {}: the ratio lever moves the frame by {moved}",
+            case.pose.name
+        );
         // Water's Fresnel is small looking down; the mirror shows the ratio whole.
         if (case.look)().surface_reflectivity >= 50.0 {
             assert!(moved > 10, "the ratio lever moves the frame: {moved}");
@@ -604,7 +617,10 @@ fn every_fragment_of_a_cell_reads_its_one_atlas_texel() {
     );
     renderer.release_level_resources();
     assert!(checked * 2 > (SIDE * SIDE) as usize && cells.len() > 50);
-    assert!(worst <= 1, "each pixel shows its own cell's texel: off by {worst}");
+    assert!(
+        worst <= 1,
+        "each pixel shows its own cell's texel: off by {worst}"
+    );
 }
 
 fn srgb(linear: f32) -> u8 {
@@ -717,5 +733,25 @@ fn levers_off_keep_mains_pipelines_and_smooth_ignores_the_cells_lever() {
     assert!(!stats.pixel_style);
     assert_eq!(stats.tiles_dispatched, 0, "no cell pass in smooth style");
     assert_eq!(off, on, "smooth is bit-identical with the cells lever on");
+    renderer.release_level_resources();
+}
+
+/// Every lever combination's render and cell-pass pipelines build and draw
+/// on this adapter (wgpu validates each at creation and record).
+#[test]
+fn every_lever_combination_builds_and_draws() {
+    let Some(mut renderer) = scene(&full_box(), mirror()) else {
+        return;
+    };
+    for bits in 0..8u8 {
+        set_levers(&mut renderer, bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+        let (_, stats) = capture_with_stats(&mut renderer, TOP_DOWN);
+        assert_eq!(
+            stats.cells_evaluated > 0,
+            bits & 1 != 0,
+            "{bits}: {stats:?}"
+        );
+    }
+    assert_eq!(renderer.full().fluid_surface.lever_pipelines_built(), 3);
     renderer.release_level_resources();
 }

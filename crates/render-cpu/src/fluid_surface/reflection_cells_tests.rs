@@ -50,7 +50,10 @@ fn the_texel_fit_recovers_an_exact_affine_map_and_refuses_a_degenerate_one() {
     assert!(fit_texel_map(&positions[..3], &collinear).is_none());
     let mut bent = positions.clone();
     bent[2].y += 0.5;
-    assert!(fit_texel_map(&bent, &texels).is_none(), "a non-affine face is refused");
+    assert!(
+        fit_texel_map(&bent, &texels).is_none(),
+        "a non-affine face is refused"
+    );
 }
 
 #[test]
@@ -88,12 +91,14 @@ fn shelf_packing_never_overlaps_and_skips_what_cannot_fit() {
 #[test]
 fn the_atlas_gives_bound_faces_entries_tiles_and_vertex_words() {
     // 4 texels per metre over 0..3 m: a 12 × 12-cell face, two tiles a side.
-    let volumes = [horizontal_volume(0.0, 3.0, 4.0), horizontal_volume(5.0, 6.0, 4.0)];
+    let volumes = [
+        horizontal_volume(0.0, 3.0, 4.0),
+        horizontal_volume(5.0, 6.0, 4.0),
+    ];
     let mesh = pack_fluid_surfaces(&volumes, &[[1, 1]], 1);
     let mut probes = vec![FLUID_REFLECTION_NO_PROBE; mesh.vertices.len()];
     let first = mesh.face_drift_maps[0].unwrap();
-    probes[first.vertex_start as usize..(first.vertex_start + first.vertex_count) as usize]
-        .fill(0);
+    probes[first.vertex_start as usize..(first.vertex_start + first.vertex_count) as usize].fill(0);
     let atlas = build_cell_atlas(&volumes, &mesh, &probes, &[[1, 1]], 1, 8192);
     assert_eq!(atlas.faces.len(), 1);
     assert_eq!(atlas.skipped_faces, 0);
@@ -107,13 +112,15 @@ fn the_atlas_gives_bound_faces_entries_tiles_and_vertex_words() {
     let words = &atlas.vertex_words;
     assert!(words[..4].iter().all(|w| w[1] == 12 | (12 << 16)));
     assert!(words[4..].iter().all(|w| w[0] == FLUID_CELL_NO_ATLAS));
-    let centre = Vec3::from(face.origin)
-        + Vec3::from(face.axis_u) * 0.5
-        + Vec3::from(face.axis_v) * 0.5;
+    let centre =
+        Vec3::from(face.origin) + Vec3::from(face.axis_u) * 0.5 + Vec3::from(face.axis_v) * 0.5;
     assert!((centre - Vec3::new(0.125, 0.0, 0.125)).length() < 1.0e-5);
 
     let mut frame = Vec::new();
-    assert_eq!(atlas.fill_frame_tiles([(1, 1.0), (0, 2.5)].into_iter(), &mut frame), 144);
+    assert_eq!(
+        atlas.fill_frame_tiles([(1, 1.0), (0, 2.5)].into_iter(), &mut frame),
+        144
+    );
     assert_eq!(frame.len(), 4);
     assert!(frame.iter().all(|tile| tile.reflectivity == 2.5));
 }
@@ -122,12 +129,13 @@ fn the_atlas_gives_bound_faces_entries_tiles_and_vertex_words() {
 fn analytic_texels_per_pixel_matches_projected_finite_differences() {
     let extent = Vec2::new(640.0, 360.0);
     let camera = Vec3::new(0.3, 2.0, -1.0);
-    let view_proj = glam::camera::rh::proj::directx::perspective(
-        70f32.to_radians(),
-        extent.x / extent.y,
-        0.1,
-        100.0,
-    ) * glam::camera::rh::view::look_at_mat4(camera, Vec3::new(1.0, 0.0, 4.0), Vec3::Y);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(
+            70f32.to_radians(),
+            extent.x / extent.y,
+            0.1,
+            100.0,
+        ) * glam::camera::rh::view::look_at_mat4(camera, Vec3::new(1.0, 0.0, 4.0), Vec3::Y);
     let u = Vec3::new(0.0625, 0.0, 0.0);
     let v = Vec3::new(0.0, 0.0, 0.0625);
     // In f64, so the differences measure the projection, not f32 rounding.
@@ -136,7 +144,11 @@ fn analytic_texels_per_pixel_matches_projected_finite_differences() {
         let c = dview_proj * p.extend(1.0);
         glam::DVec2::new(c.x / c.w, c.y / c.w) * extent.as_dvec2() * 0.5
     };
-    for centre in [Vec3::new(1.0, 0.0, 4.0), Vec3::new(-0.5, 0.0, 1.5), Vec3::new(2.0, 0.0, 9.0)] {
+    for centre in [
+        Vec3::new(1.0, 0.0, 4.0),
+        Vec3::new(-0.5, 0.0, 1.5),
+        Vec3::new(2.0, 0.0, 9.0),
+    ] {
         let analytic = cell_texels_per_pixel(view_proj, extent, centre, u, v);
         // Pixel steps per texel by central differences, then inverted.
         let (c, du, dv) = (centre.as_dvec3(), u.as_dvec3(), v.as_dvec3());
@@ -156,14 +168,21 @@ fn analytic_texels_per_pixel_matches_projected_finite_differences() {
 
 #[test]
 fn frustum_planes_hold_what_the_view_sees_and_drop_what_lies_behind() {
-    let view_proj = glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 50.0)
-        * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), Vec3::Y);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 50.0)
+            * glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), Vec3::Y);
     let planes = frustum_planes(view_proj);
     assert!(sphere_in_frustum(&planes, Vec3::new(0.0, 0.0, -5.0), 0.0));
     assert!(!sphere_in_frustum(&planes, Vec3::new(0.0, 0.0, 5.0), 0.5));
     assert!(!sphere_in_frustum(&planes, Vec3::new(20.0, 0.0, -5.0), 0.5));
-    assert!(sphere_in_frustum(&planes, Vec3::new(3.2, 0.0, -5.0), 0.5), "touching the edge");
-    assert!(!sphere_in_frustum(&planes, Vec3::new(0.0, 0.0, -60.0), 0.5), "past far");
+    assert!(
+        sphere_in_frustum(&planes, Vec3::new(3.2, 0.0, -5.0), 0.5),
+        "touching the edge"
+    );
+    assert!(
+        !sphere_in_frustum(&planes, Vec3::new(0.0, 0.0, -60.0), 0.5),
+        "past far"
+    );
     assert_eq!(cell_radius(Vec3::X, Vec3::Z), 0.5 * 2f32.sqrt());
 }
 

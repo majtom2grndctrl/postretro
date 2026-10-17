@@ -36,7 +36,20 @@ fn fxc_instance() -> wgpu::Instance {
 #[ignore = "on demand: FXC compiles every renderer pipeline (tens of seconds)"]
 fn dx12_fxc_compiles_every_full_init_pipeline() {
     match Renderer::new_offscreen_on(&fxc_instance(), 64, 64) {
-        Ok(_) => eprintln!("DX12 FXC test ran: every full-init pipeline compiled"),
+        Ok(mut renderer) => {
+            // SPIKE (cell-rate spike): the lazily built lever pipelines too,
+            // every reflecting render variant and every cell-pass variant.
+            for bits in 0..8u8 {
+                renderer.set_fluid_reflection_cell_levers(
+                    postretro_render_cpu::fluid_surface::reflection_cells::FluidReflectionCellLevers {
+                        cells: bits & 1 != 0,
+                        frustum_cull: bits & 2 != 0,
+                        ratio_one: bits & 4 != 0,
+                    },
+                );
+            }
+            eprintln!("DX12 FXC test ran: every full-init and cell-spike lever pipeline compiled")
+        }
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
             eprintln!("DX12 FXC test skipped: no DX12 adapter ({error:#})");
         }

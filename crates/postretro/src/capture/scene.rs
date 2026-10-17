@@ -51,7 +51,75 @@ pub(crate) struct CaptureScene {
     /// generation and every drain. Omitted keeps the engine default. Requires
     /// a streamed lightmap.
     pub(crate) lightmap_pool_cap_layers: Option<u32>,
+    /// SPIKE (cell-rate spike, never merged): the debug reflection cell
+    /// levers. Omitted keeps every lever off.
+    pub(crate) fluid_reflection_cells: Option<CaptureFluidReflectionCells>,
+    /// SPIKE: the reflection style the capture draws. Omitted is pixel.
+    pub(crate) fluid_reflection_style: Option<CaptureReflectionStyle>,
+    /// SPIKE: a pose drawn for `pre_camera_frames` frames before the capture
+    /// moves to `camera`, so a frame after a camera jump can be captured.
+    pub(crate) pre_camera: Option<CameraPose>,
+    /// SPIKE: frames at `pre_camera`; omitted is 4. Requires `pre_camera`.
+    pub(crate) pre_camera_frames: Option<u32>,
+    /// SPIKE: add the cell stats to the measurement report, read on the last
+    /// sample frame. Requires `measurement`; never set it on a timed run.
+    #[serde(default)]
+    pub(crate) fluid_reflection_cell_stats: bool,
 }
+
+/// SPIKE: the capture's reflection cell levers, each default off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct CaptureFluidReflectionCells {
+    #[serde(default)]
+    pub(crate) cells: bool,
+    #[serde(default)]
+    pub(crate) frustum_cull: bool,
+    #[serde(default)]
+    pub(crate) ratio_one: bool,
+}
+
+impl CaptureFluidReflectionCells {
+    pub(crate) fn levers(self) -> postretro_renderer::FluidReflectionCellLevers {
+        postretro_renderer::FluidReflectionCellLevers {
+            cells: self.cells,
+            frustum_cull: self.frustum_cull,
+            ratio_one: self.ratio_one,
+        }
+    }
+}
+
+/// SPIKE: the capture's reflection style override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CaptureReflectionStyle {
+    Pixel,
+    Smooth,
+}
+
+impl CaptureReflectionStyle {
+    pub(crate) fn style(
+        self,
+    ) -> postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle {
+        use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+        match self {
+            Self::Pixel => FluidReflectionStyle::Pixel,
+            Self::Smooth => FluidReflectionStyle::Smooth,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Pixel => "pixel",
+            Self::Smooth => "smooth",
+        }
+    }
+}
+
+/// SPIKE: frames at `pre_camera` when `pre_camera_frames` is omitted, and
+/// the most it may ask for.
+pub(crate) const DEFAULT_PRE_CAMERA_FRAMES: u32 = 4;
+const MAX_PRE_CAMERA_FRAMES: u32 = 600;
 
 impl CaptureScene {
     /// The scene's light-term mask; validated bits only.
@@ -160,6 +228,10 @@ pub(crate) enum SceneError {
     LightTermMaskOutOfRange { bits: u32 },
     #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
     LightmapPoolCapZero,
+    #[error("invalid capture scene: pre_camera_frames must be in 1..=600 and needs pre_camera")]
+    PreCameraFrames,
+    #[error("invalid capture scene: fluid_reflection_cell_stats needs a measurement block")]
+    CellStatsWithoutMeasurement,
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -229,39 +301,54 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     if scene.lightmap_pool_cap_layers == Some(0) {
         return Err(SceneError::LightmapPoolCapZero);
     }
-    if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
-        return Err(SceneError::FovOutOfRange {
-            value: scene.camera.fov_deg,
-        });
+    if let Some(frames) = scene.pre_camera_frames
+        && (scene.pre_camera.is_none() || !(1..=MAX_PRE_CAMERA_FRAMES).contains(&frames))
+    {
+        return Err(SceneError::PreCameraFrames);
+    }
+    if scene.fluid_reflection_cell_stats && scene.measurement.is_none() {
+        return Err(SceneError::CellStatsWithoutMeasurement);
     }
     let [width, height] = scene.resolution;
     if width == 0 || height == 0 || width > MAX_CAPTURE_DIMENSION || height > MAX_CAPTURE_DIMENSION
     {
         return Err(SceneError::ResolutionOutOfRange { width, height });
     }
-    if !scene.camera.position.into_iter().all(f32::is_finite)
-        || !scene.camera.yaw_deg.is_finite()
-        || !scene.camera.pitch_deg.is_finite()
+    if let Some(pre_camera) = &scene.pre_camera {
+        validate_camera(pre_camera)?;
+    }
+    validate_camera(&scene.camera)
+}
+
+fn validate_camera(camera: &CameraPose) -> Result<(), SceneError> {
+    if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&camera.fov_deg) {
+        return Err(SceneError::FovOutOfRange {
+            value: camera.fov_deg,
+        });
+    }
+    if !camera.position.into_iter().all(f32::is_finite)
+        || !camera.yaw_deg.is_finite()
+        || !camera.pitch_deg.is_finite()
     {
         return Err(SceneError::NonFiniteCamera);
     }
-    if !(-MAX_ABS_PITCH_DEG..=MAX_ABS_PITCH_DEG).contains(&scene.camera.pitch_deg) {
+    if !(-MAX_ABS_PITCH_DEG..=MAX_ABS_PITCH_DEG).contains(&camera.pitch_deg) {
         return Err(SceneError::PitchOutOfRange {
-            value: scene.camera.pitch_deg,
+            value: camera.pitch_deg,
         });
     }
 
     // `look_at_mat4` subtracts eye from center in f32. At very large finite
     // coordinates, adding a unit look vector can round back to the eye and
     // produce a zero basis. Reject that pose before visibility or GPU work.
-    let yaw = scene.camera.yaw_deg.to_radians();
-    let pitch = scene.camera.pitch_deg.to_radians();
+    let yaw = camera.yaw_deg.to_radians();
+    let pitch = camera.pitch_deg.to_radians();
     let look_dir = glam::Vec3::new(
         -yaw.sin() * pitch.cos(),
         pitch.sin(),
         -yaw.cos() * pitch.cos(),
     );
-    let eye = glam::Vec3::from_array(scene.camera.position);
+    let eye = glam::Vec3::from_array(camera.position);
     let rounded_forward = (eye + look_dir) - eye;
     if !rounded_forward.is_finite()
         || rounded_forward.length_squared() <= f32::EPSILON
@@ -588,10 +675,68 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            fluid_reflection_cells: None,
+            fluid_reflection_style: None,
+            pre_camera: None,
+            pre_camera_frames: None,
+            fluid_reflection_cell_stats: false,
         };
         assert!(matches!(
             validate_scene(&scene),
             Err(SceneError::NonFiniteForcedAnimLightRadiance)
+        ));
+    }
+
+    #[test]
+    fn parse_scene_reads_and_validates_the_cell_spike_fields() {
+        let with = |extra: &str| {
+            format!(
+                "{{\"map\": \"m.prl\", \"camera\": {{\"position\": [0, 1, 0], \
+                 \"yaw_deg\": 0, \"pitch_deg\": -60}}, \"resolution\": [64, 64], \
+                 \"output\": \"c.png\"{extra}}}"
+            )
+        };
+        let defaults = parse_scene(&with("")).expect("defaults");
+        assert_eq!(defaults.fluid_reflection_cells, None);
+        assert_eq!(defaults.fluid_reflection_style, None);
+        assert!(defaults.pre_camera.is_none() && !defaults.fluid_reflection_cell_stats);
+        let scene = parse_scene(&with(
+            ", \"fluid_reflection_cells\": {\"cells\": true, \"ratio_one\": true}, \
+             \"fluid_reflection_style\": \"smooth\", \"pre_camera\": {\"position\": \
+             [1, 1, 0], \"yaw_deg\": 90, \"pitch_deg\": -45}, \"pre_camera_frames\": 3, \
+             \"fluid_reflection_cell_stats\": true, \"measurement\": {\"report\": \
+             \"r.json\", \"warmup_frames\": 1, \"sample_frames\": 1}",
+        ))
+        .expect("spike fields");
+        let levers = scene.fluid_reflection_cells.expect("levers").levers();
+        assert!(levers.cells && levers.ratio_one && !levers.frustum_cull);
+        assert_eq!(
+            scene.fluid_reflection_style,
+            Some(CaptureReflectionStyle::Smooth)
+        );
+        assert_eq!(scene.pre_camera_frames, Some(3));
+        assert!(matches!(
+            parse_scene(&with(", \"fluid_reflection_cells\": {\"cell\": true}")),
+            Err(SceneError::Parse(_))
+        ));
+        assert!(matches!(
+            parse_scene(&with(", \"fluid_reflection_style\": \"glossy\"")),
+            Err(SceneError::Parse(_))
+        ));
+        assert!(matches!(
+            parse_scene(&with(", \"pre_camera_frames\": 2")),
+            Err(SceneError::PreCameraFrames)
+        ));
+        assert!(matches!(
+            parse_scene(&with(", \"fluid_reflection_cell_stats\": true")),
+            Err(SceneError::CellStatsWithoutMeasurement)
+        ));
+        assert!(matches!(
+            parse_scene(&with(
+                ", \"pre_camera\": {\"position\": [0, 1, 0], \"yaw_deg\": 0, \
+                 \"pitch_deg\": -95}"
+            )),
+            Err(SceneError::PitchOutOfRange { .. })
         ));
     }
 

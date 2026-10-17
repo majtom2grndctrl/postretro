@@ -112,13 +112,24 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
 
         let mut cpu_samples_ms = Vec::with_capacity(measurement.sample_frames as usize);
         let mut gpu_windows = Vec::new();
-        for _ in 0..measurement.sample_frames {
+        let mut cell_stats = None;
+        for sample in 0..measurement.sample_frames {
+            // SPIKE (cell-rate spike): stats count the last sample frame only.
+            let stats_frame =
+                scene.fluid_reflection_cell_stats && sample + 1 == measurement.sample_frames;
+            if stats_frame {
+                prepared.arm_fluid_reflection_cell_stats();
+            }
             let sample_start = Instant::now();
             if let Some(window) = prepared.capture_measurement_frame()? {
                 gpu_windows.push(window);
             }
             cpu_windows.fold_sample(prepared.cpu_stages());
             cpu_samples_ms.push(sample_start.elapsed().as_secs_f64() * 1000.0);
+            if stats_frame {
+                cell_stats = prepared.take_fluid_reflection_cell_stats();
+                log::info!("[Capture] Fluid reflection cell stats: {cell_stats:?}");
+            }
         }
 
         let report = measurement_report(
@@ -134,7 +145,8 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             gpu_windows,
             cpu_windows.report(),
         )
-        .with_lightmap_streaming(prepared.lightmap_streaming());
+        .with_lightmap_streaming(prepared.lightmap_streaming())
+        .with_fluid_reflection_cells(cell_stats);
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),
             &report,

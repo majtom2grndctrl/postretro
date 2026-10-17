@@ -91,12 +91,22 @@ pub(super) fn measurement_report(
             partial_frames,
         },
         cpu_stages,
+        fluid_reflection_cells: None,
     }
 }
 
 impl MeasurementReport {
     pub(super) fn with_lightmap_streaming(mut self, residency: CaptureLightmapResidency) -> Self {
         self.lightmap_streaming = Some(LightmapStreamingReportJson::from(residency));
+        self
+    }
+
+    /// SPIKE: attach the stats frame's reflection cell stats.
+    pub(super) fn with_fluid_reflection_cells(
+        mut self,
+        stats: Option<postretro_renderer::FluidReflectionCellStats>,
+    ) -> Self {
+        self.fluid_reflection_cells = stats.map(FluidReflectionCellsReportJson::from);
         self
     }
 }
@@ -182,6 +192,70 @@ pub(super) struct MeasurementReport {
     /// Renderer recording stages over complete post-warmup windows. Capture
     /// runs no tick or walk per sample, so only recording stages appear.
     cpu_stages: crate::cpu_timing::CpuStagesReport,
+    /// SPIKE (cell-rate spike): the reflection cell stats, only when the
+    /// scene asks for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_reflection_cells: Option<FluidReflectionCellsReportJson>,
+}
+
+/// SPIKE (cell-rate spike, never merged): one frame's reflection cell stats.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub(super) struct FluidReflectionCellsReportJson {
+    /// Which frame the stats count.
+    read_on: Cow<'static, str>,
+    levers: FluidReflectionCellLeversJson,
+    /// The style the frame drew; the cells lever acts only in pixel style.
+    reflection_style: Cow<'static, str>,
+    atlas_width: u32,
+    atlas_height: u32,
+    atlas_bytes: u64,
+    faces_in_atlas: u32,
+    faces_skipped: u32,
+    /// Reflecting draws (volumes) this frame.
+    reflecting_draws: u32,
+    tiles_dispatched: u32,
+    threads_dispatched: u64,
+    /// Sum of the drawn reflecting faces' cell rect areas.
+    cells_dispatched: u64,
+    /// Cells the pass evaluated (GPU counter): dispatched less frustum-culled.
+    cells_evaluated: u32,
+    /// Samples passing depth over the reflecting draws (occlusion query).
+    visible_reflecting_fragments: u64,
+    /// Reflecting draws past the query set, uncounted above.
+    uncounted_reflecting_draws: u32,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct FluidReflectionCellLeversJson {
+    cells: bool,
+    frustum_cull: bool,
+    ratio_one: bool,
+}
+
+impl From<postretro_renderer::FluidReflectionCellStats> for FluidReflectionCellsReportJson {
+    fn from(stats: postretro_renderer::FluidReflectionCellStats) -> Self {
+        Self {
+            read_on: "last-sample-frame".into(),
+            levers: FluidReflectionCellLeversJson {
+                cells: stats.levers.cells,
+                frustum_cull: stats.levers.frustum_cull,
+                ratio_one: stats.levers.ratio_one,
+            },
+            reflection_style: if stats.pixel_style { "pixel" } else { "smooth" }.into(),
+            atlas_width: stats.atlas_width,
+            atlas_height: stats.atlas_height,
+            atlas_bytes: stats.atlas_bytes,
+            faces_in_atlas: stats.faces_in_atlas,
+            faces_skipped: stats.faces_skipped,
+            reflecting_draws: stats.reflecting_draws,
+            tiles_dispatched: stats.tiles_dispatched,
+            threads_dispatched: stats.threads_dispatched,
+            cells_dispatched: stats.cells_dispatched,
+            cells_evaluated: stats.cells_evaluated,
+            visible_reflecting_fragments: stats.reflecting_fragments,
+            uncounted_reflecting_draws: stats.uncounted_draws,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -737,6 +811,11 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            fluid_reflection_cells: None,
+            fluid_reflection_style: None,
+            pre_camera: None,
+            pre_camera_frames: None,
+            fluid_reflection_cell_stats: false,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,

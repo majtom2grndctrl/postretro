@@ -466,8 +466,13 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
     // SPIKE (cell-rate spike): the fifth entry is the sampled cell atlas.
-    let [param_entry, probe_array, probe_table, probe_distance, _cell_atlas] =
-        fluid_params_bind_group_layout_entries();
+    let [
+        param_entry,
+        probe_array,
+        probe_table,
+        probe_distance,
+        _cell_atlas,
+    ] = fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -1582,9 +1587,14 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
 fn strip_cell_spike(fragment: &str) -> String {
     const START: &str = "ifFLUID_REFLECTION_CELLS&&";
     const END: &str = "returnfluid_reflection_composite(surface,cell.rgb,cell.a*cell_band);}";
-    let start = fragment.find(START).expect("fs_main holds the cells branch");
+    let start = fragment
+        .find(START)
+        .expect("fs_main holds the cells branch");
     let end = fragment[start..].find(END).expect("cells branch end") + start + END.len();
-    assert!(fragment[..start].ends_with("returnsurface;}"), "after the gate");
+    assert!(
+        fragment[..start].ends_with("returnsurface;}"),
+        "after the gate"
+    );
     format!("{}{}", &fragment[..start], &fragment[end..])
 }
 

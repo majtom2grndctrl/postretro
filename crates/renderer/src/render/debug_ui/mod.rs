@@ -382,7 +382,31 @@ fn draw_tab_selector(ui: &mut egui::Ui, state: &mut DiagnosticsState) {
     });
 }
 
+/// SPIKE (cell-rate spike, never merged): the debug reflection cell levers.
+fn draw_reflection_cells_spike(ui: &mut egui::Ui, renderer: &mut Renderer) {
+    let Some(mut levers) = renderer.fluid_reflection_cell_levers() else {
+        return;
+    };
+    egui::CollapsingHeader::new("Reflection cells (spike)")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut changed = ui
+                .checkbox(&mut levers.cells, "Cell-rate reflection (pixel style)")
+                .changed();
+            changed |= ui
+                .checkbox(&mut levers.frustum_cull, "Frustum-cull cells")
+                .changed();
+            changed |= ui
+                .checkbox(&mut levers.ratio_one, "Live-lighting ratio = 1")
+                .changed();
+            if changed {
+                renderer.set_fluid_reflection_cell_levers(levers);
+            }
+        });
+}
+
 fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: &mut Renderer) {
+    draw_reflection_cells_spike(ui, renderer);
     egui::CollapsingHeader::new("Lighting systems")
         .default_open(true)
         .show(ui, |ui| {

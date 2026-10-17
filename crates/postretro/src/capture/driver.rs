@@ -120,6 +120,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             cpu_windows.fold_sample(prepared.cpu_stages());
             cpu_samples_ms.push(sample_start.elapsed().as_secs_f64() * 1000.0);
         }
+        let fluid_cell_stats = prepared.fluid_cell_stats(&scene);
 
         let report = measurement_report(
             &scene,
@@ -134,7 +135,8 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
             gpu_windows,
             cpu_windows.report(),
         )
-        .with_lightmap_streaming(prepared.lightmap_streaming());
+        .with_lightmap_streaming(prepared.lightmap_streaming())
+        .with_fluid_cell_stats(fluid_cell_stats);
         let staged_report = stage_measurement_report(
             report_path.expect("measurement report path was preflighted"),
             &report,
@@ -150,6 +152,7 @@ fn run_capture_inner(scene_arg: Option<&str>) -> Result<()> {
         )?;
     } else {
         let rgba = prepared.capture_frame()?;
+        let _ = prepared.fluid_cell_stats(&scene);
 
         // `scene_color` readback is already RGBA8 sRGB. Write only after all
         // rendering succeeded, so invalid input or GPU failures never touch output.

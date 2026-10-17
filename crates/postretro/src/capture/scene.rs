@@ -51,9 +51,45 @@ pub(crate) struct CaptureScene {
     /// generation and every drain. Omitted keeps the engine default. Requires
     /// a streamed lightmap.
     pub(crate) lightmap_pool_cap_layers: Option<u32>,
+    /// Cell-rate spike (debug only): pixel-style reflections read the cell
+    /// atlas the cell compute pass fills.
+    #[serde(default)]
+    pub(crate) fluid_cell_buffer: bool,
+    /// Cell-rate spike: the cell pass skips cells outside the frustum.
+    #[serde(default)]
+    pub(crate) fluid_cell_cull: bool,
+    /// Cell-rate spike: the probe term skips its live-lighting ratio.
+    #[serde(default)]
+    pub(crate) fluid_ratio_one: bool,
+    /// Cell-rate spike: count evaluated cells and fluid samples and report
+    /// them (untimed runs only).
+    #[serde(default)]
+    pub(crate) fluid_cell_count: bool,
+    /// Cell-rate spike baseline: draw every fluid reflection-free under the
+    /// all-terms mask.
+    #[serde(default)]
+    pub(crate) fluid_reflection_off: bool,
+    /// Cell-rate spike: the cell buffer's two-draw form (reflection-free
+    /// surface, then a premultiplied reflection overlay).
+    #[serde(default)]
+    pub(crate) fluid_cell_overlay: bool,
+    /// Fluid reflection style, `"pixel"` or `"smooth"`; omitted keeps
+    /// capture's pixel default.
+    pub(crate) fluid_reflection_style: Option<String>,
 }
 
 impl CaptureScene {
+    /// The scene's validated fluid reflection style, if it names one.
+    pub(crate) fn fluid_reflection_style(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle> {
+        use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
+        match self.fluid_reflection_style.as_deref()? {
+            "smooth" => Some(FluidReflectionStyle::Smooth),
+            _ => Some(FluidReflectionStyle::Pixel),
+        }
+    }
+
     /// The scene's light-term mask; validated bits only.
     pub(crate) fn light_term_mask(&self) -> Option<LightTermMask> {
         self.light_term_mask.map(light_term_mask_from_bits)
@@ -160,6 +196,10 @@ pub(crate) enum SceneError {
     LightTermMaskOutOfRange { bits: u32 },
     #[error("invalid capture scene: lightmap_pool_cap_layers must be at least 1")]
     LightmapPoolCapZero,
+    #[error(
+        "invalid capture scene: fluid_reflection_style must be \"pixel\" or \"smooth\", got {value:?}"
+    )]
+    FluidReflectionStyleUnknown { value: String },
 }
 
 /// Parse a scene document and validate all GPU-independent authoring limits.
@@ -228,6 +268,14 @@ fn validate_scene(scene: &CaptureScene) -> Result<(), SceneError> {
     }
     if scene.lightmap_pool_cap_layers == Some(0) {
         return Err(SceneError::LightmapPoolCapZero);
+    }
+    if let Some(style) = &scene.fluid_reflection_style
+        && style != "pixel"
+        && style != "smooth"
+    {
+        return Err(SceneError::FluidReflectionStyleUnknown {
+            value: style.clone(),
+        });
     }
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&scene.camera.fov_deg) {
         return Err(SceneError::FovOutOfRange {
@@ -588,6 +636,13 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            fluid_cell_buffer: false,
+            fluid_cell_cull: false,
+            fluid_ratio_one: false,
+            fluid_cell_count: false,
+            fluid_reflection_off: false,
+            fluid_cell_overlay: false,
+            fluid_reflection_style: None,
         };
         assert!(matches!(
             validate_scene(&scene),

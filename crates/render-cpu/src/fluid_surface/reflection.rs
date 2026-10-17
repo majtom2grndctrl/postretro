@@ -256,8 +256,32 @@ pub fn fill_probe_indices(
     indices: &mut [u32],
 ) {
     indices.fill(FLUID_REFLECTION_NO_PROBE);
+    for (map, probe) in face_maps
+        .iter()
+        .zip(face_probe_indices(volumes, face_maps, section))
+    {
+        let (Some(map), true) = (map, probe != FLUID_REFLECTION_NO_PROBE) else {
+            continue;
+        };
+        let first = map.vertex_start as usize;
+        if let Some(vertices) = indices.get_mut(first..first + map.vertex_count as usize) {
+            vertices.fill(probe);
+        }
+    }
+}
+
+/// The probe each surface face of every volume binds, in record order (one
+/// entry per `face_maps` entry): [`FLUID_REFLECTION_NO_PROBE`] for a face no
+/// usable binding names or that draws nothing (no map). The walk
+/// [`fill_probe_indices`] writes vertices from.
+pub fn face_probe_indices(
+    volumes: &[EnvironmentVolumeRecord],
+    face_maps: &[Option<FluidFaceDriftMap>],
+    section: Option<&ReflectionProbesSection>,
+) -> Vec<u32> {
+    let mut probes = vec![FLUID_REFLECTION_NO_PROBE; face_maps.len()];
     let Some(section) = usable_probe_section(section) else {
-        return;
+        return probes;
     };
     let mut face_start = Vec::with_capacity(volumes.len());
     let mut faces = 0usize;
@@ -274,14 +298,11 @@ pub fn fill_probe_indices(
         if face >= record.surface_faces.len() || binding.probe as usize >= section.probes.len() {
             continue;
         }
-        let Some(Some(map)) = face_maps.get(start + face) else {
-            continue;
-        };
-        let first = map.vertex_start as usize;
-        if let Some(vertices) = indices.get_mut(first..first + map.vertex_count as usize) {
-            vertices.fill(binding.probe);
+        if let Some(Some(_)) = face_maps.get(start + face) {
+            probes[start + face] = binding.probe;
         }
     }
+    probes
 }
 
 /// Whether any surface face of installed volume `volume` binds a probe.

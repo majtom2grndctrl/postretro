@@ -16,10 +16,17 @@ use postretro_render_cpu::fluid_surface::{
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+use super::fluid_reflection_cells::{
+    FLUID_CELL_ATLAS_BINDING, FLUID_CELL_VERTEX_ATTRIBUTES, FLUID_CELL_VERTEX_STRIDE,
+    FluidCellLevers, FluidCellResources, FluidCellStats, build_cell_layout,
+    cell_atlas_bind_group_layout_entry, cell_bind_group_layout_entries,
+    cell_probe_bind_group_layout_entries, create_dummy_atlas,
+};
 use super::fluid_reflection_probes::{
     FluidProbeResources, create_probe_index_buffer, fluid_probe_bind_group_layout_entries,
     installable_probe_section,
 };
+use postretro_render_cpu::fluid_surface::reflection::face_probe_indices;
 
 #[cfg(test)]
 pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
@@ -51,10 +58,26 @@ const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../shaders/light_eval.wgsl"),
     "\n",
+    include_str!("../shaders/fluid_reflection_cells.wgsl"),
+    "\n",
 );
 
 /// The shader's pipeline-overridable constant that selects its variant.
 pub(crate) const FLUID_REFLECTIONS_OVERRIDE: &str = "FLUID_REFLECTIONS";
+
+/// Cell-rate spike overrides: read the cell atlas; skip the live-lighting ratio.
+pub(crate) const FLUID_REFLECTION_CELLS_OVERRIDE: &str = "FLUID_REFLECTION_CELLS";
+pub(crate) const FLUID_REFLECTION_RATIO_ONE_OVERRIDE: &str = "FLUID_REFLECTION_RATIO_ONE";
+
+/// Render pipelines by role: the two shipped variants, then the spike's
+/// reflecting variants (ratio one; cell atlas).
+const PIPELINE_REFLECTION_FREE: usize = 0;
+const PIPELINE_REFLECTING: usize = 1;
+const PIPELINE_RATIO_ONE: usize = 2;
+const PIPELINE_CELLS: usize = 3;
+/// Two-draw cells: the premultiplied reflection overlay drawn after the
+/// reflection-free surface.
+const PIPELINE_CELL_OVERLAY: usize = 4;
 
 /// The fragment stage's override values for `variant`.
 pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static str, f64); 1] {
@@ -68,7 +91,7 @@ pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static
 /// rows selected by a dynamic offset, then the reflection probe array, share
 /// table and distance array. Textures, samplers and uniforms only: the shared
 /// groups already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     let [probe_array, probe_table, probe_distance] = fluid_probe_bind_group_layout_entries();
     [
         wgpu::BindGroupLayoutEntry {
@@ -84,6 +107,7 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
         probe_array,
         probe_table,
         probe_distance,
+        cell_atlas_bind_group_layout_entry(),
     ]
 }
 
@@ -192,6 +216,12 @@ const PROBE_INDEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribut
 
 /// One installed level's fluid geometry and per-volume parameter buffer.
 struct InstalledFluidSurfaces {
+    /// Cell-rate spike: per-vertex cell offset and rect (fourth vertex buffer).
+    cell_vertex_buffer: wgpu::Buffer,
+    /// The level's cell atlas and compute resources, when it can read cells.
+    cells: Option<FluidCellResources>,
+    /// The 1×1 atlas group 4 binds without cells; held for the bind group.
+    _dummy_atlas: Option<(wgpu::Texture, wgpu::TextureView)>,
     vertex_buffer: wgpu::Buffer,
     /// Zeroed at install: a level draws still until drift resolves, and
     /// capture, which resolves none, always draws still.
@@ -222,7 +252,21 @@ pub(crate) struct FluidSurfacePass {
     /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
     /// order, over one layout: the reflection-free variant and the
     /// reflecting one. Each draw takes its row's variant.
-    pipelines: [wgpu::RenderPipeline; 2],
+    pipelines: [wgpu::RenderPipeline; 5],
+    /// Cell-rate spike: the cell compute pipeline, then its ratio-one variant.
+    cell_pipelines: [wgpu::ComputePipeline; 2],
+    cell_probe_bind_group_layout: wgpu::BindGroupLayout,
+    cell_bind_group_layout: wgpu::BindGroupLayout,
+    levers: FluidCellLevers,
+    /// This frame reads cells (set by `prepare_cells`).
+    cells_active: bool,
+    /// One occlusion query over the fluid draws, while counting.
+    occlusion_query_set: wgpu::QuerySet,
+    occlusion_resolve: wgpu::Buffer,
+    /// The query was written and resolved since install.
+    occlusion_resolved: std::cell::Cell<bool>,
+    /// The counting frame's pass carries the query set.
+    occlusion_this_frame: bool,
     params_bind_group_layout: wgpu::BindGroupLayout,
     /// Group 5. Built at full init, level or not, and rebuilt only by the
     /// scene-target rebuild; level install and clear never touch it.
@@ -268,11 +312,90 @@ impl FluidSurfacePass {
             ],
             immediate_size: 0,
         });
-        let pipelines = FluidShaderVariant::ALL.map(|variant| {
-            create_fluid_pipeline(device, &pipeline_layout, &shader, depth_format, variant)
+        let pipelines = [
+            (FluidShaderVariant::ReflectionFree, false, false, false),
+            (FluidShaderVariant::Reflecting, false, false, false),
+            (FluidShaderVariant::Reflecting, false, true, false),
+            (FluidShaderVariant::Reflecting, true, false, false),
+            (FluidShaderVariant::Reflecting, true, false, true),
+        ]
+        .map(|(variant, cells, ratio_one, overlay)| {
+            create_fluid_pipeline(
+                device,
+                &pipeline_layout,
+                &shader,
+                depth_format,
+                variant,
+                cells,
+                ratio_one,
+                overlay,
+            )
+        });
+        let cell_probe_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Fluid Reflection Cell Probe BGL (compute group 4)"),
+                entries: &cell_probe_bind_group_layout_entries(),
+            });
+        let cell_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Fluid Reflection Cell BGL (compute group 5)"),
+                entries: &cell_bind_group_layout_entries(),
+            });
+        let cell_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Fluid Reflection Cell Pipeline Layout"),
+            bind_group_layouts: &[
+                Some(camera_bgl),
+                None,
+                None,
+                Some(sh_bgl),
+                Some(&cell_probe_bind_group_layout),
+                Some(&cell_bind_group_layout),
+            ],
+            immediate_size: 0,
+        });
+        let cell_pipelines = [false, true].map(|ratio_one| {
+            let constants = [(
+                FLUID_REFLECTION_RATIO_ONE_OVERRIDE,
+                if ratio_one { 1.0 } else { 0.0 },
+            )];
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(if ratio_one {
+                    "Fluid Reflection Cell Pipeline (ratio one)"
+                } else {
+                    "Fluid Reflection Cell Pipeline"
+                }),
+                layout: Some(&cell_layout),
+                module: &shader,
+                entry_point: Some("cs_fluid_reflection_cells"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                cache: None,
+            })
+        });
+        let occlusion_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Fluid Surface Occlusion Query"),
+            ty: wgpu::QueryType::Occlusion,
+            count: 1,
+        });
+        let occlusion_resolve = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Surface Occlusion Resolve"),
+            size: 8,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
         Self {
             pipelines,
+            cell_pipelines,
+            cell_probe_bind_group_layout,
+            cell_bind_group_layout,
+            levers: FluidCellLevers::default(),
+            cells_active: false,
+            occlusion_query_set,
+            occlusion_resolve,
+            occlusion_resolved: std::cell::Cell::new(false),
+            occlusion_this_frame: false,
             params_bind_group_layout,
             scene_inputs,
             installed: None,
@@ -347,6 +470,34 @@ impl FluidSurfacePass {
         // An install-time upload takes the raw queue, as the SH atlases do.
         let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
+        let face_probes = face_probe_indices(volumes, &mesh.face_drift_maps, reflection_probes);
+        let (cell_vertices, cell_layout) = build_cell_layout(
+            volumes,
+            &mesh,
+            &face_probes,
+            texture_dimensions,
+            material_count,
+        );
+        let cell_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fluid Reflection Cell Vertex Buffer"),
+            contents: bytemuck::cast_slice(&cell_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let cells = cell_layout.map(|layout| {
+            FluidCellResources::new(
+                device,
+                layout,
+                probes.bind_group_entries(),
+                &self.cell_probe_bind_group_layout,
+                &self.cell_bind_group_layout,
+            )
+        });
+        let dummy_atlas = cells.is_none().then(|| create_dummy_atlas(device));
+        let atlas_view = cells
+            .as_ref()
+            .map(FluidCellResources::atlas_view)
+            .or(dummy_atlas.as_ref().map(|(_, view)| view))
+            .expect("cells or the dummy atlas");
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
             contents: bytemuck::cast_slice(&mesh.vertices),
@@ -386,6 +537,10 @@ impl FluidSurfacePass {
                 probe_array,
                 probe_table,
                 probe_distance,
+                wgpu::BindGroupEntry {
+                    binding: FLUID_CELL_ATLAS_BINDING,
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                },
             ],
         });
         log::info!(
@@ -393,7 +548,11 @@ impl FluidSurfacePass {
             mesh.volumes.len(),
             mesh.indices.len() / 3,
         );
+        self.occlusion_resolved.set(false);
         self.installed = Some(InstalledFluidSurfaces {
+            cell_vertex_buffer,
+            cells,
+            _dummy_atlas: dummy_atlas,
             vertex_buffer,
             drift_buffer,
             drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
@@ -533,15 +692,20 @@ impl FluidSurfacePass {
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
         pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
+        pass.set_vertex_buffer(3, installed.cell_vertex_buffer.slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        if self.occlusion_this_frame {
+            pass.begin_occlusion_query(0);
+        }
 
         let mut bound_variant = None;
         let mut bound_window = None;
         let mut bound_material = None;
         for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits()) {
-            if bound_variant != Some(variant) {
-                pass.set_pipeline(self.pipeline(variant));
-                bound_variant = Some(variant);
+            let pipeline = self.pipeline_index(installed, slot, variant);
+            if bound_variant != Some(pipeline) {
+                pass.set_pipeline(&self.pipelines[pipeline]);
+                bound_variant = Some(pipeline);
             }
             let (window, element) = slot_window(slot);
             if bound_window != Some(window) {
@@ -553,26 +717,185 @@ impl FluidSurfacePass {
                 );
                 bound_window = Some(window);
             }
-            for range in &installed.volumes[slot as usize].material_ranges {
-                if bound_material != Some(range.material_index) {
-                    let material = materials
-                        .get(range.material_index)
-                        .or_else(|| materials.first())
-                        .expect("renderer always keeps a placeholder material bind group");
-                    pass.set_bind_group(1, &material.bind_group, &[]);
-                    bound_material = Some(range.material_index);
+            // Two-draw cells: the surface reflection-free, then the overlay.
+            let two_draw = pipeline == PIPELINE_CELLS && self.levers.overlay;
+            if two_draw {
+                pass.set_pipeline(&self.pipelines[PIPELINE_REFLECTION_FREE]);
+                bound_variant = Some(PIPELINE_REFLECTION_FREE);
+            }
+            let passes: &[bool] = if two_draw { &[false, true] } else { &[false] };
+            for &overlay_draw in passes {
+                if overlay_draw {
+                    pass.set_pipeline(&self.pipelines[PIPELINE_CELL_OVERLAY]);
+                    bound_variant = Some(PIPELINE_CELL_OVERLAY);
                 }
-                pass.draw_indexed(
-                    range.index_start..range.index_start + range.index_count,
-                    0,
-                    element..element + 1,
-                );
+                for range in &installed.volumes[slot as usize].material_ranges {
+                    if bound_material != Some(range.material_index) {
+                        let material = materials
+                            .get(range.material_index)
+                            .or_else(|| materials.first())
+                            .expect("renderer always keeps a placeholder material bind group");
+                        pass.set_bind_group(1, &material.bind_group, &[]);
+                        bound_material = Some(range.material_index);
+                    }
+                    pass.draw_indexed(
+                        range.index_start..range.index_start + range.index_count,
+                        0,
+                        element..element + 1,
+                    );
+                }
+            }
+        }
+        if self.occlusion_this_frame {
+            pass.end_occlusion_query();
+        }
+    }
+
+    /// The render pipeline `slot`'s draw takes this frame: the cell-atlas
+    /// variant for a reflecting, cell-capable draw while cells are active;
+    /// else the ratio-one variant under that lever; else the row's variant.
+    fn pipeline_index(
+        &self,
+        installed: &InstalledFluidSurfaces,
+        slot: u32,
+        variant: FluidShaderVariant,
+    ) -> usize {
+        match variant {
+            FluidShaderVariant::ReflectionFree => PIPELINE_REFLECTION_FREE,
+            FluidShaderVariant::Reflecting if self.levers.reflection_off => {
+                PIPELINE_REFLECTION_FREE
+            }
+            FluidShaderVariant::Reflecting => {
+                if self.cells_active
+                    && installed
+                        .cells
+                        .as_ref()
+                        .is_some_and(|cells| cells.slot_reads_cells(slot))
+                {
+                    PIPELINE_CELLS
+                } else if self.levers.ratio_one {
+                    PIPELINE_RATIO_ONE
+                } else {
+                    PIPELINE_REFLECTING
+                }
             }
         }
     }
 
-    fn pipeline(&self, variant: FluidShaderVariant) -> &wgpu::RenderPipeline {
-        &self.pipelines[variant as usize]
+    pub(crate) fn levers(&self) -> FluidCellLevers {
+        self.levers
+    }
+
+    pub(crate) fn set_levers(&mut self, levers: FluidCellLevers) {
+        self.levers = levers;
+    }
+
+    /// Decide whether this frame reads cells and, if so, upload its face and
+    /// tile lists. Call once per drawing frame, before the cell pass and the
+    /// fluid pass. Cells read only under the buffer lever, in pixel style, on
+    /// a level with an atlas.
+    pub fn prepare_cells(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        camera: glam::Vec3,
+        viewport: [u32; 2],
+        light_term_mask: LightTermMask,
+    ) {
+        use postretro_render_cpu::fluid_surface::reflection_style::FLUID_REFLECTION_STYLE_PIXEL;
+        let pixel = self.scene_inputs.pending().reflection_style == FLUID_REFLECTION_STYLE_PIXEL;
+        let levers = self.levers;
+        self.occlusion_this_frame = levers.count && self.installed.is_some();
+        self.cells_active = false;
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        let Some(cells) = installed.cells.as_mut() else {
+            return;
+        };
+        if !(levers.buffer && pixel) || levers.reflection_off {
+            cells.clear_frame();
+            return;
+        }
+        self.cells_active = true;
+        cells.prepare(
+            queue,
+            &installed.slots,
+            light_term_mask.bits(),
+            camera,
+            viewport,
+            levers,
+        );
+    }
+
+    /// Record this frame's cell compute pass, if it dispatched any tile.
+    pub fn record_cell_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_bind_group: &wgpu::BindGroup,
+        sh_bind_group: &wgpu::BindGroup,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) {
+        if !self.cells_active {
+            return;
+        }
+        let Some(cells) = self.installed.as_ref().and_then(|i| i.cells.as_ref()) else {
+            return;
+        };
+        let pipeline = &self.cell_pipelines[usize::from(self.levers.ratio_one)];
+        cells.record(
+            encoder,
+            pipeline,
+            camera_bind_group,
+            sh_bind_group,
+            timestamp_writes,
+        );
+    }
+
+    /// Whether this frame's cell pass dispatches (it takes a timing pair).
+    pub fn cell_pass_dispatches(&self) -> bool {
+        self.cells_active
+            && self
+                .installed
+                .as_ref()
+                .and_then(|i| i.cells.as_ref())
+                .is_some_and(|cells| cells.frame_tiles() > 0)
+    }
+
+    /// The occlusion query set while this frame counts.
+    pub fn occlusion_query_set(&self) -> Option<&wgpu::QuerySet> {
+        self.occlusion_this_frame
+            .then_some(&self.occlusion_query_set)
+    }
+
+    /// Resolve the counting frame's occlusion query after the fluid pass.
+    pub fn resolve_occlusion(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.occlusion_this_frame && self.has_draws() {
+            encoder.resolve_query_set(&self.occlusion_query_set, 0..1, &self.occlusion_resolve, 0);
+            self.occlusion_resolved.set(true);
+        }
+    }
+
+    /// Encode copies of the GPU counters into `readback` (16 B: evaluated,
+    /// tile count, then samples passed as u64) and return the CPU-side
+    /// figures, whether the counter and whether the query were copied.
+    pub(crate) fn encode_cell_stats(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        readback: &wgpu::Buffer,
+    ) -> Option<(FluidCellStats, bool, bool)> {
+        let installed = self.installed.as_ref()?;
+        let mut stats = FluidCellStats::default();
+        let mut counted = false;
+        if let Some(cells) = installed.cells.as_ref() {
+            stats = cells.stats();
+            cells.copy_counter(encoder, readback);
+            counted = true;
+        }
+        let occluded = self.occlusion_resolved.get();
+        if occluded {
+            encoder.copy_buffer_to_buffer(&self.occlusion_resolve, 0, readback, 8, 8);
+        }
+        Some((stats, counted, occluded))
     }
 
     /// The variant each of this frame's draws takes, in draw order: what
@@ -598,12 +921,53 @@ fn create_fluid_pipeline(
     shader: &wgpu::ShaderModule,
     depth_format: wgpu::TextureFormat,
     variant: FluidShaderVariant,
+    cells: bool,
+    ratio_one: bool,
+    overlay: bool,
 ) -> wgpu::RenderPipeline {
-    let constants = fluid_variant_constants(variant);
+    let [reflections] = fluid_variant_constants(variant);
+    let spike_constants = [
+        reflections,
+        (
+            FLUID_REFLECTION_CELLS_OVERRIDE,
+            if cells { 1.0 } else { 0.0 },
+        ),
+        (
+            FLUID_REFLECTION_RATIO_ONE_OVERRIDE,
+            if ratio_one { 1.0 } else { 0.0 },
+        ),
+    ];
+    // The shipped variants set only their own override, as before the spike.
+    let experiment: f64 = std::env::var("POSTRETRO_SPIKE_CELL_EXPERIMENT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let cells_constants = [
+        spike_constants[0],
+        spike_constants[1],
+        spike_constants[2],
+        ("FLUID_CELL_EXPERIMENT", experiment),
+    ];
+    let constants: &[(&str, f64)] = if cells {
+        &cells_constants
+    } else if ratio_one {
+        &spike_constants
+    } else {
+        &spike_constants[..1]
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(match variant {
-            FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
-            FluidShaderVariant::Reflecting => "Fluid Surface Pipeline (reflecting)",
+        label: Some(match (variant, cells, ratio_one) {
+            _ if overlay => "Fluid Surface Pipeline (cell reflection overlay)",
+            (FluidShaderVariant::ReflectionFree, _, _) => {
+                "Fluid Surface Pipeline (reflection-free)"
+            }
+            (FluidShaderVariant::Reflecting, true, _) => {
+                "Fluid Surface Pipeline (reflecting, cells)"
+            }
+            (FluidShaderVariant::Reflecting, false, true) => {
+                "Fluid Surface Pipeline (reflecting, ratio one)"
+            }
+            (FluidShaderVariant::Reflecting, false, false) => "Fluid Surface Pipeline (reflecting)",
         }),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -625,6 +989,11 @@ fn create_fluid_pipeline(
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &PROBE_INDEX_ATTRIBUTES,
                 }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: FLUID_CELL_VERTEX_STRIDE as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &FLUID_CELL_VERTEX_ATTRIBUTES,
+                }),
             ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
@@ -633,14 +1002,26 @@ fn create_fluid_pipeline(
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            // The cells variant draws through its own entry point, which
+            // holds no per-fragment reflection code.
+            entry_point: Some(if overlay {
+                "fs_cells_overlay"
+            } else if cells {
+                "fs_cells"
+            } else {
+                "fs_main"
+            }),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SCENE_COLOR_FORMAT,
-                blend: Some(fluid_blend_state()),
+                blend: Some(if overlay {
+                    wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+                } else {
+                    fluid_blend_state()
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
+                constants,
                 ..Default::default()
             },
         }),
@@ -734,6 +1115,105 @@ impl Renderer {
         &self,
     ) -> postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle {
         self.fluid_reflection_style
+    }
+
+    fn update_fluid_cell_levers(&mut self, update: impl FnOnce(&mut FluidCellLevers)) {
+        let pass = &mut self.full_mut().fluid_surface;
+        let mut levers = pass.levers();
+        update(&mut levers);
+        pass.set_levers(levers);
+    }
+
+    /// Cell-rate spike lever: pixel-style reflections read the cell atlas.
+    pub fn fluid_cell_buffer(&self) -> bool {
+        self.full().fluid_surface.levers().buffer
+    }
+
+    pub fn set_fluid_cell_buffer(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.buffer = enabled);
+    }
+
+    /// Cell-rate spike lever: the cell pass skips cells outside the frustum.
+    pub fn fluid_cell_cull(&self) -> bool {
+        self.full().fluid_surface.levers().cull
+    }
+
+    pub fn set_fluid_cell_cull(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.cull = enabled);
+    }
+
+    /// Cell-rate spike lever: the probe term skips its live-lighting ratio.
+    pub fn fluid_ratio_one(&self) -> bool {
+        self.full().fluid_surface.levers().ratio_one
+    }
+
+    pub fn set_fluid_ratio_one(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.ratio_one = enabled);
+    }
+
+    /// Cell-rate spike lever: count evaluated cells and fluid samples
+    /// (untimed runs only; read with `read_fluid_cell_stats`).
+    pub fn fluid_cell_count(&self) -> bool {
+        self.full().fluid_surface.levers().count
+    }
+
+    pub fn set_fluid_cell_count(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.count = enabled);
+    }
+
+    /// Cell-rate spike baseline lever: every fluid draw takes the
+    /// reflection-free pipeline under the frame's own mask (no cells either).
+    pub fn set_fluid_reflection_off(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.reflection_off = enabled);
+    }
+
+    /// Cell-rate spike lever: with the cell buffer, draw the surface through
+    /// the reflection-free pipeline and add the cell reflection in a second,
+    /// premultiplied overlay draw.
+    pub fn set_fluid_cell_overlay(&mut self, enabled: bool) {
+        self.update_fluid_cell_levers(|levers| levers.overlay = enabled);
+    }
+
+    /// The last frame's cell and fluid-sample counts, read back with a
+    /// blocking wait (capture only). `None` without installed fluid surfaces.
+    pub fn read_fluid_cell_stats(&mut self) -> Option<FluidCellStats> {
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fluid Reflection Cell Stats Readback"),
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Fluid Reflection Cell Stats"),
+            });
+        let (mut stats, counted, occluded) = self
+            .full()
+            .fluid_surface
+            .encode_cell_stats(&mut encoder, &readback)?;
+        self.queue
+            .submit_unbatched(std::iter::once(encoder.finish()), "fluid cell stats");
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        rx.recv().ok()?.ok()?;
+        {
+            let data = slice.get_mapped_range().ok()?;
+            let words: &[u32] = bytemuck::cast_slice(&data[..8]);
+            if counted {
+                stats.cells_evaluated = words[0];
+            }
+            if occluded {
+                stats.fluid_samples_passed =
+                    u64::from_le_bytes(data[8..16].try_into().expect("8 bytes"));
+            }
+        }
+        readback.unmap();
+        Some(stats)
     }
 }
 

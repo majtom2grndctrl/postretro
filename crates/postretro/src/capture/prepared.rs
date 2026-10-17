@@ -115,6 +115,16 @@ impl PreparedCapture {
         if let Some(mask) = scene.light_term_mask() {
             renderer.set_light_term_mask(mask);
         }
+        // Cell-rate spike levers and the reflection style for gate captures.
+        renderer.set_fluid_cell_buffer(scene.fluid_cell_buffer);
+        renderer.set_fluid_cell_cull(scene.fluid_cell_cull);
+        renderer.set_fluid_ratio_one(scene.fluid_ratio_one);
+        renderer.set_fluid_cell_count(scene.fluid_cell_count);
+        renderer.set_fluid_reflection_off(scene.fluid_reflection_off);
+        renderer.set_fluid_cell_overlay(scene.fluid_cell_overlay);
+        if let Some(style) = scene.fluid_reflection_style() {
+            renderer.set_fluid_reflection_style(style);
+        }
         renderer.set_cpu_timing(crate::cpu_timing::gate_from_env());
 
         let texture_materials = derive_texture_materials(&world.texture_names);
@@ -442,6 +452,20 @@ impl PreparedCapture {
             }
         }
         result.frame
+    }
+
+    /// Cell-rate spike: the last frame's cell and fluid-sample counts, read
+    /// back with a blocking wait and logged; `None` unless the scene counts.
+    pub(super) fn fluid_cell_stats(
+        &mut self,
+        scene: &super::scene::CaptureScene,
+    ) -> Option<postretro_renderer::FluidCellStats> {
+        if !scene.fluid_cell_count {
+            return None;
+        }
+        let stats = self.renderer.read_fluid_cell_stats();
+        log::info!("[Capture] Fluid cell stats: {stats:?}");
+        stats
     }
 
     /// Start a fresh GPU timing window after warmup submissions complete.

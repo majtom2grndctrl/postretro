@@ -177,6 +177,11 @@ struct VertexInput {
     // Third vertex buffer: the face's reflection probe, written at install;
     // FLUID_REFLECTION_NO_PROBE for a face no binding names.
     @location(4) probe: u32,
+    // Fourth vertex buffer (cell-rate spike): the face's cell-atlas offset
+    // (atlas origin minus first cell) and its inclusive cell rect; zero for a
+    // face with no rect.
+    @location(5) cell_offset: vec2<i32>,
+    @location(6) cell_bounds: vec4<i32>,
 };
 
 struct VertexOutput {
@@ -188,6 +193,8 @@ struct VertexOutput {
     // The face's drift scroll this frame, texture periods in [-0.5, 0.5).
     @location(4) @interpolate(flat) drift_scroll: vec2<f32>,
     @location(5) @interpolate(flat) probe: u32,
+    @location(6) @interpolate(flat) cell_offset: vec2<i32>,
+    @location(7) @interpolate(flat) cell_bounds: vec4<i32>,
 };
 
 @vertex
@@ -200,6 +207,8 @@ fn vs_main(in: VertexInput, @builtin(instance_index) slot: u32) -> VertexOutput 
     out.slot = slot;
     out.drift_scroll = fluid_drift_scroll(in.drift_rate, uniforms.time);
     out.probe = in.probe;
+    out.cell_offset = in.cell_offset;
+    out.cell_bounds = in.cell_bounds;
     return out;
 }
 
@@ -1197,12 +1206,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
         return surface;
     }
+    // Cell-rate spike: the cell's reflection, evaluated once in compute, read
+    // from the cell atlas at the key pixel style floors.
+    if FLUID_REFLECTION_CELLS {
+        let key = clamp(vec2<i32>(floor(in.uv * dims)), in.cell_bounds.xy, in.cell_bounds.zw);
+        let cell = textureLoad(fluid_cell_atlas, key + in.cell_offset, 0);
+        let cell_band = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+        return fluid_reflection_composite(surface, cell.rgb, cell.a * cell_band);
+    }
     let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
     let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,
         outward, axes, uniforms.time, texels_per_pixel, fluid_probes.probes[in.probe].box_min,
         fluid_probes.probes[in.probe].box_max, fluid_probes.probes[in.probe].capture_point);
     let view = normalize(uniforms.camera_position - point.position);
-    let reflection = fluid_reflection_sample(in.probe, point.position, view, point.normal);
+    let reflection = fluid_reflection_sample_spike(in.probe, point.position, view, point.normal);
     let fresnel = fluid_reflection_fresnel(dot(view, outward), reflectivity) * reflection.weight;
     // From above, an eye within the fog's band of the plane scales the term
     // by its height through the band, the fog's own proximity, reaching 0 at

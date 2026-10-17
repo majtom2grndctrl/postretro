@@ -560,6 +560,24 @@ fn draw_lighting_tab(ui: &mut egui::Ui, state: &mut DiagnosticsState, renderer: 
                 renderer.set_freeze_time(frozen);
             }
         });
+    // Cell-rate spike (debug only): pixel-style reflections evaluated once
+    // per water texel cell in compute.
+    egui::CollapsingHeader::new("Fluid reflections (spike)")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut buffer = renderer.fluid_cell_buffer();
+            if ui.checkbox(&mut buffer, "Cell buffer").changed() {
+                renderer.set_fluid_cell_buffer(buffer);
+            }
+            let mut cull = renderer.fluid_cell_cull();
+            if ui.checkbox(&mut cull, "Cell frustum cull").changed() {
+                renderer.set_fluid_cell_cull(cull);
+            }
+            let mut ratio_one = renderer.fluid_ratio_one();
+            if ui.checkbox(&mut ratio_one, "Ratio = 1").changed() {
+                renderer.set_fluid_ratio_one(ratio_one);
+            }
+        });
 }
 
 fn draw_volumes_tab(

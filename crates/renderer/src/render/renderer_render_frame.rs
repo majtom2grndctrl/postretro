@@ -655,12 +655,35 @@ impl Renderer {
             // reflection style). The weight is stored every frame; both upload
             // here lazily, only when changed; the batched write copies ahead
             // of this frame's submission.
+            let extent = self.scene_extent();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.fluid_surface.upload_scene_inputs(queue);
+                // Cell-rate spike: decide whether this frame reads the cell
+                // atlas and upload its face and tile lists.
+                let camera = full.last_camera_position;
+                full.fluid_surface.prepare_cells(
+                    queue,
+                    camera,
+                    [extent.width, extent.height],
+                    frame_light_term_mask,
+                );
+            }
+            if self.full().fluid_surface.cell_pass_dispatches() {
+                let cell_ts = self
+                    .full()
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_FLUID_CELL));
+                self.full().fluid_surface.record_cell_pass(
+                    encoder,
+                    &self.full().uniform_bind_group,
+                    self.full().sh_bind_group(),
+                    cell_ts,
+                );
             }
             let fluid_ts = self
                 .full()
@@ -686,6 +709,7 @@ impl Renderer {
                     stencil_ops: None,
                 }),
                 timestamp_writes: fluid_ts,
+                occlusion_query_set: self.full().fluid_surface.occlusion_query_set(),
                 ..Default::default()
             });
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
@@ -697,6 +721,8 @@ impl Renderer {
                 &self.full().gpu_textures,
                 frame_light_term_mask,
             );
+            drop(fluid_pass);
+            self.full().fluid_surface.resolve_occlusion(encoder);
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.

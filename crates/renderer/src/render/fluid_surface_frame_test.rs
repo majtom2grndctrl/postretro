@@ -1848,3 +1848,469 @@ fn a_near_wall_distance_tile_samples_the_texel_the_cpu_search_looks_up() {
         "the GPU samples the texel the CPU search looks up: off by {worst} at {at:?}"
     );
 }
+
+// --- Cell-rate spike (debug only): the pixel style's reflection evaluated
+// once per water texel cell in compute and read from the cell atlas. ---
+
+/// Capture side for the cell-rate spike: fine enough that a water texel
+/// cell spans several pixels at every pose below.
+const CELL_SIDE: u32 = 64;
+
+fn cell_renderer() -> Option<Renderer> {
+    match Renderer::new_offscreen(CELL_SIDE, CELL_SIDE) {
+        Ok(renderer) => Some(renderer),
+        Err(error) if error.to_string().contains("requires a GPU adapter") => {
+            eprintln!("[FluidCellSpike] skipped: no adapter ({error:#})");
+            None
+        }
+        Err(error) => panic!("adapter present but renderer initialization failed: {error:#}"),
+    }
+}
+
+/// The A6 near-wall room's probe over [`horizontal_fluid`]: a striped
+/// capture and a distance tile holding a near wall, so the search, rim pull
+/// and tilt all move the lookup.
+fn near_wall_cell_probes() -> ReflectionProbesSection {
+    let capture_point = Vec3::new(0.0, 0.002, 2.0);
+    let dimension = 64;
+    ReflectionProbesSection {
+        tile_dimension: dimension,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_RGBA16F,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 0,
+            box_min: [-10.0, -1.0, -10.0],
+            box_max: [10.0, 6.0, 10.0],
+            capture_point: capture_point.to_array(),
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: striped_rgba16f_tile(dimension),
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: near_wall_distance_tile(capture_point, dimension),
+    }
+}
+
+/// A mirror at zero opacity: the output is the reflection alone.
+fn cell_mirror_look() -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        surface_reflectivity: 50.0,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    }
+}
+
+/// Camera poses over the pool: (name, eye, view-projection).
+fn cell_poses() -> Vec<(&'static str, Vec3, Mat4)> {
+    let projection =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 100.0);
+    let pose = |eye: Vec3, target: Vec3, up: Vec3| {
+        (
+            eye,
+            projection * glam::camera::rh::view::look_at_mat4(eye, target, up),
+        )
+    };
+    let (down, down_vp) = pose(Vec3::new(0.3, 2.0, 0.2), Vec3::new(0.3, 0.0, 0.2), Vec3::Z);
+    let (oblique, oblique_vp) = pose(Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 0.0, 1.5), Vec3::Y);
+    let (grazing, grazing_vp) = pose(Vec3::new(0.0, 0.6, -2.0), Vec3::new(0.0, 0.0, 3.0), Vec3::Y);
+    vec![
+        ("straight down", down, down_vp),
+        ("oblique", oblique, oblique_vp),
+        ("grazing", grazing, grazing_vp),
+    ]
+}
+
+/// Install the near-wall pool on `renderer`, mirror look.
+fn install_cell_pool(renderer: &mut Renderer) {
+    let pool = horizontal_fluid(9.0);
+    renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&near_wall_cell_probes()));
+    renderer.set_fluid_surface_draws(&[look_draw(0, cell_mirror_look())]);
+}
+
+/// One frame of the installed pool under `view_proj` from `eye`.
+fn cell_capture(renderer: &mut Renderer, view_proj: Mat4, eye: Vec3) -> Vec<u8> {
+    renderer.set_fluid_surface_draws(&[look_draw(0, cell_mirror_look())]);
+    capture_through(renderer, view_proj, eye)
+}
+
+/// (max channel deviation, pixels deviating at all, pixels deviating > 2).
+fn frame_deviation(a: &[u8], b: &[u8]) -> (u8, usize, usize) {
+    let mut worst = 0;
+    let (mut any, mut over) = (0, 0);
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+        let deviation = (0..3).map(|c| pa[c].abs_diff(pb[c])).max().unwrap_or(0);
+        worst = worst.max(deviation);
+        any += usize::from(deviation > 0);
+        over += usize::from(deviation > 2);
+    }
+    (worst, any, over)
+}
+
+/// Largest per-channel spread over the frame: a non-flat reflection.
+fn frame_spread(pixels: &[u8]) -> u8 {
+    (0..3)
+        .map(|channel| {
+            let values = pixels.as_chunks::<4>().0.iter().map(|px| px[channel]);
+            let (low, high) = values.fold((u8::MAX, 0), |(l, h), v| (l.min(v), h.max(v)));
+            high - low
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The water texel cell under capture pixel (`column`, `row`) of a
+/// [`horizontal_fluid`] seen through `view_proj` (4 texels per metre), and
+/// how far the pixel centre lies from the cell's nearest edge, in texels.
+fn cell_of_pixel(view_proj: Mat4, column: u32, row: u32) -> Option<((i32, i32), f32)> {
+    let step = 2.0 / CELL_SIDE as f32;
+    let ndc = Vec2::new(
+        (column as f32 + 0.5) * step - 1.0,
+        1.0 - (row as f32 + 0.5) * step,
+    );
+    let inverse = view_proj.inverse();
+    let near = inverse.project_point3(ndc.extend(0.0));
+    let far = inverse.project_point3(ndc.extend(1.0));
+    let dir = far - near;
+    if dir.y >= 0.0 {
+        return None;
+    }
+    let hit = near + dir * (-near.y / dir.y);
+    if hit.x.abs() >= 9.0 || hit.z.abs() >= 9.0 {
+        return None;
+    }
+    let texel = Vec2::new(hit.x * 4.0, hit.z * 4.0);
+    let fract = texel - texel.floor();
+    let edge = fract.min(Vec2::ONE - fract).min_element();
+    Some(((texel.x.floor() as i32, texel.y.floor() as i32), edge))
+}
+
+/// Texel coordinate of continuous capture pixel position (`x`, `y`) on a
+/// [`horizontal_fluid`] (4 texels per metre).
+fn texel_at(view_proj: Mat4, x: f32, y: f32) -> Option<Vec2> {
+    let step = 2.0 / CELL_SIDE as f32;
+    let ndc = Vec2::new(x * step - 1.0, 1.0 - y * step);
+    let inverse = view_proj.inverse();
+    let near = inverse.project_point3(ndc.extend(0.0));
+    let far = inverse.project_point3(ndc.extend(1.0));
+    let dir = far - near;
+    (dir.y < 0.0).then(|| {
+        let hit = near + dir * (-near.y / dir.y);
+        Vec2::new(hit.x * 4.0, hit.z * 4.0)
+    })
+}
+
+/// Capture pixel position of a texel coordinate on the pool.
+fn pixel_of_texel(view_proj: Mat4, texel: Vec2) -> Vec2 {
+    let ndc = view_proj.project_point3(Vec3::new(texel.x / 4.0, 0.0, texel.y / 4.0));
+    Vec2::new((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5) * CELL_SIDE as f32
+}
+
+/// Whether pixel (`column`, `row`)'s cell straddles its fade threshold
+/// between the fragment's own texels-per-pixel (finite differences to its
+/// neighbours) and the cell centre's (what the cell pass evaluates at),
+/// with a margin for derivative estimation: per-fragment pixel style then
+/// splits the cell where the albedo does, while the cell buffer holds one
+/// value per cell (rendering_pipeline.md §7.3a, Style).
+fn fade_straddles(view_proj: Mat4, column: u32, row: u32) -> bool {
+    use postretro_render_cpu::fluid_surface::motion::faded_flat;
+    let (x, y) = (column as f32 + 0.5, row as f32 + 0.5);
+    let (Some(here), Some(right), Some(down)) = (
+        texel_at(view_proj, x, y),
+        texel_at(view_proj, x + 1.0, y),
+        texel_at(view_proj, x, y + 1.0),
+    ) else {
+        return false;
+    };
+    let pixel_tpp = (right - here).length().max((down - here).length());
+    let cell = here.floor();
+    let centre = cell + Vec2::splat(0.5);
+    let p0 = pixel_of_texel(view_proj, centre);
+    let pu = pixel_of_texel(view_proj, centre + Vec2::X) - p0;
+    let pv = pixel_of_texel(view_proj, centre + Vec2::Y) - p0;
+    let det = pu.x * pv.y - pv.x * pu.y;
+    let centre_tpp = (Vec2::new(pv.y, -pu.y) / det)
+        .length()
+        .max((Vec2::new(-pv.x, pu.x) / det).length());
+    let lo = pixel_tpp.min(centre_tpp) * 0.8;
+    let hi = pixel_tpp.max(centre_tpp) * 1.25;
+    let key = glam::IVec2::new(cell.x as i32, cell.y as i32);
+    faded_flat(key, lo) != faded_flat(key, hi)
+}
+
+/// [`frame_deviation`] split by [`fade_straddles`]: (max off the fade
+/// threshold, pixels > 2 off it, max on it, pixels on it that deviate).
+fn deviation_by_fade(view_proj: Mat4, a: &[u8], b: &[u8]) -> (u8, usize, u8, usize) {
+    let (mut worst, mut over, mut straddle_worst, mut straddle_any) = (0, 0, 0, 0);
+    for index in 0..CELL_SIDE * CELL_SIDE {
+        let at = index as usize * 4;
+        let deviation = (0..3)
+            .map(|c| a[at + c].abs_diff(b[at + c]))
+            .max()
+            .unwrap_or(0);
+        if deviation == 0 {
+            continue;
+        }
+        if fade_straddles(view_proj, index % CELL_SIDE, index / CELL_SIDE) {
+            straddle_worst = straddle_worst.max(deviation);
+            straddle_any += 1;
+        } else {
+            worst = worst.max(deviation);
+            over += usize::from(deviation > 2);
+        }
+    }
+    (worst, over, straddle_worst, straddle_any)
+}
+
+// The cell buffer reads what per-fragment pixel style evaluates: one
+// reflection per cell, so within 2/255 at every pixel and every pose,
+// except where a cell straddles its fade threshold: per fragment it splits
+// there, the cell buffer flattens it or not as a whole (reported).
+#[test]
+fn cell_buffer_matches_per_fragment_pixel_style_within_2_of_255() {
+    let Some(mut renderer) = cell_renderer() else {
+        return;
+    };
+    install_cell_pool(&mut renderer);
+    let mut failures = Vec::new();
+    for (name, eye, view_proj) in cell_poses() {
+        renderer.set_fluid_cell_buffer(false);
+        let per_fragment = cell_capture(&mut renderer, view_proj, eye);
+        renderer.set_fluid_cell_buffer(true);
+        renderer.set_fluid_cell_count(true);
+        let cells = cell_capture(&mut renderer, view_proj, eye);
+        let stats = renderer
+            .read_fluid_cell_stats()
+            .expect("installed surfaces");
+        renderer.set_fluid_cell_count(false);
+        let (worst_all, any, over_all) = frame_deviation(&per_fragment, &cells);
+        let (worst, over, straddle_worst, straddle) =
+            deviation_by_fade(view_proj, &per_fragment, &cells);
+        eprintln!(
+            "[FluidCellSpike] {name}: max deviation {worst_all}/255, {any} pixels > 0, \
+             {over_all} > 2 (of {}); off the fade threshold max {worst}, {over} > 2; \
+             fade-straddling cells {straddle} pixels, max {straddle_worst}; frame spread {}, \
+             stats {stats:?}",
+            CELL_SIDE * CELL_SIDE,
+            frame_spread(&per_fragment),
+        );
+        assert!(
+            stats.faces_dispatched == 1 && stats.cells_evaluated > 0,
+            "{stats:?}"
+        );
+        assert_eq!(u64::from(stats.cells_evaluated), stats.cells_dispatched);
+        assert!(stats.fluid_samples_passed > 0, "{stats:?}");
+        assert!(
+            frame_spread(&per_fragment) > 16,
+            "{name}: the reflection varies"
+        );
+        if worst > 2 {
+            failures.push((name, worst, over));
+        }
+    }
+    renderer.release_level_resources();
+    assert!(
+        failures.is_empty(),
+        "cell buffer off per fragment: {failures:?}"
+    );
+}
+
+// With the lever on, every pixel of one water texel cell reads one atlas
+// texel: each cell's pixels (away from its edges) hold one value.
+#[test]
+fn cell_buffer_reads_one_texel_per_cell() {
+    let Some(mut renderer) = cell_renderer() else {
+        return;
+    };
+    install_cell_pool(&mut renderer);
+    renderer.set_fluid_cell_buffer(true);
+    for (name, eye, view_proj) in cell_poses() {
+        let pixels = cell_capture(&mut renderer, view_proj, eye);
+        let mut cells: std::collections::HashMap<(i32, i32), ([u8; 3], [u8; 3], u32)> =
+            std::collections::HashMap::new();
+        for row in 0..CELL_SIDE {
+            for column in 0..CELL_SIDE {
+                let Some((cell, edge)) = cell_of_pixel(view_proj, column, row) else {
+                    continue;
+                };
+                if edge < 0.02 {
+                    continue;
+                }
+                let at = ((row * CELL_SIDE + column) * 4) as usize;
+                let entry = cells.entry(cell).or_insert(([u8::MAX; 3], [0; 3], 0));
+                for channel in 0..3 {
+                    entry.0[channel] = entry.0[channel].min(pixels[at + channel]);
+                    entry.1[channel] = entry.1[channel].max(pixels[at + channel]);
+                }
+                entry.2 += 1;
+            }
+        }
+        let multi = cells.values().filter(|(_, _, count)| *count >= 4).count();
+        let worst = cells
+            .values()
+            .map(|(low, high, _)| (0..3).map(|c| high[c] - low[c]).max().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "[FluidCellSpike] {name}: {} cells on screen ({multi} with 4+ pixels), worst \
+             in-cell spread {worst}",
+            cells.len()
+        );
+        assert!(multi >= 8, "{name}: cells span several pixels");
+        assert!(worst <= 1, "{name}: one texel per cell, spread {worst}");
+    }
+    renderer.release_level_resources();
+}
+
+// The atlas carries nothing a frame reads from the frame before: pose A
+// then pose B on one renderer matches a fresh renderer at pose B, with the
+// frustum cull on as well as off.
+#[test]
+fn cell_buffer_after_a_camera_move_matches_a_fresh_capture() {
+    let poses = cell_poses();
+    for cull in [false, true] {
+        let Some(mut moved) = cell_renderer() else {
+            return;
+        };
+        install_cell_pool(&mut moved);
+        moved.set_fluid_cell_buffer(true);
+        moved.set_fluid_cell_cull(cull);
+        moved.set_fluid_cell_count(true);
+        for (a, b) in [(1, 0), (0, 2), (2, 1)] {
+            let (name_a, eye_a, vp_a) = poses[a];
+            let (name_b, eye_b, vp_b) = poses[b];
+            let _ = cell_capture(&mut moved, vp_a, eye_a);
+            let after_move = cell_capture(&mut moved, vp_b, eye_b);
+            let stats = moved.read_fluid_cell_stats().expect("installed surfaces");
+            if cull {
+                assert!(
+                    stats.cells_evaluated > 0
+                        && u64::from(stats.cells_evaluated) < stats.cells_dispatched,
+                    "the cull skips off-screen cells: {stats:?}"
+                );
+            } else {
+                assert_eq!(u64::from(stats.cells_evaluated), stats.cells_dispatched);
+            }
+            let Some(mut fresh) = cell_renderer() else {
+                return;
+            };
+            install_cell_pool(&mut fresh);
+            fresh.set_fluid_cell_buffer(true);
+            fresh.set_fluid_cell_cull(cull);
+            let reference = cell_capture(&mut fresh, vp_b, eye_b);
+            let (worst, any, _) = frame_deviation(&after_move, &reference);
+            eprintln!(
+                "[FluidCellSpike] cull {cull}: {name_a} -> {name_b}: {any} pixels differ, \
+                 max {worst}; evaluated {} of {} cells",
+                stats.cells_evaluated, stats.cells_dispatched
+            );
+            assert!(after_move == reference, "cull {cull}: moved to {name_b}");
+            fresh.release_level_resources();
+        }
+        moved.release_level_resources();
+    }
+}
+
+// Smooth style and reflection-free draws never read cells: the levers leave
+// them bit-identical.
+#[test]
+fn cell_levers_leave_smooth_style_and_reflection_free_bit_identical() {
+    let Some(mut renderer) = cell_renderer() else {
+        return;
+    };
+    install_cell_pool(&mut renderer);
+    let (_, eye, view_proj) = cell_poses()[1];
+    let levers = |renderer: &mut Renderer, on: bool| {
+        renderer.set_fluid_cell_buffer(on);
+        renderer.set_fluid_cell_cull(on);
+        renderer.set_fluid_cell_count(on);
+    };
+
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Smooth);
+    levers(&mut renderer, false);
+    let smooth_off = cell_capture(&mut renderer, view_proj, eye);
+    levers(&mut renderer, true);
+    let smooth_on = cell_capture(&mut renderer, view_proj, eye);
+    assert!(!renderer.full().fluid_surface.cell_pass_dispatches());
+    assert!(
+        smooth_off == smooth_on,
+        "smooth style ignores the cell levers"
+    );
+
+    // A visible surface under a mask missing one term: the reflection-free
+    // variant, in pixel style.
+    renderer.set_fluid_reflection_style(FluidReflectionStyle::Pixel);
+    let mut mask = LightTermMask::ALL;
+    // Any term but the ambient floor, which lights the surface here.
+    mask.set_enabled(
+        LightTermMask::ALL_TERMS[LightTermMask::ALL_TERMS.len() - 1],
+        false,
+    );
+    renderer.set_light_term_mask(mask);
+    let visible = FluidSurfaceLook {
+        surface_opacity: 0.6,
+        ..cell_mirror_look()
+    };
+    let free = |renderer: &mut Renderer| {
+        renderer.set_fluid_surface_draws(&[look_draw(0, visible)]);
+        capture_through(renderer, view_proj, eye)
+    };
+    levers(&mut renderer, false);
+    let free_off = free(&mut renderer);
+    levers(&mut renderer, true);
+    let free_on = free(&mut renderer);
+    assert!(!renderer.full().fluid_surface.cell_pass_dispatches());
+    assert!(
+        free_off == free_on,
+        "a reflection-free draw ignores the cell levers"
+    );
+    eprintln!(
+        "[FluidCellSpike] smooth spread {}, reflection-free spread {} (pixel {:?}): bit-identical",
+        frame_spread(&smooth_off),
+        frame_spread(&free_off),
+        &free_off[..4]
+    );
+    assert!(
+        free_off[..3] != [255, 255, 255],
+        "the reflection-free surface draws"
+    );
+    renderer.release_level_resources();
+}
+
+// Ratio one: per fragment and from the cell buffer, still within 2/255;
+// with no stored light the ratio is 1, so per fragment it changes nothing.
+#[test]
+fn ratio_one_per_fragment_and_cell_buffer_agree_within_2_of_255() {
+    let Some(mut renderer) = cell_renderer() else {
+        return;
+    };
+    install_cell_pool(&mut renderer);
+    for (name, eye, view_proj) in cell_poses() {
+        renderer.set_fluid_ratio_one(false);
+        renderer.set_fluid_cell_buffer(false);
+        let shipped = cell_capture(&mut renderer, view_proj, eye);
+        renderer.set_fluid_ratio_one(true);
+        let per_fragment = cell_capture(&mut renderer, view_proj, eye);
+        renderer.set_fluid_cell_buffer(true);
+        let cells = cell_capture(&mut renderer, view_proj, eye);
+        let (worst_all, any, over_all) = frame_deviation(&per_fragment, &cells);
+        let (worst, over, straddle_worst, straddle) =
+            deviation_by_fade(view_proj, &per_fragment, &cells);
+        eprintln!(
+            "[FluidCellSpike] ratio one, {name}: max deviation {worst_all}/255, {any} pixels \
+             > 0, {over_all} > 2; off the fade threshold max {worst}, {over} > 2; \
+             fade-straddling {straddle} pixels, max {straddle_worst}"
+        );
+        assert!(
+            shipped == per_fragment,
+            "{name}: no stored light, ratio 1 already"
+        );
+        assert!(worst <= 2, "{name}: ratio-one cell buffer off by {worst}");
+    }
+    renderer.release_level_resources();
+}

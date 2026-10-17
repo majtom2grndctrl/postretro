@@ -64,6 +64,11 @@ pub(super) fn measurement_report(
             resolution: scene.resolution,
             camera: CameraReport::from(&scene.camera),
             force_full_resident_sh_compose: scene.force_full_resident_sh_compose,
+            fluid_cell_buffer: scene.fluid_cell_buffer.then_some(true),
+            fluid_cell_cull: scene.fluid_cell_cull.then_some(true),
+            fluid_ratio_one: scene.fluid_ratio_one.then_some(true),
+            fluid_cell_count: scene.fluid_cell_count.then_some(true),
+            fluid_reflection_style: scene.fluid_reflection_style.clone(),
             animation_time_seconds: measurement_animation_time_seconds(
                 u64::from(measurement.warmup_frames) + u64::from(measurement.sample_frames),
             ),
@@ -76,6 +81,7 @@ pub(super) fn measurement_report(
         renderer_accounted_sh: sh_residency.map(ShResidencyReportJson::from),
         renderer_accounted_lightmap: lightmap_residency.map(LightmapResidencyReportJson::from),
         lightmap_streaming: None,
+        fluid_cell_stats: None,
         cpu_completion: CpuCompletionReport {
             unit: "milliseconds".into(),
             strategy: CPU_COMPLETION_STRATEGY.into(),
@@ -97,6 +103,15 @@ pub(super) fn measurement_report(
 impl MeasurementReport {
     pub(super) fn with_lightmap_streaming(mut self, residency: CaptureLightmapResidency) -> Self {
         self.lightmap_streaming = Some(LightmapStreamingReportJson::from(residency));
+        self
+    }
+
+    /// Cell-rate spike: the last sample frame's cell and fluid-sample counts.
+    pub(super) fn with_fluid_cell_stats(
+        mut self,
+        stats: Option<postretro_renderer::FluidCellStats>,
+    ) -> Self {
+        self.fluid_cell_stats = stats.map(FluidCellStatsJson::from);
         self
     }
 }
@@ -177,6 +192,10 @@ pub(super) struct MeasurementReport {
     /// How the capture owned its lightmap blocks and how many were resident.
     #[serde(skip_serializing_if = "Option::is_none")]
     lightmap_streaming: Option<LightmapStreamingReportJson>,
+    /// Cell-rate spike: cells dispatched and evaluated, fluid samples passed
+    /// (`fluid_cell_count` scenes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_cell_stats: Option<FluidCellStatsJson>,
     cpu_completion: CpuCompletionReport,
     gpu_timing: GpuTimingReport,
     /// Renderer recording stages over complete post-warmup windows. Capture
@@ -196,7 +215,46 @@ struct CaptureReport {
     resolution: [u32; 2],
     camera: CameraReport,
     force_full_resident_sh_compose: bool,
+    /// Cell-rate spike levers, present only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_cell_buffer: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_cell_cull: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_ratio_one: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_cell_count: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fluid_reflection_style: Option<String>,
     animation_time_seconds: f32,
+}
+
+/// Cell-rate spike: one frame's cell and fluid-sample counts.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub(super) struct FluidCellStatsJson {
+    faces_dispatched: u32,
+    cells_dispatched: u64,
+    cells_evaluated: u32,
+    fluid_samples_passed: u64,
+    atlas_width: u32,
+    atlas_height: u32,
+    atlas_bytes: u64,
+    cells_total: u64,
+}
+
+impl From<postretro_renderer::FluidCellStats> for FluidCellStatsJson {
+    fn from(stats: postretro_renderer::FluidCellStats) -> Self {
+        Self {
+            faces_dispatched: stats.faces_dispatched,
+            cells_dispatched: stats.cells_dispatched,
+            cells_evaluated: stats.cells_evaluated,
+            fluid_samples_passed: stats.fluid_samples_passed,
+            atlas_width: stats.atlas_width,
+            atlas_height: stats.atlas_height,
+            atlas_bytes: stats.atlas_bytes,
+            cells_total: stats.cells_total,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -737,6 +795,13 @@ mod tests {
             light_term_mask: None,
             force_missing_lightmap_blocks: Vec::new(),
             lightmap_pool_cap_layers: None,
+            fluid_cell_buffer: false,
+            fluid_cell_cull: false,
+            fluid_ratio_one: false,
+            fluid_cell_count: false,
+            fluid_reflection_off: false,
+            fluid_cell_overlay: false,
+            fluid_reflection_style: None,
             measurement: Some(CaptureMeasurement {
                 report: "capture.json".into(),
                 warmup_frames: 2,

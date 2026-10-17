@@ -396,6 +396,11 @@ fn assert_bindings_in_layout(
         let Some(binding) = &global.binding else {
             continue;
         };
+        // Cell-rate spike: the compute pass's own group-5 inputs, never in
+        // the render layout.
+        if binding.group == 5 && binding.binding >= 8 {
+            continue;
+        }
         bound += 1;
         let entries = groups
             .get(binding.group as usize)
@@ -465,8 +470,13 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let [param_entry, probe_array, probe_table, probe_distance] =
-        fluid_params_bind_group_layout_entries();
+    let [
+        param_entry,
+        probe_array,
+        probe_table,
+        probe_distance,
+        _cell_atlas,
+    ] = fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
         wgpu::BindingType::Buffer {
@@ -1532,13 +1542,18 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letreflectivity=row.surface.z;\
          if!fluid_reflection_gate(in.probe,outward,V,uniforms.light_term_mask,reflectivity){\
          returnsurface;}\
+         ifFLUID_REFLECTION_CELLS{\
+         letkey=clamp(vec2<i32>(floor(in.uv*dims)),in.cell_bounds.xy,in.cell_bounds.zw);\
+         letcell=textureLoad(fluid_cell_atlas,key+in.cell_offset,0);\
+         letcell_band=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
+         returnfluid_reflection_composite(surface,cell.rgb,cell.a*cell_band);}\
          letaxes=fluid_reflection_texel_axes(ddx*dims,ddy*dims,ddx_world,ddy_world);\
          letpoint=fluid_reflection_point(fluid_scene.reflection_style,in.uv*dims,\
          in.world_position,outward,axes,uniforms.time,texels_per_pixel,\
          fluid_probes.probes[in.probe].box_min,fluid_probes.probes[in.probe].box_max,\
          fluid_probes.probes[in.probe].capture_point);\
          letview=normalize(uniforms.camera_position-point.position);\
-         letreflection=fluid_reflection_sample(in.probe,point.position,view,point.normal);\
+         letreflection=fluid_reflection_sample_spike(in.probe,point.position,view,point.normal);\
          letfresnel=fluid_reflection_fresnel(dot(view,outward),reflectivity)*reflection.weight;\
          letband=fluid_fog_proximity(uniforms.camera_position,in.world_position,outward);\
          returnfluid_reflection_composite(surface,reflection.capture,fresnel*band);}",
@@ -3073,8 +3088,13 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (4, 1, "fluid_probe_array"),
         (4, 2, "fluid_probes"),
         (4, 3, "fluid_probe_distance"),
+        // Cell-rate spike: the fragment's atlas, then the compute-only inputs.
+        (4, 4, "fluid_cell_atlas"),
         (5, 0, "scene_depth"),
         (5, 1, "fluid_scene"),
+        (5, 8, "fluid_cell_params"),
+        (5, 9, "fluid_cell_jobs"),
+        (5, 10, "fluid_cell_atlas_out"),
     ]
     .into_iter()
     .map(|(group, binding, name)| (group, binding, name.to_owned()))
@@ -3123,8 +3143,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
     assert_eq!(
         bindings(4),
-        [0, 1, 2, 3],
-        "group 4: params, probe array, table, distance array"
+        [0, 1, 2, 3, 4],
+        "group 4: params, probe array, table, distance array, cell atlas (spike)"
     );
     assert_eq!(bindings(5), [0, 1], "group 5: scene depth, scene inputs");
 }
@@ -3150,7 +3170,7 @@ fn fluid_probe_layer_derives_from_the_face_binding_alone() {
     let tail = fs_main_reflection_tail();
     for call in [
         "fluid_reflection_gate(in.probe,",
-        "fluid_reflection_sample(in.probe,",
+        "fluid_reflection_sample_spike(in.probe,",
     ] {
         assert!(tail.contains(call), "fs_main passes the varying: `{call}`");
     }

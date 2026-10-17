@@ -15,6 +15,7 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_reflection_cells;
 mod fluid_reflection_probes;
 mod fluid_scene_inputs;
 mod fluid_surface;
@@ -223,6 +224,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
+pub use fluid_reflection_cells::FluidCellStats;
 pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;

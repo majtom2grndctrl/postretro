@@ -31,11 +31,12 @@ fn apply_lag_seed(endpoint: &mut NetEndpoint, value: Result<String, std::env::Va
     };
     endpoint.set_lag_profile(profile);
     if !profile.is_off() {
+        // Rounded so a parsed `7` reads back as `7`, not `7.000000000000001`.
+        let loss_percent = (profile.loss_probability * 100_000.0).round() / 1000.0;
         log::info!(
-            "[Net] lag proxy seeded from {LAG_SEED_ENV}: delay {} ms, jitter {} ms, loss {}% per direction",
+            "[Net] lag proxy seeded from {LAG_SEED_ENV}: delay {} ms, jitter {} ms, loss {loss_percent}% per direction",
             profile.delay_ms,
             profile.jitter_ms,
-            profile.loss_probability * 100.0,
         );
     }
 }
@@ -43,22 +44,26 @@ fn apply_lag_seed(endpoint: &mut NetEndpoint, value: Result<String, std::env::Va
 fn warn_malformed() {
     log::warn!(
         "[Net] ignoring malformed {LAG_SEED_ENV}; expected delay_ms[,jitter_ms[,loss_percent]] \
-         (e.g. 75,30,5; loss 0-100); running unimpaired"
+         (e.g. 75,30,5; delay and jitter 0-{max} each, loss 0-100); running unimpaired",
+        max = LagProfile::MAX_MS,
     );
 }
 
 /// Parse `delay_ms[,jitter_ms[,loss_percent]]`. Delay and jitter are whole
-/// milliseconds; loss is a percent in `[0, 100]` and may be fractional. Omitted
-/// trailing fields are zero. Whitespace around a field is ignored. `None` for
-/// anything else.
+/// milliseconds up to [`LagProfile::MAX_MS`] each; loss is a percent in
+/// `[0, 100]` and may be fractional. Omitted trailing fields are zero.
+/// Whitespace around a field is ignored. `None` for anything else.
 #[must_use]
 fn parse_lag_seed(value: &str) -> Option<LagProfile> {
     let mut fields = value.split(',').map(str::trim);
-    let delay_ms = fields.next()?.parse().ok()?;
-    let jitter_ms = match fields.next() {
+    let delay_ms: u32 = fields.next()?.parse().ok()?;
+    let jitter_ms: u32 = match fields.next() {
         Some(field) => field.parse().ok()?,
         None => 0,
     };
+    if delay_ms > LagProfile::MAX_MS || jitter_ms > LagProfile::MAX_MS {
+        return None;
+    }
     let loss_percent: f64 = match fields.next() {
         Some(field) => field.parse().ok()?,
         None => 0.0,
@@ -96,6 +101,7 @@ mod tests {
             ("75,30", profile(75, 30, 0.0)),
             ("0,0,2.5", profile(0, 0, 0.025)),
             ("0,0,100", profile(0, 0, 1.0)),
+            ("5000,5000", profile(5000, 5000, 0.0)),
             ("0", LagProfile::OFF),
         ] {
             assert_eq!(parse_lag_seed(value), Some(expected), "{value:?}");
@@ -117,6 +123,9 @@ mod tests {
             "75,30,101",
             "75,30,NaN",
             "75,30,inf",
+            "5001",
+            "0,5001",
+            "4294967295",
             "75ms",
             "fast",
         ] {
@@ -134,9 +143,10 @@ mod tests {
     fn lag_seed_conditions_the_endpoint_and_logs_the_active_profile() {
         let capture = LogCapture::start();
         let mut endpoint = host_endpoint();
-        apply_lag_seed(&mut endpoint, Ok("75,30,5".to_owned()));
-        assert_eq!(endpoint.lag_profile(), Some(profile(75, 30, 0.05)));
+        apply_lag_seed(&mut endpoint, Ok("75,30,7".to_owned()));
+        assert_eq!(endpoint.lag_profile(), Some(profile(75, 30, 0.07)));
         capture.assert_logged_once(Level::Info, "lag proxy seeded from POSTRETRO_NET_LAG");
+        capture.assert_logged_once(Level::Info, "delay 75 ms, jitter 30 ms, loss 7% per");
         capture.assert_not_logged(Level::Warn, LAG_SEED_ENV);
     }
 

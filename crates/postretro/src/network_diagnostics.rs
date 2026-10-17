@@ -1,6 +1,7 @@
 //! App-side bridge between the live net endpoint's lag proxy and the
 //! dev-tools Network tab. The renderer receives a plain-data lever; netcode
 //! types stay on this side.
+//! See: context/lib/networking.md §Testing the conditioned link
 
 use crate::netcode::{LagProfile, NetEndpoint};
 use crate::render::debug_ui::{NetworkLagLever, NetworkSessionRole};

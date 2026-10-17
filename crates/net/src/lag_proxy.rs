@@ -1,5 +1,5 @@
-// Dev lag proxy: an in-process UDP relay that conditions a live endpoint's
-// datagrams with the harness link model on a wall clock.
+// Dev lag proxy: an in-process UDP relay, on its own threads, that conditions
+// a live endpoint's datagrams with the harness link model on a wall clock.
 // See: context/lib/networking.md §Testing the conditioned link
 
 #![cfg(feature = "dev-tools")]
@@ -7,27 +7,43 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::harness::{LinkConfig, SplitMix64};
 
-/// Largest datagram the proxy relays intact. renetcode never emits more than
-/// `NETCODE_MAX_PACKET_BYTES` (1400); the headroom keeps an oversized stray
-/// from being silently truncated into something that parses.
+/// Receive buffer size. renetcode never emits more than
+/// `NETCODE_MAX_PACKET_BYTES` (1400), so netcode traffic always fits. A larger
+/// stray is truncated on Unix (and then fails netcode's own checks) or reported
+/// as a receive error on Windows (`WSAEMSGSIZE`); either way the reader drops
+/// it and keeps reading.
 const MAX_DATAGRAM_BYTES: usize = 2048;
 /// Packets held per direction. A full queue drops new packets, so a large delay
 /// on a busy host bounds memory instead of growing without limit.
 const MAX_QUEUED_PACKETS: usize = 4096;
+/// A full queue warns again only once it has drained below this, so sustained
+/// saturation warns once per episode, not once per packet.
+const QUEUE_LOW_WATER: usize = MAX_QUEUED_PACKETS / 2;
 /// Distinct downstream peers the proxy relays for. Beyond it a new sender's
 /// datagrams are dropped, so a flood of source addresses cannot open sockets
-/// without bound.
+/// and threads without bound.
 const MAX_PEERS: usize = 64;
-/// Datagrams read from one socket per pump, so a flood cannot hold the frame.
-const MAX_RECV_PER_PUMP: usize = 1024;
 /// A peer silent this long has gone: its upstream socket is closed. Well past
 /// netcode's 15 s connection timeout, so the server has already let it go.
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a blocked reader waits before checking for shutdown and idle
+/// peers. It bounds how long dropping the proxy takes; it never delays a
+/// datagram, whose arrival wakes the reader at once.
+const READ_TIMEOUT: Duration = Duration::from_millis(20);
+/// Pause after a second consecutive receive error, so a socket stuck failing
+/// cannot spin its reader.
+const ERROR_BACKOFF: Duration = Duration::from_millis(5);
+/// Fixed rather than time-seeded: nothing here needs unpredictability, and a
+/// fixed stream keeps single-link tests reproducible.
 const RNG_SEED: u64 = 0x1A6_C0DE;
 
 /// Impairment applied to each direction through the proxy, with the harness
@@ -36,7 +52,9 @@ const RNG_SEED: u64 = 0x1A6_C0DE;
 /// [`LagProfile::OFF`].
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LagProfile {
+    /// Clamped to [`LagProfile::MAX_MS`] when sampled.
     pub delay_ms: u32,
+    /// Clamped to [`LagProfile::MAX_MS`] when sampled.
     pub jitter_ms: u32,
     /// Clamped to `[0, 1]` when sampled; NaN reads as `0`.
     pub loss_probability: f64,
@@ -49,6 +67,12 @@ impl LagProfile {
         jitter_ms: 0,
         loss_probability: 0.0,
     };
+
+    /// Ceiling on `delay_ms` and on `jitter_ms`, each. Past ~7.5 s one-way,
+    /// netcode's 15 s timeout drops the link anyway; the ceiling keeps every
+    /// held datagram due well inside the peer idle timeout, and lets a queue
+    /// filled at the worst setting drain within seconds once lowered.
+    pub const MAX_MS: u32 = 5_000;
 
     /// Whether the profile forwards unimpaired. Loss at or below zero (or NaN)
     /// reads as off, matching how it is sampled.
@@ -65,8 +89,8 @@ impl LagProfile {
             self.loss_probability.clamp(0.0, 1.0)
         };
         LinkConfig {
-            delay: u64::from(self.delay_ms),
-            jitter: u64::from(self.jitter_ms),
+            delay: u64::from(self.delay_ms.min(Self::MAX_MS)),
+            jitter: u64::from(self.jitter_ms.min(Self::MAX_MS)),
             loss_probability: loss,
             // The proxy owns one stream across profile changes; the seed is unused.
             seed: 0,
@@ -74,51 +98,56 @@ impl LagProfile {
     }
 }
 
-/// One datagram waiting for its arrival time. `peer` is the downstream address
-/// the datagram belongs to: its source when heading to the target, its
-/// destination when heading back.
-#[derive(Debug)]
-struct Scheduled {
+/// One item waiting for its arrival time.
+struct Entry<T> {
     deliver_at: Instant,
     /// Enqueue order, so equal arrival times leave in the order they came.
     seq: u64,
-    peer: SocketAddr,
-    bytes: Vec<u8>,
+    item: T,
 }
 
-impl PartialEq for Scheduled {
+impl<T> PartialEq for Entry<T> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for Scheduled {}
+impl<T> Eq for Entry<T> {}
 
-impl PartialOrd for Scheduled {
+impl<T> PartialOrd for Entry<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Scheduled {
+impl<T> Ord for Entry<T> {
     // Reversed: `BinaryHeap` is a max-heap and the earliest arrival must pop first.
     fn cmp(&self, other: &Self) -> Ordering {
         (other.deliver_at, other.seq).cmp(&(self.deliver_at, self.seq))
     }
 }
 
-/// One direction's in-flight datagrams, released by arrival time.
-#[derive(Debug, Default)]
-struct DelayQueue {
-    heap: BinaryHeap<Scheduled>,
+/// One direction's in-flight datagrams, released by arrival time. Pure: the
+/// caller supplies every `Instant`.
+struct DelayQueue<T> {
+    heap: BinaryHeap<Entry<T>>,
     next_seq: u64,
+    /// Set when a push is refused; cleared below [`QUEUE_LOW_WATER`].
     overflowed: bool,
 }
 
-impl DelayQueue {
-    /// Schedule `bytes` for `now + delay`. Returns `false` when the queue is full
-    /// and the datagram was dropped.
-    fn push(&mut self, now: Instant, delay: Duration, peer: SocketAddr, bytes: Vec<u8>) -> bool {
+impl<T> DelayQueue<T> {
+    fn new() -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            next_seq: 0,
+            overflowed: false,
+        }
+    }
+
+    /// Schedule `item` for `deliver_at`. Returns `false` when the queue is full
+    /// and the item was dropped.
+    fn push(&mut self, deliver_at: Instant, item: T) -> bool {
         if self.heap.len() >= MAX_QUEUED_PACKETS {
             if !self.overflowed {
                 self.overflowed = true;
@@ -126,104 +155,500 @@ impl DelayQueue {
             }
             return false;
         }
-        self.overflowed = false;
-        self.heap.push(Scheduled {
-            deliver_at: now + delay,
+        self.heap.push(Entry {
+            deliver_at,
             seq: self.next_seq,
-            peer,
-            bytes,
+            item,
         });
         self.next_seq += 1;
         true
     }
 
-    /// Pop the next datagram due at or before `now`, earliest first.
-    fn pop_due(&mut self, now: Instant) -> Option<Scheduled> {
+    /// Pop the next item due at or before `now`, earliest first.
+    fn pop_due(&mut self, now: Instant) -> Option<T> {
         if self.heap.peek()?.deliver_at > now {
             return None;
         }
-        self.heap.pop()
+        let entry = self.heap.pop()?;
+        if self.heap.len() < QUEUE_LOW_WATER {
+            self.overflowed = false;
+        }
+        Some(entry.item)
     }
 
-    #[cfg(test)]
+    fn next_due(&self) -> Option<Instant> {
+        self.heap.peek().map(|entry| entry.deliver_at)
+    }
+
     fn len(&self) -> usize {
         self.heap.len()
     }
 }
 
-/// The socket a downstream peer's traffic leaves through toward the target, so
-/// the target sees one distinct address per peer.
-struct Upstream {
-    socket: UdpSocket,
-    last_heard: Instant,
+/// The live profile and the PRNG it samples, under one lock.
+struct Link {
+    profile: LagProfile,
+    rng: SplitMix64,
 }
 
-/// A polled UDP relay between downstream peers and one target address.
+/// State the handle shares with every proxy thread.
+struct Shared {
+    link: Mutex<Link>,
+    shutdown: AtomicBool,
+    /// Set by a failed send and cleared by the next success, so a failing
+    /// streak warns once.
+    send_failing: AtomicBool,
+    peers: AtomicUsize,
+    in_flight: AtomicUsize,
+}
+
+impl Shared {
+    fn new() -> Self {
+        Self {
+            link: Mutex::new(Link {
+                profile: LagProfile::OFF,
+                rng: SplitMix64::new(RNG_SEED),
+            }),
+            shutdown: AtomicBool::new(false),
+            send_failing: AtomicBool::new(false),
+            peers: AtomicUsize::new(0),
+            in_flight: AtomicUsize::new(0),
+        }
+    }
+
+    // Poison only means a proxy thread panicked mid-sample; the plain data
+    // inside is still whole.
+    fn link(&self) -> MutexGuard<'_, Link> {
+        self.link.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The link model's decision for one datagram, under the profile live now.
+    fn sample_delay(&self) -> Option<Duration> {
+        let mut link = self.link();
+        let Link { profile, rng } = &mut *link;
+        profile
+            .link_config()
+            .sample_delay(rng)
+            .map(Duration::from_millis)
+    }
+
+    /// A failed send is dropped like a lost packet; netcode's resends and
+    /// timeouts already handle loss.
+    fn send(&self, socket: &UdpSocket, bytes: &[u8], to: SocketAddr) {
+        match socket.send_to(bytes, to) {
+            Ok(_) => {
+                if self.send_failing.load(Relaxed) {
+                    self.send_failing.store(false, Relaxed);
+                }
+            }
+            Err(err) => {
+                if !self.send_failing.swap(true, Relaxed) {
+                    log::warn!("[Net] lag proxy send to {to} failed: {err}");
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    ToTarget,
+    ToPeer,
+}
+
+/// A datagram handed to the scheduler, with the socket it leaves through.
+struct Delayed {
+    direction: Direction,
+    deliver_at: Instant,
+    socket: Arc<UdpSocket>,
+    to: SocketAddr,
+    bytes: Vec<u8>,
+}
+
+/// What every reader needs to condition a datagram it received.
+#[derive(Clone)]
+struct Relay {
+    shared: Arc<Shared>,
+    scheduler: Sender<Delayed>,
+}
+
+impl Relay {
+    /// Drop `bytes`, send them now, or hand them to the scheduler, by the
+    /// profile live at `received_at`.
+    fn relay(
+        &self,
+        direction: Direction,
+        socket: &Arc<UdpSocket>,
+        to: SocketAddr,
+        bytes: &[u8],
+        received_at: Instant,
+    ) {
+        let Some(delay) = self.shared.sample_delay() else {
+            return;
+        };
+        if delay.is_zero() {
+            // The reader sends it itself: an unimpaired datagram never waits
+            // on another thread.
+            self.shared.send(socket, bytes, to);
+            return;
+        }
+        // The scheduler outlives every reader, so this fails only mid-shutdown.
+        let _ = self.scheduler.send(Delayed {
+            direction,
+            deliver_at: received_at + delay,
+            socket: Arc::clone(socket),
+            to,
+            bytes: bytes.to_vec(),
+        });
+    }
+}
+
+/// Holds delayed datagrams and sends each the moment it is due. Sleeps on the
+/// channel until the next arrival time or the next delayed datagram; exits
+/// once every reader has gone.
+fn run_scheduler(shared: &Shared, arrivals: Receiver<Delayed>) {
+    let mut to_target: DelayQueue<Delayed> = DelayQueue::new();
+    let mut to_peer: DelayQueue<Delayed> = DelayQueue::new();
+    loop {
+        let now = Instant::now();
+        for queue in [&mut to_target, &mut to_peer] {
+            while let Some(packet) = queue.pop_due(now) {
+                shared.send(&packet.socket, &packet.bytes, packet.to);
+            }
+        }
+        shared
+            .in_flight
+            .store(to_target.len() + to_peer.len(), Relaxed);
+        let next_due = match (to_target.next_due(), to_peer.next_due()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let arrival = match next_due {
+            Some(at) => arrivals.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => arrivals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match arrival {
+            Ok(packet) => {
+                let queue = match packet.direction {
+                    Direction::ToTarget => &mut to_target,
+                    Direction::ToPeer => &mut to_peer,
+                };
+                queue.push(packet.deliver_at, packet);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Counts consecutive receive errors so a stuck socket logs once and backs off.
+#[derive(Default)]
+struct ReceiveErrors {
+    streak: u32,
+}
+
+impl ReceiveErrors {
+    /// One receive, blocking up to [`READ_TIMEOUT`]. `None` on timeout or on a
+    /// skipped error; the datagram an error reports is gone either way.
+    fn receive(&mut self, socket: &UdpSocket, buffer: &mut [u8]) -> Option<(usize, SocketAddr)> {
+        match socket.recv_from(buffer) {
+            Ok(received) => {
+                self.streak = 0;
+                Some(received)
+            }
+            // A Windows `ConnectionReset` is an ICMP report for an earlier send
+            // to a closed port. Skipped, as the transports skip it, so
+            // netcode's timeout still governs an unreachable host.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                        | io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                None
+            }
+            Err(err) => {
+                self.streak += 1;
+                if self.streak == 1 {
+                    log::debug!("[Net] lag proxy receive failed; skipping: {err}");
+                } else {
+                    thread::sleep(ERROR_BACKOFF);
+                }
+                None
+            }
+        }
+    }
+}
+
+/// A downstream peer's upstream socket and the thread reading its replies.
+struct Peer {
+    socket: Arc<UdpSocket>,
+    last_heard: Instant,
+    stop: Arc<AtomicBool>,
+    reader: JoinHandle<()>,
+}
+
+/// Reads the downstream socket and owns the peer table: opens a peer's
+/// upstream socket on its first datagram and closes it once idle.
+struct DownstreamReader {
+    relay: Relay,
+    socket: Arc<UdpSocket>,
+    target: SocketAddr,
+    upstream_bind: SocketAddr,
+    idle_timeout: Duration,
+    peers: HashMap<SocketAddr, Peer>,
+    /// Readers told to stop, joined once finished so closing a peer never
+    /// blocks relaying for the rest.
+    retired: Vec<JoinHandle<()>>,
+    last_sweep: Instant,
+    peer_limit_logged: bool,
+    open_failure_logged: bool,
+}
+
+impl DownstreamReader {
+    fn run(mut self) {
+        let mut buffer = vec![0; MAX_DATAGRAM_BYTES];
+        let mut errors = ReceiveErrors::default();
+        while !self.relay.shared.shutdown.load(Relaxed) {
+            if let Some((len, peer)) = errors.receive(&self.socket, &mut buffer) {
+                self.relay_from_peer(peer, &buffer[..len]);
+            }
+            self.sweep();
+        }
+        for (_, peer) in self.peers.drain() {
+            peer.stop.store(true, Relaxed);
+            self.retired.push(peer.reader);
+        }
+        for reader in self.retired.drain(..) {
+            join(reader);
+        }
+    }
+
+    fn relay_from_peer(&mut self, peer: SocketAddr, bytes: &[u8]) {
+        let now = Instant::now();
+        if !self.peers.contains_key(&peer) && !self.open_peer(peer, now) {
+            return;
+        }
+        let Some(entry) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        entry.last_heard = now;
+        self.relay
+            .relay(Direction::ToTarget, &entry.socket, self.target, bytes, now);
+    }
+
+    fn open_peer(&mut self, peer: SocketAddr, now: Instant) -> bool {
+        if self.peers.len() >= MAX_PEERS {
+            if !self.peer_limit_logged {
+                self.peer_limit_logged = true;
+                log::warn!(
+                    "[Net] lag proxy peer limit ({MAX_PEERS}) reached; dropping datagrams from {peer}"
+                );
+            }
+            return false;
+        }
+        match self.spawn_peer(peer, now) {
+            Ok(entry) => {
+                self.open_failure_logged = false;
+                self.peers.insert(peer, entry);
+                self.relay.shared.peers.store(self.peers.len(), Relaxed);
+                true
+            }
+            Err(err) => {
+                if !self.open_failure_logged {
+                    self.open_failure_logged = true;
+                    log::warn!("[Net] lag proxy could not open a relay for {peer}: {err}");
+                }
+                false
+            }
+        }
+    }
+
+    fn spawn_peer(&self, peer: SocketAddr, now: Instant) -> io::Result<Peer> {
+        let socket = Arc::new(bind_reader(self.upstream_bind)?);
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = UpstreamReader {
+            relay: self.relay.clone(),
+            socket: Arc::clone(&socket),
+            stop: Arc::clone(&stop),
+            target: self.target,
+            downstream: Arc::clone(&self.socket),
+            peer,
+        };
+        let reader = spawn("net-lag-upstream", move || reader.run())?;
+        Ok(Peer {
+            socket,
+            last_heard: now,
+            stop,
+            reader,
+        })
+    }
+
+    /// Close idle peers and join finished readers, at most once per
+    /// [`READ_TIMEOUT`].
+    fn sweep(&mut self) {
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_sweep) < READ_TIMEOUT {
+            return;
+        }
+        self.last_sweep = now;
+        let idle_timeout = self.idle_timeout;
+        let idle = self
+            .peers
+            .extract_if(|_, peer| now.saturating_duration_since(peer.last_heard) >= idle_timeout);
+        for (_, peer) in idle {
+            peer.stop.store(true, Relaxed);
+            self.retired.push(peer.reader);
+        }
+        if self.peers.len() < MAX_PEERS {
+            self.peer_limit_logged = false;
+        }
+        self.relay.shared.peers.store(self.peers.len(), Relaxed);
+        let (finished, running) = self
+            .retired
+            .drain(..)
+            .partition::<Vec<_>, _>(JoinHandle::is_finished);
+        self.retired = running;
+        finished.into_iter().for_each(join);
+    }
+}
+
+/// Reads one peer's upstream socket and relays the target's replies back to
+/// that peer from the downstream socket, so the peer sees replies from the
+/// address it dialed.
+struct UpstreamReader {
+    relay: Relay,
+    socket: Arc<UdpSocket>,
+    stop: Arc<AtomicBool>,
+    target: SocketAddr,
+    downstream: Arc<UdpSocket>,
+    peer: SocketAddr,
+}
+
+impl UpstreamReader {
+    fn run(self) {
+        let mut buffer = vec![0; MAX_DATAGRAM_BYTES];
+        let mut errors = ReceiveErrors::default();
+        while !self.stop.load(Relaxed) && !self.relay.shared.shutdown.load(Relaxed) {
+            let Some((len, from)) = errors.receive(&self.socket, &mut buffer) else {
+                continue;
+            };
+            // Mirrors the netcode client's own source check: only the target's
+            // replies are relayed.
+            if from != self.target {
+                continue;
+            }
+            self.relay.relay(
+                Direction::ToPeer,
+                &self.downstream,
+                self.peer,
+                &buffer[..len],
+                Instant::now(),
+            );
+        }
+    }
+}
+
+/// A UDP relay between downstream peers and one target address, running on
+/// its own threads so delivery never waits on the engine's frame cadence.
 ///
 /// Every datagram a peer sends to [`LagProxy::local_addr`] leaves toward the
 /// target through that peer's own upstream socket; every datagram the target
 /// sends back to an upstream socket is relayed to its peer from the downstream
-/// socket, so the peer sees replies from the address it dialed. Both directions
-/// pass through the same [`LagProfile`].
+/// socket. Both directions pass through the same [`LagProfile`].
 ///
 /// - **Client mode** ([`LagProxy::client`]): the downstream socket is a fresh
 ///   loopback port the client transport dials; the target is the real host.
 /// - **Host mode** ([`LagProxy::host`]): the downstream socket is the host's
 ///   public socket; the target is the server transport's internal loopback port.
 ///
-/// Nothing runs off-thread: [`LagProxy::pump`] moves every datagram that has
-/// arrived and releases every datagram that is due.
+/// One thread reads the downstream socket, one per peer reads its upstream
+/// socket, and one scheduler sends delayed datagrams when due. Dropping the
+/// proxy stops and joins them all and closes every socket.
 pub struct LagProxy {
-    downstream: UdpSocket,
     local_addr: SocketAddr,
-    target: SocketAddr,
-    upstream_bind: SocketAddr,
-    peers: HashMap<SocketAddr, Upstream>,
-    to_target: DelayQueue,
-    to_peer: DelayQueue,
-    profile: LagProfile,
-    rng: SplitMix64,
-    peer_limit_logged: bool,
-    buffer: Box<[u8; MAX_DATAGRAM_BYTES]>,
+    shared: Arc<Shared>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl LagProxy {
     /// A client-mode proxy for a client dialing `host_addr`: binds a loopback
-    /// port for the client transport to dial in its place.
+    /// port for the client transport to dial in its place. IPv4 only, as
+    /// `--connect` is.
     pub fn client(host_addr: SocketAddr) -> io::Result<Self> {
+        if host_addr.is_ipv6() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the lag proxy relays IPv4 only",
+            ));
+        }
         let downstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let upstream_bind = match host_addr {
-            SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
-            SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
-        };
-        Self::new(downstream, host_addr, upstream_bind)
+        Self::new(
+            downstream,
+            host_addr,
+            (Ipv4Addr::UNSPECIFIED, 0).into(),
+            PEER_IDLE_TIMEOUT,
+        )
     }
 
     /// A host-mode proxy that owns the host's `public_socket` and relays to the
     /// server transport bound at loopback `server_addr`.
     pub fn host(public_socket: UdpSocket, server_addr: SocketAddr) -> io::Result<Self> {
-        Self::new(public_socket, server_addr, (Ipv4Addr::LOCALHOST, 0).into())
+        Self::host_with_idle_timeout(public_socket, server_addr, PEER_IDLE_TIMEOUT)
+    }
+
+    fn host_with_idle_timeout(
+        public_socket: UdpSocket,
+        server_addr: SocketAddr,
+        idle_timeout: Duration,
+    ) -> io::Result<Self> {
+        Self::new(
+            public_socket,
+            server_addr,
+            (Ipv4Addr::LOCALHOST, 0).into(),
+            idle_timeout,
+        )
     }
 
     fn new(
         downstream: UdpSocket,
         target: SocketAddr,
         upstream_bind: SocketAddr,
+        idle_timeout: Duration,
     ) -> io::Result<Self> {
-        downstream.set_nonblocking(true)?;
-        Ok(Self {
+        downstream.set_nonblocking(false)?;
+        downstream.set_read_timeout(Some(READ_TIMEOUT))?;
+        let shared = Arc::new(Shared::new());
+        let (scheduler, arrivals) = mpsc::channel();
+        let mut proxy = Self {
             local_addr: downstream.local_addr()?,
-            downstream,
+            shared: Arc::clone(&shared),
+            threads: Vec::with_capacity(2),
+        };
+        // Pushed as each starts, so a later spawn failure still joins it.
+        let scheduler_shared = Arc::clone(&shared);
+        proxy.threads.push(spawn("net-lag-scheduler", move || {
+            run_scheduler(&scheduler_shared, arrivals);
+        })?);
+        let reader = DownstreamReader {
+            relay: Relay { shared, scheduler },
+            socket: Arc::new(downstream),
             target,
             upstream_bind,
+            idle_timeout,
             peers: HashMap::new(),
-            to_target: DelayQueue::default(),
-            to_peer: DelayQueue::default(),
-            profile: LagProfile::OFF,
-            rng: SplitMix64::new(RNG_SEED),
+            retired: Vec::new(),
+            last_sweep: Instant::now(),
             peer_limit_logged: false,
-            buffer: Box::new([0; MAX_DATAGRAM_BYTES]),
-        })
+            open_failure_logged: false,
+        };
+        proxy
+            .threads
+            .push(spawn("net-lag-downstream", move || reader.run())?);
+        Ok(proxy)
     }
 
     /// The downstream address: what a client-mode transport dials, or the
@@ -235,153 +660,51 @@ impl LagProxy {
 
     #[must_use]
     pub fn profile(&self) -> LagProfile {
-        self.profile
+        self.shared.link().profile
     }
 
     /// Change the impairment. Datagrams already in flight keep the arrival time
     /// they were given; only datagrams received afterwards use `profile`.
-    pub fn set_profile(&mut self, profile: LagProfile) {
-        self.profile = profile;
-    }
-
-    /// Relay every datagram that has arrived, then send every datagram now due.
-    pub fn pump(&mut self) {
-        self.pump_at(Instant::now());
-    }
-
-    /// [`LagProxy::pump`] at an explicit monotonic `now`, so tests can drive
-    /// arrival times without sleeping.
-    pub(crate) fn pump_at(&mut self, now: Instant) {
-        self.receive_downstream(now);
-        self.receive_upstream(now);
-        self.release_due(now);
-        self.peers.retain(|_, upstream| {
-            now.saturating_duration_since(upstream.last_heard) < PEER_IDLE_TIMEOUT
-        });
-    }
-
-    fn receive_downstream(&mut self, now: Instant) {
-        let link = self.profile.link_config();
-        for _ in 0..MAX_RECV_PER_PUMP {
-            let Some((len, peer)) = recv(&self.downstream, &mut self.buffer[..]) else {
-                break;
-            };
-            if !self.peers.contains_key(&peer) {
-                if self.peers.len() >= MAX_PEERS {
-                    if !self.peer_limit_logged {
-                        self.peer_limit_logged = true;
-                        log::warn!("[Net] lag proxy peer limit reached; dropping {peer}");
-                    }
-                    continue;
-                }
-                match bind_upstream(self.upstream_bind) {
-                    Ok(socket) => {
-                        self.peers.insert(
-                            peer,
-                            Upstream {
-                                socket,
-                                last_heard: now,
-                            },
-                        );
-                    }
-                    Err(err) => {
-                        log::warn!("[Net] lag proxy could not open a socket for {peer}: {err}");
-                        continue;
-                    }
-                }
-            }
-            if let Some(upstream) = self.peers.get_mut(&peer) {
-                upstream.last_heard = now;
-            }
-            if let Some(delay) = link.sample_delay(&mut self.rng) {
-                let bytes = self.buffer[..len].to_vec();
-                self.to_target
-                    .push(now, Duration::from_millis(delay), peer, bytes);
-            }
-        }
-    }
-
-    fn receive_upstream(&mut self, now: Instant) {
-        let link = self.profile.link_config();
-        for (&peer, upstream) in &self.peers {
-            for _ in 0..MAX_RECV_PER_PUMP {
-                let Some((len, from)) = recv(&upstream.socket, &mut self.buffer[..]) else {
-                    break;
-                };
-                // Mirrors the netcode client's own source check: only the
-                // target's replies are relayed.
-                if from != self.target {
-                    continue;
-                }
-                if let Some(delay) = link.sample_delay(&mut self.rng) {
-                    let bytes = self.buffer[..len].to_vec();
-                    self.to_peer
-                        .push(now, Duration::from_millis(delay), peer, bytes);
-                }
-            }
-        }
-    }
-
-    fn release_due(&mut self, now: Instant) {
-        while let Some(packet) = self.to_target.pop_due(now) {
-            // A peer evicted while its datagrams were in flight has gone; drop them.
-            if let Some(upstream) = self.peers.get(&packet.peer) {
-                send(&upstream.socket, &packet.bytes, self.target);
-            }
-        }
-        while let Some(packet) = self.to_peer.pop_due(now) {
-            send(&self.downstream, &packet.bytes, packet.peer);
-        }
+    pub fn set_profile(&self, profile: LagProfile) {
+        self.shared.link().profile = profile;
     }
 
     #[cfg(test)]
-    pub(crate) fn peer_count(&self) -> usize {
-        self.peers.len()
+    fn peer_count(&self) -> usize {
+        self.shared.peers.load(Relaxed)
     }
 
     #[cfg(test)]
-    pub(crate) fn in_flight(&self) -> usize {
-        self.to_target.len() + self.to_peer.len()
+    fn in_flight(&self) -> usize {
+        self.shared.in_flight.load(Relaxed)
     }
 }
 
-fn bind_upstream(addr: SocketAddr) -> io::Result<UdpSocket> {
+impl Drop for LagProxy {
+    fn drop(&mut self) {
+        // Readers see the flag within one read timeout; the scheduler exits
+        // once the last reader has dropped its sender.
+        self.shared.shutdown.store(true, Relaxed);
+        for thread in self.threads.drain(..) {
+            join(thread);
+        }
+    }
+}
+
+fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
+    thread::Builder::new().name(name.to_owned()).spawn(body)
+}
+
+fn join(thread: JoinHandle<()>) {
+    if thread.join().is_err() {
+        log::warn!("[Net] a lag proxy thread panicked");
+    }
+}
+
+fn bind_reader(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(addr)?;
-    socket.set_nonblocking(true)?;
+    socket.set_read_timeout(Some(READ_TIMEOUT))?;
     Ok(socket)
-}
-
-/// One non-blocking receive. `None` once the socket is drained or on an error
-/// the relay cannot act on. A Windows `ConnectionReset` (an ICMP report for an
-/// earlier send to a closed port) is skipped, as the transports skip it, so
-/// netcode's timeout still governs an unreachable host.
-fn recv(socket: &UdpSocket, buffer: &mut [u8]) -> Option<(usize, SocketAddr)> {
-    loop {
-        match socket.recv_from(buffer) {
-            Ok(received) => return Some(received),
-            Err(err) if err.kind() == io::ErrorKind::ConnectionReset => continue,
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) =>
-            {
-                return None;
-            }
-            Err(err) => {
-                log::debug!("[Net] lag proxy receive failed: {err}");
-                return None;
-            }
-        }
-    }
-}
-
-/// A failed send is dropped like a lost packet; netcode's resends and timeouts
-/// already handle loss.
-fn send(socket: &UdpSocket, bytes: &[u8], addr: SocketAddr) {
-    if let Err(err) = socket.send_to(bytes, addr) {
-        log::debug!("[Net] lag proxy send to {addr} failed: {err}");
-    }
 }
 
 #[cfg(test)]
@@ -389,8 +712,10 @@ mod tests {
     use super::*;
     use crate::harness::reveal_both;
     use crate::transport::{NetClient, NetServer};
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+    use std::sync::Weak;
 
-    const STEP: Duration = Duration::from_millis(16);
     const MS: Duration = Duration::from_millis(1);
 
     fn delayed(delay_ms: u32) -> LagProfile {
@@ -423,56 +748,88 @@ mod tests {
         Some((buffer[..len].to_vec(), from))
     }
 
-    /// Pump at a fixed `now` until `count` datagrams are held. Loopback delivery
-    /// is near-instant, but a datagram is only held once the proxy has read it.
-    fn pump_until_held(proxy: &mut LagProxy, now: Instant, count: usize) {
-        for _ in 0..500 {
-            proxy.pump_at(now);
-            if proxy.in_flight() >= count {
-                return;
+    /// Poll `done` until it holds or `timeout` passes.
+    fn eventually(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if done() {
+                return true;
             }
-            std::thread::sleep(MS);
+            thread::sleep(MS);
         }
-        panic!("proxy held {} of {count} datagrams", proxy.in_flight());
+        done()
     }
 
-    // --- Delay queue on an injected clock ---
+    fn median(mut samples: Vec<Duration>) -> Duration {
+        samples.sort_unstable();
+        samples[samples.len() / 2]
+    }
+
+    // --- Delay queue and profile, on an injected clock ---
 
     #[test]
     fn delay_queue_releases_a_datagram_at_its_arrival_time_and_not_before() {
         let t0 = Instant::now();
-        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
-        let mut queue = DelayQueue::default();
-        assert!(queue.push(t0, 50 * MS, peer, vec![1]));
+        let mut queue = DelayQueue::new();
+        assert!(queue.push(t0 + 50 * MS, 1));
+        assert_eq!(queue.next_due(), Some(t0 + 50 * MS));
         assert!(queue.pop_due(t0 + 49 * MS).is_none());
-        assert_eq!(queue.pop_due(t0 + 50 * MS).map(|p| p.bytes), Some(vec![1]));
+        assert_eq!(queue.pop_due(t0 + 50 * MS), Some(1));
         assert!(queue.pop_due(t0 + 50 * MS).is_none());
     }
 
     #[test]
     fn delay_queue_releases_by_arrival_time_then_enqueue_order() {
         let t0 = Instant::now();
-        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
-        let mut queue = DelayQueue::default();
-        queue.push(t0, 30 * MS, peer, vec![1]);
-        queue.push(t0, 10 * MS, peer, vec![2]);
-        queue.push(t0, 10 * MS, peer, vec![3]);
-        let order: Vec<u8> = std::iter::from_fn(|| queue.pop_due(t0 + 30 * MS))
-            .map(|p| p.bytes[0])
-            .collect();
+        let mut queue = DelayQueue::new();
+        queue.push(t0 + 30 * MS, 1);
+        queue.push(t0 + 10 * MS, 2);
+        queue.push(t0 + 10 * MS, 3);
+        let order: Vec<u8> = std::iter::from_fn(|| queue.pop_due(t0 + 30 * MS)).collect();
         assert_eq!(order, vec![2, 3, 1]);
     }
 
     #[test]
     fn delay_queue_drops_beyond_its_bound() {
         let t0 = Instant::now();
-        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
-        let mut queue = DelayQueue::default();
+        let mut queue = DelayQueue::new();
         for _ in 0..MAX_QUEUED_PACKETS {
-            assert!(queue.push(t0, MS, peer, Vec::new()));
+            assert!(queue.push(t0, ()));
         }
-        assert!(!queue.push(t0, MS, peer, Vec::new()));
+        assert!(!queue.push(t0, ()));
         assert_eq!(queue.len(), MAX_QUEUED_PACKETS);
+    }
+
+    // Regression: the full-queue warning re-armed on every accepted push, so
+    // sustained saturation warned once per poll.
+    #[test]
+    fn delay_queue_warns_once_per_overflow_episode() {
+        const FULL: &str = "lag proxy queue full";
+        let capture = LogCapture::start();
+        let t0 = Instant::now();
+        let mut queue = DelayQueue::new();
+        for _ in 0..MAX_QUEUED_PACKETS {
+            queue.push(t0, ());
+        }
+        for _ in 0..10 {
+            // Saturated: each released slot refills at once and the next push
+            // is refused again.
+            assert!(!queue.push(t0, ()));
+            assert!(queue.pop_due(t0).is_some());
+            assert!(queue.push(t0, ()));
+        }
+        capture.assert_logged_once(Level::Warn, FULL);
+
+        while queue.len() >= QUEUE_LOW_WATER {
+            queue.pop_due(t0);
+        }
+        while queue.push(t0, ()) {}
+        let warnings = capture
+            .records()
+            .iter()
+            .filter(|record| record.level == Level::Warn && record.message.contains(FULL))
+            .count();
+        assert_eq!(warnings, 2, "a second episode after draining warns again");
     }
 
     #[test]
@@ -484,75 +841,177 @@ mod tests {
         assert!(lossy(f64::NAN).is_off());
     }
 
-    // --- Proxy over real sockets, on an injected clock ---
+    #[test]
+    fn profile_delay_and_jitter_are_capped_at_the_ceiling() {
+        let link = LagProfile {
+            delay_ms: u32::MAX,
+            jitter_ms: u32::MAX,
+            loss_probability: 2.0,
+        }
+        .link_config();
+        assert_eq!(link.delay, u64::from(LagProfile::MAX_MS));
+        assert_eq!(link.jitter, u64::from(LagProfile::MAX_MS));
+        assert_eq!(link.loss_probability, 1.0);
+    }
 
     #[test]
-    fn a_configured_delay_holds_each_direction_until_its_arrival_time() {
+    fn client_proxy_refuses_an_ipv6_host_as_connect_does() {
+        let host: SocketAddr = "[::1]:27015".parse().unwrap();
+        let err = LagProxy::client(host).err().expect("IPv6 refused");
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
+
+    // --- Proxy over real sockets, on the wall clock, never polled ---
+
+    /// Replies to every datagram with the same bytes, from its own thread.
+    struct Echo {
+        addr: SocketAddr,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Echo {
+        fn start() -> Self {
+            let (socket, addr) = loopback_socket();
+            socket.set_read_timeout(Some(5 * MS)).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = {
+                let stop = Arc::clone(&stop);
+                thread::spawn(move || {
+                    let mut buffer = [0; MAX_DATAGRAM_BYTES];
+                    while !stop.load(Relaxed) {
+                        if let Ok((len, from)) = socket.recv_from(&mut buffer) {
+                            let _ = socket.send_to(&buffer[..len], from);
+                        }
+                    }
+                })
+            };
+            Self {
+                addr,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for Echo {
+        fn drop(&mut self) {
+            self.stop.store(true, Relaxed);
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("echo thread");
+            }
+        }
+    }
+
+    /// Median wall time for `rounds` sequential datagrams to come back.
+    fn median_echo(socket: &UdpSocket, to: SocketAddr, rounds: u8) -> Duration {
+        let samples = (0..rounds)
+            .map(|round| {
+                let start = Instant::now();
+                socket.send_to(&[round], to).unwrap();
+                loop {
+                    let (bytes, _) =
+                        recv_within(socket, Duration::from_secs(1)).expect("the echo returns");
+                    if bytes == [round] {
+                        return start.elapsed();
+                    }
+                }
+            })
+            .collect();
+        median(samples)
+    }
+
+    #[test]
+    fn unimpaired_proxies_add_no_measurable_latency_to_an_echo() {
+        // Generous: the frame-polled relay this replaced added up to a frame
+        // (~16 ms) per hop off Linux; a threaded relay adds microseconds.
+        const SLACK: Duration = Duration::from_millis(5);
+        let echo = Echo::start();
+        let host = LagProxy::host(loopback_socket().0, echo.addr).expect("host proxy");
+        let client = LagProxy::client(host.local_addr()).expect("client proxy");
+        let (socket, _) = loopback_socket();
+
+        // Warm up: the first datagram through each proxy opens its peer.
+        median_echo(&socket, client.local_addr(), 5);
+        median_echo(&socket, echo.addr, 5);
+        let direct = median_echo(&socket, echo.addr, 50);
+        let proxied = median_echo(&socket, client.local_addr(), 50);
+        eprintln!("echo median: direct {direct:?}, through two unimpaired proxies {proxied:?}");
+        assert!(
+            proxied < direct + SLACK,
+            "proxied {proxied:?} vs direct {direct:?}"
+        );
+    }
+
+    #[test]
+    fn a_configured_delay_is_honoured_in_each_direction_without_polling() {
+        // Generous upper slack for a loaded test machine; the lower bound is exact.
+        const SLACK: Duration = Duration::from_millis(15);
+        const DELAY: Duration = Duration::from_millis(50);
         let (host, host_addr) = loopback_socket();
         let (client, _) = loopback_socket();
-        let mut proxy = LagProxy::client(host_addr).expect("client proxy");
-        proxy.set_profile(delayed(100));
-        let t0 = Instant::now();
+        let proxy = LagProxy::client(host_addr).expect("client proxy");
+        proxy.set_profile(delayed(50));
 
-        client.send_to(b"up", proxy.local_addr()).unwrap();
-        pump_until_held(&mut proxy, t0, 1);
-        proxy.pump_at(t0 + 99 * MS);
-        assert!(recv_within(&host, 20 * MS).is_none(), "held before arrival");
-        proxy.pump_at(t0 + 100 * MS);
-        let (bytes, upstream) = recv_within(&host, Duration::from_secs(1)).expect("released");
-        assert_eq!(bytes, b"up");
-        assert_ne!(
-            upstream,
-            proxy.local_addr(),
-            "leaves through its upstream socket"
-        );
+        let mut up = Vec::new();
+        let mut down = Vec::new();
+        let mut upstream = None;
+        for round in 0..5_u8 {
+            let start = Instant::now();
+            client.send_to(&[round], proxy.local_addr()).unwrap();
+            let (bytes, from) = recv_within(&host, Duration::from_secs(1)).expect("released");
+            up.push(start.elapsed());
+            assert_eq!(bytes, [round]);
+            assert_ne!(
+                from,
+                proxy.local_addr(),
+                "leaves through its upstream socket"
+            );
+            upstream = Some(from);
 
-        let t1 = t0 + 200 * MS;
-        host.send_to(b"down", upstream).unwrap();
-        pump_until_held(&mut proxy, t1, 1);
-        proxy.pump_at(t1 + 99 * MS);
-        assert!(
-            recv_within(&client, 20 * MS).is_none(),
-            "held before arrival"
-        );
-        proxy.pump_at(t1 + 100 * MS);
-        let (bytes, from) = recv_within(&client, Duration::from_secs(1)).expect("released");
-        assert_eq!(bytes, b"down");
-        assert_eq!(
-            from,
-            proxy.local_addr(),
-            "the reply comes from the dialed address"
-        );
+            let start = Instant::now();
+            host.send_to(&[round], from).unwrap();
+            let (bytes, from) = recv_within(&client, Duration::from_secs(1)).expect("released");
+            down.push(start.elapsed());
+            assert_eq!(bytes, [round]);
+            assert_eq!(
+                from,
+                proxy.local_addr(),
+                "the reply comes from the dialed address"
+            );
+        }
+        assert_eq!(proxy.peer_count(), 1);
+        assert!(upstream.is_some());
+        eprintln!("50 ms delay measured: up {up:?}, down {down:?}");
+        for sample in up.iter().chain(&down) {
+            assert!(*sample >= DELAY, "released early: {sample:?}");
+        }
+        assert!(median(up) < DELAY + SLACK);
+        assert!(median(down) < DELAY + SLACK);
     }
 
     #[test]
     fn a_profile_change_applies_only_to_datagrams_received_after_it() {
         let (host, host_addr) = loopback_socket();
         let (client, _) = loopback_socket();
-        let mut proxy = LagProxy::client(host_addr).expect("client proxy");
-        proxy.set_profile(delayed(200));
-        let t0 = Instant::now();
+        let proxy = LagProxy::client(host_addr).expect("client proxy");
+        proxy.set_profile(delayed(300));
 
+        let sent = Instant::now();
         client.send_to(b"before", proxy.local_addr()).unwrap();
-        pump_until_held(&mut proxy, t0, 1);
+        assert!(eventually(Duration::from_secs(1), || proxy.in_flight() == 1));
         proxy.set_profile(LagProfile::OFF);
         client.send_to(b"after", proxy.local_addr()).unwrap();
 
-        let mut after = None;
-        for _ in 0..500 {
-            proxy.pump_at(t0);
-            after = recv_within(&host, MS);
-            if after.is_some() {
-                break;
-            }
-        }
-        assert_eq!(after.map(|(bytes, _)| bytes), Some(b"after".to_vec()));
-        assert_eq!(proxy.in_flight(), 1, "the earlier datagram keeps its delay");
-        assert!(recv_within(&host, 20 * MS).is_none());
-
-        proxy.pump_at(t0 + 200 * MS);
-        let (bytes, _) = recv_within(&host, Duration::from_secs(1)).expect("released");
-        assert_eq!(bytes, b"before");
+        let (first, _) = recv_within(&host, Duration::from_secs(1)).expect("released");
+        assert_eq!(first, b"after", "the later datagram overtakes");
+        assert!(sent.elapsed() < Duration::from_millis(300));
+        let (second, _) = recv_within(&host, Duration::from_secs(1)).expect("released");
+        assert_eq!(second, b"before");
+        assert!(
+            sent.elapsed() >= Duration::from_millis(300),
+            "the earlier datagram keeps its delay"
+        );
     }
 
     #[test]
@@ -560,73 +1019,123 @@ mod tests {
         const SENT: usize = 32;
         let (host, host_addr) = loopback_socket();
         let (client, _) = loopback_socket();
-        let mut proxy = LagProxy::client(host_addr).expect("client proxy");
-        let now = Instant::now();
-        let relay = |proxy: &mut LagProxy, profile: LagProfile| {
+        let proxy = LagProxy::client(host_addr).expect("client proxy");
+        let relay = |profile: LagProfile, wait: Duration| {
             proxy.set_profile(profile);
             for _ in 0..SENT {
                 client.send_to(b"x", proxy.local_addr()).unwrap();
             }
             let mut received = 0;
-            for _ in 0..200 {
-                proxy.pump_at(now);
-                while recv_within(&host, MS).is_some() {
-                    received += 1;
-                }
-                if received == SENT {
-                    break;
-                }
+            while received < SENT && recv_within(&host, wait).is_some() {
+                received += 1;
             }
             received
         };
-        assert_eq!(relay(&mut proxy, lossy(0.0)), SENT);
-        assert_eq!(relay(&mut proxy, lossy(1.0)), 0);
+        assert_eq!(relay(lossy(0.0), Duration::from_secs(1)), SENT);
+        assert_eq!(relay(lossy(1.0), 100 * MS), 0);
         assert_eq!(proxy.in_flight(), 0, "a lost datagram is never scheduled");
     }
 
     #[test]
+    fn an_oversized_datagram_does_not_stall_the_reader() {
+        let (host, host_addr) = loopback_socket();
+        let (client, _) = loopback_socket();
+        let proxy = LagProxy::client(host_addr).expect("client proxy");
+        client
+            .send_to(&[0; MAX_DATAGRAM_BYTES + 1000], proxy.local_addr())
+            .unwrap();
+        client.send_to(b"next", proxy.local_addr()).unwrap();
+        let mut relayed = Vec::new();
+        while let Some((bytes, _)) = recv_within(&host, Duration::from_secs(1)) {
+            let done = bytes == b"next";
+            relayed.push(bytes);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(relayed.last().map(Vec::as_slice), Some(&b"next"[..]));
+        assert!(
+            relayed
+                .iter()
+                .all(|bytes| bytes.len() <= MAX_DATAGRAM_BYTES)
+        );
+    }
+
+    #[test]
     fn each_peer_gets_its_own_upstream_address_until_it_goes_idle() {
+        const IDLE: Duration = Duration::from_millis(200);
         let (host, host_addr) = loopback_socket();
         let (first, _) = loopback_socket();
         let (second, _) = loopback_socket();
-        let mut proxy = LagProxy::host(loopback_socket().0, host_addr).expect("host proxy");
-        let t0 = Instant::now();
+        let proxy = LagProxy::host_with_idle_timeout(loopback_socket().0, host_addr, IDLE)
+            .expect("host proxy");
 
         first.send_to(b"1", proxy.local_addr()).unwrap();
         second.send_to(b"2", proxy.local_addr()).unwrap();
         let mut sources = HashMap::new();
-        for _ in 0..500 {
-            proxy.pump_at(t0);
-            while let Some((bytes, from)) = recv_within(&host, MS) {
-                sources.insert(bytes, from);
-            }
-            if sources.len() == 2 {
-                break;
-            }
+        while sources.len() < 2 {
+            let (bytes, from) = recv_within(&host, Duration::from_secs(1)).expect("relayed");
+            sources.insert(bytes, from);
         }
         assert_eq!(proxy.peer_count(), 2);
         assert_ne!(sources[&b"1".to_vec()], sources[&b"2".to_vec()]);
 
         // A reply to each upstream address returns to its own peer only.
         host.send_to(b"to-2", sources[&b"2".to_vec()]).unwrap();
-        let mut reply = None;
-        for _ in 0..500 {
-            proxy.pump_at(t0);
-            reply = recv_within(&second, MS);
-            if reply.is_some() {
-                break;
-            }
-        }
+        let reply = recv_within(&second, Duration::from_secs(1));
         assert_eq!(reply.map(|(bytes, _)| bytes), Some(b"to-2".to_vec()));
         assert!(recv_within(&first, 20 * MS).is_none());
 
-        proxy.pump_at(t0 + PEER_IDLE_TIMEOUT - MS);
-        assert_eq!(proxy.peer_count(), 2, "not yet idle");
-        proxy.pump_at(t0 + PEER_IDLE_TIMEOUT);
-        assert_eq!(proxy.peer_count(), 0, "silent peers are closed");
+        assert!(
+            eventually(Duration::from_secs(2), || proxy.peer_count() == 0),
+            "silent peers are closed"
+        );
+    }
+
+    #[test]
+    fn dropping_the_proxy_joins_its_threads_and_closes_its_sockets() {
+        let (host, host_addr) = loopback_socket();
+        let (client, _) = loopback_socket();
+        let proxy = LagProxy::client(host_addr).expect("client proxy");
+        // Held in flight, so the scheduler has work pending at drop.
+        proxy.set_profile(delayed(LagProfile::MAX_MS));
+        client.send_to(b"x", proxy.local_addr()).unwrap();
+        assert!(eventually(Duration::from_secs(1), || proxy.in_flight() == 1));
+        proxy.set_profile(LagProfile::OFF);
+        client.send_to(b"y", proxy.local_addr()).unwrap();
+        let (_, upstream) = recv_within(&host, Duration::from_secs(1)).expect("relayed");
+
+        let downstream = proxy.local_addr();
+        let shared: Weak<Shared> = Arc::downgrade(&proxy.shared);
+        let started = Instant::now();
+        drop(proxy);
+        eprintln!("proxy drop took {:?}", started.elapsed());
+        assert!(
+            shared.upgrade().is_none(),
+            "every proxy thread has exited and released its state"
+        );
+        UdpSocket::bind(downstream).expect("the downstream socket is closed");
+        UdpSocket::bind(upstream).expect("the upstream socket is closed");
     }
 
     // --- Real endpoints through the proxy ---
+
+    /// Feeds the endpoints real elapsed time, so netcode's timeouts and the
+    /// proxy's wall-clock delays agree.
+    struct Pacer(Instant);
+
+    impl Pacer {
+        fn new() -> Self {
+            Self(Instant::now())
+        }
+
+        fn tick(&mut self) -> Duration {
+            let now = Instant::now();
+            let dt = now - self.0;
+            self.0 = now;
+            dt
+        }
+    }
 
     fn proxied_server() -> (NetServer, SocketAddr) {
         let (socket, addr) = loopback_socket();
@@ -661,6 +1170,14 @@ mod tests {
         .expect("plain client")
     }
 
+    fn proxy_of_client(client: &NetClient) -> &LagProxy {
+        client.lag_proxy().expect("proxied client")
+    }
+
+    fn proxy_of_server(server: &NetServer) -> &LagProxy {
+        server.lag_proxy().expect("proxied server")
+    }
+
     /// Matching content, revealed on both peers, so a connection participates.
     fn matching(server: &mut NetServer, client: &mut NetClient) {
         server.set_mod_identity("postretro.test".to_string(), "1".to_string());
@@ -672,24 +1189,27 @@ mod tests {
         reveal_both(server, client, "test-level");
     }
 
-    fn step(server: &mut NetServer, clients: &mut [&mut NetClient]) {
+    fn step(server: &mut NetServer, clients: &mut [&mut NetClient], pacer: &mut Pacer) {
+        thread::sleep(MS);
+        let dt = pacer.tick();
         for client in clients.iter_mut() {
-            client.update(STEP).expect("client update");
+            client.update(dt).expect("client update");
             // Draining Control activates the participation epoch.
             let _ = client.drain_control();
         }
-        let _ = server.update(STEP).expect("server update");
-        std::thread::sleep(MS);
+        let _ = server.update(dt).expect("server update");
     }
 
     fn step_until(
         server: &mut NetServer,
         clients: &mut [&mut NetClient],
-        steps: usize,
+        pacer: &mut Pacer,
+        timeout: Duration,
         mut done: impl FnMut(&mut NetServer, &mut [&mut NetClient]) -> bool,
     ) -> bool {
-        for _ in 0..steps {
-            step(server, clients);
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            step(server, clients, pacer);
             if done(server, clients) {
                 return true;
             }
@@ -697,10 +1217,19 @@ mod tests {
         false
     }
 
-    fn participate(server: &mut NetServer, client: &mut NetClient, client_id: u64) {
-        let participating = step_until(server, &mut [client], 1000, |server, clients| {
-            clients[0].is_participating() && server.is_participating(client_id)
-        });
+    fn participate(
+        server: &mut NetServer,
+        client: &mut NetClient,
+        client_id: u64,
+        pacer: &mut Pacer,
+    ) {
+        let participating = step_until(
+            server,
+            &mut [client],
+            pacer,
+            Duration::from_secs(5),
+            |server, clients| clients[0].is_participating() && server.is_participating(client_id),
+        );
         assert!(
             participating,
             "client {client_id} participates through the proxy"
@@ -708,35 +1237,57 @@ mod tests {
     }
 
     /// Wall time for an Input to reach the host and its reply to come back.
-    fn echo_round_trip(server: &mut NetServer, client: &mut NetClient, client_id: u64) -> Duration {
+    fn echo_round_trip(
+        server: &mut NetServer,
+        client: &mut NetClient,
+        client_id: u64,
+        pacer: &mut Pacer,
+    ) -> Duration {
         let start = Instant::now();
         client.send_input(b"ping".to_vec());
         let mut echoed = false;
-        let returned = step_until(server, &mut [client], 2000, |server, clients| {
-            if !echoed && server.drain_input(client_id).contains(&b"ping".to_vec()) {
-                server.send_input(client_id, b"pong".to_vec());
-                echoed = true;
-            }
-            clients[0].drain_input().contains(&b"pong".to_vec())
-        });
+        let returned = step_until(
+            server,
+            &mut [client],
+            pacer,
+            Duration::from_secs(5),
+            |server, clients| {
+                if !echoed && server.drain_input(client_id).contains(&b"ping".to_vec()) {
+                    server.send_input(client_id, b"pong".to_vec());
+                    echoed = true;
+                }
+                clients[0].drain_input().contains(&b"pong".to_vec())
+            },
+        );
         assert!(returned, "the echo returns");
         start.elapsed()
     }
 
     #[test]
     fn unimpaired_proxies_on_both_ends_connect_and_carry_traffic() {
+        let mut pacer = Pacer::new();
         let (mut server, server_addr) = proxied_server();
         let mut client = proxied_client(server_addr, 7);
-        assert_eq!(server.lag_profile(), Some(LagProfile::OFF));
-        assert_eq!(client.lag_profile(), Some(LagProfile::OFF));
+        assert_eq!(proxy_of_server(&server).profile(), LagProfile::OFF);
+        assert_eq!(proxy_of_client(&client).profile(), LagProfile::OFF);
         assert_eq!(
             server.local_addr(),
             vec![server_addr],
             "reports the public address"
         );
         matching(&mut server, &mut client);
-        participate(&mut server, &mut client, 7);
-        echo_round_trip(&mut server, &mut client, 7);
+        participate(&mut server, &mut client, 7, &mut pacer);
+        echo_round_trip(&mut server, &mut client, 7, &mut pacer);
+
+        let proxies: [Weak<Shared>; 2] = [
+            Arc::downgrade(&proxy_of_server(&server).shared),
+            Arc::downgrade(&proxy_of_client(&client).shared),
+        ];
+        drop((server, client));
+        assert!(
+            proxies.iter().all(|shared| shared.upgrade().is_none()),
+            "dropping an endpoint joins its proxy's threads"
+        );
     }
 
     #[test]
@@ -744,18 +1295,19 @@ mod tests {
         // Generous bound: the delayed trip cannot beat it, and an unimpaired
         // loopback trip of a few polls stays far under it.
         const BOUND: Duration = Duration::from_millis(300);
+        let mut pacer = Pacer::new();
         let (mut server, server_addr) = proxied_server();
         let mut client = proxied_client(server_addr, 7);
         matching(&mut server, &mut client);
-        participate(&mut server, &mut client, 7);
+        participate(&mut server, &mut client, 7, &mut pacer);
 
-        let unimpaired = echo_round_trip(&mut server, &mut client, 7);
+        let unimpaired = echo_round_trip(&mut server, &mut client, 7, &mut pacer);
         assert!(unimpaired < BOUND, "unimpaired round trip {unimpaired:?}");
 
         // Each proxy delays both directions: 2 x 100 + 2 x 50 = 300 ms.
-        assert!(client.set_lag_profile(delayed(100)));
-        assert!(server.set_lag_profile(delayed(50)));
-        let impaired = echo_round_trip(&mut server, &mut client, 7);
+        proxy_of_client(&client).set_profile(delayed(100));
+        proxy_of_server(&server).set_profile(delayed(50));
+        let impaired = echo_round_trip(&mut server, &mut client, 7, &mut pacer);
         assert!(impaired >= BOUND, "impaired round trip {impaired:?}");
         assert!(
             client.is_connected(),
@@ -764,33 +1316,76 @@ mod tests {
     }
 
     #[test]
-    fn total_loss_delivers_nothing_until_the_profile_clears() {
+    fn a_step_to_heavy_lag_and_back_to_off_keeps_the_session() {
+        let mut pacer = Pacer::new();
         let (mut server, server_addr) = proxied_server();
         let mut client = proxied_client(server_addr, 7);
-        assert!(client.set_lag_profile(lossy(1.0)));
-        let reached = step_until(&mut server, &mut [&mut client], 100, |server, _| {
-            server.has_connected_clients()
+        matching(&mut server, &mut client);
+        participate(&mut server, &mut client, 7, &mut pacer);
+
+        // At least 2 x 500 ms each way, up to 2 x 750 ms.
+        proxy_of_client(&client).set_profile(LagProfile {
+            delay_ms: 500,
+            jitter_ms: 250,
+            loss_probability: 0.0,
         });
+        let lagged = echo_round_trip(&mut server, &mut client, 7, &mut pacer);
+        assert!(lagged >= Duration::from_millis(1000), "lagged {lagged:?}");
+
+        // Keep-alives and acks are still in flight when the delay drops.
+        proxy_of_client(&client).set_profile(LagProfile::OFF);
+        let recovered = echo_round_trip(&mut server, &mut client, 7, &mut pacer);
+        eprintln!("round trip at 500/250: {lagged:?}; right after Off: {recovered:?}");
+        assert!(
+            recovered < Duration::from_millis(500),
+            "recovered {recovered:?}"
+        );
+        assert!(client.is_connected() && client.is_participating());
+        assert!(server.is_participating(7));
+    }
+
+    #[test]
+    fn total_loss_delivers_nothing_until_the_profile_clears() {
+        let mut pacer = Pacer::new();
+        let (mut server, server_addr) = proxied_server();
+        let mut client = proxied_client(server_addr, 7);
+        proxy_of_client(&client).set_profile(lossy(1.0));
+        let reached = step_until(
+            &mut server,
+            &mut [&mut client],
+            &mut pacer,
+            Duration::from_millis(500),
+            |server, _| server.has_connected_clients(),
+        );
         assert!(!reached, "no connect request reaches the host");
         assert!(!client.is_connected());
 
-        assert!(client.set_lag_profile(lossy(0.0)));
-        let connected = step_until(&mut server, &mut [&mut client], 1000, |server, clients| {
-            clients[0].is_connected() && server.has_connected_clients()
-        });
+        proxy_of_client(&client).set_profile(lossy(0.0));
+        let connected = step_until(
+            &mut server,
+            &mut [&mut client],
+            &mut pacer,
+            Duration::from_secs(5),
+            |server, clients| clients[0].is_connected() && server.has_connected_clients(),
+        );
         assert!(connected, "the next request after the change connects");
     }
 
     #[test]
     fn two_clients_behind_a_host_proxy_keep_distinct_links() {
+        let mut pacer = Pacer::new();
         let (mut server, server_addr) = proxied_server();
         let mut first = plain_client(server_addr, 7);
         let mut second = plain_client(server_addr, 8);
         matching(&mut server, &mut first);
         matching(&mut server, &mut second);
-        let connected = step_until(&mut server, &mut [&mut first, &mut second], 1000, |s, c| {
-            c.iter().all(|client| client.is_connected()) && s.connected_clients().len() == 2
-        });
+        let connected = step_until(
+            &mut server,
+            &mut [&mut first, &mut second],
+            &mut pacer,
+            Duration::from_secs(5),
+            |s, c| c.iter().all(|client| client.is_connected()) && s.connected_clients().len() == 2,
+        );
         assert!(connected, "both clients connect through one public port");
         let mut ids = server.connected_clients();
         ids.sort_unstable();
@@ -802,7 +1397,8 @@ mod tests {
         step_until(
             &mut server,
             &mut [&mut first, &mut second],
-            1000,
+            &mut pacer,
+            Duration::from_secs(5),
             |_, clients| {
                 got_first.extend(clients[0].drain_input());
                 got_second.extend(clients[1].drain_input());
@@ -831,9 +1427,14 @@ mod tests {
         let mut server =
             NetServer::new_behind_lag_proxy(socket, server_addr, 8, Duration::from_secs(1), None)
                 .expect("proxied server");
-        let connected = step_until(&mut server, &mut [&mut client], 1000, |_, clients| {
-            clients[0].is_connected()
-        });
+        let mut pacer = Pacer::new();
+        let connected = step_until(
+            &mut server,
+            &mut [&mut client],
+            &mut pacer,
+            Duration::from_secs(5),
+            |_, clients| clients[0].is_connected(),
+        );
         assert!(connected, "the retry connects");
     }
 }

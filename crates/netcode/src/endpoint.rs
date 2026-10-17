@@ -579,29 +579,31 @@ impl NetEndpoint {
         }
     }
 
+    #[cfg(feature = "dev-tools")]
+    fn lag_proxy(&self) -> Option<&postretro_net::lag_proxy::LagProxy> {
+        match self {
+            Self::Host { server, .. } => server.lag_proxy(),
+            Self::Client { client, .. } => client.lag_proxy(),
+        }
+    }
+
     /// The lag proxy's live impairment, applied to each direction of every
     /// link this endpoint carries. `None` only for an endpoint built without
     /// the proxy.
     #[cfg(feature = "dev-tools")]
     #[must_use]
     pub fn lag_profile(&self) -> Option<LagProfile> {
-        match self {
-            Self::Host { server, .. } => server.lag_profile(),
-            Self::Client { client, .. } => client.lag_profile(),
-        }
+        self.lag_proxy()
+            .map(postretro_net::lag_proxy::LagProxy::profile)
     }
 
-    /// Change the lag proxy's impairment. Datagrams already in flight keep
-    /// their arrival times; the new profile applies to later ones.
+    /// Change the lag proxy's impairment; a no-op for an endpoint built
+    /// without the proxy. Datagrams already in flight keep their arrival
+    /// times; the new profile applies to later ones.
     #[cfg(feature = "dev-tools")]
     pub fn set_lag_profile(&mut self, profile: LagProfile) {
-        match self {
-            Self::Host { server, .. } => {
-                server.set_lag_profile(profile);
-            }
-            Self::Client { client, .. } => {
-                client.set_lag_profile(profile);
-            }
+        if let Some(proxy) = self.lag_proxy() {
+            proxy.set_profile(profile);
         }
     }
 

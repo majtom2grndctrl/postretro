@@ -156,7 +156,8 @@ pub struct NetServer {
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
     /// Relay between the public socket and the transport's internal one, set
-    /// by [`NetServer::new_behind_lag_proxy`].
+    /// by [`NetServer::new_behind_lag_proxy`]. It runs on its own threads;
+    /// dropping the server joins them.
     #[cfg(feature = "dev-tools")]
     lag_proxy: Option<crate::lag_proxy::LagProxy>,
 }
@@ -280,10 +281,6 @@ impl NetServer {
 
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
         self.server.update(dt);
-        // Before the receive, so a datagram already at the public socket
-        // reaches the transport this poll.
-        #[cfg(feature = "dev-tools")]
-        self.pump_lag_proxy();
         self.transport.update(dt, &mut self.server)?;
         self.collect_server_events();
         self.apply_pending_disconnects();
@@ -293,9 +290,6 @@ impl NetServer {
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
         self.transport.send_packets(&mut self.server);
-        // After every send this poll, so replies leave the public socket now.
-        #[cfg(feature = "dev-tools")]
-        self.pump_lag_proxy();
         Ok(ServerPoll {
             disconnects,
             handshakes,
@@ -987,6 +981,8 @@ pub const CONNECT_ATTEMPTS: u32 = 4;
 pub struct NetClient {
     client: RenetClient,
     transport: NetcodeClientTransport,
+    /// The real host, as logs name it. The transport may dial a lag proxy in
+    /// its place: see [`NetClient::dial_addr`].
     server_addr: SocketAddr,
     /// Attempt N connects as `base_client_id + (N - 1)`.
     base_client_id: u64,
@@ -1016,7 +1012,8 @@ pub struct NetClient {
     retired_participation_epoch: Option<u64>,
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
     /// Relay the transport dials in place of `server_addr`, set by
-    /// [`NetClient::new_behind_lag_proxy`].
+    /// [`NetClient::new_behind_lag_proxy`]. It runs on its own threads;
+    /// dropping the client joins them.
     #[cfg(feature = "dev-tools")]
     lag_proxy: Option<crate::lag_proxy::LagProxy>,
 }
@@ -1187,20 +1184,11 @@ impl NetClient {
         let dt = if self.polled { dt } else { Duration::ZERO };
         self.polled = true;
         self.clock += dt;
-        // Before the receive, so a reply already relayed reaches the transport
-        // this poll.
-        #[cfg(feature = "dev-tools")]
-        self.pump_lag_proxy();
         self.client.update(dt);
         let result = self.update_transport(dt).and_then(|()| {
             self.queue_control_messages();
             self.transport.send_packets(&mut self.client)
         });
-        // After every send — including the connect and disconnect packets the
-        // transport sends from `update`, and on the error path — so they leave
-        // toward the host now.
-        #[cfg(feature = "dev-tools")]
-        self.pump_lag_proxy();
         if self.client.is_connected() {
             self.ever_connected = true;
         }
@@ -1306,9 +1294,10 @@ impl NetClient {
     }
 
     /// The address the transport sends to: the lag proxy when one relays for
-    /// this client, else the host itself. A retry's fresh socket dials it too,
-    /// so the proxy sees a new peer and opens a fresh upstream socket — the
-    /// host sees a new address, as it would without the proxy.
+    /// this client, else the host itself. A retry keeps the same proxy and its
+    /// profile; its fresh socket is a new peer to the proxy, which opens a
+    /// fresh upstream socket, so the host sees a new address as it would
+    /// without the proxy.
     fn dial_addr(&self) -> SocketAddr {
         #[cfg(feature = "dev-tools")]
         if let Some(proxy) = &self.lag_proxy {
@@ -1554,26 +1543,10 @@ impl NetServer {
         Ok(server)
     }
 
-    /// The live impairment, or `None` when no lag proxy relays for this server.
+    /// The lag proxy relaying for this server, if any.
     #[must_use]
-    pub fn lag_profile(&self) -> Option<crate::lag_proxy::LagProfile> {
-        self.lag_proxy.as_ref().map(|proxy| proxy.profile())
-    }
-
-    /// Change the impairment for datagrams relayed from now on. Returns whether
-    /// a lag proxy took it.
-    pub fn set_lag_profile(&mut self, profile: crate::lag_proxy::LagProfile) -> bool {
-        let Some(proxy) = &mut self.lag_proxy else {
-            return false;
-        };
-        proxy.set_profile(profile);
-        true
-    }
-
-    fn pump_lag_proxy(&mut self) {
-        if let Some(proxy) = &mut self.lag_proxy {
-            proxy.pump();
-        }
+    pub fn lag_proxy(&self) -> Option<&crate::lag_proxy::LagProxy> {
+        self.lag_proxy.as_ref()
     }
 }
 
@@ -1603,26 +1576,10 @@ impl NetClient {
         Ok(client)
     }
 
-    /// The live impairment, or `None` when no lag proxy relays for this client.
+    /// The lag proxy relaying for this client, if any.
     #[must_use]
-    pub fn lag_profile(&self) -> Option<crate::lag_proxy::LagProfile> {
-        self.lag_proxy.as_ref().map(|proxy| proxy.profile())
-    }
-
-    /// Change the impairment for datagrams relayed from now on. Returns whether
-    /// a lag proxy took it.
-    pub fn set_lag_profile(&mut self, profile: crate::lag_proxy::LagProfile) -> bool {
-        let Some(proxy) = &mut self.lag_proxy else {
-            return false;
-        };
-        proxy.set_profile(profile);
-        true
-    }
-
-    fn pump_lag_proxy(&mut self) {
-        if let Some(proxy) = &mut self.lag_proxy {
-            proxy.pump();
-        }
+    pub fn lag_proxy(&self) -> Option<&crate::lag_proxy::LagProxy> {
+        self.lag_proxy.as_ref()
     }
 }
 

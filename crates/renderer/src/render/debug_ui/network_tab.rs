@@ -1,5 +1,6 @@
 //! Network tab: the dev lag proxy's live impairment, edited in place, plus the
 //! session role and measured round trip, read-only.
+//! See: context/lib/networking.md §Testing the conditioned link
 //!
 //! The lever is plain data so the renderer never sees netcode types; the
 //! caller builds it from the live endpoint and writes a changed lever back.

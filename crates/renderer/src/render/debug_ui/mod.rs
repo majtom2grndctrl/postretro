@@ -1,5 +1,6 @@
 // Debug UI overlay: egui context, winit event bridge, diagnostics panel.
-// See: context/lib/rendering_pipeline.md §12 · context/lib/input.md §5, §8
+// See: context/lib/rendering_pipeline.md §12 · context/lib/input.md §5, §8 ·
+// context/lib/networking.md §Testing the conditioned link (Network tab)
 
 use winit::event::WindowEvent;
 use winit::window::Window;

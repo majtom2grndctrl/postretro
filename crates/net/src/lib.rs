@@ -1,4 +1,5 @@
-// Netcode crate root: wire codec, transport, and dev harness for co-op multiplayer.
+// postretro-net crate root: wire codec, transport, and the dev latency harness
+// and lag proxy for co-op multiplayer.
 // See: context/lib/networking.md
 //
 // This crate is glam-free and postretro-free: wire-mirror types use plain

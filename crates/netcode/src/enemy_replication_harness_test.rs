@@ -30,22 +30,21 @@
 //        cargo run -p postretro-level-compiler -- \
 //            content/dev/maps/combat-demo.map -o content/dev/maps/combat-demo.prl
 //
-// 1. Host the combat-demo map (listen server, default port):
+// 1. Host the combat-demo map (listen server, default port). `dev-tools` builds
+//    in the lag proxy that step 2 conditions:
 //
-//        RUST_LOG=info cargo run -p xtask -- run content/dev/maps/combat-demo.prl --host
+//        RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- \
+//            content/dev/maps/combat-demo.prl --host
 //
-// 2. Connect a client back to the host's port over loopback, same map:
+// 2. Connect a client back to the host's port over loopback, same map, with its
+//    lag proxy seeded to the Phase 2/3 profile (≈150 ms RTT, ~5% loss, jitter),
+//    matching the automated harness's
+//    `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }`. Condition
+//    the client only; see networking.md §Testing the conditioned link:
 //
-//        RUST_LOG=info cargo run -p xtask -- run \
-//            content/dev/maps/combat-demo.prl --connect 127.0.0.1:<port>
-//
-// 3. Shape the loopback link to the Phase 2/3 profile (≈150 ms RTT, ~5% loss, jitter)
-//    BEFORE driving the client, matching the automated harness's
-//    `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05 }`:
-//
-//        sudo tc qdisc add dev lo root netem delay 75ms 30ms loss 5%
-//        # ... observe, then ALWAYS tear down:
-//        sudo tc qdisc del dev lo root netem
+//        POSTRETRO_NET_LAG=45,60,5 RUST_LOG=info cargo run -p xtask -- run \
+//            --features dev-tools -- content/dev/maps/combat-demo.prl \
+//            --connect 127.0.0.1:<port>
 //
 // Expected, on the CLIENT:
 //   - Exactly ONE moving enemy per map-placed enemy — the host-authoritative remote
@@ -55,9 +54,6 @@
 //     interpolation delay), never predicted.
 //   - Killing the enemy on the HOST removes it from the client (the absent-from-tick
 //     despawn flows through and the client drops the remote entity).
-//
-// As with the Phase 1/2/3 soak, the shaped `tc netem` qdisc affects all loopback
-// traffic for its duration — apply it only for the soak session and always tear down.
 
 #![cfg(test)]
 

@@ -65,8 +65,9 @@ impl SplitMix64 {
     }
 }
 
-/// Conditioning parameters for one direction of the relay. All times are in
-/// virtual milliseconds on the conditioner's own clock.
+/// Conditioning parameters for one direction of a link. Times are
+/// milliseconds: virtual ones on [`PacketConditioner`]'s own clock, wall-clock
+/// ones in the dev lag proxy (`crate::lag_proxy`), which ignores `seed`.
 #[derive(Debug, Clone, Copy)]
 pub struct LinkConfig {
     /// Base one-way delay applied to every delivered packet.
@@ -175,11 +176,8 @@ impl PacketConditioner {
     /// Enqueue one packet buffer. The loss coin is flipped first: a dropped
     /// packet is counted and discarded (returns `false`, never scheduled). A
     /// surviving packet is scheduled at `now + delay + jitter_draw` and returns
-    /// `true`.
-    ///
-    /// The PRNG is advanced for the loss flip on every call, and for the jitter
-    /// draw only when the packet survives and `jitter > 0` — so the stream
-    /// position is a deterministic function of the enqueue sequence.
+    /// `true`. PRNG consumption follows [`LinkConfig::sample_delay`], so the
+    /// stream position is a deterministic function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
         let Some(delay) = self.config.sample_delay(&mut self.rng) else {
             self.dropped += 1;

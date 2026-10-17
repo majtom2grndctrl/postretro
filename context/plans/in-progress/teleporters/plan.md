@@ -156,7 +156,7 @@ The brief does not authorize landing before manual proof. After automated checks
 
 [`measurement.md`](measurement.md): fixture verification, bake results (§1–2) and the owner-run Mac/Metal runtime runbook with routes, commands and the report-back list (§3). AC49 shares its seamless step; AC50/51 use the dev fixture and two-peer loopback in §3.4.
 
-- **Owner residency decision outstanding:** keep full mandatory arrival origins or move non-touching origins to the evictable band. Fixtures add under 0.4 MiB per cell; the campaign-test extrapolation for 8 dense distinct arrivals is +360–830 MiB non-evictable lightmap pool (upper bound, unmeasured).
+- **Owner residency decision (2026-10-16): keep full mandatory arrival origins as-is.** Arrival rooms are mandatory only from camera cells within lead of a source and evictable otherwise, which keeps seamless swaps pop-free. Fixtures add under 0.4 MiB per cell; the campaign-test extrapolation for 8 dense distinct arrivals near one spot is +360–830 MiB non-evictable lightmap pool (upper bound, unmeasured). Follow-up, not this branch: measure the "touching cells mandatory, farther cells in the evictable band" lever on the first real dense teleporter hub.
 
 ## Review loop
 
@@ -174,7 +174,7 @@ HEAD `9fab00fa6`, `CARGO_INCREMENTAL=0`, 2026-10-16: `fmt --check` ✓ · `clipp
 ## Implementation checkpoint (active)
 
 - **All tasks 1–13 done; review loop closed; final gate green at `9fab00fa6`; AC results recorded (48 automated pass, 4 manual outstanding).** `status: test-ready` per the Verification policy.
-- Awaiting owner: manual ACs 49–52 (runbook in `measurement.md`) and the residency decision above. Record results in the AC table, then wait for "land the plane": move the brief to done, fix the `context/lib` drift listed under Review loop, push the branch.
+- AC49–51 passed by the owner (2026-10-16) and the residency decision is recorded. Awaiting AC52 (runtime runbook in `measurement.md` §3), then "land the plane": move the brief to done, fix the `context/lib` drift listed under Review loop, push the branch.
 - Open owner follow-up outside this branch: entity pitch sign vs TrenchBroom (engine positive pitch is nose-up; TrenchBroom draws non-MDL models nose-down); near-zero content exposure today.
 
 History:

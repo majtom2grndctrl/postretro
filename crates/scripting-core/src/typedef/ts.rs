@@ -227,7 +227,7 @@ pub fn emit_ts_game_state_refs(out: &mut String) {
 // Source of truth for this static block:
 //   sdk/lib/map_entities.ts
 //   sdk/lib/gravity.ts
-//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,spawners}.ts
+//   sdk/lib/entities/{lights,emitters,fog_volumes,movers,triggers,teleporters,spawners}.ts
 //   sdk/lib/util/keyframes.ts
 //   sdk/lib/data_script.ts  (re-exported via index.ts)
 //   sdk/lib/data_script/{reactions,commands,trigger_events,player_events}.ts  (re-exported via data_script.ts)

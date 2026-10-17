@@ -233,10 +233,45 @@ fn adaptive_interpolation_delay_ticks(
 /// presentation pitch sampled with the transform from the same snapshot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TransformSample {
+    pub(crate) teleport: Option<TeleportSample>,
     pub(crate) server_tick: u32,
     pub(crate) transform: Transform,
     pub(crate) intrinsic_velocity: Option<Vec3>,
     pub(crate) aim_pitch: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TeleportSample {
+    pub(crate) generation: u8,
+    pub(crate) last_teleporter: u16,
+}
+
+/// Accepted authoritative sample where a remote pawn's generation changed.
+/// Its position is independent of the delayed pose currently being rendered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObservedTeleport {
+    pub entity_id: postretro_entities::EntityId,
+    pub generation: u8,
+    pub last_teleporter: u16,
+    pub arrival: Vec3,
+}
+
+fn crosses_teleport(a: &TransformSample, b: &TransformSample) -> bool {
+    a.teleport
+        .zip(b.teleport)
+        .is_some_and(|(a, b)| a.generation != b.generation)
+}
+
+fn cut_pose(sample: &TransformSample, holds_newest: bool) -> PresentedPose {
+    PresentedPose {
+        transform: sample.transform,
+        source: PoseSource::TeleportCut,
+        holds_newest,
+        speed_xz: 0.0,
+        horizontal_velocity: Vec3::ZERO,
+        intrinsic_velocity: sample.intrinsic_velocity,
+        aim_pitch: sample.aim_pitch,
+    }
 }
 
 /// The pose the state machine resolved for a render target, plus which branch
@@ -247,6 +282,10 @@ pub(crate) struct TransformSample {
 pub(crate) struct PresentedPose {
     pub(crate) transform: Transform,
     pub(crate) source: PoseSource,
+    /// The target is at or past the newest sample and this pose holds it: a
+    /// `HeldNewest` hold, or a cut onto the newest sample when it arrived through
+    /// a teleport. Adaptive delay reads both as a starved buffer.
+    pub(crate) holds_newest: bool,
     /// Horizontal speed of the motion represented by `transform`. This is the
     /// displayed motion, rather than a host-side simulation velocity: interpolated
     /// Transform-only enemies derive it from their bracketing samples, and held
@@ -267,6 +306,8 @@ pub(crate) struct PresentedPose {
 /// Which branch of the sample state machine produced a [`PresentedPose`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PoseSource {
+    /// Hold one side of a generation discontinuity without deriving motion.
+    TeleportCut,
     /// Target bracketed by two samples: lerp/slerp between them.
     Interpolated,
     /// Target older than the oldest sample: held the oldest pose.
@@ -344,6 +385,7 @@ impl EntityBuffer {
             return Some(PresentedPose {
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
+                holds_newest: false,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(oldest.server_tick),
@@ -364,6 +406,16 @@ impl EntityBuffer {
         let mut a = samples.next().expect("non-empty buffer has a first sample");
         for b in samples {
             if f64::from(a.server_tick) <= target_tick && target_tick <= f64::from(b.server_tick) {
+                if crosses_teleport(a, b) {
+                    return Some(cut_pose(
+                        if target_tick < f64::from(b.server_tick) {
+                            a
+                        } else {
+                            b
+                        },
+                        false,
+                    ));
+                }
                 let span = f64::from(b.server_tick) - f64::from(a.server_tick);
                 // Equal-tick neighbors (span 0) cannot happen — insert dedupes ticks —
                 // but guard the divide rather than risk a NaN alpha.
@@ -375,6 +427,7 @@ impl EntityBuffer {
                 return Some(PresentedPose {
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
+                    holds_newest: false,
                     speed_xz: xz_speed_between(a, b),
                     horizontal_velocity: xz_velocity_between(a, b),
                     intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
@@ -389,6 +442,7 @@ impl EntityBuffer {
         Some(PresentedPose {
             transform: newest.transform,
             source: PoseSource::HeldNewest,
+            holds_newest: true,
             speed_xz: 0.0,
             horizontal_velocity: Vec3::ZERO,
             intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -401,6 +455,15 @@ impl EntityBuffer {
     /// the bounded window, extrapolate position forward (rotation/scale held — no
     /// angular wire velocity to extrapolate); otherwise hold the newest pose.
     fn extrapolate_or_hold(&self, newest: &TransformSample, target_tick: f64) -> PresentedPose {
+        if self
+            .samples
+            .iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|previous| crosses_teleport(previous, newest))
+        {
+            return cut_pose(newest, true);
+        }
         let overshoot_ticks = target_tick - f64::from(newest.server_tick);
         let overshoot_micros = overshoot_ticks * crate::netcode::SERVER_TICK_MICROS as f64;
 
@@ -424,6 +487,7 @@ impl EntityBuffer {
                 PresentedPose {
                     transform: predicted,
                     source: PoseSource::Extrapolated,
+                    holds_newest: false,
                     speed_xz: xz_speed(velocity),
                     horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
                     intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -435,6 +499,7 @@ impl EntityBuffer {
             _ => PresentedPose {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
+                holds_newest: true,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
@@ -466,10 +531,16 @@ impl EntityBuffer {
     /// Movement-state deltas are sparse, so a Transform-only delta inherits the
     /// last authoritative movement velocity rather than becoming transform-only.
     fn intrinsic_velocity_at_or_before(&self, server_tick: u32) -> Option<Vec3> {
-        self.samples
+        let mut samples = self
+            .samples
             .iter()
             .rev()
-            .filter(|sample| sample.server_tick <= server_tick)
+            .filter(|sample| sample.server_tick <= server_tick);
+        let newest = samples.next()?;
+        let generation = newest.teleport.map(|teleport| teleport.generation);
+        std::iter::once(newest)
+            .chain(samples)
+            .take_while(|sample| sample.teleport.map(|teleport| teleport.generation) == generation)
             .find_map(|sample| sample.intrinsic_velocity)
     }
 
@@ -527,6 +598,9 @@ fn xz_velocity_between(a: &TransformSample, b: &TransformSample) -> Vec3 {
 /// Equal-tick samples are merged on insert, but `None` keeps starvation conservative
 /// if malformed in-memory data bypasses that invariant.
 fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Option<Vec3> {
+    if crosses_teleport(a, b) {
+        return None;
+    }
     let tick_span = b.server_tick.saturating_sub(a.server_tick);
     if tick_span == 0 {
         return None;
@@ -542,6 +616,7 @@ fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Optio
 #[derive(Debug, Default)]
 pub struct RemoteInterpolationBuffer {
     buffers: HashMap<NetworkId, EntityBuffer>,
+    pending_teleports: observed_teleports::PendingObservedTeleports,
 }
 
 impl RemoteInterpolationBuffer {
@@ -554,8 +629,31 @@ impl RemoteInterpolationBuffer {
 
     /// Record a server-tick-stamped sample for `network_id`. Out-of-order and
     /// duplicate-tick arrivals are positioned/merged by tick (see [`EntityBuffer`]).
-    pub(crate) fn record(&mut self, network_id: NetworkId, sample: TransformSample) {
-        self.buffers.entry(network_id).or_default().insert(sample);
+    pub(crate) fn record(&mut self, network_id: NetworkId, mut sample: TransformSample) {
+        let buffer = self.buffers.entry(network_id).or_default();
+        if sample.teleport.is_none() {
+            sample.teleport = buffer
+                .samples
+                .iter()
+                .rev()
+                .find(|previous| previous.server_tick <= sample.server_tick)
+                .and_then(|previous| previous.teleport);
+        }
+        if buffer.samples.back().is_some_and(|previous| {
+            sample.server_tick >= previous.server_tick && crosses_teleport(previous, &sample)
+        }) {
+            self.pending_teleports.push(network_id, sample);
+        }
+        buffer.insert(sample);
+    }
+
+    /// One cue per accepted sample whose generation changed since the last
+    /// drain, per pawn in acceptance order; see [`observed_teleports`].
+    pub(crate) fn take_observed_teleports(
+        &mut self,
+        resolve: impl FnMut(NetworkId) -> Option<postretro_entities::EntityId>,
+    ) -> Vec<ObservedTeleport> {
+        self.pending_teleports.take(resolve)
     }
 
     /// Record a movement-only snapshot delta against the latest known transform.
@@ -568,6 +666,7 @@ impl RemoteInterpolationBuffer {
         server_tick: u32,
         intrinsic_velocity: Vec3,
         aim_pitch: f32,
+        teleport: Option<TeleportSample>,
     ) {
         let Some(buffer) = self.buffers.get_mut(&network_id) else {
             return;
@@ -575,17 +674,20 @@ impl RemoteInterpolationBuffer {
         let Some(transform) = buffer.transform_at_or_before(server_tick) else {
             return;
         };
-        buffer.insert(TransformSample {
+        let sample = TransformSample {
+            teleport,
             server_tick,
             transform,
             intrinsic_velocity: Some(intrinsic_velocity),
             aim_pitch,
-        });
+        };
+        self.record(network_id, sample);
     }
 
     /// Drop an entity's buffer (it despawned). Idempotent.
     pub fn forget(&mut self, network_id: NetworkId) {
         self.buffers.remove(&network_id);
+        self.pending_teleports.forget(network_id);
     }
 
     /// Resolve the presented pose for `network_id` at render server tick
@@ -646,6 +748,13 @@ impl RemoteInterpolationBuffer {
         self.buffers.get(&network_id).map_or(0, |b| b.samples.len())
     }
 }
+
+#[path = "interpolation_observed_teleports.rs"]
+mod observed_teleports;
+
+#[cfg(test)]
+#[path = "interpolation_teleport_tests.rs"]
+mod teleport_tests;
 
 /// Lerp position and scale, slerp rotation, between two transforms. `alpha` in
 /// `[0, 1]`; glam's `slerp` takes the shortest arc.
@@ -712,6 +821,7 @@ mod tests {
 
     fn sample(tick: u32, x: f32) -> TransformSample {
         TransformSample {
+            teleport: None,
             server_tick: tick,
             transform: Transform {
                 position: Vec3::new(x, 0.0, 0.0),
@@ -1095,6 +1205,7 @@ mod tests {
         // Newest sample at tick 100, moving at (3, 10, 4) m/s. The vertical
         // component must not affect displayed ground-plane speed.
         let moving = TransformSample {
+            teleport: None,
             server_tick: 100,
             transform: Transform {
                 position: Vec3::ZERO,
@@ -1108,6 +1219,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                teleport: None,
                 server_tick: 97,
                 transform: Transform {
                     position: -Vec3::new(3.0, 10.0, 4.0) * segment_secs,
@@ -1155,6 +1267,7 @@ mod tests {
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
         let moving = TransformSample {
+            teleport: None,
             server_tick: 1000,
             transform: Transform {
                 position: Vec3::ZERO,
@@ -1228,6 +1341,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                teleport: None,
                 server_tick: 100,
                 transform: Transform {
                     position: Vec3::ZERO,
@@ -1241,6 +1355,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                teleport: None,
                 server_tick: 103,
                 transform: Transform {
                     position: Vec3::new(carry_velocity * segment_secs, 0.0, 0.0),
@@ -1274,6 +1389,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                teleport: None,
                 server_tick: 100,
                 transform: Transform {
                     position: Vec3::ZERO,
@@ -1287,6 +1403,7 @@ mod tests {
         buf.record(
             id,
             TransformSample {
+                teleport: None,
                 server_tick: 103,
                 transform: Transform {
                     position: Vec3::new(world_velocity * segment_secs, 0.0, 0.0),

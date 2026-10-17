@@ -648,6 +648,7 @@ impl Fixture {
         // Fixed fixture data, not an alternative serializer or queue: actual
         // bitcode and the production incoming converter handle these messages.
         let input = wire::InputCommand {
+            teleport_yaw_stamp: 0.0,
             client_tick: tick,
             movement: wire::WireMovementInput {
                 wish_dir: command.movement.wish_dir.to_array(),

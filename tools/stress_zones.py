@@ -213,9 +213,11 @@ def zone_feature_entities(seed, rooms, door_tags, light_entity, underwater_light
             entities.append(_fog_volume(
                 prism_brush(rect_footprint(fx, fy, 320, 320, yaw), zf, flat_top(zf + 256),
                             FEATURE_TEX), 0.3))
+        # A prop faces its TrenchBroom arrow; 0 keeps the facing the committed
+        # stress baselines were measured with.
         for _ in range(MIXED_PROPS):
             zf, zc, x0, x1, y0, y1 = rooms[mixed[rng.randrange(len(mixed))]][1]
             entities.append(["{", '"classname" "prop_mesh"',
                              f'"origin" "{x1 - 128} {y1 - 128} {zf}"',
-                             f'"model" "{PROP_MODEL}"', '"angles" "0 180 0"', "}"])
+                             f'"model" "{PROP_MODEL}"', '"angles" "0 0 0"', "}"])
     return entities, anchors, script_lights

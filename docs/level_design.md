@@ -37,6 +37,20 @@ bin/prl-build <content-root>/maps/input.map \
 
 **Unit scale:** 1 map unit = 0.0254 m (one inch). A standard player-height room is roughly 72–80 units tall.
 
+### Entity facing
+
+An entity faces the direction of its TrenchBroom arrow: the yaw of its `angle`
+key, or the middle value of `angles` (`"pitch yaw roll"`). This holds for
+everything that has a front: a `player_spawn` looks along the arrow, and a
+`prop_mesh`, an enemy, a pickup, or the enemies an `entity_spawner` releases
+turn their model's front along it. An entity with no angle key faces yaw `0`.
+When an `entity_spawner` releases several copies, they line up side by side
+to the left of its arrow, starting at the spawner.
+
+Set only the yaw for characters and pickups. Pitch and roll tilt a `prop_mesh`,
+but an enemy keeps only its yaw once it starts turning, and a player start
+ignores roll. Lights use `angles` as a direction instead; see their keys below.
+
 ---
 
 ## Lights
@@ -332,6 +346,17 @@ The compiler draws a fluid's surface from its brush faces, using each face's tex
 - **Mind the depth.** A player starts swimming only once the fluid covers the share of their body that the player descriptor's `enterDepth` names; at `0.5`, about waist deep. Shallower is wading.
 - **Push is acceleration.** `8` is a firm wind; `25` up is enough to lift a player against the default gravity. Start small and tune by feel.
 - **Keep volumes clear of walls you don't mean.** Like fog, a volume does not stop at a wall.
+
+---
+
+## Teleporters
+
+A `trigger_teleport` brush sends a player who walks into it to a
+`teleport_destination` point: either exactly there (`classic`), or carried
+relative to a pair of points with their offset, view and momentum kept
+(`seamless`), for shifts between copies of a room. Scripts turn teleporters on
+and off. Keys, room-copy layout, firing rules and scripting are in
+[docs/teleporters.md](teleporters.md).
 
 ---
 

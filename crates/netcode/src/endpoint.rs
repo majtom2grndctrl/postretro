@@ -102,6 +102,8 @@ pub enum NetEndpoint {
         /// bind these by `mover_id` to their already-loaded local mover entities
         /// rather than spawning from the baseline.
         loaded_movers: std::collections::HashSet<EntityId>,
+        /// Installed teleporter regions registered for authoritative arming.
+        loaded_teleporters: std::collections::HashSet<EntityId>,
         /// Task 6 Phase 2 net-demo fixture. When the demo path is active
         /// (`POSTRETRO_NET_DEMO_MOVER=1`), the host spawns one deterministic
         /// AI-less mover ([`DemoMover`]) and stores its `EntityId` here; each tick
@@ -258,6 +260,13 @@ pub enum CurrentSwitchResolution {
 
 #[derive(Debug, Default)]
 pub struct ClientApplyFrameOutcome {
+    /// One latest accepted generation-change sample per remote pawn this frame.
+    pub observed_teleports: Vec<crate::netcode::interpolation::ObservedTeleport>,
+    /// Ordered adopted cuts from this frame's accepted own-pawn records.
+    pub local_teleport_adoptions: Vec<crate::netcode::prediction::LocalTeleportAdoption>,
+    /// The local pawn, when a reconcile this frame wrote it before its first record
+    /// had merged: a camera hold at its eye, with no cue, view turn or carry change.
+    pub local_first_record_hold: Option<EntityId>,
     pub materialized_remote_entity_presentation: bool,
     pub armed_local_pawn: Option<ClientArmedLocalPawn>,
     /// At least one replicated state-slot value was committed this frame.
@@ -523,6 +532,7 @@ impl NetEndpoint {
                     host_pawn: None,
                     descriptor_entities: std::collections::HashSet::new(),
                     loaded_movers: std::collections::HashSet::new(),
+                    loaded_teleporters: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
                     last_sent_tuning: HashMap::new(),
@@ -716,6 +726,7 @@ impl NetEndpoint {
             host_pawn,
             descriptor_entities,
             loaded_movers,
+            loaded_teleporters,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -739,6 +750,7 @@ impl NetEndpoint {
         *host_pawn = None;
         descriptor_entities.clear();
         loaded_movers.clear();
+        loaded_teleporters.clear();
         *demo_mover = DemoMoverState::from_env();
         state_slots.reset_schema();
         last_sent_tuning.clear();

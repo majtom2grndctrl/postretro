@@ -42,11 +42,10 @@
 // axis swap, no mirror, no scale. Winding matches too: glTF front faces are CCW
 // and the engine forward pipeline is `front_face: Ccw` + `cull_mode: Back`, so
 // we keep that here and front faces render. The per-instance model matrix is
-// therefore the entity transform applied directly. (A model authored facing a
-// particular axis may need a yaw baked into the entity transform — that is
-// gameplay-facing, not a basis bug; see
-// `context/plans/done/M10--model-pipeline-slice/findings.md`
-// (coordinate-system read).)
+// therefore the entity transform applied directly. (Models are authored facing
+// `+Z`; the half turn that points that front along a map arrow is gameplay-facing,
+// not a basis bug, and is applied once at spawn by
+// `MapEntity::model_rotation_quat()` in `postretro-sim`.)
 
 use std::collections::HashMap;
 

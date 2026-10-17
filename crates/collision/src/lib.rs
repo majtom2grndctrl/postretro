@@ -13,6 +13,7 @@ mod point_grid;
 mod polytope;
 mod query_timer;
 mod resolve;
+mod teleporters;
 #[cfg(test)]
 mod test_fixtures;
 mod volumes;
@@ -36,4 +37,5 @@ pub use resolve::{
     BodyProbe, EnvironmentView, ResolvedEnvironment, resolve_environment, resolve_gravity,
     resolve_particle_acceleration, resolve_particle_accelerations,
 };
+pub use teleporters::TeleporterRegions;
 pub use volumes::{EnvironmentVolume, EnvironmentVolumes};

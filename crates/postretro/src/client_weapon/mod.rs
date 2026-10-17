@@ -2,7 +2,7 @@
 // See: context/lib/networking.md §Combat authority · context/lib/input.md
 mod frame;
 mod reconcile;
-pub(crate) use frame::ClientWeaponFrame;
+pub(crate) use frame::{ClientWeaponFrame, TickAim};
 
 use crate::{App, PresentedAimPose, netcode, sim, weapon};
 use postretro_entities::components::weapon::WeaponComponent;
@@ -86,7 +86,11 @@ impl App {
         };
         // Share interpolation and mover carry with the view, while keeping
         // cosmetic view feel out of fire origin and authored muzzle placement.
-        let (origin, direction) = presented_aim.aim_ray();
+        // A shot whose tick preceded a teleport later in this frame keeps its own
+        // tick's eye and view instead: the presented pose is the arrival.
+        let presented_ray = presented_aim.aim_ray();
+        let frame_teleport =
+            crate::runtime_teleporters::local_teleport_identity(&ctx.registry.borrow());
         // Predicted pellets cross the same digest-bound volumes the host holds.
         // Fluid crossings read only the volumes, so the view's gravity and
         // viscosities are inert here; they are still the host's installed
@@ -108,6 +112,10 @@ impl App {
                 continue;
             }
             let id = queued.shot.activation.shot_id;
+            let (origin, direction) = match queued.tick_aim {
+                Some(tick) if tick.teleport != frame_teleport => tick.pose.aim_ray(),
+                _ => presented_ray,
+            };
             let resolution = {
                 let registry = ctx.registry.borrow();
                 // The original immutable data remains usable after replacement/drop.

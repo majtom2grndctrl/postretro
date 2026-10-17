@@ -714,6 +714,7 @@ impl SimHarness {
             |_| command.to_post_movement_command(),
             DT,
             Some(super::TriggerTickContext {
+                teleporters: None,
                 system: &mut self.trigger_system,
                 bridge: &self.trigger_bridge,
                 bindings: &self.trigger_bindings,

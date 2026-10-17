@@ -294,6 +294,7 @@ pub struct RemoteProjectileFireRejection {
 /// per-player map, never an action snapshot; local and remote use edges are
 /// keyed by `PlayerId` at this boundary.
 pub struct TriggerTickContext<'a> {
+    pub teleporters: Option<&'a crate::teleporter_system::TeleporterBindingTable>,
     pub system: &'a mut TriggerSystem,
     pub bridge: &'a TriggerVolumeBridge,
     pub bindings: &'a TriggerBindingTable,
@@ -318,6 +319,9 @@ pub struct TickEvents {
     /// This is frame-local, never serialized, and deliberately separate from
     /// the script-address drain above.
     pub movement_edges: Vec<crate::movement::MovementStateEdge>,
+    /// Authoritative arrivals retained separately from local-only movement emissions.
+    pub teleports: Vec<(EntityId, crate::movement::TeleportEvent)>,
+    pub teleport_residuals: Vec<crate::teleporter_system::TeleportResidual>,
     /// AI events raised this tick, each on its enemy: attacks fired and
     /// activities entered (an entry with no authored `on_enter` fires nothing
     /// but still plays its sound).
@@ -496,7 +500,7 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     environment: EnvironmentView<'_>,
     mod_block_during_reload: bool,
     anim_time: f64,
-    presentation_camera_aim: (f32, f32),
+    mut presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
     mover_colliders: &[MoverCollider],
@@ -534,6 +538,12 @@ where
         environment
     };
     registry.borrow_mut().snapshot_transforms();
+    if let Some(ctx) = trigger_context
+        .as_ref()
+        .and_then(|context| context.script_ctx.as_ref())
+    {
+        crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
+    }
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
     // (ready remote-hit ingest, AI, and local weapon fire), so every newly
@@ -571,7 +581,7 @@ where
         .iter()
         .map(|remote| (remote.pawn, remote.command.movement.clone()))
         .collect();
-    let remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
+    let mut remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
         .iter()
         .map(|remote| {
             (
@@ -583,7 +593,7 @@ where
 
     let combined_collision =
         CombinedCollisionWorld::new(collision_world, mover_colliders, mover_tick_states);
-    {
+    let remote_movement = {
         let mut registry = registry.borrow_mut();
         host_movement::run_host_movement_tick(
             &mut registry,
@@ -602,6 +612,50 @@ where
         &command.movement,
         tick_dt,
     );
+    let mut remote_pawn_commands = std::borrow::Cow::Borrowed(remote_pawn_commands);
+    let mut teleports: Vec<_> = remote_movement
+        .into_iter()
+        .filter_map(|(pawn, events)| {
+            events.teleport.map(|event| {
+                if let Some(aim) = remote_player_aims.get_mut(&pawn) {
+                    aim.1 += event.yaw_delta;
+                }
+                if let Some(command) = remote_pawn_commands
+                    .to_mut()
+                    .iter_mut()
+                    .find(|command| command.pawn == pawn)
+                {
+                    command.command.movement.facing_yaw += event.yaw_delta;
+                    if let Some(aim) = &mut command.start_aim {
+                        aim.yaw += event.yaw_delta;
+                    }
+                }
+                (pawn, event)
+            })
+        })
+        .collect();
+    if let Some((pawn, event)) = movement.teleport {
+        presentation_camera_aim.1 += event.yaw_delta;
+        teleports.push((pawn, event));
+    }
+    let mut teleport_residuals = Vec::new();
+    if let Some(context) = trigger_context.as_ref()
+        && let (Some(bindings), Some(ctx)) = (context.teleporters, context.script_ctx.as_ref())
+    {
+        // Event order: remote pawns in command order, then the local pawn
+        // (the order `teleports` was built in above); residuals keep it.
+        for (pawn, event) in &teleports {
+            let player = remote_pawn_commands
+                .iter()
+                .find(|remote| remote.pawn == *pawn)
+                .map_or(PlayerId::Local(*pawn), |remote| {
+                    PlayerId::Remote(remote.owner_client_id)
+                });
+            if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn, player) {
+                teleport_residuals.push(residual);
+            }
+        }
+    }
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
@@ -864,7 +918,7 @@ where
     weapon_stage::tick_weapon_resources(&mut registry.borrow_mut(), tick_dt);
     let remote_weapon_result = weapon_stage::run_remote_weapon_commands(
         &registry,
-        remote_pawn_commands,
+        &remote_pawn_commands,
         descriptors,
         default_weapon_placement,
         collision_world,
@@ -950,6 +1004,8 @@ where
         cpu,
         movement: movement.emissions,
         movement_edges: movement.state_edges,
+        teleports,
+        teleport_residuals,
         ai,
         weapon,
         weapon_fluid_splashes,
@@ -995,6 +1051,7 @@ fn trigger_fire_context(
     }
     TriggerFireContext {
         fired_trigger: Some(event.fire.trigger),
+        fired_teleporter: None,
         activator,
         occupancy,
         event_player: None,
@@ -1462,70 +1519,135 @@ fn update_foot_ground_probes(
                 let ComponentValue::Mesh(mesh) = value else {
                     return None;
                 };
-                let is_legged = hit_zone_store
-                    .get_by_name(&mesh.model)
-                    .is_some_and(|model| !model.legs.is_empty());
-                let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
-                    inputs.foot_count != 0
-                        || inputs
-                            .feet
-                            .iter()
-                            .any(|probe| *probe != FootProbe::default())
-                });
-                (is_legged || has_stale_feet).then_some(id)
+                is_foot_probe_candidate(mesh, hit_zone_store).then_some(id)
             }),
     );
 
     for &id in candidates.iter() {
-        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
-            continue;
-        };
-        let zones = hit_zone_store.get_by_name(&mesh.model);
-        let mut foot_count = 0;
-        let mut feet = [FootProbe::default(); MAX_FEET];
-        if let (Some(zones), Ok(transform)) = (
-            zones,
-            registry
-                .get_component::<postretro_entities::Transform>(id)
-                .copied(),
-        ) && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
-            && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
-        {
-            let world_joints =
-                sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
-            if let Some(world_joints) = world_joints.as_ref() {
-                foot_count = zones.legs.len().min(MAX_FEET);
-                let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
-                let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
-                for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
-                    feet[slot] = probe_foot(
-                        leg.foot_joint,
-                        world_joints,
-                        &model_to_world,
-                        &world_to_model,
-                        downward_reach,
-                        upward_allowance,
-                        collision_world,
-                        mover_colliders,
-                        mover_poses,
-                    );
-                }
+        let transform = registry
+            .get_component::<postretro_entities::Transform>(id)
+            .ok()
+            .copied();
+        write_foot_ground_probes(
+            registry,
+            id,
+            transform,
+            collision_world,
+            mover_colliders,
+            mover_poses,
+            hit_zone_store,
+            anim_time,
+        );
+    }
+}
+
+/// Re-probe one entity's feet from a caller-supplied `transform` instead of its
+/// registry pose. The host seat draws a connected-client pawn from a delayed
+/// presented sample, which can still sit at a teleport's source while the live
+/// pose is at the arrival; probing from the presented transform keeps the foot
+/// contacts on the floor the body is drawn over. Same probe, same RMW of the
+/// aim fields, as the per-tick [`update_foot_ground_probes`] pass.
+#[allow(clippy::too_many_arguments)] // mirrors the per-tick pass's inputs.
+pub fn update_foot_ground_probes_for(
+    registry: &mut EntityRegistry,
+    entity: EntityId,
+    transform: postretro_entities::Transform,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    let Ok(mesh) = registry.get_component::<MeshComponent>(entity) else {
+        return;
+    };
+    if !is_foot_probe_candidate(mesh, hit_zone_store) {
+        return;
+    }
+    write_foot_ground_probes(
+        registry,
+        entity,
+        Some(transform),
+        collision_world,
+        mover_colliders,
+        mover_poses,
+        hit_zone_store,
+        anim_time,
+    );
+}
+
+/// Legged models probe; a mesh still carrying feet from an earlier model clears.
+fn is_foot_probe_candidate(mesh: &MeshComponent, hit_zone_store: &HitZoneStore) -> bool {
+    let is_legged = hit_zone_store
+        .get_by_name(&mesh.model)
+        .is_some_and(|model| !model.legs.is_empty());
+    let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
+        inputs.foot_count != 0
+            || inputs
+                .feet
+                .iter()
+                .any(|probe| *probe != FootProbe::default())
+    });
+    is_legged || has_stale_feet
+}
+
+/// Probe one candidate's feet from `transform` (`None` publishes no contacts)
+/// and write them into its `PoseInputs`.
+#[allow(clippy::too_many_arguments)] // a flat parameter list keeps this a leaf helper.
+fn write_foot_ground_probes(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    transform: Option<postretro_entities::Transform>,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+        return;
+    };
+    let zones = hit_zone_store.get_by_name(&mesh.model);
+    let mut foot_count = 0;
+    let mut feet = [FootProbe::default(); MAX_FEET];
+    if let (Some(zones), Some(transform)) = (zones, transform)
+        && let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset)
+        && let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world)
+    {
+        let world_joints =
+            sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
+        if let Some(world_joints) = world_joints.as_ref() {
+            foot_count = zones.legs.len().min(MAX_FEET);
+            let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+            let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+            for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                feet[slot] = probe_foot(
+                    leg.foot_joint,
+                    world_joints,
+                    &model_to_world,
+                    &world_to_model,
+                    downward_reach,
+                    upward_allowance,
+                    collision_world,
+                    mover_colliders,
+                    mover_poses,
+                );
             }
         }
-
-        // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
-        let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
-        new_inputs.feet = feet;
-        new_inputs.foot_count = foot_count as u8;
-        if mesh.pose_inputs == Some(new_inputs) {
-            continue;
-        }
-        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
-            continue;
-        };
-        mesh.pose_inputs = Some(new_inputs);
-        let _ = registry.set_component(id, mesh);
     }
+
+    // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
+    let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
+    new_inputs.feet = feet;
+    new_inputs.foot_count = foot_count as u8;
+    if mesh.pose_inputs == Some(new_inputs) {
+        return;
+    }
+    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+        return;
+    };
+    mesh.pose_inputs = Some(new_inputs);
+    let _ = registry.set_component(id, mesh);
 }
 
 /// Probe one foot: transform its animated model-space origin to world, cast a
@@ -1653,6 +1775,8 @@ pub(crate) mod determinism_tests;
 mod divergence_spike_tests;
 #[cfg(test)]
 pub(crate) mod predict_reconcile;
+#[cfg(test)]
+mod teleport_tick_tests;
 
 /// Single-player / single-pawn movement stage. Resolves the local movement pawn via
 /// the registry marker, then drives it through the shared host multi-pawn seam
@@ -1661,6 +1785,7 @@ pub(crate) mod predict_reconcile;
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
+    teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
     emissions: Vec<crate::emission::MovementEmission>,
     state_edges: Vec<crate::movement::MovementStateEdge>,
 }
@@ -1678,6 +1803,7 @@ fn run_movement_tick(
     };
     let Some(id) = local else {
         return LocalMovementTickEvents {
+            teleport: None,
             emissions: Vec::new(),
             state_edges: Vec::new(),
         };
@@ -1695,13 +1821,16 @@ fn run_movement_tick(
     let emitter = crate::emission::entity_emitter(&registry, id);
     let mut emissions = Vec::new();
     let mut state_edges = Vec::new();
+    let mut teleport = None;
     for (pawn, movement_events) in events {
         if pawn == id {
+            teleport = movement_events.teleport.map(|event| (pawn, event));
             crate::emission::append_movement_emissions(&movement_events, &emitter, &mut emissions);
             state_edges = movement_events.state_edges;
         }
     }
     LocalMovementTickEvents {
+        teleport,
         emissions,
         state_edges,
     }
@@ -2763,6 +2892,7 @@ mod tests {
             &use_edges,
             &HashMap::new(),
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -2996,6 +3126,7 @@ mod tests {
                 },
                 1.0 / 60.0,
                 Some(TriggerTickContext {
+                    teleporters: None,
                     system: trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,
@@ -3294,6 +3425,7 @@ mod tests {
             },
             1.0 / 60.0,
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -3416,6 +3548,7 @@ mod tests {
             },
             1.0 / 60.0,
             Some(TriggerTickContext {
+                teleporters: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -3555,6 +3688,7 @@ mod tests {
                 },
                 1.0 / 60.0,
                 Some(TriggerTickContext {
+                    teleporters: None,
                     system: &mut trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,

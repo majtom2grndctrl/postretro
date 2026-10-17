@@ -15,7 +15,7 @@ use crate::ui::style_ranges::StyleRanges;
 
 use super::{
     CrossingDescriptor, ImpactEventDescriptor, NamedReaction, PlayerEventDescriptor,
-    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
+    TeleportEventDescriptor, TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
 };
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus its stack
@@ -464,6 +464,7 @@ pub struct LevelManifest {
     /// belong in `ModManifest.triggerEvents`. Bound after the matching
     /// mod-global events on a shared edge; per-level and cleared on unload.
     pub trigger_events: Vec<VolumeTriggerEventDescriptor>,
+    pub teleport_events: Vec<TeleportEventDescriptor>,
     /// Trigger-volume pool declarations. Their `levels` selector is retained
     /// for the shared descriptor contract, but level-local pools always apply
     /// to the level that declared them.

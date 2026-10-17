@@ -84,14 +84,14 @@ pub(crate) fn light_table_from_lights(
 }
 
 /// Build the non-light member table: exactly the movers, trigger volumes
-/// (switches included) and spawners the runtime places, each with the tags and
+/// (switches included), teleporters and spawners the runtime places, each with the tags and
 /// Transform position runtime gives it. Order is authored order within each
 /// kind, the order runtime spawns them and therefore answers queries in.
 ///
 /// Positions mirror the runtime spawn sites: a mover's packed origin
 /// (`runtime_movers` spawns at the PRL record origin), a trigger volume's AABB
-/// center (`TriggerVolumeBridge::populate_from_level`), and a spawner's
-/// narrowed entity origin (`entity_spawner::handle`).
+/// center (`TriggerVolumeBridge::populate_from_level`), a teleporter's entity
+/// origin, and a spawner's narrowed entity origin (`entity_spawner::handle`).
 pub(crate) fn map_members_from_map(
     movers: &[MapKinematicMover],
     triggers: &[MapTriggerVolume],
@@ -125,7 +125,20 @@ pub(crate) fn map_members_from_map(
                 .map(|(_, raw)| raw.split_whitespace().map(str::to_owned).collect())
                 .unwrap_or_default(),
         });
-    movers.chain(triggers).chain(spawners).collect()
+    let teleporters = entities
+        .iter()
+        .filter(|entity| entity.classname == "trigger_teleport")
+        .map(|entity| MapMember {
+            kind: MapMemberKind::Teleporter,
+            tags: entity.tags.clone(),
+            position: vec3(entity.origin),
+            spawned_tags: Vec::new(),
+        });
+    movers
+        .chain(triggers)
+        .chain(spawners)
+        .chain(teleporters)
+        .collect()
 }
 
 /// Validate and apply script-derived membership before namespaces are formed.
@@ -678,7 +691,7 @@ mod tests {
         )
     }
 
-    // Regression: build-side mover, trigger and spawner queries answered `[]`
+    // Regression: build-side mover, trigger, teleporter and spawner queries answered `[]`
     // because `prl-build` sent no member table, so a level script indexing a
     // member failed the map compile. The table now carries exactly the
     // members runtime places, at the positions and with the tags runtime

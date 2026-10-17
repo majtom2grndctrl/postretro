@@ -53,6 +53,7 @@ pub(crate) struct RetainedStart {
     /// Aim the carrying command declared, already through intake sanitization.
     /// The start's shot fires along it, whichever later command delivers it.
     pub aim: RemoteStartAim,
+    pub teleport_yaw_stamp: f32,
     /// Host tick at which playout first found it due. Expiry runs from here, so
     /// a start playout has not reached yet is never refused for waiting.
     due_since: Option<u32>,
@@ -113,11 +114,23 @@ impl ActivationEdges {
     /// one now, before any of its edges can be delivered: a release the client
     /// stamped at or after that tick is then suppressed, as the client's gate
     /// cancelled the charge before it.
+    #[cfg(test)]
     pub fn observe_start(
         &mut self,
         token: ActivationToken,
         firing_slot: u8,
         aim: RemoteStartAim,
+        tick: u32,
+    ) {
+        self.observe_start_stamped(token, firing_slot, aim, 0.0, tick);
+    }
+
+    pub fn observe_start_stamped(
+        &mut self,
+        token: ActivationToken,
+        firing_slot: u8,
+        aim: RemoteStartAim,
+        teleport_yaw_stamp: f32,
         tick: u32,
     ) {
         if self.is_settled(token)
@@ -140,6 +153,7 @@ impl ActivationEdges {
             .is_some_and(|closed| !self.retain(token, None, Some(closed), tick))
             .then_some(true);
         self.starts.push_back(RetainedStart {
+            teleport_yaw_stamp,
             token,
             firing_slot,
             aim,
@@ -407,6 +421,12 @@ impl ActivationEdges {
         self.delivered
             .filter(|start| start.token == token)
             .map(|start| start.aim)
+    }
+
+    pub fn delivered_teleport_yaw_stamp(&self, token: ActivationToken) -> Option<f32> {
+        self.delivered
+            .filter(|start| start.token == token)
+            .map(|start| start.teleport_yaw_stamp)
     }
     /// Retain the release and cancel edges a command at `client_tick` carried,
     /// received on host tick `tick`.

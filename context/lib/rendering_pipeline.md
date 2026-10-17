@@ -206,8 +206,9 @@ Demand comes from the baked CellResidencySet (id 51), a streaming-owned cell rel
 by cell, not an id-46 axis. For each camera cell it lists every cell within portal-path lead
 L, plus each such cell's visible set (the runtime portal walk sampled from eye points,
 dilated one portal hop), tagged with the smallest lead at which it becomes mandatory.
-Teleporter arrival cells join it as zero-length routes (decided, not yet built;
-`build_pipeline.md` §PRL section IDs, id 51). One
+Teleporter arrival cells join it as zero-length routes from camera cells within lead of a
+source, so a seamless swap finds its arrival room resident (`build_pipeline.md` §PRL
+section IDs, id 51). One
 level-scope cell-demand stage owns L and turns id 51 plus the frame's visibility path into
 per-cell classes. Each streamed resource maps those cells to its own units, blocks here and
 clusters for SH (§Cluster SH residency), so both hold one reach by construction, including

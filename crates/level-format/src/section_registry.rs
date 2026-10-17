@@ -235,6 +235,9 @@ pub enum SectionId {
     /// volume authors a force other than 1; absence means every force is 1.
     /// See `push_forces::PushForcesSection`.
     PushForces = 53,
+
+    /// Optional predictive teleporter regions and resolved arrival poses.
+    Teleporters = 55,
 }
 
 impl SectionId {
@@ -281,6 +284,7 @@ impl SectionId {
             51 => Some(Self::CellResidencySet),
             52 => Some(Self::EnvironmentVolumes),
             53 => Some(Self::PushForces),
+            55 => Some(Self::Teleporters),
             _ => None,
         }
     }
@@ -334,6 +338,7 @@ mod tests {
             SectionId::CellResidencySet,
             SectionId::EnvironmentVolumes,
             SectionId::PushForces,
+            SectionId::Teleporters,
         ];
 
         for section_id in registered {

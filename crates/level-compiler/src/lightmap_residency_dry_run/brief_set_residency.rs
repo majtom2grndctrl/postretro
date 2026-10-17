@@ -8,8 +8,8 @@ use rayon::prelude::*;
 use super::band_pool_sim::{BandSimInputs, BandWalks, pool_caps, run_band_walks};
 use super::block_pool_sim::{SIM_SEED, SIM_STEPS, shelf_layers_from_scratch};
 use super::brief_set::{
-    BriefSetSources, Dilation, LeadCheck, build_lead_map, check_every_breakpoint, pinned_cells,
-    visible_sources,
+    BakedCheck, BakedRelation, BriefSetSources, Dilation, LeadCheck, build_lead_map, check_baked,
+    check_every_breakpoint, pinned_cells, visible_sources,
 };
 use super::cell_block_residency::SIM_LEAD_METERS;
 use super::mandatory::mandatory_bytes;
@@ -85,8 +85,9 @@ pub(crate) struct BriefSetResult {
     /// Band-aware walks over the dilated set at `SIM_LEAD_METERS`.
     pub walks: BandWalks,
     /// The PRL's baked id 51 against direct evaluation of the dilated set
-    /// with no pins, since the bake stores none; `None` without a section.
-    pub baked: Option<LeadCheck>,
+    /// with no pins, since the bake stores none: equal, or a superset when the
+    /// PRL has teleporters; `None` without a section.
+    pub baked: Option<BakedCheck>,
 }
 
 pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> BriefSetResult {
@@ -107,10 +108,16 @@ pub(crate) fn run_brief_set(inputs: &VisibleSetInputs<'_>, pvs: &[Vec<u32>]) -> 
             pinned: &[],
             cell_count: inputs.input.cell_count(),
         };
-        check_every_breakpoint(
+        let relation = if inputs.input.teleporters_present {
+            BakedRelation::Superset
+        } else {
+            BakedRelation::Equal
+        };
+        check_baked(
             &LeadMap::from_section(section),
             &unpinned,
             inputs.camera_cells,
+            relation,
         )
     });
     let mut walks = None;

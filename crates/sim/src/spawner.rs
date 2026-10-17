@@ -311,16 +311,19 @@ fn spawn_resolved_spawners(
         // spawner-spawned enemy identically to a map-placed one of the same
         // archetype (otherwise it sinks ~half a capsule into the floor).
         let origin_shift = ai_capsule_center_from_feet_offset(&descriptor, agent_params);
-        let right = spawner_transform.rotation * Vec3::X;
+        // The spawner carries a model frame (front `+Z`, up `+Y`), so its `+X`
+        // is the front's left: copies fan out to the left of the map arrow.
+        let fan_axis = spawner_transform.rotation * Vec3::X;
         for index in 0..spawner.count {
             // The spawner origin authors the enemy's feet; copies fan out along
-            // the `right` axis. This feet position is the synthetic MapEntity
+            // `fan_axis`. This feet position is the synthetic MapEntity
             // `origin` — the un-raised value — so descriptor components that stamp
             // straight from `MapEntity.origin` (e.g. a `light` block) land at the
             // feet, exactly as a map-placed instance does (`spawn_descriptor_instance`
             // passes the raw feet origin while raising only the Transform). The
             // Transform below is the raised capsule center.
-            let feet_position = spawner_transform.position + right * (index as f32 * 2.0 * radius);
+            let feet_position =
+                spawner_transform.position + fan_axis * (index as f32 * 2.0 * radius);
             let transform = Transform {
                 position: feet_position + origin_shift,
                 rotation: spawner_transform.rotation,
@@ -912,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn authored_rotation_sets_facing_and_right_axis_spawn_offset() {
+    fn authored_rotation_sets_facing_and_fan_axis_spawn_offset() {
         let mut registry = EntityRegistry::new();
         let transform = Transform {
             position: Vec3::new(10.0, 2.0, -3.0),
@@ -931,7 +934,7 @@ mod tests {
         assert_eq!(first.rotation, transform.rotation);
         assert_eq!(second.rotation, transform.rotation);
         // The base sits at the AI capsule center (feet→center raise); the
-        // horizontal `right`-axis fan-out spacing is unchanged.
+        // horizontal `fan_axis` spacing is unchanged.
         let shift = cultist_feet_to_center_shift();
         assert!((first.position - (transform.position + shift)).length() < 1e-5);
         assert!(
@@ -1105,11 +1108,11 @@ mod tests {
         // mirrors map placement: the FEET position (no capsule-center raise), so
         // a spawner-spawned light lands identically to a map-placed one of the
         // same archetype. The capsule shift raises only the Transform, not the
-        // light. The horizontal `right`-axis fan-out spacing is preserved.
-        let right = transform.rotation * Vec3::X;
+        // light. The horizontal `fan_axis` spacing is preserved.
+        let fan_axis = transform.rotation * Vec3::X;
         assert!((Vec3::from_array(lights[0].origin) - transform.position).length() < 1e-5);
         assert!(
-            (Vec3::from_array(lights[1].origin) - (transform.position + right * 0.8)).length()
+            (Vec3::from_array(lights[1].origin) - (transform.position + fan_axis * 0.8)).length()
                 < 1e-5
         );
     }

@@ -69,6 +69,8 @@ pub struct ScriptCtx {
     /// services (audio/input/UI) out of the scripting surface — the queue is
     /// the seam. See: context/lib/scripting.md §10.4.
     pub system_commands: SystemCommandQueue,
+    /// Ordered host-only teleporter changes, consumed at the next fixed tick.
+    pub pending_teleporter_mutations: Rc<RefCell<Vec<(crate::EntityId, bool)>>>,
     /// Written state is independent of components rewritten by bridge sampling.
     pub presentation_overrides: Rc<RefCell<crate::presentation_overrides::PresentationOverrides>>,
     /// The level-relative clock the bridges will sample in this frame.
@@ -96,6 +98,7 @@ impl ScriptCtx {
             gravity: Rc::new(Cell::new(f32::NAN)),
             owner_slot_writes_enabled: Rc::new(Cell::new(true)),
             system_commands: SystemCommandQueue::new(),
+            pending_teleporter_mutations: Rc::new(RefCell::new(Vec::new())),
             presentation_overrides: Rc::new(RefCell::new(Default::default())),
             presentation_script_time: Rc::new(Cell::new(0.0)),
             presentation_networked_predicate: Rc::new(Cell::new(None)),

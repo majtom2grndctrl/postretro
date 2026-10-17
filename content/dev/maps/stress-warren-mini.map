@@ -3459,41 +3459,41 @@
 {
 "classname" "reference_enemy"
 "origin" "-1375 -2077 464"
-"angles" "0 254 0"
+"angles" "0 286 0"
 "_tags" "enemy"
 }
 // entity 79
 {
 "classname" "reference_enemy"
 "origin" "-4060 822 464"
-"angles" "0 281 0"
+"angles" "0 259 0"
 "_tags" "enemy"
 }
 // entity 80
 {
 "classname" "reference_enemy"
 "origin" "-2503 1799 80"
-"angles" "0 171 0"
+"angles" "0 9 0"
 "_tags" "enemy"
 }
 // entity 81
 {
 "classname" "reference_enemy"
 "origin" "4092 433 80"
-"angles" "0 32 0"
+"angles" "0 148 0"
 "_tags" "enemy"
 }
 // entity 82
 {
 "classname" "reference_pistol"
 "origin" "3998 741 80"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 83
 {
 "classname" "reference_shotgun"
 "origin" "2741 1784 464"
-"angles" "0 0 0"
+"angles" "0 180 0"
 }
 // entity 84
 {

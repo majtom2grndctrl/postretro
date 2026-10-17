@@ -1,6 +1,6 @@
 --!nocheck
 -- Command targets: the `npcs` and `players` groups and the subject tokens
--- (`on.activators`, `on.trigger`, `on.player`). Each carries exactly the verbs
+-- (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`). Each carries exactly the verbs
 -- its kind supports, called with colon syntax; a verb builds the closed wire
 -- descriptor.
 -- Part chunk of `data_script.luau`: evaluated after `player_events.luau`
@@ -162,7 +162,14 @@ local TRIGGER_TARGET = opaqueTarget("on.trigger", {
   end,
 }, "@trigger")
 
+local teleporterCommand = tokenCommand("@teleporter")
+local TELEPORTER_TARGET = opaqueTarget("on.teleporter", {
+  arm = function(_self) return teleporterCommand("armTeleporter", {}) end,
+  disarm = function(_self) return teleporterCommand("disarmTeleporter", {}) end,
+}, "@teleporter")
+
 return {
+  TELEPORTER_TARGET = TELEPORTER_TARGET,
   builders = CommandsSdk,
   ACTIVATORS_TARGET = ACTIVATORS_TARGET,
   PLAYER_TARGET = PLAYER_TARGET,

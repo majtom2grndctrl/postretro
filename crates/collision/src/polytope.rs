@@ -6,16 +6,24 @@ use glam::Vec3;
 use crate::leaf::LeafPlane;
 
 /// Relative tolerance for "on the plane" during clipping, scaled by the box's
-/// coordinate magnitude so large maps keep the same relative precision.
+/// half extent so large solids keep the same relative precision.
 const RELATIVE_PLANE_EPSILON: f32 = 1.0e-6;
 
 /// Volume of the intersection of `planes`' inner half-spaces with the box
 /// `[min, max]`. The box must enclose the solid for the result to be the solid's
 /// own volume; a leaf's AABB does by construction. Build-time only: allocates.
+///
+/// Clips in the box's own frame, centred on the box, so the clipping arithmetic
+/// does not grow with distance from the world origin: copies whose stored
+/// planes and bounds are exactly congruent compute the same volume wherever
+/// they sit. Map-scaled coordinates are rarely exact, so near-identical copies
+/// can still differ in the last bits, and overlap ranking sees that difference.
 pub(crate) fn clipped_box_volume(planes: &[LeafPlane], min: Vec3, max: Vec3) -> f32 {
     if !min.cmple(max).all() {
         return 0.0;
     }
+    let centre = (min + max) * 0.5;
+    let (min, max) = (min - centre, max - centre);
     let scale = min.abs().max(max.abs()).max_element().max(1.0);
     let epsilon = RELATIVE_PLANE_EPSILON * scale;
 
@@ -27,7 +35,7 @@ pub(crate) fn clipped_box_volume(planes: &[LeafPlane], min: Vec3, max: Vec3) -> 
             continue;
         }
         let normal = plane.normal / length;
-        let distance = plane.distance / length;
+        let distance = (plane.distance - plane.normal.dot(centre)) / length;
         faces = clip_polyhedron(faces, normal, distance, epsilon);
         if faces.is_empty() {
             return 0.0;

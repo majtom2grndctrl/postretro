@@ -271,8 +271,8 @@ impl ClientSendDiag {
         self.input_sends += 1;
     }
 
-    /// One same-frame zero-tick fire send (`client_send_input_command`): an extra
-    /// `Input` command outside the fixed-tick cadence.
+    /// One same-frame zero-tick fire send (`client_send_input_command_in_registry`):
+    /// an extra `Input` command outside the fixed-tick cadence.
     pub(crate) fn record_fire_path_send(&mut self) {
         if !Self::enabled() {
             return;

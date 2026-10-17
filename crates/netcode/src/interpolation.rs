@@ -19,7 +19,9 @@
 //     unreliable channel, so this sees the true arrival spread that time sync's
 //     min-RTT gate filters out, and any offset error cancels because the render
 //     target reads the same estimate.
-// On a LAN (RTT ≈ 0, lag ≈ 0) both reduce to the 50 ms buffer floor.
+// On a LAN (RTT ≈ 0, lag ≈ 0) the delay reduces to the 50 ms buffer floor. The
+// render target slews toward `estimated_server_tick - delay` at 0.75–1.25× the
+// estimate's advance, so a whole-tick delay step neither freezes nor jumps remotes.
 //
 // Time model: every sample is stamped with the server tick it was valid at (the
 // snapshot's `server_tick`), never a wall-clock instant. The render target is also a
@@ -112,6 +114,16 @@ const MAX_SNAPSHOT_LAG_MICROS: f64 = 1_000_000.0;
 const LAG_PEAK_EPSILON_TICKS: f64 = 0.05;
 /// Below this, the starvation margin is treated as settled and snapped to zero.
 const STARVATION_MARGIN_EPSILON_MICROS: f64 = 500.0;
+/// Playback-rate bounds for the slewed render target, as multiples of the frame's
+/// server-tick advance. A delay step moves the target toward its new value at
+/// these rates instead of freezing remotes (a raise) or jumping a whole tick in
+/// one frame (a lowered ceiling), so remote motion stays even. ±25% stays below
+/// a noticeable speed change.
+const RENDER_TARGET_PLAYBACK_RATE: std::ops::RangeInclusive<f64> = 0.75..=1.25;
+/// A render target this many ticks behind its candidate snaps to it (0.5 s): a
+/// gap this wide would take seconds to slew out. One ahead by this much holds,
+/// since the target never rewinds.
+const RENDER_TARGET_SNAP_TICKS: f64 = 30.0;
 /// Velocity below this squared magnitude is treated as stationary for starvation
 /// feedback. The pose still holds; it just does not raise global delay.
 const STARVATION_VELOCITY_EPSILON_SQ: f32 = 1e-8;
@@ -161,20 +173,34 @@ pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64
 ///   new maximum and decays toward the latest lag with a
 ///   [`LAG_PEAK_HALF_LIFE_MICROS`] half-life; each lag is capped at
 ///   [`MAX_SNAPSHOT_LAG_MICROS`].
+///
+/// The render target is slewed: it moves toward `estimated − delay` at a playback
+/// rate within [`RENDER_TARGET_PLAYBACK_RATE`] of the estimate's advance, never
+/// rewinds, and snaps only on the first frame or past
+/// [`RENDER_TARGET_SNAP_TICKS`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterpolationDelayState {
     starvation_margin_micros: f64,
-    last_render_server_tick: Option<f64>,
+    /// Previous frame's render target and the estimate it was read at.
+    last_render: Option<RenderTargetFrame>,
     lag_peak: Option<SnapshotLagPeak>,
+    /// Newest snapshot tick already folded, so each one folds once. Survives a
+    /// level unload: the replication cursor keeps the pre-unload tick, and folding
+    /// it against a post-load estimate would read the load time as lag.
+    folded_snapshot_tick: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderTargetFrame {
+    render_tick: f64,
+    estimated_tick: f64,
 }
 
 /// Decaying peak of measured snapshot arrival lag, in server ticks.
 #[derive(Debug, Clone, Copy)]
 struct SnapshotLagPeak {
     peak_ticks: f64,
-    /// Newest snapshot tick already folded, so each one folds once.
-    snapshot_tick: u32,
-    /// Estimated server tick at that fold: the decay clock.
+    /// Estimated server tick at the latest fold: the decay clock.
     observed_at_tick: f64,
 }
 
@@ -184,8 +210,13 @@ impl InterpolationDelayState {
     }
 
     /// Drop level-scoped delay feedback after remote interpolation buffers are reset.
+    /// The folded snapshot tick stays, so only a snapshot accepted after the reset
+    /// folds.
     pub(crate) fn reset_for_level_unload(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            folded_snapshot_tick: self.folded_snapshot_tick,
+            ..Self::default()
+        };
     }
 
     /// Delay in whole sim ticks: the larger of the time-sync law (measured jitter,
@@ -227,11 +258,7 @@ impl InterpolationDelayState {
         newest_snapshot_tick: u32,
         micros_per_tick: u64,
     ) {
-        if !estimated_tick.is_finite()
-            || self
-                .lag_peak
-                .is_some_and(|lag| lag.snapshot_tick == newest_snapshot_tick)
-        {
+        if !estimated_tick.is_finite() || self.folded_snapshot_tick == Some(newest_snapshot_tick) {
             return;
         }
         let micros_per_tick = micros_per_tick as f64;
@@ -254,14 +281,17 @@ impl InterpolationDelayState {
         };
         self.lag_peak = Some(SnapshotLagPeak {
             peak_ticks,
-            snapshot_tick: newest_snapshot_tick,
             observed_at_tick: estimated_tick,
         });
+        self.folded_snapshot_tick = Some(newest_snapshot_tick);
     }
 
-    /// Render target tick for the remote interpolation buffers. Delay changes may
-    /// pause remote presentation while the server estimate catches up, but never
-    /// move the sampled server time backward.
+    /// Render target tick for the remote interpolation buffers. The candidate is
+    /// `estimated_tick − delay`; the target slews toward it at a playback rate
+    /// clamped to [`RENDER_TARGET_PLAYBACK_RATE`] of this frame's estimate advance,
+    /// so a whole-tick delay step neither freezes remotes nor jumps them. It never
+    /// moves backward: an estimate that steps back holds it. The first frame, and
+    /// a target [`RENDER_TARGET_SNAP_TICKS`] behind the candidate, snap.
     pub(crate) fn render_server_tick(
         &mut self,
         estimated_tick: f64,
@@ -269,12 +299,35 @@ impl InterpolationDelayState {
         rtt_micros: f64,
         micros_per_tick: u64,
     ) -> f64 {
+        if !estimated_tick.is_finite() {
+            return self
+                .last_render
+                .map_or(estimated_tick, |last| last.render_tick);
+        }
         let delay_ticks = self.delay_ticks(jitter_micros, rtt_micros, micros_per_tick);
         let candidate = estimated_tick - f64::from(delay_ticks);
-        let render_tick = self
-            .last_render_server_tick
-            .map_or(candidate, |last| candidate.max(last));
-        self.last_render_server_tick = Some(render_tick);
+        let render_tick = match self.last_render {
+            None => candidate,
+            Some(last) => {
+                let gap = candidate - last.render_tick;
+                if gap > RENDER_TARGET_SNAP_TICKS {
+                    candidate
+                } else if gap < -RENDER_TARGET_SNAP_TICKS {
+                    last.render_tick
+                } else {
+                    let nominal = (estimated_tick - last.estimated_tick).max(0.0);
+                    let step = gap.clamp(
+                        RENDER_TARGET_PLAYBACK_RATE.start() * nominal,
+                        RENDER_TARGET_PLAYBACK_RATE.end() * nominal,
+                    );
+                    last.render_tick + step
+                }
+            }
+        };
+        self.last_render = Some(RenderTargetFrame {
+            render_tick,
+            estimated_tick,
+        });
         render_tick
     }
 
@@ -940,6 +993,16 @@ mod tests {
     /// pre-framerate-independence behavior exactly (one frame at 60 fps == one old
     /// per-frame step / decay).
     const DT_60HZ: f64 = 1.0 / 60.0;
+    /// Tolerance for server-tick float comparisons.
+    const TICK_EPS: f64 = 1e-9;
+
+    fn assert_lag_peak(state: &InterpolationDelayState, expected: f64) {
+        let peak = state.lag_peak_ticks().expect("a lag has been folded");
+        assert!(
+            (peak - expected).abs() < TICK_EPS,
+            "lag peak {peak} vs {expected}"
+        );
+    }
 
     fn sample(tick: u32, x: f32) -> TransformSample {
         TransformSample {
@@ -1196,7 +1259,7 @@ mod tests {
 
     // Regression: raising adaptive delay after held-newest starvation used to move the
     // remote render target backward when the server estimate advanced by fewer ticks
-    // than the delay increase.
+    // than the delay increase. The slewed target absorbs the rise by playing slower.
     #[test]
     fn adaptive_delay_increase_never_rewinds_render_target() {
         let mut state = InterpolationDelayState::new();
@@ -1212,9 +1275,10 @@ mod tests {
             next >= first,
             "render target must not regress after a delay increase: {next} < {first}"
         );
-        assert_eq!(
-            next, first,
-            "presentation may pause while the server estimate catches up"
+        let min_rate = *RENDER_TARGET_PLAYBACK_RATE.start();
+        assert!(
+            (next - (first + min_rate)).abs() < TICK_EPS,
+            "presentation slows to the minimum playback rate while the rise is absorbed: {next}"
         );
 
         let caught_up = state.render_server_tick(104.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
@@ -1459,7 +1523,7 @@ mod tests {
     fn measured_lag_at_lan_zero_matches_time_sync_law() {
         let mut state = InterpolationDelayState::new();
         state.observe_newest_snapshot(100.0, 100, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(state.lag_peak_ticks(), Some(0.0));
+        assert_lag_peak(&state, 0.0);
         for jitter in [0.0, 5_000.0, 20_000.0, 1_000_000.0] {
             assert_eq!(
                 state.delay_ticks(jitter, 0.0, DEFAULT_MICROS_PER_TICK),
@@ -1480,7 +1544,7 @@ mod tests {
 
         // A lag spike of 10 ticks lifts the delay at once: ceil(10 + 2) = 12.
         state.observe_newest_snapshot(102.0, 92, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(state.lag_peak_ticks(), Some(10.0));
+        assert_lag_peak(&state, 10.0);
         assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 12);
 
         // The lag then drops back to 1 tick on every snapshot. After 120 ticks (one
@@ -1527,7 +1591,7 @@ mod tests {
         state.observe_newest_snapshot(110.0, 100, DEFAULT_MICROS_PER_TICK);
         // The same newest snapshot seen on a later frame is not re-measured.
         state.observe_newest_snapshot(130.0, 100, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(state.lag_peak_ticks(), Some(10.0));
+        assert_lag_peak(&state, 10.0);
 
         // A corrupt estimate far ahead is capped at 1 s of lag.
         state.observe_newest_snapshot(1.0e9, 102, DEFAULT_MICROS_PER_TICK);
@@ -1551,9 +1615,124 @@ mod tests {
         state.reset_for_level_unload();
         assert_eq!(state.lag_peak_ticks(), None);
         assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
-        // The next level's first snapshot is measured fresh, even at a reused tick.
-        state.observe_newest_snapshot(101.0, 100, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(state.lag_peak_ticks(), Some(1.0));
+        // The pre-unload tick, seen again after a long load, is not re-measured.
+        state.observe_newest_snapshot(400.0, 100, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(state.lag_peak_ticks(), None);
+        // The next level's first snapshot is measured fresh.
+        state.observe_newest_snapshot(401.0, 400, DEFAULT_MICROS_PER_TICK);
+        assert_lag_peak(&state, 1.0);
+    }
+
+    // Regression: replication keeps its newest snapshot tick across a level unload
+    // while Settling/Frontend frames skip sampling, so the first post-load frame
+    // folded the pre-unload tick against the post-load estimate. The load time read
+    // as lag (capped at 1 s) and held remotes ~1 s behind for seconds.
+    #[test]
+    fn level_unload_folds_no_lag_until_a_post_unload_snapshot_arrives() {
+        use crate::client::ClientReplication;
+        use postretro_entities::EntityRegistry;
+        use postretro_net::wire::SnapshotMessage;
+
+        let empty_snapshot = |sequence: u32, server_tick: u32| SnapshotMessage {
+            sequence,
+            server_tick,
+            records: Vec::new(),
+            state_schema_fingerprint: [0; 32],
+            state_records: Vec::new(),
+            faction_sentiment_record: None,
+            server_script_time: 0.0,
+        };
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        let mut state = InterpolationDelayState::new();
+
+        replication.apply_snapshot(&mut registry, &empty_snapshot(5, 400));
+        let newest = replication
+            .latest_server_tick()
+            .expect("a snapshot accepted");
+        state.observe_newest_snapshot(401.0, newest, DEFAULT_MICROS_PER_TICK);
+        assert_lag_peak(&state, 1.0);
+
+        let _ = replication.reset_for_level_unload();
+        state.reset_for_level_unload();
+
+        // Three seconds of load later, the cursor still names the pre-unload tick.
+        assert_eq!(replication.latest_server_tick(), Some(400));
+        state.observe_newest_snapshot(580.0, 400, DEFAULT_MICROS_PER_TICK);
+        assert_eq!(
+            state.lag_peak_ticks(),
+            None,
+            "no fold of the pre-unload tick"
+        );
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+
+        replication.apply_snapshot(&mut registry, &empty_snapshot(6, 580));
+        let newest = replication
+            .latest_server_tick()
+            .expect("a snapshot accepted");
+        state.observe_newest_snapshot(581.0, newest, DEFAULT_MICROS_PER_TICK);
+        assert_lag_peak(&state, 1.0);
+        assert_eq!(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK), 3);
+    }
+
+    // A delay step slews the render target instead of freezing remotes on a raise
+    // or jumping a whole tick on each decay crossing.
+    #[test]
+    fn render_target_slews_through_a_lag_spike_and_its_decay() {
+        const FRAME_TICKS: f64 = 0.25;
+        let (min_rate, max_rate) = (
+            *RENDER_TARGET_PLAYBACK_RATE.start(),
+            *RENDER_TARGET_PLAYBACK_RATE.end(),
+        );
+        let mut state = InterpolationDelayState::new();
+        let delay = |state: &InterpolationDelayState| {
+            f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK))
+        };
+        // Snapshots every 2 ticks, each newest one folded 1 tick after its stamp.
+        let newest_at = |estimated: f64| ((estimated as u32).saturating_sub(1)) & !1;
+
+        let mut last_target = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        assert!(
+            (last_target - 97.0).abs() < TICK_EPS,
+            "the first frame snaps"
+        );
+        let mut widest_gap = 0.0_f64;
+        // Twenty seconds of frames; at 110 a snapshot lands 10 ticks late.
+        for step in 1..=4_800u32 {
+            let estimated = 100.0 + f64::from(step) * FRAME_TICKS;
+            let newest = if step == 40 {
+                100
+            } else {
+                newest_at(estimated)
+            };
+            state.observe_newest_snapshot(estimated, newest, DEFAULT_MICROS_PER_TICK);
+            let target = state.render_server_tick(estimated, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            let advance = target - last_target;
+            assert!(
+                advance >= min_rate * FRAME_TICKS - TICK_EPS
+                    && advance <= max_rate * FRAME_TICKS + TICK_EPS,
+                "frame {step}: render advance {advance} outside the playback-rate band"
+            );
+            widest_gap = widest_gap.max((target - (estimated - delay(&state))).abs());
+            last_target = target;
+            if step == 40 {
+                assert_lag_peak(&state, 10.0);
+            }
+        }
+        assert!(
+            widest_gap > 5.0,
+            "the spike moved the candidate far enough to exercise slewing: {widest_gap}"
+        );
+        let estimated = 100.0 + 4_800.0 * FRAME_TICKS;
+        assert_eq!(
+            state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK),
+            3,
+            "the lag peak decayed back to the floor"
+        );
+        assert!(
+            (last_target - (estimated - delay(&state))).abs() < TICK_EPS,
+            "steady state converges to the candidate: {last_target}"
+        );
     }
 
     // --- Sample lookup by server tick: midpoint lands halfway. ---

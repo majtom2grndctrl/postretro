@@ -130,6 +130,7 @@ impl App {
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
         self.client_weapon.clear();
+        self.active_slot_resync.reset();
         self.observer_weapon_cues.clear();
         self.client_reload_edges = Default::default();
         self.client_overheat_edge = Default::default();

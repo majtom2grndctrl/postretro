@@ -1,6 +1,10 @@
-// Connected-client safety net for a host active slot that diverged from the
-// owner's: detects a persistent mismatch and asks for one re-declaration.
+// Connected-client re-sync of a host active slot that diverged from the owner's.
 // See: context/lib/networking.md §Combat authority
+
+use postretro_entities::components::inventory::Inventory;
+use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::wieldable_state::WieldableState;
+use postretro_entities::{EntityId, EntityRegistry};
 
 /// Continuous mismatch, in seconds, before the client re-declares its active
 /// slot. A switch the host has accepted shows in the owner-private projection
@@ -17,13 +21,54 @@ const _: () = assert!(ACTIVE_SLOT_RESYNC_WINDOW_SECS > 0.25 + 0.1);
 pub(crate) struct ActiveSlotResyncObservation {
     /// A switch declaration the host has not answered is in flight.
     pub declarations_pending: bool,
-    /// The local inventory has a switch target or origin, or its active
-    /// weapon is lowering or raising.
+    /// The local inventory has a switch target, or its active weapon is
+    /// lowering or raising.
     pub local_switching: bool,
     pub local_active_slot: usize,
     /// The host slot every owner-private weapon sample names
     /// ([`postretro_sim::weapon::ReplicatedWeaponProjection::agreed_slot`]).
     pub projected_slot: Option<usize>,
+}
+
+impl ActiveSlotResyncObservation {
+    /// One tick's observation of `pawn`, or `None` while it holds no active
+    /// weapon.
+    pub fn read(
+        registry: &EntityRegistry,
+        pawn: EntityId,
+        declarations_pending: bool,
+        projected_slot: Option<usize>,
+    ) -> Option<Self> {
+        let (local_active_slot, local_switching) = local_selection(registry, pawn)?;
+        Some(Self {
+            declarations_pending,
+            local_switching,
+            local_active_slot,
+            projected_slot,
+        })
+    }
+}
+
+/// `pawn`'s active slot and whether it is changing hands, or `None` while it
+/// holds no active weapon. `switch_origin` cannot signal a switch: an accepted
+/// switch leaves it set until the next one, so gating on it would silence the
+/// re-sync for the rest of the pawn's life after the first switch.
+pub(super) fn local_selection(registry: &EntityRegistry, pawn: EntityId) -> Option<(usize, bool)> {
+    let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+    let weapon = inventory.active_wieldable()?;
+    let lowering_or_raising =
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .is_ok_and(|component| {
+                matches!(
+                    component.state,
+                    WieldableState::Lowering | WieldableState::Raising
+                )
+            });
+    Some((
+        inventory.active_slot,
+        inventory.switch_target.is_some() || lowering_or_raising,
+    ))
 }
 
 /// Detects a host whose active slot for this client's pawn stays off the
@@ -40,7 +85,8 @@ pub(crate) struct ActiveSlotResync {
 }
 
 impl ActiveSlotResync {
-    /// Forget any accumulated mismatch: no pawn, no endpoint, or a new level.
+    /// Forget any accumulated mismatch: no pawn, no endpoint, a level unload or
+    /// a demotion.
     pub fn reset(&mut self) {
         self.mismatch_secs = 0.0;
     }
@@ -98,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mismatch_shorter_than_the_window_declares_nothing() {
+    fn resync_declares_nothing_inside_the_window() {
         let mut resync = ActiveSlotResync::default();
         assert_eq!(
             ticks_until_declaration(&mut resync, mismatch(), window_ticks() - 2),
@@ -117,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mismatch_lasting_the_window_declares_the_local_slot_exactly_once() {
+    fn resync_declares_the_local_slot_once_after_the_window() {
         let mut resync = ActiveSlotResync::default();
         let mut declared = Vec::new();
         // One tick past the window absorbs float accumulation.
@@ -128,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_declaration_or_local_switch_resets_the_window() {
+    fn resync_resets_the_window_while_pending_or_switching() {
         for interrupt in [
             ActiveSlotResyncObservation {
                 declarations_pending: true,
@@ -163,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_redeclaration_retries_only_after_another_full_window() {
+    fn resync_retries_a_refusal_only_after_another_full_window() {
         let mut resync = ActiveSlotResync::default();
         let first = ticks_until_declaration(&mut resync, mismatch(), 4 * window_ticks())
             .expect("a persistent mismatch declares");

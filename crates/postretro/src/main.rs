@@ -279,6 +279,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
+                app.active_slot_resync.reset();
                 app.observer_weapon_cues.clear();
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
@@ -365,37 +366,12 @@ fn apply_client_switch_resolution(
     session: &mut session::Session,
     resolution: netcode::CurrentSwitchResolution,
 ) {
-    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
-        netcode::CurrentSwitchResolution::None => return,
-        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
-            session
-                .gameplay_input_latch
-                .wieldable_selection_mut()
-                .confirm_latest_declaration(last_weapon_slot);
-            return;
-        }
-        netcode::CurrentSwitchResolution::Refused {
-            target_slot,
-            rollback_slot,
-            last_weapon_slot,
-        } => (target_slot, rollback_slot, last_weapon_slot),
-    };
     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    let Some(pawn) = registry.local_player_movement_pawn() else {
-        return;
-    };
-    if !sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot) {
-        return;
-    }
-    let active_slot = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.active_slot);
-    drop(registry);
-    session
-        .gameplay_input_latch
-        .wieldable_selection_mut()
-        .reset_to_active_with_last(active_slot, last_weapon_slot);
+    client_weapon::settle_switch_resolution(
+        &mut registry,
+        &mut session.gameplay_input_latch,
+        resolution,
+    );
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -5733,79 +5709,6 @@ impl App {
                 rollback_last_weapon_slot,
             );
         }
-    }
-
-    /// Re-declare the local active slot when the host's owner-private weapon
-    /// projection has named a different slot for a full
-    /// `ACTIVE_SLOT_RESYNC_WINDOW_SECS` with nothing in flight.
-    /// The client owns selection, and the player sees the weapon they believe
-    /// they hold, so the host converges to it; a false positive from a lagging
-    /// projection is an idempotent accept on the host. The declaration rides
-    /// the ordinary path with its own slot as rollback, so it starts no local
-    /// lower or raise, and either outcome leaves the held weapon unchanged.
-    fn client_observe_active_slot_resync(&mut self, client_tick: u32, dt: f32) {
-        use postretro_entities::components::wieldable_state::WieldableState;
-        let Some(session) = self.session.as_mut() else {
-            self.active_slot_resync.reset();
-            return;
-        };
-        let Some(endpoint) = session.net_endpoint.as_mut() else {
-            self.active_slot_resync.reset();
-            return;
-        };
-        let local = {
-            let registry = session.scripting.script_ctx.registry.borrow();
-            registry
-                .local_player_movement_pawn()
-                .and_then(|pawn| registry.get_component::<Inventory>(pawn).ok())
-                .filter(|inventory| inventory.active_wieldable().is_some())
-                .map(|inventory| {
-                    let changing_hands = inventory.active_wieldable().is_some_and(|weapon| {
-                        registry
-                            .get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
-                            .is_ok_and(|component| {
-                                matches!(
-                                    component.state,
-                                    WieldableState::Lowering | WieldableState::Raising
-                                )
-                            })
-                    });
-                    (
-                        inventory.active_slot,
-                        changing_hands
-                            || inventory.switch_target.is_some()
-                            || inventory.switch_origin.is_some(),
-                    )
-                })
-        };
-        let Some((local_active_slot, local_switching)) = local else {
-            self.active_slot_resync.reset();
-            return;
-        };
-        let projected_slot = netcode::client_weapon_projection(Some(&*endpoint)).agreed_slot();
-        let Some(slot) = self.active_slot_resync.observe(
-            client_weapon::ActiveSlotResyncObservation {
-                declarations_pending: endpoint.has_pending_switch_declarations(),
-                local_switching,
-                local_active_slot,
-                projected_slot,
-            },
-            dt,
-        ) else {
-            return;
-        };
-        let Ok(declared) = u8::try_from(slot) else {
-            return;
-        };
-        log::info!(
-            "[Net] host projects weapon slot {} but this client holds slot {slot}; re-declaring slot {slot}",
-            projected_slot.map_or_else(|| "?".to_string(), |slot| slot.to_string()),
-        );
-        let last_weapon_slot = session
-            .gameplay_input_latch
-            .wieldable_selection()
-            .last_weapon_slot();
-        endpoint.send_client_switch_declaration(declared, client_tick, slot, last_weapon_slot);
     }
 
     fn client_predict_loaded_movers_tick(&mut self, tick_dt: f32) {

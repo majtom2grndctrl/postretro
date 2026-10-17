@@ -194,7 +194,7 @@ fn scripted_shift(offset: usize) -> Rig {
 // pawn record carrying it applies with (or before) the replicated armed state —
 // with the view turned 90°, one cue, and no later correction.
 //
-// Snapshot deltas apply only against the client's held baseline, so the armed
+// Each entity's delta applies on its own newest-wins baseline, so the armed
 // record (an unchanged baseline until the arm) can apply a snapshot before the
 // moving pawn's record does. The client then predicts the shift itself from
 // replicated armed state; a seamless shift is an isometry, so that path agrees

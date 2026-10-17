@@ -81,7 +81,8 @@ pub fn spawn_net_slot_pawn_with_carried_loadout(
         placement,
         // Keep generic descriptor weapon attachment enabled for parity with the
         // player-start path. Inventory composition independently materializes
-        // live siblings and makes its first populated slot the active instance.
+        // live siblings and selects the carried active slot, falling back to
+        // the first populated slot.
         true,
         DescriptorSpawnPath::NetworkSlot,
         agent_params,

@@ -27,8 +27,14 @@
 //     baseline_ref (a delta carries the full component set), advance the stored
 //     baseline, ack. Newest wins: the host keeps naming its last acked ref while
 //     the client's acks are in flight.
-//   - Delta, some baseline held, new_baseline_id not newer: skip silently; no
-//     state change, no refresh, no ack.
+//   - Delta, new_baseline_id equal to the held one: a metadata-only resend (the
+//     host refreshes authority metadata without bumping an unchanged baseline).
+//     Re-run the metadata consumers (reconcile capture, arming, materialize
+//     retry); no component re-apply, no refresh, no ack. A presentation-bound
+//     entity has no metadata consumers and skips it.
+//   - Delta, new_baseline_id older than the held one: inside an accepted newest
+//     snapshot this breaks newest-wins (an id wrap or namespace regression), so
+//     request refresh, leave state untouched, and do not ack.
 //   - Delta, no held baseline or no live mapping: request refresh, leave state
 //     untouched, and do not ack the entity baseline.
 //   - Despawn: retire the network identity and ack its tombstone. Despawn a
@@ -106,6 +112,7 @@ pub(crate) struct InterpolationSampleStats {
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
 /// repair path keys on entity + missing ref, not the reason (net wire contract).
+/// Reason: a `Delta` arrived with no held baseline, or a regressed one.
 const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 /// Reason: a `FullBaseline` named a `NetworkId` whose mapped `EntityId` was stale.
 const REFRESH_REASON_STALE_MAPPING: u8 = 1;
@@ -124,9 +131,22 @@ const REPAIR_RESEND_INTERVAL_MS: f32 = 200.0;
 /// Whether `candidate` was issued after `held` by a host baseline allocator. Ids
 /// are `u32` from `wrapping_add` allocators that never restart for an endpoint's
 /// lifetime, so this is a serial-number comparison. Full-state deltas apply on
-/// this rule; a `FullBaseline` replaces the held id unconditionally.
+/// this rule; a `FullBaseline` replaces the held id unconditionally. The host's
+/// ack paths compare with plain `>`, which disagrees only past a `u32` wrap.
 pub(crate) fn baseline_is_newer(candidate: u32, held: u32) -> bool {
     (candidate.wrapping_sub(held) as i32) > 0
+}
+
+/// How [`ClientReplication::apply_delta`] disposed of one `Delta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeltaApply {
+    /// Components applied and the stored baseline advanced; ack it.
+    Applied,
+    /// Same baseline id as held: a metadata-only resend. Metadata consumers run;
+    /// nothing re-applies or acks.
+    MetadataRefresh,
+    /// Nothing applied: a refresh was queued, or a payload failed to apply.
+    Rejected,
 }
 
 /// Descriptor-immutable locomotion reference data for a remote enemy. The host
@@ -525,13 +545,15 @@ pub(crate) struct ApplyOutcome {
     pub(crate) accepted_newest_snapshot: bool,
     /// The ack for accepted progress, or `None` for an ignored snapshot.
     /// Per-entity entries acknowledge applied baselines, deliberately
-    /// rejected presentation bindings, and despawn tombstones. Unknown-baseline deltas
-    /// request repair without acknowledging their entity baseline.
+    /// rejected presentation bindings, and despawn tombstones. A delta with no held
+    /// baseline, or a regressed one, requests repair without acknowledging its
+    /// entity baseline.
     pub(crate) ack: Option<AckMessage>,
     /// Written state applies after the entire frame batch has materialized.
     pub(crate) presentation_payloads: Vec<(NetworkId, ComponentPayload)>,
-    /// Refresh requests triggered by this snapshot (unknown-baseline deltas, stale
-    /// mappings). Sent immediately; the pending set also resends them on cadence.
+    /// Refresh requests triggered by this snapshot (deltas with no held baseline or
+    /// a regressed one, stale mappings). Sent immediately; the pending set also
+    /// resends them on cadence.
     pub(crate) refresh_requests: Vec<BaselineRefreshRequest>,
     /// Typed diagnostics for payloads received but deliberately not applied.
     pub(crate) ignored: Vec<IgnoredPayload>,
@@ -869,8 +891,8 @@ impl ClientReplication {
             ..ApplyOutcome::default()
         };
         // Applied records and terminal tombstones are acked. Rejected presentation
-        // bindings are also acked so the host can retire them; unknown-baseline
-        // records request repair without an entity-baseline ack.
+        // bindings are also acked so the host can retire them; deltas with no held
+        // baseline or a regressed one request repair without an entity-baseline ack.
         let mut acked_baselines: Vec<(u32, u32)> = Vec::new();
         let mut acked_tombstones: Vec<(u32, u32)> = Vec::new();
 
@@ -1010,75 +1032,79 @@ impl ClientReplication {
                             acked_baselines.push((*network_id, *new_baseline_id));
                             continue;
                         }
-                        let held = self.baselines.get(&nid).copied();
-                        if let Some(held) = held
-                            && self.map.get(&nid).is_some_and(|id| registry.exists(*id))
-                        {
-                            if baseline_is_newer(*new_baseline_id, held) {
+                        let live = self.map.get(&nid).is_some_and(|id| registry.exists(*id));
+                        let held = self.baselines.get(&nid).copied().filter(|_| live);
+                        match held {
+                            Some(held) if baseline_is_newer(*new_baseline_id, held) => {
                                 self.baselines.insert(nid, *new_baseline_id);
                                 collect_presentation_payloads(&mut outcome, nid, components);
                                 acked_baselines.push((*network_id, *new_baseline_id));
                             }
-                        } else {
-                            self.queue_repair(
+                            // A metadata-only resend: a bound authored entity has no
+                            // metadata consumers.
+                            Some(held) if *new_baseline_id == held => {}
+                            // No held baseline or live mapping, or a regressed id.
+                            _ => self.queue_repair(
                                 &mut outcome.refresh_requests,
                                 snapshot.sequence,
                                 nid,
                                 *baseline_ref,
                                 REFRESH_REASON_UNKNOWN_BASELINE,
-                            );
+                            ),
                         }
                         continue;
                     }
-                    if self.apply_delta(
+                    let disposition = self.apply_delta(
                         registry,
                         snapshot.sequence,
                         snapshot.server_tick,
                         mover_target_tick,
                         mover_tick_dt,
-                        NetworkId(*network_id),
+                        nid,
                         *baseline_ref,
                         *new_baseline_id,
                         components,
                         *local_player,
                         entity_class.as_deref(),
                         &mut outcome,
-                    ) {
-                        collect_presentation_payloads(
-                            &mut outcome,
-                            NetworkId(*network_id),
-                            components,
-                        );
+                    );
+                    if disposition == DeltaApply::Rejected {
+                        continue;
+                    }
+                    if disposition == DeltaApply::Applied {
+                        collect_presentation_payloads(&mut outcome, nid, components);
                         self.retain_projectile_presentation(
                             registry,
-                            NetworkId(*network_id),
+                            nid,
                             *projectile_presentation,
                         );
                         acked_baselines.push((*network_id, *new_baseline_id));
-                        self.maybe_surface_active_weapon_attachment(
-                            NetworkId(*network_id),
-                            *local_player,
-                            entity_class.as_deref(),
-                            active_weapon_archetype.clone(),
-                            components,
-                            &mut outcome,
-                        );
-                        self.maybe_arm_local_pawn(
-                            registry,
-                            NetworkId(*network_id),
-                            *local_player,
-                            entity_class.clone(),
-                            &mut outcome,
-                        );
-                        self.capture_local_reconcile(
-                            NetworkId(*network_id),
-                            *local_player,
-                            components,
-                            snapshot.server_tick,
-                            *last_processed_client_tick,
-                            &mut outcome,
-                        );
                     }
+                    // A metadata-only resend still carries the refreshed reconcile
+                    // cursor and ownership, so these run for it too.
+                    self.maybe_surface_active_weapon_attachment(
+                        nid,
+                        *local_player,
+                        entity_class.as_deref(),
+                        active_weapon_archetype.clone(),
+                        components,
+                        &mut outcome,
+                    );
+                    self.maybe_arm_local_pawn(
+                        registry,
+                        nid,
+                        *local_player,
+                        entity_class.clone(),
+                        &mut outcome,
+                    );
+                    self.capture_local_reconcile(
+                        nid,
+                        *local_player,
+                        components,
+                        snapshot.server_tick,
+                        *last_processed_client_tick,
+                        &mut outcome,
+                    );
                 }
                 EntityRecord::Despawn {
                     network_id,
@@ -1347,9 +1373,8 @@ impl ClientReplication {
         }
     }
 
-    /// Apply a `Delta`. Returns `true` if applied (ackable), `false` if it was not
-    /// newer than the held baseline (skipped) or requested a refresh (no held
-    /// baseline or live mapping). See the module state machine.
+    /// Apply a `Delta` and report how it was disposed of. See the module state
+    /// machine.
     #[allow(clippy::too_many_arguments)]
     fn apply_delta(
         &mut self,
@@ -1365,15 +1390,21 @@ impl ClientReplication {
         local_player: bool,
         entity_class: Option<&str>,
         outcome: &mut ApplyOutcome,
-    ) -> bool {
-        // The client must hold some baseline and a live mapped entity; otherwise
-        // request a refresh and leave current state untouched. A delta carries the
-        // full component set, so any held baseline older than `new_baseline_id`
-        // suffices; one not older is a duplicate or reordered record to skip.
+    ) -> DeltaApply {
+        // The client must hold some baseline and a live mapped entity. A delta
+        // carries the full component set, so any held baseline older than
+        // `new_baseline_id` suffices. Deltas reach here only from an accepted newest
+        // snapshot, whose ids never run backward, so a regressed id is a broken
+        // invariant: skipping it would leave the host resending forever.
         let held = self.baselines.get(&network_id).copied();
         let mapped = self.map.get(&network_id).copied();
         let (held, id) = match (held, mapped) {
-            (Some(held), Some(id)) if registry.exists(id) => (held, id),
+            (Some(held), Some(id))
+                if registry.exists(id)
+                    && (new_baseline_id == held || baseline_is_newer(new_baseline_id, held)) =>
+            {
+                (held, id)
+            }
             _ => {
                 self.queue_repair(
                     &mut outcome.refresh_requests,
@@ -1382,11 +1413,21 @@ impl ClientReplication {
                     baseline_ref,
                     REFRESH_REASON_UNKNOWN_BASELINE,
                 );
-                return false;
+                return DeltaApply::Rejected;
             }
         };
-        if !baseline_is_newer(new_baseline_id, held) {
-            return false;
+        if new_baseline_id == held {
+            // The host refreshes authority metadata every tick without bumping an
+            // unchanged baseline, so this resend's components are already applied.
+            // Only the materialize retry runs here; the caller runs the rest.
+            self.maybe_surface_remote_entity_materialize(
+                id,
+                local_player,
+                entity_class,
+                components,
+                outcome,
+            );
+            return DeltaApply::MetadataRefresh;
         }
         if !self.apply_components_to(
             registry,
@@ -1398,7 +1439,7 @@ impl ClientReplication {
             components,
             outcome,
         ) {
-            return false;
+            return DeltaApply::Rejected;
         }
         self.maybe_surface_remote_entity_materialize(
             id,
@@ -1407,12 +1448,12 @@ impl ClientReplication {
             components,
             outcome,
         );
-        // Advance the stored baseline so the next delta chains from this one. An
-        // empty-component delta is a valid no-op apply: it still advances the baseline
-        // (the server bumped the baseline id even if the mirrors did not change the
-        // applied set), so the client stays in step.
+        // Advance the stored baseline so newest-wins can skip a duplicate and refresh
+        // on a regression. An empty-component delta is a valid no-op apply: it still
+        // advances the baseline (the server bumped the baseline id even if the
+        // mirrors did not change the applied set), so the client stays in step.
         self.baselines.insert(network_id, new_baseline_id);
-        true
+        DeltaApply::Applied
     }
 
     fn maybe_surface_remote_entity_materialize(
@@ -3803,8 +3844,8 @@ mod tests {
         );
     }
 
-    // --- Empty delta is a no-op only when its baseline ref is known: it advances the
-    // baseline (held ref) but errors-to-repair otherwise. ---
+    // --- An empty delta newer than the held baseline is a valid no-op apply that
+    // advances the baseline; resent at the held id it acks nothing. ---
     #[test]
     fn empty_delta_is_noop_apply_when_baseline_known() {
         let mut registry = EntityRegistry::new();
@@ -3835,7 +3876,8 @@ mod tests {
         assert!(!client.is_pending_repair(NetworkId(7)));
         assert_eq!(out.ack.unwrap().entity_baselines, vec![(7, 2)]);
 
-        // A repeated empty delta for the baseline already held is skipped silently.
+        // A repeated empty delta for the baseline already held is a metadata-only
+        // resend: no refresh, no ack.
         let out2 =
             client.apply_snapshot(&mut registry, &snapshot(2, 3, vec![delta(7, 1, 2, vec![])]));
         assert!(!client.is_pending_repair(NetworkId(7)));
@@ -3879,8 +3921,11 @@ mod tests {
         assert_eq!(out_c.ack.unwrap().entity_baselines, vec![(7, 3)]);
     }
 
+    // Reordering and duplication inside the accepted-newest stream: a late
+    // snapshot is dropped by the sequence gate and a duplicate id is skipped, but a
+    // regressed id inside a newer snapshot breaks newest-wins and requests repair.
     #[test]
-    fn reordered_and_duplicate_deltas_are_skipped_without_refresh() {
+    fn duplicate_delta_skips_and_regressed_delta_requests_refresh() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(
@@ -3905,21 +3950,12 @@ mod tests {
             &mut registry,
             &snapshot(1, 2, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
         );
-        // B's baseline in a newer snapshot is still older than the held one.
-        let stale_b = client.apply_snapshot(
-            &mut registry,
-            &snapshot(3, 4, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
-        );
         // A duplicate C, resent before the host saw the ack for 3.
         let dup_c = client.apply_snapshot(
             &mut registry,
-            &snapshot(4, 5, vec![delta(7, 1, 3, vec![transform_payload(30.0)])]),
+            &snapshot(3, 4, vec![delta(7, 1, 3, vec![transform_payload(30.0)])]),
         );
-
-        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
-        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
-        assert!(!client.is_pending_repair(NetworkId(7)));
-        for out in [&late_b, &stale_b, &dup_c] {
+        for out in [&late_b, &dup_c] {
             assert!(out.refresh_requests.is_empty());
             assert!(
                 out.ack
@@ -3928,6 +3964,28 @@ mod tests {
                 "a skipped delta is not acked"
             );
         }
+        assert!(!client.is_pending_repair(NetworkId(7)));
+
+        // B's baseline in a newer snapshot is older than the held one: repair.
+        let regressed_b = client.apply_snapshot(
+            &mut registry,
+            &snapshot(4, 5, vec![delta(7, 1, 2, vec![transform_payload(2.0)])]),
+        );
+        assert_eq!(regressed_b.refresh_requests.len(), 1);
+        assert_eq!(regressed_b.refresh_requests[0].network_id, 7);
+        assert_eq!(
+            regressed_b.refresh_requests[0].reason,
+            REFRESH_REASON_UNKNOWN_BASELINE
+        );
+        assert!(client.is_pending_repair(NetworkId(7)));
+        assert!(
+            regressed_b.ack.unwrap().entity_baselines.is_empty(),
+            "a regressed delta is not acked"
+        );
+
+        // No state moved: the held baseline and pose are C's.
+        assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(3));
     }
 
     #[test]
@@ -5475,6 +5533,75 @@ mod tests {
             Some(4),
             "the host command ack is preserved for prune/replay"
         );
+    }
+
+    // The host refreshes the reconcile cursor every tick without bumping an unchanged
+    // pawn's baseline, so while its ack is in flight it resends Delta(A->N) with a
+    // newer `last_processed_client_tick`. That equal-id resend must still advance the
+    // reconcile cursor, without re-acking or requesting repair.
+    #[test]
+    fn equal_id_local_delta_refreshes_reconcile_cursor_without_refresh_or_ack() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                10,
+                vec![local_player_baseline(
+                    7,
+                    1,
+                    vec![transform_payload(0.0), movement_payload()],
+                )],
+            ),
+        );
+        let applied = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                12,
+                vec![local_player_delta(
+                    7,
+                    1,
+                    2,
+                    Some(4),
+                    vec![transform_payload(2.0), movement_payload()],
+                )],
+            ),
+        );
+        assert_eq!(applied.ack.unwrap().entity_baselines, vec![(7, 2)]);
+
+        let resend = client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                14,
+                vec![local_player_delta(
+                    7,
+                    1,
+                    2,
+                    Some(6),
+                    vec![transform_payload(2.0), movement_payload()],
+                )],
+            ),
+        );
+
+        let reconcile = resend
+            .local_reconcile
+            .expect("the metadata-only resend is captured for reconcile");
+        assert_eq!(reconcile.acked_tick, Some(6), "the cursor advanced");
+        assert_eq!(reconcile.server_tick, 14);
+        assert!(
+            (reconcile.transform.position - Vec3::new(2.0, 0.0, 0.0)).length() < EPSILON,
+            "the resend carries the already-applied pose"
+        );
+        assert!(resend.refresh_requests.is_empty(), "no repair requested");
+        assert!(!client.is_pending_repair(NetworkId(7)));
+        assert!(
+            resend.ack.unwrap().entity_baselines.is_empty(),
+            "the held baseline is not re-acked"
+        );
+        assert_eq!(client.stored_baseline(NetworkId(7)), Some(2));
     }
 
     // Regression: the dev-tools "remote" capsule overlay used the raw client

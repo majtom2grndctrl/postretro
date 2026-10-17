@@ -150,7 +150,13 @@ struct Sample {
 /// `max(RTT_GATE_FLOOR_US, RTT_GATE_FRACTION × min)`. Gated samples touch nothing
 /// else. Snapshots ride an unreliable channel and see no such stalls, so the
 /// filtered jitter is the right input for the remote interpolation delay. The
-/// first sample still seeds.
+/// first sample still seeds. A later sample that sets the window minimum more
+/// than one gate tolerance below the smoothed RTT reseeds offset and RTT at
+/// weight 1 and zeroes jitter, so a stalled first probe does not linger.
+///
+/// Under a fast RTT ramp the gate holds the estimate at the old minimum until
+/// the ramp flattens and that minimum rolls out of the window; the interpolation
+/// delay's measured snapshot-lag law covers remotes meanwhile.
 ///
 /// Stale-echo policy: each accepted sample must carry a `sample_id` strictly
 /// greater than the last accepted one. A reordered or duplicated echo (older or
@@ -219,8 +225,13 @@ impl RttWindow {
     /// empty window admits everything.
     fn admits(&self, rtt_us: f64) -> bool {
         self.min()
-            .is_none_or(|min| rtt_us <= min + (RTT_GATE_FRACTION * min).max(RTT_GATE_FLOOR_US))
+            .is_none_or(|min| rtt_us <= min + gate_tolerance_us(min))
     }
+}
+
+/// The min-RTT gate's tolerance above a window minimum of `min_us`.
+fn gate_tolerance_us(min_us: f64) -> f64 {
+    (RTT_GATE_FRACTION * min_us).max(RTT_GATE_FLOOR_US)
 }
 
 impl ClockEstimator {
@@ -311,26 +322,41 @@ impl ClockEstimator {
         // Min-RTT gate: the sample joins the window first, so a new minimum
         // always folds. The first sample seeds regardless (it is the minimum).
         self.rtt_window.push(rtt_us);
-        if !self.initialized || self.rtt_window.admits(rtt_us) {
+        if !self.initialized || self.reseeds_from(rtt_us) {
+            self.seed(sample);
+        } else if self.rtt_window.admits(rtt_us) {
             self.fold(sample);
         }
         true
     }
 
-    /// Smoothing core: seed on the first sample, then EWMA-blend offset/RTT at
-    /// [`OFFSET_SMOOTHING`] and the jitter at [`JITTER_SMOOTHING`].
-    fn fold(&mut self, sample: Sample) {
-        // The offset that makes the local-clock midpoint map exactly to the
-        // echoed server tick: server_tick - (midpoint_us / micros_per_tick).
-        let sample_offset = sample.server_tick - sample.recv_midpoint_us / self.micros_per_tick;
+    /// Does a sample at `rtt_us` reseed the estimate? It must be the window
+    /// minimum and sit more than one gate tolerance below the smoothed RTT. A
+    /// stalled first probe seeds an inflated RTT and a midpoint biased by half the
+    /// stall, which the 0.1 EWMA would take seconds to drain; the first clean
+    /// sample replaces it outright.
+    fn reseeds_from(&self, rtt_us: f64) -> bool {
+        self.rtt_window.min() == Some(rtt_us) && rtt_us + gate_tolerance_us(rtt_us) < self.rtt_us
+    }
 
-        if !self.initialized {
-            self.initialized = true;
-            self.offset_ticks = sample_offset;
-            self.rtt_us = sample.rtt_us;
-            self.jitter_us = 0.0;
-            return;
-        }
+    /// The offset that makes the sample's local-clock midpoint map exactly to its
+    /// echoed server tick: `server_tick - midpoint_us / micros_per_tick`.
+    fn sample_offset(&self, sample: Sample) -> f64 {
+        sample.server_tick - sample.recv_midpoint_us / self.micros_per_tick
+    }
+
+    /// Adopt `sample` outright (weight 1): the first sample, or a reseed.
+    fn seed(&mut self, sample: Sample) {
+        self.initialized = true;
+        self.offset_ticks = self.sample_offset(sample);
+        self.rtt_us = sample.rtt_us;
+        self.jitter_us = 0.0;
+    }
+
+    /// Smoothing core: EWMA-blend offset/RTT at [`OFFSET_SMOOTHING`] and the
+    /// jitter at [`JITTER_SMOOTHING`].
+    fn fold(&mut self, sample: Sample) {
+        let sample_offset = self.sample_offset(sample);
 
         // Jitter first, against the *current* RTT estimate (before it absorbs
         // this sample), so the deviation reflects this sample vs. the prior mean.
@@ -797,6 +823,44 @@ mod tests {
             "an 18 ms sample within the floor folds, RTT {}",
             est.rtt_micros()
         );
+    }
+
+    // A stalled first probe seeds an inflated RTT and a midpoint biased by half the
+    // stall. At EWMA weight 0.1 that took seconds to drain; the first clean sample,
+    // a new window minimum far below the smoothed RTT, reseeds outright.
+    #[test]
+    fn stalled_first_probe_reseeds_on_the_first_clean_sample() {
+        const STALL_US: u64 = 300_000;
+        let mut est = ClockEstimator::new(DEFAULT_MICROS_PER_TICK);
+        feed(&mut est, &[round_trip(0, 0, 75_000 + STALL_US, 75_000)]);
+        assert!(
+            (est.rtt_micros() - 450_000.0).abs() < EPS,
+            "the stall seeded"
+        );
+
+        let first_clean = round_trip(1, SAMPLE_PERIOD_US, 75_000, 75_000);
+        feed(&mut est, std::slice::from_ref(&first_clean));
+        let (clean_offset, _) = ungated_fold(std::slice::from_ref(&first_clean));
+        assert!(
+            (est.rtt_micros() - 150_000.0).abs() < EPS,
+            "RTT reseeds from the clean sample, got {}",
+            est.rtt_micros()
+        );
+        assert!(est.jitter_micros().abs() < EPS, "jitter resets to zero");
+        assert!(
+            (est.estimated_server_tick_at(0) - clean_offset).abs() < EPS,
+            "the offset reseeds from the clean sample"
+        );
+        assert!((est.estimated_server_tick_at(0) - TRUE_OFFSET_TICKS).abs() <= 1.0);
+
+        // Later clean samples fold as usual: a repeat of the minimum does not
+        // reseed and leaves the estimate at the clean link.
+        feed(
+            &mut est,
+            &[round_trip(2, 2 * SAMPLE_PERIOD_US, 75_000, 75_000)],
+        );
+        assert!((est.rtt_micros() - 150_000.0).abs() < EPS);
+        assert!(est.jitter_micros().abs() < EPS);
     }
 
     // --- Provenance guard: forged sample_id cannot wedge the estimator ---

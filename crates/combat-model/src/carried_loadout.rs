@@ -61,8 +61,9 @@ pub fn restore_carried_health(
 /// action's `charge` gains `interruptedBy`, which the client's vault fire gate
 /// reads (an epoch-12 reader rejects the unknown field). 14: the payload
 /// gains `spawn_active_slot`, the slot the host composed the pawn active with,
-/// which the client's install composition selects (an epoch-13 reader rejects
-/// the unknown field).
+/// which the client's install composition selects. An epoch-13 reader rejects
+/// the payload on the epoch check; without the bump it would silently drop the
+/// field and start on the first populated slot.
 pub const TUNING_PAYLOAD_EPOCH: u32 = 14;
 
 /// Host-resolved values for one occupied wieldable slot.

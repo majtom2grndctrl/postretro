@@ -371,6 +371,73 @@ fn conditioned_switch_with_a_malformed_tick_is_refused_without_switching() {
     );
 }
 
+/// The owner-private projection names the host's active slot about a round
+/// trip late.
+const RESYNC_PROJECTION_LAG_TICKS: usize = 12;
+
+impl Fixture {
+    /// One client tick under the active-slot re-sync: predict `command`,
+    /// project the host's active slot `RESYNC_PROJECTION_LAG_TICKS` late,
+    /// observe through the production reader, and declare as production does.
+    /// Returns the slot re-declared on this tick.
+    fn resync_tick(
+        &mut self,
+        resync: &mut crate::client_weapon::ActiveSlotResync,
+        tick: u32,
+        mut command: sim::SimCommand,
+    ) -> Option<usize> {
+        self.predict(tick, &mut command);
+        self.projection.cooldown = self
+            .host_active
+            .iter()
+            .rev()
+            .nth(RESYNC_PROJECTION_LAG_TICKS)
+            .map(|&(_, slot)| weapon::SlotSample { slot, value: 0.0 });
+        let observation = crate::client_weapon::ActiveSlotResyncObservation::read(
+            &self.local.borrow(),
+            self.local_actors.pawn,
+            (self.next_switch_id as usize) > self.switch_outcomes.len(),
+            self.projection.agreed_slot(),
+        )
+        .expect("the local pawn holds a weapon");
+        let declared = resync.observe(observation, DT);
+        if let Some(slot) = declared {
+            self.client
+                .send_switch_declaration(wire::ClientSwitchDeclaration {
+                    declaration_id: self.next_switch_id,
+                    slot: u8::try_from(slot).unwrap(),
+                    client_tick: tick,
+                });
+            self.next_switch_id += 1;
+        }
+        self.send_input(tick, &command);
+        self.advance_projectiles();
+        self.host_tick();
+        declared
+    }
+
+    fn local_inventory(&self) -> Inventory {
+        self.local
+            .borrow()
+            .get_component::<Inventory>(self.local_actors.pawn)
+            .unwrap()
+            .clone()
+    }
+
+    /// Point the host pawn at `slot` without a switch: the divergence the
+    /// re-sync exists to repair.
+    fn diverge_host_active_slot(&mut self, slot: usize) {
+        let mut host = self.host.borrow_mut();
+        let mut inventory = host
+            .get_component::<Inventory>(self.host_actors.pawn)
+            .unwrap()
+            .clone();
+        inventory.active_slot = slot;
+        host.set_component(self.host_actors.pawn, inventory)
+            .unwrap();
+    }
+}
+
 // Regression: after a level change the host restored a carried selection the
 // client never composed, so the host held one weapon while its owner held
 // another, and nothing re-converged them: pressing the held weapon's key sends
@@ -379,76 +446,85 @@ fn conditioned_switch_with_a_malformed_tick_is_refused_without_switching() {
 // converges to it and the detector then stays quiet.
 #[test]
 fn conditioned_host_active_slot_divergence_converges_on_the_client_selection() {
-    use crate::client_weapon::{ActiveSlotResync, ActiveSlotResyncObservation};
-    // The owner-private projection names the host's active slot about a round
-    // trip late.
-    const PROJECTION_LAG_TICKS: usize = 12;
     let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
     fixture.equip_second(&hitscan_rifle("press", 130.0));
-    {
-        let mut host = fixture.host.borrow_mut();
-        let mut inventory = host
-            .get_component::<Inventory>(fixture.host_actors.pawn)
-            .unwrap()
-            .clone();
-        inventory.active_slot = 1;
-        host.set_component(fixture.host_actors.pawn, inventory)
-            .unwrap();
-    }
-    let local_active = |fixture: &Fixture| {
-        fixture
-            .local
-            .borrow()
-            .get_component::<Inventory>(fixture.local_actors.pawn)
-            .unwrap()
-            .clone()
-    };
-    assert_eq!(local_active(&fixture).active_slot, 0);
+    fixture.diverge_host_active_slot(1);
+    assert_eq!(fixture.local_inventory().active_slot, 0);
 
-    let mut resync = ActiveSlotResync::default();
-    let mut declared = Vec::new();
-    for offset in 0..240 {
-        let tick = START + offset;
-        let mut command = neutral();
-        fixture.predict(tick, &mut command);
-        fixture.projection.cooldown = fixture
-            .host_active
-            .iter()
-            .rev()
-            .nth(PROJECTION_LAG_TICKS)
-            .map(|&(_, slot)| weapon::SlotSample { slot, value: 0.0 });
-        let inventory = local_active(&fixture);
-        let observation = ActiveSlotResyncObservation {
-            declarations_pending: (fixture.next_switch_id as usize) > fixture.switch_outcomes.len(),
-            local_switching: inventory.switch_target.is_some() || inventory.switch_origin.is_some(),
-            local_active_slot: inventory.active_slot,
-            projected_slot: fixture.projection.agreed_slot(),
-        };
-        if let Some(slot) = resync.observe(observation, DT) {
-            fixture
-                .client
-                .send_switch_declaration(wire::ClientSwitchDeclaration {
-                    declaration_id: fixture.next_switch_id,
-                    slot: u8::try_from(slot).unwrap(),
-                    client_tick: tick,
-                });
-            fixture.next_switch_id += 1;
-            declared.push((tick, slot));
-        }
-        fixture.send_input(tick, &command);
-        fixture.advance_projectiles();
-        fixture.host_tick();
-    }
+    let mut resync = crate::client_weapon::ActiveSlotResync::default();
+    let declared: Vec<usize> = (0..240)
+        .filter_map(|offset| fixture.resync_tick(&mut resync, START + offset, neutral()))
+        .collect();
 
-    assert_eq!(declared.len(), 1, "one re-declaration: {declared:?}");
-    assert_eq!(declared[0].1, 0, "the client's own slot");
+    assert_eq!(
+        declared,
+        vec![0],
+        "one re-declaration of the client's own slot"
+    );
     fixture.assert_switches_accepted(1);
     assert_eq!(
         fixture.host_active.last().unwrap().1,
         0,
         "the host converged"
     );
-    let inventory = local_active(&fixture);
+    let inventory = fixture.local_inventory();
     assert_eq!(inventory.active_slot, 0, "the client never changed hands");
     assert_eq!(inventory.switch_target, None);
+}
+
+// Regression: the re-sync treated a retained `switch_origin` as a switch in
+// flight. An accepted switch leaves it set until the next one, so after the
+// player's first switch the detector reset every tick and a later divergence
+// never re-converged.
+#[test]
+fn conditioned_active_slot_resync_fires_after_an_accepted_switch() {
+    const DIVERGE: u32 = 120;
+    let mut fixture = Fixture::new(LinkConfig::perfect(), hitscan_rifle("press", 130.0));
+    fixture.equip_second(&hitscan_rifle("press", 130.0));
+
+    let mut resync = crate::client_weapon::ActiveSlotResync::default();
+    let mut declared = Vec::new();
+    for offset in 0..DIVERGE {
+        let command = if offset == 0 { switch_to(1) } else { neutral() };
+        declared.extend(fixture.resync_tick(&mut resync, START + offset, command));
+    }
+    assert!(
+        declared.is_empty(),
+        "a settled switch is no divergence: {declared:?}"
+    );
+    fixture.assert_switches_accepted(1);
+    let settled = fixture.local_inventory();
+    assert_eq!(settled.active_slot, 1);
+    assert_eq!(
+        settled.switch_origin,
+        Some(0),
+        "an accepted switch keeps its origin, the state the old gate misread"
+    );
+
+    fixture.diverge_host_active_slot(0);
+    let mut first_declaration = None;
+    for offset in DIVERGE..DIVERGE + 240 {
+        if let Some(slot) = fixture.resync_tick(&mut resync, START + offset, neutral()) {
+            first_declaration.get_or_insert(offset);
+            declared.push(slot);
+        }
+    }
+
+    assert_eq!(
+        declared,
+        vec![1],
+        "one re-declaration of the client's own slot"
+    );
+    let window_ticks = (crate::client_weapon::ACTIVE_SLOT_RESYNC_WINDOW_SECS / DT) as u32;
+    assert!(
+        first_declaration.unwrap() >= DIVERGE + window_ticks,
+        "only after a full window of mismatch"
+    );
+    fixture.assert_switches_accepted(2);
+    assert_eq!(
+        fixture.host_active.last().unwrap().1,
+        1,
+        "the host converged"
+    );
+    assert_eq!(fixture.local_inventory().active_slot, 1);
 }

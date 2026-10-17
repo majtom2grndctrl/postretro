@@ -902,6 +902,7 @@ impl NetEndpoint {
             tuning,
             tuning_generation,
             applied_movement_tuning_generation,
+            pending_switch_declarations,
             ..
         } = self
         else {
@@ -929,6 +930,16 @@ impl NetEndpoint {
             {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
+        }
+        // After any rematerialization above, so the slot is checked against
+        // the inventory this payload left.
+        if let (Some(payload), Some(armed)) = (tuning.as_deref(), replication.armed_local_pawn()) {
+            adopt_payload_spawn_active_slot(
+                registry,
+                armed.entity_id,
+                payload,
+                !pending_switch_declarations.is_empty(),
+            );
         }
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");

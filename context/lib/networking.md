@@ -69,7 +69,7 @@ baseline, then sends the durable tombstone. Attempting one unreliable endpoint
 snapshot is not delivery. Excluded recipients never mapped the visual and do not
 hold this acknowledgment gate open.
 
-Clients acknowledge replication progress over the reliable Input channel. Acks are monotonic and additive: omitted entities or state slots leave prior server-side ack state intact. A delta no newer than the held baseline (duplicate or reordered) is skipped silently. A client that receives a delta while holding no baseline does not guess; it requests a full baseline refresh and waits for repair.
+Clients acknowledge replication progress over the reliable Input channel. Acks are monotonic and additive: omitted entities or state slots leave prior server-side ack state intact. Deltas apply only from the newest accepted snapshot. One at the held baseline id is a resend: the host refreshes authority metadata (resolved command tick, ownership, class) every tick without bumping an unchanged baseline, so the client re-reads that metadata and neither re-applies nor acks. One older than the held id breaks the newest-wins invariant (an id wrap or namespace regression); the client requests a full baseline refresh rather than skip it, since a skip would leave the host resending forever. A client that receives a delta while holding no baseline does not guess; it requests a full baseline refresh and waits for repair. The faction-sentiment overlay has no refresh request; each of its records is the complete set, so a regressed one is adopted and acked.
 
 State-slot baseline ids use one non-recycled namespace for the server endpoint's
 lifetime. A schema rebuild retires earlier ids and clears per-client state without
@@ -149,7 +149,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — the host resolves that slot's pawn tuning at the participation transition and resends it whenever it changes, and the client installs it instead of reading its own registry.
 
-The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. So does the slot the host composed the pawn's inventory active with (a carried selection after a level change or rejoin): a client composing its own inventory from the payload starts on it, falling back to the first populated slot when it names an empty one. It is fixed at spawn and never tracks a switch, so the whole-struct dedupe never resends tuning for one. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. So does the slot the host composed the pawn's inventory active with (a carried selection after a level change or rejoin): a client composing its own inventory from the payload starts on it, falling back to the first populated slot when it names no populated slot. It is fixed at spawn and never tracks a switch, so the whole-struct dedupe never resends tuning for one. A pawn baseline can arm before its level's payload (the Control resend still in flight on a lossy link) and compose from the previous one; the late payload then moves the client to its slot only while the selection is untouched: still on the composed slot, no switch made or in flight, nothing declared, and the slot populated. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
 
 **Level environment rides the same payload.** Every pawn's tuning carries the host's level environment: the level default gravity (worldspawn `initialGravity`, then any `setGravity`) and the host's fluid table, name and viscosity per fluid in declaration order. It is level-scoped, so an environment-only change installs without rebuilding the client's pawn tuning. A connected client builds its prediction and replay environment only from the installed values: it never reads its own level gravity, and it resolves level fluid names only against the host table, never its own registry, because admission gates on mod id and never on version. A name the host lacks is dry on the client even if the client declares it. Before the first install the client builds its volumes with every fluid dry and does not predict. Every fluid field but name and viscosity is presentation and resolves locally by name, as sound keys do; a client without the fluid shows none. Peers may therefore see different opacity and murk, a visibility difference non-competitive co-op accepts. Fluid surface drift is the exception: it agrees with the swimmer it depicts, so it resolves from the installed fluid table and tuning, and re-resolves on each install (`rendering_pipeline.md` §7.3a). Changed tuning is queued immediately before the snapshot send, so a mid-level `setGravity` costs at most one correction; loss retransmit or lane reorder on a lossy link can still deliver it after a snapshot. Regional volumes themselves are PRL data the content digest proves, not replicated; a teleporter's armed state is the one runtime exception (§Current contract).
 
@@ -247,7 +247,7 @@ The roster publishes no lower than admitted. Admission is a compatibility gate, 
 The transport crate emits typed snapshots and **never mutates the registry.** All registry-touching replication lives in `postretro-netcode`, which owns the two halves of the data path:
 
 - **Host serialize:** walk the authoritative replicable set, stamp each `EntityId` to its stable `NetworkId`, convert to wire mirrors, and build per-client baseline/delta/despawn records. Borrows the registry **immutably**.
-- **Client apply:** apply `FullBaseline`, `Delta`, and `Despawn` through the mapped `NetworkId→EntityId` state machine. Full baselines materialize or refresh entities; deltas mutate only a mapped, live entity whose held baseline they supersede; despawns remove mapped entities idempotently and drop their mappings.
+- **Client apply:** apply `FullBaseline`, `Delta`, and `Despawn` through the mapped `NetworkId→EntityId` state machine. Full baselines materialize or refresh entities; deltas mutate only a mapped, live entity whose held baseline they supersede, and a delta at the held id refreshes only its metadata; despawns remove mapped entities idempotently and drop their mappings.
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
@@ -353,7 +353,7 @@ Press **Off** on the Network tab to compare against the unimpaired link mid-sess
 
 ## Time sync
 
-A client clock-sync exchange (`postretro-net` `timesync` module) keeps the client's estimate of the server tick. The client periodically sends a probe on the reliable Input channel; the server echoes its current tick. The client measures round-trip against **its own** monotonic clock — the server's echoed time is telemetry, never compared cross-clock, because the two origins are unrelated. A pure estimator smooths a server-tick offset, RTT, and a link-jitter estimate behind an injected clock, so tests drive it on the harness's virtual clock. Because probes ride a reliable-ordered channel, a probe stuck behind a lost packet waits out a resend in one direction only, inflating its RTT and biasing its midpoint; so every echo enters a short window of recent RTTs, but only a sample near the window minimum folds into the estimate. The window rolls, so a sustained latency increase is adopted within one window. The interpolation buffer reads the offset to find the server's current tick, then renders remote pawns behind it by the larger of two delays. The time-sync delay is half the smoothed RTT (snapshot transit) plus a jitter-sized buffer. The measured delay is a decaying peak of each newly accepted snapshot's arrival lag — how far the estimated server tick has run past the snapshot's tick — plus one snapshot interval. Snapshots ride an unreliable channel and see no resend stalls, so their lag shows the arrival spread the min-RTT gate filters out, and any offset error cancels because the render target reads the same estimate. On a LAN both reduce to the 50 ms floor. Registry-blind and scalar-only, like the rest of the net crate.
+A client clock-sync exchange (`postretro-net` `timesync` module) keeps the client's estimate of the server tick. The client periodically sends a probe on the reliable Input channel; the server echoes its current tick. The client measures round-trip against **its own** monotonic clock — the server's echoed time is telemetry, never compared cross-clock, because the two origins are unrelated. A pure estimator smooths a server-tick offset, RTT, and a link-jitter estimate behind an injected clock, so tests drive it on the harness's virtual clock. Because probes ride a reliable-ordered channel, a probe stuck behind a lost packet waits out a resend in one direction only, inflating its RTT and biasing its midpoint; so every echo enters a short window of recent RTTs, but only a sample near the window minimum folds into the estimate. The window rolls, so a sustained latency increase is adopted within one window. A fast ramp degrades this: the estimate holds at the old minimum until the ramp flattens and that minimum rolls out, while the measured-lag law below covers remotes. A sample that sets the window minimum more than one gate tolerance below the smoothed RTT reseeds offset and RTT outright and zeroes jitter, so a stalled first probe does not linger behind the slow smoothing. The interpolation buffer reads the offset to find the server's current tick, then renders remote pawns behind it by the larger of two delays. The time-sync delay is half the smoothed RTT (snapshot transit) plus a jitter-sized buffer. The measured delay is a decaying peak of each newly accepted snapshot's arrival lag — how far the estimated server tick has run past the snapshot's tick — plus one snapshot interval. Snapshots ride an unreliable channel and see no resend stalls, so their lag shows the arrival spread the min-RTT gate filters out, and any offset error cancels because the render target reads the same estimate. Only a snapshot accepted after a level unload folds; the pre-unload one would read the load time as lag. On a LAN the delay reduces to the 50 ms floor. The delay moves in whole ticks, so the render target slews toward its new value at 0.75–1.25× real-time playback rather than freezing remotes on a raise or jumping them on a drop; it never rewinds, and snaps only on the first frame or across a gap of half a second. Registry-blind and scalar-only, like the rest of the net crate.
 
 ## Host input command queue — gap policy and bounded playout
 
@@ -686,19 +686,23 @@ following switch; and if Input stalls over 2 s while Control flows, a switch rea
 stamped too far ahead and is refused as malformed.
 
 **A diverged active slot re-converges on the client's.** Nothing else replicates the
-host's active slot to its owner, so a divergence the install parity above misses (a
-pawn baseline armed before its tuning) would otherwise persist: pressing the key of the
-weapon the client already holds sends no switch. A connected client watches the
-owner-private projection: when every held sample names one host slot that differs from
-its own active slot for a continuous second (`ACTIVE_SLOT_RESYNC_WINDOW_SECS`, past any
-round trip plus snapshot lag) while no declaration is pending and its weapon is neither
-switching nor lowering or raising, it re-declares its current slot once through the
-ordinary switch lane, with that slot as its own rollback, and logs both slots. The
-client owns selection, so the host converges to it, never the reverse. The declaration
-starts no local lower or raise; the host accepts a slot it already holds idempotently,
-an accept keeps the client's last-weapon memory, and a refusal (a reload that blocks
-switching) rolls back to the same slot, so the player sees no change. Each declaration
-restarts the window, so a refusal retries after another full second.
+host's active slot to its owner. The tuning payload's spawn active slot keeps
+composition in step, including a late payload adopted while the selection is untouched
+(§What gates, and what replicates instead); a divergence that parity misses would
+otherwise persist, because pressing the key of the weapon the client already holds
+sends no switch. A connected client watches the owner-private projection: when every
+held sample names one host slot that differs from its own active slot for a continuous
+second (`ACTIVE_SLOT_RESYNC_WINDOW_SECS`, past any round trip plus snapshot lag) while
+no declaration is pending and no switch is in flight (a switch target, or the active
+weapon lowering or raising; the origin a settled switch retains does not count), it
+re-declares its current slot once through the ordinary switch lane, with that slot as
+its own rollback, and logs both slots. The client owns selection, so the host converges
+to it, never the reverse. The declaration starts no local lower or raise. An accept
+switches the host when it had diverged, is a no-op when the projection merely lagged,
+and keeps the client's last-weapon memory. A refusal (a reload that blocks switching)
+rolls back to the same slot and leaves an in-progress selection alone, so the player
+sees no change. Each declaration restarts the window, so a refusal retries after
+another full second.
 
 **A late start fires along its own aim, once.** A retained start keeps the aim of the
 command that carried it at intake. That captured aim applies only to an uncharged
@@ -1086,8 +1090,11 @@ protocol remains PRLB.
 
 The tuning payload's spawn active slot advances the tuning epoch to 14. The payload is
 JSON carried opaquely, so `WIRE_VERSION` (32), `SNAPSHOT_VERSION` (21) and the
-application protocol (PRLB) are unchanged. The active-slot re-sync declaration reuses
-the switch declaration unchanged and bumps nothing.
+application protocol (PRLB) are unchanged. The handshake does not gate the tuning
+epoch, so a peer at 13 is admitted against one at 14; every payload between them fails
+as an epoch mismatch, so the client installs no tuning and never predicts. The
+active-slot re-sync declaration reuses the switch declaration unchanged and bumps
+nothing.
 
 ## Current contract
 

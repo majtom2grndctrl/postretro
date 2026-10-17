@@ -9,8 +9,8 @@
 ## Verdict
 
 - **The cell buffer pays only where cells cover more than about two pixels.** Below about one pixel per cell it loses.
-- **It works best combined with a split draw.** The surface draws through the reflection-free pipeline, and a second, premultiplied draw adds the reflection.
-- **The split matters more than the cells on e24.** On the 1660, most of e24's reflection cost is not the reflection's arithmetic. It comes from any long-latency read inside the heavy lighting shader, the effect §7.3a "Two pipelines" calls the reflection block's "mere presence".
+- **On the 1660 it works best combined with a split draw.** The surface draws through the reflection-free pipeline, and a second, premultiplied draw adds the reflection.
+- **The split matters more than the cells on e24, on the 1660 only.** There, most of e24's reflection cost is not the reflection's arithmetic. It comes from any long-latency read inside the heavy lighting shader, the effect §7.3a "Two pipelines" calls the reflection block's "mere presence". The 5300M timed this branch's binary and has no such penalty: its one-draw cells already sit at reflection-free cost, and the split only adds its overlay (0.5–2.4 ms at 4K). The split is a per-GPU fix, not a general one.
 - **A ratio precompute alone recovers little there.** At e24 near 4K it saves 1.6 ms of the 10.0 ms the reflection adds.
 - **The per-cell frustum cull never earned its place.**
 
@@ -83,6 +83,17 @@ The cell pass itself costs:
 
 **Noise.** Within a near-4K arm the two runs agree to 0.1–0.2 ms, but arms that should match can differ by up to 0.8 ms (`cell-r1` 21.22 against `cellcull-r1` 20.42). Read near-4K differences under about 0.8 ms as noise. Every other view repeats to 0.1 ms or better.
 
+**Whole-frame check.** The 5300M trace showed its cell pass overlapping other encoders (96–99% of its interval), so a pass's own interval is shared GPU time, and the overlapped pass can slow down. Engine timestamps on Vulkan can hit the same thing. Capture waits for the GPU every frame, so each run's median CPU completion time is a whole-frame figure that no overlap can hide. Against `frag`, the difference in completion time matches the difference in cost:
+
+| View | Cost metric vs whole frame |
+|---|---|
+| near and probes | Agree within 0.1–0.3 ms, every arm and ratio |
+| far 4K | Cells look slightly worse by whole frame: `cell` +0.04 → +0.19 ms, `cellcull` +0.08 → +0.22, `cell2` +0.31 → +0.52 |
+| far 4K, `frag2` | Flips: −0.18 by cost, +0.16 by whole frame |
+| far 1080p | `cell` +0.25 → +0.41 ms; `frag2` +0.03 → +0.11 |
+
+Completion time also holds the CPU's per-frame tile-list build (about 22k tiles at far), so part of the far gap may be CPU. Either way the far verdicts below use the whole-frame figure. The per-cell nanosecond figures in the analysis are pass-interval figures; read them as lower bounds at far.
+
 ## Analysis
 
 ### Where the reflecting variant's cost goes (e24 near 4K)
@@ -101,14 +112,14 @@ The cell pass itself costs:
 
 | Path | Break-even px per cell | How measured |
 |---|---|---|
-| One-draw cell | ≈ 0.5–0.8 | far views, where the fragment's saving is the reflection's own work (0.42–0.50 ns per pixel against 0.23–0.33 ns per cell) |
+| One-draw cell | ≈ 0.5–0.8 by pass timing; about 1 by whole frame | far views, where the fragment's saving is the reflection's own work (0.42–0.50 ns per pixel against 0.23–0.33 ns per cell, pass intervals). Far 4K at 0.71 px per cell loses 0.1–0.2 ms by whole frame. |
 | One-draw cell | ≈ 1.3–1.7 | probes, where near-wall cells search longer (0.59–0.73 ns per cell) |
 | One-draw cell | ≈ 2.1–2.4 | e24 near, where the read penalty eats the saving |
 | `cell2` vs `frag2` | ≈ 1 | far: the overlay is a constant cost in both, so cells must beat the per-fragment overlay alone |
 
 Measured views sit at 0.18–0.75 or 32–646 px per cell; nothing between 1 and 30 was measured.
 
-**Threshold for the brief:** a draw takes the cell path when its visible pixels per dispatched cell are at least 2, and the per-fragment path below 1. Between 1 and 2 the choice hardly matters on this GPU. Pixels per cell is about 1 / texels-per-pixel² for a face seen square-on. A per-draw estimate from the face's nearest texels per pixel, or projected area over cell count, is enough. The 5300M should set the final number.
+**Threshold for the brief:** a draw takes the cell path when its visible pixels per dispatched cell are at least 2, and the per-fragment path below 1. Between 1 and 2 the choice hardly matters on this GPU. Pixels per cell is about 1 / texels-per-pixel² for a face seen square-on. A per-draw estimate from the face's nearest texels per pixel, or projected area over cell count, is enough. The 5300M's mid-range poses confirm it on the target GPU: break-even lies between 0.76 and 1.83 px per cell; every view at 1.8 or more wins 11–37% and every view at 0.76 or less loses.
 
 **Gain at the best path per view, against per-fragment, ratio live:**
 
@@ -117,7 +128,7 @@ Measured views sit at 0.18–0.75 or 32–646 px per cell; nothing between 1 and
 | e24 near 4K | `cell2` | −42% |
 | e24 near 1080p | `cell2` | −39% |
 | probes 4K | `cell` | −43% |
-| far 4K | `frag2` | −9% |
+| far 4K | `frag` | 0 (`frag2` reads −9% by pass timing but +0.16 ms by whole frame) |
 | far 1080p | `frag` | 0 |
 
 Where cells are large, cells beat the per-fragment overlay:
@@ -133,7 +144,19 @@ The overlay draw costs about 0.6 ms at full 4K coverage (`cell2` against `free`,
 | Heavy (e24) | The split: it removes an 8.4 ms penalty | `cell2` 12.87 against `cell` 20.62 |
 | Light (probes) | One draw: the split's 0.6–0.9 ms is pure overhead | `cell` 6.23 against `cell2` 7.14 |
 
-The brief needs either a rule (split when the lighting loop is heavy, for example by dynamic and promoted light count) or the split everywhere at about 0.6 ms per full-screen 4K. That choice belongs to the 5300M's numbers.
+The 5300M timed this branch's binary (`cab5197a5`, Metal System Trace, 2 interleaved runs, ms live / r1):
+
+| View | frag | cell2 | frag2 | free |
+|---|---|---|---|---|
+| near 4K | 66.67 / 65.76 | 57.88 / 58.04 | 66.98 / 66.43 | 57.37 |
+| probes 4K | 36.76 / 31.54 | 25.51 / 25.26 | 35.75 / 32.05 | 23.13 |
+
+There is no read penalty on Metal:
+- `frag2` recovers nothing (66.98 against `frag` 66.67).
+- The 5300M's own one-draw cells sit at reflection-free cost: near 4K 55.2 against its `free` 56.3, probes 23.1 against 22.9.
+- `cell2`'s overlay costs about 0.5 ms at near 4K and 2.4 ms on probes 4K against the 5300M's one-draw cells.
+
+So the two GPUs disagree. On the target GPU one draw with cells is best wherever cells win. On the 1660 the split is worth 7.7 ms at e24 near 4K. The brief needs the split only where a read penalty exists: a per-backend choice, or a measured gate, never the default.
 
 ### Does the frustum cull earn its place?
 
@@ -161,13 +184,13 @@ At e24 near 4K, the ratio is worth 1.59 ms per fragment (22.24 → 20.65) and 0.
 
 ## Recommendation for the brief's third lever
 
-1. **Ship the split first.** Draw the surface through the reflection-free pipeline and add the reflection in a premultiplied overlay draw. It is exact up to blend rounding, needs no new resources, and is worth −33% at e24 near 4K on its own. Gate it on the 5300M: if Metal shows no read penalty, the split costs about 0.6 ms per full-screen 4K draw for nothing.
-2. **Add the cell buffer behind a per-draw pixels-per-cell test.** Use cells at 2 or more px per cell (0.03 ms of compute buys −2.1 to −4.6 ms here), and the per-fragment path below 1. Keep the atlas and per-face fit as built. The atlas is resident VRAM charged to the 2 GB budget: 15.8 MB for e24's 1.68M cells, 2.6 MB for the probes map.
+1. **Ship the cell buffer behind a per-draw pixels-per-cell test.** Use cells at 2 or more px per cell, and the per-fragment path below 1. Here 0.03 ms of compute buys −1.6 to −4.6 ms in one draw; on the 5300M one-draw cells win 11–37% at 1.8 px per cell and above.
+2. **Keep the split as a per-GPU option, not the default.** It draws the surface through the reflection-free pipeline and adds the reflection in a premultiplied overlay draw, exact up to blend rounding. On the 1660 it removes an 8.4 ms read penalty at e24 near 4K (`cell2` 12.87 against `cell` 20.62). On the 5300M there is no penalty, and it only adds its overlay (0.5–2.4 ms at 4K). Keep the atlas and per-face fit as built. The atlas is resident VRAM charged to the 2 GB budget: 15.8 MB for e24's 1.68M cells, 2.6 MB for the probes map.
 3. **Drop the per-cell frustum cull.** Clip per face or per rect on the CPU if the dispatch ever grows.
 4. **Keep the precompute.** It is worth 1.6 ms per fragment at e24 near 4K and 1.7 ms on probes. But in this content it is the smallest of the three levers.
 
 ## Open for consolidation
 
-- The 5300M's `free` arm decides whether its fluid cost (66 ms frag, 55 ms cells at e24 near 4K in its first round) carries the same read penalty.
-- Whether the 5300M times this branch's `cell2` and `frag2` arms. The owner decides, and the levers fit the Metal kit unchanged.
+- Resolved: the 5300M's `free` arm and its run of this branch's arms show no read penalty on Metal (above).
+- Resolved: the near-gate gap was animation time (see Honesty gates).
 - Kit layout: both kits sit in `measurements/cell-rate-spike/`. The 5300M session plans to move its Metal kit to `metal/` at consolidation.

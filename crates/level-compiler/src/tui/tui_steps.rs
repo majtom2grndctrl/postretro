@@ -52,6 +52,7 @@ const LIGHTMAP_LIGHTING_STAGES: &[StageId] = &[
 const PACK_STAGES: &[StageId] = &[
     StageId::SdfAtlasBake,
     StageId::TextureMips,
+    StageId::ReflectionProbes,
     StageId::ClusterDirectory,
     StageId::Packing,
 ];
@@ -423,7 +424,7 @@ mod tests {
         assert!(text.contains("Lighting 0/7"));
         assert!(text.contains("World 0/3"));
         assert!(text.contains("Lighting 0/4"));
-        assert!(text.contains("Pack 0/4"));
+        assert!(text.contains("Pack 0/5"));
         assert!(text.contains("Lightmap Bake"));
     }
 
@@ -558,7 +559,7 @@ mod tests {
         }
         let text = rendered(&mut state, 40, 30);
         assert_eq!(open_section(&state), Some(5));
-        assert!(text.contains("Pack 4/4"));
+        assert!(text.contains("Pack 5/5"));
         assert!(!text.contains(ACTIVITY_FRAMES[0]));
     }
 

@@ -734,7 +734,10 @@ impl App {
             self.level_timings.record("geometry_upload");
             // Fluid surfaces after textures (their UVs normalize by the
             // installed dimensions) and geometry (which drops the last level's).
-            renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
+            renderer.install_fluid_surfaces(
+                &world.environment_volumes.volumes,
+                world.reflection_probes.as_ref(),
+            );
 
             // Reseed the SH diagnostic per-light visibility bitmap to match the
             // freshly-installed level's animated-light count. Reset `seeded` so the
@@ -2325,6 +2328,7 @@ pub(crate) mod tests {
             environment_volumes: Default::default(),
             teleporters: Default::default(),
             environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

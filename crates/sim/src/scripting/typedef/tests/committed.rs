@@ -88,6 +88,48 @@ fn committed_sdk_types_contain_mod_bloom_render_profile() {
     }
 }
 
+// Acceptance row 29: the reflection-probes author surface reaches both
+// committed SDK type files and the generator alike.
+#[test]
+fn committed_sdk_types_contain_reflection_style_and_surface_reflectivity() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type ReflectionStyle ="));
+        assert!(output.contains("| \"pixel\""));
+        assert!(output.contains("| \"smooth\";"));
+        assert!(output.contains("export type ReflectionRenderProfile = {"));
+        assert!(output.contains("style?: ReflectionStyle;"));
+        assert!(output.contains("reflections?: ReflectionRenderProfile;"));
+        assert!(output.contains("surfaceReflectivity?: number;"));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type ReflectionStyle ="));
+        assert!(output.contains("\"pixel\""));
+        assert!(output.contains("| \"smooth\""));
+        assert!(output.contains("export type ReflectionRenderProfile = {"));
+        assert!(output.contains("style: ReflectionStyle?,"));
+        assert!(output.contains("reflections: ReflectionRenderProfile?,"));
+        assert!(output.contains("surfaceReflectivity: number?,"));
+    }
+}
+
 #[test]
 fn committed_sdk_types_contain_mod_audio_attenuation() {
     use crate::scripting::typedef::register_all;

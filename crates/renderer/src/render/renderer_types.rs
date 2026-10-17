@@ -722,6 +722,12 @@ pub struct Renderer {
     /// the full renderer with the last committed profile after surface recovery.
     pub(super) bloom_render_profile: BloomRenderProfile,
 
+    /// The mod's fluid reflection style, cached in boot state like the bloom
+    /// profile so `finish_full_init` hands a rebuilt fluid pass the last
+    /// committed style. Offscreen capture never sets it: pixel, the default.
+    pub(super) fluid_reflection_style:
+        postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle,
+
     /// Spot shadow-map resolution cached in boot state. Configuration updates
     /// affect the next full-renderer construction or level install; they never
     /// rebuild live GPU resources from the setter.

@@ -676,6 +676,8 @@ fn water_look() -> FluidSurfaceLook {
         wave_period: Some(63.0),
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
+        has_bound_face: false,
     }
 }
 
@@ -706,16 +708,47 @@ fn packing_lays_out_opacity_fog_and_wave_rows_with_spare_floats() {
         }
     );
 
-    // At least one float stays unused for any look (SSR's reflectivity).
-    for look in [
-        water_look(),
-        sludge_look(),
-        FluidSurfaceLook::surface_only(1.0),
+    // Reflectivity rides `surface.z`, packed only for a volume with a bound
+    // face; `surface.w` and `fog_albedo.w` stay spare for screen-space
+    // reflections whatever the look.
+    let bound = |look: FluidSurfaceLook| FluidSurfaceLook {
+        has_bound_face: true,
+        ..look
+    };
+    for (look, reflectivity) in [
+        (water_look(), 0.0),
+        (sludge_look(), 0.0),
+        (FluidSurfaceLook::surface_only(1.0), 0.0),
+        (bound(water_look()), 1.0),
+        (bound(sludge_look()), 1.0),
+        (
+            FluidSurfaceLook {
+                surface_reflectivity: 10.0,
+                ..bound(FluidSurfaceLook::surface_only(1.0))
+            },
+            10.0,
+        ),
     ] {
         let row = look.pack();
+        assert_eq!(row.surface[2], reflectivity, "{look:?}");
+        assert_eq!(row.reflectivity(), reflectivity);
+        assert_eq!([row.surface[3], row.fog_albedo[3]], [0.0; 2], "{look:?}");
+    }
+    // Out-of-range and non-finite reflectivities pack inside 0..=50.
+    for (declared, packed) in [
+        (60.0, 50.0),
+        (-1.0, 0.0),
+        (f32::NAN, 0.0),
+        (f32::INFINITY, 0.0),
+    ] {
+        let look = FluidSurfaceLook {
+            surface_reflectivity: declared,
+            ..bound(water_look())
+        };
         assert_eq!(
-            [row.surface[2], row.surface[3], row.fog_albedo[3]],
-            [0.0; 3]
+            look.pack().reflectivity(),
+            packed,
+            "reflectivity {declared}"
         );
     }
     assert_eq!(std::mem::size_of::<FluidParamsRow>(), FLUID_PARAMS_STRIDE);
@@ -909,6 +942,94 @@ fn a_reload_reuploads_exactly_the_changed_fluids_slots_and_nothing_when_unchange
     }
 }
 
+// Pin P12 (reflectivity): a staged reload that changes only one fluid's
+// `surfaceReflectivity` re-uploads exactly that fluid's slots on the next
+// frame, and an unchanged re-collect uploads nothing. A volume with no bound
+// face packs 0 either way, so its reflectivity change uploads nothing.
+#[test]
+fn a_reload_changing_only_reflectivity_reuploads_that_fluids_slots_and_nothing_when_unchanged() {
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        volume(vec![top_face(0, [10.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [20.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let bound = FluidSurfaceLook {
+        has_bound_face: true,
+        ..water_look()
+    };
+    // Water in volumes 0 and 2 (bound), sludge in volume 1 (no bound face).
+    let frame = |water: FluidSurfaceLook, sludge: FluidSurfaceLook| {
+        [draw(1, sludge), draw(2, water), draw(0, water)]
+    };
+    slots.set_draws(&frame(bound, sludge_look()));
+    assert_eq!(slots.take_dirty().map(|(range, _)| range), Some(0..3));
+    slots.set_draws(&frame(bound, sludge_look()));
+    assert!(
+        slots.take_dirty().is_none(),
+        "an unchanged re-collect uploads nothing"
+    );
+
+    for reflectivity in [2.0, 0.0, 50.0, 1.0] {
+        let changed = FluidSurfaceLook {
+            surface_reflectivity: reflectivity,
+            ..bound
+        };
+        slots.set_draws(&frame(changed, sludge_look()));
+        let (range, rows) = slots.take_dirty().expect("the changed fluid uploads");
+        assert_eq!(range, 0..3, "water's slots 0 and 2 and the one between");
+        assert_eq!(rows[0], changed.pack());
+        assert_eq!(rows[2], changed.pack());
+        assert_eq!(rows[0].reflectivity(), reflectivity);
+        assert_eq!(rows[1], sludge_look().pack(), "sludge's row stays current");
+        slots.set_draws(&frame(changed, sludge_look()));
+        assert!(
+            slots.take_dirty().is_none(),
+            "{reflectivity}: unchanged next frame"
+        );
+    }
+    let unbound_change = FluidSurfaceLook {
+        surface_reflectivity: 7.0,
+        ..sludge_look()
+    };
+    slots.set_draws(&frame(bound, unbound_change));
+    assert!(
+        slots.take_dirty().is_none(),
+        "no bound face: reflectivity packs 0 and uploads nothing"
+    );
+}
+
+// Pin P24: a zero-opacity, fog-free fluid with bound faces leaves the draw
+// set on the frame a reload commits reflectivity 1 → 0, and rejoins it on the
+// frame after the reverse reload.
+#[test]
+fn a_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
+    let volumes = two_pools();
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let look = |reflectivity: f32| FluidSurfaceLook {
+        surface_reflectivity: reflectivity,
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.0)
+    };
+    let mut collect = |reflectivity: f32| {
+        volume_indices(collector.collect(
+            &volumes,
+            &VisibleCells::DrawAll,
+            cell_bounds,
+            Vec3::ZERO,
+            |_| Some(look(reflectivity)),
+        ))
+    };
+    let reflecting = collect(1.0);
+    assert!(!reflecting.is_empty());
+    assert!(
+        collect(0.0).is_empty(),
+        "frame N after 1 → 0 collects no draw"
+    );
+    assert_eq!(collect(1.0), reflecting, "the reverse reload draws again");
+}
+
 // The upload is one contiguous range, so a change to a fluid whose slots
 // straddle another's rewrites the one between: water at slots 0 and 2, sludge
 // at 1. The range runs from water's first changed slot to its last, and every
@@ -987,6 +1108,155 @@ fn collector_keeps_a_zero_opacity_fluid_only_when_it_has_fog() {
         },
     );
     assert!(draws.is_empty());
+}
+
+// Pins P2 and P23 (zero-opacity draw set): a fog-free fluid at surface
+// opacity 0 that reflects (reflectivity > 0) draws its reflection alone when
+// its volume has a probe-bound face; with no bound face, or at reflectivity
+// 0, it collects no draw, as before reflections.
+#[test]
+fn collector_keeps_a_zero_opacity_fog_free_fluid_only_when_a_bound_face_reflects() {
+    let volumes = two_pools();
+    let mut collector = FluidSurfaceRenderCollector::new();
+    let clear = FluidSurfaceLook::surface_only(0.0);
+    assert_eq!(clear.surface_reflectivity, 1.0);
+    // Only volume 2 binds a probe.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |volume| {
+            Some(FluidSurfaceLook {
+                has_bound_face: volume == 2,
+                ..clear
+            })
+        },
+    );
+    assert_eq!(volume_indices(draws), [2]);
+    assert_eq!(draws[0].params.opacity(), 0.0);
+    assert_eq!(draws[0].params.fog_extinction(), 0.0);
+    assert_eq!(draws[0].params.reflectivity(), 1.0);
+
+    // P23: reflectivity > 0 with no bound face anywhere draws nothing.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| Some(clear),
+    );
+    assert!(draws.is_empty(), "{draws:?}");
+
+    // P2: a bound face at reflectivity 0 and no fog draws nothing.
+    let draws = collector.collect(
+        &volumes,
+        &VisibleCells::DrawAll,
+        cell_bounds,
+        Vec3::ZERO,
+        |_| {
+            Some(FluidSurfaceLook {
+                surface_reflectivity: 0.0,
+                has_bound_face: true,
+                ..clear
+            })
+        },
+    );
+    assert!(draws.is_empty(), "{draws:?}");
+}
+
+// Two fluid pipelines: a draw takes the reflecting shader variant only when
+// its volume has a probe-bound face, its reflectivity is above 0, and the
+// frame's lighting mask holds every bit of `LightTermMask::ALL`; every other
+// draw takes the reflection-free variant. Opacity and fog never choose it.
+#[test]
+fn shader_variant_reflects_only_a_bound_face_above_zero_reflectivity_under_every_term() {
+    use crate::frame_uniforms::LightTermMask;
+    let all = LightTermMask::ALL.bits();
+    // Every isolating mask: each term off alone, and every term off.
+    let mut masks: Vec<(u32, bool)> = vec![(all, true), (all | 0x80, true), (0, false)];
+    for term in LightTermMask::ALL_TERMS {
+        let mut mask = LightTermMask::ALL;
+        mask.set_enabled(term, false);
+        masks.push((mask.bits(), false));
+    }
+    assert!(masks.contains(&(0x13F, false)), "specular off isolates");
+
+    for has_bound_face in [false, true] {
+        for reflectivity in [0.0, 0.001, 1.0, 50.0] {
+            for opacity in [0.0, 0.6] {
+                for fog_distance in [None, Some(4.0)] {
+                    let row = FluidSurfaceLook {
+                        surface_reflectivity: reflectivity,
+                        has_bound_face,
+                        fog_distance,
+                        ..FluidSurfaceLook::surface_only(opacity)
+                    }
+                    .pack();
+                    for &(mask, every_term) in &masks {
+                        let expected = if has_bound_face && reflectivity > 0.0 && every_term {
+                            FluidShaderVariant::Reflecting
+                        } else {
+                            FluidShaderVariant::ReflectionFree
+                        };
+                        assert_eq!(
+                            row.shader_variant(mask),
+                            expected,
+                            "bound {has_bound_face}, reflectivity {reflectivity}, opacity \
+                             {opacity}, fog {fog_distance:?}, mask {mask:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(FluidShaderVariant::Reflecting.reflections());
+    assert!(!FluidShaderVariant::ReflectionFree.reflections());
+}
+
+// The frame's draws carry their variants in the collector's far-to-near
+// order, so the pass switches pipeline only where neighbours differ; an
+// isolating mask turns every draw reflection-free.
+#[test]
+fn slots_pair_each_frame_draw_with_its_shader_variant_in_draw_order() {
+    let volumes = vec![
+        volume(vec![top_face(0, [0.0; 3], 0.0)]),
+        volume(vec![top_face(0, [2.0, 0.0, 0.0], 0.0)]),
+        volume(vec![top_face(0, [4.0, 0.0, 0.0], 0.0)]),
+    ];
+    let mesh = pack_fluid_surfaces(&volumes, &[[64, 32]], 1);
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+    let reflecting = FluidSurfaceLook {
+        has_bound_face: true,
+        ..FluidSurfaceLook::surface_only(0.6)
+    };
+    let unbound = FluidSurfaceLook::surface_only(0.6);
+    slots.set_draws(&[
+        draw(2, unbound),
+        draw(0, reflecting),
+        draw(
+            1,
+            FluidSurfaceLook {
+                surface_reflectivity: 0.0,
+                ..reflecting
+            },
+        ),
+    ]);
+    let all = crate::frame_uniforms::LightTermMask::ALL.bits();
+    let variants: Vec<_> = slots.frame_draws(all).collect();
+    assert_eq!(
+        variants,
+        [
+            (2, FluidShaderVariant::ReflectionFree),
+            (0, FluidShaderVariant::Reflecting),
+            (1, FluidShaderVariant::ReflectionFree),
+        ]
+    );
+    assert!(
+        slots
+            .frame_draws(0x13F)
+            .all(|(_, variant)| variant == FluidShaderVariant::ReflectionFree)
+    );
 }
 
 // Steady-state collection reuses its buffers: later frames of the same view

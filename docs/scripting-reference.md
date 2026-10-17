@@ -93,8 +93,8 @@ host-side value. Omit `network` for host-local bookkeeping or use
 owner address. Per-owner values are session-scoped: `perOwner: true` with
 `persist: true` is rejected.
 
-**Render profile.** The optional `render.bloom` block picks the mod's bloom look
-once, for the whole mod:
+**Render profile.** The optional `render` block picks the mod's bloom and
+water-reflection looks once, for the whole mod:
 
 ```typescript
 export default defineMod({
@@ -106,6 +106,7 @@ export default defineMod({
       resolution: "quarter",
       pixelated: true,
     },
+    reflections: { style: "smooth" },
   },
 });
 ```
@@ -120,6 +121,7 @@ return defineMod({
       resolution = "quarter",
       pixelated = true,
     },
+    reflections = { style = "smooth" },
   },
 })
 ```
@@ -131,18 +133,30 @@ bloom-pass cost. `pixelated` (default `false`) switches the bloom upsample and
 the final composite to blocky, texel-addressed sampling for a retro look; the
 downsample and blur stages stay linear either way.
 
-Both fields — and `render` and `bloom` themselves — are optional, and omitting
-them selects the engine default of half-resolution smooth bloom. Malformed
-optional values degrade rather than abort: a non-object `render` or `bloom`
-warns and falls back to the complete default profile, an unrecognized
-`resolution` warns and uses `"half"`, and a non-boolean `pixelated` warns and
-uses `false`. None of these reject an otherwise valid manifest.
+`reflections.style` sets how every fluid reflection looks. `"pixel"` (the
+default) breaks the reflection into the same texel blocks the water's texture
+moves in: each block reflects one direction, tilted by that block's own
+shimmer and ripples, so the reflection reads as moving water. `"smooth"`
+reflects the flat surface: a still mirror. Drift and a declared wave never
+tilt the reflection in either style. How strongly a fluid reflects is its own
+`surfaceReflectivity` (see `defineFluid`).
+
+Every field — and `render`, `bloom` and `reflections` themselves — is
+optional, and omitting them selects the engine defaults: half-resolution
+smooth bloom and pixel-style reflections. Malformed optional values degrade
+rather than abort: a non-object `render` warns and falls back to the complete
+default profile; a non-object `bloom` or `reflections` warns and falls back to
+that block's default without touching the other; an unrecognized
+`resolution` warns and uses `"half"`, a non-boolean `pixelated` warns and uses
+`false`, and a `style` other than `"pixel"` or `"smooth"` warns and uses
+`"pixel"`. None of these reject an otherwise valid manifest.
 
 The profile is static and mod-wide. It is committed at mod init and reapplied
 by a debug staged reload, so it cannot vary per level, per material, or from a
 reaction. It selects only the bloom *style*: whether bloom runs at all remains
 controlled by the `POSTRETRO_BLOOM` diagnostic override and the dev-tools
-toggle.
+toggle. A capture run loads no manifest, so it always draws pixel-style
+reflections.
 
 ---
 
@@ -2956,6 +2970,7 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `viewTint` | `[r, g, b, strength]` | each `0`–`1` | Full-screen tint while the camera is inside the fluid. `strength` `0` is no tint. |
 | `muffle` | number | `0`–`1` | Low-pass on world sounds while the camera is inside. `0` is none, `1` the most. Music and UI sounds are never muffled. |
 | `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
+| `surfaceReflectivity` | number | `0`–`50`, optional | How strongly the surface reflects the room around it, strongest at a glancing view and faintest looking straight down. `0` reflects nothing, `1` is water (the default when left out), about `2` reads as glass, about `10` as wet polished stone, and `50` is a mirror at every angle. Opacity never dims the reflection: a clear fluid still mirrors fully at a glancing view. |
 | `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
 | `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
 | `fogDistance` | metres | above `0`, optional | How far you see into the fluid from outside it: at this depth of view 95% of what lies beyond is hidden. Leave it out for a clear fluid. Never applies to the view from inside, which `viewTint` alone covers. |
@@ -2985,7 +3000,9 @@ defineFluid({
 }),
 ```
 
-A `surfaceOpacity` of `0` with a `fogDistance` draws the murk alone.
+A `surfaceOpacity` of `0` with a `fogDistance` draws the murk alone, and with a
+`surfaceReflectivity` above `0` it draws the reflection alone wherever the map
+gives the water a reflection.
 
 A field out of range, an unknown field, or a second fluid with a name already
 declared rejects that one declaration, with a warning naming the field. The
@@ -2996,11 +3013,10 @@ value that is not an array, declares no fluids, with one warning. A
 warning.
 
 **In co-op,** everyone swims by the host's fluids: the host's `viscosity`
-drives movement on every machine. The tint, muffle, surface opacity, fog, wave
-and sounds come from each machine's own declaration of that name, the way sound
-keys do, so a player whose mod lacks the fluid still swims in it but sees no
-tint.
-Fluid declarations do not affect who can join.
+drives movement on every machine. The tint, muffle, surface opacity,
+reflectivity, fog, wave and sounds come from each machine's own declaration of
+that name, the way sound keys do, so a player whose mod lacks the fluid still
+swims in it but sees no tint. Fluid declarations do not affect who can join.
 
 ### `movement.swim`
 

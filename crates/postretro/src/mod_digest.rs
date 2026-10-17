@@ -897,6 +897,7 @@ pub(crate) mod tests {
             wave_period: None,
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
+            surface_reflectivity: 1.0,
         }
     }
 
@@ -944,8 +945,8 @@ pub(crate) mod tests {
         }
     }
 
-    // Fog and wave fields are local presentation: two manifests that differ
-    // only there agree on the digest.
+    // Fog, wave and reflectivity fields are local presentation: two
+    // manifests that differ only there agree on the digest.
     #[test]
     fn digest_ignores_fluid_fog_and_wave_fields() {
         let murky = postretro_foundation::FluidDescriptor {
@@ -962,6 +963,24 @@ pub(crate) mod tests {
         fogged.fluids = fluids(vec![murky, fluid("sludge", 2.0)]);
         assert_ne!(clear.fluids, fogged.fluids, "the manifests differ");
         assert_eq!(manifest_digest(&clear), manifest_digest(&fogged));
+
+        // Acceptance row 28: only `surfaceReflectivity` differs.
+        for reflectivity in [0.0, 2.0, 50.0] {
+            let mut mirrored = manifest();
+            mirrored.fluids = fluids(vec![
+                postretro_foundation::FluidDescriptor {
+                    surface_reflectivity: reflectivity,
+                    ..fluid("water", 2.0)
+                },
+                fluid("sludge", 2.0),
+            ]);
+            assert_ne!(clear.fluids, mirrored.fluids, "the manifests differ");
+            assert_eq!(
+                manifest_digest(&clear),
+                manifest_digest(&mirrored),
+                "reflectivity {reflectivity}"
+            );
+        }
     }
 
     // Regression: cosmetic overlay edits keep participation, so their ordering cannot reset on reload.

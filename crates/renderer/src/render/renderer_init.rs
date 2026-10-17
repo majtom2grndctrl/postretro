@@ -158,6 +158,7 @@ impl Renderer {
             capture_adapter_identity,
             capture_gpu_timing_state,
             bloom_render_profile: BloomRenderProfile::default(),
+            fluid_reflection_style: Default::default(),
             spot_shadow_map_resolution:
                 crate::lighting::spot_shadow::DEFAULT_SPOT_SHADOW_MAP_RESOLUTION,
             // The feature ships on; the tier is an escape hatch. The app
@@ -269,6 +270,8 @@ impl Renderer {
             capture_adapter_identity,
             capture_gpu_timing_state,
             bloom_render_profile,
+            // Capture loads no manifest: pixel-style reflections.
+            fluid_reflection_style: Default::default(),
             spot_shadow_map_resolution,
             surface_depth_quality,
             boot_splash: None,
@@ -301,6 +304,9 @@ impl Renderer {
             self.surface_depth_quality,
         )?;
         self.full = Some(Box::new(full));
+        // The rebuilt fluid pass starts at the default style; hand it the
+        // committed one, which uploads before its first pass.
+        self.set_fluid_reflection_style(self.fluid_reflection_style);
         self.queue.enable();
         self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");

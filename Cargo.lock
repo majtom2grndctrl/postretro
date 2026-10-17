@@ -4534,6 +4534,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-render-cpu",
+ "postretro-render-data",
  "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",

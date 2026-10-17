@@ -30,7 +30,7 @@ recompiles every dependent.
 - **level-format** — 12 dependents (postretro, level-compiler, level-loader, lighting, model, physics, render-cpu, renderer, script-compiler, scripting-core, sim, tool)
 - **entities** — 11 dependents (postretro, ai, combat-model, lighting, netcode, physics, render-cpu, renderer, scripting-core, sim, ui)
 - **level-loader** — 8 dependents (postretro, level-compiler, lighting, physics, render-cpu, renderer, sim, visibility)
-- **render-data** — 7 dependents (postretro, level-loader, lighting, model, render-cpu, renderer, sim)
+- **render-data** — 8 dependents (postretro, level-compiler, level-loader, lighting, model, render-cpu, renderer, sim)
 - **model** — 6 dependents (postretro, netcode, render-cpu, renderer, sim, tool)
 - **scripting-core** — 6 dependents (postretro, lighting, netcode, renderer, sim, ui)
 - **collision** — 4 dependents (postretro, netcode, physics, sim)

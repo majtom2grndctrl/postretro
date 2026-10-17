@@ -6,7 +6,7 @@ Brief · resumable · reads: `context/lib/index.md` §1.1, §3 · `rendering_pip
 The owner requested a capability: fluid surfaces reflect nothing, so water reads as a flat tinted sheet. Players will see the walls, lights and movers around a pool mirrored in its surface. A game author chooses whether reflections are pixelated or smooth as part of the game's art style. A player turns reflection quality down for cost, never past what the author chose, and can turn reflections off.
 
 ## Decisions
-- **Screen-space reflections over the baked probe term.** `reflection-probes` gives water a box-projected reflection of its static room (`rendering_pipeline.md` §7.3a), but its probes do not hold movers, characters or dynamic lights. SSR reflects exactly what surrounds a pool on screen and composites over the probe term. At promotion, the docs record SSR as the dynamic fluid reflection layer.
+- **Screen-space reflections over the baked probe term.** `reflection-probes` gives water a box-projected reflection of its static room (`rendering_pipeline.md` §7.3a), but its probes do not hold movers, characters or dynamic lights. SSR reflects exactly what surrounds a pool on screen and composites over the probe term. The layers split by what each can see. SSR owns movers, characters, dynamic lights, and objects standing in the water (pillars, posts, piers), whose far side no single capture point sees. The probe owns the static room off screen and props beside the water. Where the probe's capture shadow leaves water unreflected (`reflection-probes`, Capture shadow), SSR's on-screen hit is the only reflection. At promotion, the docs record SSR as the dynamic fluid reflection layer.
 - **`index.md` §1.1 is amended, and this brief is its first approved exception.** The rule becomes a strong preference for tracing baked structures at runtime. An exception needs owner approval and a use case with no reasonable workaround within pre-RTX constraints. Fluid SSR qualifies:
   - Mirroring nearby walls, lights and movers has no baked equivalent that moves with the scene.
   - The march reads scene depth, which fog and forward already sample, so it adds no acceleration structure.
@@ -68,7 +68,7 @@ The Luau mirror ships with the same names (`reflections = { style = "smooth" }`,
   - an unknown string or wrong type warns and resolves to pixel without rejecting the manifest.
 - [ ] The Scripting surface example parses in TS and its Luau mirror. `surfaceReflectivity` parsing is `reflection-probes`' acceptance.
 - [ ] The player setting carries no style value, so the player cannot select smooth under a pixel game.
-- [ ] Pipeline budget tests pass. Fluid fragment storage stays at 8. Sampled textures, 9 before the reflection target joins group 5 (`reflection-probes` adds the probe array), stay within the requested 16.
+- [ ] Pipeline budget tests pass. Fluid fragment storage stays at 8. Sampled textures, 10 before the reflection target joins group 5 (`reflection-probes` adds the probe and distance arrays), stay within the requested 16.
 - [ ] The DX12 FXC shader test compiles the reflection and fluid shaders (Windows, ignored-gated run).
 
 ### Manual

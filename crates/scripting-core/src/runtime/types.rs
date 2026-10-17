@@ -57,9 +57,45 @@ pub struct ModBloomProfile {
     pub pixelated: bool,
 }
 
+/// `render.reflections.style`: the look of every fluid reflection layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModReflectionStyle {
+    /// One reflection direction per water texel cell. The default.
+    #[default]
+    Pixel,
+    /// The flat surface normal per pixel: a still mirror.
+    Smooth,
+}
+
+impl ModReflectionStyle {
+    /// Every style, in SDK declaration order.
+    pub const ALL: [Self; 2] = [Self::Pixel, Self::Smooth];
+
+    /// The authored spelling.
+    pub const fn authored_name(self) -> &'static str {
+        match self {
+            Self::Pixel => "pixel",
+            Self::Smooth => "smooth",
+        }
+    }
+
+    /// The style an authored string names, if any.
+    pub fn from_authored(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.authored_name() == name)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModReflectionProfile {
+    pub style: ModReflectionStyle,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModRenderProfile {
     pub bloom: ModBloomProfile,
+    pub reflections: ModReflectionProfile,
 }
 
 /// Mod-global static defaults for authored kinematic movers.

@@ -777,7 +777,7 @@ fn overlap_texels_bake_bit_identical_across_every_cut() {
 #[test]
 fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
     use crate::bake_control::BakeControl;
-    use crate::bc6h::{decode_bc6h_block_for_tests, f16_bits_to_f32};
+    use crate::bc6h::decode_bc6h_block;
     use crate::bvh_build::build_bvh;
     use crate::light_namespaces::StaticBakedLights;
     use crate::lightmap_bake::{
@@ -829,9 +829,9 @@ fn encoded_step_across_a_cut_stays_within_bc6h_noise() {
             let mut texels = vec![[0.0; 3]; w * h];
             for (bi, encoded) in block.irradiance.as_chunks::<16>().0.iter().enumerate() {
                 let (bx, by) = ((bi % (w / 4)) * 4, (bi / (w / 4)) * 4);
-                let block = decode_bc6h_block_for_tests(encoded);
-                for (k, texel) in block.iter().enumerate() {
-                    texels[(by + k / 4) * w + bx + k % 4] = texel.map(f16_bits_to_f32);
+                let block = decode_bc6h_block(encoded).expect("the bake writes Mode 11");
+                for (k, texel) in block.into_iter().enumerate() {
+                    texels[(by + k / 4) * w + bx + k % 4] = texel;
                 }
             }
             texels

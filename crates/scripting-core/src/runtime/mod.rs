@@ -14,7 +14,8 @@ pub use input_block::{ModInputBinding, ModInputBlock, ModInputCommand, ModInputG
 pub use loading_screen::ModLoading;
 pub use types::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
-    ModBloomResolution, ModManifestResult, ModMapEntry, ModMoverDefaults, ModRenderProfile,
-    ReloadSummary, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
+    ModBloomResolution, ModManifestResult, ModMapEntry, ModMoverDefaults, ModReflectionProfile,
+    ModReflectionStyle, ModRenderProfile, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
+    StagedManifestCommitOutcome,
 };
 pub(crate) use types::{validate_mod_manifest_id, validate_mod_manifest_version};

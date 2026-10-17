@@ -90,7 +90,7 @@
 - **Teleporters / teleport / `trigger_teleport` / `teleport_destination` / classic vs seamless teleport / arm-disarm teleporter / `teleport` event / teleport reconcile, yaw stamp and observer cut / arrival sound** → `movement.md` §6 (Teleport) · `entity_model.md` §7 (Environment Volumes) · script surface: `scripting.md` §12 · co-op: `networking.md` §Current contract, §Snapshot apply ordering (incl. Joiner gate), §Host input command queue, §Host-side remote-pawn presentation · FGD and ids 51/55: `build_pipeline.md` §Custom FGD, §PRL section IDs · `audio.md` §4
 - **Entity facing / map yaw / `angle` `angles` `mangle` / model front vs view forward / `rotation_quat` vs `model_rotation_quat`** → `entity_model.md` §4 (Facing convention) · `build_pipeline.md` §Supported Map Formats
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
-- **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / Mac perf measurement confounders / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
+- **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
@@ -152,7 +152,7 @@ prl-build uses a BSP tree as a compiler intermediate to produce cells, portal ge
 | Indirect lighting | SH L2 irradiance volume baked from canonical lights |
 | Fog volumes | FGD fog entities + `FogCellMasks` over runtime cells |
 | Acoustic zones | FGD brush entities intended to resolve through runtime cells for reverb |
-| Reflection probes | prl-build (decided, not yet built): probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time |
+| Reflection probes | prl-build: probes derived per up-facing fluid surface, overridden by `reflection_volume` brushes, captured at compile time into colour and distance tiles |
 
 Full detail (section inventory, SectionId registry): `build_pipeline.md`.
 

@@ -9,7 +9,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -42,8 +42,19 @@ const READ_TIMEOUT: Duration = Duration::from_millis(20);
 /// Pause after a second consecutive receive error, so a socket stuck failing
 /// cannot spin its reader.
 const ERROR_BACKOFF: Duration = Duration::from_millis(5);
-/// Fixed rather than time-seeded: nothing here needs unpredictability, and a
-/// fixed stream keeps single-link tests reproducible.
+/// How close to a datagram's arrival time the scheduler stops waiting on the
+/// channel and sleeps the rest. Channel waits park the thread, which Windows
+/// rounds up to its ~15.6 ms system tick; `thread::sleep` uses a
+/// high-resolution timer there. The margin covers that tick, so the coarse wait
+/// always ends before the release is due. Elsewhere parking is precise and the
+/// margin only absorbs wake-up latency.
+#[cfg(windows)]
+const PRECISE_WAIT: Duration = Duration::from_millis(17);
+#[cfg(not(windows))]
+const PRECISE_WAIT: Duration = Duration::from_millis(2);
+/// Fixed rather than time-seeded: nothing here needs unpredictability. Readers
+/// draw from it in whatever order the OS schedules them, so the stream a given
+/// datagram sees is not deterministic.
 const RNG_SEED: u64 = 0x1A6_C0DE;
 
 /// Impairment applied to each direction through the proxy, with the harness
@@ -195,10 +206,9 @@ struct Link {
 struct Shared {
     link: Mutex<Link>,
     shutdown: AtomicBool,
-    /// Set by a failed send and cleared by the next success, so a failing
-    /// streak warns once.
-    send_failing: AtomicBool,
+    /// Test observability: read only by `LagProxy::peer_count`.
     peers: AtomicUsize,
+    /// Test observability: read only by `LagProxy::in_flight`.
     in_flight: AtomicUsize,
 }
 
@@ -210,7 +220,6 @@ impl Shared {
                 rng: SplitMix64::new(RNG_SEED),
             }),
             shutdown: AtomicBool::new(false),
-            send_failing: AtomicBool::new(false),
             peers: AtomicUsize::new(0),
             in_flight: AtomicUsize::new(0),
         }
@@ -231,19 +240,39 @@ impl Shared {
             .sample_delay(rng)
             .map(Duration::from_millis)
     }
+}
+
+/// One destination: a peer's link toward the target, or the target's link back
+/// to that peer. The reader and the scheduler both send through it.
+struct Route {
+    socket: Arc<UdpSocket>,
+    to: SocketAddr,
+    /// Set by a failed send and cleared by the next success, so a failing
+    /// streak warns once for this destination alone.
+    failing: AtomicBool,
+}
+
+impl Route {
+    fn new(socket: Arc<UdpSocket>, to: SocketAddr) -> Arc<Self> {
+        Arc::new(Self {
+            socket,
+            to,
+            failing: AtomicBool::new(false),
+        })
+    }
 
     /// A failed send is dropped like a lost packet; netcode's resends and
     /// timeouts already handle loss.
-    fn send(&self, socket: &UdpSocket, bytes: &[u8], to: SocketAddr) {
-        match socket.send_to(bytes, to) {
+    fn send(&self, bytes: &[u8]) {
+        match self.socket.send_to(bytes, self.to) {
             Ok(_) => {
-                if self.send_failing.load(Relaxed) {
-                    self.send_failing.store(false, Relaxed);
+                if self.failing.load(Relaxed) {
+                    self.failing.store(false, Relaxed);
                 }
             }
             Err(err) => {
-                if !self.send_failing.swap(true, Relaxed) {
-                    log::warn!("[Net] lag proxy send to {to} failed: {err}");
+                if !self.failing.swap(true, Relaxed) {
+                    log::warn!("[Net] lag proxy send to {} failed: {err}", self.to);
                 }
             }
         }
@@ -256,12 +285,11 @@ enum Direction {
     ToPeer,
 }
 
-/// A datagram handed to the scheduler, with the socket it leaves through.
+/// A datagram handed to the scheduler, with the route it leaves through.
 struct Delayed {
     direction: Direction,
     deliver_at: Instant,
-    socket: Arc<UdpSocket>,
-    to: SocketAddr,
+    route: Arc<Route>,
     bytes: Vec<u8>,
 }
 
@@ -274,46 +302,53 @@ struct Relay {
 
 impl Relay {
     /// Drop `bytes`, send them now, or hand them to the scheduler, by the
-    /// profile live at `received_at`.
-    fn relay(
-        &self,
-        direction: Direction,
-        socket: &Arc<UdpSocket>,
-        to: SocketAddr,
-        bytes: &[u8],
-        received_at: Instant,
-    ) {
+    /// profile live when this runs. The sampled delay counts from
+    /// `received_at`.
+    fn relay(&self, direction: Direction, route: &Arc<Route>, bytes: &[u8], received_at: Instant) {
         let Some(delay) = self.shared.sample_delay() else {
             return;
         };
         if delay.is_zero() {
             // The reader sends it itself: an unimpaired datagram never waits
             // on another thread.
-            self.shared.send(socket, bytes, to);
+            route.send(bytes);
             return;
         }
         // The scheduler outlives every reader, so this fails only mid-shutdown.
         let _ = self.scheduler.send(Delayed {
             direction,
             deliver_at: received_at + delay,
-            socket: Arc::clone(socket),
-            to,
+            route: Arc::clone(route),
             bytes: bytes.to_vec(),
         });
     }
 }
 
-/// Holds delayed datagrams and sends each the moment it is due. Sleeps on the
-/// channel until the next arrival time or the next delayed datagram; exits
-/// once every reader has gone.
+/// Holds delayed datagrams and sends each the moment it is due. Waits on the
+/// channel until [`PRECISE_WAIT`] before the next arrival time, or until the
+/// next delayed datagram, then sleeps the rest; exits once every reader has
+/// gone. Datagrams handed over during that final sleep are queued right after
+/// it, so one can be late by at most [`PRECISE_WAIT`], and only when its own
+/// delay is shorter than that.
 fn run_scheduler(shared: &Shared, arrivals: Receiver<Delayed>) {
+    fn schedule(
+        to_target: &mut DelayQueue<Delayed>,
+        to_peer: &mut DelayQueue<Delayed>,
+        packet: Delayed,
+    ) {
+        let queue = match packet.direction {
+            Direction::ToTarget => to_target,
+            Direction::ToPeer => to_peer,
+        };
+        queue.push(packet.deliver_at, packet);
+    }
     let mut to_target: DelayQueue<Delayed> = DelayQueue::new();
     let mut to_peer: DelayQueue<Delayed> = DelayQueue::new();
     loop {
         let now = Instant::now();
         for queue in [&mut to_target, &mut to_peer] {
             while let Some(packet) = queue.pop_due(now) {
-                shared.send(&packet.socket, &packet.bytes, packet.to);
+                packet.route.send(&packet.bytes);
             }
         }
         shared
@@ -323,25 +358,32 @@ fn run_scheduler(shared: &Shared, arrivals: Receiver<Delayed>) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        let arrival = match next_due {
-            Some(at) => arrivals.recv_timeout(at.saturating_duration_since(Instant::now())),
+        let arrival = match next_due.map(|at| at.saturating_duration_since(Instant::now())) {
             None => arrivals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(wait) if wait > PRECISE_WAIT => arrivals.recv_timeout(wait - PRECISE_WAIT),
+            Some(wait) => {
+                thread::sleep(wait);
+                arrivals.try_recv().map_err(|err| match err {
+                    TryRecvError::Empty => RecvTimeoutError::Timeout,
+                    TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+                })
+            }
         };
         match arrival {
-            Ok(packet) => {
-                let queue = match packet.direction {
-                    Direction::ToTarget => &mut to_target,
-                    Direction::ToPeer => &mut to_peer,
-                };
-                queue.push(packet.deliver_at, packet);
-            }
+            Ok(packet) => schedule(&mut to_target, &mut to_peer, packet),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
+        }
+        // Everything already handed over, so a backlog never waits a round
+        // per datagram.
+        for packet in arrivals.try_iter() {
+            schedule(&mut to_target, &mut to_peer, packet);
         }
     }
 }
 
-/// Counts consecutive receive errors so a stuck socket logs once and backs off.
+/// Counts consecutive receive errors so a stuck socket warns once and backs
+/// off. A lone error logs at debug; a streak warns as it starts backing off.
 #[derive(Default)]
 struct ReceiveErrors {
     streak: u32,
@@ -371,10 +413,13 @@ impl ReceiveErrors {
                 None
             }
             Err(err) => {
-                self.streak += 1;
-                if self.streak == 1 {
-                    log::debug!("[Net] lag proxy receive failed; skipping: {err}");
-                } else {
+                self.streak = self.streak.saturating_add(1);
+                match self.streak {
+                    1 => log::debug!("[Net] lag proxy receive failed; skipping: {err}"),
+                    2 => log::warn!("[Net] lag proxy receive keeps failing; backing off: {err}"),
+                    _ => {}
+                }
+                if self.streak > 1 {
                     thread::sleep(ERROR_BACKOFF);
                 }
                 None
@@ -383,9 +428,9 @@ impl ReceiveErrors {
     }
 }
 
-/// A downstream peer's upstream socket and the thread reading its replies.
+/// A downstream peer's route to the target and the thread reading its replies.
 struct Peer {
-    socket: Arc<UdpSocket>,
+    to_target: Arc<Route>,
     last_heard: Instant,
     stop: Arc<AtomicBool>,
     reader: JoinHandle<()>,
@@ -437,7 +482,7 @@ impl DownstreamReader {
         };
         entry.last_heard = now;
         self.relay
-            .relay(Direction::ToTarget, &entry.socket, self.target, bytes, now);
+            .relay(Direction::ToTarget, &entry.to_target, bytes, now);
     }
 
     fn open_peer(&mut self, peer: SocketAddr, now: Instant) -> bool {
@@ -475,12 +520,11 @@ impl DownstreamReader {
             socket: Arc::clone(&socket),
             stop: Arc::clone(&stop),
             target: self.target,
-            downstream: Arc::clone(&self.socket),
-            peer,
+            to_peer: Route::new(Arc::clone(&self.socket), peer),
         };
         let reader = spawn("net-lag-upstream", move || reader.run())?;
         Ok(Peer {
-            socket,
+            to_target: Route::new(socket, self.target),
             last_heard: now,
             stop,
             reader,
@@ -524,8 +568,8 @@ struct UpstreamReader {
     socket: Arc<UdpSocket>,
     stop: Arc<AtomicBool>,
     target: SocketAddr,
-    downstream: Arc<UdpSocket>,
-    peer: SocketAddr,
+    /// From the downstream socket to this reader's peer.
+    to_peer: Arc<Route>,
 }
 
 impl UpstreamReader {
@@ -543,8 +587,7 @@ impl UpstreamReader {
             }
             self.relay.relay(
                 Direction::ToPeer,
-                &self.downstream,
-                self.peer,
+                &self.to_peer,
                 &buffer[..len],
                 Instant::now(),
             );
@@ -800,8 +843,7 @@ mod tests {
         assert_eq!(queue.len(), MAX_QUEUED_PACKETS);
     }
 
-    // Regression: the full-queue warning re-armed on every accepted push, so
-    // sustained saturation warned once per poll.
+    // Sustained saturation warns once per episode, not once per refused push.
     #[test]
     fn delay_queue_warns_once_per_overflow_episode() {
         const FULL: &str = "lag proxy queue full";
@@ -923,8 +965,7 @@ mod tests {
 
     #[test]
     fn unimpaired_proxies_add_no_measurable_latency_to_an_echo() {
-        // Generous: the frame-polled relay this replaced added up to a frame
-        // (~16 ms) per hop off Linux; a threaded relay adds microseconds.
+        // Generous bound; a frame-quantized relay would add ~16 ms per hop.
         const SLACK: Duration = Duration::from_millis(5);
         let echo = Echo::start();
         let host = LagProxy::host(loopback_socket().0, echo.addr).expect("host proxy");
@@ -955,7 +996,6 @@ mod tests {
 
         let mut up = Vec::new();
         let mut down = Vec::new();
-        let mut upstream = None;
         for round in 0..5_u8 {
             let start = Instant::now();
             client.send_to(&[round], proxy.local_addr()).unwrap();
@@ -967,7 +1007,6 @@ mod tests {
                 proxy.local_addr(),
                 "leaves through its upstream socket"
             );
-            upstream = Some(from);
 
             let start = Instant::now();
             host.send_to(&[round], from).unwrap();
@@ -981,7 +1020,6 @@ mod tests {
             );
         }
         assert_eq!(proxy.peer_count(), 1);
-        assert!(upstream.is_some());
         eprintln!("50 ms delay measured: up {up:?}, down {down:?}");
         for sample in up.iter().chain(&down) {
             assert!(*sample >= DELAY, "released early: {sample:?}");

@@ -72,7 +72,7 @@ Each run measured its own implementation; the 5300M also timed the 1660 binary (
   - 1660: 0.5–0.8 by pass cost, about 1 by whole frame.
   - The 1660's e24 near figure (2.1–2.4) is inflated by its read penalty.
   - The rule "cells at 2 or more, per-fragment below 1" holds on both.
-- **The cell pass is cheap where it wins.** It costs 0.19 ms on the 5300M and 0.03 ms on the 1660 at e24 near. It grows with cell count: 1.3–2.0 ms on the 5300M and about 0.4–0.5 ms on the 1660 for 1.3–1.4M cells.
+- **The cell pass is cheap where it wins.** It costs 0.19 ms on the 5300M and 0.03 ms on the 1660 at e24 near. It grows with cell count: 1.3–2.0 ms on the 5300M and 0.37–0.50 ms on the 1660 for 1.3–1.4M cells.
 - **The per-cell frustum cull does not earn its place.**
 - **Most of the gain survives the ratio forced to 1:**
   - 5300M one-draw cells: 88% at e24 near, 62% on the probes map.

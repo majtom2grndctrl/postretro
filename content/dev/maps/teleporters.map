@@ -2,6 +2,7 @@
 // Format: Standard
 // Teleporter acceptance fixture. All coordinates below are Quake map units.
 // Spawn body center is 40 units above the floor, clearing the dev 1 metre capsule extreme.
+// Floor markers: yellow = arm pad, red = arm button or closet plate, purple = classic gate (including returns), blue = disarm pad.
 // Hub yellow use pad at minus 128 minus 128 arms the purple gate at minus 40 minus 184.
 // Red plate at 64 0 disarms the gate and opens the two map-monster closet.
 // Kill both closet residents. The authored death override removes them, then progress rearms the gate.
@@ -267,6 +268,38 @@
 ( 0 -168 0 ) ( 1 -168 0 ) ( 0 -168 1 ) DebugTextures/debug_floor_red 0 0 0 1 1
 ( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
 ( 0 0 16 ) ( 0 1 16 ) ( 1 0 16 ) DebugTextures/debug_floor_red 0 0 0 1 1
+}
+{
+( 4264 0 0 ) ( 4264 1 0 ) ( 4264 0 1 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 4296 0 0 ) ( 4296 0 1 ) ( 4296 1 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 168 0 ) ( 0 168 1 ) ( 1 168 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 200 0 ) ( 1 200 0 ) ( 0 200 1 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 0 16 ) ( 0 1 16 ) ( 1 0 16 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
+{
+( 7992 0 0 ) ( 7992 1 0 ) ( 7992 0 1 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 8024 0 0 ) ( 8024 0 1 ) ( 8024 1 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 168 0 ) ( 0 168 1 ) ( 1 168 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 200 0 ) ( 1 200 0 ) ( 0 200 1 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 0 0 16 ) ( 0 1 16 ) ( 1 0 16 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
+{
+( 3888 0 0 ) ( 3888 1 0 ) ( 3888 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 3936 0 0 ) ( 3936 0 1 ) ( 3936 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 160 0 ) ( 0 160 1 ) ( 1 160 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 208 0 ) ( 1 208 0 ) ( 0 208 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 4 ) ( 0 1 4 ) ( 1 0 4 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+{
+( 7984 0 0 ) ( 7984 1 0 ) ( 7984 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 8032 0 0 ) ( 8032 0 1 ) ( 8032 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -208 0 ) ( 0 -208 1 ) ( 1 -208 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 -160 0 ) ( 1 -160 0 ) ( 0 -160 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 4 ) ( 0 1 4 ) ( 1 0 4 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 }
 }
 {

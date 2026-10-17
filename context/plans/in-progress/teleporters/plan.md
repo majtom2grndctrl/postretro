@@ -1,7 +1,7 @@
 # teleporters — plan of record
 
 mode: resumable
-status: test-ready
+status: done-pending-landing
 read at: 08231a583
 
 ## Checkpoint
@@ -112,7 +112,7 @@ AC numbers count the brief's checkboxes in order, automated first (1–48), then
 | 49 | Metal seamless swap has no pop/lighting change | owner in-engine, distant room copies at fixed landmark offsets | manual-visual | pass (owner, 2026-10-16, Mac/Metal): A↔B swap seamless; only the intended wall-texture difference is visible |
 | 50 | Co-op traveller timing, observer cut, scripted agreement | owner two-peer playtest at approximately 100 ms RTT | manual-playtest | pass (owner, 2026-10-16, Windows PC ↔ Mac over LAN, then with injected latency): instant walk-in, no snap-back, scripted shift agrees. General non-teleport lag artefacts seen; out of scope |
 | 51 | Closet loop end to end | owner playtest dev fixture: reveal → disarm → map-monster clear → rearm → use/disarm | manual-playtest | pass (owner, 2026-10-16): closet loop plays end to end, after the passive-resident fixture fix `75d91fbbb` |
-| 52 | Runtime lightmap/SH comparison | matched baseline/teleporter dev and eight-source stress diagnostics run below | manual-measurement | outstanding — owner: runtime Mac/Metal runbook in [`measurement.md`](measurement.md) §3; bake half done (§2) |
+| 52 | Runtime lightmap/SH comparison | matched baseline/teleporter dev and eight-source stress diagnostics run below | manual-measurement | pass (unattended Mac/Metal run, 2026-10-16, AMD 5300M, AC power, 22 fresh runs): lightmap pool stayed at 1 of 15 layers (28 MiB) on every fixture, variant and baseline; no pool growth, no growth transient, no SH floor warning; mandatory demand rises as baked (stress 45 vs 5 blocks). Substitutions and skips (co-op occupied arm, L=32) are listed in [`measurement.md`](measurement.md) §4 |
 
 ## Tasks
 
@@ -174,7 +174,7 @@ HEAD `9fab00fa6`, `CARGO_INCREMENTAL=0`, 2026-10-16: `fmt --check` ✓ · `clipp
 ## Implementation checkpoint (active)
 
 - **All tasks 1–13 done; review loop closed; final gate green at `9fab00fa6`; AC results recorded (48 automated pass, 4 manual outstanding).** `status: test-ready` per the Verification policy.
-- AC49–51 passed by the owner (2026-10-16) and the residency decision is recorded. Awaiting AC52 (runtime runbook in `measurement.md` §3), then "land the plane": move the brief to done, fix the `context/lib` drift listed under Review loop, push the branch.
+- All 52 ACs pass: AC49–51 by the owner (2026-10-16), AC52 by the unattended runtime run (`measurement.md` §4). Residency decision recorded. Awaiting "land the plane": move the brief to done, fix the `context/lib` drift listed under Review loop, push the branch.
 - Open owner follow-up outside this branch: entity pitch sign vs TrenchBroom (engine positive pitch is nose-up; TrenchBroom draws non-MDL models nose-down); near-zero content exposure today.
 
 History:

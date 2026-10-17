@@ -225,3 +225,80 @@ Positions are `--start-pose` engine metres: engine = (−quake_y, quake_z, −qu
 - Overruns: any pool or transient that would breach 2 GB, stated plainly.
 
 The owner then decides the brief's open question: keep full mandatory arrival origins, or move origins beyond the touching cells to the evictable band.
+
+## 4. Runtime results (2026-10-16, unattended)
+
+Run by an agent with the owner away, on worktree HEAD `fb8e0dfca`. Raw logs, per-run power/VRAM checks and the driver scripts lived in session scratch and are not retained in git.
+
+### 4.1 Setup
+
+| Item | Value |
+|---|---|
+| Machine | MacBook Pro, Intel i9-9980HK, AMD Radeon Pro 5300M 4 GB + Intel UHD 630 |
+| GPU the engine selected | `AMD Radeon Pro 5300M (backend=Metal, type=DiscreteGpu)` in every run |
+| Power | AC power before and after every run; no `ScreenSaverEngine` before or after any run; `caffeinate -dimsu` for the whole session |
+| Build | §3.1: `dev` profile, `postretro --features dev-tools`; fixtures re-baked with `prl-build ... --release` into `content/dev/maps/` |
+| Launch | `RUST_LOG=info POSTRETRO_CPU_TIMING=1 target/debug/postretro-tool run --install-root . maps/<map>.prl [--start-pose ...]`. One fresh process per row; 25 s wall dwell (about 22 s after reveal), then SIGINT. No stray `postretro` process after any run. |
+| Extents, lead, cap | surface 3584×2240, scene 1195×747 (divisor 3); lead 16.0 of 32.0 m; lightmap pool cap 15 layers |
+| Frame regime | Every run vsync-bound at 60 Hz: 120-frame window averages 16.2–16.6 ms, `wait_acquire` ≈ 9–10.5 ms. No slow-regime run occurred, none discarded. |
+
+Readings come from the last `[Lightmap streaming]` and `[SH streaming]` log lines of each run (§3.3). Each fixture installs everything in the first 5 s window and stays idle after it, so one window holds the whole run, any cross included.
+
+### 4.2 What was automated, substituted or skipped
+
+`xtask observe` / `--headless` has no renderer, so it cannot measure GPU residency. `--observe-live` reads state but injects no input. Neither was used; no engine code or flags were added. The only per-run control was `--start-pose`.
+
+| Step | How it ran |
+|---|---|
+| Dev 1, 2; stress 1, 2 (L = 16) | Automated as written. |
+| Stress 2 at L = 32 | **Skipped.** Lead is set only by the dev-panel slider. §2.1 shows L = 32 equals L = 16 on both fixtures. |
+| Dev 3, classic cross | **Substituted.** `vault_gate` starts disarmed and needs a use press. Variant and baseline both launch cold at the `vault_in` arrival pose. That row also serves as the variant's step-4 room-A dwell. |
+| Dev 4, occupied-arm shift | **Substituted, unverified.** The variant launches standing on the room-A `era_plate` (`0,1.016,-105.664`). The trigger system emits Enter on the first tick for a capsule already inside, which arms the shift. No log line confirms the teleport, and A↔B are rotated copies, so portal-walk stats cannot tell the rooms apart. Residency cannot differ either way: both room cells mandate the whole level. |
+| Dev 5, return | **Substituted.** The variant launches inside `return_b` (`4.674,1.016,-203.403`), armed classic, and crosses to the hub on the first tick: 21 evictions confirm it. Baseline: the `hub_return` pose and the same `return_b` pose. |
+| Stress 3, 4, crosses | **Substituted.** The variant launches inside source 0 (classic) or source 1 (seamless, standing on landmark `stress_in_1`) and crosses on the first tick: 40 evictions confirm it. The source cell's full mandatory set (all 8 arrivals) is resident at reveal, so the pre-cross peak is captured. Baseline: the same source pose (no teleporter), plus the arrival pose. |
+| Stress 5, co-op occupied arm | **Skipped.** The host must press use on `stress_button`; no input path exists without code. |
+
+### 4.3 Dev level (`teleporters` vs `teleporters-baseline`, 56 blocks)
+
+Lightmap: mandatory = resident in every row. The pool is 1 layer (peak 1, cap 15), 28.0 MiB, 0 retiring, growth peak 0 B, 0 growths, 0 visible misses. `[Renderer] Lightmap residency` total is 28.19 MiB for both maps (1 streamed layer + spare, shadowmask resident). SH pool capacity is 3.0 MiB for both maps, with 0 growths and 0 misses.
+
+| Step | Variant: LM mandatory | Variant: SH targets / occupancy | Baseline: LM mandatory | Baseline: SH targets / occupancy | Cross activity (variant, first window) |
+|---|---|---|---|---|---|
+| 1 Spawn (hub) | 35 blocks, 110.4 KiB | 3, 415.6 KiB | 14 blocks, 53.0 KiB | 1, 262.2 KiB | — |
+| 2 Beside vault gate | 35, 110.4 KiB | 3, 415.6 KiB | 14, 53.0 KiB | 1, 262.2 KiB | — |
+| 3/4 Room A at `vault_in` (cold) | 56, 166.4 KiB (whole level) | 6, 577.4 KiB | 21, 57.3 KiB | 2, 153.4 KiB | — |
+| 4 Room A centre (baseline) / on plate (variant shift) | 56, 166.4 KiB | 6, 577.4 KiB | 21, 57.3 KiB | 2, 153.4 KiB | 56 installs, 0 evictions, 0 growths |
+| 4 Room B (baseline) | — | — | 21, 56.0 KiB | 3, 161.9 KiB | — |
+| 5 Return gate → hub | 35, 110.4 KiB after cross | 3, 415.6 KiB | hub: 14, 53.0 KiB; at gate pose: 21, 56.0 KiB | hub: 1, 262.2 KiB; gate: 3, 161.9 KiB | 56 requested/installed, 21 evicted, 0 growths, peak 1 layer |
+
+### 4.4 Eight-source stress (`teleporters-stress` vs `teleporters-stress-baseline`, 45 blocks)
+
+Same pool state in every row: 1 layer (peak 1, cap 15), 28.0 MiB, growth peak 0 B, 0 misses. Lightmap residency total is 28.00 MiB. SH pool capacity is 1.3 MiB, with 0 growths.
+
+| Step | Variant: LM mandatory | Variant: SH targets / occupancy | Baseline: LM mandatory | Baseline: SH targets / occupancy | Cross activity (variant, first window) |
+|---|---|---|---|---|---|
+| 1 Spawn (source room) | 45 blocks, 160.2 KiB (whole map) | 9, 331.2 KiB | 5 blocks, 42.9 KiB | 1, 193.7 KiB | — |
+| 2 Beside sources, L = 16 | 45, 160.2 KiB | 9, 331.2 KiB | 5, 42.9 KiB | 1, 193.7 KiB | — |
+| 3 Classic cross, source 0 | 5, 14.7 KiB after cross | 1, 16.2 KiB | at source pose: 5, 42.9 KiB; at arrival: 5, 14.7 KiB | 1, 193.7 KiB; arrival 1, 16.2 KiB | 45 installed, 40 evicted, 0 growths, peak 1 layer |
+| 4 Seamless cross, source 1 | 5, 14.7 KiB after cross | 1, 16.2 KiB | at source pose: 5, 42.9 KiB; at arrival: 5, 14.7 KiB | 1, 193.7 KiB; arrival 1, 16.2 KiB | 45 installed, 40 evicted, 0 growths, peak 1 layer |
+
+Stress runtime matches §2.1 L = 16 exactly: 45 blocks and 9 clusters from every source-room cell. The dev level has since been edited (floor markers `5ce836af0`, hub lamp `3962349a0`) and now has 56 blocks, so its counts are not comparable one-to-one with §2.1.
+
+### 4.5 Device memory and warnings
+
+- **Device VRAM.** AMD `inUseVidMemoryBytes` (device-wide, other apps included):
+  - Idle: about 1.16–1.18 GiB.
+  - Mid-run: about 1.85–1.86 GiB.
+  - Engine-attributable: 688–712 MiB in every run, variant and baseline alike. The spread is noise, not a teleporter effect. It is dominated by fixed allocations, such as the 384 MiB spot shadow pool and the 3584×2240 surface.
+- **SH floor.** No `[SH streaming] non-evictable logical demand exceeds the effective floor` warning in any run. No ERROR lines.
+- **2 GB target.** No overrun. Peak device-wide use was about 1.86 GiB of 4 GiB, including the desktop. The teleporter-attributable increase is ≤ 0.12 MiB lightmap and ≤ 0.42 MiB SH (dev room A: +109 KiB, +424 KiB).
+
+### 4.6 Verdict against AC52
+
+AC52 asks for the runtime lightmap pool peak and SH working set beside a teleporter, against the same map with teleporters removed.
+
+- **Mechanism.** Arrival origins are mandatory and resident before any cross. Beside the stress sources the variant holds the whole map: 45 vs 5 lightmap blocks and 9 vs 1 SH clusters. Beside the dev vault gate it holds 35 vs 14 blocks and 3 vs 1 clusters.
+- **Bytes.** The absolute cost is negligible at fixture scale: +117 KiB lightmap and +138 KiB SH (stress), +57 KiB lightmap and +153 KiB SH (dev beside the gate).
+- **Pool.** The lightmap pool stays at 1 layer with peak 1 in every run. No growth event, no retiring generation, and a 0 B growth transient on every cross, classic or seamless. SH pools never grow and never warn.
+- **Verdict.** Measured, not exceeded. No runtime pool peak or transient approaches the 2 GB target. These fixtures cannot show byte scale. The dense-map exposure in §2.3 (several hundred MiB of non-evictable lightmap from eight dense arrivals) remains an extrapolation that this runtime run neither confirms nor refutes.
+- **Gaps.** The L = 32 dwell and the co-op occupied arm were not run, and the dev crosses used start-pose substitutions. These are listed in §4.2.

@@ -33,6 +33,9 @@ impl ShResidencyState {
             selection_weights,
         };
         self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
+        #[cfg(feature = "dev-tools")]
+        self.probe_readback
+            .reconcile(self.grid_dimensions, &self.sampled_words);
         Ok(outcome)
     }
 
@@ -250,6 +253,8 @@ impl ShResidencyState {
     /// The CPU half of a session clear: every residency mirror, the compose
     /// planner, and the frame scratch return to their post-load state.
     pub(super) fn clear_session_mirrors(&mut self) {
+        #[cfg(feature = "dev-tools")]
+        self.probe_readback.invalidate();
         self.targets.clear();
         self.node_slots.clear();
         self.dense_slots = FirstFitRanges::default();

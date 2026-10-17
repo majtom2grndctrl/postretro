@@ -49,6 +49,8 @@ impl ShResidencyState {
                     visible_cells: region_sets.visible_cells,
                     fog_cells: region_sets.fog_cells,
                     dynamic_regions: &dynamic_regions,
+                    #[cfg(feature = "dev-tools")]
+                    probe_bricks: self.probe_overlay_bricks(),
                     fog_draw_all,
                 },
                 &mut region_rows,

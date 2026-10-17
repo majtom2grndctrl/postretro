@@ -46,6 +46,7 @@ struct MoverGoToPathNodeArgs {
 pub(crate) enum BindSite {
     Trigger,
     PlayerEvent,
+    Teleport,
 }
 
 pub(super) fn bind_primitive(
@@ -71,6 +72,7 @@ pub(super) fn bind_primitive(
         match sentinel {
             "@activators" => Some(BoundTarget::Activators),
             "@trigger" => Some(BoundTarget::FiredTrigger),
+            "@teleporter" => Some(BoundTarget::FiredTeleporter),
             "@player" => Some(BoundTarget::EventPlayer),
             spelling => {
                 log::warn!("[Trigger] illegal primitive target sentinel `{spelling}`; not binding");
@@ -110,6 +112,7 @@ pub(super) fn bind_sequence_step(
         SequenceTarget::Group(group) => BoundTarget::Group(group.clone()),
         SequenceTarget::Activators => BoundTarget::Activators,
         SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
+        SequenceTarget::FiredTeleporter => BoundTarget::FiredTeleporter,
         SequenceTarget::EventPlayer => BoundTarget::EventPlayer,
         // Control steps never bind to an in-tick command: `BoundTarget` has no
         // analogue for them. The amended `partition_direct_reaction` (Task 3)
@@ -260,6 +263,10 @@ pub(super) fn bind_command_at(
                 amount: args.amount,
             })
         }
+        "armTeleporter" | "disarmTeleporter" => Some(BoundTriggerCommand::TeleporterArmed {
+            target: target(primitive)?,
+            armed: primitive == "armTeleporter",
+        }),
         "armTrigger" => Some(BoundTriggerCommand::Arm {
             target: target(primitive)?,
         }),
@@ -424,6 +431,7 @@ fn bind_store_slot(
         };
         let scope = match site {
             BindSite::Trigger => DispatchScope::script(script_ctx.clone(), TRIGGER_EVENT_INPUTS),
+            BindSite::Teleport => DispatchScope::script(script_ctx.clone(), &[]),
             BindSite::PlayerEvent => {
                 DispatchScope::player_event(script_ctx.clone(), TRIGGER_EVENT_INPUTS)
             }

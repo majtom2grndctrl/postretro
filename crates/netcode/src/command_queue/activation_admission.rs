@@ -21,13 +21,14 @@ impl ClientCommandState {
         self.activation_edges
             .observe(input, command.client_tick, self.host_tick);
         if let Some(token) = input.initiation {
-            self.activation_edges.observe_start(
+            self.activation_edges.observe_start_stamped(
                 token,
                 command.movement.firing_slot,
                 RemoteStartAim {
                     pitch: command.movement.aim_pitch,
                     yaw: command.movement.facing_yaw,
                 },
+                command.teleport_yaw_stamp,
                 self.host_tick,
             );
         }
@@ -329,6 +330,33 @@ impl HostCommandQueues {
         self.clients
             .get(&client_id)
             .and_then(|state| state.activation_edges.delivered_aim(token))
+    }
+
+    /// [`Self::start_aim`] turned into `pawn`'s current teleport frame by the
+    /// start's own yaw stamp. Host FIRE reads this form; the raw aim is still in
+    /// the frame the client sampled it in.
+    pub fn start_aim_in_registry(
+        &self,
+        client_id: u64,
+        token: ActivationToken,
+        pawn: EntityId,
+        registry: &EntityRegistry,
+    ) -> Option<RemoteStartAim> {
+        let state = self.clients.get(&client_id)?;
+        let mut aim = state.activation_edges.delivered_aim(token)?;
+        let stamp = state.activation_edges.delivered_teleport_yaw_stamp(token)?;
+        // As host command resolution: a pawn without movement holds no teleport
+        // frame, so its start keeps the aim it declared.
+        if let Ok(movement) =
+            registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+        {
+            aim.yaw = crate::netcode::wire_convert::facing_in_teleport_frame(
+                aim.yaw,
+                movement.teleport.accumulated_yaw,
+                stamp,
+            );
+        }
+        Some(aim)
     }
 
     /// After the simulation tick, clear each client's cadence record for every

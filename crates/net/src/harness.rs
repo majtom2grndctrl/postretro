@@ -407,6 +407,7 @@ mod tests {
                 projectile_presentation: None,
                 presentation_binding: None,
                 components: vec![RawComponentPayload {
+                    teleporter: None,
                     component_kind: COMPONENT_KIND_TRANSFORM,
                     transform: Some(WireTransform {
                         position: [1.5, -2.0, 3.25],

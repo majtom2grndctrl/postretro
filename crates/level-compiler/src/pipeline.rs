@@ -1530,8 +1530,10 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
 
-    // Lightmap residency set (id 51): reads only the partition plan's Cells and
-    // Portals and the encoded locator, all final here. It never feeds a bake.
+    // Lightmap residency set (id 51): reads the partition plan's Cells and
+    // Portals, the encoded locator, and for teleporter routes the id-55 section
+    // plus the f64 BSP leaves (bounds and defining planes), all final here. It
+    // never feeds a bake.
     let stage_start = begin_stage(reporter.as_ref(), StageId::CellResidencySet);
     let cell_residency_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::CellResidencySet, cell_residency_progress.clone());
@@ -1540,6 +1542,12 @@ fn run_after_parsing(
         &cell_partition.cells,
         &cell_partition.portals,
         &pack::encode_cell_locator(&result.tree)?,
+        Some(
+            cell_residency_bake::teleport_routes::TeleportResidencyInput {
+                section: &map_data.teleporters,
+                tree: &result.tree,
+            },
+        ),
         stage_cache.as_ref(),
         &cell_residency_control,
     )?;
@@ -1955,6 +1963,7 @@ fn run_after_parsing(
         kinematic_geometry: kinematic_geometry_section.as_ref(),
         trigger_volumes: trigger_volumes_section.as_ref(),
         environment_volumes: &environment_volumes_section,
+        teleporters: &map_data.teleporters,
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),

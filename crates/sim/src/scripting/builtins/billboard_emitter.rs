@@ -136,6 +136,8 @@ pub(crate) fn handle(entity: &MapEntity, registry: &mut EntityRegistry) -> Optio
 
     let transform = Transform {
         position: entity.origin,
+        // Particles launch along world-space `initial_velocity`; an emitter has
+        // no front, so it keeps the authored frame unturned.
         rotation: entity.rotation_quat(),
         scale: Vec3::ONE,
     };

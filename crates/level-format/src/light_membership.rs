@@ -102,17 +102,24 @@ pub struct LightTableLight {
 pub enum MapMemberKind {
     KinematicMover,
     TriggerVolume,
+    Teleporter,
     Spawner,
 }
 
 impl MapMemberKind {
-    pub const ALL: [Self; 3] = [Self::KinematicMover, Self::TriggerVolume, Self::Spawner];
+    pub const ALL: [Self; 4] = [
+        Self::KinematicMover,
+        Self::TriggerVolume,
+        Self::Teleporter,
+        Self::Spawner,
+    ];
 
     /// The `worldQuery` component name, which is also the wire spelling.
     pub fn component(self) -> &'static str {
         match self {
             Self::KinematicMover => "kinematic_mover",
             Self::TriggerVolume => "trigger_volume",
+            Self::Teleporter => "teleporter",
             Self::Spawner => "spawner",
         }
     }
@@ -124,7 +131,7 @@ impl MapMemberKind {
     }
 }
 
-/// One runtime-placed mover, trigger volume or spawner, in authored order
+/// One runtime-placed mover, trigger volume, teleporter or spawner, in authored order
 /// within its kind. Mirrors the runtime identity snapshot
 /// (`collect_identity_snapshots_json` in `postretro-sim`); `scripts-build`
 /// assigns the build id.

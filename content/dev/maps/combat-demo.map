@@ -135,7 +135,7 @@
 {
 "classname" "target_dummy"
 "origin" "456 384 0"
-"angles" "0 0 0"
+"angles" "0 195 0"
 "_tags" "dummy"
 }
 // entity 4

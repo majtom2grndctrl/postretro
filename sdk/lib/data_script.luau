@@ -65,8 +65,9 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. A group command
 --- (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a
---- subject-token command (`on.activators`, `on.trigger`, `on.player`) carries
---- `target = "@activators"`, `"@trigger"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity
+--- subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`) carries `target = "@activators"`, `"@trigger"`,
+--- `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity
 --- carrying it (fog, emitter and animation primitives have no typed builder).
 --- True system reactions carry neither and enqueue typed engine commands such
 --- as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args`
@@ -96,10 +97,11 @@ export type GroupCommand = {
 }
 
 --- The subject a token command addresses: this fire's activators, the volume
---- that fired, or the event's player.
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@player"
+--- that fired, the teleporter that fired, or the event's player.
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
 
---- One subject-token command (`on.activators`, `on.trigger`, `on.player`): a primitive
+--- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
+--- `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction
 --- body and directly as a sequence entry, but only before any `wait`.
 export type SubjectTokenCommand = {
@@ -235,6 +237,8 @@ export type MoverSetBlockPolicyStep = {
   args: { policy: "displace" | "reverse" | "stop" | "crush" },
 }
 
+export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args: {} }
+export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
 export type ArmTriggerStep = {
   id: number,
   primitive: "armTrigger",
@@ -277,7 +281,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read
@@ -323,6 +327,12 @@ export type TriggerTarget = {
   arm: (self: TriggerTarget) -> SubjectTokenCommand,
   disarm: (self: TriggerTarget) -> SubjectTokenCommand,
 }
+export type TeleporterTarget = {
+  arm: (self: TeleporterTarget) -> SubjectTokenCommand,
+  disarm: (self: TeleporterTarget) -> SubjectTokenCommand,
+}
+export type TeleportEventParams = { activators: ActivatorsTarget, teleporter: TeleporterTarget }
+export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport", fire: {string} }
 export type TriggerEventParams = {
   activators: ActivatorsTarget,
   trigger: TriggerTarget,
@@ -450,6 +460,7 @@ export type LevelManifest = {
   crossings: {CrossingDescriptor}?,
   -- Level trigger events, keyed by volume: build each with a trigger member's `on`.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
+  teleportEvents: {TeleportEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   -- Per-player events, built with `players():on`. A level's entries belong to
   -- that level; an entry carrying `levels` is skipped with a warning (its

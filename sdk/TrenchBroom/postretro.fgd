@@ -319,7 +319,7 @@
     = prop_mesh : "Static Mesh Prop"
 [
     origin(origin)
-    angles(angles) : "Orientation (pitch yaw roll, degrees)" : "0 0 0"
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     model(string) : "Model path (relative to content root, e.g. models/x/scene.gltf)" : ""
 ]
 
@@ -405,6 +405,39 @@
     origin(origin)
     name(string) : "Stable waypoint name" : ""
     next(string) : "Next waypoint name" : ""
+]
+
+// Teleporter brushwork is a non-solid union; only player body points fire it.
+@SolidClass
+    color(140 100 240)
+    = trigger_teleport : "Player teleporter region"
+[
+    name(string) : "Teleporter name" : ""
+    _tags(string) : "Space-delimited tags" : ""
+    mode(choices) : "Mode" : "classic" =
+    [
+        "classic" : "Classic (exact destination and facing)"
+        "seamless" : "Seamless (relative to landmark)"
+    ]
+    target(string) : "Destination name" : "" : "Required teleport_destination name."
+    landmark(string) : "Source landmark name" : "" : "Required in seamless mode; forbidden in classic. Must differ from target."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    arrival_sound(string) : "Arrival sound key" : "" : "Optional key under sounds/, without extension. Blank is silent."
+    on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
+]
+
+@PointClass
+    color(140 100 240)
+    size(-6 -6 -6, 6 6 6)
+    = teleport_destination : "Teleporter destination or source landmark"
+[
+    origin(origin)
+    name(string) : "Unique destination name" : ""
+    angles(angles) : "Pitch yaw roll (degrees)" : "0 0 0" : "Only yaw is used; pitch or roll emits a compile warning."
 ]
 
 @SolidClass

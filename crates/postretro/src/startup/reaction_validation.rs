@@ -221,6 +221,7 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
                     step.id,
                     SequenceTarget::Activators
                         | SequenceTarget::FiredTrigger
+                        | SequenceTarget::FiredTeleporter
                         | SequenceTarget::EventPlayer
                 ) || args_read_emitter(&step.args)
                     || args_read_audience(&step.args)
@@ -371,6 +372,9 @@ fn scoped_fire_targets(
                         )),
                         SequenceTarget::FiredTrigger => Some(format!(
                             "sequence step {step_index} target sentinel `@trigger`"
+                        )),
+                        SequenceTarget::FiredTeleporter => Some(format!(
+                            "sequence step {step_index} target sentinel `@teleporter`"
                         )),
                         SequenceTarget::EventPlayer => Some(format!(
                             "sequence step {step_index} target sentinel `@player`"

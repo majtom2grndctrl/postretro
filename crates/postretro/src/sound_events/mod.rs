@@ -17,3 +17,6 @@ pub(crate) use descriptors::{
     warn_unknown_sound_keys, weapon_emission_addresses, weapon_emission_sound, weapon_sound,
 };
 pub(crate) use movers::{MoverEdge, resolve_mover_edges};
+
+mod teleporters;
+pub(crate) use teleporters::{arrival_sound, observed_arrival_sounds};

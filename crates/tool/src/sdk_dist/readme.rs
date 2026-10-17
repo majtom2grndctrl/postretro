@@ -179,6 +179,7 @@ live, so renaming it after release strands them.\n\
 - `docs/level_design.md` — level authoring and the compiler pipeline.\n\
 - `docs/scripting-reference.md` — the scripting API surface.\n\
 - `docs/weapon-mounts.md` — weapon mount and viewmodel authoring.\n\
+- `docs/teleporters.md` — classic and seamless teleporters.\n\
 - `docs/diagnostics.md` — diagnosing and profiling a running session.\n\
 - `tools/` — Python asset helpers. See `tools/README.md` for the Python and\n\
   library requirements they need.\n\
@@ -318,6 +319,7 @@ mod tests {
             "docs/level_design.md",
             "docs/scripting-reference.md",
             "docs/weapon-mounts.md",
+            "docs/teleporters.md",
             "docs/diagnostics.md",
             "docs/distribution.md",
             "tools/",

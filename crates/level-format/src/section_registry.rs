@@ -242,6 +242,9 @@ pub enum SectionId {
     /// tile per probe. Absent means no probes.
     /// See `reflection_probes::ReflectionProbesSection`.
     ReflectionProbes = 54,
+
+    /// Optional predictive teleporter regions and resolved arrival poses.
+    Teleporters = 55,
 }
 
 impl SectionId {
@@ -289,6 +292,7 @@ impl SectionId {
             52 => Some(Self::EnvironmentVolumes),
             53 => Some(Self::PushForces),
             54 => Some(Self::ReflectionProbes),
+            55 => Some(Self::Teleporters),
             _ => None,
         }
     }
@@ -343,6 +347,7 @@ mod tests {
             SectionId::EnvironmentVolumes,
             SectionId::PushForces,
             SectionId::ReflectionProbes,
+            SectionId::Teleporters,
         ];
 
         for section_id in registered {
@@ -350,6 +355,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(55), None);
+        assert_eq!(SectionId::from_u32(56), None);
     }
 }

@@ -2562,6 +2562,8 @@ pub(crate) fn load_prl_from_container(
         }
         None => Vec::new(),
     };
+    let teleporters =
+        crate::prl_teleporters::decode_teleporters(read_section(SectionId::Teleporters)?)?;
     let touch_trigger_count = trigger_volumes
         .iter()
         .filter(|trigger| trigger.activation == 0)
@@ -3007,6 +3009,7 @@ pub(crate) fn load_prl_from_container(
         map_entities,
         kinematic_geometry,
         trigger_volumes,
+        teleporters,
         fog_volumes,
         fog_pixel_scale,
         environment_volumes,

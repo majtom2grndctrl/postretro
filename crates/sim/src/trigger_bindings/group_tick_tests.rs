@@ -159,6 +159,7 @@ impl Level {
                         fired_trigger: Some(event.fire.trigger),
                         activator,
                         occupancy,
+                        fired_teleporter: None,
                         event_player: None,
                     },
                 );

@@ -380,6 +380,44 @@ fn deepest_mover_penetration_with<const BROAD_PHASE: bool>(
     deepest
 }
 
+/// Whether `point` lies inside any mover's closed hull at its current pose.
+/// Contact queries see only triangles, so a shape wholly inside a hull reports
+/// none. Uses the generalized winding number (summed signed solid angles,
+/// Van Oosterom–Strackee): about ±1 inside a closed mesh of either winding, 0
+/// outside, and free of the edge and vertex degeneracies of ray parity. A point
+/// on a surface is undefined, so callers ask only after contact came back clear.
+/// Movers whose bounding sphere cannot reach the point are skipped;
+/// allocation-free.
+pub(crate) fn point_inside_mover(
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    point: Vec3,
+) -> bool {
+    if !point.is_finite() {
+        return false;
+    }
+    movers.iter().any(|mover| {
+        let Some(pose) = poses.pose(mover.mover_id) else {
+            return false;
+        };
+        let mover_pose = transform_pose(pose.transform);
+        if !mover_bound_may_reach_segment(mover, &mover_pose, point, Vec3::ZERO, 0.0) {
+            return false;
+        }
+        let local = mover_pose.inverse_transform_point(point).as_dvec3();
+        let vertices = mover.local_mesh.vertices();
+        let mut solid_angle = 0.0_f64;
+        for triangle in mover.local_mesh.indices() {
+            let [a, b, c] = triangle.map(|index| vertices[index as usize].as_dvec3() - local);
+            let (la, lb, lc) = (a.length(), b.length(), c.length());
+            let numerator = a.dot(b.cross(c));
+            let denominator = la * lb * lc + a.dot(b) * lc + a.dot(c) * lb + b.dot(c) * la;
+            solid_angle += 2.0 * numerator.atan2(denominator);
+        }
+        (solid_angle / (4.0 * std::f64::consts::PI)).abs() > 0.5
+    })
+}
+
 pub(crate) fn deepest_mover_push_penetration(
     movers: &[MoverCollider],
     poses: &(impl MoverPoseSource + ?Sized),

@@ -3,6 +3,13 @@
 
 pub mod bc5;
 pub mod cache;
+/// Only the Quake angle converter, so placement tests in other crates build
+/// entity orientation through the compiler's own conversion point.
+pub mod format {
+    pub mod quake_map {
+        pub mod angles;
+    }
+}
 pub mod geometry;
 pub mod geometry_utils;
 pub mod map_data;

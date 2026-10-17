@@ -1661,6 +1661,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `events` | Level-local impact policies. |
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
+| `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -1736,9 +1737,9 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, lights, fog volumes, emitters, spawners. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity a trigger fire is about: `on.activators` and `on.trigger`, inside a trigger-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -1748,12 +1749,14 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
+| teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | `on.activators` | trigger-event reaction param | `damage`, `grantHealth`, `grantAmmo`, `addSlot` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
+| `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
 
 ### getMapEntities
 
@@ -1772,6 +1775,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 |------|--------|-----------------|
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
+| `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
@@ -1802,7 +1806,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -2457,7 +2461,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 
 | Helper | Emitted body | Notes |
 |--------|--------------|-------|
-| `playSound(sound, { bus?, at?, audience? }?)` | `{ primitive: "playSound", args: { sound, bus?, at?, audience? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. `at` with a non-SFX bus is rejected when the level installs. |
+| `playSound(sound, { bus?, at?, audience? }?)` | `{ primitive: "playSound", args: { sound, bus?, at?, audience? } }` | Plays `sound` on the optional mixer `bus` (SFX when omitted). In a reaction fired by a weapon, reload, impact, enemy, movement or mover event, `at: on.emitter` positions the sound where that event happened, on the SFX bus: `defineReaction("door.open", (on: EmitterParams) => playSound("sfx/door_open", { at: on.emitter }))`. A source that publishes no emitter (level load, crossings, triggers, deaths, follow-ups) skips such a reaction with a warning. A teleport publishes none either, but there `at` skips only the positioned sound, with a warning logged once; the rest of the reaction runs. `at` with a non-SFX bus is rejected when the level installs. |
 | `rumble(strong, durationMs, weak?, { audience? }?)` | `{ primitive: "rumble", args: { strong, weak?, durationMs, audience? } }` | Drives gilrs gamepad force feedback. `strong`/optional `weak` are 0–1 motor intensities; `durationMs` is the rumble length. Warn-once no-op when force feedback is unsupported. |
 | `flashScreen(color, durationMs, { audience? }?)` | `{ primitive: "flashScreen", args: { color, durationMs, audience? } }` | Writes the engine-owned `screen.flash` RGBA slot, which decays back to transparent. `color` is `[r, g, b, a]` (0–1); `durationMs` is the decay time. |
 | `vignette(strength, durationMs, color?, { audience? }?)` | `{ primitive: "vignette", args: { color?, strength, durationMs, audience? } }` | Writes the engine-owned `screen.vignette` slot, which rises to peak then decays back to rest. `strength` is the peak edge-darken amount; `durationMs` is the total rise-plus-decay time. Optional `color` is an `[r, g, b]` linear-RGB tint (omitted → black, a pure strength-only edge-darken). |
@@ -2484,6 +2488,7 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 | Source that fires the reaction | Default sound audience | Default flash, vignette, shake and rumble audience |
 |---|---|---|
 | Trigger enter or exit | Everyone | The players who activated that edge |
+| Teleport | Everyone | The player who teleported |
 | Per-player event | That player | That player |
 | Host-only AI cues, death, movers, kill progress, follow-ups and timed landings | Everyone | Host only |
 | Each-machine level load, local crossing, movement, weapon or AI activate/observer presentation | This machine | This machine |
@@ -2491,6 +2496,8 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 `audience: "everyone"` reaches every participating player. In a trigger callback,
 `audience: on.activators` selects that edge's activators;
 `audience: on.trigger` selects the players inside that trigger at the fire.
+In a teleport callback, `audience: on.activators` selects the player who
+teleported.
 In a player-event callback, `audience: on.player` selects its player. These are
 source tokens, not entity positions. An absent or disconnected player adds no
 recipient. Every recipient plays the command once, including the host when

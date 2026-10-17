@@ -682,6 +682,8 @@ pub struct MapData {
     /// Authored reflection-probe boxes in source map entity order, the
     /// binding tiebreak and id 54's authored probe order.
     pub reflection_volumes: Vec<MapReflectionVolume>,
+    /// Predictive teleporter records, in source entity order.
+    pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.

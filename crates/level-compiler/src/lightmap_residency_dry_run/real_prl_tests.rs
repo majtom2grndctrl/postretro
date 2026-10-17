@@ -6,7 +6,8 @@ use super::{read_dry_run_input, run_dry_run};
 /// bounds, the sampled visible-set bounds, the cell-block pool walks, and the
 /// brief set's lead map, band and walks for a real compiled PRL. When the PRL
 /// carries a baked CellResidencySet (id 51), it must equal direct evaluation
-/// of the dilated, unpinned set at every lead breakpoint. Run from the
+/// of the dilated, unpinned set at every lead breakpoint — or, when the PRL
+/// has teleporters, hold every directly evaluated cell at no greater lead. Run from the
 /// workspace root, in release for large maps:
 ///
 /// ```text
@@ -91,8 +92,10 @@ fn lightmap_residency_dry_run_from_prl() {
         }
         if let Some(baked) = visible.brief_set.baked {
             assert_eq!(
-                baked.mismatched, 0,
-                "the PRL's baked id 51 disagrees with direct evaluation of M(c, L)"
+                baked.check.mismatched,
+                0,
+                "the PRL's baked id 51 is not {} direct evaluation of M(c, L)",
+                baked.relation.label()
             );
         }
         assert!(

@@ -1874,3 +1874,144 @@ fn client_weapon_a_spared_charge_stops_its_burst_once_fired_and_dies_with_its_ow
     predict(&mut frame, &mut registry, &mut command(false, false), 3);
     assert!(frame.due.is_empty());
 }
+
+/// A connected client holding a one-shot projectile weapon, its pawn drifting +X
+/// toward a classic teleporter that sends it to (20, 0, 0) a quarter turn to the left.
+fn teleporting_shooter() -> crate::App {
+    use crate::runtime_teleporters::app_tests::{classic, client_app, level, region};
+    let action = serde_json::json!({"trigger":"press","recoveryMs":50.0,"steps":[{"kind":"shot"}]});
+    let (mut registry, pawn, weapon_id) = fixture(action, true);
+    if let Ok(postretro_entities::ComponentValue::Weapon(component)) =
+        registry.get_component_value_mut(weapon_id, postretro_entities::ComponentKind::Weapon)
+    {
+        // Isolates the aim choice from bloom dispersion.
+        component.bloom_per_shot_degrees = 0.0;
+        component.bloom_max_degrees = 0.0;
+    }
+    let start = Vec3::new(-1.15, 0.0, 0.0);
+    registry
+        .set_component(
+            pawn,
+            Transform {
+                position: start,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.velocity = Vec3::X * 6.0;
+    let eye_height = movement.capsule.eye_height;
+    registry.set_component(pawn, movement).unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+    let facing = crate::build_sim_command(
+        &crate::input::ActionSnapshot::neutral(),
+        &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    )
+    .movement
+    .facing_yaw;
+    let level = level(vec![classic(
+        1,
+        region(Vec3::new(-1.0, -50.0, -5.0), Vec3::new(1.0, 50.0, 5.0)),
+        Vec3::new(20.0, 0.0, 0.0),
+        facing + std::f32::consts::FRAC_PI_2,
+    )]);
+    let mut app = client_app(&level, registry);
+    app.camera = crate::camera::Camera::new(start + Vec3::Y * eye_height, 0.0, 0.2);
+    app.frame_timing = crate::frame_timing::FrameTiming::new(
+        crate::frame_timing::InterpolableState::new(app.camera.position),
+    );
+    app
+}
+
+/// One predicted tick through the frame loop's seam: the weapon predicts on this
+/// tick's command (pressing fire when `fire`), then movement. Yields the eye and
+/// view the camera settled on, and whether the pawn teleported.
+fn shooter_tick(app: &mut crate::App, tick: u32, fire: bool) -> (Vec3, Vec3, bool) {
+    let result = app.run_client_predicted_tick(true, |app| {
+        let mut command = crate::build_sim_command(
+            &crate::input::ActionSnapshot::neutral(),
+            &app.camera,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        command.fire_button = weapon::FireButtonState {
+            pressed: fire,
+            active: fire,
+        };
+        let ctx = app.session.as_ref().unwrap().scripting.script_ctx.clone();
+        predict(
+            &mut app.client_weapon,
+            &mut ctx.registry.borrow_mut(),
+            &mut command,
+            tick,
+        );
+        crate::runtime_teleporters::app_tests::predicted_step(app, command.movement, tick)
+    });
+    let (eye, view) = app.camera.aim_ray();
+    (
+        eye,
+        view,
+        result.is_some_and(|result| result.movement_events.teleport.is_some()),
+    )
+}
+
+fn resolved_launch(app: &mut crate::App) -> (Vec3, Vec3) {
+    let aim = app.presented_aim_pose(0.5);
+    let mut emissions = Vec::new();
+    app.run_client_fire_path_post_loop(0.0, 0.0, aim, &mut emissions);
+    let [resolution] = app.client_fire_resolutions.as_slice() else {
+        panic!("one predicted shot resolves");
+    };
+    let launch = resolution.projectile_launch.as_ref().unwrap();
+    (launch.origin, launch.direction)
+}
+
+// The host fires each shot after that tick's movement, so a shot a predicting
+// client fires on the tick before a teleport later in the same frame leaves that
+// tick's eye along that tick's view, not the frame's presented arrival; a shot on
+// the teleport tick itself leaves the arrival eye along the rotated view.
+#[test]
+fn teleport_client_shot_keeps_its_firing_tick_aim_across_a_later_catchup_teleport() {
+    let mut app = teleporting_shooter();
+    let (eye, view, teleported) = shooter_tick(&mut app, 10, true);
+    assert!(!teleported, "fixture: the shot's tick stays at the source");
+    let (arrival_eye, arrival_view, teleported) = shooter_tick(&mut app, 11, false);
+    assert!(teleported, "fixture: the next catch-up tick teleports");
+    assert!(arrival_eye.distance(eye) > 10.0 && arrival_view.distance(view) > 0.5);
+    let (origin, direction) = resolved_launch(&mut app);
+    assert!(
+        origin.distance(eye) < 1.0e-5,
+        "the shot left {origin}, not its tick's eye {eye}"
+    );
+    assert!(direction.distance(view) < 1.0e-5);
+
+    let mut app = teleporting_shooter();
+    let _ = shooter_tick(&mut app, 10, false);
+    let (arrival_eye, arrival_view, teleported) = shooter_tick(&mut app, 11, true);
+    assert!(teleported, "fixture: the shot's own tick teleports");
+    let (origin, direction) = resolved_launch(&mut app);
+    assert!(
+        origin.distance(arrival_eye) < 1.0e-5,
+        "leaves the arrival eye"
+    );
+    assert!(
+        direction.distance(arrival_view) < 1.0e-5,
+        "along the rotated view"
+    );
+    assert!((app.camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5);
+}

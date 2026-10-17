@@ -4,7 +4,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use glam::{EulerRot, Mat4, Quat, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, ClusterShPayloadsSection,
@@ -300,11 +300,11 @@ pub(super) fn receiver_mask(map: &Path, workspace: &Path, receiver: Receiver) ->
             );
             let mut palette = Vec::new();
             postretro_model::anim::sample_rest_pose(&model.skeleton, &mut palette);
-            let [pitch, yaw, roll] = entity.angles;
-            let transform = Mat4::from_rotation_translation(
-                Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll),
-                Vec3::from_array(entity.origin),
-            );
+            // The prop_mesh spawn rotation, through the same map-entity seam.
+            let rotation = postretro_sim::scripting::map_entity::MapEntity::from(entity.clone())
+                .model_rotation_quat();
+            let transform =
+                Mat4::from_rotation_translation(rotation, Vec3::from_array(entity.origin));
             let positions = model
                 .mesh
                 .vertices

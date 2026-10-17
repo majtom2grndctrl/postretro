@@ -37,6 +37,7 @@ use postretro_level_loader::LevelWorld;
 mod capsule_triangle;
 pub mod moving;
 mod skin_cast;
+mod solid_cells;
 
 /// A collision trimesh could not be built from the supplied triangles.
 ///
@@ -80,6 +81,9 @@ impl CollisionMeshError {
 #[derive(Debug)]
 pub struct CollisionWorld {
     pub(crate) mesh: TriMesh,
+    /// Solid and exterior cells, for shapes no triangle touches.
+    solid_cells: solid_cells::SolidCells,
+    pub teleporters: crate::teleporters::Teleporters,
 }
 
 impl CollisionWorld {
@@ -89,6 +93,8 @@ impl CollisionWorld {
     pub fn from_triangles_for_test(vertices: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
         Self {
             mesh: TriMesh::new(vertices, triangles).expect("test collision mesh must be valid"),
+            solid_cells: Default::default(),
+            teleporters: Default::default(),
         }
     }
 
@@ -115,6 +121,8 @@ impl CollisionWorld {
         Self {
             mesh: TriMesh::new(placeholder_points, placeholder_indices)
                 .expect("the one-triangle placeholder mesh is always valid"),
+            solid_cells: Default::default(),
+            teleporters: Default::default(),
         }
     }
 
@@ -138,7 +146,11 @@ impl CollisionWorld {
 
         let triangles: Vec<[u32; 3]> = world.indices.as_chunks::<3>().0.to_vec();
         if triangles.is_empty() {
-            return Ok(Self::new());
+            let mut collision = Self::new();
+            collision.solid_cells = solid_cells::SolidCells::from_level(world);
+            collision.teleporters =
+                crate::teleporters::Teleporters::from_section(&world.teleporters);
+            return Ok(collision);
         }
 
         let points: Vec<Vec3> = world
@@ -148,6 +160,8 @@ impl CollisionWorld {
             .collect();
         Ok(Self {
             mesh: TriMesh::new(points, triangles).map_err(CollisionMeshError::from_parry)?,
+            solid_cells: solid_cells::SolidCells::from_level(world),
+            teleporters: crate::teleporters::Teleporters::from_section(&world.teleporters),
         })
     }
 
@@ -504,6 +518,41 @@ pub fn sphere_fits_world(world: &CollisionWorld, position: Vec3, radius: f32) ->
     !cast_hits
         && intersection_test(&sphere_pose, &sphere, &Pose::IDENTITY, &world.mesh)
             .is_ok_and(|intersection| !intersection.intersecting)
+}
+
+/// Exact arrival clearance: checks the capsule where it stands, without
+/// grounding or moving it. Triangle contact misses a capsule wholly enclosed
+/// by solid, which touches no surface. A clear capsule lies in one connected
+/// region of each mesh's complement, so its core points then decide
+/// containment: world solid or exterior cells, and closed mover hulls at their
+/// current poses. Allocation-free.
+pub fn capsule_fits_combined(
+    world: &moving::CombinedCollisionWorld<'_>,
+    position: Vec3,
+    capsule: &postretro_foundation::CapsuleParams,
+) -> bool {
+    let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
+    let clear_of_static = intersection_test(
+        &Pose::from_translation(position),
+        &shape,
+        &Pose::IDENTITY,
+        &world.static_world.mesh,
+    )
+    .is_ok_and(|hit| !hit.intersecting);
+    if !clear_of_static
+        || moving::deepest_mover_penetration(world.movers, world.poses, position, &shape).is_some()
+    {
+        return false;
+    }
+    let core = [
+        position,
+        position + Vec3::Y * capsule.half_height,
+        position - Vec3::Y * capsule.half_height,
+    ];
+    !core.iter().any(|&point| {
+        world.static_world.solid_cells.contains(point)
+            || moving::point_inside_mover(world.movers, world.poses, point)
+    })
 }
 
 #[cfg(test)]

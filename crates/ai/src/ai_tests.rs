@@ -585,7 +585,7 @@ fn set_enemy_aggro_armed(reg: &mut EntityRegistry, enemy: EntityId, aggro_armed:
 
 /// The enemy MESH's yaw-only VISUAL forward vector in the XZ plane, derived from
 /// its `Transform.rotation`. The skinned reference characters are authored facing
-/// `+Z` in model space (`MESH_FORWARD` in `ai.rs`), and the renderer applies the
+/// `+Z` in model space (`MESH_FORWARD` in `facing.rs`), and the renderer applies the
 /// Transform rotation straight to the model matrix with no axis flip — so the
 /// model's front points wherever `rotation * (+Z)` points. Rotating that base
 /// model-forward by the stored quaternion gives WHERE the model's FACE looks,

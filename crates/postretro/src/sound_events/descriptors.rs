@@ -352,6 +352,7 @@ pub(crate) fn warn_unknown_sound_keys(
             }
         }
     }
+    super::teleporters::name_arrival_sounds(&registry, &mut name);
     drop(registry);
 
     let mut unknown = Vec::new();

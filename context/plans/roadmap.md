@@ -62,6 +62,8 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
   - [ ] **Per-entity interpolation delay** — the starvation-driven delay is global today (one starved moving remote adds latency to every remote); make it per-entity. Tradeoff: per-entity delay introduces per-entity time offsets.
   - [ ] **Smoothed interpolation-delay transitions** — a delay *increase* currently pauses the remote render target (the monotonic no-rewind clamp) until the server estimate catches up, which can read as a brief freeze on a sustained-jitter link. Rate-limit the transition instead. Delicate: trades directly against the no-rewind guarantee.
 
+- [ ] **Network lag simulator** — inject latency, jitter and loss into a session from a dev-toolbar control or CLI flag, so co-op playtests at realistic RTT need no OS-level link conditioning.
+
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.
 
 ---
@@ -116,6 +118,7 @@ The platform foundation, visual parity, trigger/command surface, rotation, and d
 
 - [ ] **F - Visibility-bearing moving world.** Doors-as-occluders, dynamic portals, sector-graph updates, and any chunk-primitive consolidation. Extend the shared cell-visibility relation for moving geometry; do not invent a parallel dynamic-visibility path. Moving lights that cast shadows use the dynamic shadow tier; reuse the existing depth-cache substrate when a real moving shadow caster needs it, invalidating from the mover's authoritative at-rest signal. Start only for a concrete set-piece (E18-E's sealed closets) or measured performance need. The non-visibility-bearing kinematic-cluster slice lives in Epic 22.
 - [ ] **G - Destruction bridge.** Pre-fracture, promotion to dynamic debris, and rigid-body debris stay outside the deterministic kinematic substrate. Revisit only after mover payloads and the speculative destruction work both have real consumers.
+- [ ] **Enemy–mover interaction** — enemies blocked, crushed, carried on lifts and pushed by movers, as players already are. Research: `context/research/enemy-mover-interaction.md`.
 
 ---
 
@@ -220,12 +223,14 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 ### Infrastructure
 
 - **Large-map spatial residency** — future epic seed for clustered-cell, portal-driven residency of baked resources (SH, geometry, lightmap layers, and related spatial data). Distinct from regional-BVH culling. Research and staged planning seed: `context/plans/large-map-spatial-residency.md`. SH residency (stages 1–4) and lightmap/shadowmask cell blocks (stage 5, `done/spatial-residency--lightmap-cell-blocks/`) have shipped.
+- **Teleporter arrival residency lever** — keep arrival cells touching a source region mandatory and move farther arrival cells into the evictable band. Measure on the first dense teleporter hub; today every arrival room within lead of a source is mandatory (`done/teleporters/plan.md`, External runbook).
 - **Sector Graph + Portal Culling** — replace the compiler-derived runtime cell/portal graph with an author-defined sector graph. Latent portals (activate on event) support destruction reveals. Prerequisite for kinematic clusters that need their own sector graphs.
 - **Chunk Primitive** — unify static world geometry, kinematic clusters, and dynamic debris into one record type (mesh + collider + transform + sector membership). Deferred until two or more of those consumers exist and the duplication cost is clear.
 - **`canonicalName` rename** — rename `classname` to `canonicalName` in scripting API and PRL. Source formats translate their identifier (Quake `.map` `classname`, UDMF thing-type, Blender prop) to this canonical name at compile time. Absence on an archetype means not directly placeable from source — script-spawned or marker-indirected only. Subsumes the `spawn_only` / `map_entity_classname` patterns into one field's presence.
 - **FGD generated from script registry** — scripts are the single source of truth for entity archetypes. FGD emitted at script compile time, not hand-edited. Removes the divergence class of bug where registry and FGD describe different archetypes.
 - **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).
 - **Property-driven editor previews** — TrenchBroom expression-language helpers (`model({{ ... }})`, `iconsprite({{ ... }})`) drive per-instance preview variation. One canonical name can display different models or icons based on property values, reducing pressure to multiply archetype names.
+- **Entity pitch sign vs TrenchBroom** — engine positive pitch is nose-up, while TrenchBroom draws non-MDL models nose-down; reconcile at the one angle converter. Near-zero content exposure today.
 - **Multi-format map support** — UDMF and others via `format/<name>.rs` sibling modules. All formats normalize to the canonical-name vocabulary at compile time, so runtime sees one identifier shape regardless of source.
 
 ### Dropped

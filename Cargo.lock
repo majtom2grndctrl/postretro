@@ -4510,6 +4510,7 @@ dependencies = [
  "rquickjs",
  "serde",
  "serde_json",
+ "smallvec",
  "thiserror 2.0.21",
 ]
 
@@ -4637,6 +4638,7 @@ dependencies = [
  "postretro-combat-model",
  "postretro-entities",
  "postretro-foundation",
+ "postretro-level-format",
  "postretro-model",
  "postretro-net",
  "postretro-physics",
@@ -4661,6 +4663,7 @@ dependencies = [
  "postretro-level-format",
  "postretro-level-loader",
  "postretro-sim",
+ "postretro-test-log-capture",
  "proptest",
 ]
 

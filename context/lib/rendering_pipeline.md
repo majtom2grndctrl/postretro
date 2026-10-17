@@ -205,7 +205,10 @@ no id 22, or zero blocks, runs placeholder mode: every vertex reads 1×1 neutral
 Demand comes from the baked CellResidencySet (id 51), a streaming-owned cell relation keyed
 by cell, not an id-46 axis. For each camera cell it lists every cell within portal-path lead
 L, plus each such cell's visible set (the runtime portal walk sampled from eye points,
-dilated one portal hop), tagged with the smallest lead at which it becomes mandatory. One
+dilated one portal hop), tagged with the smallest lead at which it becomes mandatory.
+Teleporter arrival cells join it as zero-length routes from camera cells within lead of a
+source, so a seamless swap finds its arrival room resident (`build_pipeline.md` §PRL
+section IDs, id 51). One
 level-scope cell-demand stage owns L and turns id 51 plus the frame's visibility path into
 per-cell classes. Each streamed resource maps those cells to its own units, blocks here and
 clusters for SH (§Cluster SH residency), so both hold one reach by construction, including
@@ -342,6 +345,26 @@ sampled and composed word mirrors: sampleable, installed awaiting compose, reque
 miss, or invalid. Per-pass compose counters report rows composed, dispatches, rows composed
 because they lagged, resident rows still lagging, and CPU planning time through the same
 log, Streaming-tab, and capture-report surfaces.
+
+Irradiance markers also work while streaming: they show the live indirect total,
+averaged over logical tile interiors and reconstructed with the same adaptive node
+corner weights as whole-loaded markers. Cold, invalid and pending probes are grey.
+While these markers are enabled with a positive radius, conservative probe-grid
+bounds join the normal compose gate and scaled-node writer closure. Selection and
+compose share grid coordinates so rounding at large origins cannot omit a drawn
+probe's row. Markers outside the scene view therefore stay current without forcing
+all resident rows through every pass. A renderer-owned compute reduction reads only nearby
+sampleable markers after compose in the scene encoder;
+its sampled-texture dependency avoids copying the live storage-written atlas. One
+asynchronous buffer readback runs at most ten times per second, capped to the existing
+three-segment marker budget (87,381 probes, about 8 MiB of lazily allocated GPU buffers).
+Disabling the overlay stops new work. Unchanged resident probes retain their last
+sample across unrelated installs, deferred promotions and append-only pool growth.
+Actual sampled-word or adaptive-corner changes invalidate only dependent cached and
+pending colors. A bounded table tracks the slot incarnations referenced by the cache
+and in-flight sample; releasing a slot rejects its old colors even after identical-word
+ABA reuse. Overlay toggles and session resets invalidate every sample. Level unload
+drops the readback, and callbacks retain no GPU handles.
 
 The requested GPU floor counts fixed streaming metadata, whole-resident ids 47/48, and
 active physical pool capacity. Logical occupancy is a sub-ledger, not another allocation.
@@ -1008,6 +1031,14 @@ CPU and GPU windows never align: the GPU window counts completed readbacks. Surf
 Release builds create the wgpu instance with indirect-call validation off, with or without `dev-tools`; debug builds keep wgpu's default, on. Windowed and offscreen-capture renderers share the policy, and no other wgpu validation flag changes. `WGPU_VALIDATION_INDIRECT_CALL` overrides that one bit in any build: unset applies the build default, `0` clears it, and any other value, empty included, sets it. Like `WGPU_BACKEND` it is a wgpu-named safety toggle, not `POSTRETRO_*` instrumentation (`development_guide.md` §6.4). The renderer logs the effective state once at instance creation, noting when the override set it. Release safety rests on the indirect-args invariant (§5). Set it to `1` for a same-binary baseline when measuring the validation's `render_submit` cost.
 
 ### Debug-Line Renderer
+
+Probe markers, cell wires, and streamed irradiance requests visit conservative local
+grid bounds, then apply the exact sphere predicate in x-fastest order. Residency
+classification runs only for drawn probes. Emission stops after the segment cap
+overflows, preserving the same partial final marker and overflow warning.
+`POSTRETRO_SH_PROBE_OVERLAY=irradiance,30` enables markers at launch in dev-tools builds
+for repeatable profiling; `residency`, `validity`, `density`, and `uniform` also work.
+Radius must be finite, positive, and at most 64 metres. Unset leaves panel defaults.
 
 `dev-tools` only. Immediate-mode API: per-frame CPU buffer of `(start, end, color_rgba)` line segments uploaded to a `LineList` vertex buffer and drawn after the fog composite pass and before egui. Depth-tested lines match the world render target sample count, test against opaque scene depth, and keep depth writes off. Overlay/x-ray lines are a separate always-on-top stream. Buffer cleared at the top of the diagnostic emit call each frame, before new segments are pushed — not inside the render path — so it stays bounded even when `render_frame_indirect` early-returns (surface Timeout/Occluded/Outdated). Capped at a fixed segment limit (overflow: log + truncate). Consumers include SH volume diagnostics, nav/path overlays, remote-entity markers, and Spatial BVH/cell/portal overlays.
 

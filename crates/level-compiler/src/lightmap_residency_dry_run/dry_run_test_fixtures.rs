@@ -119,6 +119,7 @@ pub(super) fn input(
         visibility_world: None,
         loader_rejected_portals: 0,
         baked_residency_set: None,
+        teleporters_present: false,
     }
 }
 

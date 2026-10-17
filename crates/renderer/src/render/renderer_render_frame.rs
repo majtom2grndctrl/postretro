@@ -205,11 +205,10 @@ impl Renderer {
         let frame_light_term_mask = self.frame_light_term_mask();
         let mut compose_succeeded = true;
 
-        // The readback copy is deliberately not encoded here. A
-        // `copy_texture_to_buffer` in the same command buffer as the compose
-        // dispatch reads the `total` atlas texture before its storage writes
-        // are visible, flickering garbage into the markers. It runs after a
-        // blocking `poll(Wait)` below, once the compose submit has retired.
+        // Whole-loaded diagnostics copy their atlas only after the submit's
+        // blocking wait: copying the storage-written texture here flickers on
+        // Metal. Streamed diagnostics instead reduce through a sampled-texture
+        // dependency and copy only the resulting buffer in this encoder.
 
         // Selected-static promotion gates on the renderable/planned mesh set, not
         // raw collected inputs: uncached models and budget overflow cannot promote
@@ -968,6 +967,15 @@ impl Renderer {
             timing.encode_resolve(encoder);
         }
 
+        #[cfg(feature = "dev-tools")]
+        if swapchain_view.is_some()
+            && (render_world || scene.composes_sh())
+            && compose_succeeded
+            && let Some(streaming) = full.sh_streaming.as_mut()
+        {
+            streaming.encode_probe_readback(&self.device, queue, encoder);
+        }
+
         Ok(compose_succeeded)
     }
 
@@ -1002,6 +1010,9 @@ impl Renderer {
                 .expect("renderer full-init must complete before full-ready paths run");
             if let Some(live_irradiance) = full.sh_probe_readback.post_submit(device) {
                 full.sh_volume_resources.probe_irradiance = live_irradiance;
+            }
+            if let Some(streaming) = full.sh_streaming.as_mut() {
+                streaming.post_submit_probe_readback(device);
             }
         }
 

@@ -50,6 +50,7 @@ use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::teleporters::TeleportersSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 #[cfg(test)]
@@ -485,6 +486,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         kinematic_geometry,
         trigger_volumes,
         &environment_volumes,
+        &TeleportersSection::default(),
         None,
         None,
         cell_draw_index_section,
@@ -530,6 +532,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     kinematic_geometry: Option<&KinematicGeometrySection>,
     trigger_volumes: Option<&TriggerVolumesSection>,
     environment_volumes: &EnvironmentVolumesSection,
+    teleporters: &TeleportersSection,
     // PushForces (id 53), or `None` when every force is 1.
     push_forces: Option<&PushForcesSection>,
     // ReflectionProbes (id 54), or `None` when no probe was kept.
@@ -672,6 +675,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        teleporters,
         push_forces,
         reflection_probes,
         cell_draw_index: cell_draw_index_section,

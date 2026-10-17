@@ -38,6 +38,7 @@ use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
+use postretro_level_format::teleporters::TeleportersSection;
 use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 
 use super::cell_partition::CellPartitionPlan;
@@ -151,6 +152,7 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
+    pub(super) teleporters: &'a TeleportersSection,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     /// ReflectionProbes (id 54), or `None` when no probe was kept.
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
@@ -198,6 +200,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        teleporters,
         push_forces,
         reflection_probes,
         cell_draw_index,
@@ -246,6 +249,7 @@ pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow:
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        teleporters,
         push_forces,
         reflection_probes,
         cell_draw_index,

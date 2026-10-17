@@ -209,6 +209,7 @@ impl World {
                         fired_trigger: Some(event.fire.trigger),
                         activator: Some(pawn),
                         occupancy,
+                        fired_teleporter: None,
                         event_player: None,
                     },
                 );

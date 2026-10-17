@@ -725,6 +725,15 @@ impl ClientReplication {
         &self.map
     }
 
+    /// Map `entity_id` as this client's armed local pawn without a snapshot
+    /// (tests that drive the endpoint's tuning install directly).
+    #[cfg(test)]
+    pub(crate) fn arm_local_pawn_for_test(&mut self, network_id: NetworkId, entity_id: EntityId) {
+        self.map.insert(network_id, entity_id);
+        self.reverse_map.insert(entity_id, network_id);
+        self.local_pawn = Some(network_id);
+    }
+
     /// Resolve a client-local entity to the host-assigned `NetworkId`, if this
     /// entity is currently mapped by replication.
     pub fn network_id_for_entity(&self, entity_id: EntityId) -> Option<NetworkId> {

@@ -291,9 +291,10 @@ impl InterpolationDelayState {
     /// clamped to [`RENDER_TARGET_PLAYBACK_RATE`] of `frame_dt_secs` in ticks, so a
     /// whole-tick delay step or a forward estimate jump (a time-sync reseed)
     /// neither freezes remotes nor jumps them. Once the previous target is at or
-    /// past the newest folded snapshot the lower bound is zero: the target holds
-    /// rather than playing on into starvation, so a lasting latency rise starves
-    /// remotes about as long as the rise. It never moves backward: an estimate that
+    /// past the newest folded snapshot the lower bound is zero: the target may
+    /// hold rather than keep slewing while the delay rises, so a lasting latency
+    /// rise starves remotes about as long as the rise. At a steady delay it keeps
+    /// tracking the candidate. It never moves backward: an estimate that
     /// steps back slows it like a delay raise, and one more than
     /// [`RENDER_TARGET_SNAP_TICKS`] back holds it. The first frame, and a target
     /// that far behind the candidate, snap.
@@ -1967,6 +1968,147 @@ mod tests {
         assert!(
             (last_target - (estimated - delay)).abs() < TICK_EPS,
             "the target converges on the candidate: {last_target}"
+        );
+    }
+
+    // A frame delta that is NaN, negative or zero plays nothing: the target
+    // holds that frame and closes the gap at up to 1.25× on the frames after.
+    #[test]
+    fn degenerate_frame_delta_plays_nothing_then_catches_up() {
+        const FRAME_TICKS: f64 = 0.25;
+        let max_rate = *RENDER_TARGET_PLAYBACK_RATE.end();
+        for degenerate_dt in [f64::NAN, -1.0, 0.0] {
+            let mut state = InterpolationDelayState::new();
+            let render = |state: &mut InterpolationDelayState, estimated: f64, dt: f64| {
+                state.render_server_tick(estimated, dt, 0.0, 0.0, DEFAULT_MICROS_PER_TICK)
+            };
+            let first = render(&mut state, 100.0, frame_dt(FRAME_TICKS));
+            let held = render(&mut state, 100.0 + FRAME_TICKS, degenerate_dt);
+            assert!(
+                (held - first).abs() < TICK_EPS,
+                "dt {degenerate_dt}: the target played {} ticks",
+                held - first
+            );
+            let mut estimated = 100.0 + FRAME_TICKS;
+            let mut last = held;
+            for frame in 0..8 {
+                estimated += FRAME_TICKS;
+                let target = render(&mut state, estimated, frame_dt(FRAME_TICKS));
+                if frame < 4 {
+                    assert!(
+                        (target - last - max_rate * FRAME_TICKS).abs() < TICK_EPS,
+                        "dt {degenerate_dt}: frame {frame} catches up at the max rate"
+                    );
+                }
+                last = target;
+            }
+            let delay = f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK));
+            assert!(
+                (last - (estimated - delay)).abs() < TICK_EPS,
+                "dt {degenerate_dt}: the target caught up to the candidate: {last}"
+            );
+        }
+    }
+
+    // A half-second hitch plays at most the clamped quarter second (1.25× of
+    // it). A gap of exactly the snap distance slews rather than snapping, and
+    // what the clamp leaves slews out over the following frames.
+    #[test]
+    fn hitch_frame_is_clamped_and_a_gap_at_the_snap_distance_slews_out() {
+        const FRAME_TICKS: f64 = 0.25;
+        let (min_rate, max_rate) = (
+            *RENDER_TARGET_PLAYBACK_RATE.start(),
+            *RENDER_TARGET_PLAYBACK_RATE.end(),
+        );
+        let clamped_ticks = playback_ticks(MAX_FEEDBACK_DT_SECS, DEFAULT_MICROS_PER_TICK);
+        let render = |state: &mut InterpolationDelayState, estimated: f64, dt: f64| {
+            state.render_server_tick(estimated, dt, 0.0, 0.0, DEFAULT_MICROS_PER_TICK)
+        };
+
+        // Just past the snap distance, the target snaps to the candidate.
+        let mut state = InterpolationDelayState::new();
+        let first = render(&mut state, 100.0, frame_dt(FRAME_TICKS));
+        let snapped = render(&mut state, 100.0 + RENDER_TARGET_SNAP_TICKS + 0.25, 0.5);
+        assert!(
+            (snapped - (first + RENDER_TARGET_SNAP_TICKS + 0.25)).abs() < TICK_EPS,
+            "a gap past the snap distance snaps: {snapped}"
+        );
+
+        let mut state = InterpolationDelayState::new();
+        let first = render(&mut state, 100.0, frame_dt(FRAME_TICKS));
+        let mut estimated = 100.0 + RENDER_TARGET_SNAP_TICKS;
+        let hitch = render(&mut state, estimated, 0.5);
+        assert!(
+            (hitch - first - max_rate * clamped_ticks).abs() < TICK_EPS,
+            "the hitch frame advanced {} ticks, not 1.25× the clamped {clamped_ticks}",
+            hitch - first
+        );
+        let mut last = hitch;
+        for frame in 0..400 {
+            estimated += FRAME_TICKS;
+            let target = render(&mut state, estimated, frame_dt(FRAME_TICKS));
+            let advance = target - last;
+            assert!(
+                advance >= min_rate * FRAME_TICKS - TICK_EPS
+                    && advance <= max_rate * FRAME_TICKS + TICK_EPS,
+                "frame {frame}: render advance {advance} outside the playback-rate band"
+            );
+            last = target;
+        }
+        let delay = f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK));
+        assert!(
+            (last - (estimated - delay)).abs() < TICK_EPS,
+            "the hitch's remainder slewed out: {last}"
+        );
+    }
+
+    // Snapshots stop (the folded tick freezes) while the delay holds: the
+    // target keeps tracking the candidate past the newest snapshot. The hold
+    // bound only drops the floor to zero; it bites when the candidate is
+    // behind the target or under 0.75× ahead of it.
+    #[test]
+    fn render_target_tracks_the_candidate_past_frozen_snapshots_at_a_steady_delay() {
+        const FRAME_TICKS: f64 = 0.25;
+        const NEWEST: u32 = 100;
+        let render = |state: &mut InterpolationDelayState, estimated: f64| {
+            state.render_server_tick(
+                estimated,
+                frame_dt(FRAME_TICKS),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            )
+        };
+        let mut state = InterpolationDelayState::new();
+        let mut estimated = f64::from(NEWEST) + 1.0;
+        state.observe_newest_snapshot(estimated, NEWEST, DEFAULT_MICROS_PER_TICK);
+        let delay = f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK));
+        let mut last = render(&mut state, estimated);
+        for frame in 0..80 {
+            estimated += FRAME_TICKS;
+            state.observe_newest_snapshot(estimated, NEWEST, DEFAULT_MICROS_PER_TICK);
+            assert_eq!(
+                f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK)),
+                delay,
+                "a frozen snapshot folds no new lag"
+            );
+            last = render(&mut state, estimated);
+            assert!(
+                (last - (estimated - delay)).abs() < TICK_EPS,
+                "frame {frame}: target {last} left the candidate"
+            );
+        }
+        assert!(
+            last > f64::from(NEWEST) + 10.0,
+            "the target ran well past the newest snapshot: {last}"
+        );
+
+        // A candidate behind the target holds it there, with no 0.75× floor.
+        estimated -= 1.0;
+        let held = render(&mut state, estimated);
+        assert!(
+            (held - last).abs() < TICK_EPS,
+            "a starved target holds: {held}"
         );
     }
 

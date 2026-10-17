@@ -46,6 +46,16 @@ impl WieldableSelection {
         self.cursor_slot
     }
 
+    /// Whether the player has no choice in progress: no dwell running, no
+    /// commit queued, and the cursor unset or on `active_slot`.
+    pub fn is_idle_on(&self, active_slot: Option<usize>) -> bool {
+        self.dwell_remaining_ms.is_none()
+            && self.pending_commit.is_none()
+            && self
+                .cursor_slot
+                .is_none_or(|slot| Some(slot) == active_slot)
+    }
+
     /// Settle an ordered network refusal with the last-weapon memory retained by
     /// that declaration's authoritative pre-state.
     pub fn reset_to_active_with_last(
@@ -779,5 +789,63 @@ mod tests {
         );
 
         assert_eq!(selection.cursor_slot(), Some(2));
+    }
+
+    // A late tuning payload adopts the host's slot only while this reads idle:
+    // a moved cursor, running dwell or queued commit is the player's choice.
+    #[test]
+    fn selection_reads_idle_only_without_a_moved_cursor_dwell_or_commit() {
+        let neutral = ActionSnapshot::neutral();
+        let mut selection = WieldableSelection::default();
+        assert!(selection.is_idle_on(Some(0)), "a cleared latch is idle");
+        selection.advance_frame(&neutral, &THREE_SLOTS, Some(0), direct_policy(), 16.0);
+        assert!(
+            selection.is_idle_on(Some(0)),
+            "cursor reconciled onto active"
+        );
+
+        selection.advance_frame(
+            &scroll_snapshot(1, 0),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        assert!(!selection.is_idle_on(Some(0)), "cycle dwell running");
+
+        let mut selection = WieldableSelection::default();
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable3),
+            &THREE_SLOTS,
+            Some(0),
+            direct_policy(),
+            0.0,
+        );
+        assert!(!selection.is_idle_on(Some(0)), "commit queued");
+        assert_eq!(
+            selection.take_pending_commit(&THREE_SLOTS, Some(0)),
+            Some(2)
+        );
+        assert!(
+            !selection.is_idle_on(Some(0)),
+            "cursor still names the switch target"
+        );
+        assert!(selection.is_idle_on(Some(2)), "settled on the new slot");
+
+        let mut selection = WieldableSelection::default();
+        selection.advance_frame(
+            &snapshot(Action::SelectWieldable2),
+            &THREE_SLOTS,
+            Some(0),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: false,
+                cycle_dwell_ms: 20.0,
+            },
+            0.0,
+        );
+        assert!(
+            !selection.is_idle_on(Some(0)),
+            "cursor moved, not committed"
+        );
     }
 }

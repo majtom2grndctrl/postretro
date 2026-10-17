@@ -474,6 +474,9 @@ impl NetEndpoint {
             ..
         } = self
         {
+            // Recorded only for an armed pawn. That matches the senders, which
+            // declare only for the local movement pawn arming marks, so no
+            // declaration goes unrecorded.
             if let Some(armed) = replication.armed_local_pawn() {
                 *selection_declared_pawn = Some(armed.network_id);
             }
@@ -919,12 +922,16 @@ impl NetEndpoint {
 
     /// Install a host tuning payload. Returns the slot the armed pawn's
     /// selection moved to when the payload's spawn active slot was adopted, so
-    /// the caller resets its selection latch to it.
+    /// the caller resets its selection latch to it. `selection_idle` is the
+    /// caller's input latch read before this call: false while the player has a
+    /// cursor off the active slot, a dwell running or a commit queued, which
+    /// skips adoption.
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
         registry: &mut EntityRegistry,
         descriptors: &[EntityTypeDescriptor],
+        selection_idle: bool,
     ) -> Option<usize> {
         let Self::Client {
             replication,
@@ -946,6 +953,7 @@ impl NetEndpoint {
                 &armed,
                 *selection_declared_pawn,
                 !pending_switch_declarations.is_empty(),
+                selection_idle,
             )
         });
         let generation_before = *tuning_generation;
@@ -1090,19 +1098,24 @@ mod tests {
             })
         };
 
-        endpoint.install_tuning_payload(&payload(-12.0, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-12.0, &["water"]), &mut registry, &[], true);
         assert_eq!(
             installed(&endpoint),
             Some((-12.0, vec!["water".to_string()]))
         );
         let first = generations(&endpoint);
 
-        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
         assert_eq!(
             installed(&endpoint),
             Some((-4.5, vec!["water".to_string()]))
         );
-        endpoint.install_tuning_payload(&payload(-4.5, &["water", "lava"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(
+            &payload(-4.5, &["water", "lava"]),
+            &mut registry,
+            &[],
+            true,
+        );
         assert_eq!(
             installed(&endpoint),
             Some((-4.5, vec!["water".to_string(), "lava".to_string()]))
@@ -1116,13 +1129,13 @@ mod tests {
         // So does a level unload: the old level's gravity and fluids must
         // not reach the next one, and the next payload installs as new pawn
         // tuning even when it matches the dropped one.
-        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
         let before_unload = generations(&endpoint);
         endpoint.reset_level_scoped_client_state();
         assert!(endpoint.client_host_environment().is_none());
         assert!(endpoint.client_movement_tuning().is_none());
         assert_eq!(generations(&endpoint), (before_unload.0, 0));
-        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
         assert_eq!(generations(&endpoint).0, before_unload.0.wrapping_add(1));
 
         let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)

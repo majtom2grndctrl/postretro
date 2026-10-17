@@ -1,0 +1,737 @@
+{
+  "near-1080": {
+    "pose": {
+      "map": "content/dev/maps/e24-environment-test.prl",
+      "position": [
+        -4.8768,
+        1.6,
+        -44.2976
+      ],
+      "yaw": 0.0,
+      "pitch": -89.0
+    },
+    "resolution": [
+      1920,
+      1080
+    ],
+    "stats": {
+      "cells": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": false,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 1024,
+        "threads_dispatched": 65536,
+        "cells_dispatched": 65536,
+        "cells_evaluated": 65536,
+        "visible_reflecting_fragments": 2073600,
+        "uncounted_reflecting_draws": 0
+      },
+      "cull": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": true,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 1024,
+        "threads_dispatched": 65536,
+        "cells_dispatched": 65536,
+        "cells_evaluated": 20572,
+        "visible_reflecting_fragments": 2073600,
+        "uncounted_reflecting_draws": 0
+      }
+    },
+    "parity": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 9350,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 9350,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    },
+    "parity-r1": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 9350,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 9350,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    },
+    "main": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "free": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "smooth": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "stale": {
+      "cells": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    }
+  },
+  "near-4k": {
+    "pose": {
+      "map": "content/dev/maps/e24-environment-test.prl",
+      "position": [
+        -4.8768,
+        1.6,
+        -44.2976
+      ],
+      "yaw": 0.0,
+      "pitch": -89.0
+    },
+    "resolution": [
+      3840,
+      2160
+    ],
+    "parity": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 37435,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 37435,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "parity-r1": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 37435,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 37435,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "main": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "free": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "smooth": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "stale": {
+      "cells": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "stats": {
+      "cells": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": false,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 1024,
+        "threads_dispatched": 65536,
+        "cells_dispatched": 65536,
+        "cells_evaluated": 65536,
+        "visible_reflecting_fragments": 8294400,
+        "uncounted_reflecting_draws": 0
+      },
+      "cull": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": true,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 1024,
+        "threads_dispatched": 65536,
+        "cells_dispatched": 65536,
+        "cells_evaluated": 20572,
+        "visible_reflecting_fragments": 8294400,
+        "uncounted_reflecting_draws": 0
+      }
+    }
+  },
+  "test-4k": {
+    "pose": {
+      "map": "content/dev/maps/reflection-probes-test.prl",
+      "position": [
+        -6.5024,
+        1.6,
+        -6.5024
+      ],
+      "yaw": 0.0,
+      "pitch": -89.0
+    },
+    "resolution": [
+      3840,
+      2160
+    ],
+    "parity": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 44786,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 44786,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "parity-r1": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 40844,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 1,
+        "pixels_differing": 40844,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "main": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "free": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "smooth": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "stale": {
+      "cells": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "stats": {
+      "cells": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": false,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 512,
+        "atlas_height": 640,
+        "atlas_bytes": 2621440,
+        "faces_in_atlas": 8,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 576,
+        "threads_dispatched": 36864,
+        "cells_dispatched": 36864,
+        "cells_evaluated": 36864,
+        "visible_reflecting_fragments": 8294400,
+        "uncounted_reflecting_draws": 0
+      },
+      "cull": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": true,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 512,
+        "atlas_height": 640,
+        "atlas_bytes": 2621440,
+        "faces_in_atlas": 8,
+        "faces_skipped": 0,
+        "reflecting_draws": 1,
+        "tiles_dispatched": 576,
+        "threads_dispatched": 36864,
+        "cells_dispatched": 36864,
+        "cells_evaluated": 13112,
+        "visible_reflecting_fragments": 8294400,
+        "uncounted_reflecting_draws": 0
+      }
+    }
+  },
+  "far-4k": {
+    "pose": {
+      "map": "content/dev/maps/e24-environment-test.prl",
+      "position": [
+        -4.877,
+        4.0,
+        -40.64
+      ],
+      "yaw": 0.0,
+      "pitch": 5.0
+    },
+    "resolution": [
+      3840,
+      2160
+    ],
+    "parity": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 23,
+        "pixels_differing": 8767,
+        "pixels_over": 64,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 23,
+        "pixels_differing": 8767,
+        "pixels_over": 64,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "parity-r1": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 23,
+        "pixels_differing": 8767,
+        "pixels_over": 64,
+        "pixels": 8294400
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 23,
+        "pixels_differing": 8767,
+        "pixels_over": 64,
+        "pixels": 8294400
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "main": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "free": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "smooth": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 8294400
+    },
+    "stale": {
+      "cells": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      },
+      "cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 8294400
+      }
+    },
+    "stats": {
+      "cells": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": false,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 4,
+        "tiles_dispatched": 20224,
+        "threads_dispatched": 1294336,
+        "cells_dispatched": 1294336,
+        "cells_evaluated": 1294336,
+        "visible_reflecting_fragments": 513147,
+        "uncounted_reflecting_draws": 0
+      },
+      "cull": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": true,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 4,
+        "tiles_dispatched": 20224,
+        "threads_dispatched": 1294336,
+        "cells_dispatched": 1294336,
+        "cells_evaluated": 1233547,
+        "visible_reflecting_fragments": 513147,
+        "uncounted_reflecting_draws": 0
+      }
+    }
+  },
+  "far-1080": {
+    "pose": {
+      "map": "content/dev/maps/e24-environment-test.prl",
+      "position": [
+        -4.877,
+        4.0,
+        -40.64
+      ],
+      "yaw": 0.0,
+      "pitch": 5.0
+    },
+    "resolution": [
+      1920,
+      1080
+    ],
+    "parity": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 20,
+        "pixels_differing": 2215,
+        "pixels_over": 20,
+        "pixels": 2073600
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 20,
+        "pixels_differing": 2215,
+        "pixels_over": 20,
+        "pixels": 2073600
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    },
+    "parity-r1": {
+      "frag_vs_cells": {
+        "comparable": true,
+        "identical": false,
+        "max": 20,
+        "pixels_differing": 2215,
+        "pixels_over": 20,
+        "pixels": 2073600
+      },
+      "frag_vs_cull": {
+        "comparable": true,
+        "identical": false,
+        "max": 20,
+        "pixels_differing": 2215,
+        "pixels_over": 20,
+        "pixels": 2073600
+      },
+      "cells_vs_cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    },
+    "main": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "free": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "smooth": {
+      "comparable": true,
+      "identical": true,
+      "max": 0,
+      "pixels_over": 0,
+      "pixels": 2073600
+    },
+    "stale": {
+      "cells": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      },
+      "cull": {
+        "comparable": true,
+        "identical": true,
+        "max": 0,
+        "pixels_over": 0,
+        "pixels": 2073600
+      }
+    },
+    "stats": {
+      "cells": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": false,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 4,
+        "tiles_dispatched": 20224,
+        "threads_dispatched": 1294336,
+        "cells_dispatched": 1294336,
+        "cells_evaluated": 1294336,
+        "visible_reflecting_fragments": 128497,
+        "uncounted_reflecting_draws": 0
+      },
+      "cull": {
+        "read_on": "last-sample-frame",
+        "levers": {
+          "cells": true,
+          "frustum_cull": true,
+          "ratio_one": false
+        },
+        "reflection_style": "pixel",
+        "atlas_width": 1360,
+        "atlas_height": 1472,
+        "atlas_bytes": 16015360,
+        "faces_in_atlas": 17,
+        "faces_skipped": 0,
+        "reflecting_draws": 4,
+        "tiles_dispatched": 20224,
+        "threads_dispatched": 1294336,
+        "cells_dispatched": 1294336,
+        "cells_evaluated": 1233547,
+        "visible_reflecting_fragments": 128497,
+        "uncounted_reflecting_draws": 0
+      }
+    }
+  }
+}

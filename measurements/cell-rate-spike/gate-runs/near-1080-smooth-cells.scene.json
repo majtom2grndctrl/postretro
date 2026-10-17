@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.8768,
+      1.6,
+      -44.2976
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/gate-runs/near-1080-smooth-cells.png",
+  "fluid_reflection_style": "smooth",
+  "fluid_reflection_cells": {
+    "cells": true,
+    "frustum_cull": true,
+    "ratio_one": false
+  }
+}

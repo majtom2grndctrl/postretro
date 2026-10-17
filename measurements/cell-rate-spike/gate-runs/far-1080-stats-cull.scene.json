@@ -1,0 +1,29 @@
+{
+  "map": "content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.877,
+      4.0,
+      -40.64
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 5.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    1920,
+    1080
+  ],
+  "output": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/gate-runs/far-1080-stats-cull.png",
+  "fluid_reflection_cells": {
+    "cells": true,
+    "frustum_cull": true,
+    "ratio_one": false
+  },
+  "measurement": {
+    "report": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/gate-runs/far-1080-stats-cull.report.json",
+    "warmup_frames": 8,
+    "sample_frames": 8
+  },
+  "fluid_reflection_cell_stats": true
+}

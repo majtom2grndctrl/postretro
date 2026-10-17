@@ -1,0 +1,19 @@
+{
+  "map": "content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.877,
+      4.0,
+      -40.64
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": 5.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/gate-runs/far-4k-smooth-frag.png",
+  "fluid_reflection_style": "smooth"
+}

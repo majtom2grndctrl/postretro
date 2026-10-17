@@ -1,0 +1,34 @@
+{
+  "near-4k": {
+    "pixels_over_2": 840,
+    "max_diff": 9,
+    "split_regions": 50,
+    "split_pixels": 766,
+    "whole_regions": 56,
+    "whole_pixels": 74
+  },
+  "near-1080p": {
+    "pixels_over_2": 164,
+    "max_diff": 9,
+    "split_regions": 23,
+    "split_pixels": 133,
+    "whole_regions": 29,
+    "whole_pixels": 31
+  },
+  "far-4k": {
+    "pixels_over_2": 32,
+    "max_diff": 10,
+    "split_regions": 4,
+    "split_pixels": 5,
+    "whole_regions": 26,
+    "whole_pixels": 27
+  },
+  "far-1080p": {
+    "pixels_over_2": 18,
+    "max_diff": 5,
+    "split_regions": 2,
+    "split_pixels": 2,
+    "whole_regions": 16,
+    "whole_pixels": 16
+  }
+}

@@ -1,0 +1,4509 @@
+{
+  "meta": {
+    "git_rev": "65ca0fbb3946014409dfbc4c8ee899956e828584",
+    "git_branch": "claude/cell-rate-spike-1660",
+    "git_dirty": true,
+    "binary": "C:\\Users\\danhi\\Projects\\Personal\\postretro\\.claude\\worktrees\\reflection-probes-ssr-research-42d47a\\target\\release\\postretro.exe",
+    "machine": "1660",
+    "warmup": 240,
+    "samples": 360,
+    "idle": null,
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    },
+    "started_utc": "2026-10-17T20:04:33Z"
+  },
+  "stats": [
+    {
+      "view": "near-4k",
+      "atlas": "1344x1472",
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384,
+      "faces_dispatched": 1,
+      "cells_dispatched": 65536,
+      "cells_evaluated_cull": 20078,
+      "visible_fluid_pixels": 8294400,
+      "pixels_per_cell": 126.5625,
+      "pixels_per_cell_cull": 413.1088753859946,
+      "problems": []
+    },
+    {
+      "view": "near-1080p",
+      "atlas": "1344x1472",
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384,
+      "faces_dispatched": 1,
+      "cells_dispatched": 65536,
+      "cells_evaluated_cull": 20078,
+      "visible_fluid_pixels": 2073600,
+      "pixels_per_cell": 31.640625,
+      "pixels_per_cell_cull": 103.27721884649866,
+      "problems": []
+    },
+    {
+      "view": "probes-4k",
+      "atlas": "512x640",
+      "atlas_bytes": 2621440,
+      "cells_total": 221696,
+      "faces_dispatched": 1,
+      "cells_dispatched": 36864,
+      "cells_evaluated_cull": 12844,
+      "visible_fluid_pixels": 8294400,
+      "pixels_per_cell": 225.0,
+      "pixels_per_cell_cull": 645.7801308003737,
+      "problems": []
+    },
+    {
+      "view": "far-4k",
+      "atlas": "1344x1472",
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384,
+      "faces_dispatched": 10,
+      "cells_dispatched": 1409024,
+      "cells_evaluated_cull": 1338209,
+      "visible_fluid_pixels": 998584,
+      "pixels_per_cell": 0.7087061682412791,
+      "pixels_per_cell_cull": 0.7462092991453503,
+      "problems": []
+    },
+    {
+      "view": "far-1080p",
+      "atlas": "1344x1472",
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384,
+      "faces_dispatched": 10,
+      "cells_dispatched": 1409024,
+      "cells_evaluated_cull": 1338209,
+      "visible_fluid_pixels": 249942,
+      "pixels_per_cell": 0.17738661655159885,
+      "pixels_per_cell_cull": 0.18677351594556604,
+      "problems": []
+    }
+  ],
+  "runs": [
+    {
+      "label": "far-1080p-cell-live-r1",
+      "arm": "far-1080p-cell-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.44308914666666666,
+      "cell_pass_ms": 0.37074791000000007,
+      "fluid_windows_ms": [
+        0.44279066,
+        0.44361305,
+        0.44286373
+      ],
+      "cell_windows_ms": [
+        0.370736,
+        0.37010133,
+        0.3714064
+      ],
+      "forward_ms": 2.5502465333333335,
+      "fluid_ms": 0.8138370566666667,
+      "cpu_completion_median_ms": 4.66245,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell-r1-r1",
+      "arm": "far-1080p-cell-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.44252694,
+      "cell_pass_ms": 0.32638782666666666,
+      "fluid_windows_ms": [
+        0.44270188,
+        0.44242907,
+        0.44244987
+      ],
+      "cell_windows_ms": [
+        0.3246928,
+        0.33011788,
+        0.3243528
+      ],
+      "forward_ms": 2.561284533333333,
+      "fluid_ms": 0.7689147666666667,
+      "cpu_completion_median_ms": 4.62505,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell2-live-r1",
+      "arm": "far-1080p-cell2-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5643602,
+      "cell_pass_ms": 0.37036862666666664,
+      "fluid_windows_ms": [
+        0.5603344,
+        0.5671499,
+        0.5655963
+      ],
+      "cell_windows_ms": [
+        0.3709176,
+        0.3708264,
+        0.36936188
+      ],
+      "forward_ms": 2.548667233333333,
+      "fluid_ms": 0.9347288266666667,
+      "cpu_completion_median_ms": 4.81945,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell2-r1-r1",
+      "arm": "far-1080p-cell2-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5628780666666666,
+      "cell_pass_ms": 0.3248352,
+      "fluid_windows_ms": [
+        0.5609059,
+        0.5629163,
+        0.564812
+      ],
+      "cell_windows_ms": [
+        0.32418266,
+        0.3259904,
+        0.32433254
+      ],
+      "forward_ms": 2.5470364666666665,
+      "fluid_ms": 0.8877132666666666,
+      "cpu_completion_median_ms": 4.7592,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cellcull-live-r1",
+      "arm": "far-1080p-cellcull-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.44247315333333337,
+      "cell_pass_ms": 0.3935683566666667,
+      "fluid_windows_ms": [
+        0.44289947,
+        0.44240665,
+        0.44211334
+      ],
+      "cell_windows_ms": [
+        0.39507547,
+        0.39266613,
+        0.39296347
+      ],
+      "forward_ms": 2.5502841333333333,
+      "fluid_ms": 0.83604151,
+      "cpu_completion_median_ms": 4.68635,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cellcull-r1-r1",
+      "arm": "far-1080p-cellcull-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.4425990166666667,
+      "cell_pass_ms": 0.34971955,
+      "fluid_windows_ms": [
+        0.44186854,
+        0.44207385,
+        0.44385466
+      ],
+      "cell_windows_ms": [
+        0.34874585,
+        0.349032,
+        0.3513808
+      ],
+      "forward_ms": 2.5483916333333334,
+      "fluid_ms": 0.7923185666666667,
+      "cpu_completion_median_ms": 4.65385,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag-live-r1",
+      "arm": "far-1080p-frag-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5652727166666668,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.5643619,
+        0.5657128,
+        0.56574345
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5471246666666665,
+      "fluid_ms": 0.5652727166666668,
+      "cpu_completion_median_ms": 4.2395499999999995,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag-r1-r1",
+      "arm": "far-1080p-frag-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5687478333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.5682787,
+        0.568712,
+        0.5692528
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.547081233333333,
+      "fluid_ms": 0.5687478333333333,
+      "cpu_completion_median_ms": 4.2884,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag2-live-r1",
+      "arm": "far-1080p-frag2-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5980025833333332,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.5964491,
+        0.5982616,
+        0.59929705
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5737079333333335,
+      "fluid_ms": 0.5980025833333332,
+      "cpu_completion_median_ms": 4.389049999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag2-r1-r1",
+      "arm": "far-1080p-frag2-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5902311,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.58971864,
+        0.5878576,
+        0.59311706
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.548454366666667,
+      "fluid_ms": 0.5902311,
+      "cpu_completion_median_ms": 4.29985,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-free-live-r1",
+      "arm": "far-1080p-free-live",
+      "round": 1,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.41915145333333326,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.41832265,
+        0.41935065,
+        0.41978106
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.6061479666666667,
+      "fluid_ms": 0.41915145333333326,
+      "cpu_completion_median_ms": 4.20615,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell-live-r1",
+      "arm": "far-4k-cell-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4977729999999998,
+      "cell_pass_ms": 0.46664331,
+      "fluid_windows_ms": [
+        1.4962224,
+        1.4951637,
+        1.5019329
+      ],
+      "cell_windows_ms": [
+        0.6453339,
+        0.37702215,
+        0.37757388
+      ],
+      "forward_ms": 9.136370166666666,
+      "fluid_ms": 1.9644163099999998,
+      "cpu_completion_median_ms": 13.1325,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell-r1-r1",
+      "arm": "far-4k-cell-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4819339,
+      "cell_pass_ms": 0.4125845333333333,
+      "fluid_windows_ms": [
+        1.4771683,
+        1.480072,
+        1.4885614
+      ],
+      "cell_windows_ms": [
+        0.32903972,
+        0.57346374,
+        0.33525014
+      ],
+      "forward_ms": 9.024874666666665,
+      "fluid_ms": 1.8945184333333334,
+      "cpu_completion_median_ms": 12.9675,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell2-live-r1",
+      "arm": "far-4k-cell2-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7637695999999998,
+      "cell_pass_ms": 0.4659912033333334,
+      "fluid_windows_ms": [
+        1.8227832,
+        1.821804,
+        1.6467216
+      ],
+      "cell_windows_ms": [
+        0.64311814,
+        0.3752784,
+        0.37957707
+      ],
+      "forward_ms": 9.149222499999999,
+      "fluid_ms": 2.2297608033333334,
+      "cpu_completion_median_ms": 13.4777,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell2-r1-r1",
+      "arm": "far-4k-cell2-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7702574333333334,
+      "cell_pass_ms": 0.41459343,
+      "fluid_windows_ms": [
+        1.8312507,
+        1.8240517,
+        1.6554699
+      ],
+      "cell_windows_ms": [
+        0.58154696,
+        0.33134773,
+        0.3308856
+      ],
+      "forward_ms": 9.141490166666667,
+      "fluid_ms": 2.1848508633333332,
+      "cpu_completion_median_ms": 13.438849999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cellcull-live-r1",
+      "arm": "far-4k-cellcull-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4927122666666668,
+      "cell_pass_ms": 0.5002446033333333,
+      "fluid_windows_ms": [
+        1.492809,
+        1.4917448,
+        1.493583
+      ],
+      "cell_windows_ms": [
+        0.7013589,
+        0.39847785,
+        0.40089706
+      ],
+      "forward_ms": 9.139416666666667,
+      "fluid_ms": 1.99295687,
+      "cpu_completion_median_ms": 13.1741,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cellcull-r1-r1",
+      "arm": "far-4k-cellcull-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4930600666666667,
+      "cell_pass_ms": 0.44373821666666663,
+      "fluid_windows_ms": [
+        1.4886442,
+        1.491896,
+        1.49864
+      ],
+      "cell_windows_ms": [
+        0.6185648,
+        0.35642612,
+        0.35622373
+      ],
+      "forward_ms": 9.141773666666667,
+      "fluid_ms": 1.9367982833333333,
+      "cpu_completion_median_ms": 13.1462,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag-live-r1",
+      "arm": "far-4k-frag-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.9162938333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.9175845,
+        1.9165202,
+        1.9147768
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.056537666666667,
+      "fluid_ms": 1.9162938333333333,
+      "cpu_completion_median_ms": 12.96255,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag-r1-r1",
+      "arm": "far-4k-frag-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.9152149333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.9117125,
+        1.9213907,
+        1.9125416
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.046073499999999,
+      "fluid_ms": 1.9152149333333333,
+      "cpu_completion_median_ms": 12.95535,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag2-live-r1",
+      "arm": "far-4k-frag2-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7300479333333334,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.7552539,
+        1.7196053,
+        1.7152846
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.244698333333334,
+      "fluid_ms": 1.7300479333333334,
+      "cpu_completion_median_ms": 13.06795,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag2-r1-r1",
+      "arm": "far-4k-frag2-r1",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7270824999999999,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.75402,
+        1.7095197,
+        1.7177078
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.246980666666666,
+      "fluid_ms": 1.7270824999999999,
+      "cpu_completion_median_ms": 13.0896,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-free-live-r1",
+      "arm": "far-4k-free-live",
+      "round": 1,
+      "pose": "far",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.3804205999999999,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.3784778,
+        1.3826902,
+        1.3800938
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.055095999999999,
+      "fluid_ms": 1.3804205999999999,
+      "cpu_completion_median_ms": 12.415099999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell-live-r1",
+      "arm": "near-1080p-cell-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.306920933333333,
+      "cell_pass_ms": 0.029264978000000004,
+      "fluid_windows_ms": [
+        5.957814,
+        5.098278,
+        4.8646708
+      ],
+      "cell_windows_ms": [
+        0.029304534,
+        0.0292056,
+        0.0292848
+      ],
+      "forward_ms": 2.1609262333333334,
+      "fluid_ms": 5.336185911333333,
+      "cpu_completion_median_ms": 8.3962,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell-r1-r1",
+      "arm": "near-1080p-cell-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.3022029999999996,
+      "cell_pass_ms": 0.027646666666666667,
+      "fluid_windows_ms": [
+        5.9398365,
+        5.1036825,
+        4.86309
+      ],
+      "cell_windows_ms": [
+        0.027559467,
+        0.027701333,
+        0.0276792
+      ],
+      "forward_ms": 2.1591678666666665,
+      "fluid_ms": 5.329849666666666,
+      "cpu_completion_median_ms": 8.373550000000002,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell2-live-r1",
+      "arm": "near-1080p-cell2-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.4781731333333332,
+      "cell_pass_ms": 0.029181955666666665,
+      "fluid_windows_ms": [
+        3.452932,
+        3.4922311,
+        3.4893563
+      ],
+      "cell_windows_ms": [
+        0.0290944,
+        0.029238667,
+        0.0292128
+      ],
+      "forward_ms": 2.1566710666666666,
+      "fluid_ms": 3.507355089,
+      "cpu_completion_median_ms": 6.8467,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell2-r1-r1",
+      "arm": "near-1080p-cell2-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.4727430666666668,
+      "cell_pass_ms": 0.027548355666666666,
+      "fluid_windows_ms": [
+        3.4614797,
+        3.5587385,
+        3.398011
+      ],
+      "cell_windows_ms": [
+        0.027469333,
+        0.0275472,
+        0.027628534
+      ],
+      "forward_ms": 2.149945333333333,
+      "fluid_ms": 3.5002914223333335,
+      "cpu_completion_median_ms": 6.88245,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cellcull-live-r1",
+      "arm": "near-1080p-cellcull-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.302979033333334,
+      "cell_pass_ms": 0.020456355333333336,
+      "fluid_windows_ms": [
+        5.948546,
+        5.1018386,
+        4.8585525
+      ],
+      "cell_windows_ms": [
+        0.02042,
+        0.020489866,
+        0.0204592
+      ],
+      "forward_ms": 2.1629584,
+      "fluid_ms": 5.323435388666668,
+      "cpu_completion_median_ms": 8.44385,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cellcull-r1-r1",
+      "arm": "near-1080p-cellcull-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.2990678,
+      "cell_pass_ms": 0.019470578,
+      "fluid_windows_ms": [
+        5.9528484,
+        5.0796866,
+        4.8646684
+      ],
+      "cell_windows_ms": [
+        0.0194688,
+        0.0194864,
+        0.019456534
+      ],
+      "forward_ms": 2.1618078,
+      "fluid_ms": 5.318538378,
+      "cpu_completion_median_ms": 8.443850000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag-live-r1",
+      "arm": "near-1080p-frag-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.7524075,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        6.24637,
+        5.6050825,
+        5.40577
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1721778333333335,
+      "fluid_ms": 5.7524075,
+      "cpu_completion_median_ms": 8.9331,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag-r1-r1",
+      "arm": "near-1080p-frag-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.279471066666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        5.5554447,
+        5.231358,
+        5.0516105
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1591356666666663,
+      "fluid_ms": 5.279471066666667,
+      "cpu_completion_median_ms": 8.63785,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag2-live-r1",
+      "arm": "near-1080p-frag2-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.9238917000000004,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        3.9227514,
+        3.9847028,
+        3.8642209
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1777754,
+      "fluid_ms": 3.9238917000000004,
+      "cpu_completion_median_ms": 7.38265,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag2-r1-r1",
+      "arm": "near-1080p-frag2-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.8460042333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        3.8322637,
+        3.9152088,
+        3.7905402
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1682985666666665,
+      "fluid_ms": 3.8460042333333333,
+      "cpu_completion_median_ms": 7.2491,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-free-live-r1",
+      "arm": "near-1080p-free-live",
+      "round": 1,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.1155423333333334,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        3.0900726,
+        3.106438,
+        3.1501164
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1505498999999997,
+      "fluid_ms": 3.1155423333333334,
+      "cpu_completion_median_ms": 6.49565,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell-live-r1",
+      "arm": "near-4k-cell-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.655589,
+      "cell_pass_ms": 0.030874933000000004,
+      "fluid_windows_ms": [
+        20.665579,
+        20.657648,
+        20.64354
+      ],
+      "cell_windows_ms": [
+        0.0308776,
+        0.030866666,
+        0.030880533
+      ],
+      "forward_ms": 8.402676999999999,
+      "fluid_ms": 20.686463933,
+      "cpu_completion_median_ms": 31.261400000000002,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell-r1-r1",
+      "arm": "near-4k-cell-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 21.215870666666664,
+      "cell_pass_ms": 0.028934666666666668,
+      "fluid_windows_ms": [
+        21.222698,
+        21.217924,
+        21.20699
+      ],
+      "cell_windows_ms": [
+        0.028919734,
+        0.0289296,
+        0.028954666
+      ],
+      "forward_ms": 8.310981,
+      "fluid_ms": 21.244805333333332,
+      "cpu_completion_median_ms": 31.593999999999998,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell2-live-r1",
+      "arm": "near-4k-cell2-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.874274333333334,
+      "cell_pass_ms": 0.030713777666666667,
+      "fluid_windows_ms": [
+        12.861138,
+        12.868887,
+        12.892798
+      ],
+      "cell_windows_ms": [
+        0.030809067,
+        0.030676266,
+        0.030656
+      ],
+      "forward_ms": 8.365089,
+      "fluid_ms": 12.904988111000002,
+      "cpu_completion_median_ms": 23.408,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell2-r1-r1",
+      "arm": "near-4k-cell2-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.671392666666666,
+      "cell_pass_ms": 0.02902133333333334,
+      "fluid_windows_ms": [
+        12.618949,
+        12.704803,
+        12.690426
+      ],
+      "cell_windows_ms": [
+        0.029012267,
+        0.029091733,
+        0.02896
+      ],
+      "forward_ms": 8.218653999999999,
+      "fluid_ms": 12.700413999999999,
+      "cpu_completion_median_ms": 22.9799,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cellcull-live-r1",
+      "arm": "near-4k-cellcull-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.700235666666668,
+      "cell_pass_ms": 0.021874133,
+      "fluid_windows_ms": [
+        20.693022,
+        20.681025,
+        20.72666
+      ],
+      "cell_windows_ms": [
+        0.0218216,
+        0.021942666,
+        0.021858133
+      ],
+      "forward_ms": 8.442679666666665,
+      "fluid_ms": 20.72210979966667,
+      "cpu_completion_median_ms": 31.33735,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cellcull-r1-r1",
+      "arm": "near-4k-cellcull-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.449343,
+      "cell_pass_ms": 0.020706222,
+      "fluid_windows_ms": [
+        20.44042,
+        20.44122,
+        20.466389
+      ],
+      "cell_windows_ms": [
+        0.020681066,
+        0.0207456,
+        0.020692
+      ],
+      "forward_ms": 8.325214833333332,
+      "fluid_ms": 20.470049222,
+      "cpu_completion_median_ms": 30.8395,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag-live-r1",
+      "arm": "near-4k-frag-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 22.34697933333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        22.334644,
+        22.34785,
+        22.358444
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.415682666666665,
+      "fluid_ms": 22.34697933333333,
+      "cpu_completion_median_ms": 32.90005,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag-r1-r1",
+      "arm": "near-4k-frag-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.660527000000002,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        20.671005,
+        20.662928,
+        20.647648
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.301025999999998,
+      "fluid_ms": 20.660527000000002,
+      "cpu_completion_median_ms": 30.99275,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag2-live-r1",
+      "arm": "near-4k-frag2-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 15.017773666666669,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        15.017002,
+        15.007781,
+        15.028538
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.279757666666667,
+      "fluid_ms": 15.017773666666669,
+      "cpu_completion_median_ms": 25.41485,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag2-r1-r1",
+      "arm": "near-4k-frag2-r1",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 14.664412833333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        14.635359,
+        14.6545925,
+        14.703287
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.305114666666666,
+      "fluid_ms": 14.664412833333333,
+      "cpu_completion_median_ms": 25.0821,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-free-live-r1",
+      "arm": "near-4k-free-live",
+      "round": 1,
+      "pose": "near",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.239378333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        12.300567,
+        12.155719,
+        12.261849
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.112942333333333,
+      "fluid_ms": 12.239378333333333,
+      "cpu_completion_median_ms": 22.33765,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell-live-r1",
+      "arm": "probes-4k-cell-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.202467933333333,
+      "cell_pass_ms": 0.027038311000000002,
+      "fluid_windows_ms": [
+        6.2035403,
+        6.206236,
+        6.1976275
+      ],
+      "cell_windows_ms": [
+        0.027089866,
+        0.026998933,
+        0.027026134
+      ],
+      "forward_ms": 6.793209866666667,
+      "fluid_ms": 6.229506244333333,
+      "cpu_completion_median_ms": 15.84675,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell-r1-r1",
+      "arm": "probes-4k-cell-r1",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.285300333333333,
+      "cell_pass_ms": 0.02188079966666667,
+      "fluid_windows_ms": [
+        6.287426,
+        6.279121,
+        6.289354
+      ],
+      "cell_windows_ms": [
+        0.021861333,
+        0.021860266,
+        0.0219208
+      ],
+      "forward_ms": 6.876058366666666,
+      "fluid_ms": 6.307181132999999,
+      "cpu_completion_median_ms": 16.16835,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell2-live-r1",
+      "arm": "probes-4k-cell2-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 7.106985099999999,
+      "cell_pass_ms": 0.02692693333333333,
+      "fluid_windows_ms": [
+        7.348133,
+        7.2181773,
+        6.754645
+      ],
+      "cell_windows_ms": [
+        0.027016267,
+        0.026933867,
+        0.026830666
+      ],
+      "forward_ms": 6.7932877,
+      "fluid_ms": 7.133912033333333,
+      "cpu_completion_median_ms": 16.7969,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell2-r1-r1",
+      "arm": "probes-4k-cell2-r1",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 7.110868333333333,
+      "cell_pass_ms": 0.021832622,
+      "fluid_windows_ms": [
+        7.3428917,
+        7.2236953,
+        6.766018
+      ],
+      "cell_windows_ms": [
+        0.021808267,
+        0.021866133,
+        0.021823466
+      ],
+      "forward_ms": 6.791856366666666,
+      "fluid_ms": 7.132700955333333,
+      "cpu_completion_median_ms": 16.866,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cellcull-live-r1",
+      "arm": "probes-4k-cellcull-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.205406333333333,
+      "cell_pass_ms": 0.018788088666666668,
+      "fluid_windows_ms": [
+        6.2064643,
+        6.206788,
+        6.2029667
+      ],
+      "cell_windows_ms": [
+        0.0188088,
+        0.0187824,
+        0.018773066
+      ],
+      "forward_ms": 6.793654566666667,
+      "fluid_ms": 6.224194422,
+      "cpu_completion_median_ms": 15.822600000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cellcull-r1-r1",
+      "arm": "probes-4k-cellcull-r1",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.215517033333333,
+      "cell_pass_ms": 0.015367289,
+      "fluid_windows_ms": [
+        6.2014623,
+        6.1977224,
+        6.2473664
+      ],
+      "cell_windows_ms": [
+        0.0153168,
+        0.015296534,
+        0.015488533
+      ],
+      "forward_ms": 6.804710866666667,
+      "fluid_ms": 6.230884322333333,
+      "cpu_completion_median_ms": 15.895950000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag-live-r1",
+      "arm": "probes-4k-frag-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 10.830952333333334,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        10.85049,
+        10.812549,
+        10.829818
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.7857818666666665,
+      "fluid_ms": 10.830952333333334,
+      "cpu_completion_median_ms": 20.3949,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag-r1-r1",
+      "arm": "probes-4k-frag-r1",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 9.168619666666668,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        9.083614,
+        9.123857,
+        9.298388
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.841273466666666,
+      "fluid_ms": 9.168619666666668,
+      "cpu_completion_median_ms": 18.8108,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag2-live-r1",
+      "arm": "probes-4k-frag2-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 10.279119333333334,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        10.24573,
+        10.254068,
+        10.33756
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.8542480333333335,
+      "fluid_ms": 10.279119333333334,
+      "cpu_completion_median_ms": 20.045949999999998,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag2-r1-r1",
+      "arm": "probes-4k-frag2-r1",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 8.698570666666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        8.81654,
+        8.698301,
+        8.580871
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.865198666666667,
+      "fluid_ms": 8.698570666666667,
+      "cpu_completion_median_ms": 18.465449999999997,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-free-live-r1",
+      "arm": "probes-4k-free-live",
+      "round": 1,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.477106099999999,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        6.4773383,
+        6.470068,
+        6.483912
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.7876391,
+      "fluid_ms": 6.477106099999999,
+      "cpu_completion_median_ms": 16.060000000000002,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell-live-r2",
+      "arm": "far-1080p-cell-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.44269965000000006,
+      "cell_pass_ms": 0.3703932433333334,
+      "fluid_windows_ms": [
+        0.44249228,
+        0.4430536,
+        0.44255307
+      ],
+      "cell_windows_ms": [
+        0.3699672,
+        0.3714488,
+        0.36976373
+      ],
+      "forward_ms": 2.5499097666666666,
+      "fluid_ms": 0.8130928933333335,
+      "cpu_completion_median_ms": 4.6494,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell-r1-r2",
+      "arm": "far-1080p-cell-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.44247075333333336,
+      "cell_pass_ms": 0.32553191,
+      "fluid_windows_ms": [
+        0.44237414,
+        0.4419968,
+        0.44304132
+      ],
+      "cell_windows_ms": [
+        0.3258416,
+        0.3260344,
+        0.32471973
+      ],
+      "forward_ms": 2.5484245666666663,
+      "fluid_ms": 0.7680026633333333,
+      "cpu_completion_median_ms": 4.59525,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell2-live-r2",
+      "arm": "far-1080p-cell2-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5634136766666666,
+      "cell_pass_ms": 0.37154337333333337,
+      "fluid_windows_ms": [
+        0.56222373,
+        0.5666661,
+        0.5613512
+      ],
+      "cell_windows_ms": [
+        0.37204292,
+        0.372296,
+        0.3702912
+      ],
+      "forward_ms": 2.547303666666667,
+      "fluid_ms": 0.93495705,
+      "cpu_completion_median_ms": 4.78705,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cell2-r1-r2",
+      "arm": "far-1080p-cell2-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5654022333333333,
+      "cell_pass_ms": 0.32469501,
+      "fluid_windows_ms": [
+        0.5625088,
+        0.5664971,
+        0.5672008
+      ],
+      "cell_windows_ms": [
+        0.32427865,
+        0.32465732,
+        0.32514906
+      ],
+      "forward_ms": 2.5511302000000002,
+      "fluid_ms": 0.8900972433333333,
+      "cpu_completion_median_ms": 4.758,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cellcull-live-r2",
+      "arm": "far-1080p-cellcull-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.4423560033333333,
+      "cell_pass_ms": 0.39309440666666673,
+      "fluid_windows_ms": [
+        0.44219387,
+        0.44322294,
+        0.4416512
+      ],
+      "cell_windows_ms": [
+        0.39239734,
+        0.394596,
+        0.39228988
+      ],
+      "forward_ms": 2.5512174000000005,
+      "fluid_ms": 0.83545041,
+      "cpu_completion_median_ms": 4.678100000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-cellcull-r1-r2",
+      "arm": "far-1080p-cellcull-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.4428860433333333,
+      "cell_pass_ms": 0.34945981666666665,
+      "fluid_windows_ms": [
+        0.44304934,
+        0.44259894,
+        0.44300985
+      ],
+      "cell_windows_ms": [
+        0.34928533,
+        0.3487528,
+        0.35034132
+      ],
+      "forward_ms": 2.5507586333333334,
+      "fluid_ms": 0.79234586,
+      "cpu_completion_median_ms": 4.6277,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag-live-r2",
+      "arm": "far-1080p-frag-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5651105700000001,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.5643176,
+        0.56466985,
+        0.56634426
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5464542666666667,
+      "fluid_ms": 0.5651105700000001,
+      "cpu_completion_median_ms": 4.2613,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag-r1-r2",
+      "arm": "far-1080p-frag-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5681357233333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.56667787,
+        0.5682765,
+        0.5694528
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5481333333333334,
+      "fluid_ms": 0.5681357233333333,
+      "cpu_completion_median_ms": 4.2452000000000005,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag2-live-r2",
+      "arm": "far-1080p-frag2-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.6002263133333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.599688,
+        0.59928024,
+        0.6017107
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.564762,
+      "fluid_ms": 0.6002263133333333,
+      "cpu_completion_median_ms": 4.335999999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-frag2-r1-r2",
+      "arm": "far-1080p-frag2-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.5934775166666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.59295785,
+        0.5942923,
+        0.5931824
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5685177666666665,
+      "fluid_ms": 0.5934775166666667,
+      "cpu_completion_median_ms": 4.34845,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-1080p-free-live-r2",
+      "arm": "far-1080p-free-live",
+      "round": 2,
+      "pose": "far",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 0.4186541333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        0.41809627,
+        0.4188056,
+        0.41906053
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.5463851,
+      "fluid_ms": 0.4186541333333333,
+      "cpu_completion_median_ms": 4.08305,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell-live-r2",
+      "arm": "far-4k-cell-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4874082,
+      "cell_pass_ms": 0.4660937766666666,
+      "fluid_windows_ms": [
+        1.487444,
+        1.4889603,
+        1.4858203
+      ],
+      "cell_windows_ms": [
+        0.64551467,
+        0.3751656,
+        0.37760106
+      ],
+      "forward_ms": 9.123895333333333,
+      "fluid_ms": 1.9535019766666666,
+      "cpu_completion_median_ms": 13.1146,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell-r1-r2",
+      "arm": "far-4k-cell-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.5046472666666668,
+      "cell_pass_ms": 0.41927067333333334,
+      "fluid_windows_ms": [
+        1.4902074,
+        1.4881256,
+        1.5356088
+      ],
+      "cell_windows_ms": [
+        0.57869655,
+        0.33136347,
+        0.347752
+      ],
+      "forward_ms": 9.149246333333334,
+      "fluid_ms": 1.9239179400000002,
+      "cpu_completion_median_ms": 13.110100000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell2-live-r2",
+      "arm": "far-4k-cell2-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7618760000000002,
+      "cell_pass_ms": 0.46553662,
+      "fluid_windows_ms": [
+        1.8248675,
+        1.8233451,
+        1.6374154
+      ],
+      "cell_windows_ms": [
+        0.6437429,
+        0.37521628,
+        0.37765068
+      ],
+      "forward_ms": 9.134820666666668,
+      "fluid_ms": 2.2274126200000004,
+      "cpu_completion_median_ms": 13.42875,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cell2-r1-r2",
+      "arm": "far-4k-cell2-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7641364333333334,
+      "cell_pass_ms": 0.41417902,
+      "fluid_windows_ms": [
+        1.8218718,
+        1.8210237,
+        1.6495138
+      ],
+      "cell_windows_ms": [
+        0.5802464,
+        0.3312976,
+        0.33099306
+      ],
+      "forward_ms": 9.149263333333334,
+      "fluid_ms": 2.1783154533333335,
+      "cpu_completion_median_ms": 13.4408,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cellcull-live-r2",
+      "arm": "far-4k-cellcull-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4879316666666667,
+      "cell_pass_ms": 0.4996175966666666,
+      "fluid_windows_ms": [
+        1.4876592,
+        1.4888381,
+        1.4872977
+      ],
+      "cell_windows_ms": [
+        0.6991784,
+        0.39859065,
+        0.40108374
+      ],
+      "forward_ms": 9.120906000000002,
+      "fluid_ms": 1.9875492633333334,
+      "cpu_completion_median_ms": 13.1401,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-cellcull-r1-r2",
+      "arm": "far-4k-cellcull-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.4978030666666664,
+      "cell_pass_ms": 0.4449591066666667,
+      "fluid_windows_ms": [
+        1.4989355,
+        1.498235,
+        1.4962387
+      ],
+      "cell_windows_ms": [
+        0.6185864,
+        0.35831547,
+        0.35797545
+      ],
+      "forward_ms": 9.140795,
+      "fluid_ms": 1.9427621733333331,
+      "cpu_completion_median_ms": 13.1448,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag-live-r2",
+      "arm": "far-4k-frag-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.9132092333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.9115666,
+        1.9143717,
+        1.9136894
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.027914333333335,
+      "fluid_ms": 1.9132092333333333,
+      "cpu_completion_median_ms": 12.90835,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag-r1-r2",
+      "arm": "far-4k-frag-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.9123168,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.9115946,
+        1.9125563,
+        1.9127995
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.037037666666667,
+      "fluid_ms": 1.9123168,
+      "cpu_completion_median_ms": 12.92685,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag2-live-r2",
+      "arm": "far-4k-frag2-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7373048000000002,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.7763842,
+        1.7155998,
+        1.7199304
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.241589000000001,
+      "fluid_ms": 1.7373048000000002,
+      "cpu_completion_median_ms": 13.13005,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-frag2-r1-r2",
+      "arm": "far-4k-frag2-r1",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.7266677666666668,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.7868755,
+        1.7065859,
+        1.6865419
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.444952333333335,
+      "fluid_ms": 1.7266677666666668,
+      "cpu_completion_median_ms": 13.14705,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "far-4k-free-live-r2",
+      "arm": "far-4k-free-live",
+      "round": 2,
+      "pose": "far",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 1.3729171666666666,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        1.3742625,
+        1.371677,
+        1.372812
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 9.038633666666668,
+      "fluid_ms": 1.3729171666666666,
+      "cpu_completion_median_ms": 12.3613,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell-live-r2",
+      "arm": "near-1080p-cell-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.285518,
+      "cell_pass_ms": 0.029216888666666666,
+      "fluid_windows_ms": [
+        5.913084,
+        5.0893106,
+        4.8541594
+      ],
+      "cell_windows_ms": [
+        0.029057333,
+        0.029328,
+        0.029265333
+      ],
+      "forward_ms": 2.150931933333333,
+      "fluid_ms": 5.314734888666666,
+      "cpu_completion_median_ms": 8.37635,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell-r1-r2",
+      "arm": "near-1080p-cell-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.291096866666667,
+      "cell_pass_ms": 0.027560622333333337,
+      "fluid_windows_ms": [
+        5.918436,
+        5.095841,
+        4.8590136
+      ],
+      "cell_windows_ms": [
+        0.027430933,
+        0.027560534,
+        0.0276904
+      ],
+      "forward_ms": 2.1525758,
+      "fluid_ms": 5.3186574890000005,
+      "cpu_completion_median_ms": 8.36525,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell2-live-r2",
+      "arm": "near-1080p-cell2-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.471724733333333,
+      "cell_pass_ms": 0.02921244466666667,
+      "fluid_windows_ms": [
+        3.4450357,
+        3.4493043,
+        3.5208342
+      ],
+      "cell_windows_ms": [
+        0.0290824,
+        0.029256267,
+        0.029298667
+      ],
+      "forward_ms": 2.1474809333333336,
+      "fluid_ms": 3.500937178,
+      "cpu_completion_median_ms": 6.84575,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cell2-r1-r2",
+      "arm": "near-1080p-cell2-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.4814598333333326,
+      "cell_pass_ms": 0.027638755666666664,
+      "fluid_windows_ms": [
+        3.4792173,
+        3.5113502,
+        3.453812
+      ],
+      "cell_windows_ms": [
+        0.027673068,
+        0.027633067,
+        0.027610132
+      ],
+      "forward_ms": 2.1549192333333336,
+      "fluid_ms": 3.5090985889999993,
+      "cpu_completion_median_ms": 6.839499999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cellcull-live-r2",
+      "arm": "near-1080p-cellcull-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.2909856,
+      "cell_pass_ms": 0.020418756,
+      "fluid_windows_ms": [
+        5.9196973,
+        5.097847,
+        4.8554125
+      ],
+      "cell_windows_ms": [
+        0.020404533,
+        0.020390667,
+        0.020461068
+      ],
+      "forward_ms": 2.1539950333333335,
+      "fluid_ms": 5.311404356,
+      "cpu_completion_median_ms": 8.34835,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-cellcull-r1-r2",
+      "arm": "near-1080p-cellcull-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.2880563333333335,
+      "cell_pass_ms": 0.01943039966666667,
+      "fluid_windows_ms": [
+        5.9258213,
+        5.0810757,
+        4.857272
+      ],
+      "cell_windows_ms": [
+        0.0194024,
+        0.019436266,
+        0.019452533
+      ],
+      "forward_ms": 2.157599766666667,
+      "fluid_ms": 5.307486733,
+      "cpu_completion_median_ms": 8.3515,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag-live-r2",
+      "arm": "near-1080p-frag-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.7160300333333325,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        6.2154775,
+        5.565201,
+        5.3674116
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1576405333333333,
+      "fluid_ms": 5.7160300333333325,
+      "cpu_completion_median_ms": 8.8542,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag-r1-r2",
+      "arm": "near-1080p-frag-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 5.252957833333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        5.5261164,
+        5.1999016,
+        5.0328555
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1496830333333334,
+      "fluid_ms": 5.252957833333333,
+      "cpu_completion_median_ms": 8.626999999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag2-live-r2",
+      "arm": "near-1080p-frag2-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.9781882000000004,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        4.0704746,
+        3.9938257,
+        3.8702643
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.2223829333333334,
+      "fluid_ms": 3.9781882000000004,
+      "cpu_completion_median_ms": 7.42795,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-frag2-r1-r2",
+      "arm": "near-1080p-frag2-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 4.0187408,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        4.070615,
+        4.064024,
+        3.9215834
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.2301593333333334,
+      "fluid_ms": 4.0187408,
+      "cpu_completion_median_ms": 7.4274,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-1080p-free-live-r2",
+      "arm": "near-1080p-free-live",
+      "round": 2,
+      "pose": "near",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 3.104545433333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        3.092859,
+        3.0909941,
+        3.1297832
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 2.1423490666666667,
+      "fluid_ms": 3.104545433333333,
+      "cpu_completion_median_ms": 6.449350000000001,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell-live-r2",
+      "arm": "near-4k-cell-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.520944999999998,
+      "cell_pass_ms": 0.030731644333333336,
+      "fluid_windows_ms": [
+        20.522781,
+        20.526394,
+        20.51366
+      ],
+      "cell_windows_ms": [
+        0.030717067,
+        0.0307112,
+        0.030766666
+      ],
+      "forward_ms": 8.346351,
+      "fluid_ms": 20.55167664433333,
+      "cpu_completion_median_ms": 30.9637,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell-r1-r2",
+      "arm": "near-4k-cell-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 21.171011666666665,
+      "cell_pass_ms": 0.029118311666666664,
+      "fluid_windows_ms": [
+        21.17627,
+        21.146034,
+        21.190731
+      ],
+      "cell_windows_ms": [
+        0.029088533,
+        0.029121334,
+        0.029145068
+      ],
+      "forward_ms": 8.664361333333334,
+      "fluid_ms": 21.200129978333333,
+      "cpu_completion_median_ms": 32.1141,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell2-live-r2",
+      "arm": "near-4k-cell2-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.798352666666668,
+      "cell_pass_ms": 0.030583822666666666,
+      "fluid_windows_ms": [
+        12.802005,
+        12.794447,
+        12.798606
+      ],
+      "cell_windows_ms": [
+        0.030610668,
+        0.030561866,
+        0.030578934
+      ],
+      "forward_ms": 8.253633166666665,
+      "fluid_ms": 12.828936489333335,
+      "cpu_completion_median_ms": 23.099400000000003,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cell2-r1-r2",
+      "arm": "near-4k-cell2-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.591776,
+      "cell_pass_ms": 0.029013778000000004,
+      "fluid_windows_ms": [
+        12.561627,
+        12.563391,
+        12.65031
+      ],
+      "cell_windows_ms": [
+        0.028904267,
+        0.029142667,
+        0.0289944
+      ],
+      "forward_ms": 8.172778000000001,
+      "fluid_ms": 12.620789777999999,
+      "cpu_completion_median_ms": 22.79905,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cellcull-live-r2",
+      "arm": "near-4k-cellcull-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.449341999999998,
+      "cell_pass_ms": 0.021679022666666665,
+      "fluid_windows_ms": [
+        20.4476,
+        20.459806,
+        20.44062
+      ],
+      "cell_windows_ms": [
+        0.021670934,
+        0.021729067,
+        0.021637067
+      ],
+      "forward_ms": 8.335539666666666,
+      "fluid_ms": 20.471021022666665,
+      "cpu_completion_median_ms": 30.87995,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-cellcull-r1-r2",
+      "arm": "near-4k-cellcull-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.353506,
+      "cell_pass_ms": 0.020681244666666664,
+      "fluid_windows_ms": [
+        20.345081,
+        20.35216,
+        20.363277
+      ],
+      "cell_windows_ms": [
+        0.020677067,
+        0.020662667,
+        0.020704
+      ],
+      "forward_ms": 8.280534333333334,
+      "fluid_ms": 20.374187244666665,
+      "cpu_completion_median_ms": 30.720399999999998,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag-live-r2",
+      "arm": "near-4k-frag-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 22.128841,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        22.1362,
+        22.122343,
+        22.12798
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.349708999999999,
+      "fluid_ms": 22.128841,
+      "cpu_completion_median_ms": 32.498599999999996,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag-r1-r2",
+      "arm": "near-4k-frag-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 20.63896366666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        20.873928,
+        20.508026,
+        20.534937
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.334877333333333,
+      "fluid_ms": 20.63896366666667,
+      "cpu_completion_median_ms": 30.89045,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag2-live-r2",
+      "arm": "near-4k-frag2-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 14.919734000000002,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        14.891718,
+        14.912523,
+        14.954961
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.299497666666667,
+      "fluid_ms": 14.919734000000002,
+      "cpu_completion_median_ms": 25.2877,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-frag2-r1-r2",
+      "arm": "near-4k-frag2-r1",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 14.646419666666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        14.563391,
+        14.612135,
+        14.763733
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.29677,
+      "fluid_ms": 14.646419666666667,
+      "cpu_completion_median_ms": 24.967999999999996,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "near-4k-free-live-r2",
+      "arm": "near-4k-free-live",
+      "round": 2,
+      "pose": "near",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 12.245421666666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        12.246332,
+        12.24541,
+        12.244523
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 8.121654,
+      "fluid_ms": 12.245421666666667,
+      "cpu_completion_median_ms": 22.354499999999998,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell-live-r2",
+      "arm": "probes-4k-cell-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.200542266666667,
+      "cell_pass_ms": 0.02701582233333333,
+      "fluid_windows_ms": [
+        6.201117,
+        6.199006,
+        6.2015038
+      ],
+      "cell_windows_ms": [
+        0.0270824,
+        0.026988534,
+        0.026976533
+      ],
+      "forward_ms": 6.785694233333333,
+      "fluid_ms": 6.227558089,
+      "cpu_completion_median_ms": 15.7864,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell-r1-r2",
+      "arm": "probes-4k-cell-r1",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.195172266666666,
+      "cell_pass_ms": 0.021862044333333334,
+      "fluid_windows_ms": [
+        6.1978455,
+        6.1954503,
+        6.192221
+      ],
+      "cell_windows_ms": [
+        0.021759467,
+        0.0218904,
+        0.021936266
+      ],
+      "forward_ms": 6.7801226,
+      "fluid_ms": 6.217034310999999,
+      "cpu_completion_median_ms": 15.779600000000002,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell2-live-r2",
+      "arm": "probes-4k-cell2-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 7.1110690000000005,
+      "cell_pass_ms": 0.027010044666666663,
+      "fluid_windows_ms": [
+        7.338526,
+        7.24344,
+        6.751241
+      ],
+      "cell_windows_ms": [
+        0.027089866,
+        0.026961334,
+        0.026978934
+      ],
+      "forward_ms": 6.782000133333333,
+      "fluid_ms": 7.138079044666667,
+      "cpu_completion_median_ms": 16.79835,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cell2-r1-r2",
+      "arm": "probes-4k-cell2-r1",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 7.1121273333333335,
+      "cell_pass_ms": 0.021811999999999998,
+      "fluid_windows_ms": [
+        7.338163,
+        7.246599,
+        6.75162
+      ],
+      "cell_windows_ms": [
+        0.021718666,
+        0.021824267,
+        0.021893067
+      ],
+      "forward_ms": 6.781038466666667,
+      "fluid_ms": 7.133939333333333,
+      "cpu_completion_median_ms": 16.8285,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cellcull-live-r2",
+      "arm": "probes-4k-cellcull-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.196666,
+      "cell_pass_ms": 0.01881528866666667,
+      "fluid_windows_ms": [
+        6.1986,
+        6.1943474,
+        6.1970506
+      ],
+      "cell_windows_ms": [
+        0.018841866,
+        0.018779734,
+        0.018824266
+      ],
+      "forward_ms": 6.7845571,
+      "fluid_ms": 6.215481288666666,
+      "cpu_completion_median_ms": 15.799399999999999,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-cellcull-r1-r2",
+      "arm": "probes-4k-cellcull-r1",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.1961538,
+      "cell_pass_ms": 0.015178311,
+      "fluid_windows_ms": [
+        6.1943154,
+        6.195877,
+        6.198269
+      ],
+      "cell_windows_ms": [
+        0.0151416,
+        0.015208533,
+        0.0151848
+      ],
+      "forward_ms": 6.785125833333334,
+      "fluid_ms": 6.211332111,
+      "cpu_completion_median_ms": 15.805300000000003,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag-live-r2",
+      "arm": "probes-4k-frag-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 10.869997,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        10.836261,
+        10.845612,
+        10.928118
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.798551533333332,
+      "fluid_ms": 10.869997,
+      "cpu_completion_median_ms": 20.44415,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag-r1-r2",
+      "arm": "probes-4k-frag-r1",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 9.071080333333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        9.068248,
+        9.074593,
+        9.0704
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.785791233333334,
+      "fluid_ms": 9.071080333333333,
+      "cpu_completion_median_ms": 18.6352,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag2-live-r2",
+      "arm": "probes-4k-frag2-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 10.248060666666667,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        10.325776,
+        10.199499,
+        10.218907
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.872459433333333,
+      "fluid_ms": 10.248060666666667,
+      "cpu_completion_median_ms": 20.024500000000003,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-frag2-r1-r2",
+      "arm": "probes-4k-frag2-r1",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 8.704938666666665,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        8.854553,
+        8.643356,
+        8.616907
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.873868766666667,
+      "fluid_ms": 8.704938666666665,
+      "cpu_completion_median_ms": 18.51265,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    },
+    {
+      "label": "probes-4k-free-live-r2",
+      "arm": "probes-4k-free-live",
+      "round": 2,
+      "pose": "probes",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "problems": [],
+      "adapter": {
+        "name": "NVIDIA GeForce GTX 1660 SUPER",
+        "backend": "Vulkan",
+        "device_type": "DiscreteGpu"
+      },
+      "gpu_timing": "available",
+      "fluid_pass_ms": 6.475141833333333,
+      "cell_pass_ms": 0.0,
+      "fluid_windows_ms": [
+        6.474688,
+        6.475267,
+        6.4754705
+      ],
+      "cell_windows_ms": [],
+      "forward_ms": 6.780655,
+      "fluid_ms": 6.475141833333333,
+      "cpu_completion_median_ms": 16.03035,
+      "basis": "timestamps",
+      "valid": true,
+      "clock": null
+    }
+  ],
+  "arms": [
+    {
+      "arm": "near-1080p-frag-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.734218766666666,
+      "fluid_ms_spread": 0.03637746666666786,
+      "fluid_pass_ms_mean": 5.734218766666666,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.164909183333333,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "near-1080p-cell-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.325460399999999,
+      "fluid_ms_spread": 0.021451022666666653,
+      "fluid_pass_ms_mean": 5.296219466666667,
+      "cell_pass_ms_mean": 0.029240933333333337,
+      "forward_ms_mean": 2.1559290833333336,
+      "vs_frag_ms": -0.4087583666666674,
+      "vs_frag_ratio": 0.9287159448741644
+    },
+    {
+      "arm": "near-1080p-cellcull-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.317419872333334,
+      "fluid_ms_spread": 0.01203103266666794,
+      "fluid_pass_ms_mean": 5.296982316666667,
+      "cell_pass_ms_mean": 0.02043755566666667,
+      "forward_ms_mean": 2.1584767166666667,
+      "vs_frag_ms": -0.4167988943333327,
+      "vs_frag_ratio": 0.9273137438082747
+    },
+    {
+      "arm": "near-1080p-cell2-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 3.5041461335,
+      "fluid_ms_spread": 0.006417910999999776,
+      "fluid_pass_ms_mean": 3.474948933333333,
+      "cell_pass_ms_mean": 0.029197200166666666,
+      "forward_ms_mean": 2.152076,
+      "vs_frag_ms": -2.2300726331666665,
+      "vs_frag_ratio": 0.6110939041722295
+    },
+    {
+      "arm": "near-1080p-frag2-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 3.95103995,
+      "fluid_ms_spread": 0.05429649999999997,
+      "fluid_pass_ms_mean": 3.95103995,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.200079166666667,
+      "vs_frag_ms": -1.7831788166666662,
+      "vs_frag_ratio": 0.68902846416806
+    },
+    {
+      "arm": "near-1080p-free-live",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 3.1100438833333333,
+      "fluid_ms_spread": 0.01099690000000031,
+      "fluid_pass_ms_mean": 3.1100438833333333,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.146449483333333,
+      "vs_frag_ms": -2.624174883333333,
+      "vs_frag_ratio": 0.5423657537121171
+    },
+    {
+      "arm": "near-1080p-frag-r1",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.26621445,
+      "fluid_ms_spread": 0.026513233333333552,
+      "fluid_pass_ms_mean": 5.26621445,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.15440935,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "near-1080p-cell-r1",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.324253577833334,
+      "fluid_ms_spread": 0.011192177666665692,
+      "fluid_pass_ms_mean": 5.296649933333333,
+      "cell_pass_ms_mean": 0.027603644500000003,
+      "forward_ms_mean": 2.1558718333333333,
+      "vs_frag_ms": 0.05803912783333409,
+      "vs_frag_ratio": 1.0110210338725067
+    },
+    {
+      "arm": "near-1080p-cellcull-r1",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 5.3130125555,
+      "fluid_ms_spread": 0.011051645000000221,
+      "fluid_pass_ms_mean": 5.2935620666666665,
+      "cell_pass_ms_mean": 0.019450488833333335,
+      "forward_ms_mean": 2.1597037833333337,
+      "vs_frag_ms": 0.04679810550000063,
+      "vs_frag_ratio": 1.0088864792621577
+    },
+    {
+      "arm": "near-1080p-cell2-r1",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 3.504695005666666,
+      "fluid_ms_spread": 0.008807166666665811,
+      "fluid_pass_ms_mean": 3.4771014499999997,
+      "cell_pass_ms_mean": 0.027593555666666665,
+      "forward_ms_mean": 2.1524322833333334,
+      "vs_frag_ms": -1.7615194443333335,
+      "vs_frag_ratio": 0.6655055617164748
+    },
+    {
+      "arm": "near-1080p-frag2-r1",
+      "pose": "near",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 3.9323725166666668,
+      "fluid_ms_spread": 0.17273656666666648,
+      "fluid_pass_ms_mean": 3.9323725166666668,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.19922895,
+      "vs_frag_ms": -1.333841933333333,
+      "vs_frag_ratio": 0.746717125556227
+    },
+    {
+      "arm": "near-4k-frag-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 22.237910166666666,
+      "fluid_ms_spread": 0.21813833333332866,
+      "fluid_pass_ms_mean": 22.237910166666666,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 8.382695833333333,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "near-4k-cell-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 20.619070288666663,
+      "fluid_ms_spread": 0.13478728866666856,
+      "fluid_pass_ms_mean": 20.588267,
+      "cell_pass_ms_mean": 0.03080328866666667,
+      "forward_ms_mean": 8.374514,
+      "vs_frag_ms": -1.6188398780000028,
+      "vs_frag_ratio": 0.927203596656913
+    },
+    {
+      "arm": "near-4k-cellcull-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 20.596565411166665,
+      "fluid_ms_spread": 0.2510887770000032,
+      "fluid_pass_ms_mean": 20.574788833333333,
+      "cell_pass_ms_mean": 0.02177657783333333,
+      "forward_ms_mean": 8.389109666666666,
+      "vs_frag_ms": -1.6413447555000005,
+      "vs_frag_ratio": 0.9261915916019716
+    },
+    {
+      "arm": "near-4k-cell2-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 12.86696230016667,
+      "fluid_ms_spread": 0.07605162166666624,
+      "fluid_pass_ms_mean": 12.836313500000001,
+      "cell_pass_ms_mean": 0.030648800166666667,
+      "forward_ms_mean": 8.309361083333332,
+      "vs_frag_ms": -9.370947866499996,
+      "vs_frag_ratio": 0.5786048330860468
+    },
+    {
+      "arm": "near-4k-frag2-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 14.968753833333334,
+      "fluid_ms_spread": 0.09803966666666675,
+      "fluid_pass_ms_mean": 14.968753833333334,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 8.289627666666668,
+      "vs_frag_ms": -7.269156333333331,
+      "vs_frag_ratio": 0.6731187292846711
+    },
+    {
+      "arm": "near-4k-free-live",
+      "pose": "near",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 12.2424,
+      "fluid_ms_spread": 0.006043333333334289,
+      "fluid_pass_ms_mean": 12.2424,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 8.117298166666666,
+      "vs_frag_ms": -9.995510166666666,
+      "vs_frag_ratio": 0.5505193567312204
+    },
+    {
+      "arm": "near-4k-frag-r1",
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 20.649745333333335,
+      "fluid_ms_spread": 0.021563333333332935,
+      "fluid_pass_ms_mean": 20.649745333333335,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 8.317951666666666,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "near-4k-cell-r1",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 21.222467655833334,
+      "fluid_ms_spread": 0.04467535499999897,
+      "fluid_pass_ms_mean": 21.193441166666666,
+      "cell_pass_ms_mean": 0.029026489166666666,
+      "forward_ms_mean": 8.487671166666667,
+      "vs_frag_ms": 0.5727223224999989,
+      "vs_frag_ratio": 1.027735079210662
+    },
+    {
+      "arm": "near-4k-cellcull-r1",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 20.422118233333332,
+      "fluid_ms_spread": 0.09586197733333535,
+      "fluid_pass_ms_mean": 20.401424499999997,
+      "cell_pass_ms_mean": 0.020693733333333332,
+      "forward_ms_mean": 8.302874583333333,
+      "vs_frag_ms": -0.22762710000000297,
+      "vs_frag_ratio": 0.98897675993938
+    },
+    {
+      "arm": "near-4k-cell2-r1",
+      "pose": "near",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 12.660601888999999,
+      "fluid_ms_spread": 0.07962422199999963,
+      "fluid_pass_ms_mean": 12.631584333333333,
+      "cell_pass_ms_mean": 0.029017555666666674,
+      "forward_ms_mean": 8.195716000000001,
+      "vs_frag_ms": -7.989143444333337,
+      "vs_frag_ratio": 0.6131117689167304
+    },
+    {
+      "arm": "near-4k-frag2-r1",
+      "pose": "near",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 14.65541625,
+      "fluid_ms_spread": 0.017993166666666838,
+      "fluid_pass_ms_mean": 14.65541625,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 8.300942333333333,
+      "vs_frag_ms": -5.994329083333335,
+      "vs_frag_ratio": 0.7097141399774486
+    },
+    {
+      "arm": "probes-4k-frag-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 10.850474666666667,
+      "fluid_ms_spread": 0.039044666666665506,
+      "fluid_pass_ms_mean": 10.850474666666667,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 6.792166699999999,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "probes-4k-cell-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 6.228532166666667,
+      "fluid_ms_spread": 0.0019481553333324797,
+      "fluid_pass_ms_mean": 6.2015051,
+      "cell_pass_ms_mean": 0.02702706666666667,
+      "forward_ms_mean": 6.78945205,
+      "vs_frag_ms": -4.6219425,
+      "vs_frag_ratio": 0.5740331513607515
+    },
+    {
+      "arm": "probes-4k-cellcull-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 6.219837855333333,
+      "fluid_ms_spread": 0.0087131333333339,
+      "fluid_pass_ms_mean": 6.2010361666666665,
+      "cell_pass_ms_mean": 0.01880168866666667,
+      "forward_ms_mean": 6.789105833333333,
+      "vs_frag_ms": -4.630636811333334,
+      "vs_frag_ratio": 0.5732318673984892
+    },
+    {
+      "arm": "probes-4k-cell2-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 7.135995539,
+      "fluid_ms_spread": 0.004167011333334081,
+      "fluid_pass_ms_mean": 7.10902705,
+      "cell_pass_ms_mean": 0.026968489,
+      "forward_ms_mean": 6.787643916666666,
+      "vs_frag_ms": -3.7144791276666673,
+      "vs_frag_ratio": 0.6576666697284886
+    },
+    {
+      "arm": "probes-4k-frag2-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 10.26359,
+      "fluid_ms_spread": 0.031058666666666568,
+      "fluid_pass_ms_mean": 10.26359,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 6.863353733333334,
+      "vs_frag_ms": -0.5868846666666663,
+      "vs_frag_ratio": 0.9459116135748777
+    },
+    {
+      "arm": "probes-4k-free-live",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 6.476123966666666,
+      "fluid_ms_spread": 0.001964266666666603,
+      "fluid_pass_ms_mean": 6.476123966666666,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 6.78414705,
+      "vs_frag_ms": -4.374350700000001,
+      "vs_frag_ratio": 0.5968516738315349
+    },
+    {
+      "arm": "probes-4k-frag-r1",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 9.11985,
+      "fluid_ms_spread": 0.09753933333333542,
+      "fluid_pass_ms_mean": 9.11985,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 6.81353235,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "probes-4k-cell-r1",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 6.262107722,
+      "fluid_ms_spread": 0.09014682200000035,
+      "fluid_pass_ms_mean": 6.240236299999999,
+      "cell_pass_ms_mean": 0.021871422,
+      "forward_ms_mean": 6.828090483333334,
+      "vs_frag_ms": -2.857742278,
+      "vs_frag_ratio": 0.6866459121586429
+    },
+    {
+      "arm": "probes-4k-cellcull-r1",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 6.221108216666666,
+      "fluid_ms_spread": 0.01955221133333307,
+      "fluid_pass_ms_mean": 6.205835416666666,
+      "cell_pass_ms_mean": 0.0152728,
+      "forward_ms_mean": 6.7949183500000006,
+      "vs_frag_ms": -2.8987417833333335,
+      "vs_frag_ratio": 0.682150278421977
+    },
+    {
+      "arm": "probes-4k-cell2-r1",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 7.133320144333333,
+      "fluid_ms_spread": 0.00123837800000004,
+      "fluid_pass_ms_mean": 7.111497833333333,
+      "cell_pass_ms_mean": 0.021822310999999997,
+      "forward_ms_mean": 6.786447416666666,
+      "vs_frag_ms": -1.9865298556666664,
+      "vs_frag_ratio": 0.7821751612508246
+    },
+    {
+      "arm": "probes-4k-frag2-r1",
+      "pose": "probes",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 8.701754666666666,
+      "fluid_ms_spread": 0.006367999999998375,
+      "fluid_pass_ms_mean": 8.701754666666666,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 6.869533716666667,
+      "vs_frag_ms": -0.4180953333333335,
+      "vs_frag_ratio": 0.9541554594282435
+    },
+    {
+      "arm": "far-1080p-frag-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.5651916433333335,
+      "fluid_ms_spread": 0.00016214666666669597,
+      "fluid_pass_ms_mean": 0.5651916433333335,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.5467894666666666,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "far-1080p-cell-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.813464975,
+      "fluid_ms_spread": 0.0007441633333332698,
+      "fluid_pass_ms_mean": 0.44289439833333333,
+      "cell_pass_ms_mean": 0.3705705766666667,
+      "forward_ms_mean": 2.55007815,
+      "vs_frag_ms": 0.24827333166666654,
+      "vs_frag_ratio": 1.4392728282435736
+    },
+    {
+      "arm": "far-1080p-cellcull-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.83574596,
+      "fluid_ms_spread": 0.0005911000000000666,
+      "fluid_pass_ms_mean": 0.4424145783333333,
+      "cell_pass_ms_mean": 0.3933313816666667,
+      "forward_ms_mean": 2.550750766666667,
+      "vs_frag_ms": 0.2705543166666665,
+      "vs_frag_ratio": 1.4786948283081771
+    },
+    {
+      "arm": "far-1080p-cell2-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.9348429383333333,
+      "fluid_ms_spread": 0.00022822333333327727,
+      "fluid_pass_ms_mean": 0.5638869383333334,
+      "cell_pass_ms_mean": 0.370956,
+      "forward_ms_mean": 2.54798545,
+      "vs_frag_ms": 0.3696512949999998,
+      "vs_frag_ratio": 1.6540282386694636
+    },
+    {
+      "arm": "far-1080p-frag2-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.5991144483333333,
+      "fluid_ms_spread": 0.0022237300000000904,
+      "fluid_pass_ms_mean": 0.5991144483333333,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.5692349666666665,
+      "vs_frag_ms": 0.03392280499999978,
+      "vs_frag_ratio": 1.0600200045420578
+    },
+    {
+      "arm": "far-1080p-free-live",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "free",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.41890279333333325,
+      "fluid_ms_spread": 0.0004973199999999678,
+      "fluid_pass_ms_mean": 0.41890279333333325,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.5762665333333334,
+      "vs_frag_ms": -0.14628885000000025,
+      "vs_frag_ratio": 0.7411694745923139
+    },
+    {
+      "arm": "far-1080p-frag-r1",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.5684417783333333,
+      "fluid_ms_spread": 0.0006121100000000546,
+      "fluid_pass_ms_mean": 0.5684417783333333,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.547607283333333,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "far-1080p-cell-r1",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.768458715,
+      "fluid_ms_spread": 0.0009121033333333584,
+      "fluid_pass_ms_mean": 0.44249884666666667,
+      "cell_pass_ms_mean": 0.32595986833333335,
+      "forward_ms_mean": 2.55485455,
+      "vs_frag_ms": 0.20001693666666664,
+      "vs_frag_ratio": 1.3518688180399314
+    },
+    {
+      "arm": "far-1080p-cellcull-r1",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.7923322133333333,
+      "fluid_ms_spread": 2.7293333333289205e-05,
+      "fluid_pass_ms_mean": 0.44274252999999997,
+      "cell_pass_ms_mean": 0.3495896833333333,
+      "forward_ms_mean": 2.5495751333333336,
+      "vs_frag_ms": 0.22389043499999994,
+      "vs_frag_ratio": 1.393866959702443
+    },
+    {
+      "arm": "far-1080p-cell2-r1",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "cell2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.888905255,
+      "fluid_ms_spread": 0.002383976666666676,
+      "fluid_pass_ms_mean": 0.56414015,
+      "cell_pass_ms_mean": 0.324765105,
+      "forward_ms_mean": 2.5490833333333334,
+      "vs_frag_ms": 0.32046347666666664,
+      "vs_frag_ratio": 1.5637577829100862
+    },
+    {
+      "arm": "far-1080p-frag2-r1",
+      "pose": "far",
+      "res": "1080p",
+      "mode": "frag2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 0.5918543083333334,
+      "fluid_ms_spread": 0.003246416666666696,
+      "fluid_pass_ms_mean": 0.5918543083333334,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 2.5584860666666667,
+      "vs_frag_ms": 0.023412530000000098,
+      "vs_frag_ratio": 1.0411872084220224
+    },
+    {
+      "arm": "far-4k-frag-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9147515333333334,
+      "fluid_ms_spread": 0.003084599999999993,
+      "fluid_pass_ms_mean": 1.9147515333333334,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 9.042226000000001,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "far-4k-cell-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9589591433333333,
+      "fluid_ms_spread": 0.010914333333333248,
+      "fluid_pass_ms_mean": 1.4925905999999998,
+      "cell_pass_ms_mean": 0.46636854333333333,
+      "forward_ms_mean": 9.13013275,
+      "vs_frag_ms": 0.04420760999999995,
+      "vs_frag_ratio": 1.0230879094391114
+    },
+    {
+      "arm": "far-4k-cellcull-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9902530666666667,
+      "fluid_ms_spread": 0.00540760666666662,
+      "fluid_pass_ms_mean": 1.4903219666666667,
+      "cell_pass_ms_mean": 0.49993109999999996,
+      "forward_ms_mean": 9.130161333333334,
+      "vs_frag_ms": 0.07550153333333331,
+      "vs_frag_ratio": 1.0394315043069295
+    },
+    {
+      "arm": "far-4k-cell2-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 2.228586711666667,
+      "fluid_ms_spread": 0.002348183333332976,
+      "fluid_pass_ms_mean": 1.7628228,
+      "cell_pass_ms_mean": 0.4657639116666667,
+      "forward_ms_mean": 9.142021583333333,
+      "vs_frag_ms": 0.3138351783333335,
+      "vs_frag_ratio": 1.163903865786172
+    },
+    {
+      "arm": "far-4k-frag2-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.7336763666666668,
+      "fluid_ms_spread": 0.007256866666666806,
+      "fluid_pass_ms_mean": 1.7336763666666668,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 9.243143666666668,
+      "vs_frag_ms": -0.18107516666666656,
+      "vs_frag_ratio": 0.9054315071619563
+    },
+    {
+      "arm": "far-4k-free-live",
+      "pose": "far",
+      "res": "4k",
+      "mode": "free",
+      "ratio": "live",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.3766688833333331,
+      "fluid_ms_spread": 0.007503433333333254,
+      "fluid_pass_ms_mean": 1.3766688833333331,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 9.046864833333334,
+      "vs_frag_ms": -0.5380826500000002,
+      "vs_frag_ratio": 0.7189804313339453
+    },
+    {
+      "arm": "far-4k-frag-r1",
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9137658666666666,
+      "fluid_ms_spread": 0.0028981333333333303,
+      "fluid_pass_ms_mean": 1.9137658666666666,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 9.041555583333333,
+      "vs_frag_ms": 0.0,
+      "vs_frag_ratio": 1.0
+    },
+    {
+      "arm": "far-4k-cell-r1",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9092181866666667,
+      "fluid_ms_spread": 0.029399506666666797,
+      "fluid_pass_ms_mean": 1.4932905833333334,
+      "cell_pass_ms_mean": 0.41592760333333334,
+      "forward_ms_mean": 9.0870605,
+      "vs_frag_ms": -0.004547679999999943,
+      "vs_frag_ratio": 0.9976237009556864
+    },
+    {
+      "arm": "far-4k-cellcull-r1",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cellcull",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.9397802283333332,
+      "fluid_ms_spread": 0.005963889999999861,
+      "fluid_pass_ms_mean": 1.4954315666666664,
+      "cell_pass_ms_mean": 0.44434866166666664,
+      "forward_ms_mean": 9.141284333333335,
+      "vs_frag_ms": 0.026014361666666597,
+      "vs_frag_ratio": 1.0135932833372023
+    },
+    {
+      "arm": "far-4k-cell2-r1",
+      "pose": "far",
+      "res": "4k",
+      "mode": "cell2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 2.1815831583333334,
+      "fluid_ms_spread": 0.006535409999999686,
+      "fluid_pass_ms_mean": 1.7671969333333335,
+      "cell_pass_ms_mean": 0.414386225,
+      "forward_ms_mean": 9.14537675,
+      "vs_frag_ms": 0.2678172916666668,
+      "vs_frag_ratio": 1.139942558455775
+    },
+    {
+      "arm": "far-4k-frag2-r1",
+      "pose": "far",
+      "res": "4k",
+      "mode": "frag2",
+      "ratio": "r1",
+      "runs": 2,
+      "valid_runs": 2,
+      "fluid_ms_mean": 1.7268751333333334,
+      "fluid_ms_spread": 0.0004147333333330838,
+      "fluid_pass_ms_mean": 1.7268751333333334,
+      "cell_pass_ms_mean": 0.0,
+      "forward_ms_mean": 9.3459665,
+      "vs_frag_ms": -0.18689073333333317,
+      "vs_frag_ratio": 0.9023439927587102
+    }
+  ]
+}

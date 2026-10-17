@@ -1,0 +1,12 @@
+# Per-run intermediates stay local; results.md and results.json are the deliverable.
+raw/
+runs/*.png
+runs/*.log
+runs/*.trace-status.txt
+*.trace
+*.ktrace
+__pycache__/
+gate-runs/*.png
+runs-impl1660/*.png
+runs-impl1660/*.log
+runs-impl1660/*.trace-status.txt

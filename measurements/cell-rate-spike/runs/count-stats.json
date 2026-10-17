@@ -1,0 +1,92 @@
+{
+  "near-4k": {
+    "problems": [],
+    "fluid_cell_stats": {
+      "faces_dispatched": 1,
+      "cells_dispatched": 65536,
+      "cells_evaluated": 20078,
+      "fluid_samples_passed": 8294400,
+      "atlas_width": 1344,
+      "atlas_height": 1472,
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384
+    },
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    }
+  },
+  "near-1080p": {
+    "problems": [],
+    "fluid_cell_stats": {
+      "faces_dispatched": 1,
+      "cells_dispatched": 65536,
+      "cells_evaluated": 20078,
+      "fluid_samples_passed": 2073600,
+      "atlas_width": 1344,
+      "atlas_height": 1472,
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384
+    },
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    }
+  },
+  "probes-4k": {
+    "problems": [],
+    "fluid_cell_stats": {
+      "faces_dispatched": 1,
+      "cells_dispatched": 36864,
+      "cells_evaluated": 12844,
+      "fluid_samples_passed": 8294400,
+      "atlas_width": 512,
+      "atlas_height": 640,
+      "atlas_bytes": 2621440,
+      "cells_total": 221696
+    },
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    }
+  },
+  "far-4k": {
+    "problems": [],
+    "fluid_cell_stats": {
+      "faces_dispatched": 10,
+      "cells_dispatched": 1409024,
+      "cells_evaluated": 1338209,
+      "fluid_samples_passed": 998584,
+      "atlas_width": 1344,
+      "atlas_height": 1472,
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384
+    },
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    }
+  },
+  "far-1080p": {
+    "problems": [],
+    "fluid_cell_stats": {
+      "faces_dispatched": 10,
+      "cells_dispatched": 1409024,
+      "cells_evaluated": 1338209,
+      "fluid_samples_passed": 249942,
+      "atlas_width": 1344,
+      "atlas_height": 1472,
+      "atlas_bytes": 15826944,
+      "cells_total": 1680384
+    },
+    "adapter": {
+      "name": "NVIDIA GeForce GTX 1660 SUPER",
+      "backend": "Vulkan",
+      "device_type": "DiscreteGpu"
+    }
+  }
+}

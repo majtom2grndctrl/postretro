@@ -1,0 +1,24 @@
+{
+  "map": "content/dev/maps/reflection-probes-test.prl",
+  "camera": {
+    "position": [
+      -6.5024,
+      1.6,
+      -6.5024
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -89.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/runs-impl1660/test-4k-free.png",
+  "measurement": {
+    "report": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/runs-impl1660/test-4k-free-r1.report.json",
+    "warmup_frames": 240,
+    "sample_frames": 240
+  },
+  "fluid_reflection_off": true
+}

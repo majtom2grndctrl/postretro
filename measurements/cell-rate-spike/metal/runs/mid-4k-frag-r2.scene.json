@@ -1,0 +1,28 @@
+{
+  "map": "content/dev/maps/e24-environment-test.prl",
+  "camera": {
+    "position": [
+      -4.8768,
+      1.6,
+      -44.2976
+    ],
+    "yaw_deg": 0.0,
+    "pitch_deg": -30.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/cell-rate-spike-traces/mid-4k-frag-r2.png",
+  "measurement": {
+    "report": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/1f2c925e-d6a0-4b30-82ef-11de1519cd43/scratchpad/wt/measurements/cell-rate-spike/runs/mid-4k-frag-r2.report.json",
+    "warmup_frames": 240,
+    "sample_frames": 240
+  },
+  "fluid_reflection_cells": {
+    "cells": false,
+    "frustum_cull": false,
+    "ratio_one": false
+  }
+}

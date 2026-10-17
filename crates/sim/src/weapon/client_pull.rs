@@ -66,6 +66,28 @@ impl ReplicatedWeaponProjection {
         take(&mut self.cell, fresh.cell);
         take(&mut self.cell_capacity, fresh.cell_capacity);
     }
+
+    /// The host wieldable slot every held sample names, or `None` when there
+    /// are none or they disagree. Every sample carries the host's active slot,
+    /// so agreement reads as the slot the host holds; records arriving per
+    /// slot make a disagreement transient, never evidence.
+    pub fn agreed_slot(&self) -> Option<usize> {
+        let slots = [
+            self.cooldown.map(|sample| sample.slot),
+            self.magazine.map(|sample| sample.slot),
+            self.reserve.map(|sample| sample.slot),
+            self.reload_progress.map(|sample| sample.slot),
+            self.reload_active.map(|sample| sample.slot),
+            self.heat.map(|sample| sample.slot),
+            self.overheat_at.map(|sample| sample.slot),
+            self.overheated.map(|sample| sample.slot),
+            self.cell.map(|sample| sample.slot),
+            self.cell_capacity.map(|sample| sample.slot),
+        ];
+        let mut named = slots.into_iter().flatten();
+        let first = named.next()?;
+        named.all(|slot| slot == first).then_some(first)
+    }
 }
 
 /// A sample's value when it describes `slot`.
@@ -268,6 +290,28 @@ pub fn client_shot_presentation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agreed_slot_requires_every_held_sample_to_name_one_slot() {
+        assert_eq!(ReplicatedWeaponProjection::default().agreed_slot(), None);
+        let mut projection = ReplicatedWeaponProjection {
+            cooldown: Some(SlotSample {
+                slot: 2,
+                value: 0.0,
+            }),
+            magazine: Some(SlotSample {
+                slot: 2,
+                value: None,
+            }),
+            ..ReplicatedWeaponProjection::default()
+        };
+        assert_eq!(projection.agreed_slot(), Some(2));
+        projection.reload_active = Some(SlotSample {
+            slot: 0,
+            value: false,
+        });
+        assert_eq!(projection.agreed_slot(), None, "mid-transition records");
+    }
 
     fn effects(
         addresses: &[&'static str],

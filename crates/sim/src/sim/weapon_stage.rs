@@ -1216,6 +1216,43 @@ mod tests {
         assert_eq!(refused.state_remaining_ms, 0);
     }
 
+    // The connected client's active-slot re-sync declares the slot it already
+    // holds. A host refusal of it (a `block_during_reload` reload) rolls back
+    // to that same slot: no switch state, no equip transition, and the held
+    // weapon's own state (here a reload) untouched.
+    #[test]
+    fn same_slot_resync_refusal_changes_nothing_the_player_holds() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let held = registry.spawn(Transform::default());
+        let other = registry.spawn(Transform::default());
+        let mut held_component = gate_weapon_component(FireMode::Semi, 100.0);
+        held_component.state = WieldableState::Reloading;
+        held_component.state_total_ms = 400;
+        held_component.state_remaining_ms = 250;
+        registry
+            .set_component(held, held_component.clone())
+            .unwrap();
+        registry
+            .set_component(other, gate_weapon_component(FireMode::Semi, 100.0))
+            .unwrap();
+        let mut inventory = Inventory::default();
+        inventory.wieldables[0] = Some(held);
+        inventory.wieldables[2] = Some(other);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+
+        refuse_local_switch(&mut registry, pawn, 0, 0);
+
+        assert_eq!(
+            registry.get_component::<Inventory>(pawn).unwrap(),
+            &inventory
+        );
+        assert_eq!(
+            registry.get_component::<WeaponComponent>(held).unwrap(),
+            &held_component
+        );
+    }
+
     #[test]
     fn o21_active_instance_despawn_during_lower_abandons_switch_without_raise() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));

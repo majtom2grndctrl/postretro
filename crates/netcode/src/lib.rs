@@ -471,10 +471,16 @@ fn resolve_switch_outcome(
         .pop_front()
         .expect("the non-empty declaration chain was checked");
     let (settled_active, settled_last_weapon) = if accepted {
-        (
-            usize::from(settled.target_slot),
-            Some(settled.held_origin_slot),
-        )
+        // A declaration naming the slot the client held when it made it is the
+        // active-slot re-sync: the local switch machine never emits one, and a
+        // round trip back (0 -> 1 -> 0) holds the intermediate slot as its
+        // origin. Accepting it makes no last-weapon history.
+        let last_weapon = if usize::from(settled.target_slot) == settled.held_origin_slot {
+            settled.rollback_last_weapon_slot
+        } else {
+            Some(settled.held_origin_slot)
+        };
+        (usize::from(settled.target_slot), last_weapon)
     } else {
         (settled.rollback_slot, settled.rollback_last_weapon_slot)
     };
@@ -519,6 +525,79 @@ fn apply_installed_movement_tuning_to_armed_pawn(
         *applied_generation != tuning_generation,
     );
     *applied_generation = tuning_generation;
+}
+
+/// Whether a tuning install may adopt its payload's spawn active slot on the
+/// armed pawn. No switch declaration may be pending or ever sent for this pawn:
+/// the client owns selection from its first declaration on, and that includes
+/// the active-slot re-sync, so a payload landing after a re-sync the host
+/// already followed cannot flip the client back. The selection must also be
+/// the one composition left: on its composed slot, no switch target or held
+/// origin, and the active weapon idle, since a reload, charge or activation in
+/// progress is the player's and a move would abandon it. `selection_idle` is
+/// the caller's input-layer latch: no cursor off the active slot, no dwell
+/// running and no commit queued. A choice in progress skips adoption outright,
+/// since a queued commit would otherwise switch away from the adopted slot.
+/// Read this before the install rematerializes the inventory: a layout change
+/// releases weapons, and a release repoints the active slot at the first
+/// populated one, which would read as a switch.
+fn spawn_slot_adoption_open(
+    registry: &EntityRegistry,
+    armed: &client::ArmedLocalPawn,
+    selection_declared_pawn: Option<NetworkId>,
+    declarations_pending: bool,
+    selection_idle: bool,
+) -> bool {
+    if !selection_idle || declarations_pending || selection_declared_pawn == Some(armed.network_id)
+    {
+        return false;
+    }
+    let Ok(inventory) = registry.get_component::<Inventory>(armed.entity_id) else {
+        return false;
+    };
+    let active_idle = inventory.active_wieldable().is_none_or(|weapon| {
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .ok()
+            .is_none_or(|component| {
+                matches!(
+                    component.state,
+                    postretro_entities::components::wieldable_state::WieldableState::Idle
+                )
+            })
+    });
+    inventory.active_slot == inventory.spawn_active_slot
+        && inventory.switch_target.is_none()
+        && inventory.switch_origin.is_none()
+        && active_idle
+}
+
+/// Adopt an installed payload's spawn active slot on the armed local pawn. A
+/// pawn baseline that arms before any payload installs (the Control resend
+/// still in flight on a lossy link) composes from the client's own
+/// descriptor, and a payload differing only in this slot is the same pawn
+/// tuning, so nothing else moves it. The caller gates on
+/// [`spawn_slot_adoption_open`], read before this install. Moves only onto a
+/// populated slot, and also restores the slot when rematerialization repointed
+/// the active slot away from it. Returns the slot when the active slot moved,
+/// so the caller resets its selection latch to it.
+fn adopt_payload_spawn_active_slot(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    payload: &TuningPayload,
+) -> Option<usize> {
+    let slot = payload.spawn_active_slot;
+    let inventory = registry.get_component::<Inventory>(pawn).ok()?;
+    let populated = inventory.wieldables.get(slot).is_some_and(Option::is_some);
+    if !populated || (inventory.active_slot == slot && inventory.spawn_active_slot == slot) {
+        return None;
+    }
+    let moved = inventory.active_slot != slot;
+    let mut inventory = inventory.clone();
+    inventory.active_slot = slot;
+    inventory.spawn_active_slot = slot;
+    registry.set_component(pawn, inventory).ok()?;
+    moved.then_some(slot)
 }
 
 fn discard_world_less_snapshots(client: &mut NetClient) {
@@ -1499,8 +1578,12 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 /// buffers) and **before** the render collectors read entities, so the renderer stays
 /// read-only over the registry.
 ///
-/// The render target is `estimated_server_tick - interpolation_delay`. Jitter sets
-/// the baseline delay; recent held-newest starvation temporarily adds headroom.
+/// The render target is `estimated_server_tick - interpolation_delay`. Half the
+/// smoothed RTT covers snapshot transit, jitter sets the buffer delay on top, and
+/// recent held-newest starvation temporarily adds headroom. The delay never drops
+/// below the decaying peak of measured snapshot arrival lag plus one snapshot
+/// interval, and the render target slews toward its new value when the delay steps
+/// (see `InterpolationDelayState`).
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
 /// left unsampled and remote entities stay at their last-applied snapshot pose. Their
@@ -1512,7 +1595,8 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 ///
 /// `frame_dt_secs` is the frame's wall-clock delta (the same per-frame delta the frame
 /// loop computes); it drives the framerate-independent starvation feedback so the
-/// adaptive delay's time-constant does not scale with frame rate.
+/// adaptive delay's time-constant does not scale with frame rate, and it is the
+/// render target's nominal playback, so an estimate jump slews rather than jumps.
 /// `frame_anim_time` is the slow-mo/freeze-gated animation clock used by mesh sampling;
 /// remote walk-rate rebases must use this exact clock for clip-time continuity.
 pub fn client_sample_interpolation(
@@ -1530,10 +1614,26 @@ pub fn client_sample_interpolation(
         replication.apply_held_remote_player_presentation(registry, frame_anim_time);
         return replication.presented_player_inputs().clone();
     };
-    // Jitter is available whenever the estimate is; default to 0 defensively.
+    // Jitter and RTT are available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
-    let render_server_tick =
-        interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
+    let rtt = time_sync.rtt_micros().unwrap_or(0.0);
+    // Measured arrival lag of the newest accepted snapshot. This runs in the same
+    // frame as `client_receive_and_apply`, so the estimate is read at receive time
+    // to within the frame; a snapshot already folded is skipped.
+    if let Some(newest_snapshot_tick) = replication.latest_server_tick() {
+        interpolation_delay.observe_newest_snapshot(
+            estimated_tick,
+            newest_snapshot_tick,
+            SERVER_TICK_MICROS,
+        );
+    }
+    let render_server_tick = interpolation_delay.render_server_tick(
+        estimated_tick,
+        frame_dt_secs,
+        jitter,
+        rtt,
+        SERVER_TICK_MICROS,
+    );
     let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
@@ -1545,8 +1645,9 @@ pub fn client_sample_interpolation(
 /// The wieldable rows come from its live inventory, not the authored loadout: a
 /// descriptor refresh retunes existing instances, while loadout changes wait for
 /// the next pawn install. `environment` is the host's current level state
-/// ([`host_environment_tuning`]), shared by every pawn's payload. The net crate
-/// carries the resulting JSON bytes without learning this vocabulary.
+/// ([`host_environment_tuning`]), shared by every pawn's payload. The payload's
+/// `spawn_active_slot` is the inventory's composition-time selection. The net
+/// crate carries the resulting JSON bytes without learning this vocabulary.
 pub fn tuning_payload_for_pawn(
     registry: &EntityRegistry,
     pawn: EntityId,
@@ -1615,7 +1716,13 @@ pub fn tuning_payload_for_pawn(
             })
         })
         .unwrap_or_else(|| std::array::from_fn(|_| None));
+    // The composition-time selection, not the live active slot: a switch must
+    // never read as changed tuning under the whole-struct dedupe.
+    let spawn_active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .map_or(0, |inventory| inventory.spawn_active_slot);
     TuningPayload::new(movement, wieldables, environment.clone())
+        .with_spawn_active_slot(spawn_active_slot)
 }
 
 /// The host's current level state for the tuning payload, read live at every
@@ -2892,6 +2999,97 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    // The active-slot re-sync declares the slot the client already holds. Its
+    // accept leaves last-weapon memory as it was; its refusal rolls back to
+    // that same slot, so neither outcome changes what the player holds.
+    #[test]
+    fn same_slot_resync_declaration_settles_without_moving_selection_or_history() {
+        let resync = |declaration_id| PendingSwitchDeclaration {
+            declaration_id,
+            target_slot: 0,
+            held_origin_slot: 0,
+            rollback_slot: 0,
+            rollback_last_weapon_slot: Some(2),
+        };
+        let mut pending = VecDeque::from([resync(41)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Accepted(ServerSwitchAccepted {
+                    declaration_id: 41,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Accepted {
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+
+        let mut pending = VecDeque::from([resync(42)]);
+        assert_eq!(
+            resolve_switch_outcome(
+                &mut pending,
+                SwitchOutcome::Refused(ServerSwitchRefused {
+                    declaration_id: 42,
+                    slot: 0,
+                }),
+            ),
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(2),
+            }
+        );
+        assert!(pending.is_empty());
+    }
+
+    // A round trip back (0 -> 1 -> 0) also ends on the slot the chain started
+    // from, but each declaration holds the slot it switched away from as its
+    // origin, so the return is an ordinary switch: its accept remembers the
+    // intermediate slot, never the re-sync's unchanged history.
+    #[test]
+    fn round_trip_switch_chain_is_not_mistaken_for_a_resync() {
+        let mut pending = VecDeque::from([
+            PendingSwitchDeclaration {
+                declaration_id: 1,
+                target_slot: 1,
+                held_origin_slot: 0,
+                rollback_slot: 0,
+                rollback_last_weapon_slot: Some(2),
+            },
+            PendingSwitchDeclaration {
+                declaration_id: 2,
+                target_slot: 0,
+                held_origin_slot: 1,
+                rollback_slot: 1,
+                rollback_last_weapon_slot: Some(0),
+            },
+        ]);
+        for (declaration_id, slot, expected) in [
+            (1, 1, CurrentSwitchResolution::None),
+            (
+                2,
+                0,
+                CurrentSwitchResolution::Accepted {
+                    last_weapon_slot: Some(1),
+                },
+            ),
+        ] {
+            assert_eq!(
+                resolve_switch_outcome(
+                    &mut pending,
+                    SwitchOutcome::Accepted(ServerSwitchAccepted {
+                        declaration_id,
+                        slot,
+                    }),
+                ),
+                expected
+            );
+        }
+        assert!(pending.is_empty());
+    }
+
     #[test]
     fn host_liveness_repoint_marks_attachment_dirty_before_already_active_acceptance() {
         // Regression: declaration-time liveness repair repointed the active slot,
@@ -3120,6 +3318,383 @@ mod tests {
         );
         assert_eq!(slot.lower_ms, 45);
         assert_eq!(slot.raise_ms, 70);
+    }
+
+    // The payload names the slot the pawn was composed active with, never its
+    // live selection: a switch after spawn must leave the whole-struct dedupe
+    // quiet, or every switch would resend (and reinstall) the pawn's tuning.
+    #[test]
+    fn tuning_payload_spawn_active_slot_is_fixed_at_composition_across_switches() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        for (slot, name) in [(0, "shotgun"), (2, "plasma")] {
+            let weapon_id = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon_id, test_weapon(10.0, 96.0))
+                .unwrap();
+            registry
+                .set_component(
+                    weapon_id,
+                    DescriptorProvenance {
+                        canonical_name: name.to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            inventory.wieldables[slot] = Some(weapon_id);
+        }
+        // As composition leaves a carried plasma selection.
+        inventory.active_slot = 2;
+        inventory.spawn_active_slot = 2;
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        let payload = |registry: &EntityRegistry| {
+            tuning_payload_for_pawn(registry, pawn, &[], None, &test_environment())
+        };
+
+        let mut last_sent = HashMap::new();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_some());
+
+        // Mid-switch, then switched to the shotgun: nothing to resend.
+        inventory.switch_target = Some(0);
+        inventory.switch_origin = Some(2);
+        registry.set_component(pawn, inventory.clone()).unwrap();
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
+        inventory.active_slot = 0;
+        inventory.switch_target = None;
+        inventory.switch_origin = None;
+        registry.set_component(pawn, inventory).unwrap();
+        assert_eq!(payload(&registry).spawn_active_slot, 2);
+        assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
+    }
+
+    // Regression: a pawn baseline armed before any payload installed composed
+    // from the client's own descriptor, and a later payload differing only in
+    // the spawn active slot read as the same pawn tuning, so the client stayed
+    // on a slot the host never held. Install adopts the late slot while the
+    // selection is untouched, judged before rematerialization, and only then.
+    #[test]
+    fn late_tuning_install_adopts_spawn_active_slot_only_for_an_untouched_selection() {
+        fn composed(registry: &mut EntityRegistry) -> crate::client::ArmedLocalPawn {
+            let pawn = registry.spawn(Transform::default());
+            let mut inventory = Inventory::default();
+            for slot in inventory.wieldables.iter_mut().take(3) {
+                let weapon = registry.spawn(Transform::default());
+                registry
+                    .set_component(weapon, test_weapon(10.0, 96.0))
+                    .unwrap();
+                *slot = Some(weapon);
+            }
+            registry.set_component(pawn, inventory).unwrap();
+            crate::client::ArmedLocalPawn {
+                network_id: NetworkId(7),
+                entity_id: pawn,
+                entity_class: None,
+            }
+        }
+        fn edit(registry: &mut EntityRegistry, pawn: EntityId, change: fn(&mut Inventory)) {
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            change(&mut inventory);
+            registry.set_component(pawn, inventory).unwrap();
+        }
+        let payload = |slot| {
+            TuningPayload::new(None, std::array::from_fn(|_| None), test_environment())
+                .with_spawn_active_slot(slot)
+        };
+        let active = |registry: &EntityRegistry, pawn| {
+            let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+            (inventory.active_slot, inventory.spawn_active_slot)
+        };
+
+        let mut registry = EntityRegistry::new();
+        let armed = composed(&mut registry);
+        let pawn = armed.entity_id;
+        assert!(spawn_slot_adoption_open(
+            &registry, &armed, None, false, true
+        ));
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            Some(2)
+        );
+        assert_eq!(active(&registry, pawn), (2, 2));
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            None,
+            "a repeat install changes nothing"
+        );
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(5)),
+            None,
+            "an empty payload slot moves nothing"
+        );
+        assert_eq!(active(&registry, pawn), (2, 2));
+
+        // A layout change released a weapon during rematerialization, which
+        // repointed the active slot at the first populated one. Read after it,
+        // the release looks like a switch; the gate read before it holds, and
+        // adoption restores the slot the host composed.
+        let mut registry = EntityRegistry::new();
+        let armed = composed(&mut registry);
+        let pawn = armed.entity_id;
+        edit(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 2;
+            inventory.spawn_active_slot = 2;
+        });
+        assert!(spawn_slot_adoption_open(
+            &registry, &armed, None, false, true
+        ));
+        edit(&mut registry, pawn, |inventory| inventory.active_slot = 0);
+        assert!(!spawn_slot_adoption_open(
+            &registry, &armed, None, false, true
+        ));
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            Some(2)
+        );
+        assert_eq!(active(&registry, pawn), (2, 2));
+
+        type Touch = fn(&mut EntityRegistry, EntityId);
+        let closed: [(&str, Touch, Option<NetworkId>, bool, bool); 7] = [
+            (
+                "switched since compose",
+                |registry, pawn| edit(registry, pawn, |inventory| inventory.active_slot = 1),
+                None,
+                false,
+                true,
+            ),
+            (
+                "switch in flight",
+                |registry, pawn| {
+                    edit(registry, pawn, |inventory| {
+                        inventory.switch_target = Some(1)
+                    });
+                },
+                None,
+                false,
+                true,
+            ),
+            (
+                "switch origin held",
+                |registry, pawn| {
+                    edit(registry, pawn, |inventory| {
+                        inventory.switch_origin = Some(1)
+                    });
+                },
+                None,
+                false,
+                true,
+            ),
+            (
+                "active weapon reloading",
+                |registry, pawn| {
+                    let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+                    let weapon = inventory.wieldables[0].unwrap();
+                    let mut component = registry
+                        .get_component::<WeaponComponent>(weapon)
+                        .unwrap()
+                        .clone();
+                    component.state =
+                        postretro_entities::components::wieldable_state::WieldableState::Reloading;
+                    registry.set_component(weapon, component).unwrap();
+                },
+                None,
+                false,
+                true,
+            ),
+            ("declaration pending", |_, _| {}, None, true, true),
+            (
+                "a switch or re-sync declared for this pawn",
+                |_, _| {},
+                Some(NetworkId(7)),
+                false,
+                true,
+            ),
+            ("player selecting", |_, _| {}, None, false, false),
+        ];
+        for (case, touch, declared, pending, selection_idle) in closed {
+            let mut registry = EntityRegistry::new();
+            let armed = composed(&mut registry);
+            touch(&mut registry, armed.entity_id);
+            assert!(
+                !spawn_slot_adoption_open(&registry, &armed, declared, pending, selection_idle),
+                "{case}"
+            );
+        }
+
+        // A declaration made for an earlier pawn leaves a new pawn's gate open.
+        let mut registry = EntityRegistry::new();
+        let armed = composed(&mut registry);
+        assert!(spawn_slot_adoption_open(
+            &registry,
+            &armed,
+            Some(NetworkId(6)),
+            false,
+            true
+        ));
+    }
+
+    /// A connected client endpoint whose armed local pawn (`NetworkId(7)`)
+    /// composed `slots` from its own descriptor, active on `active`.
+    fn armed_client_endpoint(
+        registry: &mut EntityRegistry,
+        slots: &[(usize, &str)],
+        active: usize,
+    ) -> (NetEndpoint, EntityId) {
+        let mut endpoint = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let pawn = registry.spawn(Transform::default());
+        let mut inventory = Inventory::default();
+        for &(slot, name) in slots {
+            let weapon = registry.spawn(Transform::default());
+            registry
+                .set_component(weapon, test_weapon(10.0, 96.0))
+                .unwrap();
+            registry
+                .set_component(
+                    weapon,
+                    DescriptorProvenance {
+                        canonical_name: name.to_string(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                    },
+                )
+                .unwrap();
+            inventory.wieldables[slot] = Some(weapon);
+        }
+        inventory.active_slot = active;
+        inventory.spawn_active_slot = active;
+        registry.set_component(pawn, inventory).unwrap();
+        let NetEndpoint::Client { replication, .. } = &mut endpoint else {
+            unreachable!();
+        };
+        replication.arm_local_pawn_for_test(NetworkId(7), pawn);
+        (endpoint, pawn)
+    }
+
+    fn active_and_spawn_slot(registry: &EntityRegistry, pawn: EntityId) -> (usize, usize) {
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        (inventory.active_slot, inventory.spawn_active_slot)
+    }
+
+    fn selection_declared_pawn(endpoint: &NetEndpoint) -> Option<NetworkId> {
+        match endpoint {
+            NetEndpoint::Client {
+                selection_declared_pawn,
+                ..
+            } => *selection_declared_pawn,
+            NetEndpoint::Host { .. } => unreachable!(),
+        }
+    }
+
+    // Wiring for the late-payload adoption above, driven through the
+    // endpoint's install: the payload differs from the client's own
+    // composition only in its spawn slot. A choice in progress skips it, and
+    // any declaration for the pawn (the re-sync's included) closes it.
+    #[test]
+    fn client_tuning_install_adopts_a_late_spawn_slot_until_a_switch_is_declared() {
+        let slots = [(0, "shotgun"), (2, "plasma")];
+        let payload = |registry: &EntityRegistry, pawn, slot, level_gravity| {
+            let environment = EnvironmentTuning {
+                level_gravity,
+                ..test_environment()
+            };
+            tuning_payload::encode_tuning_payload(
+                &tuning_payload_for_pawn(registry, pawn, &[], None, &environment)
+                    .with_spawn_active_slot(slot),
+            )
+        };
+
+        // The player is mid-choice: the install leaves the selection alone.
+        let mut registry = EntityRegistry::new();
+        let (mut endpoint, pawn) = armed_client_endpoint(&mut registry, &slots, 0);
+        let bytes = payload(&registry, pawn, 2, -9.81);
+        assert_eq!(
+            endpoint.install_tuning_payload(&bytes, &mut registry, &[], false),
+            None
+        );
+        assert_eq!(active_and_spawn_slot(&registry, pawn), (0, 0));
+
+        let mut registry = EntityRegistry::new();
+        let (mut endpoint, pawn) = armed_client_endpoint(&mut registry, &slots, 0);
+        let bytes = payload(&registry, pawn, 2, -9.81);
+        assert_eq!(
+            endpoint.install_tuning_payload(&bytes, &mut registry, &[], true),
+            Some(2)
+        );
+        assert_eq!(active_and_spawn_slot(&registry, pawn), (2, 2));
+
+        // A re-sync declaration of the held slot, accepted: nothing pending,
+        // the inventory as composition left it, yet a further payload naming
+        // another slot moves nothing.
+        endpoint.send_client_switch_declaration(2, 10, 2, None);
+        assert_eq!(selection_declared_pawn(&endpoint), Some(NetworkId(7)));
+        let NetEndpoint::Client {
+            pending_switch_declarations,
+            ..
+        } = &endpoint
+        else {
+            unreachable!();
+        };
+        let declaration_id = pending_switch_declarations.front().unwrap().declaration_id;
+        endpoint.take_switch_outcome(SwitchOutcome::Accepted(ServerSwitchAccepted {
+            declaration_id,
+            slot: 2,
+        }));
+        assert!(!endpoint.has_pending_switch_declarations());
+        let bytes = payload(&registry, pawn, 0, -4.5);
+        assert_eq!(
+            endpoint.install_tuning_payload(&bytes, &mut registry, &[], true),
+            None
+        );
+        assert_eq!(active_and_spawn_slot(&registry, pawn), (2, 2));
+
+        // Level unload and demotion each reopen adoption for the next pawn.
+        endpoint.reset_level_scoped_client_state();
+        assert_eq!(selection_declared_pawn(&endpoint), None);
+        let NetEndpoint::Client { replication, .. } = &mut endpoint else {
+            unreachable!();
+        };
+        replication.arm_local_pawn_for_test(NetworkId(7), pawn);
+        endpoint.send_client_switch_declaration(0, 20, 2, None);
+        assert_eq!(selection_declared_pawn(&endpoint), Some(NetworkId(7)));
+        endpoint.demote_client_state(&mut registry);
+        assert_eq!(selection_declared_pawn(&endpoint), None);
+    }
+
+    // The install releases the client's active weapon, a slot the host's
+    // layout lacks, which repoints the active slot at the first populated one.
+    // The gate was read before that, so adoption still restores the slot the
+    // host composed; read after, the release would look like a switch.
+    #[test]
+    fn client_tuning_install_restores_the_payload_slot_after_releasing_the_active_weapon() {
+        let mut registry = EntityRegistry::new();
+        let (mut endpoint, pawn) = armed_client_endpoint(
+            &mut registry,
+            &[(0, "shotgun"), (1, "rifle"), (2, "plasma")],
+            1,
+        );
+        let mut host = tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment())
+            .with_spawn_active_slot(2);
+        host.wieldables[1] = None;
+        let bytes = tuning_payload::encode_tuning_payload(&host);
+
+        assert_eq!(
+            endpoint.install_tuning_payload(&bytes, &mut registry, &[], true),
+            Some(2)
+        );
+        let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+        assert!(inventory.wieldables[1].is_none(), "the host lacks slot 1");
+        assert_eq!(active_and_spawn_slot(&registry, pawn), (2, 2));
     }
 
     // Regression: connected clients resolved first-person placement from their

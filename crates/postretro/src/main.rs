@@ -279,6 +279,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_fire_resolutions.clear();
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
+                app.active_slot_resync.reset();
                 app.observer_weapon_cues.clear();
                 // Demotion dropped the host's tuning: until the next one
                 // installs, this client's volumes keep gravity and push but
@@ -298,7 +299,28 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     && let Some(endpoint) = session.net_endpoint.as_mut()
                 {
                     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-                    endpoint.install_tuning_payload(&bytes, &mut registry, &descriptors);
+                    // A choice in progress (cursor moved, dwell running, commit
+                    // queued) skips adoption: the queued commit would switch
+                    // away from the adopted slot.
+                    let selection_idle = session
+                        .gameplay_input_latch
+                        .wieldable_selection()
+                        .is_idle_on(local_wieldable_occupancy(&registry).1);
+                    let adopted = endpoint.install_tuning_payload(
+                        &bytes,
+                        &mut registry,
+                        &descriptors,
+                        selection_idle,
+                    );
+                    drop(registry);
+                    // A late payload moved the untouched selection onto the
+                    // slot the host composed: point the cursor there too, so
+                    // the HUD's pending weapon never names the old slot.
+                    if let Some(slot) = adopted {
+                        let selection = session.gameplay_input_latch.wieldable_selection_mut();
+                        let last_weapon_slot = selection.last_weapon_slot();
+                        selection.reset_to_active_with_last(Some(slot), last_weapon_slot);
+                    }
                 }
                 // The host's fluid table rides this payload. Re-resolve the
                 // installed volumes against it before any prediction or replay
@@ -365,37 +387,12 @@ fn apply_client_switch_resolution(
     session: &mut session::Session,
     resolution: netcode::CurrentSwitchResolution,
 ) {
-    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
-        netcode::CurrentSwitchResolution::None => return,
-        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
-            session
-                .gameplay_input_latch
-                .wieldable_selection_mut()
-                .confirm_latest_declaration(last_weapon_slot);
-            return;
-        }
-        netcode::CurrentSwitchResolution::Refused {
-            target_slot,
-            rollback_slot,
-            last_weapon_slot,
-        } => (target_slot, rollback_slot, last_weapon_slot),
-    };
     let mut registry = session.scripting.script_ctx.registry.borrow_mut();
-    let Some(pawn) = registry.local_player_movement_pawn() else {
-        return;
-    };
-    if !sim::refuse_local_wieldable_switch(&mut registry, pawn, target_slot, rollback_slot) {
-        return;
-    }
-    let active_slot = registry
-        .get_component::<Inventory>(pawn)
-        .ok()
-        .map(|inventory| inventory.active_slot);
-    drop(registry);
-    session
-        .gameplay_input_latch
-        .wieldable_selection_mut()
-        .reset_to_active_with_last(active_slot, last_weapon_slot);
+    client_weapon::settle_switch_resolution(
+        &mut registry,
+        &mut session.gameplay_input_latch,
+        resolution,
+    );
 }
 
 /// Rebuild the render-only blocked-portal input from the final post-tick mover
@@ -1026,6 +1023,9 @@ pub(crate) struct App {
     trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
     client_weapon: client_weapon::ClientWeaponFrame,
+    /// Connected-client safety net re-declaring the local active slot when the
+    /// host's projection persistently names another one.
+    active_slot_resync: client_weapon::ActiveSlotResync,
     observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
     /// This frame's teleport arrival cues at fixed points: the local traveller's
     /// (forward prediction, adoption, or the host seat's own crossing) and every

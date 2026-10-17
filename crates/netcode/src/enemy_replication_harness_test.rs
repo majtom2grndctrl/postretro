@@ -64,11 +64,11 @@ use glam::{Quat, Vec3};
 use postretro_net::harness::{LinkConfig, PacketConditioner, VirtualMillis};
 use postretro_net::replication::{EntitySnapshot, ServerReplication};
 use postretro_net::wire::{
-    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    WireMeshAnimationState, WireTransform,
+    self, ClientMessage, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage,
+    SnapshotMessage, WireMeshAnimationState, WireTransform,
 };
 
-use super::client::{ClientReplication, RemoteEntityMaterialize};
+use super::client::{ClientReplication, RemoteEntityMaterialize, encode_client_messages};
 use super::interpolation::{MAX_DELAY_MICROS, PoseSource};
 use super::remote_materialize::materialize_armed_remote_enemy;
 use super::replication::{
@@ -512,7 +512,16 @@ struct EnemyReplicationHarness {
 
     // Conditioned link, one per direction, on a shared virtual clock.
     to_client: PacketConditioner,
+    /// Client-to-host link for acks and refresh requests. `None` applies acks the
+    /// moment the client produces them and drops refresh requests.
+    to_host: Option<PacketConditioner>,
     virtual_ms: VirtualMillis,
+
+    /// Entity refresh requests the client produced.
+    refresh_requests: usize,
+    /// Per remote entity: received snapshots carrying its Transform, and how many
+    /// of those left that Transform as its newest interpolation sample.
+    transform_samples: HashMap<NetworkId, (usize, usize)>,
 }
 
 impl EnemyReplicationHarness {
@@ -532,8 +541,18 @@ impl EnemyReplicationHarness {
             client_replication: ClientReplication::new(),
             descriptors: entity_descriptors(),
             to_client: PacketConditioner::new(link),
+            to_host: None,
             virtual_ms: 0,
+            refresh_requests: 0,
+            transform_samples: HashMap::new(),
         }
+    }
+
+    /// Route acks and refresh requests back through their own conditioned link, as
+    /// the reliable input channel carries them, instead of applying them at once.
+    fn with_ack_link(mut self, link: LinkConfig) -> Self {
+        self.to_host = Some(PacketConditioner::new(link));
+        self
     }
 
     fn host_register_descriptors(&mut self) {
@@ -563,6 +582,23 @@ impl EnemyReplicationHarness {
         self.virtual_ms += TICK_MS;
         self.to_client.advance(TICK_MS);
         self.server_tick = self.server_tick.wrapping_add(1);
+        if let Some(to_host) = &mut self.to_host {
+            to_host.advance(TICK_MS);
+            for packet in to_host.take_ready() {
+                match wire::decode::<ClientMessage>(&packet) {
+                    Ok(ClientMessage::Ack(ack)) => self.server_replication.apply_ack(
+                        CLIENT_ID,
+                        ack.latest_snapshot_sequence,
+                        &ack.entity_baselines,
+                        &ack.despawn_tombstones,
+                    ),
+                    Ok(ClientMessage::BaselineRefresh(req)) => self
+                        .server_replication
+                        .request_refresh(CLIENT_ID, req.network_id, req.missing_baseline_ref),
+                    _ => {}
+                }
+            }
+        }
 
         let owned: Vec<EntitySnapshot> = produce_owned_snapshots(
             &self.host_registry,
@@ -607,7 +643,11 @@ impl EnemyReplicationHarness {
                     &mut self.client_replication,
                 );
             }
-            if let Some(ack) = outcome.ack {
+            self.tally_transform_samples(&snapshot);
+            self.refresh_requests += outcome.refresh_requests.len();
+            if let Some(to_host) = &mut self.to_host {
+                to_host.enqueue_all(encode_client_messages(&outcome));
+            } else if let Some(ack) = outcome.ack {
                 acks.push(ack);
             }
         }
@@ -618,6 +658,38 @@ impl EnemyReplicationHarness {
                 &ack.entity_baselines,
                 &ack.despawn_tombstones,
             );
+        }
+    }
+
+    fn tally_transform_samples(&mut self, snapshot: &SnapshotMessage) {
+        for record in &snapshot.records {
+            let (EntityRecord::FullBaseline {
+                network_id,
+                components,
+                ..
+            }
+            | EntityRecord::Delta {
+                network_id,
+                components,
+                ..
+            }) = record
+            else {
+                continue;
+            };
+            let Some(sent) = components.iter().find_map(|payload| match payload {
+                ComponentPayload::Transform(transform) => Some(Vec3::from(transform.position)),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let id = NetworkId(*network_id);
+            let sampled = self
+                .client_replication
+                .newest_sample_transform(id)
+                .is_some_and(|sample| sample.position == sent);
+            let tally = self.transform_samples.entry(id).or_default();
+            tally.0 += 1;
+            tally.1 += usize::from(sampled);
         }
     }
 
@@ -1434,6 +1506,67 @@ fn remote_enemy_pose_comes_from_interpolation_under_conditioned_link() {
     assert!(
         h.to_client.dropped() > 0,
         "the 5% loss model dropped at least one snapshot over 120 ticks"
+    );
+}
+
+// Snapshots outpace the round trip: with a 60 ms one-way delay each way and a snapshot
+// every tick, about seven snapshots are in flight before the host sees an ack, so the
+// host keeps encoding deltas against an older acked baseline. Each delta carries the
+// full component set, so every one must still land as an interpolation sample,
+// without a refresh. A client that required the named baseline would take one
+// sample per round trip and request repair for the rest.
+#[test]
+fn remote_enemy_samples_every_snapshot_when_round_trip_spans_many_snapshots() {
+    let link = LinkConfig {
+        delay: 60,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0x1502,
+    };
+    let mut h = EnemyReplicationHarness::new(link).with_ack_link(link);
+    let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+    h.host_register_descriptors();
+    let net_id = h.enemy_network_id(enemy);
+
+    let mut x = 0.0_f32;
+    let mut move_enemy = |h: &mut EnemyReplicationHarness| {
+        x += 0.25;
+        let _ = h.host_registry.set_component_value(
+            enemy,
+            ComponentValue::Transform(Transform {
+                position: Vec3::new(x, 0.0, 0.0),
+                ..Transform::default()
+            }),
+        );
+        h.step();
+    };
+    // Warm-up: the first baseline and its ack each cross the link once.
+    for _ in 0..30 {
+        move_enemy(&mut h);
+    }
+    assert!(
+        h.client_mapped_entity(net_id).is_some(),
+        "warm-up mapped the enemy"
+    );
+    h.transform_samples.clear();
+    h.refresh_requests = 0;
+
+    for _ in 0..120 {
+        move_enemy(&mut h);
+    }
+
+    let (carried, sampled) = h.transform_samples[&net_id];
+    assert!(
+        carried >= 110,
+        "the enemy moved every tick, so nearly every snapshot carried it"
+    );
+    assert_eq!(
+        sampled, carried,
+        "every snapshot carrying the enemy's pose became its newest interpolation sample"
+    );
+    assert_eq!(
+        h.refresh_requests, 0,
+        "no snapshot needed a baseline repair"
     );
 }
 

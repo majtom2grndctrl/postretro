@@ -1178,10 +1178,11 @@ pub struct AckMessage {
 }
 
 /// Client -> server request to re-send a full baseline for one entity, carried on
-/// the reliable-ordered `Channel::Input`. Sent when the client receives a `Delta`
-/// referencing a `baseline_ref` it does not hold (a lost/old snapshot left it
-/// without that baseline). The server responds with a `FullBaseline` record for
-/// that entity on `Channel::Snapshot`.
+/// the reliable-ordered `Channel::Input`. Sent when a `Delta` arrives for an entity
+/// the client holds no baseline or live mapping for, or whose new baseline id is
+/// older than the one it holds; also for the other repair causes `reason` names.
+/// The server responds with a `FullBaseline` record for that entity on
+/// `Channel::Snapshot`.
 ///
 /// Requests are **additive** and keyed by `(client, network_id,
 /// missing_baseline_ref)` on the server, so a duplicate request (the reliable
@@ -1192,9 +1193,12 @@ pub struct BaselineRefreshRequest {
     /// The snapshot `sequence` whose delta could not be applied. Diagnostic /
     /// dedup context; the repair is keyed by entity + missing ref, not sequence.
     pub snapshot_sequence: u32,
-    /// The entity whose baseline the client is missing.
+    /// The entity to re-send a full baseline for.
     pub network_id: u32,
-    /// The `baseline_ref` the unappliable delta named but the client lacks.
+    /// The `baseline_ref` the unappliable delta named, despite the field name not
+    /// necessarily a baseline the client lacks: a delta applies whatever reference
+    /// it names. Diagnostic only — the repair never reads it, though the server
+    /// dedups requests on it.
     pub missing_baseline_ref: u32,
     /// Why the refresh is needed (e.g. unknown baseline). A `u8` reason code,
     /// not interpreted by the repair path — logged for diagnostics.
@@ -1205,9 +1209,10 @@ pub struct BaselineRefreshRequest {
 /// slot*, carried on the reliable-ordered `Channel::Input` (M15 Phase 3.5).
 ///
 /// Distinct from [`BaselineRefreshRequest`] by design: entity baselines are keyed
-/// by `NetworkId`, while state baselines are keyed by `StateSlotId`. Sent when the
-/// client receives a state `Delta` referencing a `baseline_ref` it does not hold;
-/// the server schedules a `FullBaseline` for that slot on `Channel::Snapshot`.
+/// by `NetworkId`, while state baselines are keyed by `StateSlotId`. Sent when a
+/// state `Delta` arrives for a slot the client holds no baseline for, or whose new
+/// baseline id is older than the one it holds; the server schedules a
+/// `FullBaseline` for that slot on `Channel::Snapshot`.
 /// Requests are additive and deduped server-side by `(client, slot_id,
 /// missing_baseline_ref)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
@@ -1215,10 +1220,13 @@ pub struct StateBaselineRefreshRequest {
     /// The snapshot `sequence` whose state delta could not be applied. Diagnostic /
     /// dedup context; the repair is keyed by slot + missing ref, not sequence.
     pub snapshot_sequence: u32,
-    /// The replicated state slot whose baseline the client is missing (`StateSlotId`
+    /// The replicated state slot to re-send a full baseline for (`StateSlotId`
     /// inner value).
     pub slot_id: u16,
-    /// The `baseline_ref` the unappliable state delta named but the client lacks.
+    /// The `baseline_ref` the unappliable state delta named, despite the field name
+    /// not necessarily a baseline the client lacks: a state delta applies whatever
+    /// reference it names. Diagnostic only — the repair never reads it, though the
+    /// server dedups requests on it.
     pub missing_baseline_ref: u32,
     /// Why the refresh is needed. A `u8` reason code, not interpreted by the repair
     /// path — logged for diagnostics.

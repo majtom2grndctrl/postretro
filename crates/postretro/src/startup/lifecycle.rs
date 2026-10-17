@@ -1946,6 +1946,7 @@ pub(crate) mod tests {
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_weapon: Default::default(),
+            active_slot_resync: Default::default(),
             observer_weapon_cues: Vec::new(),
             pending_teleport_sounds: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),

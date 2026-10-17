@@ -1,13 +1,120 @@
-// Fixed-command client weapon prediction and rendered-pose presentation.
+// Fixed-command client weapon prediction, rendered-pose presentation, switch
+// settlement and the active-slot re-sync.
 // See: context/lib/networking.md §Combat authority · context/lib/input.md
 mod frame;
 mod reconcile;
+mod slot_resync;
 pub(crate) use frame::{ClientWeaponFrame, TickAim};
+#[cfg(test)]
+pub(crate) use slot_resync::ACTIVE_SLOT_RESYNC_WINDOW_SECS;
+pub(crate) use slot_resync::{ActiveSlotResync, ActiveSlotResyncObservation};
 
-use crate::{App, PresentedAimPose, netcode, sim, weapon};
+use crate::{App, PresentedAimPose, input, netcode, sim, weapon};
+use postretro_entities::EntityRegistry;
+use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
 
+/// Settle the host's answer to this client's newest switch declaration on the
+/// local inventory and selection. A refusal rolls the inventory back and resets
+/// the selection to the restored slot. A same-slot refusal that finds the
+/// player steadily holding that slot changed nothing they hold, so an
+/// in-progress cursor, dwell or commit survives it. The active-slot re-sync's
+/// refusal is the case this exists for; a refusal rebased onto a round trip
+/// back to the held slot matches too, and keeping the selection there is
+/// equally harmless.
+pub(crate) fn settle_switch_resolution(
+    registry: &mut EntityRegistry,
+    latch: &mut input::GameplayInputLatch,
+    resolution: netcode::CurrentSwitchResolution,
+) {
+    let (target_slot, rollback_slot, last_weapon_slot) = match resolution {
+        netcode::CurrentSwitchResolution::None => return,
+        netcode::CurrentSwitchResolution::Accepted { last_weapon_slot } => {
+            latch
+                .wieldable_selection_mut()
+                .confirm_latest_declaration(last_weapon_slot);
+            return;
+        }
+        netcode::CurrentSwitchResolution::Refused {
+            target_slot,
+            rollback_slot,
+            last_weapon_slot,
+        } => (target_slot, rollback_slot, last_weapon_slot),
+    };
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return;
+    };
+    let held_steadily = target_slot == rollback_slot
+        && slot_resync::local_selection(registry, pawn) == Some((target_slot, false));
+    if !sim::refuse_local_wieldable_switch(registry, pawn, target_slot, rollback_slot) {
+        return;
+    }
+    if held_steadily {
+        return;
+    }
+    let active_slot = registry
+        .get_component::<Inventory>(pawn)
+        .ok()
+        .map(|inventory| inventory.active_slot);
+    latch
+        .wieldable_selection_mut()
+        .reset_to_active_with_last(active_slot, last_weapon_slot);
+}
+
 impl App {
+    /// Re-declare the local active slot when the host's owner-private weapon
+    /// projection has named a different slot for a full
+    /// `ACTIVE_SLOT_RESYNC_WINDOW_SECS` with nothing in flight.
+    /// The client owns selection, and the player sees the weapon they believe
+    /// they hold, so the host converges to it; a false positive from a lagging
+    /// projection is an idempotent accept on the host. The declaration rides
+    /// the ordinary path with its own slot as rollback, so it starts no local
+    /// lower or raise, and either outcome leaves the held weapon unchanged.
+    pub(crate) fn client_observe_active_slot_resync(&mut self, client_tick: u32, dt: f32) {
+        let Some(session) = self.session.as_mut() else {
+            self.active_slot_resync.reset();
+            return;
+        };
+        let Some(endpoint) = session.net_endpoint.as_mut() else {
+            self.active_slot_resync.reset();
+            return;
+        };
+        let projected_slot = netcode::client_weapon_projection(Some(&*endpoint)).agreed_slot();
+        let observation = {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            registry.local_player_movement_pawn().and_then(|pawn| {
+                ActiveSlotResyncObservation::read(
+                    &registry,
+                    pawn,
+                    endpoint.has_pending_switch_declarations(),
+                    projected_slot,
+                )
+            })
+        };
+        let Some(observation) = observation else {
+            self.active_slot_resync.reset();
+            return;
+        };
+        let Some(slot) = self.active_slot_resync.observe(observation, dt) else {
+            return;
+        };
+        // Inventory slots index a `WIELDABLE_SLOT_CAPACITY`-entry array, so
+        // this always fits a `u8`; a corrupt slot skips the declaration rather
+        // than naming a wrong one.
+        let Ok(declared) = u8::try_from(slot) else {
+            return;
+        };
+        log::info!(
+            "[Net] host projects weapon slot {} but this client holds slot {slot}; re-declaring slot {slot}",
+            projected_slot.map_or_else(|| "?".to_string(), |slot| slot.to_string()),
+        );
+        let last_weapon_slot = session
+            .gameplay_input_latch
+            .wieldable_selection()
+            .last_weapon_slot();
+        endpoint.send_client_switch_declaration(declared, client_tick, slot, last_weapon_slot);
+    }
+
     pub(crate) fn predict_client_weapon_command(
         &mut self,
         command: &mut sim::SimCommand,

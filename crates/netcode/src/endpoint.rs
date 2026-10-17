@@ -163,12 +163,18 @@ pub enum NetEndpoint {
         state_slots: Box<state_slots::ClientStateApply>,
         /// Host-resolved values the client predicts with. The generation lets the
         /// movement materializer rebuild after a staged host retune without relying
-        /// on Control/Snapshot ordering.
+        /// on Control/Snapshot ordering. Dropped at demotion and at level unload,
+        /// since it carries the host's level environment.
         tuning: Option<Box<TuningPayload>>,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
         next_switch_declaration_id: u32,
         pending_switch_declarations: VecDeque<PendingSwitchDeclaration>,
+        /// The armed pawn this client has sent a switch declaration for, the
+        /// active-slot re-sync's included. Once set for the armed pawn, a late
+        /// payload no longer moves its selection: the client owns selection
+        /// from its first declaration on.
+        selection_declared_pawn: Option<NetworkId>,
         /// Latest status-only roster received from the host. This survives level
         /// changes with the endpoint and feeds the client-local UI projection.
         session_status: ClientSessionStatus,
@@ -461,11 +467,19 @@ impl NetEndpoint {
     ) {
         if let Self::Client {
             client,
+            replication,
             next_switch_declaration_id,
             pending_switch_declarations,
+            selection_declared_pawn,
             ..
         } = self
         {
+            // Recorded only for an armed pawn. That matches the senders, which
+            // declare only for the local movement pawn arming marks, so no
+            // declaration goes unrecorded.
+            if let Some(armed) = replication.armed_local_pawn() {
+                *selection_declared_pawn = Some(armed.network_id);
+            }
             let declaration_id = *next_switch_declaration_id;
             *next_switch_declaration_id = (*next_switch_declaration_id).wrapping_add(1);
             pending_switch_declarations.push_back(PendingSwitchDeclaration {
@@ -481,6 +495,18 @@ impl NetEndpoint {
                 client_tick,
             });
         }
+    }
+
+    /// Whether this client has a switch declaration the host has not yet
+    /// answered. `false` on a host.
+    pub fn has_pending_switch_declarations(&self) -> bool {
+        matches!(
+            self,
+            Self::Client {
+                pending_switch_declarations,
+                ..
+            } if !pending_switch_declarations.is_empty()
+        )
     }
 
     pub fn take_switch_outcome(&mut self, outcome: SwitchOutcome) -> CurrentSwitchResolution {
@@ -583,6 +609,7 @@ impl NetEndpoint {
                     applied_movement_tuning_generation: 0,
                     next_switch_declaration_id: 0,
                     pending_switch_declarations: VecDeque::new(),
+                    selection_declared_pawn: None,
                     session_status: ClientSessionStatus::default(),
                 }))
             }
@@ -742,6 +769,12 @@ impl NetEndpoint {
     /// full baselines so unchanged acked remotes are not lost after the local registry
     /// is cleared. Replicated state-slot schema and baselines rebuild from the next
     /// installed level.
+    ///
+    /// The installed tuning goes too: its environment is the old level's gravity
+    /// and fluid table. The host's level change demotes this slot first, which
+    /// already drops it, and the next level's payload is sent only after this
+    /// client re-enters participation, which needs its reveal of a level loaded
+    /// after this reset. Clearing here keeps the unload self-contained.
     pub fn reset_level_scoped_client_state(&mut self) {
         let NetEndpoint::Client {
             client,
@@ -750,7 +783,10 @@ impl NetEndpoint {
             interpolation_delay,
             prediction,
             state_slots,
+            tuning,
+            applied_movement_tuning_generation,
             pending_switch_declarations,
+            selection_declared_pawn,
             ..
         } = self
         else {
@@ -764,7 +800,10 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        *tuning = None;
+        *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
+        *selection_declared_pawn = None;
         time_sync.weapon_cues.clear();
     }
 
@@ -843,6 +882,7 @@ impl NetEndpoint {
             tuning,
             applied_movement_tuning_generation,
             pending_switch_declarations,
+            selection_declared_pawn,
             ..
         } = self
         else {
@@ -855,6 +895,7 @@ impl NetEndpoint {
         *tuning = None;
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
+        *selection_declared_pawn = None;
         time_sync.weapon_cues.clear();
     }
 
@@ -879,22 +920,42 @@ impl NetEndpoint {
         }
     }
 
+    /// Install a host tuning payload. Returns the slot the armed pawn's
+    /// selection moved to when the payload's spawn active slot was adopted, so
+    /// the caller resets its selection latch to it. `selection_idle` is the
+    /// caller's input latch read before this call: false while the player has a
+    /// cursor off the active slot, a dwell running or a commit queued, which
+    /// skips adoption.
     pub fn install_tuning_payload(
         &mut self,
         bytes: &[u8],
         registry: &mut EntityRegistry,
         descriptors: &[EntityTypeDescriptor],
-    ) {
+        selection_idle: bool,
+    ) -> Option<usize> {
         let Self::Client {
             replication,
             tuning,
             tuning_generation,
             applied_movement_tuning_generation,
+            pending_switch_declarations,
+            selection_declared_pawn,
             ..
         } = self
         else {
-            return;
+            return None;
         };
+        // Judged before any rematerialization below, which can repoint the
+        // active slot on its own.
+        let adopt_spawn_slot = replication.armed_local_pawn().is_some_and(|armed| {
+            spawn_slot_adoption_open(
+                registry,
+                &armed,
+                *selection_declared_pawn,
+                !pending_switch_declarations.is_empty(),
+                selection_idle,
+            )
+        });
         let generation_before = *tuning_generation;
         let result = replace_client_tuning(tuning, tuning_generation, bytes);
         // An environment-only change keeps the generation: nothing pawn-side to
@@ -918,9 +979,18 @@ impl NetEndpoint {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
+        // After any rematerialization above, so the slot is checked against
+        // the inventory this payload left.
+        let adopted = match (tuning.as_deref(), replication.armed_local_pawn()) {
+            (Some(payload), Some(armed)) if adopt_spawn_slot => {
+                adopt_payload_spawn_active_slot(registry, armed.entity_id, payload)
+            }
+            _ => None,
+        };
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
+        adopted
     }
 }
 
@@ -1028,19 +1098,24 @@ mod tests {
             })
         };
 
-        endpoint.install_tuning_payload(&payload(-12.0, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-12.0, &["water"]), &mut registry, &[], true);
         assert_eq!(
             installed(&endpoint),
             Some((-12.0, vec!["water".to_string()]))
         );
         let first = generations(&endpoint);
 
-        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
         assert_eq!(
             installed(&endpoint),
             Some((-4.5, vec!["water".to_string()]))
         );
-        endpoint.install_tuning_payload(&payload(-4.5, &["water", "lava"]), &mut registry, &[]);
+        endpoint.install_tuning_payload(
+            &payload(-4.5, &["water", "lava"]),
+            &mut registry,
+            &[],
+            true,
+        );
         assert_eq!(
             installed(&endpoint),
             Some((-4.5, vec!["water".to_string(), "lava".to_string()]))
@@ -1050,6 +1125,18 @@ mod tests {
         // Demotion drops the installed table with the rest of the tuning.
         endpoint.demote_client_state(&mut registry);
         assert!(endpoint.client_host_environment().is_none());
+
+        // So does a level unload: the old level's gravity and fluids must
+        // not reach the next one, and the next payload installs as new pawn
+        // tuning even when it matches the dropped one.
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
+        let before_unload = generations(&endpoint);
+        endpoint.reset_level_scoped_client_state();
+        assert!(endpoint.client_host_environment().is_none());
+        assert!(endpoint.client_movement_tuning().is_none());
+        assert_eq!(generations(&endpoint), (before_unload.0, 0));
+        endpoint.install_tuning_payload(&payload(-4.5, &["water"]), &mut registry, &[], true);
+        assert_eq!(generations(&endpoint).0, before_unload.0.wrapping_add(1));
 
         let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
             .unwrap()

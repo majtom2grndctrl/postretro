@@ -726,6 +726,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 if switch_accepted && let Some(slot) = command.select_slot {
                     app.client_declare_switch(slot, input_tick);
                 }
+                app.client_observe_active_slot_resync(input_tick, tick_dt);
                 {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movers);
                     app.client_predict_loaded_movers_tick(tick_dt);

@@ -2015,3 +2015,213 @@ fn teleport_client_shot_keeps_its_firing_tick_aim_across_a_later_catchup_telepor
     );
     assert!((app.camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5);
 }
+
+mod switch_settlement {
+    use super::*;
+    use crate::client_weapon::{ActiveSlotResyncObservation, settle_switch_resolution};
+    use crate::input::{
+        Action, ActionSnapshot, ButtonState, GameplayInputLatch, WieldableSelectionPolicy,
+    };
+    use crate::netcode::CurrentSwitchResolution;
+    use postretro_entities::components::wieldable_state::WieldableState;
+
+    const OCCUPIED: [bool; 2] = [true, true];
+
+    /// A movement pawn holding slot 0, with a second weapon in slot 1.
+    fn two_slot_pawn() -> (EntityRegistry, EntityId, [EntityId; 2]) {
+        let (mut registry, pawn, first) = fixture(
+            serde_json::json!({"trigger":"press","recoveryMs":50.0,"steps":[{"kind":"shot"}]}),
+            false,
+        );
+        let component = registry
+            .get_component::<WeaponComponent>(first)
+            .unwrap()
+            .clone();
+        let second = registry.spawn(Transform::default());
+        registry.set_component(second, component).unwrap();
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        inventory.wieldables[1] = Some(second);
+        registry.set_component(pawn, inventory).unwrap();
+        (registry, pawn, [first, second])
+    }
+
+    fn edit_inventory(
+        registry: &mut EntityRegistry,
+        pawn: EntityId,
+        edit: impl FnOnce(&mut Inventory),
+    ) {
+        let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+        edit(&mut inventory);
+        registry.set_component(pawn, inventory).unwrap();
+    }
+
+    fn set_state(registry: &mut EntityRegistry, weapon: EntityId, state: WieldableState) {
+        let mut component = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        component.state = state;
+        registry.set_component(weapon, component).unwrap();
+    }
+
+    /// A selection that has queued a direct-select commit by `select` while
+    /// `active` is held.
+    fn latch_committing(select: Action, active: usize) -> GameplayInputLatch {
+        let mut latch = GameplayInputLatch::default();
+        latch.wieldable_selection_mut().advance_frame(
+            &ActionSnapshot::with_button_state(select, ButtonState::Pressed),
+            &OCCUPIED,
+            Some(active),
+            WieldableSelectionPolicy {
+                commit_on_direct_select: true,
+                cycle_dwell_ms: 0.0,
+            },
+            0.0,
+        );
+        latch
+    }
+
+    // Regression: a host refusal of the active-slot re-sync (the slot the
+    // player already holds) rolled back to that same slot and then reset the
+    // selection, wiping a weapon choice the player was making meanwhile.
+    #[test]
+    fn same_slot_resync_refusal_keeps_the_in_progress_selection() {
+        let (mut registry, pawn, _) = two_slot_pawn();
+        // An earlier accepted switch left its origin behind.
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_origin = Some(1);
+        });
+        let mut latch = latch_committing(Action::SelectWieldable2, 0);
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(1));
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(1),
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            0
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(1));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            Some(1),
+            "the queued choice survives"
+        );
+    }
+
+    #[test]
+    fn refusal_that_rolls_back_resets_the_selection_to_the_restored_slot() {
+        let (mut registry, pawn, _) = two_slot_pawn();
+        // Switched 0 -> 1 locally; the lower has already repointed.
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 1;
+            inventory.switch_origin = Some(0);
+        });
+        let mut latch = latch_committing(Action::SelectWieldable1, 1);
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 1,
+                rollback_slot: 0,
+                last_weapon_slot: None,
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .active_slot,
+            0
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(0));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            None
+        );
+    }
+
+    // A same-slot refusal is not always the re-sync: a refused round trip
+    // (0 -> 1 -> 0) rebases to the slot it returns to. When it cancels a raise
+    // still running locally, the player saw a change, so the selection resets.
+    #[test]
+    fn same_slot_refusal_that_cancels_a_raise_resets_the_selection() {
+        let (mut registry, pawn, [first, _]) = two_slot_pawn();
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_origin = Some(1);
+        });
+        set_state(&mut registry, first, WieldableState::Raising);
+        let mut latch = latch_committing(Action::SelectWieldable2, 0);
+
+        settle_switch_resolution(
+            &mut registry,
+            &mut latch,
+            CurrentSwitchResolution::Refused {
+                target_slot: 0,
+                rollback_slot: 0,
+                last_weapon_slot: Some(1),
+            },
+        );
+
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(first)
+                .unwrap()
+                .state,
+            WieldableState::Idle
+        );
+        assert_eq!(latch.wieldable_selection().cursor_slot(), Some(0));
+        assert_eq!(
+            latch
+                .wieldable_selection_mut()
+                .take_pending_commit(&OCCUPIED, Some(0)),
+            None
+        );
+    }
+
+    // Regression: the observation treated a retained `switch_origin` as a
+    // switch in flight, so after the first accepted switch the re-sync never
+    // armed again.
+    #[test]
+    fn resync_observation_ignores_a_retained_switch_origin() {
+        let (mut registry, pawn, [_, second]) = two_slot_pawn();
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 1;
+            inventory.switch_origin = Some(0);
+        });
+        let read = |registry: &EntityRegistry| {
+            ActiveSlotResyncObservation::read(registry, pawn, false, Some(0))
+                .expect("the pawn holds a weapon")
+        };
+        let settled = read(&registry);
+        assert!(
+            !settled.local_switching,
+            "a settled switch is not in flight"
+        );
+        assert_eq!(settled.local_active_slot, 1);
+
+        set_state(&mut registry, second, WieldableState::Raising);
+        assert!(read(&registry).local_switching, "raising");
+        set_state(&mut registry, second, WieldableState::Idle);
+        edit_inventory(&mut registry, pawn, |inventory| {
+            inventory.switch_target = Some(0);
+        });
+        assert!(read(&registry).local_switching, "a switch target");
+    }
+}

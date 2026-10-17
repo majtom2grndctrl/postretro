@@ -92,9 +92,15 @@ impl DryRunReport {
             consistency.join("; ")
         );
         let baked = match &brief.baked {
-            Some(check) => format!(
-                "{} mismatched of {} (camera, lead) checks over {} distinct baked leads",
-                check.mismatched, check.checked, check.distinct_leads
+            Some(baked) => format!(
+                "{}: {} mismatched of {} (camera, lead) checks over {} distinct baked leads; \
+                 arrival delta {} entries over {} camera cells",
+                baked.relation.label(),
+                baked.check.mismatched,
+                baked.check.checked,
+                baked.check.distinct_leads,
+                baked.arrival_entries,
+                baked.arrival_cameras
             ),
             None => "no section in this PRL".to_string(),
         };

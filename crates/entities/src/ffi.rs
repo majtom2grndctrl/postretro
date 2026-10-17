@@ -182,6 +182,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::HitVolume => "hit_volume",
         ComponentKind::MapOrdinal => "map_ordinal",
         ComponentKind::Immersion => "immersion",
+        ComponentKind::Teleporter => "teleporter",
     }
 }
 
@@ -261,6 +262,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "trigger_volume" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "TriggerVolume component is engine-managed and not exposed to scripts",
+            )),
+            "teleporter" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Teleporter component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -391,6 +396,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "Immersion component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Teleporter(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Teleporter component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -466,6 +475,9 @@ impl FromLua for ComponentValue {
             "trigger_volume" => Err(mlua::Error::RuntimeError(
                 "TriggerVolume component is engine-managed and not exposed to scripts"
                     .to_string(),
+            )),
+            "teleporter" => Err(mlua::Error::RuntimeError(
+                "Teleporter component is engine-managed and not exposed to scripts".to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -566,6 +578,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::Immersion(_) => Err(mlua::Error::RuntimeError(
                 "Immersion component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Teleporter(_) => Err(mlua::Error::RuntimeError(
+                "Teleporter component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),
@@ -850,7 +865,7 @@ mod tests {
         let runtime = rquickjs::Runtime::new().unwrap();
         let context = rquickjs::Context::full(&runtime).unwrap();
         context.with(|ctx| {
-            for kind in ["kinematic_mover", "trigger_volume"] {
+            for kind in ["kinematic_mover", "trigger_volume", "teleporter"] {
                 let value = Object::new(ctx.clone()).unwrap();
                 value.set("kind", kind).unwrap();
                 let err = ComponentValue::from_js(&ctx, value.into_value())
@@ -862,7 +877,7 @@ mod tests {
         });
 
         let lua = Lua::new();
-        for kind in ["kinematic_mover", "trigger_volume"] {
+        for kind in ["kinematic_mover", "trigger_volume", "teleporter"] {
             let value = lua.create_table().unwrap();
             value.set("kind", kind).unwrap();
             let err = ComponentValue::from_lua(LuaValue::Table(value), &lua).unwrap_err();

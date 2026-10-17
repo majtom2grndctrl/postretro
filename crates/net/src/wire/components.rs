@@ -31,6 +31,7 @@ pub const COMPONENT_KIND_PROJECTILE: u16 = 20;
 pub const COMPONENT_KIND_HIT_VOLUME: u16 = 21;
 pub const COMPONENT_KIND_MAP_ORDINAL: u16 = 22;
 pub const COMPONENT_KIND_IMMERSION: u16 = 23;
+pub const COMPONENT_KIND_TELEPORTER: u16 = 24;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;
@@ -158,8 +159,9 @@ pub enum WireGroundRef {
 /// tuning separately as opaque Control payload bytes. Only the fields interpolation
 /// and later prediction reconciliation need are mirrored here. Source field types
 /// are preserved: ability counters and `air_ticks` are `u32`; live timers are `f32`.
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct WirePlayerMovementState {
+    pub teleport: super::WireTeleportState,
     pub velocity: [f32; 3],
     /// Protected impulse contribution already included in total velocity.
     pub knockback_velocity: [f32; 3],
@@ -284,6 +286,7 @@ impl WirePlayerMovementState {
     #[must_use]
     fn all_finite(&self) -> bool {
         self.velocity.iter().all(|c| c.is_finite())
+            && self.teleport.accumulated_yaw.is_finite()
             && self.knockback_velocity.iter().all(|c| c.is_finite())
             && self.push_velocity.iter().all(|c| c.is_finite())
             && self.dash_cooldown_ms.is_finite()
@@ -590,6 +593,7 @@ impl WireEmitterState {
 /// instead of a testable rejected envelope).
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct RawComponentPayload {
+    pub teleporter: Option<super::WireTeleporterState>,
     pub component_kind: u16,
     pub transform: Option<WireTransform>,
     pub player_movement: Option<WirePlayerMovementState>,
@@ -604,6 +608,7 @@ pub struct RawComponentPayload {
 /// so a typed payload always has exactly the inner value its kind requires.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentPayload {
+    TeleporterState(super::WireTeleporterState),
     Transform(WireTransform),
     PlayerMovementState(WirePlayerMovementState),
     MeshAnimationState(WireMeshAnimationState),
@@ -620,6 +625,7 @@ impl ComponentPayload {
     #[must_use]
     pub fn kind(&self) -> u16 {
         match self {
+            ComponentPayload::TeleporterState(_) => COMPONENT_KIND_TELEPORTER,
             ComponentPayload::Transform(_) => COMPONENT_KIND_TRANSFORM,
             ComponentPayload::PlayerMovementState(_) => COMPONENT_KIND_PLAYER_MOVEMENT_STATE,
             ComponentPayload::MeshAnimationState(_) => COMPONENT_KIND_MESH_ANIMATION_STATE,
@@ -641,6 +647,7 @@ impl RawComponentPayload {
         // one its `component_kind` names. Any other slot being `Some` is a
         // mismatch regardless of the named kind (it makes the envelope ambiguous).
         let populated = usize::from(self.transform.is_some())
+            + usize::from(self.teleporter.is_some())
             + usize::from(self.player_movement.is_some())
             + usize::from(self.mesh_animation_state.is_some())
             + usize::from(self.kinematic_mover.is_some())
@@ -649,6 +656,21 @@ impl RawComponentPayload {
             + usize::from(self.fog.is_some());
 
         match self.component_kind {
+            COMPONENT_KIND_TELEPORTER => match self.teleporter {
+                Some(state) if populated == 1 => {
+                    if state.index == super::NO_WIRE_TELEPORTER {
+                        Err(ValidationError::InvalidTeleporterState)
+                    } else {
+                        Ok(ComponentPayload::TeleporterState(state))
+                    }
+                }
+                Some(_) => Err(ValidationError::MismatchedComponentPayload(
+                    self.component_kind,
+                )),
+                None => Err(ValidationError::MissingComponentPayload(
+                    self.component_kind,
+                )),
+            },
             COMPONENT_KIND_TRANSFORM => match self.transform {
                 Some(t) if populated == 1 => {
                     if t.all_finite() {
@@ -664,14 +686,15 @@ impl RawComponentPayload {
                     self.component_kind,
                 )),
             },
-            COMPONENT_KIND_PLAYER_MOVEMENT_STATE => match self.player_movement {
+            COMPONENT_KIND_PLAYER_MOVEMENT_STATE => match &self.player_movement {
                 Some(m) if populated == 1 => {
                     if !m.all_finite() {
                         Err(ValidationError::NonFiniteMovementState)
-                    } else if !m.movement_state.has_valid_state_contract() {
+                    } else if !m.movement_state.has_valid_state_contract() || !m.teleport.is_valid()
+                    {
                         Err(ValidationError::InvalidMovementState)
                     } else {
-                        Ok(ComponentPayload::PlayerMovementState(m))
+                        Ok(ComponentPayload::PlayerMovementState(m.clone()))
                     }
                 }
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
@@ -808,6 +831,7 @@ mod tests {
     }
     fn empty_raw(kind: u16) -> RawComponentPayload {
         RawComponentPayload {
+            teleporter: None,
             component_kind: kind,
             transform: None,
             player_movement: None,
@@ -1139,6 +1163,7 @@ mod tests {
             (
                 COMPONENT_KIND_LIGHT,
                 RawComponentPayload {
+                    teleporter: None,
                     light: Some(light_state()),
                     ..empty_raw(COMPONENT_KIND_LIGHT)
                 },
@@ -1146,6 +1171,7 @@ mod tests {
             (
                 COMPONENT_KIND_BILLBOARD_EMITTER,
                 RawComponentPayload {
+                    teleporter: None,
                     emitter: Some(emitter_state()),
                     ..empty_raw(COMPONENT_KIND_BILLBOARD_EMITTER)
                 },
@@ -1153,6 +1179,7 @@ mod tests {
             (
                 COMPONENT_KIND_FOG_VOLUME,
                 RawComponentPayload {
+                    teleporter: None,
                     fog: Some(fog_state()),
                     ..empty_raw(COMPONENT_KIND_FOG_VOLUME)
                 },

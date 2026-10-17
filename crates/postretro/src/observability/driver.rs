@@ -136,7 +136,7 @@ fn run_headless_inner(
     let script_ctx = session.scripting.script_ctx.clone();
     let nav_graph = install_world_gravity_and_nav(&world, &script_ctx);
 
-    let collision_world =
+    let mut collision_world =
         CollisionWorld::from_level(&world).context("static collision mesh rejected")?;
     // Built from the level's records exactly as the windowed install builds them,
     // resolving fluid names against the drained manifest's declarations.
@@ -205,6 +205,10 @@ fn run_headless_inner(
         )
     };
 
+    crate::runtime_teleporters::bind_loaded_teleporters(
+        &mut collision_world.teleporters,
+        &script_ctx.registry.borrow(),
+    );
     let mover_colliders = products.mover_colliders;
     let mut mover_tick_states = products.mover_tick_states;
 

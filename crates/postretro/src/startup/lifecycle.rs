@@ -260,6 +260,14 @@ impl App {
             bindings
         };
         self.trigger_bindings = bindings;
+        if let Some(session) = self.session.as_ref() {
+            self.teleporter_bindings =
+                postretro_sim::teleporter_system::TeleporterBindingTable::build(
+                    &session.scripting.script_ctx,
+                    session.scripting.command_diagnostics.clone(),
+                    session.scripting.spawn_context.clone(),
+                );
+        }
         self.warn_hosted_trigger_machine_local();
         self.rebuild_player_events(true);
     }
@@ -902,6 +910,10 @@ impl App {
                 }
             },
         );
+        crate::runtime_teleporters::bind_loaded_teleporters(
+            &mut self.collision_world.teleporters,
+            &script_ctx.registry.borrow(),
+        );
         // The level's trees joined the tree set.
         session.check_accessibility_entry();
 
@@ -930,6 +942,7 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        self.teleporter_bindings = products.teleporter_bindings;
         self.warn_hosted_trigger_machine_local();
         self.warn_if_local_player_cannot_swim();
         // After the boot pawn spawns, so the host reads its own descriptor's
@@ -1499,6 +1512,7 @@ pub(crate) struct WorldInstallProducts {
     pub(crate) spawned_mover_entities: Vec<postretro_entities::registry::EntityId>,
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
+    pub(crate) teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only trigger-pool outcome retained by `App` for diagnostics and
     /// tests. Connected clients receive the default empty report.
     pub(crate) trigger_pool_report: TriggerPoolInstallReport,
@@ -1924,11 +1938,13 @@ pub(crate) mod tests {
                 postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
             fluid_eye: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+            teleporter_bindings: Default::default(),
             player_events: Default::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),
             client_fire_resolutions: Vec::new(),
             client_weapon: Default::default(),
             observer_weapon_cues: Vec::new(),
+            pending_teleport_sounds: Vec::new(),
             client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
             client_reload_edges: Default::default(),
             client_overheat_edge: Default::default(),
@@ -2307,6 +2323,7 @@ pub(crate) mod tests {
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: Default::default(),
+            teleporters: Default::default(),
             environment_push_forces: Vec::new(),
             fog_cell_masks: None,
             navmesh: None,

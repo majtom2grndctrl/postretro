@@ -54,6 +54,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
     pub(super) trigger_volumes: Option<&'a TriggerVolumesSection>,
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
+    pub(super) teleporters: &'a TeleportersSection,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
@@ -98,6 +99,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         kinematic_geometry,
         trigger_volumes,
         environment_volumes,
+        teleporters,
         push_forces,
         cell_draw_index,
         cell_visibility,
@@ -411,6 +413,14 @@ pub(super) fn build_finalized_section_plan<'a>(
             1,
             section.byte_len(),
             || Ok(section.to_bytes()),
+        ));
+    }
+    if !teleporters.teleporters.is_empty() {
+        sections.push(PlannedSection::new(
+            SectionId::Teleporters as u32,
+            1,
+            teleporters.byte_len(),
+            || Ok(teleporters.to_bytes()),
         ));
     }
     if let Some(section) = trigger_volumes {

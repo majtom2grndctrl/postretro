@@ -186,7 +186,7 @@ fn parse_numbers(raw: &str, key: &str, entity: &str, shape: &str) -> Result<Vec<
 /// One authored brush as one convex leaf. A brush with no usable hull fails
 /// the build, following `trigger_volume`'s posture: an invisible region the
 /// compiler cannot resolve must not silently vanish.
-fn resolve_leaf(
+pub(super) fn resolve_leaf(
     geo_map: &GeoMap,
     brush_id: BrushId,
     scale: f64,
@@ -201,7 +201,8 @@ fn resolve_leaf(
         scale,
         classname,
         false,
-    )?
+    )
+    .map_err(|error| anyhow::anyhow!("{brush}: {error}"))?
     .ok_or_else(|| anyhow::anyhow!("{brush} has no usable vertices"))?;
     if (bounds.max - bounds.min).min_element() <= 0.0 {
         anyhow::bail!("{brush} has zero volume");

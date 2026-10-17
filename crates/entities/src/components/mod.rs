@@ -21,6 +21,7 @@ pub mod player_movement;
 pub mod projectile;
 pub mod spawner;
 pub mod sprite_visual;
+pub mod teleporter;
 pub mod touchable;
 pub mod trigger_volume;
 pub mod weapon;

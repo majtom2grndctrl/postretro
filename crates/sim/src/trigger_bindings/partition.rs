@@ -25,6 +25,8 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "grantAmmo",
     "armTrigger",
     "disarmTrigger",
+    "armTeleporter",
+    "disarmTeleporter",
     "setState",
     "addSlot",
     "setAnimationState",

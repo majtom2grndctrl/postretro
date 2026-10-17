@@ -363,9 +363,10 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             "export function getMapEntities<K extends MapEntityKind>(kind: K, filter?: MapEntityFilter): MapEntityForKind<K>[];"
         ) && ts.contains("K extends \"mover\" ? MoverEntityHandle :")
             && ts.contains("K extends \"trigger\" ? TriggerVolumeHandle :")
+            && ts.contains("K extends \"teleporter\" ? TeleporterHandle :")
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -373,6 +374,9 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
         luau.contains("((kind: \"mover\", filter: MapEntityFilter?) -> {MoverEntityHandle})")
             && luau.contains(
                 "((kind: \"trigger\", filter: MapEntityFilter?) -> {TriggerVolumeHandle})"
+            )
+            && luau.contains(
+                "((kind: \"teleporter\", filter: MapEntityFilter?) -> {TeleporterHandle})"
             )
             && luau.contains(
                 "((kind: \"spawner\", filter: MapEntityFilter?) -> {SpawnerEntityHandle})"

@@ -345,6 +345,9 @@ pub(crate) struct DryRunInput {
     /// The PRL's baked CellResidencySet (id 51), checked against direct
     /// evaluation; absent in fixtures and in levels without usable portals.
     pub baked_residency_set: Option<CellResidencySetSection>,
+    /// Whether the PRL carries any teleporter (id 55): its arrival origins
+    /// make the baked set a superset of direct evaluation.
+    pub teleporters_present: bool,
     pub reconstruction: ReconstructionStats,
 }
 

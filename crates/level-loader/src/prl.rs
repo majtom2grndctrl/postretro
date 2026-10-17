@@ -58,6 +58,8 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
 #[cfg(feature = "load-prl")]
+use postretro_level_format::teleporters::TeleportersSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
@@ -718,6 +720,9 @@ pub struct LevelWorld {
     /// Invisible trigger AABBs and declarative command records (section 44).
     #[cfg(feature = "load-prl")]
     pub trigger_volumes: Vec<TriggerVolumeRecord>,
+    /// Predictive teleporter regions (id55), empty when absent.
+    #[cfg(feature = "load-prl")]
+    pub teleporters: TeleportersSection,
     /// Empty when section absent or no `fog_volume` brushes authored.
     #[cfg(feature = "load-prl")]
     pub fog_volumes: Vec<FogVolumeRecord>,
@@ -882,6 +887,8 @@ impl LevelWorld {
             kinematic_geometry: KinematicGeometry::default(),
             #[cfg(feature = "load-prl")]
             trigger_volumes: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            teleporters: TeleportersSection::default(),
             #[cfg(feature = "load-prl")]
             fog_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -1984,6 +1991,8 @@ mod tests {
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
             trigger_volumes: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            teleporters: TeleportersSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2088,6 +2097,8 @@ mod tests {
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
             trigger_volumes: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            teleporters: TeleportersSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2146,6 +2157,8 @@ mod tests {
             map_entities: Vec::new(),
             kinematic_geometry: KinematicGeometry::default(),
             trigger_volumes: Vec::new(),
+            #[cfg(feature = "load-prl")]
+            teleporters: TeleportersSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),

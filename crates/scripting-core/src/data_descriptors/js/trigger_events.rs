@@ -101,3 +101,45 @@ fn trigger_event_from_js<'js>(
         levels: string_array_from_js(&item, "levels")?,
     })))
 }
+
+/// Level-only teleporter events. Invalid entries degrade independently.
+pub fn drain_level_teleport_events_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<TeleportEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "teleportEvents", scope)? else {
+        return Ok(Vec::new());
+    };
+    let mut events = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let parsed = (|| -> Result<TeleportEventDescriptor, DescriptorError> {
+            let item =
+                Object::from_value(arr.get::<JsValue>(i).map_err(js_err)?).map_err(|_| {
+                    DescriptorError::InvalidShape {
+                        reason: "teleport-event entry must be an object".into(),
+                    }
+                })?;
+            if field_present_js(&item, "tag")? || field_present_js(&item, "levels")? {
+                return Err(DescriptorError::InvalidShape { reason: "teleportEvents accepts only level teleporter member ids, without tag or levels".into() });
+            }
+            let event = get_required_string_js(&item, "event")?;
+            if event != "teleport" {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("unknown teleport event `{event}`"),
+                });
+            }
+            Ok(TeleportEventDescriptor {
+                teleporter: EntityId::from_raw(get_required_u32_js(&item, "teleporter")?),
+                event,
+                fire: string_array_from_js(&item, "fire")?,
+            })
+        })();
+        match parsed {
+            Ok(event) => events.push(event),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: teleportEvents[{i}] is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    Ok(events)
+}

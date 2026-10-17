@@ -9,9 +9,9 @@
 // floor, not sunk into it, and walk out through the doorway.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/spawner-test.map -o content/dev/maps/spawner-test.prl
 // Run: cargo run -p xtask -- run content/dev/maps/spawner-test.prl
-// Sealed room, interior 288 x 256 x 128 units, wall thickness 16, with a
+// Sealed room, interior 288 x 560 x 128 units, wall thickness 16, with a
 // recessed closet nook carved into the solid east block. The nook interior
-// spans x 176 to 272, y 96 to 160, z 0 to 96, entered through a doorway at
+// spans x 176 to 272, y -112 to 80, z 0 to 96, entered through a doorway at
 // x 176 that the sliding door occludes. The nook and main room form a single
 // enclosed interior joined by that internal doorway, so the world hull is
 // sealed with no leak. Worldspawn brush order: floor, ceiling, west, east,
@@ -296,11 +296,12 @@
 // and the spawner's local +X fan-out, but inside alarm_light's cone. The prop
 // stands close enough to the closed door that alarm_light casts its shadow
 // onto the door's lit face. The promoted capture needs that shadow: the door
-// is convex, so it cannot shadow itself.
+// is convex, so it cannot shadow itself. Its 135 yaw is the silhouette the
+// receiver captures and masks were tuned on.
 {
 "classname" "prop_mesh"
 "origin" "128 -112 0"
-"angles" "0 45 0"
+"angles" "0 135 0"
 "model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
 }
 // entity 14

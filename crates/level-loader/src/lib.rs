@@ -31,6 +31,8 @@ mod prl_spec_owners;
 #[cfg(feature = "load-prl")]
 mod prl_streaming;
 #[cfg(feature = "load-prl")]
+mod prl_teleporters;
+#[cfg(feature = "load-prl")]
 mod sh_stream;
 #[cfg(all(test, feature = "load-prl"))]
 mod sh_stream_tests;

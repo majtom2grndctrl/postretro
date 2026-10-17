@@ -139,6 +139,10 @@ pub enum FireSubject {
     PlayerEvent {
         player: Option<Seat>,
     },
+    Teleport {
+        player: Option<Seat>,
+        teleporter: EntityId,
+    },
 }
 
 impl FireOrigin {
@@ -264,14 +268,21 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         (EveryMachine, Option::None | Some(Everyone)) => Recipients::Local,
         (EveryMachine, Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
         (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
-        (HostOnly(FireSubject::Trigger { player, .. }), Some(Activators)) => {
-            Recipients::Seats(player.iter().copied().collect())
-        }
+        (
+            HostOnly(FireSubject::Trigger { player, .. } | FireSubject::Teleport { player, .. }),
+            Some(Activators),
+        ) => Recipients::Seats(player.iter().copied().collect()),
         (HostOnly(FireSubject::Trigger { occupants, .. }), Some(Audience::Trigger)) => {
             Recipients::Seats(occupants.clone())
         }
-        (HostOnly(FireSubject::Trigger { .. } | FireSubject::None), Option::None) if sound => {
-            Recipients::Everyone
+        (
+            HostOnly(
+                FireSubject::Trigger { .. } | FireSubject::Teleport { .. } | FireSubject::None,
+            ),
+            Option::None,
+        ) if sound => Recipients::Everyone,
+        (HostOnly(FireSubject::Teleport { player, .. }), Option::None) => {
+            player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
         }
         (HostOnly(FireSubject::Trigger { player, .. }), Option::None) => {
             Recipients::Seats(player.iter().copied().collect())

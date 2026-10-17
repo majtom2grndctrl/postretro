@@ -74,7 +74,7 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 /// deterministic prediction or collision. The net crate treats the digest as
 /// opaque; keeping the byte recipe engine-side preserves that boundary.
 pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWorld) -> [u8; 32] {
-    const FINGERPRINT_EPOCH: u32 = 3;
+    const FINGERPRINT_EPOCH: u32 = 4;
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"postretro-kinematic-static");
@@ -132,6 +132,7 @@ pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWo
 
     hash_environment_volumes(&mut hasher, &world.environment_volumes);
     hash_push_forces(&mut hasher, world);
+    crate::runtime_teleporters::hash_content(&mut hasher, world);
 
     *hasher.finalize().as_bytes()
 }

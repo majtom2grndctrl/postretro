@@ -84,6 +84,7 @@ pub(crate) use postretro_sim::{
 mod render;
 mod render_preparation;
 mod runtime_movers;
+mod runtime_teleporters;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -1013,6 +1014,10 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Per-level `teleport` event bindings, rebuilt with the trigger bindings from
+    /// the composed reaction set. The authoritative fixed tick dispatches each
+    /// teleport's reactions through it, and the frame-end residual drain reads it.
+    teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
     /// Host-only player events bound from the composed active set, with their
     /// per-player edge memory. Rebuilt with the trigger bindings.
     player_events: postretro_sim::player_events::PlayerEventTable,
@@ -1022,6 +1027,10 @@ pub(crate) struct App {
 
     client_weapon: client_weapon::ClientWeaponFrame,
     observer_weapon_cues: Vec<netcode::weapon_cues::ObserverWeaponCueDelivery>,
+    /// This frame's teleport arrival cues at fixed points: the local traveller's
+    /// (forward prediction, adoption, or the host seat's own crossing) and every
+    /// observed remote arrival. Played and cleared by the frame's audio step.
+    pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.
@@ -3891,6 +3900,7 @@ impl App {
                 host_pawn: _,
                 descriptor_entities: _,
                 loaded_movers: _,
+                loaded_teleporters: _,
                 demo_mover: _,
                 state_slots,
                 last_sent_tuning,
@@ -4385,6 +4395,21 @@ impl App {
                         time_sync.rtt_micros(),
                     )
                 };
+                crate::runtime_teleporters::apply_local_adoptions(
+                    &mut self.camera,
+                    &mut self.frame_timing,
+                    &mut self.mover_yaw_carry_ground,
+                    &mut self.pending_teleport_sounds,
+                    &self.collision_world.teleporters,
+                    &registry,
+                    &apply_outcome.local_teleport_adoptions,
+                    apply_outcome.local_first_record_hold,
+                );
+                sound_events::observed_arrival_sounds(
+                    &self.collision_world.teleporters,
+                    &apply_outcome.observed_teleports,
+                    &mut self.pending_teleport_sounds,
+                );
                 // This owner projection can arrive on a zero-tick frame. Death
                 // clears charge feedback/input immediately, without changing
                 // the local health simulation or previously produced flights.
@@ -4695,6 +4720,7 @@ impl App {
             host_pawn,
             descriptor_entities: _,
             loaded_movers: _,
+            loaded_teleporters: _,
             demo_mover,
             state_slots,
             last_sent_tuning,
@@ -5012,13 +5038,10 @@ impl App {
     /// serialization (which reads the authoritative pose) and before the render collectors
     /// read entities. `alpha` is the render sub-tick accumulator, so the presented pose
     /// varies smoothly per render frame rather than stepping once per 60 Hz tick. Thin
-    /// delegation; a no-op for single-player and the client.
-    fn host_present_client_pawns(&mut self, alpha: f32) {
-        let Some(script_ctx) = self
-            .session
-            .as_ref()
-            .map(|session| session.scripting.script_ctx.clone())
-        else {
+    /// delegation; a no-op for single-player and the client. The pawns' feet are then
+    /// re-probed from that presented pose at `anim_time`, so contacts match the drawn body.
+    fn host_present_client_pawns(&mut self, alpha: f32, anim_time: f64) {
+        let Some(session) = self.session.as_ref() else {
             return;
         };
         let Some(netcode::NetEndpoint::Host {
@@ -5027,22 +5050,27 @@ impl App {
             allocator,
             tick,
             ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_ref()
         else {
             return;
         };
-        let current_tick = *tick;
-        let mut registry = script_ctx.registry.borrow_mut();
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         netcode::host_present_client_pawns(
             client_pawn_presentation,
             owners,
             allocator,
             &mut registry,
-            current_tick,
+            *tick,
             alpha,
+        );
+        netcode::host_probe_presented_client_pawn_feet(
+            owners,
+            &mut registry,
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+            &session.hit_zone_store,
+            anim_time,
         );
     }
 
@@ -5069,7 +5097,11 @@ impl App {
         else {
             return Vec::new();
         };
-        let resolved = netcode::host_resolve_remote_commands(owners, command_queues);
+        let resolved = netcode::host_resolve_remote_commands_in_registry(
+            owners,
+            command_queues,
+            &session.scripting.script_ctx.registry.borrow(),
+        );
         netcode::host_apply_switch_deliveries(
             &mut session.scripting.script_ctx.registry.borrow_mut(),
             server,
@@ -5584,6 +5616,7 @@ impl App {
             allocator,
             replicable,
             loaded_movers,
+            loaded_teleporters,
             ..
         }) = self
             .session
@@ -5594,6 +5627,12 @@ impl App {
         };
         let registry = script_ctx.registry.borrow();
         netcode::host_register_loaded_movers(&registry, allocator, replicable, loaded_movers);
+        netcode::host_register_loaded_teleporters(
+            &registry,
+            allocator,
+            replicable,
+            loaded_teleporters,
+        );
     }
 
     /// Connected-client predicted fixed tick (M15 Phase 3 Task 3). Thin delegation
@@ -9226,6 +9265,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9266,6 +9306,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],
@@ -9353,6 +9394,7 @@ mod tests {
                     active: false,
                 },
                 activation: postretro_net::wire::WireActivationInput::default(),
+                teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
                     wish_dir: [0.0, 0.0],

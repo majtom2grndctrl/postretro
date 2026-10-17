@@ -1,7 +1,7 @@
 # reflection-probes — plan of record
 
 mode: resumable
-status: approved — results reported; waiting for "land the plane"
+status: approved — results reported, manual rows signed off; waiting for "land the plane"
 read at: 41f21c8ae
 branch: feature/reflection-probes
 
@@ -159,13 +159,13 @@ Adapter-backed
 Manual (owner, in-engine)
 | AC | Proof | Status | Result |
 |---|---|---|---|
-| 37 Existing map's pool reflects after rebuild | owner, in-engine | manual | outstanding — owner, in-engine (four water maps rebaked with the final compiler) |
-| 38 Mirrors lit room incl. sdf corner; strafe parallax; low-eye coping | owner, in-engine | manual | outstanding — owner, in-engine |
-| 39 Fresnel read: straight down faint, across near-mirror, vista strong | owner, in-engine | manual | outstanding — owner, in-engine |
-| 40 Flicker, no lobe seam; script switch-off incl. vista; neon reflects | owner, in-engine | manual | outstanding — owner, in-engine |
-| 41 Pixel vs smooth follow the manifest | owner, in-engine | manual | outstanding — owner, in-engine |
-| 42 Canal boundary: step, never a geometry jump | owner, in-engine | manual | outstanding — owner, in-engine |
-| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual | partial — 1660 GPU re-timed after the review rounds (e24 reflecting 5.43 ms vs main 3.16; test map 2.79 vs 1.66; reflection-free = main), stage and VRAM measured (9b, 11f); owner Mac 5300M Metal trace outstanding |
+| 37 Existing map's pool reflects after rebuild | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac (four water maps rebaked with the final compiler) |
+| 38 Mirrors lit room incl. sdf corner; strafe parallax; low-eye coping | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac |
+| 39 Fresnel read: straight down faint, across near-mirror, vista strong | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac |
+| 40 Flicker, no lobe seam; script switch-off incl. vista; neon reflects | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac |
+| 41 Pixel vs smooth follow the manifest | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac |
+| 42 Canal boundary: step, never a geometry jump | owner, in-engine | manual | pass — owner signed off 2026-10-16 after an in-engine look on Windows and Mac |
+| 43 Fluid-pass GPU delta (1660, 5300M); cold/warm stage time; probe VRAM on stress map | executor measures 1660 + stage + VRAM; owner runs Metal System Trace on the Mac | manual | partial — 1660 GPU re-timed after the review rounds (e24 reflecting 5.43 ms vs main 3.16; test map 2.79 vs 1.66; reflection-free = main), stage and VRAM measured (9b, 11f); owner signed off 2026-10-16 after an in-engine look on Windows and Mac; the 5300M Metal System Trace figures were not part of the sign-off and run separately (procedure §12, kit on `claude/probe-streaming-brief-364a5e`) |
 
 
 ## Task 9b measurements (clean rerun, 2026-10-15)

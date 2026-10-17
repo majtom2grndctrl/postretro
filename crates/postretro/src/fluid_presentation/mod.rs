@@ -1,6 +1,6 @@
 // Local fluid presentation at the App: the camera eye's view tint, fog weight
 // and world muffle, the per-frame fluid surface draws with their full look
-// (opacity, depth fog, wave), and the surfaces' current drift.
+// (opacity, depth fog, wave, reflection), and the surfaces' current drift.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.8 (Fluid view tint) · context/lib/audio.md §1 (World muffle)
 
 mod drift;
@@ -17,6 +17,7 @@ use postretro_collision::{EnvironmentView, EnvironmentVolumes};
 use postretro_combat_model::FluidMovementTable;
 use postretro_foundation::{FluidDescriptor, FluidRegistry};
 use postretro_level_loader::LevelWorld;
+use postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face;
 use postretro_render_cpu::fluid_surface::{
     FluidSurfaceDraw, FluidSurfaceLook, FluidSurfaceRenderCollector,
 };
@@ -27,8 +28,20 @@ use crate::App;
 /// Surface opacity frame capture draws every fluid volume at. Capture is
 /// VM-free and loads no manifest, so it cannot read a fluid's own opacity;
 /// a fixed one keeps the pass visible and timed in captures.
-#[cfg(feature = "capture")]
+#[cfg(any(feature = "capture", test))]
 pub(crate) const CAPTURE_FLUID_SURFACE_OPACITY: f32 = 0.6;
+
+/// Frame capture's look for a named fluid's volume. Capture loads no
+/// manifest, so it draws at the fixed capture opacity with no fog or wave,
+/// reflecting as water (reflectivity 1) wherever a face binds a probe; it
+/// never sets a reflection style, so the renderer's default, pixel, holds.
+#[cfg(any(feature = "capture", test))]
+pub(crate) fn capture_surface_look(has_bound_face: bool) -> FluidSurfaceLook {
+    FluidSurfaceLook {
+        has_bound_face,
+        ..FluidSurfaceLook::surface_only(CAPTURE_FLUID_SURFACE_OPACITY)
+    }
+}
 
 /// The local presentation of installed volume `volume`'s fluid: the local
 /// manifest's declaration of the name the active table gives that fluid, or
@@ -44,9 +57,10 @@ pub(crate) fn local_fluid_presentation<'r>(
     fluids.local_presentation(fluid, local)
 }
 
-/// A fluid's surface look as the renderer packs it: opacity, depth fog and
-/// wave from the local declaration.
-pub(crate) fn surface_look(fluid: &FluidDescriptor) -> FluidSurfaceLook {
+/// A fluid's surface look as the renderer packs it: opacity, depth fog, wave
+/// and reflectivity from the local declaration, reflecting wherever the volume
+/// has a probe-bound face (`has_bound_face`).
+pub(crate) fn surface_look(fluid: &FluidDescriptor, has_bound_face: bool) -> FluidSurfaceLook {
     FluidSurfaceLook {
         surface_opacity: fluid.surface_opacity,
         fog_distance: fluid.fog_distance,
@@ -57,12 +71,15 @@ pub(crate) fn surface_look(fluid: &FluidDescriptor) -> FluidSurfaceLook {
         wave_period: fluid.wave_period,
         wave_amplitude: fluid.wave_amplitude,
         wave_length: fluid.wave_length,
+        surface_reflectivity: fluid.surface_reflectivity,
+        has_bound_face,
     }
 }
 
 /// This frame's fluid surface draws, far to near: surfaces whose bounds touch
 /// a visible cell, in their fluid's local look. A dry volume, or one whose
-/// fluid this machine does not declare, draws nothing.
+/// fluid this machine does not declare, draws nothing. Whether a volume has a
+/// probe-bound face is one binary search over the level's bindings.
 pub(crate) fn collect_fluid_surface_draws<'c>(
     collector: &'c mut FluidSurfaceRenderCollector,
     world: &LevelWorld,
@@ -77,7 +94,14 @@ pub(crate) fn collect_fluid_surface_draws<'c>(
         visible,
         |cell| world.cell_bounds(cell as usize),
         camera_eye,
-        |volume| local_fluid_presentation(volumes, fluids, local, volume).map(surface_look),
+        |volume| {
+            local_fluid_presentation(volumes, fluids, local, volume).map(|fluid| {
+                surface_look(
+                    fluid,
+                    volume_has_bound_face(world.reflection_probes.as_ref(), volume),
+                )
+            })
+        },
     )
 }
 

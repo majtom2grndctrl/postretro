@@ -1,18 +1,39 @@
-// Fluid pass group 5, the scene inputs: scene depth and the eye fog weight,
-// built at full init and rebuilt only with the scene targets.
+// Fluid pass group 5, the scene inputs: scene depth, the eye fog weight and
+// the mod's reflection style, built at full init and rebuilt only with the
+// scene targets.
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
 use std::num::NonZeroU64;
 
+use bytemuck::{Pod, Zeroable};
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use wgpu::util::DeviceExt;
 
 /// Pipeline group of the fluid scene inputs.
 pub(crate) const FLUID_SCENE_INPUTS_GROUP: u32 = 5;
 
-/// The fluid scene uniform (binding 1): `[eye fog weight, spare ×3]`. The
-/// spares are for later scene-wide fluid inputs, such as reflections'.
-type FluidSceneUniform = [f32; 4];
+/// The fluid scene uniform (binding 1), the shader's `FluidSceneInputs`
+/// member for member: the eye fog weight, the reflection style
+/// (`FluidReflectionStyle::uniform_value`), and two spares for later
+/// scene-wide fluid inputs, such as screen-space reflections'.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub(crate) struct FluidSceneUniform {
+    pub fog_weight: f32,
+    pub reflection_style: u32,
+    pub spare: [f32; 2],
+}
 pub(crate) const FLUID_SCENE_UNIFORM_BYTES: u64 = std::mem::size_of::<FluidSceneUniform>() as u64;
+
+impl FluidSceneUniform {
+    fn from_inputs(fog_weight: f32, style: FluidReflectionStyle) -> Self {
+        Self {
+            fog_weight,
+            reflection_style: style.uniform_value(),
+            spare: [0.0; 2],
+        }
+    }
+}
 
 /// The eye fog weight before any write: a renderer built or recreated
 /// mid-level draws fog on its first frame.
@@ -50,11 +71,13 @@ pub(crate) fn fluid_scene_inputs_bind_group_layout_entries() -> [wgpu::BindGroup
 /// touch it, so a level with no fluid, or none yet, still has it current.
 pub(crate) struct FluidSceneInputs {
     layout: wgpu::BindGroupLayout,
-    /// Written only when the fog weight changes.
+    /// Written only when the fog weight or the reflection style changes.
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     fog_weight: f32,
-    uploaded_fog_weight: f32,
+    reflection_style: FluidReflectionStyle,
+    /// The uniform as last written.
+    uploaded: FluidSceneUniform,
     /// The scene depth the bind group was last built over; tests read it.
     #[cfg(test)]
     scene_depth: wgpu::TextureView,
@@ -92,10 +115,15 @@ impl FluidSceneInputs {
             label: Some("Fluid Surface Scene Inputs BGL (group 5)"),
             entries: &fluid_scene_inputs_bind_group_layout_entries(),
         });
-        let initial: FluidSceneUniform = [DEFAULT_FLUID_FOG_WEIGHT, 0.0, 0.0, 0.0];
+        // Pixel style until the mod's profile says otherwise: frame capture,
+        // which loads no manifest, keeps it.
+        let initial = FluidSceneUniform::from_inputs(
+            DEFAULT_FLUID_FOG_WEIGHT,
+            FluidReflectionStyle::default(),
+        );
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Scene Uniform"),
-            contents: bytemuck::cast_slice(&initial),
+            contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind_group = create_bind_group(device, &layout, scene_depth, &uniform_buffer);
@@ -104,7 +132,8 @@ impl FluidSceneInputs {
             uniform_buffer,
             bind_group,
             fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
-            uploaded_fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
+            reflection_style: FluidReflectionStyle::default(),
+            uploaded: initial,
             #[cfg(test)]
             scene_depth: scene_depth.clone(),
             #[cfg(test)]
@@ -141,19 +170,37 @@ impl FluidSceneInputs {
         }
     }
 
-    /// Write the uniform if the fog weight changed since it last uploaded.
+    /// Store the mod's reflection style; it uploads before the next fluid
+    /// pass. Change-driven: a commit that keeps the style writes nothing.
+    pub fn set_reflection_style(&mut self, style: FluidReflectionStyle) {
+        self.reflection_style = style;
+    }
+
+    /// The uniform as the next upload writes it.
+    pub fn pending(&self) -> FluidSceneUniform {
+        FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style)
+    }
+
+    /// Write the uniform if the fog weight or the reflection style changed
+    /// since it last uploaded.
     pub fn upload(&mut self, queue: &crate::render::uploads::UploadQueue) {
-        if self.fog_weight == self.uploaded_fog_weight {
+        let uniform = self.pending();
+        if uniform == self.uploaded {
             return;
         }
-        let uniform: FluidSceneUniform = [self.fog_weight, 0.0, 0.0, 0.0];
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&uniform));
-        self.uploaded_fog_weight = self.fog_weight;
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.uploaded = uniform;
     }
 
     #[cfg(test)]
     pub fn fog_weight(&self) -> f32 {
         self.fog_weight
+    }
+
+    /// The uniform as last written; tests read it.
+    #[cfg(test)]
+    pub fn uploaded(&self) -> FluidSceneUniform {
+        self.uploaded
     }
 
     /// The scene depth the bind group was last built over, and the build count.

@@ -194,7 +194,10 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 Water-surface briefs outside a numbered epic.
 
-- [ ] **reflection-probes** — every map's water mirrors its static room from compile-time, box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Builds after `fluid-depth-fog-waves`. Brief: `context/plans/ready/reflection-probes/`.
+- [x] **reflection-probes** — every map's water mirrors its static room from compile-time, distance-corrected box-projected probes the compiler derives per pool, with live per-light brightness and Fresnel weighting; a `reflection_volume` brush overrides the fit. The static base layer a later screen-space layer composites over. Done (`plans/done/reflection-probes`).
+- [ ] **reflection-probe fluid-pass performance** — per-probe light-share precompute for drawn volumes (the blend-cost spike cut a single sample 21% and a 3-probe blend from +78% to +3–4%), a Fresnel early-out at steep views, pixel style at cell rate; measure the Mac 5300M first. Not yet drafted.
+- [ ] **fluid-ssr-reflections** — partial screen-space reflections composited over the probe term, covering what a single capture point cannot see (a dock's underside). Draft: `context/plans/drafts/fluid-ssr-reflections/`.
+- [ ] **reflection-probe streaming and seams** — streamed probe residency, and blending across probe boundaries. Drafts on branch `claude/probe-streaming-brief-364a5e`; the seams brief depends on the performance brief's precompute.
 
 ---
 

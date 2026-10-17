@@ -150,7 +150,10 @@ impl PreparedCapture {
             streaming.pool_cap_layers = cap;
         }
         renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
-        renderer.install_fluid_surfaces(&world.environment_volumes.volumes);
+        renderer.install_fluid_surfaces(
+            &world.environment_volumes.volumes,
+            world.reflection_probes.as_ref(),
+        );
         let forced_active_writes = install_forced_active_animation_descriptors(
             &mut renderer,
             &world.lights,
@@ -236,7 +239,8 @@ impl PreparedCapture {
         );
         renderer.set_mover_occluder_aabbs(mover_collector.occluder_aabbs());
         // Capture loads no manifest, so every fluid volume draws at the fixed
-        // capture opacity, with no fog or wave.
+        // capture opacity, with no fog or wave, reflecting at reflectivity 1
+        // wherever a face binds a probe.
         let mut fluid_collector =
             postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new();
         renderer.set_fluid_surface_draws(fluid_collector.collect(
@@ -245,11 +249,14 @@ impl PreparedCapture {
             |cell| world.cell_bounds(cell as usize),
             eye,
             |volume| {
-                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then_some(
-                    postretro_render_cpu::fluid_surface::FluidSurfaceLook::surface_only(
-                        crate::fluid_presentation::CAPTURE_FLUID_SURFACE_OPACITY,
-                    ),
-                )
+                (!world.environment_volumes.volumes[volume].fluid.is_empty()).then(|| {
+                    crate::fluid_presentation::capture_surface_look(
+                        postretro_render_cpu::fluid_surface::reflection::volume_has_bound_face(
+                            world.reflection_probes.as_ref(),
+                            volume,
+                        ),
+                    )
+                })
             },
         ));
         renderer.set_mesh_draws(mesh_collector.instances());

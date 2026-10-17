@@ -662,6 +662,7 @@ mod tests {
             environment_volumes: Default::default(),
             teleporters: Default::default(),
             environment_push_forces: Vec::new(),
+            reflection_probes: None,
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,

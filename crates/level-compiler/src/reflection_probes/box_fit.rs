@@ -1,0 +1,686 @@
+// Reflection-probe box fit: the room a water face sees, from rays cast against the static world.
+// See: context/lib/resource_management.md §5.1
+
+use glam::DVec3;
+
+use super::hit::SceneTracer;
+
+/// Fit rays: the zenith plus this many azimuths (from +X toward +Z) on each
+/// elevation ring, every [`FIT_ELEVATION_STEP_DEG`] from the horizon up to
+/// [`FIT_RING_COUNT`] rings. Water sees only its upper hemisphere, so no ray
+/// points below the horizon. Eight azimuths per quadrant put rays on the box
+/// axes and both diagonals; 2.5° rings see a far wall through the band
+/// between a low rim prop and the ceiling (e24's still pool sees 3.4°).
+const FIT_AZIMUTHS: usize = 32;
+const FIT_ELEVATION_STEP_DEG: f64 = 2.5;
+const FIT_RING_COUNT: usize = 36;
+/// Hits on one side within this distance of each other lie on one plane.
+const FIT_PLANE_MERGE_M: f64 = 0.01;
+
+/// One fit ray: its direction, the solid angle it stands for (as a share of
+/// the hemisphere), and its azimuth column; the zenith has none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FitRay {
+    pub direction: DVec3,
+    pub weight: f64,
+    pub azimuth: Option<usize>,
+}
+
+/// The pinned fit pattern, zenith first, then rings in elevation order with
+/// azimuths ascending. A ring ray's weight is its share of the band between
+/// the half-steps around its elevation (the horizon ring's band starts at the
+/// horizon); the zenith stands for the cap above the last band.
+pub(crate) fn fit_rays() -> Vec<FitRay> {
+    let half = (FIT_ELEVATION_STEP_DEG * 0.5).to_radians();
+    let top = (FIT_RING_COUNT as f64 - 0.5) * FIT_ELEVATION_STEP_DEG;
+    let mut rays = vec![FitRay {
+        direction: DVec3::Y,
+        weight: 1.0 - top.to_radians().sin(),
+        azimuth: None,
+    }];
+    for ring in 0..FIT_RING_COUNT {
+        let elevation = (ring as f64 * FIT_ELEVATION_STEP_DEG).to_radians();
+        let band = (elevation + half).sin() - (elevation - half).max(0.0).sin();
+        let (sin_e, cos_e) = elevation.sin_cos();
+        for k in 0..FIT_AZIMUTHS {
+            let azimuth = std::f64::consts::TAU * k as f64 / FIT_AZIMUTHS as f64;
+            let (sin_a, cos_a) = azimuth.sin_cos();
+            rays.push(FitRay {
+                direction: DVec3::new(cos_e * cos_a, sin_e, cos_e * sin_a),
+                weight: band / FIT_AZIMUTHS as f64,
+                azimuth: Some(k),
+            });
+        }
+    }
+    rays
+}
+
+/// The axis-aligned bounds of the static world; fitted boxes clamp to it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WorldBounds {
+    pub min: DVec3,
+    pub max: DVec3,
+}
+
+impl WorldBounds {
+    /// Bounds of `positions`, or `None` when there are none.
+    pub(crate) fn from_positions<'p>(
+        positions: impl Iterator<Item = &'p [f32; 3]>,
+    ) -> Option<Self> {
+        let mut bounds: Option<Self> = None;
+        for p in positions {
+            let p = DVec3::from(p.map(f64::from));
+            bounds = Some(match bounds {
+                Some(b) => Self {
+                    min: b.min.min(p),
+                    max: b.max.max(p),
+                },
+                None => Self { min: p, max: p },
+            });
+        }
+        bounds
+    }
+
+    pub(crate) fn diagonal(&self) -> f64 {
+        (self.max - self.min).length()
+    }
+
+    /// Where a ray from `origin` inside the bounds leaves them.
+    fn exit_point(&self, origin: DVec3, direction: DVec3) -> DVec3 {
+        let mut t_exit = f64::INFINITY;
+        for axis in 0..3 {
+            let d = direction[axis];
+            if d.abs() > 1e-12 {
+                let wall = if d > 0.0 {
+                    self.max[axis]
+                } else {
+                    self.min[axis]
+                };
+                t_exit = t_exit.min((wall - origin[axis]) / d);
+            }
+        }
+        origin + direction * t_exit.max(0.0)
+    }
+
+    fn clamp(&self, p: DVec3) -> DVec3 {
+        p.clamp(self.min, self.max)
+    }
+}
+
+/// Box sides a fitted plane can bound: +X, −X, +Z, −Z and the ceiling. The
+/// floor of the box is the capture plane itself, since water reads only its
+/// upper hemisphere.
+const SIDES: [(usize, f64); 5] = [(0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0), (1, 1.0)];
+const CEILING: usize = 4;
+
+/// A wall a fit ray hit: the box side it bounds and its plane's coordinate
+/// along that side's axis.
+type Wall = (usize, f64);
+
+/// The box a face's water sees, from `origin` just above it: the room shell.
+/// Walls vote by azimuth column, walking each column up from the horizon.
+/// Each wall hit tops the column in turn until its first ceiling-facing
+/// (downward) hit closes it. After that, a wall tops the column only when it
+/// lies farther out than the top, along the top's side: the side of a beam
+/// spanning the room, or the riser of a tray ceiling, is nearer than the
+/// room wall the column met below it, so it is ceiling detail and no shell;
+/// the room wall seen over a coping lip overhanging a sunken pool is farther
+/// than the pit wall met under the lip, so it tops the column although the
+/// lip's underside closed it.
+///
+/// Then a column whose last wall lies on a wall plane takes that last wall
+/// instead: the plane has an opening in it, so a column seeing through a
+/// doorway tops out on the lintel. A plane is a wall when some column meets
+/// it before its first ceiling hit, or tops out on it and ends there having
+/// met no ceiling farther out than its top on the way: beside a doorway over
+/// a lipped pool, a column reaches the room wall past nothing but the lip's
+/// underside, while one reaching a tray ceiling's riser has passed the
+/// soffit beyond its pit wall first, so the riser is no wall. An opening
+/// spanning a room's whole side leaves no column to meet its plane that
+/// way: it is a beam with a room beyond it, so the box reaches the far
+/// room's wall (the runtime's distance search still finds the lintel).
+///
+/// A sunken pool's column tops out on the room wall above its pit, and a
+/// column over a low prop on the wall beyond it. A lip that hides a wall
+/// from the water nearly up to a tray ceiling's soffit leaves the columns
+/// facing that wall nothing to top out on but the raised centre's riser, so
+/// a pool off-centre under such a lip fits the riser on the sides it lies
+/// toward; an authored `reflection_volume` box overrides it. Each side takes
+/// the plane most columns vote for (ties to the farther). The ceiling is the
+/// downward-facing plane the most sky ends on. A side nothing votes for
+/// falls back to the farthest point reached that way, misses counting where
+/// they leave the world bounds; the box is clamped to those bounds and
+/// always holds the origin. Rays run in their pinned order and every rule is
+/// a fixed comparison over them, so the box depends on nothing but the
+/// geometry.
+pub(crate) fn fit_box(
+    tracer: &SceneTracer<'_>,
+    origin: DVec3,
+    bounds: &WorldBounds,
+    rays: &[FitRay],
+) -> (DVec3, DVec3) {
+    let origin = bounds.clamp(origin);
+    let reach = bounds.diagonal() as f32 + 1.0;
+    let origin_f32 = origin.as_vec3();
+    // Per column: the wall that tops it, the last wall below its first
+    // ceiling hit, the last wall that topped it past a ceiling before it was
+    // sealed, and the last wall at all. A column is sealed once a ceiling hit
+    // lies farther out than its top: it has looked past its wall.
+    let mut column_top: [Option<Wall>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_open: [Option<Wall>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_raised: [Option<Wall>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_last: [Option<Wall>; FIT_AZIMUTHS] = [None; FIT_AZIMUTHS];
+    let mut column_closed = [false; FIT_AZIMUTHS];
+    let mut column_sealed = [false; FIT_AZIMUTHS];
+    let mut ceiling: Vec<(f64, f64)> = Vec::new();
+    let mut reached = [f64::NEG_INFINITY; 5];
+    // Rays run ring by ring upward, so a column's later wall hit is higher.
+    for ray in rays {
+        let direction = ray.direction;
+        let (point, facing) = match tracer.closest_hit(origin_f32, direction.as_vec3(), reach) {
+            Some(hit) => {
+                let surface = tracer.surface(&hit, origin_f32, direction.as_vec3());
+                let point = origin + direction * f64::from(hit.distance);
+                (point, facing_side(surface.normal.as_dvec3()))
+            }
+            None => (bounds.exit_point(origin, direction), None),
+        };
+        let point = bounds.clamp(point);
+        for (side, &(axis, sign)) in SIDES.iter().enumerate() {
+            reached[side] = reached[side].max((point[axis] - origin[axis]) * sign);
+        }
+        match (facing, ray.azimuth) {
+            (Some(CEILING), column) => {
+                ceiling.push((point.y, ray.weight));
+                if let Some(column) = column {
+                    column_closed[column] = true;
+                    if column_top[column].is_some_and(|top| beyond(point, top)) {
+                        column_sealed[column] = true;
+                    }
+                }
+            }
+            (Some(side), Some(column)) => {
+                let wall = Some((side, point[SIDES[side].0]));
+                column_last[column] = wall;
+                if !column_closed[column] {
+                    column_top[column] = wall;
+                    column_open[column] = wall;
+                } else if column_top[column].is_some_and(|top| beyond(point, top)) {
+                    // Past the ceiling, only a wall farther out than the top
+                    // replaces it; one on the top's plane or nearer is detail.
+                    column_top[column] = wall;
+                    if !column_sealed[column] {
+                        column_raised[column] = wall;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let ended_raised: [Option<Wall>; FIT_AZIMUTHS] = std::array::from_fn(|column| {
+        column_raised[column]
+            .filter(|&raised| column_last[column].is_some_and(|last| same_plane(raised, last)))
+    });
+    let is_wall = |wall: Wall| {
+        column_open
+            .iter()
+            .chain(&ended_raised)
+            .flatten()
+            .any(|&plane| same_plane(plane, wall))
+    };
+    let mut votes: [Vec<(f64, f64)>; 5] = Default::default();
+    for (top, last) in column_top.into_iter().zip(column_last) {
+        let top = match last {
+            Some(last) if is_wall(last) => Some(last),
+            _ => top,
+        };
+        if let Some((side, coordinate)) = top {
+            votes[side].push((coordinate, 1.0));
+        }
+    }
+    votes[CEILING] = ceiling;
+    let mut lo = origin;
+    let mut hi = origin;
+    for (side, &(axis, sign)) in SIDES.iter().enumerate() {
+        let plane = best_plane(&mut votes[side], origin[axis], sign)
+            .unwrap_or(origin[axis] + reached[side].max(0.0) * sign);
+        if sign > 0.0 {
+            hi[axis] = hi[axis].max(plane);
+        } else {
+            lo[axis] = lo[axis].min(plane);
+        }
+    }
+    (bounds.clamp(lo), bounds.clamp(hi))
+}
+
+/// The box side a surface facing `normal` can bound: a wall facing −X bounds
+/// +X, and so on. Up-facing surfaces (floors, ledge tops) bound nothing.
+fn facing_side(normal: DVec3) -> Option<usize> {
+    let a = normal.abs();
+    if a.y >= a.x && a.y >= a.z {
+        (normal.y < 0.0).then_some(CEILING)
+    } else if a.x >= a.z {
+        Some(if normal.x < 0.0 { 0 } else { 1 })
+    } else {
+        Some(if normal.z < 0.0 { 2 } else { 3 })
+    }
+}
+
+/// Whether `point` lies more than [`FIT_PLANE_MERGE_M`] farther out than
+/// `wall`'s plane, along its side.
+fn beyond(point: DVec3, (side, plane): Wall) -> bool {
+    let (axis, sign) = SIDES[side];
+    (point[axis] - plane) * sign > FIT_PLANE_MERGE_M
+}
+
+/// Whether two walls bound one side on one plane, within
+/// [`FIT_PLANE_MERGE_M`].
+fn same_plane(a: Wall, b: Wall) -> bool {
+    a.0 == b.0 && (a.1 - b.1).abs() < FIT_PLANE_MERGE_M
+}
+
+/// The best-supported plane among `(coordinate, weight)` votes: votes within
+/// [`FIT_PLANE_MERGE_M`] merge into one plane; ties go to the plane farther
+/// from `origin` along `sign`.
+fn best_plane(votes: &mut [(f64, f64)], origin: f64, sign: f64) -> Option<f64> {
+    votes.sort_by(|a, b| ((a.0 - origin) * sign).total_cmp(&((b.0 - origin) * sign)));
+    let mut best: Option<(f64, f64)> = None;
+    let mut start = 0;
+    while start < votes.len() {
+        let mut end = start;
+        let (mut weight, mut weighted) = (0.0, 0.0);
+        while end < votes.len()
+            && ((votes[end].0 - votes[start].0) * sign).abs() < FIT_PLANE_MERGE_M
+        {
+            weight += votes[end].1;
+            weighted += votes[end].0 * votes[end].1;
+            end += 1;
+        }
+        if best.is_none_or(|(_, w)| weight >= w) {
+            best = Some((weighted / weight, weight));
+        }
+        start = end;
+    }
+    best.map(|(plane, _)| plane)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bvh_build::build_bvh;
+    use crate::reflection_probes::reflection_probes_test_fixtures::{
+        GeometryBuilder, box_room, rect,
+    };
+    use glam::Vec3;
+
+    fn fit(geometry: &crate::geometry::GeometryResult, origin: DVec3) -> (DVec3, DVec3) {
+        let (bvh, primitives, _) = build_bvh(geometry).unwrap();
+        let tracer = SceneTracer::new(&bvh, &primitives, geometry);
+        let bounds =
+            WorldBounds::from_positions(geometry.geometry.vertices.iter().map(|v| &v.position))
+                .unwrap();
+        fit_box(&tracer, origin, &bounds, &fit_rays())
+    }
+
+    fn quad(builder: &mut GeometryBuilder, normal: Vec3, corners: [Vec3; 4]) {
+        builder.push_face(normal, &corners, 0, Vec3::ZERO, 0, [[0.0; 2]; 4]);
+    }
+
+    fn assert_box(actual: (DVec3, DVec3), min: [f64; 3], max: [f64; 3]) {
+        let close = |a: DVec3, b: [f64; 3]| (a - DVec3::from(b)).abs().max_element() < 1e-3;
+        assert!(close(actual.0, min) && close(actual.1, max), "{actual:?}");
+    }
+
+    #[test]
+    fn fit_box_reaches_the_walls_and_ceiling_of_a_plain_room() {
+        let room = box_room([-4.0, -1.0, -3.0], [5.0, 3.0, 2.0]);
+        let fitted = fit(&room, DVec3::new(1.0, 0.002, -0.5));
+        assert_box(fitted, [-4.0, 0.002, -3.0], [5.0, 3.0, 2.0]);
+    }
+
+    /// A pool sunk 1.5 m into a 12 m room's floor: the water sees the pit's
+    /// walls only at the horizon, and the room's walls above them.
+    #[test]
+    fn fit_box_of_a_sunken_pool_reaches_the_room_not_the_pit() {
+        let (lo, hi) = (Vec3::new(-6.0, -1.5, -6.0), Vec3::new(6.0, 4.0, 6.0));
+        let pit = 2.0;
+        let mut b = GeometryBuilder::default();
+        // Room shell above the floor line.
+        quad(&mut b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(
+                &mut b,
+                normal,
+                rect(Vec3::new(lo.x, 0.0, lo.z), hi, axis, value),
+            );
+        }
+        // Floor around the pit, as four strips.
+        let floor = |b: &mut GeometryBuilder, x0: f32, z0: f32, x1: f32, z1: f32| {
+            let r = rect(Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1), 1, 0.0);
+            quad(b, Vec3::Y, r);
+        };
+        floor(&mut b, lo.x, lo.z, hi.x, -pit);
+        floor(&mut b, lo.x, pit, hi.x, hi.z);
+        floor(&mut b, lo.x, -pit, -pit, pit);
+        floor(&mut b, pit, -pit, hi.x, pit);
+        // The pit: walls facing its centre, and its floor.
+        let (plo, phi) = (Vec3::new(-pit, lo.y, -pit), Vec3::new(pit, 0.0, pit));
+        quad(&mut b, Vec3::Y, rect(plo, phi, 1, lo.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, -pit),
+            (Vec3::NEG_X, 0, pit),
+            (Vec3::Z, 2, -pit),
+            (Vec3::NEG_Z, 2, pit),
+        ] {
+            quad(&mut b, normal, rect(plo, phi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let water = -0.4;
+        let fitted = fit(&geometry, DVec3::new(0.3, water + 0.002, -0.2));
+        assert_box(fitted, [-6.0, water + 0.002, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// The pit of a 4 m pool sunk into a 12 m room, under a 0.2 m coping lip
+    /// overhanging the water 0.5 m on all four sides. Every column meets the
+    /// pit wall under the lip, then the lip's underside, so no column meets
+    /// the room wall before a ceiling hit; the room wall seen over the lip is
+    /// farther out than the pit wall, and the box reaches it.
+    #[test]
+    fn fit_box_of_a_sunken_pool_under_an_overhanging_lip_reaches_the_room() {
+        let mut b = GeometryBuilder::default();
+        open_floor_room(&mut b, Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 6.0, 6.0));
+        pit_under_a_lip(&mut b, 2.0, 1.5, 0.2, -1.5);
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let water = -0.6;
+        let fitted = fit(&geometry, DVec3::new(0.3, water + 0.002, -0.2));
+        assert_box(fitted, [-6.0, water + 0.002, -6.0], [6.0, 6.0, 6.0]);
+    }
+
+    /// A pool's pit, `pit` m from its centre on each side and down to
+    /// `floor`, under a coping lip whose underside lies on the floor line
+    /// (y = 0) and whose inner edge, `lip` m from the centre, stands `coping`
+    /// m tall. Rays rising from the water never reach the room's floor, the
+    /// lip's top or its outer edge, so none is built.
+    fn pit_under_a_lip(b: &mut GeometryBuilder, pit: f32, lip: f32, coping: f32, floor: f32) {
+        facing_in(b, Vec3::new(-pit, floor, -pit), Vec3::new(pit, 0.0, pit));
+        let underside = |b: &mut GeometryBuilder, x0: f32, z0: f32, x1: f32, z1: f32| {
+            let r = rect(Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1), 1, 0.0);
+            quad(b, Vec3::NEG_Y, r);
+        };
+        underside(b, -pit, -pit, pit, -lip);
+        underside(b, -pit, lip, pit, pit);
+        underside(b, -pit, -lip, -lip, lip);
+        underside(b, lip, -lip, pit, lip);
+        facing_in(b, Vec3::new(-lip, 0.0, -lip), Vec3::new(lip, coping, lip));
+    }
+
+    /// The four walls of `lo`..`hi`, facing its centre.
+    fn facing_in(b: &mut GeometryBuilder, lo: Vec3, hi: Vec3) {
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(b, normal, rect(lo, hi, axis, value));
+        }
+    }
+
+    /// Two 6 m rooms joined by a 2 m doorway in the wall at x = 0: a pool in
+    /// the west room fits the west room, not both.
+    #[test]
+    fn fit_box_stops_at_a_doorway_wall() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -3.0), Vec3::new(6.0, 3.0, 3.0));
+        let mut b = GeometryBuilder::default();
+        quad(&mut b, Vec3::Y, rect(lo, hi, 1, lo.y));
+        quad(&mut b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(&mut b, normal, rect(lo, hi, axis, value));
+        }
+        // The dividing wall, both faces, around a doorway z −1..1, y 0..2.
+        for normal in [Vec3::NEG_X, Vec3::X] {
+            let pieces = [
+                (Vec3::new(0.0, 0.0, -3.0), Vec3::new(0.0, 3.0, -1.0)),
+                (Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 3.0, 3.0)),
+                (Vec3::new(0.0, 2.0, -1.0), Vec3::new(0.0, 3.0, 1.0)),
+            ];
+            for (plo, phi) in pieces {
+                quad(&mut b, normal, rect(plo, phi, 0, 0.0));
+            }
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        // Off the doorway's axis, as a pool beside a doorway would be.
+        let fitted = fit(&geometry, DVec3::new(-3.0, 0.502, 0.5));
+        assert_box(fitted, [-6.0, 0.502, -3.0], [0.0, 3.0, 3.0]);
+    }
+
+    /// A 6 m room opening into a 9 m one through a doorway 4 m wide and 2 m
+    /// tall in the 6 m wall at x = 0. Most columns facing +X see through the
+    /// doorway to the far room's back wall, then its ceiling, then end on the
+    /// lintel; only two beside the doorway meet the wall below any ceiling.
+    /// That makes its plane a wall, so the door columns take the lintel, and
+    /// the box stops at the doorway wall rather than the far room's back wall.
+    #[test]
+    fn fit_box_stops_at_a_wide_doorway_into_a_deeper_room() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -3.0), Vec3::new(9.0, 3.0, 3.0));
+        let mut b = GeometryBuilder::default();
+        quad(&mut b, Vec3::Y, rect(lo, hi, 1, lo.y));
+        open_floor_room(&mut b, lo, hi);
+        // The dividing wall, both faces, around a doorway z −2..2, y 0..2.
+        for normal in [Vec3::NEG_X, Vec3::X] {
+            let pieces = [
+                (Vec3::new(0.0, 0.0, -3.0), Vec3::new(0.0, 3.0, -2.0)),
+                (Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 3.0, 3.0)),
+                (Vec3::new(0.0, 2.0, -2.0), Vec3::new(0.0, 3.0, 2.0)),
+            ];
+            for (plo, phi) in pieces {
+                quad(&mut b, normal, rect(plo, phi, 0, 0.0));
+            }
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let fitted = fit(&geometry, DVec3::new(-3.0, 0.502, 0.5));
+        assert_box(fitted, [-6.0, 0.502, -3.0], [0.0, 3.0, 3.0]);
+    }
+
+    // Regression: under a lip no column met the room wall before a ceiling,
+    // so the doorway rescue found no wall and the box reached the bay.
+    /// A 12 m room, 4 m tall, whose +X wall has an opening 7 m wide and 3 m
+    /// tall into a bay 3 m deep, its ceiling flush with the lintel; in its
+    /// floor, the lip fixture's pool under a 0.1 m coping, its water 0.2 m
+    /// below the lip. No column facing +X meets that wall below a ceiling:
+    /// each meets the pit wall, then the lip's underside. Those beside the
+    /// opening top out on the wall past nothing but the lip and end there,
+    /// so it is a wall: the columns through the opening take the lintel, and
+    /// the box stops at the room rather than the bay's back wall.
+    #[test]
+    fn fit_box_under_a_lip_stops_at_a_wall_with_an_opening() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 4.0, 6.0));
+        let (width, door, depth) = (7.0, 3.0, 3.0);
+        let mut b = GeometryBuilder::default();
+        quad(&mut b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(&mut b, normal, rect(lo, hi, axis, value));
+        }
+        // The +X wall beside the opening, and the lintel over it.
+        let w = width * 0.5;
+        for (plo, phi) in [
+            (Vec3::new(hi.x, lo.y, lo.z), Vec3::new(hi.x, hi.y, -w)),
+            (Vec3::new(hi.x, lo.y, w), Vec3::new(hi.x, hi.y, hi.z)),
+            (Vec3::new(hi.x, door, -w), Vec3::new(hi.x, hi.y, w)),
+        ] {
+            quad(&mut b, Vec3::NEG_X, rect(plo, phi, 0, hi.x));
+        }
+        // The bay: its back and side walls, and its ceiling.
+        let (blo, bhi) = (Vec3::new(hi.x, lo.y, -w), Vec3::new(hi.x + depth, door, w));
+        for (normal, axis, value) in [
+            (Vec3::NEG_X, 0, bhi.x),
+            (Vec3::Z, 2, blo.z),
+            (Vec3::NEG_Z, 2, bhi.z),
+            (Vec3::NEG_Y, 1, bhi.y),
+        ] {
+            quad(&mut b, normal, rect(blo, bhi, axis, value));
+        }
+        pit_under_a_lip(&mut b, 2.0, 1.5, 0.1, -1.5);
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let water = -0.2;
+        let fitted = fit(&geometry, DVec3::new(-0.3, water + 0.002, 0.1));
+        assert_box(fitted, [-6.0, water + 0.002, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// A 1.6 m wall on the pool's rim, 2 m off, as e24's grain markers stand:
+    /// the far wall shows in the band above it, and the box reaches it.
+    #[test]
+    fn fit_box_reaches_past_a_low_wall_on_the_rim() {
+        let mut b = GeometryBuilder::default();
+        let (lo, hi) = (Vec3::new(-12.0, 0.0, -6.0), Vec3::new(12.0, 10.0, 6.0));
+        quad(&mut b, Vec3::Y, rect(lo, hi, 1, lo.y));
+        quad(&mut b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(&mut b, normal, rect(lo, hi, axis, value));
+        }
+        let (plo, phi) = (Vec3::new(2.0, 0.0, -2.5), Vec3::new(2.4, 1.6, 2.5));
+        for (normal, axis, value) in [
+            (Vec3::NEG_X, 0, plo.x),
+            (Vec3::X, 0, phi.x),
+            (Vec3::Y, 1, phi.y),
+            (Vec3::NEG_Z, 2, plo.z),
+            (Vec3::Z, 2, phi.z),
+        ] {
+            quad(&mut b, normal, rect(plo, phi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let fitted = fit(&geometry, DVec3::new(0.0, 0.302, 0.0));
+        assert_box(fitted, [-12.0, 0.302, -6.0], [12.0, 10.0, 6.0]);
+    }
+
+    /// The walls and ceiling of the room `lo`..`hi`; no floor, since fit rays
+    /// never point down.
+    fn open_floor_room(b: &mut GeometryBuilder, lo: Vec3, hi: Vec3) {
+        quad(b, Vec3::NEG_Y, rect(lo, hi, 1, hi.y));
+        for (normal, axis, value) in [
+            (Vec3::X, 0, lo.x),
+            (Vec3::NEG_X, 0, hi.x),
+            (Vec3::Z, 2, lo.z),
+            (Vec3::NEG_Z, 2, hi.z),
+        ] {
+            quad(b, normal, rect(lo, hi, axis, value));
+        }
+    }
+
+    /// A beam spanning the room above the pool, 1 m deep under a 4 m
+    /// ceiling: columns toward it meet the ceiling beyond the beam first,
+    /// then the beam's side, which must not become the room's wall.
+    #[test]
+    fn fit_box_ignores_a_ceiling_beam_spanning_the_room() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 4.0, 6.0));
+        let mut b = GeometryBuilder::default();
+        open_floor_room(&mut b, lo, hi);
+        let (blo, bhi) = (Vec3::new(0.0, 3.0, lo.z), Vec3::new(0.4, hi.y, hi.z));
+        for (normal, axis, value) in [
+            (Vec3::NEG_Y, 1, blo.y),
+            (Vec3::NEG_X, 0, blo.x),
+            (Vec3::X, 0, bhi.x),
+        ] {
+            quad(&mut b, normal, rect(blo, bhi, axis, value));
+        }
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let fitted = fit(&geometry, DVec3::new(-2.0, 0.302, 0.3));
+        assert_box(fitted, [-6.0, 0.302, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// A tray ceiling: a 3 m soffit 2 m deep around the walls, the centre
+    /// raised to 4 m. Columns meet the soffit, then the raised centre's
+    /// riser, which must not become the room's wall.
+    #[test]
+    fn fit_box_of_a_tray_ceiling_reaches_the_walls() {
+        let mut b = GeometryBuilder::default();
+        tray_ceiling_room(&mut b);
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        // Most sky ends on the raised centre, so the box's top is its 4 m.
+        let fitted = fit(&geometry, DVec3::new(0.3, 0.302, -0.2));
+        assert_box(fitted, [-6.0, 0.302, -6.0], [6.0, 4.0, 6.0]);
+    }
+
+    /// The walls of a 12 m room with a tray ceiling: a 3 m soffit 2 m deep
+    /// around the walls, the centre raised to 4 m. No floor.
+    fn tray_ceiling_room(b: &mut GeometryBuilder) {
+        let (lo, hi) = (Vec3::new(-6.0, 0.0, -6.0), Vec3::new(6.0, 3.0, 6.0));
+        facing_in(b, lo, hi);
+        // The soffit as four strips around the raised centre.
+        let inner = 4.0;
+        let soffit = |b: &mut GeometryBuilder, x0: f32, z0: f32, x1: f32, z1: f32| {
+            let r = rect(Vec3::new(x0, 0.0, z0), Vec3::new(x1, 0.0, z1), 1, hi.y);
+            quad(b, Vec3::NEG_Y, r);
+        };
+        soffit(b, lo.x, lo.z, hi.x, -inner);
+        soffit(b, lo.x, inner, hi.x, hi.z);
+        soffit(b, lo.x, -inner, -inner, inner);
+        soffit(b, inner, -inner, hi.x, inner);
+        // The raised centre: its risers facing inward, and its ceiling.
+        let (clo, chi) = (
+            Vec3::new(-inner, hi.y, -inner),
+            Vec3::new(inner, 4.0, inner),
+        );
+        quad(b, Vec3::NEG_Y, rect(clo, chi, 1, chi.y));
+        facing_in(b, clo, chi);
+    }
+
+    /// The lip fixture's pool under the tray fixture's ceiling, off centre
+    /// toward +X and −Z. The lip hides the +X and −Z walls from the water
+    /// nearly up to the soffit, so no ring sees them: those columns pass the
+    /// soffit and top out on the raised centre's riser, and the box stops at
+    /// it on those sides. Pins the limit `fit_box` names; an authored box is
+    /// the override.
+    #[test]
+    fn fit_box_of_a_pool_under_a_lip_and_a_tray_ceiling_stops_at_the_riser_it_lies_toward() {
+        let mut b = GeometryBuilder::default();
+        tray_ceiling_room(&mut b);
+        pit_under_a_lip(&mut b, 2.0, 1.5, 0.2, -1.5);
+        let geometry = b.finish(vec!["t".to_string()]);
+
+        let water = -0.6;
+        let fitted = fit(&geometry, DVec3::new(0.3, water + 0.002, -0.2));
+        assert_box(fitted, [-6.0, water + 0.002, -4.0], [4.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn fit_rays_cover_the_upper_hemisphere_by_solid_angle() {
+        let rays = fit_rays();
+        assert_eq!(rays.len(), 1 + FIT_AZIMUTHS * FIT_RING_COUNT);
+        assert!(rays.iter().all(|r| r.direction.y >= 0.0 && r.weight > 0.0));
+        assert!(
+            rays.iter()
+                .all(|r| (r.direction.length() - 1.0).abs() < 1e-12)
+        );
+        // Weights partition the hemisphere: 2π sr over 2π.
+        let total: f64 = rays.iter().map(|r| r.weight).sum();
+        assert!((total - 1.0).abs() < 1e-9, "{total}");
+    }
+}

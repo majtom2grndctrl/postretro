@@ -38,8 +38,8 @@ use crate::{
     cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, environment_volumes, fog_cell_masks, geometry, kinematic_geometry,
     light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals,
-    sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group, texture_mips,
-    texture_validation, trigger_volumes, visibility,
+    reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group,
+    texture_mips, texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -1864,6 +1864,46 @@ fn run_after_parsing(
         true,
     );
 
+    // Reflection probes read the encoded id 52 and id 22, the packed base SH,
+    // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),
+    // id 45's descriptor table (checked for identity), the runtime lights
+    // (id 18) and their chunk windows (id 23), and the baked `.prm`
+    // sidecars, with the BVH still in scope; the BSP and its exterior leaves
+    // drop capture points in solid or outside the hull.
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ReflectionProbes);
+    let reflection_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ReflectionProbes, reflection_progress.clone());
+    let reflection_control = BakeControl::new(Arc::clone(&governor), &reflection_progress);
+    let reflection_probes_section = reflection_probes::bake_or_load_reflection_probes(
+        &reflection_probes::ReflectionProbeInputs {
+            bvh: &bvh,
+            primitives: &bvh_primitives,
+            geometry: &geo_result,
+            environment_volumes: &environment_volumes_section,
+            reflection_volumes: &map_data.reflection_volumes,
+            tree: &result.tree,
+            exterior_leaves: &exterior_leaves,
+            lightmap: &lightmap_section,
+            sh_volume: &packed_sh_volume,
+            delta_sh: delta_sections.indirect.as_ref(),
+            animated_weight_maps: animated_light_weight_maps_section.as_ref(),
+            animated_direct_sh: delta_sections.animated_direct.as_ref(),
+            alpha_lights: &alpha_lights_section,
+            chunk_light_list: &chunk_light_list_section,
+            texture_keys: &name_to_key,
+            prm_root: &prm_root,
+        },
+        stage_cache.as_ref(),
+        &reflection_control,
+    )?;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ReflectionProbes,
+        stage_start,
+        reflection_probes_section.is_some(),
+    );
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ClusterDirectory);
     let finalized_cluster_metadata =
         build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
@@ -1925,6 +1965,7 @@ fn run_after_parsing(
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
         push_forces: push_forces_section.as_ref(),
+        reflection_probes: reflection_probes_section.as_ref(),
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
         cell_residency_set: cell_residency_set_section.as_ref(),

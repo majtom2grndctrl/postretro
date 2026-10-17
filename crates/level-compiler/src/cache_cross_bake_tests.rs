@@ -1363,11 +1363,11 @@ fn five_stage_version_bumps_miss_then_hit() {
 
 #[test]
 fn lighting_scale_cache_versions_pin_current_epochs() {
-    assert_eq!(DIRECT_SH_STAGE_VERSION, 4);
+    assert_eq!(DIRECT_SH_STAGE_VERSION, 5);
     assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
     assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
     assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
-    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 2);
+    assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 3);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

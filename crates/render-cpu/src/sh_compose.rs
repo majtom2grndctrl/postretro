@@ -173,9 +173,9 @@ impl DirectDeltaComposeBuffers {
     }
 }
 
-/// CPU-side source of truth for the animated-direct compose scale. The Pass-B
-/// WGSL helper mirrors this exactly: unit-radiance delta transport receives the
-/// authored intensity/color once through `base_color`, then brightness.
+/// One animated light's descriptor as the compose scale reads it: unit-radiance
+/// delta transport receives the authored intensity/color once through
+/// `base_color`, then brightness.
 #[derive(Clone, Copy, Debug)]
 pub struct AnimatedLightScaleDescriptor<'a> {
     /// Positive for a closed loop. Negative selects endpoint-clamped sampling;
@@ -188,9 +188,13 @@ pub struct AnimatedLightScaleDescriptor<'a> {
     pub is_active: bool,
 }
 
-/// Match `animated_light_scale` in `animated_direct_sh_compose.wgsl` without a
-/// GPU context. `base_color` is either authored `intensity × color`, or an
-/// intensity splat when a color curve supplies RGB.
+/// Match `animated_light_scale` in `sh_compose.wgsl` without a GPU context:
+/// clamped colour × clamped brightness, 0 while inactive. `base_color` is
+/// either authored `intensity × color`, or an intensity splat when a color
+/// curve supplies RGB. `animated_direct_sh_compose.wgsl`'s helper of the same
+/// name further multiplies the promotion weight and gates on the lighting
+/// mask and its debug override; this form reads none of them, which is why
+/// the fluid reflection's live lighting ports it.
 pub fn animated_light_scale(
     descriptor: Option<AnimatedLightScaleDescriptor<'_>>,
     time: f32,

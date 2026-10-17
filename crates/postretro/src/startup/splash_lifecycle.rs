@@ -610,6 +610,7 @@ impl App {
             self.commit_loading_manifest(ui_images, loading, image_refs);
         }
         self.apply_mod_bloom_render_profile(committed_render_profile);
+        self.apply_mod_reflection_profile(committed_render_profile);
         self.apply_mod_audio_profile(committed_audio_profile);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_presentation_templates(committed_presentation_templates);

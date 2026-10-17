@@ -276,6 +276,7 @@ fn fluid(name: &str) -> postretro_foundation::FluidDescriptor {
         wave_period: None,
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 
@@ -1293,4 +1294,197 @@ fn unloading_a_level_clears_its_fluid_surface_drift() {
 
     app.unload_level();
     assert!(app.fluid_surface_drift.is_empty());
+}
+
+// --- Reflectivity through the staged reload (pins P12, P24) -----------------
+
+/// A start script declaring `water` at the given opacity and reflectivity.
+fn reflecting_water_script(surface_opacity: &str, surface_reflectivity: &str) -> String {
+    format!(
+        "globalThis.__postretroModManifest = {{ name: 'Fluids', id: 'fluids', version: '1', \
+         fluids: [{{ name: 'water', viscosity: 2, viewTint: [0.1, 0.3, 0.4, 0.35], muffle: 0.8, \
+         surfaceOpacity: {surface_opacity}, surfaceReflectivity: {surface_reflectivity} }}] }};"
+    )
+}
+
+/// [`level_with_fluid_volume`] naming `water`, its top face at y 4 bound to
+/// one reflection probe.
+fn level_with_reflecting_pool() -> LevelWorld {
+    use postretro_level_format::environment_volumes::{
+        EnvironmentSurfaceFace, EnvironmentSurfaceVertex,
+    };
+    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
+    use postretro_level_format::reflection_probes::{
+        REFLECTION_PROBE_LIGHTS_PER_PROBE, ReflectionProbeBinding, ReflectionProbeLightShare,
+        ReflectionProbeRecord, ReflectionProbesSection,
+    };
+    let mut world = level_with_fluid_volume(7, "water");
+    let vertex = |x: f32, z: f32| EnvironmentSurfaceVertex {
+        position: [x, 4.0, z],
+        uv: [0.0, 0.0],
+    };
+    world.environment_volumes.volumes[0].surface_faces = vec![EnvironmentSurfaceFace {
+        texture_index: 0,
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(0.0, 4.0),
+            vertex(4.0, 4.0),
+            vertex(4.0, 0.0),
+        ],
+    }];
+    world.reflection_probes = Some(ReflectionProbesSection {
+        tile_dimension: 4,
+        tile_border: 1,
+        atlas_format: IRRADIANCE_FORMAT_BC6H,
+        probes: vec![ReflectionProbeRecord {
+            source_entity: 9,
+            box_min: [0.0, 0.0, 0.0],
+            box_max: [4.0, 8.0, 4.0],
+            capture_point: [2.0, 4.002, 2.0],
+            layer: 0,
+            lights: [ReflectionProbeLightShare::UNUSED; REFLECTION_PROBE_LIGHTS_PER_PROBE],
+        }],
+        bindings: vec![ReflectionProbeBinding {
+            volume: 0,
+            face: 0,
+            probe: 0,
+        }],
+        tiles: vec![0; 16],
+        distance_format:
+            postretro_level_format::reflection_probes::REFLECTION_PROBE_DISTANCE_F16_INVERSE_L1,
+        distances: postretro_level_format::reflection_probes::reflection_probe_zero_distances(1, 4),
+    });
+    world
+}
+
+/// This frame's fluid draws, as the app collects them for the renderer.
+fn collect_draws(app: &mut App) -> Vec<postretro_render_cpu::fluid_surface::FluidSurfaceDraw> {
+    let local = script_ctx(app).data_registry.borrow().fluids.clone();
+    crate::fluid_presentation::collect_fluid_surface_draws(
+        &mut app.fluid_surface_render,
+        app.level.as_ref().expect("installed"),
+        &postretro_visibility::VisibleCells::DrawAll,
+        Vec3::new(2.0, 6.0, 2.0),
+        &app.environment_volumes,
+        &app.environment_fluids,
+        &local,
+    )
+    .to_vec()
+}
+
+/// Queue a staged build of the start script under `mod_root` and poll until
+/// it fails, the route a broken reload takes: it never commits.
+fn fail_staged_manifest(app: &mut App, mod_root: &std::path::Path) {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let generation = app
+        .session
+        .as_mut()
+        .expect("test app session installed")
+        .scripting
+        .script_runtime
+        .enqueue_staged_manifest_build(mod_root)
+        .expect("staged build queued")
+        .expect("debug builds stage manifest reloads");
+    let failed = format!("[Scripting] staged mod-init generation {generation} failed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !capture
+        .records()
+        .iter()
+        .any(|record| record.message.contains(&failed))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the staged manifest never failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.poll_staged_manifest_results();
+    }
+}
+
+// Pin P12 for reflectivity, through the real staged reload route: the frame
+// after a reload that changes only `surfaceReflectivity` draws the new value
+// and re-uploads that fluid's row; an unchanged re-collect uploads nothing;
+// a failed reload keeps the previous value.
+#[test]
+fn a_staged_reload_changing_only_reflectivity_draws_the_new_value_next_frame() {
+    use postretro_render_cpu::fluid_surface::{FluidSurfaceSlots, pack_fluid_surfaces};
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let script = mod_root.path().join("start-script.js");
+    std::fs::write(&script, reflecting_water_script("0.6", "1")).expect("manifest written");
+    let mut app = test_app();
+    commit_staged_manifest(&mut app, mod_root.path());
+    let world = level_with_reflecting_pool();
+    let mesh = pack_fluid_surfaces(&world.environment_volumes.volumes, &[], 1);
+    app.install_level_payload(world, PathBuf::from("baked"))
+        .expect("fixture installs");
+    let mut slots = FluidSurfaceSlots::new(&mesh.volumes);
+
+    let draws = collect_draws(&mut app);
+    assert_eq!(draws.len(), 1);
+    assert_eq!(draws[0].params.reflectivity(), 1.0);
+    assert_eq!(draws[0].params.opacity(), 0.6);
+    slots.set_draws(&draws);
+    assert!(slots.take_dirty().is_some(), "the first frame uploads");
+
+    std::fs::write(&script, reflecting_water_script("0.6", "2.5")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    let draws = collect_draws(&mut app);
+    assert_eq!(
+        draws[0].params.reflectivity(),
+        2.5,
+        "frame N draws the new value"
+    );
+    assert_eq!(draws[0].params.opacity(), 0.6, "opacity unchanged");
+    slots.set_draws(&draws);
+    let (range, rows) = slots.take_dirty().expect("the changed row uploads");
+    assert_eq!(range, 0..1);
+    assert_eq!(rows[0].reflectivity(), 2.5);
+    slots.set_draws(&collect_draws(&mut app));
+    assert!(
+        slots.take_dirty().is_none(),
+        "an unchanged re-collect uploads no row"
+    );
+
+    std::fs::write(&script, "throw new Error('broken reload');").expect("manifest written");
+    fail_staged_manifest(&mut app, mod_root.path());
+    let draws = collect_draws(&mut app);
+    assert_eq!(
+        draws[0].params.reflectivity(),
+        2.5,
+        "a failed reload keeps the value"
+    );
+    slots.set_draws(&draws);
+    assert!(slots.take_dirty().is_none());
+}
+
+// Pin P24 through the staged reload route: a zero-opacity, fog-free fluid
+// with a bound face leaves the draw set on the frame a reload commits
+// reflectivity 1 → 0, and draws its reflection again after 0 → 1.
+#[test]
+fn a_staged_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
+    let mod_root = tempfile::tempdir().expect("temporary mod root");
+    let script = mod_root.path().join("start-script.js");
+    std::fs::write(&script, reflecting_water_script("0", "1")).expect("manifest written");
+    let mut app = test_app();
+    commit_staged_manifest(&mut app, mod_root.path());
+    app.install_level_payload(level_with_reflecting_pool(), PathBuf::from("baked"))
+        .expect("fixture installs");
+    let reflecting = collect_draws(&mut app);
+    assert_eq!(reflecting.len(), 1, "a zero-opacity reflecting fluid draws");
+    assert_eq!(reflecting[0].params.opacity(), 0.0);
+
+    std::fs::write(&script, reflecting_water_script("0", "0")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert!(
+        collect_draws(&mut app).is_empty(),
+        "frame N after 1 → 0 collects no draw"
+    );
+
+    std::fs::write(&script, reflecting_water_script("0", "1")).expect("manifest written");
+    commit_staged_manifest(&mut app, mod_root.path());
+    assert_eq!(
+        collect_draws(&mut app),
+        reflecting,
+        "the reverse reload draws again"
+    );
 }

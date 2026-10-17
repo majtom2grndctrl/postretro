@@ -15,6 +15,10 @@ const ENVIRONMENT_VOLUMES_CONTAINER_VERSION: u16 = 1;
 /// (`PUSH_FORCES_VERSION`) is the epoch a loader checks.
 const PUSH_FORCES_CONTAINER_VERSION: u16 = 1;
 
+/// Id 54's PRL table entry version. The payload's own leading version
+/// (`REFLECTION_PROBES_VERSION`) is the epoch a loader checks.
+const REFLECTION_PROBES_CONTAINER_VERSION: u16 = 1;
+
 /// Borrowed inputs for the one-shot legacy PRL descriptor plan.
 ///
 /// This is deliberately assembled only after direct/scatter policy has settled,
@@ -56,6 +60,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) teleporters: &'a TeleportersSection,
     pub(super) push_forces: Option<&'a PushForcesSection>,
+    pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
@@ -101,6 +106,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         environment_volumes,
         teleporters,
         push_forces,
+        reflection_probes,
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
@@ -442,6 +448,14 @@ pub(super) fn build_finalized_section_plan<'a>(
         sections.push(PlannedSection::new(
             SectionId::PushForces as u32,
             PUSH_FORCES_CONTAINER_VERSION,
+            section.byte_len(),
+            || Ok(section.to_bytes()),
+        ));
+    }
+    if let Some(section) = reflection_probes {
+        sections.push(PlannedSection::new(
+            SectionId::ReflectionProbes as u32,
+            REFLECTION_PROBES_CONTAINER_VERSION,
             section.byte_len(),
             || Ok(section.to_bytes()),
         ));

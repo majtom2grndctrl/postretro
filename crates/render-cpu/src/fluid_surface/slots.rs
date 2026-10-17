@@ -7,6 +7,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::fog::{FLUID_FOG_EXTINCTION_MAX, FLUID_FOG_EXTINCTION_PER_DISTANCE};
 use super::motion::FluidWaveParams;
+use super::reflection::{FLUID_REFLECTIVITY_MAX, reflection_mask_on};
 use super::{FLUID_SLOTS_PER_WINDOW, FluidSurfaceDraw, FluidSurfaceVolume};
 
 const NO_SLOT: u32 = u32::MAX;
@@ -34,10 +35,18 @@ pub struct FluidSurfaceLook {
     pub wave_amplitude: f32,
     /// Crest length range, texels, `[min, max]`.
     pub wave_length: [f32; 2],
+    /// Scale on Schlick's base reflectance 0.02: 0 reflects nothing, 1 is
+    /// water, 50 a mirror at every angle.
+    pub surface_reflectivity: f32,
+    /// Whether any surface face of the volume binds a reflection probe. A
+    /// volume with none reflects nothing, so it packs reflectivity 0.
+    pub has_bound_face: bool,
 }
 
 impl FluidSurfaceLook {
-    /// A look with only a surface opacity: no fog and no wave.
+    /// A look with only a surface opacity: no fog and no wave, reflecting as
+    /// water (reflectivity 1) wherever a face binds a probe. No face binds
+    /// until the caller says so.
     pub fn surface_only(surface_opacity: f32) -> Self {
         Self {
             surface_opacity,
@@ -46,6 +55,8 @@ impl FluidSurfaceLook {
             wave_period: None,
             wave_amplitude: 0.0,
             wave_length: [0.0; 2],
+            surface_reflectivity: 1.0,
+            has_bound_face: false,
         }
     }
 
@@ -94,8 +105,15 @@ impl FluidSurfaceLook {
         } else {
             [0.0; 4]
         };
+        // A volume with no bound face reflects nothing whatever it declares,
+        // so it packs 0 and the draw predicate drops it at zero opacity.
+        let reflectivity = if self.has_bound_face && self.surface_reflectivity.is_finite() {
+            self.surface_reflectivity.clamp(0.0, FLUID_REFLECTIVITY_MAX)
+        } else {
+            0.0
+        };
         FluidParamsRow {
-            surface: [opacity, extinction, 0.0, 0.0],
+            surface: [opacity, extinction, reflectivity, 0.0],
             fog_albedo: [albedo[0], albedo[1], albedo[2], 0.0],
             wave,
         }
@@ -103,11 +121,12 @@ impl FluidSurfaceLook {
 }
 
 /// One slot's per-volume parameters, three `vec4<f32>` as the shader's
-/// `FluidVolumeRow` reads them. `surface.zw` and `fog_albedo.w` are spare.
+/// `FluidVolumeRow` reads them. `surface.w` and `fog_albedo.w` are spare.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct FluidParamsRow {
-    /// `[opacity, fog extinction (3 / fogDistance, 0 = no fog), spare, spare]`.
+    /// `[opacity, fog extinction (3 / fogDistance, 0 = no fog), reflectivity
+    /// (0 without a bound face), spare]`.
     pub surface: [f32; 4],
     /// `[r, g, b, spare]`: the fog colour × [`FLUID_FOG_COLOR_SCALE`].
     pub fog_albedo: [f32; 4],
@@ -132,10 +151,29 @@ impl FluidParamsRow {
         self.surface[1]
     }
 
-    /// Whether a volume with this row draws anything: a visible surface, or
-    /// murk on its own at zero opacity.
+    /// Reflectivity as packed: 0 for a volume with no probe-bound face.
+    pub fn reflectivity(&self) -> f32 {
+        self.surface[2]
+    }
+
+    /// Whether a volume with this row draws anything: a visible surface, or,
+    /// at zero opacity, murk or a probe-bound face's reflection on its own.
     pub fn draws(&self) -> bool {
-        self.opacity() > 0.0 || self.fog_extinction() > 0.0
+        self.opacity() > 0.0 || self.fog_extinction() > 0.0 || self.reflectivity() > 0.0
+    }
+
+    /// The fluid shader variant a draw with this row takes under the frame's
+    /// lighting mask. Only a volume that can draw the probe term takes the
+    /// reflecting variant: a probe-bound face (reflectivity packs 0 without
+    /// one) at reflectivity above 0, with every lighting bit on. Every other
+    /// draw takes the reflection-free variant, whose fragments match what the
+    /// reflecting variant's gate leaves them, so it is chosen for cost alone.
+    pub fn shader_variant(&self, light_term_mask: u32) -> FluidShaderVariant {
+        if self.reflectivity() > 0.0 && reflection_mask_on(light_term_mask) {
+            FluidShaderVariant::Reflecting
+        } else {
+            FluidShaderVariant::ReflectionFree
+        }
     }
 
     /// The wave as the motion reference reads it.
@@ -147,6 +185,28 @@ impl FluidParamsRow {
             length_min,
             length_max,
         }
+    }
+}
+
+/// The two compilations of the fluid shader, one pipeline each over one
+/// layout. The reflection block's mere presence slows every fluid fragment
+/// on some drivers, so draws that cannot reflect take a variant compiled
+/// without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FluidShaderVariant {
+    /// No reflection code: a draw with no probe-bound face, reflectivity 0,
+    /// or an isolating lighting mask.
+    ReflectionFree,
+    /// The probe term, gated per fragment as before.
+    Reflecting,
+}
+
+impl FluidShaderVariant {
+    pub const ALL: [Self; 2] = [Self::ReflectionFree, Self::Reflecting];
+
+    /// The value of the shader's `FLUID_REFLECTIONS` override.
+    pub fn reflections(self) -> bool {
+        self == Self::Reflecting
     }
 }
 
@@ -227,6 +287,20 @@ impl FluidSurfaceSlots {
     /// This frame's slots, in draw order.
     pub fn frame_slots(&self) -> &[u32] {
         &self.frame_slots
+    }
+
+    /// This frame's slots in draw order, each with the shader variant its row
+    /// takes under `light_term_mask`. Allocation-free.
+    pub fn frame_draws(
+        &self,
+        light_term_mask: u32,
+    ) -> impl Iterator<Item = (u32, FluidShaderVariant)> + '_ {
+        self.frame_slots.iter().map(move |&slot| {
+            (
+                slot,
+                self.params[slot as usize].shader_variant(light_term_mask),
+            )
+        })
     }
 
     pub fn has_draws(&self) -> bool {

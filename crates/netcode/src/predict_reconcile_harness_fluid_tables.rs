@@ -41,6 +41,7 @@ fn fluid(name: &str, viscosity: f32, view_tint: [f32; 4]) -> FluidDescriptor {
         wave_period: None,
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
+        surface_reflectivity: 1.0,
     }
 }
 

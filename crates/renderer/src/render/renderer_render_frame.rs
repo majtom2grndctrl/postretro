@@ -651,9 +651,10 @@ impl Renderer {
         // its own visible draws, never on the smoke pass's particle gate.
         if render_world && self.full().fluid_surface.has_draws() {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
-            // Only a drawing frame reads the weight. It is stored every frame
-            // and uploads here lazily, only when it changed; the batched write
-            // copies ahead of this frame's submission.
+            // Only a drawing frame reads the scene inputs (fog weight,
+            // reflection style). The weight is stored every frame; both upload
+            // here lazily, only when changed; the batched write copies ahead
+            // of this frame's submission.
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -690,9 +691,12 @@ impl Renderer {
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
             fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
             fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
-            self.full()
-                .fluid_surface
-                .record_draws(&mut fluid_pass, &self.full().gpu_textures);
+            // The frame's group-0 mask picks each draw's shader variant.
+            self.full().fluid_surface.record_draws(
+                &mut fluid_pass,
+                &self.full().gpu_textures,
+                frame_light_term_mask,
+            );
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.

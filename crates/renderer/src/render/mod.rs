@@ -15,6 +15,7 @@ mod direct_sh_compose;
 mod direct_sh_compose_carrier;
 mod direct_sh_resources;
 mod dynamic_depth_cache;
+mod fluid_reflection_cells;
 mod fluid_reflection_probes;
 mod fluid_scene_inputs;
 mod fluid_surface;
@@ -228,6 +229,9 @@ pub use kinematic_brush::KinematicMoverInstance;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;
+// SPIKE (cell-rate spike): the debug cell levers and their stats.
+pub use fluid_reflection_cells::FluidReflectionCellStats;
+pub use postretro_render_cpu::fluid_surface::reflection_cells::FluidReflectionCellLevers;
 pub use renderer_geometry::level_world_to_geometry;
 pub(crate) use renderer_geometry::{
     SPEC_OWNER_STRIDE, build_default_view_projection, build_line_indices_from_triangles,

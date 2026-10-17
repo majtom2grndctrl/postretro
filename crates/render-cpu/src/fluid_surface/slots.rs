@@ -306,6 +306,11 @@ impl FluidSurfaceSlots {
     pub fn has_draws(&self) -> bool {
         !self.frame_slots.is_empty()
     }
+
+    /// SPIKE (cell-rate spike): slot `slot`'s row as last set.
+    pub fn row(&self, slot: u32) -> FluidParamsRow {
+        self.params[slot as usize]
+    }
 }
 
 /// The uniform window and in-window element that address one slot. The

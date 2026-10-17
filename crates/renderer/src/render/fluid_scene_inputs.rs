@@ -176,6 +176,11 @@ impl FluidSceneInputs {
         self.reflection_style = style;
     }
 
+    /// SPIKE (cell-rate spike): the reflection style the next pass draws.
+    pub fn reflection_style(&self) -> FluidReflectionStyle {
+        self.reflection_style
+    }
+
     /// The uniform as the next upload writes it.
     pub fn pending(&self) -> FluidSceneUniform {
         FluidSceneUniform::from_inputs(self.fog_weight, self.reflection_style)

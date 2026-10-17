@@ -399,10 +399,11 @@ fn fluid_pipeline_vertex_storage_and_sampled_textures_stay_within_limits() {
     // moments and direct atlas (group 3), the reflection probe array and its
     // distance array (group 4), and scene depth for depth fog (group 5): 10
     // of the 16.
+    // SPIKE (cell-rate spike): plus the sampled cell atlas in group 4: 11.
     let fragment_sampled = per_group(fragment_sampled_textures);
-    assert_eq!(fragment_sampled, [0, 4, 0, 3, 2, 1]);
+    assert_eq!(fragment_sampled, [0, 4, 0, 3, 3, 1]);
     let fragment_total: u32 = fragment_sampled.iter().sum();
-    assert_eq!(fragment_total, 10);
+    assert_eq!(fragment_total, 11);
     assert_eq!(
         fluid_surface::fluid_pipeline_stage_count(fragment_sampled_textures),
         fragment_total
@@ -437,7 +438,8 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
             [4, 0, 1, 1],
             [0, 5, 1, 0],
             [3, 3, 1, 1],
-            [2, 0, 2, 0],
+            // SPIKE: plus the sampled cell atlas.
+            [3, 0, 2, 0],
             [1, 0, 1, 0],
         ],
         "fluid FRAGMENT bindings changed"
@@ -450,8 +452,9 @@ fn fluid_pipeline_fragment_uniforms_and_samplers_stay_within_limits() {
     );
     assert_eq!(
         total(0),
-        10,
-        "eight sampled textures before probes, plus the probe and distance arrays"
+        11,
+        "eight sampled textures before probes, plus the probe and distance arrays, \
+         plus (SPIKE) the cell atlas"
     );
     assert_eq!(total(1), 8, "the probes add no storage buffer");
     assert_eq!(total(3), 2, "the probes add no sampler");

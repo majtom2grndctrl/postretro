@@ -662,6 +662,29 @@ impl Renderer {
                     .expect("renderer full-init must complete before full-ready paths run");
                 full.fluid_surface.upload_scene_inputs(queue);
             }
+            // SPIKE (cell-rate spike): the Fluid Reflection Cell Pass, its own
+            // compute pass ahead of the fluid pass, only under the cells lever.
+            {
+                let scene = self.render_extents().scene;
+                let max_workgroups = self.device.limits().max_compute_workgroups_per_dimension;
+                let Self { queue, full, .. } = self;
+                let full = full
+                    .as_mut()
+                    .expect("renderer full-init must complete before full-ready paths run");
+                full.fluid_surface.prepare_cell_pass(
+                    queue,
+                    frame_light_term_mask,
+                    view_proj,
+                    [scene.width, scene.height],
+                    max_workgroups,
+                );
+                let full = &*full;
+                full.fluid_surface.record_cell_pass(
+                    encoder,
+                    &full.uniform_bind_group,
+                    full.sh_bind_group(),
+                );
+            }
             let fluid_ts = self
                 .full()
                 .frame_timing
@@ -686,6 +709,8 @@ impl Renderer {
                     stencil_ops: None,
                 }),
                 timestamp_writes: fluid_ts,
+                // SPIKE: set only on a stats-armed frame.
+                occlusion_query_set: self.full().fluid_surface.cell_stats_query_set(),
                 ..Default::default()
             });
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
@@ -697,6 +722,11 @@ impl Renderer {
                 &self.full().gpu_textures,
                 frame_light_term_mask,
             );
+            drop(fluid_pass);
+            // SPIKE: a stats-armed frame's query resolve and counter copy.
+            self.full_mut()
+                .fluid_surface
+                .encode_cell_stats_readback(encoder);
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.

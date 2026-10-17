@@ -16,10 +16,17 @@ use postretro_render_cpu::fluid_surface::{
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+use super::fluid_reflection_cells::{
+    FluidCellPipelines, FluidCellStatsGpu, FluidReflectionCellStats, InstalledFluidCells,
+    cell_vertex_buffer_layout, fluid_cell_atlas_layout_entry, lever_constants,
+    lever_pipeline_index,
+};
 use super::fluid_reflection_probes::{
     FluidProbeResources, create_probe_index_buffer, fluid_probe_bind_group_layout_entries,
     installable_probe_section,
 };
+use postretro_render_cpu::fluid_surface::reflection_cells::FluidReflectionCellLevers;
+use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 
 #[cfg(test)]
 pub(crate) use super::fluid_scene_inputs::FLUID_SCENE_UNIFORM_BYTES;
@@ -66,9 +73,10 @@ pub(crate) fn fluid_variant_constants(variant: FluidShaderVariant) -> [(&'static
 
 /// Group 4, level-scoped: one uniform window (at most 64 KiB) of per-volume
 /// rows selected by a dynamic offset, then the reflection probe array, share
-/// table and distance array. Textures, samplers and uniforms only: the shared
-/// groups already spend the whole FRAGMENT storage budget.
-pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+/// table and distance array, and (SPIKE) the sampled cell atlas. Textures,
+/// samplers and uniforms only: the shared groups already spend the whole
+/// FRAGMENT storage budget.
+pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     let [probe_array, probe_table, probe_distance] = fluid_probe_bind_group_layout_entries();
     [
         wgpu::BindGroupLayoutEntry {
@@ -84,6 +92,7 @@ pub(crate) fn fluid_params_bind_group_layout_entries() -> [wgpu::BindGroupLayout
         probe_array,
         probe_table,
         probe_distance,
+        fluid_cell_atlas_layout_entry(),
     ]
 }
 
@@ -210,6 +219,9 @@ struct InstalledFluidSurfaces {
     /// through `params_bind_group`.
     _probes: FluidProbeResources,
     params_bind_group: wgpu::BindGroup,
+    /// SPIKE (cell-rate spike): the cell atlas, its vertex words and pass
+    /// resources.
+    cells: InstalledFluidCells,
     /// Indexed by draw slot.
     volumes: Vec<FluidSurfaceVolume>,
     slots: FluidSurfaceSlots,
@@ -230,6 +242,17 @@ pub(crate) struct FluidSurfacePass {
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
     installed: Option<InstalledFluidSurfaces>,
+    /// SPIKE (cell-rate spike): what the lever pipelines build from, the
+    /// reflecting lever pipelines (built on first use, indexed by
+    /// `lever_pipeline_index`), the cell pass pipelines, the levers, and the
+    /// stats frame's resources while armed.
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    depth_format: wgpu::TextureFormat,
+    lever_pipelines: [Option<wgpu::RenderPipeline>; 3],
+    cell_pipelines: FluidCellPipelines,
+    cell_levers: FluidReflectionCellLevers,
+    cell_stats: Option<FluidCellStatsGpu>,
 }
 
 impl FluidSurfacePass {
@@ -269,14 +292,181 @@ impl FluidSurfacePass {
             immediate_size: 0,
         });
         let pipelines = FluidShaderVariant::ALL.map(|variant| {
-            create_fluid_pipeline(device, &pipeline_layout, &shader, depth_format, variant)
+            create_fluid_pipeline(
+                device,
+                &pipeline_layout,
+                &shader,
+                depth_format,
+                variant,
+                &fluid_variant_constants(variant),
+            )
         });
+        let cell_pipelines = FluidCellPipelines::new(device, camera_bgl, sh_bgl);
         Self {
             pipelines,
             params_bind_group_layout,
             scene_inputs,
             installed: None,
+            shader,
+            pipeline_layout,
+            depth_format,
+            lever_pipelines: [None, None, None],
+            cell_pipelines,
+            cell_levers: FluidReflectionCellLevers::default(),
+            cell_stats: None,
         }
+    }
+
+    /// SPIKE (cell-rate spike): set the debug levers, building any pipeline
+    /// they need now, so a frame never compiles one.
+    pub fn set_cell_levers(&mut self, device: &wgpu::Device, levers: FluidReflectionCellLevers) {
+        self.cell_levers = levers;
+        if let Some(index) = lever_pipeline_index(levers.cells, levers.ratio_one)
+            && self.lever_pipelines[index].is_none()
+        {
+            let mut constants = fluid_variant_constants(FluidShaderVariant::Reflecting).to_vec();
+            constants.extend(lever_constants(levers.cells, levers.ratio_one));
+            self.lever_pipelines[index] = Some(create_fluid_pipeline(
+                device,
+                &self.pipeline_layout,
+                &self.shader,
+                self.depth_format,
+                FluidShaderVariant::Reflecting,
+                &constants,
+            ));
+        }
+        if levers.cells {
+            self.cell_pipelines.ensure(device, SHADER_SOURCE, levers);
+        }
+    }
+
+    pub fn cell_levers(&self) -> FluidReflectionCellLevers {
+        self.cell_levers
+    }
+
+    /// The cells lever acts only in pixel style.
+    fn cells_on(&self) -> bool {
+        self.cell_levers.cells && self.scene_inputs.reflection_style() == FluidReflectionStyle::Pixel
+    }
+
+    /// SPIKE: prepare this frame's cell pass (tile list and uniform) from the
+    /// frame's draws. Called beside the scene-input upload, before the pass.
+    pub fn prepare_cell_pass(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        light_term_mask: LightTermMask,
+        view_proj: glam::Mat4,
+        extent: [u32; 2],
+        max_workgroups: u32,
+    ) {
+        let cells_on = self.cells_on();
+        let stats = self.cell_stats.is_some();
+        let Some(installed) = self.installed.as_mut() else {
+            return;
+        };
+        installed.cells.prepare(
+            queue,
+            &installed.slots,
+            light_term_mask.bits(),
+            cells_on,
+            view_proj,
+            extent,
+            max_workgroups,
+            stats,
+        );
+    }
+
+    /// SPIKE: record the Fluid Reflection Cell Pass, its own compute pass,
+    /// if this frame prepared one. The caller passes the frame's camera
+    /// (group 0) and SH (group 3) bind groups.
+    pub fn record_cell_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_bind_group: &wgpu::BindGroup,
+        sh_bind_group: &wgpu::BindGroup,
+    ) {
+        let Some(installed) = self.installed.as_ref() else {
+            return;
+        };
+        installed.cells.record(
+            encoder,
+            &self.cell_pipelines,
+            self.cell_levers,
+            camera_bind_group,
+            sh_bind_group,
+            self.cell_stats.is_some(),
+        );
+    }
+
+    /// SPIKE: the stats frame's occlusion query set, for the fluid pass.
+    pub fn cell_stats_query_set(&self) -> Option<&wgpu::QuerySet> {
+        self.cell_stats
+            .as_ref()
+            .filter(|_| self.installed.is_some())
+            .map(FluidCellStatsGpu::query_set)
+    }
+
+    /// SPIKE: arm the next frame's stats; reading them disarms.
+    pub fn arm_cell_stats(&mut self, device: &wgpu::Device) {
+        let slot_count = self
+            .installed
+            .as_ref()
+            .map_or(1, |installed| installed.slots.slot_count());
+        self.cell_stats = Some(FluidCellStatsGpu::new(device, slot_count));
+    }
+
+    /// SPIKE: after the fluid pass, resolve the stats frame's queries and copy
+    /// them and the evaluated-cell counter to the readback.
+    pub fn encode_cell_stats_readback(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let (Some(stats), Some(installed)) = (self.cell_stats.as_mut(), self.installed.as_ref())
+        else {
+            return;
+        };
+        let written = installed.cells.frame().reflecting_draws;
+        stats.encode_readback(encoder, &installed.cells, written);
+    }
+
+    /// SPIKE: read the armed frame's stats after its submission and disarm.
+    pub fn take_cell_stats(&mut self, device: &wgpu::Device) -> Option<FluidReflectionCellStats> {
+        let mut gpu = self.cell_stats.take()?;
+        let installed = self.installed.as_ref()?;
+        let (evaluated, samples) = gpu.read(device)?;
+        let frame = installed.cells.frame();
+        let layout = installed.cells.layout();
+        Some(FluidReflectionCellStats {
+            levers: self.cell_levers,
+            pixel_style: self.scene_inputs.reflection_style() == FluidReflectionStyle::Pixel,
+            atlas_width: layout.width,
+            atlas_height: layout.height,
+            atlas_bytes: layout.bytes(),
+            faces_in_atlas: layout.faces.len() as u32,
+            faces_skipped: layout.skipped_faces,
+            reflecting_draws: frame.reflecting_draws,
+            tiles_dispatched: frame.tiles,
+            threads_dispatched: FluidReflectionCellStats::threads(frame.tiles),
+            cells_dispatched: frame.cells,
+            cells_evaluated: evaluated,
+            reflecting_fragments: samples,
+            uncounted_draws: frame.reflecting_draws.saturating_sub(gpu.query_count()),
+        })
+    }
+
+    /// SPIKE test hook: fill the atlas with `texels` and run no cell pass.
+    #[cfg(test)]
+    pub(crate) fn write_cell_atlas_for_test(&mut self, queue: &wgpu::Queue, texels: &[u8]) {
+        if let Some(installed) = self.installed.as_mut() {
+            installed.cells.write_atlas_for_test(queue, texels);
+        }
+    }
+
+    /// SPIKE test hook: the installed atlas layout.
+    #[cfg(test)]
+    pub(crate) fn cell_atlas_layout(
+        &self,
+    ) -> Option<&postretro_render_cpu::fluid_surface::reflection_cells::FluidCellAtlas> {
+        self.installed
+            .as_ref()
+            .map(|installed| installed.cells.layout())
     }
 
     /// Rebuild group 5 over a recreated scene depth. The scene-target rebuild
@@ -370,6 +560,16 @@ impl FluidSurfacePass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let cells = InstalledFluidCells::new(
+            device,
+            volumes,
+            &mesh,
+            reflection_probes,
+            &probes,
+            texture_dimensions,
+            material_count,
+            &self.cell_pipelines,
+        );
         let [probe_array, probe_table, probe_distance] = probes.bind_group_entries();
         let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
@@ -386,6 +586,7 @@ impl FluidSurfacePass {
                 probe_array,
                 probe_table,
                 probe_distance,
+                cells.atlas_entry(),
             ],
         });
         log::info!(
@@ -403,6 +604,7 @@ impl FluidSurfacePass {
             params_buffer,
             _probes: probes,
             params_bind_group,
+            cells,
             volumes: mesh.volumes,
             slots,
             #[cfg(test)]
@@ -519,6 +721,22 @@ impl FluidSurfacePass {
         materials: &[GpuTexture],
         light_term_mask: LightTermMask,
     ) {
+        // SPIKE: the frame's reflecting draws take the lever pipeline, if
+        // any; the stats frame counts each one's fragments by occlusion query.
+        let lever_index = self.installed.as_ref().and_then(|installed| {
+            lever_pipeline_index(
+                installed.cells.frame().cells_variant,
+                self.cell_levers.ratio_one,
+            )
+        });
+        let reflecting_pipeline = lever_index
+            .and_then(|index| self.lever_pipelines[index].as_ref())
+            .unwrap_or_else(|| self.pipeline(FluidShaderVariant::Reflecting));
+        let query_capacity = self
+            .cell_stats
+            .as_ref()
+            .map_or(0, FluidCellStatsGpu::query_count);
+        let mut queries = 0u32;
         let Some(installed) = self.installed.as_ref() else {
             return;
         };
@@ -533,6 +751,7 @@ impl FluidSurfacePass {
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, installed.drift_buffer.slice(..));
         pass.set_vertex_buffer(2, installed.probe_index_buffer.slice(..));
+        pass.set_vertex_buffer(3, installed.cells.vertex_buffer().slice(..));
         pass.set_index_buffer(installed.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         let mut bound_variant = None;
@@ -540,8 +759,16 @@ impl FluidSurfacePass {
         let mut bound_material = None;
         for (slot, variant) in installed.slots.frame_draws(light_term_mask.bits()) {
             if bound_variant != Some(variant) {
-                pass.set_pipeline(self.pipeline(variant));
+                pass.set_pipeline(match variant {
+                    FluidShaderVariant::Reflecting => reflecting_pipeline,
+                    FluidShaderVariant::ReflectionFree => self.pipeline(variant),
+                });
                 bound_variant = Some(variant);
+            }
+            let query = variant == FluidShaderVariant::Reflecting && queries < query_capacity;
+            if query {
+                pass.begin_occlusion_query(queries);
+                queries += 1;
             }
             let (window, element) = slot_window(slot);
             if bound_window != Some(window) {
@@ -567,6 +794,9 @@ impl FluidSurfacePass {
                     0,
                     element..element + 1,
                 );
+            }
+            if query {
+                pass.end_occlusion_query();
             }
         }
     }
@@ -598,8 +828,8 @@ fn create_fluid_pipeline(
     shader: &wgpu::ShaderModule,
     depth_format: wgpu::TextureFormat,
     variant: FluidShaderVariant,
+    constants: &[(&str, f64)],
 ) -> wgpu::RenderPipeline {
-    let constants = fluid_variant_constants(variant);
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(match variant {
             FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
@@ -625,6 +855,8 @@ fn create_fluid_pipeline(
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &PROBE_INDEX_ATTRIBUTES,
                 }),
+                // SPIKE: the cell atlas entry (location 5).
+                Some(cell_vertex_buffer_layout()),
             ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
@@ -640,7 +872,7 @@ fn create_fluid_pipeline(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
+                constants,
                 ..Default::default()
             },
         }),
@@ -727,6 +959,37 @@ impl Renderer {
         if let Some(full) = self.full.as_mut() {
             full.fluid_surface.set_reflection_style(style);
         }
+    }
+
+    /// SPIKE (cell-rate spike): set the debug cell levers. Safe before full
+    /// init (then dropped); builds any pipeline the levers need now.
+    pub fn set_fluid_reflection_cell_levers(&mut self, levers: FluidReflectionCellLevers) {
+        let Self { device, full, .. } = self;
+        if let Some(full) = full.as_mut() {
+            full.fluid_surface.set_cell_levers(device, levers);
+        }
+    }
+
+    /// SPIKE: the debug cell levers, once fully initialized.
+    pub fn fluid_reflection_cell_levers(&self) -> Option<FluidReflectionCellLevers> {
+        self.full
+            .as_ref()
+            .map(|full| full.fluid_surface.cell_levers())
+    }
+
+    /// SPIKE: count the next frame's cell stats (an occlusion query per
+    /// reflecting draw and the pass's evaluated-cell counter).
+    pub fn arm_fluid_reflection_cell_stats(&mut self) {
+        let Self { device, full, .. } = self;
+        if let Some(full) = full.as_mut() {
+            full.fluid_surface.arm_cell_stats(device);
+        }
+    }
+
+    /// SPIKE: the armed frame's stats, after it completed; disarms.
+    pub fn take_fluid_reflection_cell_stats(&mut self) -> Option<FluidReflectionCellStats> {
+        let Self { device, full, .. } = self;
+        full.as_mut()?.fluid_surface.take_cell_stats(device)
     }
 
     /// The reflection style the next fluid pass draws.

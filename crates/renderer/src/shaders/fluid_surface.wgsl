@@ -154,6 +154,10 @@ struct FluidProbeTable {
 // inverse L1 distance from the capture point to what each texel saw, 0 where
 // it saw nothing. Sampled at level 0 through the same sampler.
 @group(4) @binding(3) var fluid_probe_distance: texture_2d_array<f32>;
+// SPIKE (cell-rate spike): the pixel-style reflection cell atlas the
+// Fluid Reflection Cell Pass fills, one texel per water texel cell:
+// rgb = the probe term, a = Fresnel x the search weight. Read by textureLoad.
+@group(4) @binding(4) var fluid_cell_atlas: texture_2d<f32>;
 
 // --- Group 5: fluid scene inputs, rebuilt only with the scene targets ---
 // Scene depth, loaded under the pass's read-only depth attachment.
@@ -177,6 +181,10 @@ struct VertexInput {
     // Third vertex buffer: the face's reflection probe, written at install;
     // FLUID_REFLECTION_NO_PROBE for a face no binding names.
     @location(4) probe: u32,
+    // SPIKE: fourth vertex buffer, the face's cell atlas entry: origin
+    // (x | y << 16), extent (w | h << 16), cell min x and y; x =
+    // FLUID_CELL_NO_ATLAS for a face without one.
+    @location(5) cell_atlas: vec4<u32>,
 };
 
 struct VertexOutput {
@@ -188,6 +196,7 @@ struct VertexOutput {
     // The face's drift scroll this frame, texture periods in [-0.5, 0.5).
     @location(4) @interpolate(flat) drift_scroll: vec2<f32>,
     @location(5) @interpolate(flat) probe: u32,
+    @location(6) @interpolate(flat) cell_atlas: vec4<u32>,
 };
 
 @vertex
@@ -200,6 +209,7 @@ fn vs_main(in: VertexInput, @builtin(instance_index) slot: u32) -> VertexOutput 
     out.slot = slot;
     out.drift_scroll = fluid_drift_scroll(in.drift_rate, uniforms.time);
     out.probe = in.probe;
+    out.cell_atlas = in.cell_atlas;
     return out;
 }
 
@@ -479,6 +489,13 @@ fn fluid_fog_composite(rgb: vec3<f32>, alpha: f32, fog_rgb: vec3<f32>, fog_opaci
 // fragments compile with no reflection code at all (its mere presence slows
 // the always-run lighting on some drivers), true for the rest.
 override FLUID_REFLECTIONS: bool = true;
+// SPIKE (cell-rate spike, debug levers): CELLS makes pixel-style reflecting
+// fragments read their cell's atlas texel instead of evaluating the
+// reflection; RATIO_ONE holds the live-lighting ratio at exactly 1. Both
+// false is the shipped shader.
+override FLUID_REFLECTION_CELLS: bool = false;
+override FLUID_REFLECTION_RATIO_ONE: bool = false;
+const FLUID_CELL_NO_ATLAS: u32 = 0xFFFFFFFFu;
 
 // Reflection probes. Mirrors `postretro_render_cpu::fluid_surface::reflection`:
 // each function and constant here is pinned to it, and `fs_main`'s tail
@@ -666,6 +683,9 @@ fn fluid_reflection_light_change(current: vec3<f32>, reference: vec3<f32>) -> ve
 // The capture's live-lighting scale toward `direction`, clamped at 0. Lights
 // past the stored K have no entry and hold their reference.
 fn fluid_reflection_ratio(probe: u32, direction: vec3<f32>) -> vec3<f32> {
+    if FLUID_REFLECTION_RATIO_ONE {
+        return vec3<f32>(1.0);
+    }
     let lobes = fluid_reflection_lobe_weights(direction);
     var ratio = vec3<f32>(1.0);
     for (var i: u32 = 0u; i < FLUID_REFLECTION_LIGHTS_PER_PROBE; i = i + 1u) {
@@ -1196,6 +1216,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let reflectivity = row.surface.z;
     if !fluid_reflection_gate(in.probe, outward, V, uniforms.light_term_mask, reflectivity) {
         return surface;
+    }
+    // SPIKE: the cell-rate variant reads the term its cell pass evaluated.
+    if FLUID_REFLECTION_CELLS && in.cell_atlas.x != FLUID_CELL_NO_ATLAS
+        && fluid_scene.reflection_style != FLUID_REFLECTION_STYLE_SMOOTH {
+        let origin = vec2<i32>(i32(in.cell_atlas.x & 0xFFFFu), i32(in.cell_atlas.x >> 16u));
+        let extent = vec2<i32>(i32(in.cell_atlas.y & 0xFFFFu), i32(in.cell_atlas.y >> 16u));
+        let cell_min = vec2<i32>(bitcast<i32>(in.cell_atlas.z), bitcast<i32>(in.cell_atlas.w));
+        let local = clamp(vec2<i32>(floor(in.uv * dims)) - cell_min, vec2<i32>(0),
+            extent - vec2<i32>(1));
+        let cell = textureLoad(fluid_cell_atlas, origin + local, 0);
+        let cell_band = fluid_fog_proximity(uniforms.camera_position, in.world_position, outward);
+        return fluid_reflection_composite(surface, cell.rgb, cell.a * cell_band);
     }
     let axes = fluid_reflection_texel_axes(ddx * dims, ddy * dims, ddx_world, ddy_world);
     let point = fluid_reflection_point(fluid_scene.reflection_style, in.uv * dims, in.world_position,

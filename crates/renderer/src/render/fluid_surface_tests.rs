@@ -465,7 +465,8 @@ fn fluid_shader_layouts_match_the_cpu_vertex_and_parameter_windows() {
         FLUID_PARAMS_WINDOW_BYTES / FLUID_PARAMS_STRIDE as u64,
         u64::from(FLUID_SLOTS_PER_WINDOW)
     );
-    let [param_entry, probe_array, probe_table, probe_distance] =
+    // SPIKE (cell-rate spike): the fifth entry is the sampled cell atlas.
+    let [param_entry, probe_array, probe_table, probe_distance, _cell_atlas] =
         fluid_params_bind_group_layout_entries();
     assert!(matches!(
         param_entry.ty,
@@ -918,8 +919,9 @@ fn fluid_warp_reads_no_reduce_motion_accessibility_or_render_profile_input() {
             "fluid shader reads `{forbidden}`"
         );
     }
-    // The author's style is read once, by the reflection tail.
-    assert_eq!(shader.matches("fluid_scene.reflection_style").count(), 1);
+    // The author's style is read once, by the reflection tail (SPIKE: and
+    // once by the cells branch, which acts only in pixel style).
+    assert_eq!(shader.matches("fluid_scene.reflection_style").count(), 2);
     assert!(
         fs_main_reflection_tail().contains("fluid_reflection_point(fluid_scene.reflection_style,")
     );
@@ -1500,10 +1502,10 @@ fn fluid_fog_wgsl_bodies_match_the_cpu_reference() {
 // camera.
 #[test]
 fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
-    let fragment = code_only(wgsl_fn(
+    let fragment = strip_cell_spike(&code_only(wgsl_fn(
         include_str!("../shaders/fluid_surface.wgsl"),
         "fs_main",
-    ));
+    )));
     let tail = [
         "letoutward=normalize(in.world_normal);",
         "varn=outward;",
@@ -1573,6 +1575,17 @@ fn fluid_fs_main_fogs_from_the_outward_normal_and_returns_the_composite() {
          letfog_opacity=fog_layer_opacity(fragment.weight,proximity,transmittance);\
          fog_composite(rgb,alpha,fragment.fog_albedo*fragment.lighting,fog_opacity,)}"
     );
+}
+
+/// SPIKE (cell-rate spike): `fs_main` without its cells branch, which must
+/// sit right after the reflection gate; the pins below hold the rest.
+fn strip_cell_spike(fragment: &str) -> String {
+    const START: &str = "ifFLUID_REFLECTION_CELLS&&";
+    const END: &str = "returnfluid_reflection_composite(surface,cell.rgb,cell.a*cell_band);}";
+    let start = fragment.find(START).expect("fs_main holds the cells branch");
+    let end = fragment[start..].find(END).expect("cells branch end") + start + END.len();
+    assert!(fragment[..start].ends_with("returnsurface;}"), "after the gate");
+    format!("{}{}", &fragment[..start], &fragment[end..])
 }
 
 // The renderer installs exactly the section render-cpu deems usable, mapped
@@ -2485,8 +2498,10 @@ fn fluid_reflection_live_lighting_wgsl_bodies_match_the_cpu_reference() {
         ),
     ];
     for (wgsl_name, wgsl_body, cpu_source, cpu_name, cpu_body) in pinned {
+        // SPIKE (cell-rate spike): the ratio-one lever's early return.
         assert_eq!(
-            code_only(wgsl_fn(wgsl, wgsl_name)),
+            code_only(wgsl_fn(wgsl, wgsl_name))
+                .replace("ifFLUID_REFLECTION_RATIO_ONE{returnvec3<f32>(1.0);}", ""),
             wgsl_body,
             "WGSL `{wgsl_name}` drifted"
         );
@@ -3073,6 +3088,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (4, 1, "fluid_probe_array"),
         (4, 2, "fluid_probes"),
         (4, 3, "fluid_probe_distance"),
+        // SPIKE (cell-rate spike): the cell atlas, written by its own pass.
+        (4, 4, "fluid_cell_atlas"),
         (5, 0, "scene_depth"),
         (5, 1, "fluid_scene"),
     ]
@@ -3123,8 +3140,8 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         |group: usize| -> Vec<u32> { groups[group].iter().map(|entry| entry.binding).collect() };
     assert_eq!(
         bindings(4),
-        [0, 1, 2, 3],
-        "group 4: params, probe array, table, distance array"
+        [0, 1, 2, 3, 4],
+        "group 4: params, probe array, table, distance array, (SPIKE) cell atlas"
     );
     assert_eq!(bindings(5), [0, 1], "group 5: scene depth, scene inputs");
 }

@@ -43,7 +43,7 @@ Real-map capture PNGs (warmup 4 + 4 frames) were diffed against an `origin/main`
 | Two-draw forms | `cell2` vs `cell` and `frag2` vs `frag`: max 1/255 at every view (blend rounding). |
 | DX12 FXC | `dx12_fxc_compiles_every_full_init_pipeline` passes. It covers all 7 fluid render pipelines and both cell compute pipelines. |
 
-The 5300M session's first gate found 0 pixels over 2 at e24 near. Its captures rendered at time 0, because they had no measurement block, and this one rendered after 8 steps. That run is redoing the gate at 4+4, 30+30 and 120+120 frames; treat the gap as open until it reports.
+The 5300M session's first gate found 0 pixels over 2 at e24 near, but its captures rendered at time 0 (no measurement block) while these rendered after 8 steps. Redone at matching times, its own implementation shows the same exceptions: 164 px over at t8, 369 at t60 and 0 at t240 at near 4K (max 8/255); 0 at every time on probes; up to 168 at its far 4K (max 23). By hand inspection, 100% of its t8 pixels and 95% of t60 are cells the per-fragment image draws in two values while the cell image shows one of them. Its largest cluster is a cell cut by the screen edge, where the derivative-estimated centre extrapolates furthest. The exceptions are the derivative-vs-affine cell-centre difference, common to both implementations.
 
 ## Views
 
@@ -169,6 +169,5 @@ At e24 near 4K, the ratio is worth 1.59 ms per fragment (22.24 → 20.65) and 0.
 ## Open for consolidation
 
 - The 5300M's `free` arm decides whether its fluid cost (66 ms frag, 55 ms cells at e24 near 4K in its first round) carries the same read penalty.
-- The 5300M's gate at matching animation times; its implementation clamps the cell rect differently (`ceil(max) - 1`).
 - Whether the 5300M times this branch's `cell2` and `frag2` arms. The owner decides, and the levers fit the Metal kit unchanged.
 - Kit layout: both kits sit in `measurements/cell-rate-spike/`. The 5300M session plans to move its Metal kit to `metal/` at consolidation.

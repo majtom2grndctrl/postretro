@@ -1,7 +1,7 @@
 # reflection-probes — plan of record
 
 mode: resumable
-status: approved — results reported, manual rows signed off; waiting for "land the plane"
+status: landed (2026-10-17)
 read at: 41f21c8ae
 branch: feature/reflection-probes
 
@@ -62,7 +62,7 @@ Compiler
 - Row 8's CLI test compiles with `--uncompressed-irradiance`, but the probe stage always writes BC6H tiles (`atlas_format: IRRADIANCE_FORMAT_BC6H`; only the runtime and decoder accept RGBA16F), so its `-j1`/`-j4` byte identity covers BC6H probe tiles, as do the in-process `capture_is_byte_identical_across_worker_counts` and task 2's byte-identical e24 PRL at 1/5/8 workers. (Corrected at 11g.)
 - The capture's white clear reads 254 (peak 1.0 is past the 0.98 knee); row 35's 188 holds below the knee.
 - Manual test map `content/dev/maps/reflection-probes-test.map` (+ level script `content/dev/scripts/reflection-probes-test.ts`, the switch-demo precedent; lights are found by `_tags` `rp_switch_light`, since the light FGD has no `targetname`): pool room with floor-level pool, coping, props, neon sign, flicker light, switchable light and sdf corner; two-room canal (room A derived probe, room B authored `reflection_volume` with `_capture_offset "-128 0"` around a pillar); balcony vantage; switch pairs in the pool room and on the balcony. Compiles in ≈8 s with no warnings: 3 probes, 8 bindings; the pool probe stores the switchable light (0.286 of its capture) and the flicker light (0.139). Its header comment maps each feature to Manual rows 38–42.
-- A map comment line that is only `//` makes the parser drop every entity ("no worldspawn entity found"); the test map uses `// ----`. Pre-existing parser robustness gap; proposed as a separate session.
+- A map comment line that is only `//` makes the parser drop every entity ("no worldspawn entity found"); the test map uses `// ----`. Pre-existing parser robustness gap. Fixed on main by PR 598 (`parse/map_source.rs` `normalize_map_source` drops every comment line outside quotes; `parse_keeps_entities_with_comment_lines_between_and_inside_entities` covers a bare `//`), merged here before landing.
 
 Runtime
 - `fs_main` takes only `dpdx/dpdy(in.uv)` → pixel style adds `dpdx/dpdy(in.world_position)` at the top, still uniform control flow.
@@ -271,6 +271,10 @@ Recorded, not fixed (box fit is a heuristic; an authored `reflection_volume` ove
 ## Final gate (2026-10-16, HEAD `295a0d70e`)
 
 Full preflight: `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, `cargo test` (11 413 passed, 0 failed, 51 ignored), `cargo check --release` (no warnings), `crate-graph --check` — all clean. Feature-gated: clippy `-p postretro --features dev-tools,capture --all-targets` clean; `postretro` bin tests with `dev-tools,capture` 1 874 passed; level-loader with `load-prl` 305 passed. Fresh `--no-cache --release` rebakes, no reflection-probe warnings: reflection-probes-test 3 probes / 8 bindings (stage 0.12 s), vault-test 1 / 1 (0.04 s), campaign-test 2 / 2 (0.14 s; its 34 warnings are pre-existing content warnings), e24 12 / 17 (0.36 s). Not run: the ignored stress-map compile (≈30 min; last run at task 4 / 11f), a re-timed 1660 GPU capture (since done — see "Re-timed after review rounds").
+
+## Main merged before landing (2026-10-17, `debf878ae`)
+
+Merged `origin/main` at `b3322a2ef` (teleporters PR 597, parser PR 598). Four textual conflicts, all additive: `section_registry.rs` keeps id 54 `ReflectionProbes` and id 55 `Teleporters` (the registry test's unknown-id probe moved from 55 to 56), `map_data.rs` and `parse.rs` keep both features' fields and modules, `build_pipeline.md` keeps the as-built reflection text beside main's teleporter text. No build-cache collision (main bumped only `CELL_RESIDENCY_SET_STAGE_VERSION`). Gate on the merge: `cargo fmt --check`, clippy (`target/preflight-clippy`, `-D warnings`), `cargo test` 11 579 passed / 0 failed / 51 ignored, `cargo check --release`, `crate-graph --check`; clippy and `postretro` bin tests (1 895) with `dev-tools,capture`; level-loader `load-prl` 308; DX12 FXC passed. campaign-test recompiles with 1 probe / 1 binding and no reflection-probe warnings.
 
 ## Re-timed after review rounds (2026-10-16, HEAD `020b7cc73`)
 

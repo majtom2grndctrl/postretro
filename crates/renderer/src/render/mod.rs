@@ -87,6 +87,8 @@ mod world_specular_test;
 // --- Extracted submodules (module root is slim; impls split by concern) ---
 #[cfg(test)]
 mod fluid_surface_frame_test;
+#[cfg(test)]
+mod fluid_reflection_cells_frame_test;
 mod geometry_install_marks;
 mod geometry_ranges;
 #[cfg(all(test, debug_assertions))]

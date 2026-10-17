@@ -459,6 +459,12 @@ impl FluidSurfacePass {
         }
     }
 
+    /// SPIKE test hook: lever pipelines built so far.
+    #[cfg(test)]
+    pub(crate) fn lever_pipelines_built(&self) -> usize {
+        self.lever_pipelines.iter().filter(|p| p.is_some()).count()
+    }
+
     /// SPIKE test hook: the installed atlas layout.
     #[cfg(test)]
     pub(crate) fn cell_atlas_layout(
@@ -990,6 +996,17 @@ impl Renderer {
     pub fn take_fluid_reflection_cell_stats(&mut self) -> Option<FluidReflectionCellStats> {
         let Self { device, full, .. } = self;
         full.as_mut()?.fluid_surface.take_cell_stats(device)
+    }
+
+    /// SPIKE test hook: fill the installed cell atlas with `texels` (RGBA16F,
+    /// row-major) and run no cell pass from now on.
+    #[cfg(test)]
+    pub(crate) fn write_fluid_cell_atlas_for_test(&mut self, texels: &[u8]) {
+        let Self { queue, full, .. } = self;
+        if let Some(full) = full.as_mut() {
+            full.fluid_surface
+                .write_cell_atlas_for_test(queue.raw(), texels);
+        }
     }
 
     /// The reflection style the next fluid pass draws.

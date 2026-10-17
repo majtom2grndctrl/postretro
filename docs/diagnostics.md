@@ -1,6 +1,6 @@
 # Postretro — Runtime Diagnostics
 
-Quick-reference for the engine's diagnostic keyboard chords. All chords use **Alt+Shift** as the modifier. Chords fire on key-down only (no repeat); any extra modifier (Ctrl, Cmd) suppresses the chord.
+Quick-reference for the engine's diagnostic keyboard chords, plus simulated network lag for co-op testing. All chords use **Alt+Shift** as the modifier. Chords fire on key-down only (no repeat); any extra modifier (Ctrl, Cmd) suppresses the chord.
 
 ---
 
@@ -67,3 +67,47 @@ Cycles through nine modes in order, wrapping back to Normal. Each press advances
 | 9 | SpecularOnly | Specular only |
 
 **Typical workflow for light leaks:** cycle through the `*Only` modes one at a time until the leak appears in exactly one mode. That mode identifies which lighting path is responsible — e.g. if the leak shows in `LightmapOnly` but not `DynamicOnly`, the problem is in the baked lightmap, not a runtime light.
+
+---
+
+## Simulating network lag
+
+The SDK engine can add delay, jitter, and packet loss to a co-op session, so
+you can feel how your mod plays over a real connection while host and client
+both run on one machine. It works on every platform and needs no admin rights.
+Player builds made with `dist` do not include it.
+
+Lag is off until you ask for it. Two ways to set it:
+
+- **At launch**, with the `POSTRETRO_NET_LAG` environment variable:
+  `delay_ms,jitter_ms,loss_percent`. You can leave off trailing values: `75`
+  is 75 ms of delay only, `75,30` adds up to 30 ms of jitter, and `75,30,5`
+  also drops 5% of packets. Loss can be 0–100. If the value can't be read,
+  the engine logs a warning and runs without lag.
+- **Mid-session**, in the **Network** tab of the Diagnostics panel
+  (Alt+Shift+backtick toggles the panel once you are in a level). Sliders
+  cover delay, jitter, and loss;
+  **Standard** sets 45 ms delay, up to 60 ms jitter, and 5% loss, and **Off**
+  clears it. The tab also shows whether you are the host or a client and, on a
+  client, the measured round trip. In single-player it shows "Not in a
+  networked session".
+
+Settings apply to this machine's traffic, in **each direction**. Delay is
+added on the way out and again on the way back, so a 75 ms delay adds roughly
+150 ms to the round trip. Set lag on one side only, usually the client; if you
+set it on both, the effects add up. Lag set on a host applies to every client
+that joins it.
+
+A typical two-terminal test from the bundle root:
+
+```bash
+# Terminal 1: host
+bin/postretro-tool run maps/<name>.prl --host
+
+# Terminal 2: client with simulated lag (bare --host listens on port 27015)
+POSTRETRO_NET_LAG=75,30,5 bin/postretro-tool run maps/<name>.prl --connect 127.0.0.1:27015
+```
+
+On Windows PowerShell, set the variable first with
+`$env:POSTRETRO_NET_LAG = "75,30,5"`, then run the client command without the
+prefix.

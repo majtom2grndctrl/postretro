@@ -54,6 +54,9 @@ mod host_switch;
 mod host_presentation;
 mod interpolation;
 mod join_seed;
+// Dev-tools `POSTRETRO_NET_LAG` launch seed for the lag proxy.
+#[cfg(feature = "dev-tools")]
+mod lag_seed;
 mod lifecycle;
 mod movement_state;
 mod netdiag;
@@ -149,6 +152,8 @@ pub use host_presentation::{
 #[cfg(test)]
 use host_switch::{HostSwitchDecision, apply_host_switch_declaration};
 pub use host_switch::{host_apply_switch_deliveries, host_retain_switch_declaration};
+#[cfg(feature = "dev-tools")]
+pub use lag_seed::seed_lag_profile_from_environment;
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
 pub use host_address::{dialable_host_address, probe_lan_address};

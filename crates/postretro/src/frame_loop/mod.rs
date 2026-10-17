@@ -2266,6 +2266,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         }
                     });
                     let mut reach = reach_before;
+                    let network_lag_before = session
+                        .net_endpoint
+                        .as_ref()
+                        .and_then(crate::network_diagnostics::lag_lever);
+                    let mut network_lag = network_lag_before;
                     let ctx_clone = debug_ui.ctx.clone();
                     let full_output = ctx_clone.run_ui(raw_input, |ui| {
                         let ctx = ui.ctx();
@@ -2302,6 +2307,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                         }
                                     }),
                                 reach.as_mut(),
+                                network_lag.as_mut(),
                             );
                         }
                     });
@@ -2316,6 +2322,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         && let Some(stage) = session.level_streaming.cell_demand_mut()
                     {
                         stage.set_lead_metres(after.lead_metres);
+                    }
+                    if let (Some(before), Some(after)) = (network_lag_before, network_lag)
+                        && let Some(endpoint) = session.net_endpoint.as_mut()
+                    {
+                        crate::network_diagnostics::apply_lag_lever(endpoint, &before, &after);
                     }
                     debug_ui
                         .winit_state

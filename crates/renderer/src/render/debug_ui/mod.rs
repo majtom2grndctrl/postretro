@@ -22,10 +22,12 @@ use super::frame_timing::{FrameTimingSnapshot, PassTiming};
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
 mod cpu_timing_block;
+mod network_tab;
 mod pending_textures;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
+pub use network_tab::{NetworkLagLever, NetworkSessionRole};
 pub use pending_textures::PendingTextures;
 pub use streaming_tab::LightmapStreamingTab;
 
@@ -63,10 +65,11 @@ pub enum DiagnosticsTab {
     Doors,
     Triggers,
     Streaming,
+    Network,
 }
 
 impl DiagnosticsTab {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Lighting,
         Self::Volumes,
         Self::Performance,
@@ -75,6 +78,7 @@ impl DiagnosticsTab {
         Self::Doors,
         Self::Triggers,
         Self::Streaming,
+        Self::Network,
     ];
 
     const fn label(self) -> &'static str {
@@ -87,6 +91,7 @@ impl DiagnosticsTab {
             Self::Doors => "Doors",
             Self::Triggers => "Triggers",
             Self::Streaming => "Streaming",
+            Self::Network => "Network",
         }
     }
 }
@@ -278,6 +283,9 @@ impl DebugUi {
 /// `sh_streaming` and `lightmap_streaming` feed the Streaming tab; `None`
 /// means the level does not stream that resource. The tab edits the lightmap
 /// levers in place for the caller to apply.
+///
+/// `network_lag` feeds the Network tab; `None` means no networked session. The
+/// tab edits the lever in place for the caller to apply.
 #[expect(
     clippy::too_many_arguments,
     reason = "Each tab receives its own prepared plain-data input at the renderer boundary."
@@ -296,6 +304,7 @@ pub fn draw_diagnostics_panel(
     sh_streaming: Option<&ShStreamingLiveDiagnostics>,
     lightmap_streaming: Option<LightmapStreamingTab<'_>>,
     streaming_reach: Option<&mut crate::render::StreamingReachLever>,
+    network_lag: Option<&mut NetworkLagLever>,
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -359,6 +368,7 @@ pub fn draw_diagnostics_panel(
                 lightmap_streaming,
                 streaming_reach,
             ),
+            DiagnosticsTab::Network => network_tab::draw_network_tab(ui, network_lag),
         }
     });
 }
@@ -1379,6 +1389,7 @@ mod tests {
                 DiagnosticsTab::Doors,
                 DiagnosticsTab::Triggers,
                 DiagnosticsTab::Streaming,
+                DiagnosticsTab::Network,
             ],
         );
         assert_eq!(DiagnosticsTab::Spatial.label(), "Spatial");
@@ -1386,6 +1397,7 @@ mod tests {
         assert_eq!(DiagnosticsTab::Doors.label(), "Doors");
         assert_eq!(DiagnosticsTab::Triggers.label(), "Triggers");
         assert_eq!(DiagnosticsTab::Streaming.label(), "Streaming");
+        assert_eq!(DiagnosticsTab::Network.label(), "Network");
     }
 
     #[test]

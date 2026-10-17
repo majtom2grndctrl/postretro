@@ -31,6 +31,8 @@ mod authoring_regions;
 mod environment_volume_tests;
 #[path = "parse/environment_volumes.rs"]
 mod environment_volumes;
+#[path = "parse/map_source.rs"]
+mod map_source;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
@@ -43,6 +45,7 @@ use authoring_regions::{
     BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
     resolve_sh_protect_aabb, resolve_streaming_hint_region, resolve_streaming_priority_region,
 };
+use map_source::{normalize_map_source, parse_complete_map};
 use streaming_hint_source::reject_invalid_streaming_hint_source_hulls;
 
 /// Convert a shambler nalgebra Vector3 to glam DVec3.
@@ -692,12 +695,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // quoted material fields to a sentinel here so shalrath sees one token; the
     // name is decoded back to its space-containing form at the texture-read
     // boundary below. See `context/lib/build_pipeline.md` §Texture name resolution.
-    let map_text = encode_quoted_brush_textures(&raw_map_text);
+    //
+    // Layout shalrath's grammar cannot take (blank, indented and comment lines,
+    // CRLF) is normalized away first, because at the top level it ends the
+    // entity list silently. The quote encoding rewrites line for line, so the
+    // normalized line numbers still map back to the source for parse errors.
+    let source = normalize_map_source(&raw_map_text);
+    let map_text = encode_quoted_brush_textures(&source.text);
     reject_invalid_streaming_hint_source_hulls(&map_text, scale)?;
 
-    let shalrath_map: shambler::shalrath::repr::Map = map_text
-        .parse()
-        .map_err(|e| anyhow::anyhow!("failed to parse .map syntax: {e}"))?;
+    let shalrath_map = parse_complete_map(&source, &map_text)?;
 
     let geo_map = GeoMap::new(shalrath_map);
 
@@ -6996,7 +7003,7 @@ mod tests {
     fn parse_map_file_rejects_malformed_or_non_finite_initial_gravity() {
         for value in ["not-a-number", "NaN", "inf"] {
             let map_data = format!(
-                "\\
+                "\
 // entity 0
 {{
 \"classname\" \"worldspawn\"

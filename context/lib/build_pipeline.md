@@ -26,6 +26,8 @@ prl-build accepts idTech2 `.map` files (Quake 1/2 dialect, parsed via shambler/s
 
 Both Standard (axis-aligned) and Valve 220 (explicit UV axes) texture projections are supported. Shalrath auto-detects per face; they can coexist in one `.map` file.
 
+Source layout is free-form within a line's grammar. shalrath separates items by exactly one line ending, so before parsing, `crates/level-compiler/src/parse/map_source.rs` turns CRLF into LF and, outside quoted values, drops blank, whitespace-only and `//` comment lines and trims indentation. The parse must then consume the whole file: an entity shalrath cannot parse is an error naming the source line where parsing stopped, never a silently shortened entity list.
+
 **Entity angles.** One converter, `quake_to_engine_angles` in the Quake adapter, turns a point entity's `angles` or `mangle` (pitch yaw roll, degrees; either wins over `angle`) or legacy `angle` (yaw only; `-1` up, `-2` down) into engine Euler radians. No component changes sign: the axis map (x, y, z) → (−y, z, −x) is a proper rotation, so map yaw stays the TrenchBroom arrow (`entity_model.md` §4, Facing convention). A malformed value warns and reads as zero, except on a `teleport_destination`, where it fails the build. Light direction keeps its own spotlight convention.
 
 ### Source-format neutrality

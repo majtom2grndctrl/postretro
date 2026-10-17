@@ -17,8 +17,11 @@ use postretro_entities::components::weapon::WeaponComponent;
 /// Settle the host's answer to this client's newest switch declaration on the
 /// local inventory and selection. A refusal rolls the inventory back and resets
 /// the selection to the restored slot. A same-slot refusal that finds the
-/// player steadily holding that slot (the active-slot re-sync) changed nothing
-/// they hold, so an in-progress cursor, dwell or commit survives it.
+/// player steadily holding that slot changed nothing they hold, so an
+/// in-progress cursor, dwell or commit survives it. The active-slot re-sync's
+/// refusal is the case this exists for; a refusal rebased onto a round trip
+/// back to the held slot matches too, and keeping the selection there is
+/// equally harmless.
 pub(crate) fn settle_switch_resolution(
     registry: &mut EntityRegistry,
     latch: &mut input::GameplayInputLatch,
@@ -95,8 +98,9 @@ impl App {
         let Some(slot) = self.active_slot_resync.observe(observation, dt) else {
             return;
         };
-        // Inventory slots index a ten-entry array, so this always fits; a
-        // corrupt slot skips the declaration rather than naming a wrong one.
+        // Inventory slots index a `WIELDABLE_SLOT_CAPACITY`-entry array, so
+        // this always fits a `u8`; a corrupt slot skips the declaration rather
+        // than naming a wrong one.
         let Ok(declared) = u8::try_from(slot) else {
             return;
         };

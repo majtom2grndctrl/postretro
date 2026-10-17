@@ -527,35 +527,72 @@ fn apply_installed_movement_tuning_to_armed_pawn(
     *applied_generation = tuning_generation;
 }
 
+/// Whether a tuning install may adopt its payload's spawn active slot on the
+/// armed pawn. No switch declaration may be pending or ever sent for this pawn:
+/// the client owns selection from its first declaration on, and that includes
+/// the active-slot re-sync, so a payload landing after a re-sync the host
+/// already followed cannot flip the client back. The selection must also be
+/// the one composition left: on its composed slot, no switch target or held
+/// origin, and the active weapon idle, since a reload, charge or activation in
+/// progress is the player's and a move would abandon it. Read this before the
+/// install rematerializes the inventory: a layout change releases weapons, and
+/// a release repoints the active slot at the first populated one, which would
+/// read as a switch.
+fn spawn_slot_adoption_open(
+    registry: &EntityRegistry,
+    armed: &client::ArmedLocalPawn,
+    selection_declared_pawn: Option<NetworkId>,
+    declarations_pending: bool,
+) -> bool {
+    if declarations_pending || selection_declared_pawn == Some(armed.network_id) {
+        return false;
+    }
+    let Ok(inventory) = registry.get_component::<Inventory>(armed.entity_id) else {
+        return false;
+    };
+    let active_idle = inventory.active_wieldable().is_none_or(|weapon| {
+        registry
+            .get_component::<WeaponComponent>(weapon)
+            .ok()
+            .is_none_or(|component| {
+                matches!(
+                    component.state,
+                    postretro_entities::components::wieldable_state::WieldableState::Idle
+                )
+            })
+    });
+    inventory.active_slot == inventory.spawn_active_slot
+        && inventory.switch_target.is_none()
+        && inventory.switch_origin.is_none()
+        && active_idle
+}
+
 /// Adopt an installed payload's spawn active slot on the armed local pawn. A
-/// pawn baseline that arms before its level's tuning (a lossy link holding the
-/// Control resend) composes from the previous payload or the local descriptor,
-/// and a payload differing only in this slot is the same pawn tuning, so
-/// nothing else moves it. Only an untouched selection moves: still on its
-/// composed slot, no switch state, nothing declared, and the payload slot
-/// populated. Returns whether the slot moved.
+/// pawn baseline that arms before any payload installs (the Control resend
+/// still in flight on a lossy link) composes from the client's own
+/// descriptor, and a payload differing only in this slot is the same pawn
+/// tuning, so nothing else moves it. The caller gates on
+/// [`spawn_slot_adoption_open`], read before this install. Moves only onto a
+/// populated slot, and also restores the slot when rematerialization repointed
+/// the active slot away from it. Returns the slot when the active slot moved,
+/// so the caller resets its selection latch to it.
 fn adopt_payload_spawn_active_slot(
     registry: &mut EntityRegistry,
     pawn: EntityId,
     payload: &TuningPayload,
-    declarations_pending: bool,
-) -> bool {
+) -> Option<usize> {
     let slot = payload.spawn_active_slot;
-    let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
-        return false;
-    };
-    let untouched = !declarations_pending
-        && inventory.active_slot == inventory.spawn_active_slot
-        && inventory.switch_target.is_none()
-        && inventory.switch_origin.is_none();
+    let inventory = registry.get_component::<Inventory>(pawn).ok()?;
     let populated = inventory.wieldables.get(slot).is_some_and(Option::is_some);
-    if inventory.spawn_active_slot == slot || !untouched || !populated {
-        return false;
+    if !populated || (inventory.active_slot == slot && inventory.spawn_active_slot == slot) {
+        return None;
     }
+    let moved = inventory.active_slot != slot;
     let mut inventory = inventory.clone();
     inventory.active_slot = slot;
     inventory.spawn_active_slot = slot;
-    registry.set_component(pawn, inventory).is_ok()
+    registry.set_component(pawn, inventory).ok()?;
+    moved.then_some(slot)
 }
 
 fn discard_world_less_snapshots(client: &mut NetClient) {
@@ -1553,7 +1590,8 @@ pub fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) {
 ///
 /// `frame_dt_secs` is the frame's wall-clock delta (the same per-frame delta the frame
 /// loop computes); it drives the framerate-independent starvation feedback so the
-/// adaptive delay's time-constant does not scale with frame rate.
+/// adaptive delay's time-constant does not scale with frame rate, and it is the
+/// render target's nominal playback, so an estimate jump slews rather than jumps.
 /// `frame_anim_time` is the slow-mo/freeze-gated animation clock used by mesh sampling;
 /// remote walk-rate rebases must use this exact clock for clip-time continuity.
 pub fn client_sample_interpolation(
@@ -1584,8 +1622,13 @@ pub fn client_sample_interpolation(
             SERVER_TICK_MICROS,
         );
     }
-    let render_server_tick =
-        interpolation_delay.render_server_tick(estimated_tick, jitter, rtt, SERVER_TICK_MICROS);
+    let render_server_tick = interpolation_delay.render_server_tick(
+        estimated_tick,
+        frame_dt_secs,
+        jitter,
+        rtt,
+        SERVER_TICK_MICROS,
+    );
     let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
@@ -3323,22 +3366,35 @@ mod tests {
         assert!(tuning_control_if_changed(&mut last_sent, 1, payload(&registry)).is_none());
     }
 
-    // Regression: a pawn baseline armed before its level's tuning composed
-    // from the previous payload, and a later payload differing only in the
-    // spawn active slot read as the same pawn tuning, so the client stayed on
-    // a slot the host never held. Install adopts the late slot while the
-    // selection is untouched, and only then.
+    // Regression: a pawn baseline armed before any payload installed composed
+    // from the client's own descriptor, and a later payload differing only in
+    // the spawn active slot read as the same pawn tuning, so the client stayed
+    // on a slot the host never held. Install adopts the late slot while the
+    // selection is untouched, judged before rematerialization, and only then.
     #[test]
     fn late_tuning_install_adopts_spawn_active_slot_only_for_an_untouched_selection() {
-        let composed = |registry: &mut EntityRegistry| {
+        fn composed(registry: &mut EntityRegistry) -> crate::client::ArmedLocalPawn {
             let pawn = registry.spawn(Transform::default());
             let mut inventory = Inventory::default();
             for slot in inventory.wieldables.iter_mut().take(3) {
-                *slot = Some(registry.spawn(Transform::default()));
+                let weapon = registry.spawn(Transform::default());
+                registry
+                    .set_component(weapon, test_weapon(10.0, 96.0))
+                    .unwrap();
+                *slot = Some(weapon);
             }
             registry.set_component(pawn, inventory).unwrap();
-            pawn
-        };
+            crate::client::ArmedLocalPawn {
+                network_id: NetworkId(7),
+                entity_id: pawn,
+                entity_class: None,
+            }
+        }
+        fn edit(registry: &mut EntityRegistry, pawn: EntityId, change: fn(&mut Inventory)) {
+            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
+            change(&mut inventory);
+            registry.set_component(pawn, inventory).unwrap();
+        }
         let payload = |slot| {
             TuningPayload::new(None, std::array::from_fn(|_| None), test_environment())
                 .with_spawn_active_slot(slot)
@@ -3349,63 +3405,117 @@ mod tests {
         };
 
         let mut registry = EntityRegistry::new();
-        let pawn = composed(&mut registry);
-        assert!(adopt_payload_spawn_active_slot(
-            &mut registry,
-            pawn,
-            &payload(2),
-            false
-        ));
+        let armed = composed(&mut registry);
+        let pawn = armed.entity_id;
+        assert!(spawn_slot_adoption_open(&registry, &armed, None, false));
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            Some(2)
+        );
         assert_eq!(active(&registry, pawn), (2, 2));
-        assert!(
-            !adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2), false),
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            None,
             "a repeat install changes nothing"
         );
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(5)),
+            None,
+            "an empty payload slot moves nothing"
+        );
+        assert_eq!(active(&registry, pawn), (2, 2));
 
-        type Touch = fn(&mut Inventory);
-        let touched: [(&str, Touch, bool, usize); 5] = [
+        // A layout change released a weapon during rematerialization, which
+        // repointed the active slot at the first populated one. Read after it,
+        // the release looks like a switch; the gate read before it holds, and
+        // adoption restores the slot the host composed.
+        let mut registry = EntityRegistry::new();
+        let armed = composed(&mut registry);
+        let pawn = armed.entity_id;
+        edit(&mut registry, pawn, |inventory| {
+            inventory.active_slot = 2;
+            inventory.spawn_active_slot = 2;
+        });
+        assert!(spawn_slot_adoption_open(&registry, &armed, None, false));
+        edit(&mut registry, pawn, |inventory| inventory.active_slot = 0);
+        assert!(!spawn_slot_adoption_open(&registry, &armed, None, false));
+        assert_eq!(
+            adopt_payload_spawn_active_slot(&mut registry, pawn, &payload(2)),
+            Some(2)
+        );
+        assert_eq!(active(&registry, pawn), (2, 2));
+
+        type Touch = fn(&mut EntityRegistry, EntityId);
+        let closed: [(&str, Touch, Option<NetworkId>, bool); 6] = [
             (
                 "switched since compose",
-                |inventory| inventory.active_slot = 1,
+                |registry, pawn| edit(registry, pawn, |inventory| inventory.active_slot = 1),
+                None,
                 false,
-                2,
             ),
             (
                 "switch in flight",
-                |inventory| inventory.switch_target = Some(1),
+                |registry, pawn| {
+                    edit(registry, pawn, |inventory| {
+                        inventory.switch_target = Some(1)
+                    });
+                },
+                None,
                 false,
-                2,
             ),
             (
                 "switch origin held",
-                |inventory| inventory.switch_origin = Some(1),
+                |registry, pawn| {
+                    edit(registry, pawn, |inventory| {
+                        inventory.switch_origin = Some(1)
+                    });
+                },
+                None,
                 false,
-                2,
             ),
-            ("declaration pending", |_| {}, true, 2),
-            ("empty payload slot", |_| {}, false, 5),
+            (
+                "active weapon reloading",
+                |registry, pawn| {
+                    let inventory = registry.get_component::<Inventory>(pawn).unwrap();
+                    let weapon = inventory.wieldables[0].unwrap();
+                    let mut component = registry
+                        .get_component::<WeaponComponent>(weapon)
+                        .unwrap()
+                        .clone();
+                    component.state =
+                        postretro_entities::components::wieldable_state::WieldableState::Reloading;
+                    registry.set_component(weapon, component).unwrap();
+                },
+                None,
+                false,
+            ),
+            ("declaration pending", |_, _| {}, None, true),
+            (
+                "a switch or re-sync declared for this pawn",
+                |_, _| {},
+                Some(NetworkId(7)),
+                false,
+            ),
         ];
-        for (case, touch, declarations_pending, slot) in touched {
+        for (case, touch, declared, pending) in closed {
             let mut registry = EntityRegistry::new();
-            let pawn = composed(&mut registry);
-            let mut inventory = registry.get_component::<Inventory>(pawn).unwrap().clone();
-            touch(&mut inventory);
-            registry.set_component(pawn, inventory.clone()).unwrap();
+            let armed = composed(&mut registry);
+            touch(&mut registry, armed.entity_id);
             assert!(
-                !adopt_payload_spawn_active_slot(
-                    &mut registry,
-                    pawn,
-                    &payload(slot),
-                    declarations_pending
-                ),
-                "{case}"
-            );
-            assert_eq!(
-                registry.get_component::<Inventory>(pawn).unwrap(),
-                &inventory,
+                !spawn_slot_adoption_open(&registry, &armed, declared, pending),
                 "{case}"
             );
         }
+
+        // A declaration made for an earlier pawn leaves a new pawn's gate open.
+        let mut registry = EntityRegistry::new();
+        let armed = composed(&mut registry);
+        assert!(spawn_slot_adoption_open(
+            &registry,
+            &armed,
+            Some(NetworkId(6)),
+            false
+        ));
     }
 
     // Regression: connected clients resolved first-person placement from their

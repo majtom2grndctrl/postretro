@@ -21,7 +21,9 @@
 //     target reads the same estimate.
 // On a LAN (RTT ≈ 0, lag ≈ 0) the delay reduces to the 50 ms buffer floor. The
 // render target slews toward `estimated_server_tick - delay` at 0.75–1.25× the
-// estimate's advance, so a whole-tick delay step neither freezes nor jumps remotes.
+// frame's wall-clock time, so a whole-tick delay step or a forward estimate jump
+// neither freezes nor jumps remotes. A target already at or past the newest
+// snapshot may hold instead of playing on into starvation.
 //
 // Time model: every sample is stamped with the server tick it was valid at (the
 // snapshot's `server_tick`), never a wall-clock instant. The render target is also a
@@ -95,9 +97,10 @@ const MAX_STARVATION_MARGIN_MICROS: f64 = 100_000.0;
 static STARVATION_MARGIN_DECAY_PER_SEC: std::sync::LazyLock<f64> =
     std::sync::LazyLock::new(|| 0.85_f64.powi(60));
 /// Ceiling applied to a single frame's `dt_secs` before driving the starvation
-/// feedback. A hitch (long GC pause, alt-tab, breakpoint) would otherwise let one
-/// frame add a pathological amount of margin or decay it fully to zero; clamping to
-/// 0.25 s bounds the per-frame influence to a quarter-second of adaptation.
+/// feedback or the render target's playback. A hitch (long GC pause, alt-tab,
+/// breakpoint) would otherwise let one frame add a pathological amount of margin,
+/// decay it fully to zero, or jump remotes; clamping to 0.25 s bounds the per-frame
+/// influence to a quarter-second of adaptation.
 const MAX_FEEDBACK_DT_SECS: f64 = 0.25;
 /// Half-life of the snapshot-lag peak's decay toward the latest measured lag, in
 /// microseconds of estimated server time (2 s). A new maximum lifts the peak
@@ -115,10 +118,12 @@ const LAG_PEAK_EPSILON_TICKS: f64 = 0.05;
 /// Below this, the starvation margin is treated as settled and snapped to zero.
 const STARVATION_MARGIN_EPSILON_MICROS: f64 = 500.0;
 /// Playback-rate bounds for the slewed render target, as multiples of the frame's
-/// server-tick advance. A delay step moves the target toward its new value at
-/// these rates instead of freezing remotes (a raise) or jumping a whole tick in
-/// one frame (a lowered ceiling), so remote motion stays even. ±25% stays below
-/// a noticeable speed change.
+/// wall-clock time in server ticks. A delay step or an estimate jump moves the
+/// target toward its new value at these rates instead of freezing remotes (a
+/// raise) or jumping a whole tick in one frame (a lowered ceiling or a reseed), so
+/// remote motion stays even. ±25% stays below a noticeable speed change. The lower
+/// bound drops to zero once the target reaches the newest snapshot (see
+/// [`InterpolationDelayState::render_server_tick`]).
 const RENDER_TARGET_PLAYBACK_RATE: std::ops::RangeInclusive<f64> = 0.75..=1.25;
 /// A render target this many ticks behind its candidate snaps to it (0.5 s): a
 /// gap this wide would take seconds to slew out. One ahead by this much holds,
@@ -175,25 +180,20 @@ pub(crate) fn interpolation_delay_ticks(jitter_micros: f64, micros_per_tick: u64
 ///   [`MAX_SNAPSHOT_LAG_MICROS`].
 ///
 /// The render target is slewed: it moves toward `estimated − delay` at a playback
-/// rate within [`RENDER_TARGET_PLAYBACK_RATE`] of the estimate's advance, never
-/// rewinds, and snaps only on the first frame or past
-/// [`RENDER_TARGET_SNAP_TICKS`].
+/// rate within [`RENDER_TARGET_PLAYBACK_RATE`] of the frame's wall-clock time,
+/// holds instead once it reaches the newest snapshot, never rewinds, and snaps
+/// only on the first frame or past [`RENDER_TARGET_SNAP_TICKS`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterpolationDelayState {
     starvation_margin_micros: f64,
-    /// Previous frame's render target and the estimate it was read at.
-    last_render: Option<RenderTargetFrame>,
+    /// Previous frame's render target.
+    last_render_tick: Option<f64>,
     lag_peak: Option<SnapshotLagPeak>,
     /// Newest snapshot tick already folded, so each one folds once. Survives a
     /// level unload: the replication cursor keeps the pre-unload tick, and folding
-    /// it against a post-load estimate would read the load time as lag.
+    /// it against a post-load estimate would read the load time as lag. The render
+    /// target also reads it to tell when remotes have run out of snapshots.
     folded_snapshot_tick: Option<u32>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RenderTargetFrame {
-    render_tick: f64,
-    estimated_tick: f64,
 }
 
 /// Decaying peak of measured snapshot arrival lag, in server ticks.
@@ -288,46 +288,56 @@ impl InterpolationDelayState {
 
     /// Render target tick for the remote interpolation buffers. The candidate is
     /// `estimated_tick − delay`; the target slews toward it at a playback rate
-    /// clamped to [`RENDER_TARGET_PLAYBACK_RATE`] of this frame's estimate advance,
-    /// so a whole-tick delay step neither freezes remotes nor jumps them. It never
-    /// moves backward: an estimate that steps back holds it. The first frame, and
-    /// a target [`RENDER_TARGET_SNAP_TICKS`] behind the candidate, snap.
+    /// clamped to [`RENDER_TARGET_PLAYBACK_RATE`] of `frame_dt_secs` in ticks, so a
+    /// whole-tick delay step or a forward estimate jump (a time-sync reseed)
+    /// neither freezes remotes nor jumps them. Once the previous target is at or
+    /// past the newest folded snapshot the lower bound is zero: the target holds
+    /// rather than playing on into starvation, so a lasting latency rise starves
+    /// remotes about as long as the rise. It never moves backward: an estimate that
+    /// steps back slows it like a delay raise, and one more than
+    /// [`RENDER_TARGET_SNAP_TICKS`] back holds it. The first frame, and a target
+    /// that far behind the candidate, snap.
     pub(crate) fn render_server_tick(
         &mut self,
         estimated_tick: f64,
+        frame_dt_secs: f64,
         jitter_micros: f64,
         rtt_micros: f64,
         micros_per_tick: u64,
     ) -> f64 {
         if !estimated_tick.is_finite() {
-            return self
-                .last_render
-                .map_or(estimated_tick, |last| last.render_tick);
+            // Hold the last target. With none yet the value passes through: the
+            // caller samples only after the estimator seeds a finite tick.
+            return self.last_render_tick.unwrap_or(estimated_tick);
         }
         let delay_ticks = self.delay_ticks(jitter_micros, rtt_micros, micros_per_tick);
         let candidate = estimated_tick - f64::from(delay_ticks);
-        let render_tick = match self.last_render {
+        let render_tick = match self.last_render_tick {
             None => candidate,
             Some(last) => {
-                let gap = candidate - last.render_tick;
+                let gap = candidate - last;
                 if gap > RENDER_TARGET_SNAP_TICKS {
                     candidate
                 } else if gap < -RENDER_TARGET_SNAP_TICKS {
-                    last.render_tick
+                    last
                 } else {
-                    let nominal = (estimated_tick - last.estimated_tick).max(0.0);
-                    let step = gap.clamp(
-                        RENDER_TARGET_PLAYBACK_RATE.start() * nominal,
+                    let nominal = playback_ticks(frame_dt_secs, micros_per_tick);
+                    let starved = self
+                        .folded_snapshot_tick
+                        .is_some_and(|newest| last >= f64::from(newest));
+                    let min_rate = if starved {
+                        0.0
+                    } else {
+                        *RENDER_TARGET_PLAYBACK_RATE.start()
+                    };
+                    last + gap.clamp(
+                        min_rate * nominal,
                         RENDER_TARGET_PLAYBACK_RATE.end() * nominal,
-                    );
-                    last.render_tick + step
+                    )
                 }
             }
         };
-        self.last_render = Some(RenderTargetFrame {
-            render_tick,
-            estimated_tick,
-        });
+        self.last_render_tick = Some(render_tick);
         render_tick
     }
 
@@ -366,6 +376,19 @@ impl InterpolationDelayState {
     fn lag_peak_ticks(&self) -> Option<f64> {
         self.lag_peak.map(|lag| lag.peak_ticks)
     }
+}
+
+/// One frame's wall-clock delta in server ticks: the render target's nominal
+/// playback. A non-finite or negative delta plays nothing; a hitch is clamped to
+/// [`MAX_FEEDBACK_DT_SECS`] and the gap it leaves slews out over later frames.
+/// Always finite and non-negative, so the playback clamp's bounds stay ordered.
+fn playback_ticks(frame_dt_secs: f64, micros_per_tick: u64) -> f64 {
+    let dt = if frame_dt_secs.is_finite() && frame_dt_secs > 0.0 {
+        frame_dt_secs.min(MAX_FEEDBACK_DT_SECS)
+    } else {
+        0.0
+    };
+    dt * 1_000_000.0 / micros_per_tick.max(1) as f64
 }
 
 fn adaptive_interpolation_delay_ticks(
@@ -996,6 +1019,11 @@ mod tests {
     /// Tolerance for server-tick float comparisons.
     const TICK_EPS: f64 = 1e-9;
 
+    /// Wall-clock seconds for a frame spanning `ticks` server ticks.
+    fn frame_dt(ticks: f64) -> f64 {
+        ticks * MICROS_PER_TICK / 1_000_000.0
+    }
+
     fn assert_lag_peak(state: &InterpolationDelayState, expected: f64) {
         let peak = state.lag_peak_ticks().expect("a lag has been folded");
         assert!(
@@ -1264,13 +1292,15 @@ mod tests {
     fn adaptive_delay_increase_never_rewinds_render_target() {
         let mut state = InterpolationDelayState::new();
 
-        let first = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
-        assert_eq!(first, 97.0, "50 ms floor is 3 ticks");
+        let first =
+            state.render_server_tick(100.0, frame_dt(1.0), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        assert!((first - 97.0).abs() < TICK_EPS, "50 ms floor is 3 ticks");
 
         state.observe_sampled_frame(true, DT_60HZ);
         state.observe_sampled_frame(true, DT_60HZ);
 
-        let next = state.render_server_tick(101.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let next =
+            state.render_server_tick(101.0, frame_dt(1.0), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert!(
             next >= first,
             "render target must not regress after a delay increase: {next} < {first}"
@@ -1281,7 +1311,8 @@ mod tests {
             "presentation slows to the minimum playback rate while the rise is absorbed: {next}"
         );
 
-        let caught_up = state.render_server_tick(104.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let caught_up =
+            state.render_server_tick(104.0, frame_dt(3.0), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
         assert!(
             caught_up > next,
             "render target resumes advancing once the estimate catches up"
@@ -1374,12 +1405,18 @@ mod tests {
             }
             let new_target = new_law.render_server_tick(
                 estimated_tick,
+                frame_dt(0.25),
                 0.0,
                 RTT_MICROS,
                 DEFAULT_MICROS_PER_TICK,
             );
-            let old_target =
-                old_law.render_server_tick(estimated_tick, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            let old_target = old_law.render_server_tick(
+                estimated_tick,
+                frame_dt(0.25),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
             if estimated_tick < 30.0 {
                 continue; // warm-up: the buffer is still filling
             }
@@ -1487,10 +1524,20 @@ mod tests {
             if let Some(newest) = newest {
                 measured.observe_newest_snapshot(estimated_tick, newest, DEFAULT_MICROS_PER_TICK);
             }
-            let measured_target =
-                measured.render_server_tick(estimated_tick, jitter, rtt, DEFAULT_MICROS_PER_TICK);
-            let rtt_only_target =
-                rtt_only.render_server_tick(estimated_tick, jitter, rtt, DEFAULT_MICROS_PER_TICK);
+            let measured_target = measured.render_server_tick(
+                estimated_tick,
+                frame_dt(0.25),
+                jitter,
+                rtt,
+                DEFAULT_MICROS_PER_TICK,
+            );
+            let rtt_only_target = rtt_only.render_server_tick(
+                estimated_tick,
+                frame_dt(0.25),
+                jitter,
+                rtt,
+                DEFAULT_MICROS_PER_TICK,
+            );
             if estimated_tick < 180.0 {
                 continue;
             }
@@ -1540,7 +1587,8 @@ mod tests {
     fn measured_lag_peak_rises_instantly_then_decays_without_rewinding() {
         let mut state = InterpolationDelayState::new();
         state.observe_newest_snapshot(100.0, 98, DEFAULT_MICROS_PER_TICK);
-        let mut last_target = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let mut last_target =
+            state.render_server_tick(100.0, frame_dt(2.0), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
 
         // A lag spike of 10 ticks lifts the delay at once: ceil(10 + 2) = 12.
         state.observe_newest_snapshot(102.0, 92, DEFAULT_MICROS_PER_TICK);
@@ -1553,8 +1601,13 @@ mod tests {
         while tick < 222 {
             tick += 2;
             state.observe_newest_snapshot(f64::from(tick), tick - 1, DEFAULT_MICROS_PER_TICK);
-            let target =
-                state.render_server_tick(f64::from(tick), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            let target = state.render_server_tick(
+                f64::from(tick),
+                frame_dt(2.0),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
             assert!(
                 target >= last_target,
                 "render target rewound: {target} < {last_target}"
@@ -1574,8 +1627,13 @@ mod tests {
         for _ in 0..600 {
             tick += 2;
             state.observe_newest_snapshot(f64::from(tick), tick - 1, DEFAULT_MICROS_PER_TICK);
-            let target =
-                state.render_server_tick(f64::from(tick), 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            let target = state.render_server_tick(
+                f64::from(tick),
+                frame_dt(2.0),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
             assert!(
                 target >= last_target,
                 "render target rewound: {target} < {last_target}"
@@ -1691,7 +1749,13 @@ mod tests {
         // Snapshots every 2 ticks, each newest one folded 1 tick after its stamp.
         let newest_at = |estimated: f64| ((estimated as u32).saturating_sub(1)) & !1;
 
-        let mut last_target = state.render_server_tick(100.0, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+        let mut last_target = state.render_server_tick(
+            100.0,
+            frame_dt(FRAME_TICKS),
+            0.0,
+            0.0,
+            DEFAULT_MICROS_PER_TICK,
+        );
         assert!(
             (last_target - 97.0).abs() < TICK_EPS,
             "the first frame snaps"
@@ -1706,10 +1770,23 @@ mod tests {
                 newest_at(estimated)
             };
             state.observe_newest_snapshot(estimated, newest, DEFAULT_MICROS_PER_TICK);
-            let target = state.render_server_tick(estimated, 0.0, 0.0, DEFAULT_MICROS_PER_TICK);
+            let target = state.render_server_tick(
+                estimated,
+                frame_dt(FRAME_TICKS),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
             let advance = target - last_target;
+            // A target at or past the newest folded snapshot may hold (the late
+            // snapshot on frame 40 folds an older tick than the target).
+            let floor_rate = if last_target >= f64::from(newest) {
+                0.0
+            } else {
+                min_rate
+            };
             assert!(
-                advance >= min_rate * FRAME_TICKS - TICK_EPS
+                advance >= floor_rate * FRAME_TICKS - TICK_EPS
                     && advance <= max_rate * FRAME_TICKS + TICK_EPS,
                 "frame {step}: render advance {advance} outside the playback-rate band"
             );
@@ -1732,6 +1809,164 @@ mod tests {
         assert!(
             (last_target - (estimated - delay(&state))).abs() < TICK_EPS,
             "steady state converges to the candidate: {last_target}"
+        );
+    }
+
+    // Regression: after a lasting latency rise of D ticks the target kept playing
+    // at 0.75× past the newest snapshot, so remotes starved ~4(D − 2) ticks after
+    // the first late snapshot landed. Holding at the newest snapshot bounds that
+    // near D.
+    #[test]
+    fn sustained_latency_rise_starves_about_as_long_as_the_rise() {
+        const FRAME_TICKS: f64 = 0.25;
+        const BASE_LATENCY_TICKS: f64 = 4.5;
+        const RISE_TICKS: f64 = 10.0;
+        const RISE_AT_TICK: u32 = 200;
+        let latency = |tick: u32| {
+            if tick < RISE_AT_TICK {
+                BASE_LATENCY_TICKS
+            } else {
+                BASE_LATENCY_TICKS + RISE_TICKS
+            }
+        };
+        let first_late_arrival = f64::from(RISE_AT_TICK) + BASE_LATENCY_TICKS + RISE_TICKS;
+
+        let id = NetworkId(1);
+        let mut buf = RemoteInterpolationBuffer::new();
+        let mut state = InterpolationDelayState::new();
+        let mut next_snapshot = 0u32;
+        let mut newest: Option<u32> = None;
+        let mut last_target: Option<f64> = None;
+        let (mut starved_ticks, mut starved_after_late_arrival) = (0.0_f64, 0.0_f64);
+
+        // Snapshots every interval, each buffered once its latency has elapsed on
+        // a perfectly synced estimate; the latency rises for snapshots stamped at
+        // or after RISE_AT_TICK and stays raised.
+        for step in 0..3_200u32 {
+            let estimated = f64::from(step) * FRAME_TICKS;
+            while f64::from(next_snapshot) + latency(next_snapshot) <= estimated {
+                buf.record(id, sample(next_snapshot, next_snapshot as f32));
+                newest = Some(next_snapshot);
+                next_snapshot += crate::host::SNAPSHOT_TICK_INTERVAL;
+            }
+            if let Some(newest) = newest {
+                state.observe_newest_snapshot(estimated, newest, DEFAULT_MICROS_PER_TICK);
+            }
+            let target = state.render_server_tick(
+                estimated,
+                frame_dt(FRAME_TICKS),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
+            if let Some(last) = last_target {
+                assert!(target >= last, "render target rewound: {target} < {last}");
+            }
+            last_target = Some(target);
+            if estimated < 40.0 {
+                continue; // warm-up: the buffer and lag peak are still filling
+            }
+
+            let pose = buf.presented_pose(id, target).expect("buffered");
+            assert_ne!(
+                pose.source,
+                PoseSource::HeldOldest,
+                "target {target} fell behind the buffer at estimate {estimated}"
+            );
+            let starved = matches!(
+                pose.source,
+                PoseSource::Extrapolated | PoseSource::HeldNewest
+            );
+            if estimated < f64::from(RISE_AT_TICK) {
+                assert!(
+                    !starved,
+                    "steady state before the rise is bracketed at estimate {estimated}"
+                );
+            }
+            if starved {
+                starved_ticks += FRAME_TICKS;
+                if estimated >= first_late_arrival {
+                    starved_after_late_arrival += FRAME_TICKS;
+                }
+            }
+        }
+
+        assert!(
+            starved_after_late_arrival > 0.0,
+            "the rise outran the buffer before the late snapshots landed"
+        );
+        // About RISE_TICKS − 1 after the first late arrival (the 0.75× floor gave
+        // ~4 × (RISE_TICKS − 2)); the blackout before it adds about RISE_TICKS more.
+        assert!(
+            starved_after_late_arrival <= RISE_TICKS,
+            "starved {starved_after_late_arrival} ticks after the first late snapshot"
+        );
+        assert!(
+            starved_ticks <= 2.0 * RISE_TICKS,
+            "starved {starved_ticks} ticks in all"
+        );
+        let estimated = 3_199.0 * FRAME_TICKS;
+        let delay = f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK));
+        assert!(
+            (last_target.expect("frames ran") - (estimated - delay)).abs() < TICK_EPS,
+            "the target settles on the raised delay"
+        );
+    }
+
+    // A time-sync reseed can step the estimate forward in one frame. Playback runs
+    // on wall-clock time, so the target absorbs the jump at no more than 1.25×
+    // instead of jumping remotes with it (the estimate's own advance would have
+    // moved it 10.25 ticks in that frame).
+    #[test]
+    fn forward_estimate_jump_slews_instead_of_jumping() {
+        const FRAME_TICKS: f64 = 0.25;
+        const JUMP_TICKS: f64 = 10.0;
+        let (min_rate, max_rate) = (
+            *RENDER_TARGET_PLAYBACK_RATE.start(),
+            *RENDER_TARGET_PLAYBACK_RATE.end(),
+        );
+        let mut state = InterpolationDelayState::new();
+        let mut estimated = 100.0;
+        let mut last_target = state.render_server_tick(
+            estimated,
+            frame_dt(FRAME_TICKS),
+            0.0,
+            0.0,
+            DEFAULT_MICROS_PER_TICK,
+        );
+        let mut slewing_frames = 0u32;
+        for step in 1..=400u32 {
+            estimated += FRAME_TICKS;
+            if step == 20 {
+                estimated += JUMP_TICKS;
+            }
+            let target = state.render_server_tick(
+                estimated,
+                frame_dt(FRAME_TICKS),
+                0.0,
+                0.0,
+                DEFAULT_MICROS_PER_TICK,
+            );
+            let advance = target - last_target;
+            assert!(
+                advance >= min_rate * FRAME_TICKS - TICK_EPS
+                    && advance <= max_rate * FRAME_TICKS + TICK_EPS,
+                "frame {step}: render advance {advance} outside the playback-rate band"
+            );
+            if (advance - max_rate * FRAME_TICKS).abs() < TICK_EPS {
+                slewing_frames += 1;
+            }
+            last_target = target;
+        }
+        // Closing 10 ticks at +0.25 × 0.25 ticks per frame takes about 160 frames.
+        assert!(
+            (155..=165).contains(&slewing_frames),
+            "the jump was absorbed over {slewing_frames} max-rate frames"
+        );
+        let delay = f64::from(state.delay_ticks(0.0, 0.0, DEFAULT_MICROS_PER_TICK));
+        assert!(
+            (last_target - (estimated - delay)).abs() < TICK_EPS,
+            "the target converges on the candidate: {last_target}"
         );
     }
 

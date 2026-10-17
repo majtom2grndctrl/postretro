@@ -33,8 +33,9 @@
 //     retry); no component re-apply, no refresh, no ack. A presentation-bound
 //     entity has no metadata consumers and skips it.
 //   - Delta, new_baseline_id older than the held one: inside an accepted newest
-//     snapshot this breaks newest-wins (an id wrap or namespace regression), so
-//     request refresh, leave state untouched, and do not ack.
+//     snapshot this breaks newest-wins (a namespace regression, or a gap past
+//     half the id range), so request refresh, leave state untouched, and do not
+//     ack.
 //   - Delta, no held baseline or no live mapping: request refresh, leave state
 //     untouched, and do not ack the entity baseline.
 //   - Despawn: retire the network identity and ack its tombstone. Despawn a
@@ -112,7 +113,7 @@ pub(crate) struct InterpolationSampleStats {
 
 /// Reason code carried in a `BaselineRefreshRequest`. Diagnostic only — the server
 /// repair path keys on entity + missing ref, not the reason (net wire contract).
-/// Reason: a `Delta` arrived with no held baseline, or a regressed one.
+/// A `Delta` arrived with no held baseline, or a regressed one.
 const REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 /// Reason: a `FullBaseline` named a `NetworkId` whose mapped `EntityId` was stale.
 const REFRESH_REASON_STALE_MAPPING: u8 = 1;

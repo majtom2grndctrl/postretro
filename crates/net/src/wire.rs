@@ -1195,9 +1195,10 @@ pub struct BaselineRefreshRequest {
     pub snapshot_sequence: u32,
     /// The entity to re-send a full baseline for.
     pub network_id: u32,
-    /// The `baseline_ref` the unappliable delta named. Diagnostic and dedup
-    /// context only: a delta applies whatever reference it names, so this need not
-    /// be a baseline the client lacks.
+    /// The `baseline_ref` the unappliable delta named, despite the field name not
+    /// necessarily a baseline the client lacks: a delta applies whatever reference
+    /// it names. Diagnostic only — the repair never reads it, though the server
+    /// dedups requests on it.
     pub missing_baseline_ref: u32,
     /// Why the refresh is needed (e.g. unknown baseline). A `u8` reason code,
     /// not interpreted by the repair path — logged for diagnostics.
@@ -1222,8 +1223,10 @@ pub struct StateBaselineRefreshRequest {
     /// The replicated state slot to re-send a full baseline for (`StateSlotId`
     /// inner value).
     pub slot_id: u16,
-    /// The `baseline_ref` the unappliable state delta named. Diagnostic and dedup
-    /// context only: a state delta applies whatever reference it names.
+    /// The `baseline_ref` the unappliable state delta named, despite the field name
+    /// not necessarily a baseline the client lacks: a state delta applies whatever
+    /// reference it names. Diagnostic only — the repair never reads it, though the
+    /// server dedups requests on it.
     pub missing_baseline_ref: u32,
     /// Why the refresh is needed. A `u8` reason code, not interpreted by the repair
     /// path — logged for diagnostics.

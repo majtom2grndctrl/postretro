@@ -1160,8 +1160,8 @@ use postretro_net::wire::StateBaselineRefreshRequest;
 use crate::scripting::primitives::store::apply_store_slot_batch;
 
 /// Reason code carried in a `StateBaselineRefresh` request. Diagnostic only — the
-/// server repair path keys on slot + missing ref, not the reason. Reason: a delta
-/// arrived with no held baseline, or a regressed one.
+/// server repair path keys on slot + missing ref, not the reason.
+/// A `Delta` arrived with no held baseline, or a regressed one.
 const STATE_REFRESH_REASON_UNKNOWN_BASELINE: u8 = 0;
 
 /// What a client state-apply pass produced for the caller to send back on the reliable

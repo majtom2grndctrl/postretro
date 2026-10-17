@@ -31,12 +31,12 @@ pub type VirtualMillis = u64;
 /// single seeded stream is all the conditioner needs for reproducible
 /// jitter/loss decisions. Same seed ⇒ same sequence, every run, every platform.
 #[derive(Debug, Clone)]
-struct SplitMix64 {
+pub(crate) struct SplitMix64 {
     state: u64,
 }
 
 impl SplitMix64 {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
@@ -93,6 +93,19 @@ impl LinkConfig {
             loss_probability: 0.0,
             seed: 0,
         }
+    }
+
+    /// The per-packet decision of the link model, shared by
+    /// [`PacketConditioner`] and the dev lag proxy (`crate::lag_proxy`): `None`
+    /// drops the packet, else its one-way delay (`delay` plus a uniform
+    /// `[0, jitter]` draw). The loss flip consumes the stream only when loss is
+    /// on, and the jitter draw only when the packet survives and jitter is on,
+    /// so the stream position is a deterministic function of the call sequence.
+    pub(crate) fn sample_delay(&self, rng: &mut SplitMix64) -> Option<VirtualMillis> {
+        if self.loss_probability > 0.0 && rng.next_unit_f64() < self.loss_probability {
+            return None;
+        }
+        Some(self.delay + rng.next_in_inclusive(self.jitter))
     }
 }
 
@@ -168,16 +181,14 @@ impl PacketConditioner {
     /// draw only when the packet survives and `jitter > 0` — so the stream
     /// position is a deterministic function of the enqueue sequence.
     pub fn enqueue(&mut self, packet: Vec<u8>) -> bool {
-        if self.config.loss_probability > 0.0
-            && self.rng.next_unit_f64() < self.config.loss_probability
-        {
+        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
             self.dropped += 1;
             return false;
-        }
-
-        let jitter = self.rng.next_in_inclusive(self.config.jitter);
-        let deliver_at = self.now + self.config.delay + jitter;
-        self.queue.push(ScheduledPacket { deliver_at, packet });
+        };
+        self.queue.push(ScheduledPacket {
+            deliver_at: self.now + delay,
+            packet,
+        });
         true
     }
 
@@ -191,16 +202,12 @@ impl PacketConditioner {
     /// without consuming twice. Clones only the surviving buffer.
     fn enqueue_one(&mut self, packet: &[u8]) -> bool {
         // Mirror `enqueue` but avoid cloning a dropped buffer.
-        if self.config.loss_probability > 0.0
-            && self.rng.next_unit_f64() < self.config.loss_probability
-        {
+        let Some(delay) = self.config.sample_delay(&mut self.rng) else {
             self.dropped += 1;
             return false;
-        }
-        let jitter = self.rng.next_in_inclusive(self.config.jitter);
-        let deliver_at = self.now + self.config.delay + jitter;
+        };
         self.queue.push(ScheduledPacket {
-            deliver_at,
+            deliver_at: self.now + delay,
             packet: packet.to_vec(),
         });
         true

@@ -128,6 +128,8 @@ pub use command_queue::{
     CadenceVerdict, HostCommandQueues, MovementOwners, ResolutionSource, ResolvedPawnCommand,
     WeaponOwners, active_wieldable_for_pawn, host_resolve_remote_commands,
 };
+#[cfg(feature = "dev-tools")]
+pub use endpoint::LagProfile;
 pub use endpoint::{
     ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, CurrentSwitchResolution,
     NetEndpoint, PendingSwitchDeclaration, SwitchOutcome, WorldLessPoll,

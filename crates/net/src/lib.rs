@@ -16,3 +16,5 @@ pub mod wire;
 
 #[cfg(any(test, feature = "dev-tools"))]
 pub mod harness;
+#[cfg(feature = "dev-tools")]
+pub mod lag_proxy;

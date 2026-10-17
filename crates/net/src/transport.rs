@@ -155,6 +155,11 @@ pub struct NetServer {
     relevel_catalog_id: Option<String>,
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
+    /// Relay between the public socket and the transport's internal one, set
+    /// by [`NetServer::new_behind_lag_proxy`]. It runs on its own threads;
+    /// dropping the server joins them.
+    #[cfg(feature = "dev-tools")]
+    lag_proxy: Option<crate::lag_proxy::LagProxy>,
 }
 
 impl NetServer {
@@ -195,6 +200,8 @@ impl NetServer {
             revealed_level: None,
             relevel_catalog_id: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
+            #[cfg(feature = "dev-tools")]
+            lag_proxy: None,
         })
     }
 
@@ -974,6 +981,8 @@ pub const CONNECT_ATTEMPTS: u32 = 4;
 pub struct NetClient {
     client: RenetClient,
     transport: NetcodeClientTransport,
+    /// The real host, as logs name it. The transport may dial a lag proxy in
+    /// its place: see [`NetClient::dial_addr`].
     server_addr: SocketAddr,
     /// Attempt N connects as `base_client_id + (N - 1)`.
     base_client_id: u64,
@@ -1002,6 +1011,11 @@ pub struct NetClient {
     active_participation_epoch: Option<u64>,
     retired_participation_epoch: Option<u64>,
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
+    /// Relay the transport dials in place of `server_addr`, set by
+    /// [`NetClient::new_behind_lag_proxy`]. It runs on its own threads;
+    /// dropping the client joins them.
+    #[cfg(feature = "dev-tools")]
+    lag_proxy: Option<crate::lag_proxy::LagProxy>,
 }
 
 fn client_transport(
@@ -1059,6 +1073,8 @@ impl NetClient {
             active_participation_epoch: None,
             retired_participation_epoch: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
+            #[cfg(feature = "dev-tools")]
+            lag_proxy: None,
         })
     }
 
@@ -1243,7 +1259,8 @@ impl NetClient {
         if !unanswered || self.ever_connected || self.connect_attempt >= CONNECT_ATTEMPTS {
             return false;
         }
-        let bind_addr: SocketAddr = match self.server_addr {
+        let dial_addr = self.dial_addr();
+        let bind_addr: SocketAddr = match dial_addr {
             SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
             SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
         };
@@ -1255,13 +1272,7 @@ impl NetClient {
         let transport = UdpSocket::bind(bind_addr)
             .map_err(NetcodeTransportError::IO)
             .and_then(|socket| {
-                client_transport(
-                    socket,
-                    self.server_addr,
-                    client_id,
-                    self.clock,
-                    self.user_data,
-                )
+                client_transport(socket, dial_addr, client_id, self.clock, self.user_data)
             });
         match transport {
             Ok(transport) => {
@@ -1280,6 +1291,19 @@ impl NetClient {
                 false
             }
         }
+    }
+
+    /// The address the transport sends to: the lag proxy when one relays for
+    /// this client, else the host itself. A retry keeps the same proxy and its
+    /// profile; its fresh socket is a new peer to the proxy, which opens a
+    /// fresh upstream socket, so the host sees a new address as it would
+    /// without the proxy.
+    fn dial_addr(&self) -> SocketAddr {
+        #[cfg(feature = "dev-tools")]
+        if let Some(proxy) = &self.lag_proxy {
+            return proxy.local_addr();
+        }
+        self.server_addr
     }
 
     #[must_use]
@@ -1489,6 +1513,73 @@ impl NetClient {
     pub fn update_connections(&mut self, dt: Duration) {
         self.client.update(dt);
         self.queue_control_messages();
+    }
+}
+
+#[cfg(feature = "dev-tools")]
+impl NetServer {
+    /// [`NetServer::new`] behind a host-mode lag proxy that owns
+    /// `public_socket`. The transport binds an internal loopback port but still
+    /// advertises `public_addr`, the address clients dial, so the relay is
+    /// invisible to them.
+    pub fn new_behind_lag_proxy(
+        public_socket: UdpSocket,
+        public_addr: SocketAddr,
+        max_clients: usize,
+        current_time: Duration,
+        kinematic_static_fingerprint: Option<[u8; 32]>,
+    ) -> Result<Self, NetcodeTransportError> {
+        let internal = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let internal_addr = internal.local_addr()?;
+        let proxy = crate::lag_proxy::LagProxy::host(public_socket, internal_addr)?;
+        let mut server = Self::new(
+            internal,
+            public_addr,
+            max_clients,
+            current_time,
+            kinematic_static_fingerprint,
+        )?;
+        server.lag_proxy = Some(proxy);
+        Ok(server)
+    }
+
+    /// The lag proxy relaying for this server, if any.
+    #[must_use]
+    pub fn lag_proxy(&self) -> Option<&crate::lag_proxy::LagProxy> {
+        self.lag_proxy.as_ref()
+    }
+}
+
+#[cfg(feature = "dev-tools")]
+impl NetClient {
+    /// [`NetClient::new`] behind a client-mode lag proxy: the transport dials a
+    /// loopback relay that forwards to `server_addr`. Logs still name the host.
+    pub fn new_behind_lag_proxy(
+        socket: UdpSocket,
+        server_addr: SocketAddr,
+        client_id: u64,
+        current_time: Duration,
+        kinematic_static_fingerprint: Option<[u8; 32]>,
+        user_data: Option<[u8; NETCODE_USER_DATA_BYTES]>,
+    ) -> Result<Self, NetcodeTransportError> {
+        let proxy = crate::lag_proxy::LagProxy::client(server_addr)?;
+        let mut client = Self::new(
+            socket,
+            proxy.local_addr(),
+            client_id,
+            current_time,
+            kinematic_static_fingerprint,
+            user_data,
+        )?;
+        client.server_addr = server_addr;
+        client.lag_proxy = Some(proxy);
+        Ok(client)
+    }
+
+    /// The lag proxy relaying for this client, if any.
+    #[must_use]
+    pub fn lag_proxy(&self) -> Option<&crate::lag_proxy::LagProxy> {
+        self.lag_proxy.as_ref()
     }
 }
 

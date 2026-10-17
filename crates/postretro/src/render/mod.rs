@@ -13,7 +13,8 @@ pub(crate) mod nav_diagnostics;
 #[cfg(feature = "dev-tools")]
 pub mod debug_ui {
     pub use postretro_renderer::{
-        CpuTimingPanel, DebugUi, LightmapStreamingTab, draw_diagnostics_panel,
+        CpuTimingPanel, DebugUi, LightmapStreamingTab, NetworkLagLever, NetworkSessionRole,
+        draw_diagnostics_panel,
     };
 }
 

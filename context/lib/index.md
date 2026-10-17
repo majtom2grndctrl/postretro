@@ -64,7 +64,7 @@
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
-- **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
+- **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md` · simulated lag, dev lag proxy, `POSTRETRO_NET_LAG`, Network tab: §Testing the conditioned link
 - **What reaches clients in co-op / networked-by-default classification / display copies / host-only light, fog, emitter changes as replicated state / join baseline budget / trigger presentation `audience`** → `networking.md` §Current contract · §Presentation events vs. replicated state · `scripting.md` §12 (Entity addressing)
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead

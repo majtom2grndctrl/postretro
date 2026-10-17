@@ -48,6 +48,9 @@ use postretro_physics::movement;
 // state; the renderer only consumes its emitted lines.
 #[cfg(feature = "dev-tools")]
 mod mover_diagnostics;
+// App-side bridge from the net endpoint's dev lag proxy to the Network tab.
+#[cfg(feature = "dev-tools")]
+mod network_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 use postretro_sim::nav;

@@ -10,7 +10,7 @@ Authoritative client-server co-op uses client-side prediction and reconciliation
 
 ## Crate boundary and ownership
 
-`postretro-net` (`crates/net/`) is transport-only: wire codec, polled transport, time sync, and the dev-only latency harness. `postretro-netcode` is the registry-owning gameplay replication layer. It owns wire-side replication and state-slot tracking. The dependency direction is `postretro-netcode → postretro-net`; neither crate depends on the engine.
+`postretro-net` (`crates/net/`) is transport-only: wire codec, polled transport, time sync, and the dev-only latency harness and lag proxy. `postretro-netcode` is the registry-owning gameplay replication layer. It owns wire-side replication and state-slot tracking. The dependency direction is `postretro-netcode → postretro-net`; neither crate depends on the engine.
 
 `postretro-net` is **glam-free and postretro-free by construction.** Wire types use plain `[f32; N]` / `f32` / `bool` — never glam or engine types. The crate is never handed an `EntityRegistry` and has no notion of entities, components, or game state. It moves opaque, typed messages.
 
@@ -18,7 +18,7 @@ Authoritative client-server co-op uses client-side prediction and reconciliation
 
 ## Transport contract — polled, non-blocking
 
-The transport is **synchronous and frame-polled** — no async runtime, no tokio, no spawned threads. It builds on renet 2.0 + renet_netcode over a non-blocking `std::net::UdpSocket`. The crate pins `default-features = false` on both renet deps specifically to keep the dependency tree free of tokio/async-std/smol; `cargo tree` verifies the no-async-runtime invariant.
+The transport is **synchronous and frame-polled** — no async runtime, no tokio, no spawned threads. One exception sits beneath it: a `dev-tools` build's lag proxy (§Testing the conditioned link) relays datagrams on its own threads between the transport's socket and the network, never touches renet state, and is joined when its endpoint drops. It builds on renet 2.0 + renet_netcode over a non-blocking `std::net::UdpSocket`. The crate pins `default-features = false` on both renet deps specifically to keep the dependency tree free of tokio/async-std/smol; `cargo tree` verifies the no-async-runtime invariant.
 
 The caller advances the transport once per frame: it drives renet, drains the socket to `WouldBlock`, processes events, and flushes outbound packets — then returns. It never blocks. This honors the event-loop ownership invariant (`development_guide.md` §4.2): winit owns the loop, and the netcode poll slots into the frame's Game-logic stage without stalling it.
 
@@ -302,24 +302,25 @@ Role is selected once at startup from CLI flags; default is **single-player with
 
 ## Testing the conditioned link
 
-Two complementary paths exercise the netcode under loss and latency:
+Three paths exercise the netcode under loss and latency:
 
 **In-memory harness (deterministic, unit-test path).** A dev-only packet conditioner (gated on `dev-tools`, always built under `test`) sits between an already-connected server/client pair, conditioning the *connection-level packet buffers* — bypassing the UDP transport entirely. It applies one-way delay, bounded jitter, and loss on a **virtual clock the caller advances** (it never reads wall-clock time), driven by a seeded PRNG. Same seed ⇒ same drops and arrival times, every run, every platform. This is deliberately not turmoil: turmoil conditions tokio sockets, and this path has no socket and no async runtime. It is the deterministic, reproducible unit-test path.
 
-**`tc netem` (manual, real-socket soak path).** To shape the *real* renet_netcode UDP loopback path — the in-memory harness's real-socket complement — use Linux `tc netem` on the loopback device. Run the host and client locally over `lo`, then apply impairment:
+**Dev lag proxy (manual, real-socket path; any OS).** Every `dev-tools` `--host` / `--connect` endpoint relays its datagrams through an in-process UDP proxy from the first packet. The proxy sits between the netcode transport and the real socket and forwards unimpaired until configured, so no session needs setup to be conditioned later. It runs on its own threads, off the frame: a datagram leaves the moment it is due, so Off adds no measurable latency and a delay holds to about a millisecond at any frame rate (measured on Linux). The last stretch before each release is a high-resolution sleep rather than a channel wait, so Windows' ~15.6 ms wait granularity does not round delays up. It applies the harness link model — one-way delay, uniform jitter `[0, jitter]`, loss — on the wall clock, to **each direction** through it: one conditioned endpoint adds about twice the delay to RTT, and the symmetric split keeps time sync's one-way estimate unbiased. Either endpoint can condition. One setting per process; a host applies it uniformly to every client link and still sees each client at a distinct address. A change applies to datagrams received afterwards; those in flight keep their arrival times, so lowering the delay lets new datagrams overtake held ones. renetcode's replay window discards a datagram overtaken by 256 newer ones, which only very high send rates reach. IPv4 only, as `--connect` is. Builds without `dev-tools` construct no proxy: the transport owns the real socket, unchanged.
+
+Above the transport the proxy is invisible: a client's logs still name the real host, and a host still publishes its public port in `session.hostAddress`. Below it, a host's renet `RUST_LOG` lines name the proxy's loopback relay addresses, one per client, where client addresses would be.
+
+| Control | Contract |
+|---------|----------|
+| `POSTRETRO_NET_LAG=delay_ms[,jitter_ms[,loss_percent]]` | Launch seed, applied before the first poll, so the handshake runs conditioned. Delay and jitter are whole milliseconds, at most 5000 each (past ~7.5 s one-way, netcode's 15 s timeout drops the link anyway); loss is a percent in `[0, 100]`, fractions allowed, and 100 never connects. Out of range is malformed. Omitted trailing fields are zero (`75` is delay only). Unset or empty: off. Malformed: one warning, runs unimpaired, never blocks boot. A non-off seed logs one info line. Read only when an endpoint exists. |
+| Diagnostics panel → **Network** tab | Live edit, mid-session: delay `0..=500` ms, jitter `0..=250` ms, loss `0..=50` %, a harness-standard preset (45 / 60 / 5 %), and Off. Shows the role and, on a client, measured RTT. A seed beyond a slider's range holds until that slider is dragged. No endpoint: no controls. The panel draws in the world frame only, so menus and the join handshake take the env var. |
+
+**`tc netem` (optional, Linux kernel path).** Shapes the kernel loopback device rather than one process — reach for it only when the kernel path itself is under test. It shapes all loopback traffic until torn down, and its jitter is `±` around the delay rather than the proxy's additive `[0, jitter]`:
 
 ```sh
-# 80ms one-way delay, ±20ms jitter, 2% packet loss on loopback
-sudo tc qdisc add dev lo root netem delay 80ms 20ms loss 2%
-
-# Inspect the active qdisc
-tc qdisc show dev lo
-
-# Tear down — restores normal loopback
-sudo tc qdisc del dev lo root netem
+sudo tc qdisc add dev lo root netem delay 75ms 30ms loss 5%   # ~ harness profile, both directions
+sudo tc qdisc del dev lo root netem                           # ALWAYS tear down
 ```
-
-`tc netem` shapes every packet over `lo`, so it affects all local loopback traffic for the duration — apply it only for a soak session and always tear it down afterward. The in-memory harness is the deterministic automated gate; `tc netem` is the manual end-to-end soak over the real encrypted UDP path.
 
 ### Manual loopback recipe — movement prediction (host + client over `lo`)
 
@@ -328,21 +329,16 @@ The deterministic in-memory harness (`postretro-netcode::predict_reconcile_harne
 Run two processes locally over `lo`:
 
 ```sh
-# Terminal 1 — listen host on the campaign-test map.
-RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --host
+# Terminal 1 — listen host on the campaign-test map. `dev-tools` builds in the
+# lag proxy and the Network tab; without it POSTRETRO_NET_LAG is ignored.
+RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl --host
 
-# Terminal 2 — client connecting back to the host's default port over loopback.
-RUST_LOG=info cargo run -p xtask -- run content/dev/maps/campaign-test.prl --connect 127.0.0.1:<port>
+# Terminal 2 — client connecting back to the host's default port over loopback,
+# conditioned to the harness profile.
+POSTRETRO_NET_LAG=45,60,5 RUST_LOG=info cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl --connect 127.0.0.1:<port>
 ```
 
-Then shape the loopback link to the harness profile (45..105 ms one-way, ~5% loss) before driving the client, so the manual session matches its `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`:
-
-```sh
-# ~75ms mean one-way delay, ±30ms jitter, 5% loss on loopback (both directions).
-sudo tc qdisc add dev lo root netem delay 75ms 30ms loss 5%
-# ... drive the client, observe, then ALWAYS tear down:
-sudo tc qdisc del dev lo root netem
-```
+Condition the **client only**: its proxy applies the harness profile (45..105 ms one-way, 5% loss) to both directions, matching `LinkConfig { delay: 45, jitter: 60, loss_probability: 0.05, .. }`. Conditioning the host as well doubles the impairment. Pressing **Standard** on the client's Network tab once in the world is equivalent, minus the conditioned handshake.
 
 Verify, on the **client**:
 
@@ -353,7 +349,7 @@ Verify, on the **client**:
 5. **Remote interpolation still active.** A *second* client (or the host's own pawn, viewed from the first client) moves smoothly through the interpolation buffer, not prediction — a remote pawn lags behind by the interpolation delay and is never predicted.
 6. **No duplicate local pawn.** Exactly one descriptor-backed pawn exists per client. There is no provisional client-spawned pawn alongside the host-authoritative one; the local pawn is the host's pawn, mapped by `NetworkId` and reconciled in place.
 
-Tear down the `tc netem` qdisc when finished. The shaped link affects all loopback traffic for its duration.
+Press **Off** on the Network tab to compare against the unimpaired link mid-session; the connection survives the step change. Nothing outlives the process.
 
 ## Time sync
 

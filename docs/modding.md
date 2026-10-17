@@ -217,7 +217,8 @@ If you want to type-check your scripts, run `tsc --noEmit` yourself;
 - `docs/teleporters.md` — classic and seamless teleporters: map keys, room
   copies, and turning them on and off from scripts.
 - `docs/weapon-mounts.md` — rigid weapon mount authoring workflow.
-- `docs/diagnostics.md` — runtime diagnostic keyboard chords.
+- `docs/diagnostics.md` — runtime diagnostic keyboard chords and simulated
+  network lag for co-op testing.
 - `docs/distribution.md` — producing a lean, shippable player build.
 - `docs/external-projects.md` — keeping your game in its own repository.
 - `tools/` — asset helpers. The Python ones (specular, normal and emissive map

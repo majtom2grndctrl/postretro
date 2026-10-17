@@ -8,6 +8,9 @@ use postretro_combat_model::{EnvironmentTuning, TuningPayload};
 use postretro_foundation::{PlayerMovementDescriptor, Seat};
 use postretro_net::wire::JoinSeedValue;
 
+#[cfg(feature = "dev-tools")]
+pub use postretro_net::lag_proxy::LagProfile;
+
 /// The active network endpoint held by `App`. `None` for single-player; a
 /// `Host`/`Client` variant once the role's transport is constructed.
 ///
@@ -511,8 +514,15 @@ impl NetEndpoint {
                 let public_addr = socket
                     .local_addr()
                     .map_err(|e| format!("host local_addr failed: {e}"))?;
-                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None)
-                    .map_err(|e| format!("host transport init failed: {e}"))?;
+                // Dev builds relay every session through the lag proxy, which
+                // takes over the public socket; it forwards unimpaired until a
+                // profile is set.
+                #[cfg(feature = "dev-tools")]
+                let server =
+                    NetServer::new_behind_lag_proxy(socket, public_addr, MAX_CLIENTS, now(), None);
+                #[cfg(not(feature = "dev-tools"))]
+                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None);
+                let server = server.map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
                     allocator: Box::new(NetworkIdAllocator::new()),
@@ -549,8 +559,18 @@ impl NetEndpoint {
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
-                let client = NetClient::new(socket, *addr, client_id, now(), None, user_data)
-                    .map_err(|e| format!("client transport init failed: {e}"))?;
+                #[cfg(feature = "dev-tools")]
+                let client = NetClient::new_behind_lag_proxy(
+                    socket,
+                    *addr,
+                    client_id,
+                    now(),
+                    None,
+                    user_data,
+                );
+                #[cfg(not(feature = "dev-tools"))]
+                let client = NetClient::new(socket, *addr, client_id, now(), None, user_data);
+                let client = client.map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
                     replication: Box::new(ClientReplication::new()),
@@ -567,6 +587,47 @@ impl NetEndpoint {
                 }))
             }
         }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    fn lag_proxy(&self) -> Option<&postretro_net::lag_proxy::LagProxy> {
+        match self {
+            Self::Host { server, .. } => server.lag_proxy(),
+            Self::Client { client, .. } => client.lag_proxy(),
+        }
+    }
+
+    /// The lag proxy's live impairment, applied to each direction of every
+    /// link this endpoint carries. `None` only for an endpoint built without
+    /// the proxy.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn lag_profile(&self) -> Option<LagProfile> {
+        self.lag_proxy()
+            .map(postretro_net::lag_proxy::LagProxy::profile)
+    }
+
+    /// Change the lag proxy's impairment; a no-op for an endpoint built
+    /// without the proxy. Datagrams already in flight keep their arrival
+    /// times; the new profile applies to later ones.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_lag_profile(&mut self, profile: LagProfile) {
+        if let Some(proxy) = self.lag_proxy() {
+            proxy.set_profile(profile);
+        }
+    }
+
+    /// A client's smoothed time-sync round trip, through any lag proxy. `None`
+    /// for a host, or before the first echo.
+    #[cfg(feature = "dev-tools")]
+    #[must_use]
+    pub fn measured_rtt(&self) -> Option<Duration> {
+        let Self::Client { time_sync, .. } = self else {
+            return None;
+        };
+        time_sync
+            .rtt_micros()
+            .and_then(|micros| Duration::try_from_secs_f64(micros / 1_000_000.0).ok())
     }
 
     pub fn set_mod_identity(&mut self, id: String, version: String) {
@@ -1030,6 +1091,37 @@ mod tests {
             !apply_client_session_roster(&mut session_status, &mut slot_table, roster).0,
             "an identical reliable roster does not create a second presentation change"
         );
+    }
+
+    /// Every dev-tools endpoint is built behind the lag proxy, unimpaired, and
+    /// takes a live profile change.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn dev_endpoints_start_unimpaired_behind_the_lag_proxy_and_take_a_live_profile() {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        let profile = LagProfile {
+            delay_ms: 75,
+            jitter_ms: 30,
+            loss_probability: 0.05,
+        };
+        let host = NetEndpoint::from_role(&NetRole::Host { port: 0 }, None)
+            .expect("host endpoint constructs")
+            .expect("host role yields an endpoint");
+        let client = NetEndpoint::from_role(
+            &NetRole::Connect {
+                addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint");
+        for mut endpoint in [host, client] {
+            assert_eq!(endpoint.lag_profile(), Some(LagProfile::OFF));
+            endpoint.set_lag_profile(profile);
+            assert_eq!(endpoint.lag_profile(), Some(profile));
+            assert_eq!(endpoint.measured_rtt(), None, "no echo has been measured");
+        }
     }
 
     #[test]

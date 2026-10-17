@@ -652,6 +652,12 @@ impl Session {
                 None
             }
         };
+        // Dev builds relay every session through the lag proxy; seed it before
+        // the first poll so the handshake already runs conditioned.
+        #[cfg(feature = "dev-tools")]
+        if let Some(endpoint) = net_endpoint.as_mut() {
+            netcode::seed_lag_profile_from_environment(endpoint);
+        }
         let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
             None
         } else {

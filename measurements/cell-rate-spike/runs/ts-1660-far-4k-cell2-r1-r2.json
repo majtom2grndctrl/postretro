@@ -1,0 +1,33 @@
+{
+  "label": "far-4k-cell2-r1-r2",
+  "arm": "far-4k-cell2-r1",
+  "round": 2,
+  "pose": "far",
+  "res": "4k",
+  "mode": "cell2",
+  "ratio": "r1",
+  "problems": [],
+  "adapter": {
+    "name": "NVIDIA GeForce GTX 1660 SUPER",
+    "backend": "Vulkan",
+    "device_type": "DiscreteGpu"
+  },
+  "gpu_timing": "available",
+  "fluid_pass_ms": 1.7641364333333334,
+  "cell_pass_ms": 0.41417902,
+  "fluid_windows_ms": [
+    1.8218718,
+    1.8210237,
+    1.6495138
+  ],
+  "cell_windows_ms": [
+    0.5802464,
+    0.3312976,
+    0.33099306
+  ],
+  "forward_ms": 9.149263333333334,
+  "fluid_ms": 2.1783154533333335,
+  "cpu_completion_median_ms": 13.4408,
+  "basis": "timestamps",
+  "valid": true
+}

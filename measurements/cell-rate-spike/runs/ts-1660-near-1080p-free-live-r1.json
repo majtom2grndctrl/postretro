@@ -1,0 +1,29 @@
+{
+  "label": "near-1080p-free-live-r1",
+  "arm": "near-1080p-free-live",
+  "round": 1,
+  "pose": "near",
+  "res": "1080p",
+  "mode": "free",
+  "ratio": "live",
+  "problems": [],
+  "adapter": {
+    "name": "NVIDIA GeForce GTX 1660 SUPER",
+    "backend": "Vulkan",
+    "device_type": "DiscreteGpu"
+  },
+  "gpu_timing": "available",
+  "fluid_pass_ms": 3.1155423333333334,
+  "cell_pass_ms": 0.0,
+  "fluid_windows_ms": [
+    3.0900726,
+    3.106438,
+    3.1501164
+  ],
+  "cell_windows_ms": [],
+  "forward_ms": 2.1505498999999997,
+  "fluid_ms": 3.1155423333333334,
+  "cpu_completion_median_ms": 6.49565,
+  "basis": "timestamps",
+  "valid": true
+}

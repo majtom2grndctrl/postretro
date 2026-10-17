@@ -1,7 +1,11 @@
 // Teleporter acceptance fixture. Luau twin: teleporters.luau.
 // Explicit names and ordered member lists keep the installed manifests equal.
 import { defineImpactEvent, defineReaction, getMapEntities, npcs } from "postretro";
-import type { TeleportEventParams } from "postretro";
+import type { SequenceStep, TeleportEventParams } from "postretro";
+
+// The purple gate's lamp brightness: dim while the gate is disarmed, bright while armed.
+const LAMP_DISARMED = 0.2;
+const LAMP_ARMED = 1.0;
 
 // The dev mod registers the enemy-death base. Only this override is installed
 // here: successful removal, rather than a zero-HP corpse, advances progress.
@@ -22,23 +26,41 @@ export function setupLevel() {
       triggerEvents: getMapEntities("trigger", { tag: "stress_button" }).map((t) => t.on("enter", [arm])),
     };
   }
+  // Every gate arm and disarm below also sets the lamp, so it tracks the armed state.
+  const lamps = getMapEntities("light", { tag: "gate_lamp" });
+  const lamp = (armed: boolean): SequenceStep[] => lamps.map((light) => ({
+    id: light.id,
+    primitive: "setLightAnimation" as const,
+    args: { periodMs: 1000, brightness: [armed ? LAMP_ARMED : LAMP_DISARMED] },
+  }));
+  // The gate starts disarmed (`enabled_on_spawn` 0), so its lamp starts dim.
+  const lampAtLoad = defineReaction("levelLoad", { sequence: lamp(false) });
   // Matched baselines keep the same script but contain no teleporter members.
-  if (gate.length === 0 && shift.length === 0) return { reactions: [], triggerEvents: [], teleportEvents: [] };
+  // The hub baseline keeps the lamp, which stays dim with no gate to arm.
+  if (gate.length === 0 && shift.length === 0) {
+    return { reactions: lamps.length > 0 ? [lampAtLoad] : [], triggerEvents: [], teleportEvents: [] };
+  }
 
   const button = getMapEntities("trigger", { tag: "vault_button" });
   const plate = getMapEntities("trigger", { tag: "closet_plate" });
   const doors = getMapEntities("mover", { tag: "closet_door" });
-  const open = defineReaction("gate.open", { sequence: gate.flatMap((t) => t.arm()) });
-  const shut = defineReaction("gate.shut", { sequence: gate.flatMap((t) => t.disarm()) });
+  const gateState = (armed: boolean): SequenceStep[] => [
+    ...gate.flatMap((t) => (armed ? t.arm() : t.disarm())),
+    ...lamp(armed),
+  ];
+  const open = defineReaction("gate.open", { sequence: gateState(true) });
+  const shut = defineReaction("gate.shut", { sequence: gateState(false) });
   const cleared = defineReaction("closet.cleared", { progress: { tag: "closet", at: 1.0, fire: "gate.open" } });
   const reveal = defineReaction("closet.reveal", {
     sequence: [...doors.flatMap((door) => door.start()), npcs({ tag: "closet" }).update({ aggro: true })],
   });
   const timeShift = defineReaction("era.shift", { sequence: shift.flatMap((t) => t.arm()) });
   const reset = defineReaction("era.reset", { sequence: shift.flatMap((t) => t.disarm()) });
-  const oneWay = defineReaction("gate.used", (on: TeleportEventParams) => on.teleporter.disarm());
+  const oneWay = defineReaction("gate.used", (on: TeleportEventParams) => ({
+    sequence: [on.teleporter.disarm(), ...lamp(false)],
+  }));
   return {
-    reactions: [open, shut, cleared, reveal, timeShift, reset, oneWay],
+    reactions: [lampAtLoad, open, shut, cleared, reveal, timeShift, reset, oneWay],
     events: [closetDeath],
     triggerEvents: [
       ...button.map((t) => t.on("enter", [open])),

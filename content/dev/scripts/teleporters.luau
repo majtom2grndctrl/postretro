@@ -2,6 +2,10 @@
 -- Every reaction is explicitly named, and member traversal preserves map order.
 local Postretro = require("postretro")
 
+-- The purple gate's lamp brightness: dim while the gate is disarmed, bright while armed.
+local LAMP_DISARMED = 0.2
+local LAMP_ARMED = 1.0
+
 -- The dev mod registers this base. Only its closet-specific override installs.
 local enemyDeath = Postretro.defineImpactEvent("enemy-death", { tag = "enemy" }, function(_impact)
   return {}
@@ -34,16 +38,37 @@ function setupLevel(_ctx)
     bind(triggerEvents, Postretro.getMapEntities("trigger", { tag = "stress_button" }), "enter", { arm })
     return { reactions = { arm }, triggerEvents = triggerEvents }
   end
+  -- Every gate arm and disarm below also sets the lamp, so it tracks the armed state.
+  local lamps = Postretro.getMapEntities("light", { tag = "gate_lamp" })
+  local function lamp(armed)
+    local steps = {}
+    for _, light in ipairs(lamps) do
+      table.insert(steps, {
+        id = light.id,
+        primitive = "setLightAnimation",
+        args = { periodMs = 1000, brightness = { if armed then LAMP_ARMED else LAMP_DISARMED } },
+      })
+    end
+    return steps
+  end
+  -- The gate starts disarmed (`enabled_on_spawn` 0), so its lamp starts dim.
+  local lampAtLoad = Postretro.defineReaction("levelLoad", { sequence = lamp(false) })
   -- Matched baselines keep this script and simply have no teleporter members.
+  -- The hub baseline keeps the lamp, which stays dim with no gate to arm.
   if #gate == 0 and #shift == 0 then
-    return { reactions = {}, triggerEvents = {}, teleportEvents = {} }
+    return { reactions = if #lamps > 0 then { lampAtLoad } else {}, triggerEvents = {}, teleportEvents = {} }
   end
 
   local button = Postretro.getMapEntities("trigger", { tag = "vault_button" })
   local plate = Postretro.getMapEntities("trigger", { tag = "closet_plate" })
   local doors = Postretro.getMapEntities("mover", { tag = "closet_door" })
-  local open = Postretro.defineReaction("gate.open", { sequence = commands(gate, "arm") })
-  local shut = Postretro.defineReaction("gate.shut", { sequence = commands(gate, "disarm") })
+  local function gateState(armed)
+    local steps = commands(gate, if armed then "arm" else "disarm")
+    append(steps, lamp(armed))
+    return steps
+  end
+  local open = Postretro.defineReaction("gate.open", { sequence = gateState(true) })
+  local shut = Postretro.defineReaction("gate.shut", { sequence = gateState(false) })
   local cleared = Postretro.defineReaction("closet.cleared", { progress = { tag = "closet", at = 1.0, fire = "gate.open" } })
   local revealSteps = commands(doors, "start")
   table.insert(revealSteps, Postretro.npcs({ tag = "closet" }):update({ aggro = true }))
@@ -51,7 +76,9 @@ function setupLevel(_ctx)
   local timeShift = Postretro.defineReaction("era.shift", { sequence = commands(shift, "arm") })
   local reset = Postretro.defineReaction("era.reset", { sequence = commands(shift, "disarm") })
   local oneWay = Postretro.defineReaction("gate.used", function(on)
-    return on.teleporter:disarm()
+    local steps = { on.teleporter:disarm() }
+    append(steps, lamp(false))
+    return { sequence = steps }
   end)
   local triggerEvents = {}
   bind(triggerEvents, button, "enter", { open })
@@ -62,7 +89,7 @@ function setupLevel(_ctx)
   local teleportEvents = {}
   bind(teleportEvents, gate, "teleport", { oneWay })
   return {
-    reactions = { open, shut, cleared, reveal, timeShift, reset, oneWay },
+    reactions = { lampAtLoad, open, shut, cleared, reveal, timeShift, reset, oneWay },
     events = { closetDeath },
     triggerEvents = triggerEvents,
     teleportEvents = teleportEvents,

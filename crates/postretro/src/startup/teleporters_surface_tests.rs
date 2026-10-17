@@ -17,6 +17,7 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
 };
+use postretro_entities::components::light::LightComponent;
 use postretro_entities::{
     ComponentKind, EntityId, KinematicMoverComponent, ScriptCtx, ScriptError, TeleporterComponent,
     Transform,
@@ -46,6 +47,9 @@ const SETTLE: usize = 30;
 const PAD_CLEARANCE: f32 = 0.5;
 /// Frames a lone kill is given to (wrongly) re-arm the gate.
 const PROGRESS_FRAMES: usize = 4;
+/// The gate lamp's brightness while the gate is disarmed and armed (`teleporters.ts`).
+const LAMP_DISARMED: f32 = 0.2;
+const LAMP_ARMED: f32 = 1.0;
 
 /// Wraps `setupLevel` so its raw return, before Rust-side parsing, reaches the capture.
 const JS_CAPTURE: &str = "\n;(function () {\n  const original = globalThis.setupLevel;\n  globalThis.setupLevel = function (ctx) {\n    const result = original(ctx);\n    __teleportFixtureCapture(result);\n    return result;\n  };\n})();\n";
@@ -282,6 +286,31 @@ impl Level {
 
     fn armed(&self, teleporter: EntityId) -> bool {
         self.component(teleporter).armed
+    }
+
+    /// The `gate_lamp` light's runtime brightness multiplier. The script writes a
+    /// one-sample looping curve, which the bridge and GPU sample as a constant.
+    fn lamp(&self) -> f32 {
+        let registry = self.ctx.registry.borrow();
+        let lamps: Vec<EntityId> = registry
+            .query_by_component_and_tag(ComponentKind::Light, Some("gate_lamp"))
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(lamps.len(), 1, "one `gate_lamp` light");
+        let light = registry.get_component::<LightComponent>(lamps[0]).unwrap();
+        assert!(!light.is_dynamic, "an animated baked light");
+        let animation = light
+            .animation
+            .as_ref()
+            .expect("the script drives the lamp from load");
+        assert_eq!(
+            animation.play_count, None,
+            "the level holds until rewritten"
+        );
+        match animation.brightness.as_deref() {
+            Some(&[brightness]) => brightness,
+            other => panic!("the lamp holds one constant brightness: {other:?}"),
+        }
     }
 
     fn record(
@@ -584,7 +613,8 @@ fn register_teleporter_and_trigger_primitives(app: &mut crate::App, ctx: &Script
     );
 }
 
-const LEVEL_REACTIONS: [&str; 7] = [
+const LEVEL_REACTIONS: [&str; 8] = [
+    "levelLoad",
     "gate.open",
     "gate.shut",
     "closet.cleared",
@@ -659,7 +689,8 @@ fn teleport_level_twins_emit_byte_identical_wire_data() {
 // closet's map-placed monsters re-arms it through `progress` once the authored
 // despawn removes them, and using it disarms it. Standing in room A's central
 // region, arming `era_shift` shifts the player into room B, carried relative to
-// the landmark pair, without bouncing back.
+// the landmark pair, without bouncing back. The gate lamp is dim whenever the
+// gate is disarmed and bright whenever it is armed.
 #[test]
 fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     let out = tempfile::tempdir().unwrap();
@@ -680,6 +711,11 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
         "`enabled_on_spawn` 0 starts the gate disarmed"
     );
     assert!(!level.armed(era_a_to_b) && !level.armed(era_b_to_a));
+    assert_eq!(
+        level.lamp(),
+        LAMP_DISARMED,
+        "`levelLoad` starts the lamp dim"
+    );
     level.settle();
     // The standing height on the bare floor; `place` drops from above it.
     let height = level.position().y;
@@ -691,6 +727,7 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     assert!(level.frame_with(true, &[]).is_empty());
     level.frame();
     assert!(level.armed(gate), "armed after the button");
+    assert_eq!(level.lamp(), LAMP_ARMED, "the button brightens the lamp");
 
     // The plate disarms it and reveals the closet.
     let residents = level.residents();
@@ -711,6 +748,7 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     level.frame();
     level.frame();
     assert!(!level.armed(gate), "disarmed after the plate");
+    assert_eq!(level.lamp(), LAMP_DISARMED, "the plate dims the lamp");
     let door = {
         let registry = level.ctx.registry.borrow();
         let ids: Vec<EntityId> = registry
@@ -752,6 +790,7 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
         !level.armed(gate),
         "one of two closet monsters is not a clear"
     );
+    assert_eq!(level.lamp(), LAMP_DISARMED);
     level.frame_with(false, &residents[1..]);
     assert!(
         level.residents().is_empty(),
@@ -774,6 +813,7 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
         level.armed(gate),
         "armed again when the closet's monsters die"
     );
+    assert_eq!(level.lamp(), LAMP_ARMED, "`gate.open` brightens the lamp");
 
     // Using it teleports the player to `vault_in` and disarms it.
     let (min, max) = level.region(gate);
@@ -788,6 +828,7 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
     );
     level.frame();
     assert!(!level.armed(gate), "using the gate disarms it");
+    assert_eq!(level.lamp(), LAMP_DISARMED, "`gate.used` dims the lamp");
     level.place((min + max) * 0.5, height);
     for _ in 0..SETTLE {
         assert!(level.frame().is_empty(), "the one-way gate stays shut");
@@ -868,6 +909,35 @@ fn teleport_dev_level_runs_the_closet_gate_loop_and_era_shift() {
             "the arrival latch holds; no ping-pong"
         );
     }
+    assert_eq!(
+        level.lamp(),
+        LAMP_DISARMED,
+        "the seamless rooms leave it alone"
+    );
+}
+
+// The matched baseline keeps the gate lamp and drops the gate. Its script binds
+// nothing, so the lamp starts dim and the hub's button leaves it dim.
+#[test]
+fn teleport_baseline_gate_lamp_stays_dim_without_a_gate() {
+    let out = tempfile::tempdir().unwrap();
+    let mut level = Level::install(compile("teleporters-baseline", out.path()));
+    assert_eq!(
+        level.lamp(),
+        LAMP_DISARMED,
+        "`levelLoad` starts the lamp dim"
+    );
+    level.settle();
+    let height = level.position().y;
+    level.place(level.trigger_center("vault_button", None), height);
+    level.settle();
+    level.frame_with(true, &[]);
+    level.frame();
+    assert_eq!(
+        level.lamp(),
+        LAMP_DISARMED,
+        "no gate, so the button binds nothing"
+    );
 }
 
 // Hot-reload recompose rebinds teleporter events only. Armed state is live

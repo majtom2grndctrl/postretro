@@ -7,6 +7,7 @@
 // Red plate at 64 0 disarms the gate and opens the two map-monster closet.
 // Kill both closet residents. The authored death override removes them, then progress rearms the gate.
 // Using the gate plays fixtures/jump and disarms it. The arrival is outside the seamless region.
+// The purple lamp at minus 40 minus 232 tracks the gate: dim while disarmed, bright while armed.
 // Room A center is 4096 0 and room B center is 8192 0. Landmark yaw delta is 90 degrees.
 // Inside either room, cross the yellow pad to arm both seamless directions on the next tick.
 // A peer outside the central region can use the red pad to shift an occupied room.
@@ -419,6 +420,16 @@
 "_falloff_range" "400"
 "_light_size" "0"
 "_shadow_type" "static_light_map"
+}
+{
+"classname" "light"
+"origin" "-40 -232 48"
+"light" "100"
+"_color" "190 110 255"
+"_falloff_range" "128"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+"_tags" "gate_lamp"
 }
 {
 "classname" "trigger_volume"

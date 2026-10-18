@@ -40,7 +40,7 @@ Read at b0a5c0f. All claims cite symbols; re-verify before relying on them.
 | `ClientControlMessage::SwitchDeclaration` | C→S | ordered event (`declaration_id`, client tick) | host lane by tick | Input (moves from Control) |
 | `SwitchAccepted` / `SwitchRefused` | S→C | strictly ordered chain (`resolve_switch_outcome`) | no | Input (moves from Control) |
 | Admission, Parity, JoinSeed, Revealed, participation marker, Divergence, Relevel, SessionRoster | both | join/control | various | Control, ~100 ms |
-| `ServerControlMessage::Tuning` | S→C | state, possibly sliced | whole-struct dedupe | bulk, 150–200 ms |
+| `ServerControlMessage::Tuning` | S→C | state, possibly sliced | whole-struct dedupe | Control, ~100 ms (ordering vs. demotion kept) |
 
 Ordering dependencies to keep:
 - the participation marker gates Input sends and snapshot acceptance;
@@ -62,7 +62,7 @@ Profile: one-way 45 + U(0,60) ms. RTT ≈ 90–210 ms (~158 ms effective with re
 | QUIC-style NACK + PTO | 45–105 | ≈225–305 | ≈405–505 | ≈1.05–1.1 |
 | Every tick until acked (16–20 ms) | 45–105 | 62–125 | 79–145 | ≈9–10 |
 
-Selected: every-tick resend for the gameplay families, all on Input; ~100 ms for Control; 150–200 ms for a bulk tuning channel. Rejected: a custom unreliable redundant stream. It would bound delivery of edges, starts and switches by the redundancy window and would need an edge-identity rework (`/validate-plan`, Q3 and Q6).
+Selected: every-tick resend for the gameplay families, all on Input; ~100 ms for Control, which keeps tuning. A bulk tuning channel was rejected because Control's ordering keeps tuning from landing after a demotion or relevel (second `/validate-plan`). Rejected: a custom unreliable redundant stream. It would bound delivery of edges, starts and switches by the redundancy window and would need an edge-identity rework (`/validate-plan`, Q3 and Q6).
 
 Upstream cost for Input at a one-tick resend: about RTT ÷ tick + 1 ≈ 9–10 copies of each in-flight command, so about 30 KB/s at 60 Hz with ~50 B commands. It is measured and bounded by the executor.
 

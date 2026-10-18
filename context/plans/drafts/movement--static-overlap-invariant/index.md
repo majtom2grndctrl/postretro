@@ -6,7 +6,7 @@ Brief · compact · reads: `context/lib/entity_model.md` §7 (Collision), `conte
 Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn sank into the brush it had vaulted over and stayed embedded until the player walked out. Basis: observed defect. The lossy link triggered it: the host ran held, then neutral, input against the lip (`coop--lossy-link-delivery`). The defect itself lives in the movement code and can occur in any role. Cause: collision integration moves the capsule in places that bypass the swept cast, which can carry it into static geometry, and nothing ever pushes it back out. The enemy controller copies two of those moves. When done, a body that starts a tick clear of static geometry cannot end that tick overlapping it, whether it is a player pawn or an enemy, on any peer.
 
 ## Decisions
-- **New invariant: movement never ends a tick inside static geometry if it started clear.** It covers player pawns and enemy agents. It extends the skin-cast contract in `entity_model.md` §7 from a single cast to a whole tick, using the same 0.5 mm tolerance. Mover carry and mover displacement are exempt; mover block and crush policy owns those overlaps (`networking.md` §Current contract).
+- **New invariant: movement never ends a tick inside static geometry if it started clear.** It covers player pawns and enemy agents. It extends the skin-cast contract in `entity_model.md` §7 from a single cast to a whole tick, using the same 0.5 mm tolerance. Mover carry and mover displacement are exempt (see Non-goals).
 - **One swept move helper carries every position change.** A body moves only through the swept skin cast, so an unswept write cannot be added by accident. Today's unswept moves are converted at their source:
   - in `integrate_collision`: the second-TOI-0 free advance, the per-tick floor push, and the stuck-stop rollback (it restores the start X/Z but keeps the new Y);
   - `step_up_lift`'s rise;
@@ -14,11 +14,16 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
   - in the agent controller (`crates/sim/src/agent/mod.rs`), its `step_up_lift` and `ground_stick` copies.
 
   `research.md` ranks the free advance at a convex lip edge as the likeliest cause of the observed embed.
-- **The guard is a test-build assertion, not a release revert.** In test builds, every movement tick asserts that a clear start ends clear, using the static half of `capsule_fits_combined` with the skin tolerance. Release builds carry no guard. A release revert would re-fire every tick under held input and freeze the body: a stall in place of an embed. Since every position change goes through the swept helper, release builds do not need one.
+- **The guard checks and reports; it never reverts.** It uses the static half of `capsule_fits_combined` with the skin tolerance.
+  - Test builds assert on every movement tick.
+  - Builds with debug assertions, including the dev profile the owner playtested on, log one warning per session.
+  - Release builds carry no check.
+
+  A revert would re-fire every tick under held input and freeze the body, a stall in place of an embed. The swept helper is a convention the compiler does not enforce, and the skin cast's guarantee has exceptions (`entity_model.md` §7: non-capsule pairs, degenerate triangles, a core piercing a triangle). The dev warning is the net for those.
 - **Host and client run identical code.** Pose and motion stay pure functions of input and geometry, so prediction, replay and host simulation stay deterministic. No wire or tuning change.
 - **Placement.** The movement substrate in `postretro-physics`, plus the agent controller in `postretro-sim`. This is not co-op code and not vault code: the vault moves only by swept velocity, and its ledge probe already proves the full capsule (`research.md`).
 - **Non-goals.**
-  - Rescuing a body already embedded at tick start, by Quake-style nudge or static depenetration. Own movement can no longer create one. Mover carry under the `displace` policy still can, by lifting a rider into a static ceiling. That is mover policy's case, and the guard stays off for a tick that starts embedded.
+  - Rescuing a body already embedded at tick start, by Quake-style nudge or static depenetration. Own movement can no longer create one. Mover carry under the `displace` policy still can, by lifting a rider into a static ceiling. Under the default `displace` policy nothing resolves that: movers never yield, and only `crush` handles a pinned rider (`movement.md` §6). It is an unowned leftover. Raise a follow-up ticket for it, not this brief. The guard stays off for a tick that starts embedded.
   - Clamping the vault exit pose: the probe already proves the vault's volume.
 
 ## Acceptance
@@ -31,6 +36,7 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 - [ ] Ground-stick beside a wall above a ledge between one and two step heights high ends clear, for a pawn and for an agent.
 - [ ] A stuck-stop corner wedge on a ramp ends clear.
 - [ ] Two bypass conditions on one tick (free advance, then ground-stick) end clear.
+- [ ] In a debug-assertion build, a forced overlap logs exactly one warning per session and moves nothing.
 
 **Legitimate motion still moves** (not over-tight)
 - [ ] Ramps, stairs at step height, step-up onto a ledge, sliding along a wall, and running across a coplanar seam keep their current displacement within tolerance.

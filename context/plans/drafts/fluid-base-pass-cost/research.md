@@ -71,6 +71,7 @@ ablation2, 2 runs each, spread ≤ 0.6 ms. Removing work made the pass up to 48%
 | Texel-cell lighting in the reflection brief's cell pool | One per-cell evaluation point for fluid; matches the "grain is the texture" look | New compute pass and per-frame pool, couples to an unbuilt brief; lighting blocks per texel unless filtered; cells below 1 px cost more than per fragment (cell-rate spike) |
 | Half-resolution fluid lighting target with upsample | Independent of mesh | New targets and pass; depth-aware upsample over translucency; edge artefacts at pool walls |
 | Tighter per-fragment SH sampler | No look change | Measured lottery above; cannot be validated off the 5300M |
+| Per-vertex on today's face fans, no grid (the `vertexsh` arm) | No grid, cap or shared-edge proof; measured 2.1 ms | Measured faceting across face-sized triangles: max 14–19/255 at 960×540 (§Lower-rate evaluation) |
 | Per-face constant baked term | Cheapest | Visible: a pool lit by one value; fails "matches baked lighting on adjacent walls" (E24) |
 | Compile-time tessellation in prl-build | prl-build already closes T-junctions, splits faces at 2 mm and knows the SH lattice; a cap warning reaches the mapper at build time | Changes the PRL format; freezes sample density into baked data, so retuning needs a rebake; couples a renderer quality choice to the format |
 | World-space irradiance texture per fluid face, written by compute when SH compose runs | No mesh change, no T-junction proof, no vertex cap; near free while lights are static | New pass, new fragment binding (fluid fragment storage is spent, §10), persistent VRAM, chart gutters; refreshes every frame while any animated light runs; falls in the texture-space shading class the reflection brief already sends to IP review, where a per-vertex grid is long-standing practice |
@@ -90,6 +91,8 @@ The world forward pass runs the same per-fragment sampler for SH indirect. At th
 
 ## Interaction with `reflection-probe-fluid-pass-performance`
 
+That draft is not merged: it lives on `claude/reflection-perf-brief`. Its Decisions say the reflection-free variant "keeps today's cost and image"; this brief changes both, so that line needs a coordination edit when either lands.
+
 That draft's done-row is "reflecting water within 1 ms of reflection-free". Its reflecting variant runs the same base lighting, so this brief lowers both variants' floor by the same ~53 ms at near 4K. After it lands, the reflection term (10–14 ms at full-screen 4K) is most of the reflecting pass, and that brief's levers carry more of the frame.
 - **GTX 1660 read penalty.** On the 1660 the reflecting variant pays ~8.4 ms at e24 near 4K for one long-latency reflection read held across the heavy per-fragment lighting it shares a shader with (`origin/claude/cell-rate-spike`, `findings-1660.md` items 4–7). That penalty is the whole case for the reflection brief's deferred split draw. Moving the baked lighting out of `fs_main` plausibly removes it, so the split-draw question should be measured after this lands; this brief's 1660 row records the reflecting-minus-free difference at e24 near for that reason.
 - **Per-frame face records.** The reflection brief's candidate "per-frame rewrite of the drawn faces' vertex words" would scale with this grid's vertex count, not the face count. Its other candidate, a uniform table keyed by face index, is unaffected. A coordination note for that draft.
@@ -99,3 +102,23 @@ That draft's done-row is "reflecting water within 1 ms of reflection-free". Its 
 - **Normal-perturbing water.** Per-vertex baked light cannot respond to a per-pixel normal. Today's wave is a UV warp with no height, so nothing is lost now; a future normal-mapped or height-wave water re-opens per-fragment baked SH, or interpolates per vertex and corrects per fragment.
 - **`fluid-ssr-reflections` fallback.** That draft names Fresnel-weighted reads from the baked SH probes as its fallback. Built per fragment, it would put back the cost this brief removes.
 
+## Pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | level install | SH volume (PRL section or streamed) installs inside geometry install, then fluid install reads its lattice | fluid packs on this level's lattice |
+| P2 | level change, SH level to one with another lattice or none | geometry install clears fluid and replaces SH, then fluid install | the second level packs on its own lattice, or ungridded; nothing carries over |
+| P3 | streamed-SH level | streamed state initialises after the legacy SH resources, which hold the placeholder lattice (origin 0, 1 m) | grid on the manifest base lattice, never the placeholder |
+| P4 | level with no SH volume, or one the device rejects | SH resources fall to the placeholder | packs as today; ambient floor only; no error |
+| P5 | level at or under the cap | count before pack | chosen spacing; no log |
+| P6 | level past the cap, overflow reached only by the last face, which shares an edge with the first | count every face before packing any | one coarser spacing for every face; shared edge identical; under the cap; one log |
+| P7 | level whose ungridded vertices alone exceed the cap | coarsening has no spacing left | packs as today; terminates; one log |
+| P8 | face spanning several probe cells | cut by every lattice family crossing it | no sub-polygon wider than one spacing on any lattice axis |
+| P9 | edge shared by a top face and a side face, and by a sloped face | each face cuts by every lattice family crossing the edge | identical vertices along the edge from both faces |
+| P10 | original vertex exactly on a lattice plane | crossing coincides with a corner | no duplicate vertex; no zero-area triangle |
+| P11 | face edge lying in a lattice plane | plane is parallel to and on the edge | no vertex added along it; no sliver strip |
+| P12 | crossing within the collinear tolerance of an original vertex on a shared edge | snap decided from the edge alone | both faces snap the same way |
+| P13 | edge with an open T-junction today (burial, or between volumes): face A's edge spans two of face B's segments | each face cuts its own edges | crossings agree on both sides; the existing T-vertex stays; no new one |
+| P14 | level with no fluid | install returns before packing | no grid, no cap log |
+| P15 | drift re-resolve (script or fluid table reload) | drift rewrite runs over the packed mesh | grid untouched; drift stream covers every grid vertex |
+| P16 | camera below, then crossing, the water plane | per-vertex and per-fragment terms read one camera position per frame | baked term takes the viewer's side the same frame dynamic lights do |

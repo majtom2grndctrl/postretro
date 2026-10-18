@@ -1,6 +1,6 @@
 // Game: Postretro
 // Format: Standard
-// Generator: TrenchBroom 2026.2 (Build v2026.2 Release macOS)
+// Generator: TrenchBroom 2026.2 (Build v2026.2 Release Win64)
 // entity 0
 {
 "classname" "worldspawn"
@@ -1495,7 +1495,7 @@
 // entity 14
 {
 "classname" "light"
-"origin" "1824 2080 440"
+"origin" "1824 2256 440"
 "_color" "255 240 220"
 "_falloff_range" "600"
 "_bake_only" "0"
@@ -1700,7 +1700,7 @@
 "classname" "light"
 "origin" "1248 1568 440"
 "_color" "255 240 220"
-"_falloff_range" "600"
+"_falloff_range" "400"
 "_bake_only" "0"
 "delay" "0"
 "light" "150"
@@ -5759,18 +5759,6 @@
 }
 // entity 333
 {
-"classname" "light_spot"
-"origin" "2560 1736 192"
-"light" "500"
-"_color" "255 240 220"
-"_falloff_range" "1024"
-"angles" "-20 180 0"
-"_cone" "15"
-"_cone2" "20"
-"_shadow_type" "static_light_map"
-}
-// entity 334
-{
 "classname" "fluid_volume"
 "fluid" "water"
 // brush 0
@@ -5783,13 +5771,25 @@
 ( 2592 2032 -16 ) ( 2592 1440 -1200 ) ( 2592 1440 -16 ) fluids/water_64 0 0 0 1 1
 }
 }
-// entity 335
+// entity 334
 {
 "classname" "light"
-"origin" "2560 1720 192"
-"light" "100"
-"_color" "255 240 220"
-"_falloff_range" "1024"
+"origin" "2432 1736 112"
+"light" "30"
+"_color" "0 137 255"
+"_falloff_range" "512"
+"angles" "-20 180 0"
+"_cone" "15"
+"_cone2" "20"
+"_shadow_type" "static_light_map"
+}
+// entity 335
+{
+"classname" "light_spot"
+"origin" "2560 1736 192"
+"light" "500"
+"_color" "178 255 214"
+"_falloff_range" "1400"
 "angles" "-20 180 0"
 "_cone" "15"
 "_cone2" "20"

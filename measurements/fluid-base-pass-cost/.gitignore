@@ -1,0 +1,6 @@
+raw/
+metal/raw/
+metal/variants/
+metal/runs/*.png
+metal/runs/*.log
+__pycache__/

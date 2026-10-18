@@ -52,7 +52,7 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 | A9 diff touches no level-compiler, level-format or wire code | `git diff --stat main...HEAD -- crates/level-compiler crates/level-format crates/net crates/netcode` empty | achievable as stated | **pass** |
 | M1 5300M near + probes 4K ≤ 3.0 ms, whole frame reported | Metal kit, `results-landing1` | manual | **pass:** 2.16 / 2.13 ms (whole frame 27.9 / 25.9; today 53.9 / 21.7 ms, 79.6 / 50.7) |
 | M2 5300M at Auto, near/probes/mid vs today | Metal kit, `results-landing1` | manual | **measured:** 0.51 / 0.54 / 0.54 ms vs 9.90 / 4.14 / 4.18 ms; new-arm clocks low, directional |
-| M3 Windows DX12 FXC compile, both variants | owner, Windows | manual | **outstanding** |
+| M3 Windows DX12 FXC compile, both variants | owner, Windows | manual | **pass** (GTX 1660 Super, Windows 11, at 25d738377: `dx12_fxc_compiles_every_full_init_pipeline -- --ignored` 1 passed on DX12/FXC, both fluid pipelines built, no FXC errors) |
 | M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual | **pass** (GTX 1660 Super, Vulkan, 96ab6c9f4 → e00a42fc5, 64/64 runs valid): every view and mask faster, forward unchanged; reflecting − reflection-free at e24 near 4K 9.99 → 2.48 ms (GTX 1660 table below) |
 | M5 parity at near, probes, mid, under; near-wall subset | Metal kit, `parity.py` | manual | **measured:** max 1/255 per channel at every view, near-wall included (mid: 41 075 px) |
 | M6 owner look | owner, in engine | manual | **outstanding** |

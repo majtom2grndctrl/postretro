@@ -160,7 +160,7 @@ over it needs `rest / cos` of room), so A3's walkable-limit case is a chamfered 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Riskiest premise first: test-only overlap helper, the lip-edge fixture, the displacement baseline and every per-bypass fixture, run on pre-fix source; commit baseline + lip expected-failure | integrating executor | — | done: fixtures + baseline committed pre-fix |
-| 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | |
+| 2 | Behaviour-preserving: swept-move helper and shared step-up / snap-to-floor primitives in a sibling module; player substrate and agent controller call them; agent copies deleted | integrating executor | 1 | done: `movement::swept`; physics 374 + sim 1471 tests unchanged, fixtures still reproduce |
 | 3 | Overlap check: tolerance query, armed assertion, build/env gate, report with texture + TrenchBroom position, warn-once on `CollisionWorld`, caller logging (host, prediction, agents), timing stage | integrating executor | 2 | |
 | 4 | Convert every unswept move at its source; flip lip fixture | integrating executor | 3 | |
 | 5 | Resize growth clearance: anchored stand-up, growing entry | integrating executor | 3 | |

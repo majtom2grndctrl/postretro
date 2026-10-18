@@ -13,8 +13,7 @@ use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE};
 
 const DT: f32 = 1.0 / 60.0;
 const ENV: EnvironmentView<'static> = EnvironmentView::level_only(-20.0);
-/// Overlap past resting contact that counts as intersecting static geometry.
-pub(super) const OVERLAP_TOLERANCE: f32 = 5.0e-4;
+pub(super) use crate::collision::OVERLAP_TOLERANCE;
 const SPAN: (f32, f32) = (-50.0, 50.0);
 
 /// How deep the pawn's live capsule at `position` overlaps static geometry.

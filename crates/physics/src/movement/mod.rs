@@ -14,6 +14,7 @@ mod ledge_probe;
 mod mover_carry;
 mod push;
 mod substrate;
+pub mod swept;
 mod swim_transition;
 mod vault;
 mod vault_path;
@@ -35,9 +36,7 @@ use postretro_foundation::{GroundRef, MovementState, MovementStateKind, PlayerMo
 #[cfg(test)]
 use crate::movement::intents::{DASH_MAX_MS, SLIDE_MAX_MS, dash_intent};
 #[cfg(test)]
-use crate::movement::substrate::{
-    ResizeAnchor, resize_capsule, standup_clearance_probe, step_up_lift,
-};
+use crate::movement::substrate::{ResizeAnchor, resize_capsule, standup_clearance_probe};
 
 /// Per-tick input plumbed in from the engine's input layer. Keep `wish_dir`
 /// component magnitudes within `[0, 1]` — the raw x/y values drive threshold
@@ -1838,7 +1837,8 @@ mod tests {
     fn step_up_lift_returns_none_at_pure_wall() {
         let desc = canonical_descriptor();
         let world = flat_floor_and_wall_world();
-        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
+        let capsule =
+            crate::collision::CollisionCapsule::new(desc.capsule.radius, desc.capsule.half_height);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Position the capsule just shy of the wall (wall at x=5) so the
@@ -1846,19 +1846,19 @@ mod tests {
         // floor so the forward probe finds the wall (not the floor contact).
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
-        let horiz_speed = horiz_vel.length();
         let collision = CombinedCollisionWorld::static_only(&world);
 
-        let result = step_up_lift(
+        let result = swept::step_up(
             &collision,
-            &capsule,
+            capsule,
             current_pos,
             horiz_vel,
-            horiz_speed,
-            desc.ground.step_height,
-            cos_walkable,
             DT,
-            desc.capsule.radius,
+            swept::StepParams {
+                step_height: desc.ground.step_height,
+                lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
+                cos_walkable,
+            },
         );
         assert!(
             result.is_none(),
@@ -1872,7 +1872,8 @@ mod tests {
     fn step_up_lift_returns_some_at_walkable_step() {
         let desc = canonical_descriptor();
         let world = ledge_and_wall_world();
-        let capsule = Capsule::new_y(desc.capsule.half_height, desc.capsule.radius);
+        let capsule =
+            crate::collision::CollisionCapsule::new(desc.capsule.radius, desc.capsule.half_height);
         let cos_walkable = desc.ground.max_slope.to_radians().cos();
         let floor_y = desc.capsule.half_height + desc.capsule.radius;
         // Approach the step riser at x=5 from the floor side. Lift the
@@ -1881,19 +1882,19 @@ mod tests {
         // riser.
         let current_pos = Vec3::new(5.0 - desc.capsule.radius - 0.05, floor_y + 0.05, 0.0);
         let horiz_vel = Vec3::new(desc.ground.speed.walk, 0.0, 0.0);
-        let horiz_speed = horiz_vel.length();
         let collision = CombinedCollisionWorld::static_only(&world);
 
-        let result = step_up_lift(
+        let result = swept::step_up(
             &collision,
-            &capsule,
+            capsule,
             current_pos,
             horiz_vel,
-            horiz_speed,
-            desc.ground.step_height,
-            cos_walkable,
             DT,
-            desc.capsule.radius,
+            swept::StepParams {
+                step_height: desc.ground.step_height,
+                lift_margin: crate::collision::STEP_UP_LIFT_MARGIN,
+                cos_walkable,
+            },
         );
         let lifted = result.expect("step_up_lift should return Some at a walkable step");
         let expected_y = current_pos.y + desc.ground.step_height + 0.05;

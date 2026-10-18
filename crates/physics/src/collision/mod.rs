@@ -223,6 +223,12 @@ impl Default for CollisionWorld {
 /// separation for clearance; do not duplicate the offset by pushing again.
 pub const SKIN_DISTANCE: f32 = 0.02;
 
+/// How far a capsule may overlap a static surface and still count as resting
+/// contact rather than intersecting it. Swept own movement stops this far short
+/// of surfaces, and the tick overlap check reports deeper overlap
+/// (`movement.md` §1). Equals the skin cast's band intrusion allowance.
+pub const OVERLAP_TOLERANCE: f32 = 5.0e-4;
+
 /// Query limit for an inclusive `max_toi`. parry's trimesh traversal (its BVH
 /// `find_best`) drops a hit lying exactly at `max_time_of_impact`, unlike its
 /// single-shape queries. Engine casts are inclusive — a projectile reaching a
@@ -273,7 +279,7 @@ pub struct CastHit {
 /// Lift margin added on top of `step_height` by player step-up and by placement
 /// ground probes, so "within the step envelope" means the same thing for
 /// selection and motion.
-pub(crate) const STEP_UP_LIFT_MARGIN: f32 = 0.05;
+pub const STEP_UP_LIFT_MARGIN: f32 = 0.05;
 
 /// Capsule geometry for static placement checks. The capsule axis is world +Y,
 /// matching [`cast_capsule`].
@@ -386,10 +392,23 @@ pub(crate) fn cast_capsule_parry(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<ShapeCastHit> {
+    cast_capsule_parry_to(world, pos, capsule, dir, max_toi, SKIN_DISTANCE)
+}
+
+/// [`cast_capsule_parry`] stopping `target_distance` from surfaces instead of
+/// one skin width.
+pub(crate) fn cast_capsule_parry_to(
+    world: &CollisionWorld,
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<ShapeCastHit> {
     let pos1 = Pose::from_translation(pos);
     let options = ShapeCastOptions {
         max_time_of_impact: inclusive_query_limit(max_toi),
-        target_distance: SKIN_DISTANCE,
+        target_distance,
         stop_at_penetration: false,
         ..Default::default()
     };

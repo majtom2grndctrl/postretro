@@ -12,7 +12,7 @@ use parry3d::shape::{Capsule as ParryCapsule, TriMesh};
 use super::skin_cast::cast_shapes_skin;
 use super::{
     COS_WALKABLE, CollisionCapsule, CollisionMeshError, CollisionWorld, SKIN_DISTANCE,
-    cast_capsule_parry, cast_ray_parry, inclusive_query_limit, within_limit,
+    cast_capsule_parry_to, cast_ray_parry, inclusive_query_limit, within_limit,
 };
 use postretro_entities::Transform;
 
@@ -218,8 +218,57 @@ fn cast_capsule_combined_with<const BROAD_PHASE: bool>(
     dir: Vec3,
     max_toi: f32,
 ) -> Option<CombinedCastHit> {
+    cast_capsule_combined_targeted::<BROAD_PHASE>(
+        static_world,
+        movers,
+        poses,
+        pos,
+        capsule,
+        dir,
+        max_toi,
+        SKIN_DISTANCE,
+    )
+}
+
+/// [`cast_capsule_combined_parry`] stopping `target_distance` from surfaces
+/// instead of one skin width.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cast_capsule_combined_to(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
+    cast_capsule_combined_targeted::<true>(
+        static_world,
+        movers,
+        poses,
+        pos,
+        capsule,
+        dir,
+        max_toi,
+        target_distance,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cast_capsule_combined_targeted<const BROAD_PHASE: bool>(
+    static_world: &CollisionWorld,
+    movers: &[MoverCollider],
+    poses: &(impl MoverPoseSource + ?Sized),
+    pos: Vec3,
+    capsule: &ParryCapsule,
+    dir: Vec3,
+    max_toi: f32,
+    target_distance: f32,
+) -> Option<CombinedCastHit> {
     let mut nearest =
-        cast_capsule_parry(static_world, pos, capsule, dir, max_toi).map(static_shape_hit);
+        cast_capsule_parry_to(static_world, pos, capsule, dir, max_toi, target_distance)
+            .map(static_shape_hit);
     let (capsule_center, capsule_radius) = capsule_bounding_sphere(capsule);
     let sweep_start = pos + capsule_center;
     let sweep_motion = dir * max_toi;
@@ -235,14 +284,14 @@ fn cast_capsule_combined_with<const BROAD_PHASE: bool>(
                 &mover_pose,
                 sweep_start,
                 sweep_motion,
-                capsule_radius + SKIN_DISTANCE,
+                capsule_radius + target_distance,
             )
         {
             continue;
         }
         let options = ShapeCastOptions {
             max_time_of_impact: inclusive_query_limit(max_toi),
-            target_distance: SKIN_DISTANCE,
+            target_distance,
             stop_at_penetration: false,
             ..Default::default()
         };
@@ -1132,7 +1181,8 @@ mod tests {
         let origin = Vec3::new(0.0, 2.0, 0.0);
         let dir = Vec3::NEG_Y;
 
-        let direct = cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
+        let direct =
+            crate::collision::cast_capsule_parry(&world, origin, &capsule, dir, 10.0).unwrap();
         let combined =
             cast_capsule_combined_parry(&world, &[], &poses, origin, &capsule, dir, 10.0).unwrap();
 

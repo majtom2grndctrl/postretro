@@ -6,8 +6,10 @@ use glam::Vec3;
 
 use crate::collision::{CollisionCapsule, CollisionWorld, StaticOverlap};
 
-/// Switches the check on (`1`) or off (`0`) in any build. Unset, debug-assertion
-/// builds check and release builds do not. Test builds always check.
+/// Switches the check on (`1`) or off (`0`) in any build without the physics
+/// `test-support` feature. Unset, debug-assertion builds check and release
+/// builds do not. Builds with `test-support` always check, as an assertion,
+/// and ignore the variable.
 pub const OVERLAP_CHECK_ENV: &str = "POSTRETRO_OVERLAP_CHECK";
 
 /// Whether the check runs, from the variable's value and the build. `Err`
@@ -60,23 +62,48 @@ pub fn check_own_movement(
     end: Vec3,
     capsule: CollisionCapsule,
 ) -> Option<StaticOverlap> {
-    // A body that did not move ends where it started: clear if it started clear.
-    if !overlap_check_enabled() || start == end {
+    check(world, (start, capsule), (end, capsule), "own movement")
+}
+
+/// Check a capsule resize the tick's intent or swim seam committed: `start` is
+/// the tick-start pose and capsule, `end` the pose and capsule the resize left.
+/// Resizes run before mover carry, so [`check_own_movement`] starts from the
+/// resized pose and cannot see one; this covers that segment. Each growth
+/// passes a clearance sweep first, so it should never fire.
+pub fn check_resize(
+    world: &CollisionWorld,
+    start: (Vec3, CollisionCapsule),
+    end: (Vec3, CollisionCapsule),
+) -> Option<StaticOverlap> {
+    check(world, start, end, "a capsule resize")
+}
+
+fn check(
+    world: &CollisionWorld,
+    (start, start_capsule): (Vec3, CollisionCapsule),
+    (end, end_capsule): (Vec3, CollisionCapsule),
+    what: &str,
+) -> Option<StaticOverlap> {
+    // A body that did not move or resize ends as it started: clear if it
+    // started clear.
+    if !overlap_check_enabled() || (start == end && start_capsule == end_capsule) {
         return None;
     }
     let overlap = world.overlap_timer().time(|| {
         world
-            .static_overlap(end, capsule)
-            .filter(|_| !world.overlaps_static(start, capsule))
+            .static_overlap(end, end_capsule)
+            .filter(|_| !world.overlaps_static(start, start_capsule))
     })?;
     #[cfg(any(test, feature = "test-support"))]
     if test_assert::armed() {
         panic!(
-            "own movement ended a tick inside static geometry: started clear at {start:?}, \
+            "{what} ended a tick inside static geometry: started clear at {start:?}, \
              ended at {end:?} (texture {:?})",
             overlap.texture
         );
     }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = what;
     Some(overlap)
 }
 
@@ -162,6 +189,36 @@ mod tests {
         // not a breach.
         let resting = Vec3::new(0.2, REST - 0.0195, 0.0);
         assert_eq!(check_own_movement(&world, clear, resting, CAPSULE), None);
+    }
+
+    #[test]
+    fn an_overlap_within_the_tolerance_is_contact_and_one_past_it_a_breach() {
+        let world = floor();
+        let _disarmed = disarm_overlap_assert_for_test();
+        let clear = Vec3::new(0.0, REST, 0.0);
+        // The capsule's lowest point touches the floor at centre height 1.2.
+        let touching = CAPSULE.half_height + CAPSULE.radius;
+        let within = Vec3::new(0.0, touching - 0.0004, 0.0);
+        assert_eq!(check_own_movement(&world, clear, within, CAPSULE), None);
+        let past = Vec3::new(0.0, touching - 0.0006, 0.0);
+        assert!(check_own_movement(&world, clear, past, CAPSULE).is_some());
+    }
+
+    #[test]
+    fn a_resize_that_grows_into_the_floor_in_place_is_a_breach() {
+        let world = floor();
+        let _disarmed = disarm_overlap_assert_for_test();
+        let at = Vec3::new(0.0, REST, 0.0);
+        let grown = CollisionCapsule {
+            half_height: CAPSULE.half_height + 0.1,
+            ..CAPSULE
+        };
+        // `check_own_movement` sees no move here; the resize check does.
+        assert_eq!(check_own_movement(&world, at, at, grown), None);
+        let overlap = check_resize(&world, (at, CAPSULE), (at, grown))
+            .expect("growing in place into the floor is caught");
+        assert_eq!(overlap.position, at);
+        assert_eq!(check_resize(&world, (at, CAPSULE), (at, CAPSULE)), None);
     }
 
     #[test]

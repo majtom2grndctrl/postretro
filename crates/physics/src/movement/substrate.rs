@@ -23,7 +23,8 @@ use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 /// `KinematicCharacterController::normal_nudge_factor` default. Critically
 /// it is NOT a physics step: it consumes zero `remaining_dt`, so a grounded
 /// player resting on the floor does not accumulate vertical drift across
-/// iterations.
+/// iterations. It must stay below `OVERLAP_TOLERANCE`: the tick overlap
+/// invariant exempts this one unswept write for that reason.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
 // The step-up lift (`step_height + STEP_UP_LIFT_MARGIN`) must exceed
@@ -514,8 +515,6 @@ pub(super) enum ResizeAnchor {
 ///   - `Head`: keep `position.y + (half_height + radius)` fixed ⇒
 ///     `delta = old_half_height - new_half_height` (positive on a shrink: the
 ///     center rises so the pinned head stays put).
-// Production caller: the `Crouching` intent (entry shrink + stand-up grow);
-// `movement--slide` reuses it later.
 pub(super) fn resize_capsule(
     component: &mut PlayerMovementComponent,
     target_half_height: f32,
@@ -531,47 +530,16 @@ pub(super) fn resize_capsule(
     }
 }
 
-/// Stand-up clearance probe: is there headroom to grow the capsule from the
-/// crouched size back to the standing size with the FEET PLANTED?
-///
-/// Collision exposes only `cast_capsule` (a sweep) — there is no overlap/
-/// intersection query — so headroom is tested by sweeping the CROUCHED-size
-/// capsule straight UP by the head-rise delta. With feet planted, growing the
-/// half-height from crouched to standing raises the head by
-/// `2 × (standing_half_height − crouched_half_height)` (the center rises by the
-/// half-height delta and the top extends a further half-height delta above the
-/// center). A hit within that distance means a ceiling blocks the standing
-/// capsule; clear means the player can stand.
-///
-/// State-agnostic (D8): takes the crouched and standing half-heights as plain
-/// sizes, not a crouch flag — `movement--slide` reuses it to test whether a
-/// slide can stand up. Returns `true` when headroom is CLEAR.
-// Production caller: the `Crouching` intent (stand-up release + crouch-jump);
-// `movement--slide` reuses it later.
-pub(super) fn standup_clearance_probe(
-    component: &PlayerMovementComponent,
-    collision: &CombinedCollisionWorld<'_>,
-    position: Vec3,
-    crouched_half_height: f32,
-    standing_half_height: f32,
-) -> bool {
-    let head_rise = 2.0 * (standing_half_height - crouched_half_height);
-    upward_clearance_probe(
-        component,
-        collision,
-        position,
-        crouched_half_height,
-        head_rise,
-    )
-}
-
-/// Stand-up clearance in the direction `anchor` grows the capsule: `Feet`
-/// raises the head by `2 × (standing_half_height − crouched_half_height)`, the
-/// upward sweep [`standup_clearance_probe`] runs; `Head` lowers the feet by the
-/// same distance, so the crouched capsule sweeps down instead. The swim seam
-/// stands a crouched pawn up with the anchor its crouch entered with, so an
-/// airborne pawn tests the floor below it, not the ceiling above. Returns
-/// `true` when the growth is CLEAR.
+/// Stand-up clearance: can the capsule grow from `crouched_half_height` to
+/// `standing_half_height` about `anchor`? Growing raises the head (`Feet`) or
+/// lowers the feet (`Head`) by `2 × (standing_half_height −
+/// crouched_half_height)`, so the crouched capsule sweeps that far in the growth
+/// direction; the swept volume is exactly the grown capsule. The combined
+/// (mover-aware) collision answers only sweeps, so a sweep, not an overlap
+/// query, tests the room. Every growing resize keeps its entry's anchor and
+/// passes this first: crouch and slide stand-up, the swim seam, and a crouch or
+/// slide entry whose authored crouch capsule is the larger one. A growth of zero
+/// or less (a shrink) is always clear. Returns `true` when the growth is CLEAR.
 pub(super) fn anchored_standup_clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,
@@ -598,9 +566,8 @@ pub(super) fn anchored_standup_clearance_probe(
 /// Upward headroom probe: can a capsule of `half_height` (the live radius)
 /// centred at `position` rise `rise` metres straight up without hitting
 /// anything? Sweeps that capsule up by `rise`; a hit strictly within it blocks.
-/// A rise of zero or less needs nothing cleared. Shared by crouch stand-up
-/// (through [`standup_clearance_probe`]) and the swim seam's fluid-jump
-/// qualification. Returns `true` when headroom is CLEAR.
+/// A rise of zero or less needs nothing cleared. The swim seam's fluid-jump
+/// qualification uses it. Returns `true` when headroom is CLEAR.
 pub(super) fn upward_clearance_probe(
     component: &PlayerMovementComponent,
     collision: &CombinedCollisionWorld<'_>,

@@ -36,6 +36,8 @@ use super::{GROUND_STOP_FRICTION, OVERSPEED_BLEED_MARGIN};
 /// ONCE per tick by `derive_jump_edges` before this intent runs (D5). The jump
 /// steps consume `jump_edges.grounded` / `jump_edges.air` IN PLACE OF the raw
 /// `jump_pressed` bit so forgiveness is never re-derived here.
+// Mirrors `crouching_intent`'s shape; grouping the substrate/position handles
+// would add an abstraction with one production caller and no reuse.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn normal_intent(
     component: &mut PlayerMovementComponent,

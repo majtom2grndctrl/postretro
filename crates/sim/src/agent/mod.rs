@@ -40,6 +40,9 @@ const _: () = assert!(STEP_UP_LIFT_MARGIN > SKIN_DISTANCE);
 /// Separation nudge applied along the contact normal on a TOI=0 (resting)
 /// contact, to break out of the skin band so the next sweep iteration makes
 /// tangential progress. Consumes zero `dt` (not a physics step).
+///
+/// Must stay below `crate::collision::OVERLAP_TOLERANCE` (0.5 mm): the tick
+/// overlap invariant exempts the nudge for that reason.
 const NORMAL_NUDGE: f32 = 1.0e-4;
 
 /// Termination guard: when remaining motion length squared falls below this,
@@ -99,8 +102,8 @@ pub(crate) struct SlideResult {
 
 /// Resolve one tick of agent motion: take a desired horizontal velocity, the
 /// current capsule-center position, the carried vertical velocity, and dt;
-/// integrate gravity, sweep-and-slide horizontally against the world, run the
-/// step-up probe, then ground-stick. Returns the resolved position, the
+/// integrate gravity, run the step-up probe, sweep-and-slide against the
+/// world, then ground-stick. Returns the resolved position, the
 /// grounded flag, and the post-step velocity.
 ///
 /// `desired_horizontal` is the steering velocity (XZ; any Y is ignored). The

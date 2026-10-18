@@ -8,7 +8,7 @@ use crate::movement::carry::CarryRule;
 use crate::movement::dispatch::{stand_up_resize, stand_up_transition};
 use crate::movement::substrate::{
     JumpEdges, ResizeAnchor, air_jump_ready, anchored_standup_clearance_probe, resize_capsule,
-    standup_clearance_probe, wish_dir_from_input,
+    wish_dir_from_input,
 };
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_foundation::{MovementState, PlayerMovementComponent};
@@ -92,12 +92,13 @@ fn natural_exit(
         };
     }
 
-    if standup_clearance_probe(
+    if anchored_standup_clearance_probe(
         component,
         collision,
         *position,
         component.capsule.half_height,
         component.standing_half_height,
+        ResizeAnchor::Feet,
     ) {
         // Slide entry is always feet-anchored, even if it subsequently reaches
         // a ledge, so its inverse stand-up resize must use Feet as well.
@@ -190,12 +191,13 @@ pub(crate) fn sliding_intent(
         false
     };
     if jumped {
-        if standup_clearance_probe(
+        if anchored_standup_clearance_probe(
             component,
             collision,
             *position,
             component.capsule.half_height,
             component.standing_half_height,
+            ResizeAnchor::Feet,
         ) {
             stand_up_resize(component, position, ResizeAnchor::Feet);
             *eye_current = component.capsule.eye_height;

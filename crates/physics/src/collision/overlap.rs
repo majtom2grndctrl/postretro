@@ -9,7 +9,7 @@ use std::time::Instant;
 use glam::Vec3;
 use parry3d::math::Pose;
 use parry3d::query::intersection_test;
-use parry3d::shape::{Capsule as ParryCapsule, Shape};
+use parry3d::shape::{Capsule as ParryCapsule, Shape, Triangle};
 
 use postretro_level_loader::LevelWorld;
 
@@ -53,24 +53,45 @@ pub(super) struct SurfaceTable {
 
 const NO_TEXTURE: u16 = u16::MAX;
 
+/// What [`SurfaceTable`] reads from one BVH leaf.
+struct LeafSurface {
+    texture: u32,
+    index_offset: u32,
+    index_count: u32,
+}
+
 impl SurfaceTable {
     pub(super) fn from_level(world: &LevelWorld) -> Self {
-        let triangle_count = world.indices.len() / 3;
+        let leaves = world.bvh.leaves.iter().map(|leaf| LeafSurface {
+            texture: leaf.material_bucket_id,
+            index_offset: leaf.index_offset,
+            index_count: leaf.index_count,
+        });
+        Self::from_leaves(world.indices.len() / 3, leaves, world.texture_names.clone())
+    }
+
+    /// A leaf naming a texture outside `texture_names`, or indices past the
+    /// mesh, leaves its triangles untextured rather than failing the load.
+    fn from_leaves(
+        triangle_count: usize,
+        leaves: impl IntoIterator<Item = LeafSurface>,
+        texture_names: Vec<String>,
+    ) -> Self {
         let mut triangle_textures = vec![NO_TEXTURE; triangle_count];
-        for leaf in &world.bvh.leaves {
-            let texture = u16::try_from(leaf.material_bucket_id)
+        for leaf in leaves {
+            let texture = u16::try_from(leaf.texture)
                 .ok()
-                .filter(|&index| usize::from(index) < world.texture_names.len())
+                .filter(|&index| usize::from(index) < texture_names.len())
                 .unwrap_or(NO_TEXTURE);
             let first = (leaf.index_offset / 3) as usize;
-            let last = ((leaf.index_offset + leaf.index_count) / 3) as usize;
+            let last = (leaf.index_offset.saturating_add(leaf.index_count) / 3) as usize;
             if let Some(range) = triangle_textures.get_mut(first..last.min(triangle_count)) {
                 range.fill(texture);
             }
         }
         Self {
             triangle_textures,
-            texture_names: world.texture_names.clone(),
+            texture_names,
         }
     }
 
@@ -129,8 +150,9 @@ impl OverlapCheckTimer {
 
 impl CollisionWorld {
     /// Does a capsule at `position` intersect static geometry: overlap a
-    /// surface by more than [`OVERLAP_TOLERANCE`], or sit wholly inside a solid
-    /// or exterior cell? Resting inside the skin band is contact, not overlap.
+    /// surface by more than [`OVERLAP_TOLERANCE`], or have a core point (its
+    /// centre or either end of its segment) inside a solid or exterior cell?
+    /// Resting inside the skin band is contact, not overlap.
     pub fn overlaps_static(&self, position: Vec3, capsule: CollisionCapsule) -> bool {
         self.static_overlap(position, capsule).is_some()
     }
@@ -147,23 +169,9 @@ impl CollisionWorld {
     ) -> Option<StaticOverlap> {
         let pose = Pose::from_translation(position);
         let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
-        let pos12 = pose.inverse();
         let mut deepest: Option<(f32, u32)> = None;
         for triangle in self.mesh.bvh().intersect_aabb(&shape.compute_aabb(&pose)) {
-            let geometry = self.mesh.triangle(triangle);
-            let depth = if geometry.normal().is_none() {
-                // Degenerate: no exact contact; parry's intersection test is
-                // all there is.
-                let intersects = intersection_test(&pose, &shape, &Pose::IDENTITY, &geometry)
-                    .is_ok_and(|hit| hit.intersecting);
-                if intersects { capsule.radius } else { 0.0 }
-            } else {
-                match capsule_triangle::contact(&pos12, &shape, &geometry) {
-                    Some(contact) => -contact.dist,
-                    // The core pierces or touches the triangle.
-                    None => capsule.radius,
-                }
-            };
+            let depth = triangle_depth(&pose, &shape, &self.mesh.triangle(triangle));
             if depth > OVERLAP_TOLERANCE && deepest.is_none_or(|(deepest, _)| depth > deepest) {
                 deepest = Some((depth, triangle));
             }
@@ -205,7 +213,56 @@ impl CollisionWorld {
         !self.overlap_warned.swap(true, Ordering::Relaxed)
     }
 
+    /// The overlap check's CPU timer, which the fixed tick brackets per tick.
     pub fn overlap_timer(&self) -> &OverlapCheckTimer {
         &self.overlap_timer
+    }
+}
+
+/// How far a capsule at `pose` sinks into one triangle: the exact separation
+/// negated, the radius when its core pierces or touches it, zero when clear.
+pub(super) fn triangle_depth(pose: &Pose, shape: &ParryCapsule, triangle: &Triangle) -> f32 {
+    if triangle.normal().is_none() {
+        // Degenerate: no exact contact; parry's intersection test is all there is.
+        let intersects = intersection_test(pose, shape, &Pose::IDENTITY, triangle)
+            .is_ok_and(|hit| hit.intersecting);
+        return if intersects { shape.radius } else { 0.0 };
+    }
+    match capsule_triangle::contact(&pose.inverse(), shape, triangle) {
+        Some(contact) => (-contact.dist).max(0.0),
+        None => shape.radius,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(texture: u32, first_triangle: u32, triangles: u32) -> LeafSurface {
+        LeafSurface {
+            texture,
+            index_offset: first_triangle * 3,
+            index_count: triangles * 3,
+        }
+    }
+
+    #[test]
+    fn each_leaf_textures_its_own_triangle_range() {
+        let names = vec![
+            String::from("metal/floor_grate"),
+            String::from("concrete/wall"),
+        ];
+        let table = SurfaceTable::from_leaves(5, [leaf(1, 0, 2), leaf(0, 2, 2)], names);
+        let textures: Vec<_> = (0..5).map(|triangle| table.texture_of(triangle)).collect();
+        assert_eq!(textures, [Some(1), Some(1), Some(0), Some(0), None]);
+    }
+
+    #[test]
+    fn a_leaf_past_the_names_or_the_mesh_leaves_its_triangles_untextured() {
+        let names = vec![String::from("metal/floor_grate")];
+        // Texture 3 has no name; the second leaf runs past the mesh's end.
+        let table = SurfaceTable::from_leaves(3, [leaf(3, 0, 1), leaf(0, 2, 4)], names);
+        let textures: Vec<_> = (0..4).map(|triangle| table.texture_of(triangle)).collect();
+        assert_eq!(textures, [None, None, Some(0), None]);
     }
 }

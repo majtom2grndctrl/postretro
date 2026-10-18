@@ -2,9 +2,8 @@
 
 The per-tick CPU cost of the movement overlap check (`movement.md` §1), taken from its
 own stage, `sim_overlap_check`, on `stress-env-volumes` (64 agents plus the player
-pawn). This was measured once so the brief could decide between checking every body and
-checking only bodies that moved. A body that did not move already skips the check
-(`start == end`).
+pawn). This was measured once to decide between checking every body and checking only
+bodies that moved. A body that did not move already skips the check (`start == end`).
 
 ## Result
 
@@ -16,7 +15,8 @@ checking only bodies that moved. A body that did not move already skips the chec
 Values are cumulative per-tick means at tick 3600; the 600-tick checkpoints are in
 `results.txt`. The checkpoints are matched elapsed times, since agents converge on the
 player.
-- **Cost:** under the brief's 0.1 ms threshold, so every moving body is checked.
+- **Cost:** under the 0.1 ms per-tick threshold (above it, the check would run only for
+  bodies that moved that tick), so every moving body is checked.
 - **Tick time:** `sim_tick` is the same on and off, within run-to-run noise.
 - **Determinism:** both runs' state dumps are byte-identical. The check reports and
   never moves a body.
@@ -27,8 +27,8 @@ player.
 This container has no GPU or display, so the windowed `POSTRETRO_CPU_TIMING` run in
 `content/dev/maps/stress-env-volumes.README.md` cannot run. The headless batch driver
 (`cargo run -p xtask -- observe`) runs the same fixed tick, `simulate_tick`, on the same
-map, but batch mode keeps stage timing off by design. `timing.patch` is the local,
-uncommitted change that turns the tick's `TimingGate` on under `OVL_MEASURE=1` and prints
+map, but batch mode keeps stage timing off by design. `timing.patch` is a
+measurement-only patch, applied locally and never merged, that turns the tick's `TimingGate` on under `OVL_MEASURE=1` and prints
 cumulative per-tick means every 600 ticks. Everything else is the shipped code.
 
 - Machine: 4-vCPU Intel Xeon @ 2.80 GHz (cloud container), nothing else running.
@@ -45,4 +45,4 @@ cumulative per-tick means every 600 ticks. Everything else is the shipped code.
 - Cleanup: the baked `.prl` and the scratch logs were deleted afterwards.
 
 A windowed release run on the owner's machine remains the reference for frame-level
-cost: the brief's measured row and manual checks.
+cost.

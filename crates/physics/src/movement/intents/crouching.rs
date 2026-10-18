@@ -195,9 +195,10 @@ pub(crate) fn crouching_intent(
     }
 
     // Crouch-jump (D10): a jump fired this tick while `crouch_intent` is STILL
-    // active. Probe headroom — clear ⇒ stand (resize, shift the center up) and
-    // exit to `Normal` carrying the jump just launched; blocked ⇒ stay crouched,
-    // the jump still applies (lower arc). Either way the jump is never swallowed.
+    // active. Probe the crouched capsule in the direction standing grows it (the
+    // entry's anchor) — clear ⇒ stand (resize) and exit to `Normal` carrying the
+    // jump just launched; blocked ⇒ stay crouched, the jump still applies (lower
+    // arc). Either way the jump is never swallowed.
     if jumped_this_tick && input.crouch_intent {
         if anchored_standup_clearance_probe(
             component,
@@ -215,9 +216,10 @@ pub(crate) fn crouching_intent(
         return None;
     }
 
-    // Stand-up on release (D7): `crouch_intent` inactive. Probe the standing
-    // capsule upward; CLEAR ⇒ resize to standing (center rises, feet planted) and
-    // exit to `Normal`; BLOCKED ⇒ stay crouched and retry next tick.
+    // Stand-up on release (D7): `crouch_intent` inactive. Probe the crouched
+    // capsule in the direction standing grows it (the entry's anchor: up for
+    // feet, down for head); CLEAR ⇒ resize to standing and exit to `Normal`;
+    // BLOCKED ⇒ stay crouched and retry next tick.
     if !input.crouch_intent
         && anchored_standup_clearance_probe(
             component,

@@ -109,19 +109,24 @@ grounded Decision reads stand. Source re-read this session: `movement/substrate.
 ## Pre-fix fixture results (A2)
 
 Run on unmodified movement source (task 1 commit). Every row below is committed as
-`#[should_panic]` naming its bug; the fix flips it to a plain test.
+`#[should_panic]` naming its bug; the fix flips it to a plain test. Depths are the
+exact capsule–triangle measure the shipped check uses, applied to the
+behaviour-preserving source at 938a7d0 (task 2, which moves no body differently from
+b0a5c0f); the first recording used parry's intersection depth, which drifts by
+millimetres beside large triangles. D3 and D4's pre-fix depths were measured on
+post-task-4 source with task 5 removed, since task 1 predates their fixtures.
 
 | Fixture | Bypass | Worst overlap at b0a5c0f |
 |---|---|---|
-| `a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear` (A1) | free advance | 3.6 mm (walk), deeper at run |
+| `a_pawn_walking_onto_a_chamfered_lip_ends_every_tick_clear` (A1) | free advance | 1.2 mm |
 | `free_advance_then_ground_stick_at_a_ramp_foot_ends_clear` (A8, P5) | free advance, then ground-stick | grows every tick; 5.1 mm on the first |
 | `a_floor_push_under_a_ceiling_within_a_skin_ends_clear` (A4) | floor push, step height 0 | 1.1 mm |
 | `a_step_without_room_for_the_standing_capsule_leaves_the_pawn_below_it_and_clear` (A5) | step-up rise | 7.3 mm |
-| `a_step_up_then_a_floor_push_under_an_overhang_ends_clear` (A9, P4) | step-up approach (centre-ray drop at the riser) | 1.6 mm |
-| `ground_stick_beside_a_riser_over_a_drop_ends_clear` (A6) | centre-ray drop | 6.8 cm |
-| `a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick` (A10, P7) | centre-ray drop | 7.7 cm |
-| `a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback` (A7) | stuck-stop rollback | 3.5 mm, with `stuck_stop_threshold` 0.1 m (at the default 1 mm it cannot leave the skin band, noted in the test) |
-| `a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up` (B2) | step-up headroom | 1.2 mm, and never climbs |
+| `a_step_up_then_a_floor_push_under_an_overhang_ends_clear` (A9, P4) | step-up approach (centre-ray drop at the riser) | 1.5 mm |
+| `ground_stick_beside_a_riser_over_a_drop_ends_clear` (A6) | centre-ray drop | 6.75 cm |
+| `a_still_pawn_over_a_ledge_edge_ends_clear_after_ground_stick` (A10, P7) | centre-ray drop | 7.69 cm |
+| `a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback` (A7) | stuck-stop rollback | 1.0 mm, with `stuck_stop_threshold` 0.1 m (at the default 1 mm it cannot leave the skin band, noted in the test) |
+| `a_step_with_room_for_the_capsule_but_not_the_lift_margin_still_steps_up` (B2) | step-up headroom | 0.74 mm, and never climbs |
 | `a_stair_climb_keeps_its_recorded_displacement` (B1) | centre-ray drop | 6.9 cm |
 | `a_step_up_keeps_its_recorded_displacement` (B1) | centre-ray drop | 7.0 cm |
 | agent `an_agent_walking_into_a_step_without_headroom_stays_below_it_and_clear` (A5) | agent step-up rise | reproduces |

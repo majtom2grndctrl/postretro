@@ -27,8 +27,9 @@ pub struct StepParams {
 }
 
 /// Move the capsule by `delta`, stopping [`OVERLAP_TOLERANCE`] short of the
-/// first surface on the way: the one way own movement changes position outside
-/// a slide sweep. A body that starts clear therefore ends clear. Movers count,
+/// first surface on the way, so a body that starts clear ends clear. Own
+/// movement that no slide sweep or skin cast already proves (the floor push,
+/// the free advance, the stuck-stop rollback) moves through it. Movers count,
 /// like every movement cast through `collision`.
 pub fn swept_move(
     collision: &CombinedCollisionWorld<'_>,
@@ -242,14 +243,35 @@ pub fn snap_to_floor(
         ground_stick_reach(params),
         params.cos_walkable,
     )?;
-    let drop = Vec3::new(0.0, -floor.drop, 0.0);
-    let snapped = match source {
-        FloorSource::Sweep => position + drop,
-        // The ray found the floor past an edge the sweep met first, so the
-        // drop is swept: beside a riser it rests on the edge instead of sinking
-        // the capsule's side into it. The floor still classifies the body as
-        // grounded, as before.
-        FloorSource::CentreRay => swept_move(collision, position, capsule, drop),
-    };
-    Some((snapped, floor))
+    match source {
+        FloorSource::Sweep => Some((position - Vec3::Y * floor.drop, floor)),
+        // The ray found the floor past an edge the sweep met first, so the drop
+        // is swept: beside a riser the capsule rests on the edge instead of
+        // sinking its side into it. It still counts as grounded, as before, but
+        // on what stopped it: a body perched on a static edge must not ride a
+        // mover the ray found below it. The drop stops a skin short, like a
+        // slide sweep, so the next tick's casts start at the band's edge.
+        FloorSource::CentreRay => {
+            let stop = cast_capsule_combined_parry(
+                collision.static_world,
+                collision.movers,
+                collision.poses,
+                position,
+                &capsule.parry(),
+                Vec3::NEG_Y,
+                floor.drop,
+            )
+            .filter(|hit| hit.time_of_impact < floor.drop);
+            let Some(stop) = stop else {
+                return Some((position - Vec3::Y * floor.drop, floor));
+            };
+            let drop = stop.time_of_impact.clamp(0.0, floor.drop);
+            let perched = FloorBelow {
+                drop,
+                ground: ground_ref_from_hit(stop),
+                ..floor
+            };
+            Some((position - Vec3::Y * drop, perched))
+        }
+    }
 }

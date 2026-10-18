@@ -391,13 +391,18 @@ fn a_step_up_then_a_floor_push_under_an_overhang_ends_clear() {
         let (mut component, position) =
             settled(&desc, &world, Vec3::new(4.0, rest_y(&desc, 0.0), 0.0));
         component.velocity = Vec3::new(speed, 0.0, 0.0);
-        run_clear(
+        let end = run_clear(
             &mut component,
             &world,
             &toward_x(),
             position,
             40,
             "overhang",
+        );
+        let feet = end.y - desc.capsule.half_height - desc.capsule.radius;
+        assert!(
+            end.x > 5.0 && feet > rise,
+            "speed {speed}: the pawn stepped up onto the step, at {end:?}"
         );
     }
 }
@@ -503,14 +508,22 @@ fn a_corner_wedge_on_the_steepest_walkable_ramp_ends_clear_after_the_rollback() 
         let mut component = PlayerMovementComponent::from_descriptor(&desc);
         component.velocity = Vec3::new(4.0, fall, -0.5);
         component.coyote_timer_ms = 1000.0;
-        run_clear(
+        let what = format!("corner wedge, {uphill} m uphill falling at {fall} m/s");
+        let mut position = run_clear(
             &mut component,
             &world,
             &input,
             Vec3::new(x, ramp_y(x) + rest_over_slope, side_contact_z),
-            10,
-            &format!("corner wedge, {uphill} m uphill falling at {fall} m/s"),
+            0,
+            &what,
         );
+        // The rollback zeroes horizontal velocity on the tick it fires.
+        let mut rolled_back = false;
+        for _ in 0..10 {
+            position = step_clear(&mut component, &world, &input, position, &what);
+            rolled_back |= component.velocity.x == 0.0 && component.velocity.z == 0.0;
+        }
+        assert!(rolled_back, "{what}: the stuck-stop rollback fires");
     }
 }
 
@@ -542,7 +555,7 @@ fn vault_case(
     yaw: f32,
     abort_at: Option<usize>,
     after: &MovementInput,
-) {
+) -> usize {
     let desc = vault_descriptor(ground_auto());
     let world = vault_world(top, chamfer_deg);
     let (mut component, mut position) =
@@ -551,17 +564,24 @@ fn vault_case(
     // riser `yaw` radians off its normal, toward +Z.
     let forward_input = walk(Vec2::new(yaw.cos(), -yaw.sin()));
     let what = format!("vault top {top}, chamfer {chamfer_deg}, yaw {yaw}, abort {abort_at:?}");
-    let mut vaulted = false;
-    for tick in 0..60 {
-        if abort_at == Some(tick) && component.movement_state.kind() == MovementStateKind::Vault {
-            // A shove off the path, as knockback lands mid-vault.
-            component.knockback_velocity = Quat::from_rotation_y(-yaw) * Vec3::new(-6.0, 0.0, 0.0);
+    // Ticks spent in the vault, counted from its first.
+    let mut vault_ticks = 0;
+    for _ in 0..60 {
+        if abort_at == Some(vault_ticks)
+            && component.movement_state.kind() == MovementStateKind::Vault
+        {
+            // A shove off the path, as knockback lands mid-vault: 0.2 m in a
+            // tick, past the vault's 0.1 m blocked tolerance.
+            component.knockback_velocity = Quat::from_rotation_y(-yaw) * Vec3::new(-12.0, 0.0, 0.0);
         }
         position = step_clear(&mut component, &world, &forward_input, position, &what);
-        vaulted |= component.movement_state.kind() == MovementStateKind::Vault;
+        if component.movement_state.kind() == MovementStateKind::Vault {
+            vault_ticks += 1;
+        }
     }
-    assert!(vaulted, "{what}: the fixture vaults");
+    assert!(vault_ticks > 0, "{what}: the fixture vaults");
     run_clear(&mut component, &world, after, position, 30, &what);
+    vault_ticks
 }
 
 #[test]
@@ -570,13 +590,17 @@ fn vaults_never_end_a_tick_overlapping_static_geometry() {
     // A flat lip, and one chamfered at exactly the walkable limit.
     for chamfer in [0.0, max_slope] {
         // On the path, then held forward input after the exit.
-        vault_case(1.0, chamfer, 0.0, None, &toward_x());
+        let full = vault_case(1.0, chamfer, 0.0, None, &toward_x());
         // Then neutral input after the exit.
         vault_case(1.0, chamfer, 0.0, None, &idle_input());
         // Oblique entry.
         vault_case(1.0, chamfer, 0.5, None, &idle_input());
-        // Aborted mid-path.
-        vault_case(1.0, chamfer, 0.0, Some(3), &idle_input());
+        // Aborted mid-path: the shove on the vault's third tick ends it early.
+        let aborted = vault_case(1.0, chamfer, 0.0, Some(2), &idle_input());
+        assert!(
+            aborted < full,
+            "chamfer {chamfer}: the shove aborts the vault ({aborted} of {full} ticks)"
+        );
     }
 }
 
@@ -910,6 +934,9 @@ fn a_rider_walking_into_a_chamfered_lip_while_its_platform_moves_ends_clear() {
 
 // Mover displacement runs before the check's start sample: a pawn pushed out
 // of a mover toward a static wall is mover policy's, never the assertion's.
+// Displacement is itself swept against static geometry, so no push here ends
+// inside the wall; the fixture pins that a squeeze never reaches the armed
+// check, not that an embedding push is exempt (none can be built).
 #[test]
 fn a_pawn_pushed_out_of_a_mover_toward_a_static_wall_does_not_trip_the_assertion() {
     let desc = descriptor();
@@ -1017,6 +1044,49 @@ fn a_pawn_steps_up_onto_and_snaps_to_a_movers_top() {
     );
 }
 
+// A centre-ray drop that the edge stops grounds the pawn on the edge, not on a
+// mover the ray found below it.
+#[test]
+fn a_pawn_perched_on_a_ledge_edge_over_a_mover_is_not_its_rider() {
+    let desc = descriptor();
+    let top = desc.ground.step_height;
+    let world = Geometry::default()
+        .floor((-50.0, 5.0), top)
+        .wall_x(5.0, (-5.0, top), Vec3::X)
+        .floor((5.0, 60.0), -5.0)
+        .build();
+    // The mover's top one step below the ledge, within ground-stick reach.
+    let movers = [platform(2.0)];
+    let mut poses = OnePose::default();
+    poses.place(
+        PLATFORM,
+        Vec3::new(7.0, top - desc.ground.step_height, 0.0),
+        Vec3::ZERO,
+    );
+    let collision = CombinedCollisionWorld::new(&world, &movers, &poses);
+    for offset in [0.3, 0.33] {
+        let (mut component, position) = placed(
+            &desc,
+            Vec3::new(5.0 + offset, rest_y(&desc, top), 0.0),
+            Vec3::ZERO,
+        );
+        let end = tick_combined(&mut component, &collision, &idle_input(), position);
+        assert!(
+            overlap_depth(&world, end, &component.capsule) <= OVERLAP_TOLERANCE,
+            "offset {offset}: the perch ends clear, at {end:?}"
+        );
+        assert!(
+            end.y > rest_y(&desc, top - desc.ground.step_height) + 0.05,
+            "offset {offset}: the edge stops the drop, at {end:?}"
+        );
+        assert_ne!(
+            component.ground,
+            GroundRef::Mover(PLATFORM),
+            "offset {offset}: perched on the static edge, not riding the mover below"
+        );
+    }
+}
+
 // --- Controller call rules ---------------------------------------------------------
 
 #[test]
@@ -1057,26 +1127,25 @@ fn with_step_height_zero_a_pawn_neither_steps_up_nor_snaps_to_the_floor() {
         "no step-up with step height zero, at {end:?}"
     );
 
-    // Walking off a 5 cm ledge: ground-stick would put the pawn on the lower
-    // floor the tick its centre clears the edge; without it gravity alone
-    // lowers it.
+    // Over a 5 cm ledge with the centre far enough past the edge that the
+    // hemisphere's down-sweep meets the lower floor before the edge:
+    // ground-stick drops the pawn onto it in one tick, gravity alone does not.
     let top = 0.05;
     let ledge = ledge_drop(top);
-    let (mut component, mut position) = start(&ledge, Vec3::new(4.0, rest_y(&desc, top), 0.0));
-    let past_edge = 5.0 + 0.05;
-    while position.x <= past_edge {
-        position = step_clear(
-            &mut component,
-            &ledge,
-            &toward_x(),
-            position,
-            "step zero ledge",
-        );
-    }
+    let over_edge = Vec3::new(5.3, rest_y(&desc, top), 0.0);
+    let one_tick = |desc: &PlayerMovementDescriptor, what: &str| {
+        let (mut component, position) = placed(desc, over_edge, Vec3::ZERO);
+        run_clear(&mut component, &ledge, &idle_input(), position, 1, what)
+    };
+    let snapped = one_tick(&descriptor(), "default step height over ledge");
     assert!(
-        position.y > rest_y(&desc, 0.0) + 0.02,
-        "no snap to the lower floor: centre at {} past the edge",
-        position.y
+        (snapped.y - rest_y(&desc, 0.0)).abs() < 2.0e-3,
+        "control: the default step height snaps to the lower floor, at {snapped:?}"
+    );
+    let unsnapped = one_tick(&desc, "step zero ledge");
+    assert!(
+        unsnapped.y > rest_y(&desc, 0.0) + 0.02,
+        "no snap to the lower floor with step height zero, at {unsnapped:?}"
     );
 }
 
@@ -1144,14 +1213,14 @@ fn a_pawn_tuned_to_a_shallower_walkable_slope_classifies_floors_by_its_own_slope
 
 /// Statements that change a body's position in `src` (assignments to
 /// `current_pos`, its fields, or compound forms), trimmed.
-pub(super) fn position_writes(src: &str) -> Vec<String> {
+fn position_writes(src: &str) -> Vec<String> {
     let lines: Vec<&str> = src.lines().map(str::trim).collect();
     let mut writes = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("//") {
             continue;
         }
-        let statement = line.trim_start_matches("let mut ");
+        let statement = line.trim_start_matches("let ").trim_start_matches("mut ");
         let is_write = [
             "current_pos =",
             "current_pos +=",
@@ -1178,12 +1247,15 @@ pub(super) fn position_writes(src: &str) -> Vec<String> {
 // substrate is a slide sweep's own advance or a `movement::swept` result.
 #[test]
 fn the_substrate_writes_no_body_position_outside_a_swept_move() {
-    let allowed = [
+    // Every write, once per occurrence: a new write fails, and so does one
+    // this list no longer matches.
+    let mut allowed = vec![
         // Mover carry and mover displacement: mover policy, exempt.
         "current_pos = apply_mover_carry(position, carry_ground, collision);",
         "current_pos = displace_from_movers(component, carry_ground, collision, &capsule, current_pos);",
         // The slide sweep's advance: to its hit, or the whole move it proved clear.
         "current_pos += velocity * remaining_dt;",
+        "current_pos += dir * toi;",
         "current_pos += dir * toi;",
         // The wall-contact nudge, below the overlap tolerance: exempt.
         "current_pos += normal * NORMAL_NUDGE;",
@@ -1194,12 +1266,11 @@ fn the_substrate_writes_no_body_position_outside_a_swept_move() {
         "current_pos = swept::swept_move(collision, current_pos, body, Vec3::Y * push);",
         "current_pos = snapped;",
     ];
-    let writes = position_writes(include_str!("substrate.rs"));
-    assert!(!writes.is_empty(), "the gate reads the substrate");
-    for write in &writes {
-        assert!(
-            allowed.contains(&write.as_str()),
-            "unswept position write in the substrate: `{write}`"
-        );
-    }
+    let mut writes = position_writes(include_str!("substrate.rs"));
+    writes.sort();
+    allowed.sort();
+    assert_eq!(
+        writes, allowed,
+        "the substrate's position writes changed: an unswept write, or a stale allowlist"
+    );
 }

@@ -137,16 +137,10 @@ impl CollisionWorld {
     #[cfg(any(test, feature = "test-support"))]
     pub fn overlap_depth_for_test(&self, position: Vec3, capsule: CollisionCapsule) -> f32 {
         let shape = ParryCapsule::new_y(capsule.half_height, capsule.radius);
-        let pos12 = Pose::from_translation(position).inverse();
+        let pose = Pose::from_translation(position);
         self.mesh
             .triangles()
-            .filter(|triangle| triangle.normal().is_some())
-            .map(
-                |triangle| match capsule_triangle::contact(&pos12, &shape, &triangle) {
-                    Some(contact) => (-contact.dist).max(0.0),
-                    None => capsule.radius,
-                },
-            )
+            .map(|triangle| overlap::triangle_depth(&pose, &shape, &triangle))
             .fold(0.0, f32::max)
     }
 
@@ -245,8 +239,9 @@ pub const SKIN_DISTANCE: f32 = 0.02;
 /// How far a capsule may overlap a static surface and still count as resting
 /// contact rather than intersecting it. Swept own movement stops this far short
 /// of surfaces, and the tick overlap check reports deeper overlap
-/// (`movement.md` §1). Equals the skin cast's band intrusion allowance.
-pub const OVERLAP_TOLERANCE: f32 = 5.0e-4;
+/// (`movement.md` §1). It is the skin cast's band intrusion allowance, so a
+/// swept move's dropped graze never ends past it.
+pub const OVERLAP_TOLERANCE: f32 = skin_cast::MAX_BAND_INTRUSION;
 
 /// Query limit for an inclusive `max_toi`. parry's trimesh traversal (its BVH
 /// `find_best`) drops a hit lying exactly at `max_time_of_impact`, unlike its

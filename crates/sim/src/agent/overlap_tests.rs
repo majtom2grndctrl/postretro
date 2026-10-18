@@ -5,13 +5,11 @@
 use glam::Vec3;
 
 use super::{AgentCapsule, SlideResult, collide_and_slide};
-use crate::collision::{CollisionCapsule, CollisionWorld, SKIN_DISTANCE};
+use crate::collision::{CollisionCapsule, CollisionWorld, OVERLAP_TOLERANCE, SKIN_DISTANCE};
 use postretro_collision::EnvironmentView;
 
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
-/// Overlap past resting contact that counts as intersecting static geometry.
-const OVERLAP_TOLERANCE: f32 = 5.0e-4;
 const SPAN: (f32, f32) = (-50.0, 50.0);
 
 /// The agent harness fixture capsule: radius 0.35, 1.8 m tall.
@@ -266,7 +264,9 @@ fn controller_source() -> &'static str {
 // write is the slide sweep's own advance or a `movement::swept` result.
 #[test]
 fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
-    let allowed = [
+    // Every write, once per occurrence: a new write fails, and so does one
+    // this list no longer matches.
+    let mut allowed = vec![
         "current_pos = position;",
         "current_pos = lifted;",
         "current_pos += velocity * remaining_dt;",
@@ -274,11 +274,11 @@ fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
         "current_pos += normal * NORMAL_NUDGE;",
         "current_pos = snapped;",
     ];
-    let writes: Vec<&str> = controller_source()
+    let mut writes: Vec<&str> = controller_source()
         .lines()
         .map(str::trim)
         .filter(|line| !line.starts_with("//"))
-        .map(|line| line.trim_start_matches("let mut "))
+        .map(|line| line.trim_start_matches("let ").trim_start_matches("mut "))
         .filter(|line| {
             [
                 "current_pos =",
@@ -290,13 +290,12 @@ fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
             .any(|write| line.starts_with(write) && !line.contains("=="))
         })
         .collect();
-    assert!(!writes.is_empty(), "the gate reads the controller");
-    for write in writes {
-        assert!(
-            allowed.contains(&write),
-            "unswept position write in the agent controller: `{write}`"
-        );
-    }
+    writes.sort_unstable();
+    allowed.sort_unstable();
+    assert_eq!(
+        writes, allowed,
+        "the agent controller's position writes changed: an unswept write, or a stale allowlist"
+    );
 }
 
 // Players and enemies share the geometry primitives, not controllers: the
@@ -308,7 +307,9 @@ fn the_agent_controller_holds_no_step_up_or_snap_to_floor_of_its_own() {
         "fn step_up",
         "fn ground_stick",
         "fn snap_to_floor",
-        "cast_ray(",
+        // A floor probe or lift of its own.
+        "cast_ray",
+        "step_height +",
     ] {
         assert!(
             !src.contains(copy),
@@ -348,18 +349,23 @@ fn an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position()
         )
     };
     let mut registry = EntityRegistry::new();
-    let grunt = registry.spawn(Transform::default());
-    registry
-        .set_component(
-            grunt,
-            DescriptorProvenance {
-                canonical_name: String::from("enemy.grunt"),
-                owned_components: Default::default(),
-                map_overrides: Default::default(),
-                spawn_path: DescriptorSpawnPath::MapPlacement,
-            },
-        )
-        .unwrap();
+    let mut spawn = |name: &str| {
+        let body = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                body,
+                DescriptorProvenance {
+                    canonical_name: String::from(name),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .unwrap();
+        body
+    };
+    let grunt = spawn("enemy.grunt");
+    let drone = spawn("enemy.drone");
     let shape = CollisionCapsule::new(0.35, 0.55);
     let clear = Vec3::new(0.0, 0.92, 0.0);
     // Engine (x, y, z) = (-2.54, 0.85, 5.08) is TrenchBroom (-200 100 33).
@@ -378,8 +384,9 @@ fn an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position()
          `metal/floor_grate` at TrenchBroom (-200 100 33)",
     );
     // A second overlap in the same level load is silent, whoever it is.
-    crate::sim::report_static_overlap(&world, &registry, grunt, &report);
+    crate::sim::report_static_overlap(&world, &registry, drone, &report);
     capture.assert_logged_once(Level::Warn, "inside static geometry");
+    capture.assert_not_logged(Level::Warn, "enemy.drone");
 
     // A level reload builds a new world, which warns again.
     let reloaded = level();
@@ -393,6 +400,16 @@ fn an_overlap_warns_once_per_level_load_naming_descriptor_texture_and_position()
         })
         .count();
     assert_eq!(warnings, 2, "the reload re-arms the one warning");
+
+    // An untextured face names the position alone.
+    let untextured = Geometry::default().floor((-50.0, 50.0), 0.0).build();
+    let report = check_own_movement(&untextured, clear, sunk, shape).unwrap();
+    crate::sim::report_static_overlap(&untextured, &registry, drone, &report);
+    capture.assert_logged_once(
+        Level::Warn,
+        "[Movement] `enemy.drone` ended a tick inside static geometry at TrenchBroom \
+         (-200 100 33); further overlaps this level stay silent",
+    );
 }
 
 // --- Controller call rules ---------------------------------------------------------
@@ -417,16 +434,24 @@ fn with_step_height_zero_an_agent_neither_steps_up_nor_snaps_to_the_floor() {
     );
     assert!(end.x < 5.0, "no step-up with step height zero, at {end:?}");
 
-    // Off a 5 cm ledge, the tick its centre clears the edge: gravity alone
-    // lowers it, no snap.
+    // Over a 5 cm ledge with the centre far enough past the edge that the
+    // hemisphere's down-sweep meets the lower floor before the edge:
+    // snap-to-floor drops the agent onto it in one tick, gravity alone does
+    // not.
     let top = 0.05;
     let world = ledge_drop(top);
-    let mut position = Vec3::new(5.0 + 0.06, rest_y(&capsule, top), 0.0);
-    let result = step(&world, &capsule, position, Vec3::new(1.0, 0.0, 0.0), 0.0);
-    position = result.position;
+    let over_edge = Vec3::new(5.3, rest_y(&capsule, top), 0.0);
+    let one_tick =
+        |capsule: &AgentCapsule| step(&world, capsule, over_edge, Vec3::ZERO, 0.0).position;
+    let snapped = one_tick(&self::capsule(STEP));
     assert!(
-        position.y > rest_y(&capsule, 0.0) + 0.02,
-        "no snap to the lower floor, at {position:?}"
+        (snapped.y - rest_y(&capsule, 0.0)).abs() < 2.0e-3,
+        "control: a step height snaps to the lower floor, at {snapped:?}"
+    );
+    let unsnapped = one_tick(&capsule);
+    assert!(
+        unsnapped.y > rest_y(&capsule, 0.0) + 0.02,
+        "no snap to the lower floor with step height zero, at {unsnapped:?}"
     );
 }
 

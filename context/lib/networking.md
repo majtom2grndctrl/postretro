@@ -149,7 +149,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 **Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — the host resolves that slot's pawn tuning at the participation transition and resends it whenever it changes, and the client installs it instead of reading its own registry.
 
-The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. So does the slot the host composed the pawn's inventory active with (a carried selection after a level change or rejoin): a client composing its own inventory from the payload starts on it, falling back to the first populated slot when it names no populated slot. It is fixed at spawn and never tracks a switch, so the whole-struct dedupe never resends tuning for one. The client drops its installed payload at demotion and at level unload, so a pawn baseline that arms before the payload lands (the Control resend still in flight on a lossy link) composes from the client's own descriptor, never a previous level's payload. The late payload then moves the client to its slot, and the selection cursor with it, only while the selection is untouched, judged before the install rebuilds any weapon: still on the composed slot, active weapon idle, no switch in flight, the player not mid-choice (cursor moved, dwell running or commit queued), and the slot populated. Adoption closes for that pawn's life once any switch is declared, the active-slot re-sync's included, so the host's agreement is never undone. A payload that lands while the weapon is busy or the player is selecting is not adopted; the re-sync then converges the host to the client's slot, and its declaration closes adoption too. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. First-person weapon placement also rides this payload because later fire authority consumes it. So does the slot the host composed the pawn's inventory active with (a carried selection after a level change or rejoin). The client composes its pawn's inventory only from the payload, starting on that slot, or on the first populated slot when it names none. That slot is fixed at spawn and never tracks a switch, so the whole-struct dedupe never resends tuning for one, and a later payload merges into the live inventory without moving the selection. The client drops its installed payload at demotion and at level unload. A pawn baseline that arms before the payload lands (the Control resend still in flight on a lossy link) holds no inventory until it installs, as its movement already waits; it never composes from the client's own descriptor or a previous level's payload. Payload-only composition is decided, not yet built: today that pawn composes from the client's own descriptor, and the late payload adopts its spawn slot while the selection is untouched. View feel and movement/weapon sound keys are stripped from tuning, so player view-feel settings survive a join and owners retain local sounds. Activation programs, scaling bases, and action aliases come from the host. Observer cues separately carry frozen host fire/impact keys, resolved against local sound assets.
 
 **Level environment rides the same payload.** Every pawn's tuning carries the host's level environment: the level default gravity (worldspawn `initialGravity`, then any `setGravity`) and the host's fluid table, name and viscosity per fluid in declaration order. It is level-scoped, so an environment-only change installs without rebuilding the client's pawn tuning. A connected client builds its prediction and replay environment only from the installed values: it never reads its own level gravity, and it resolves level fluid names only against the host table, never its own registry, because admission gates on mod id and never on version. A name the host lacks is dry on the client even if the client declares it. Before the first install the client builds its volumes with every fluid dry and does not predict. Every fluid field but name and viscosity is presentation and resolves locally by name, as sound keys do; a client without the fluid shows none. Peers may therefore see different opacity and murk, a visibility difference non-competitive co-op accepts. Fluid surface drift is the exception: it agrees with the swimmer it depicts, so it resolves from the installed fluid table and tuning, and re-resolves on each install (`rendering_pipeline.md` §7.3a). Changed tuning is queued immediately before the snapshot send, so a mid-level `setGravity` costs at most one correction; loss retransmit or lane reorder on a lossy link can still deliver it after a snapshot. Regional volumes themselves are PRL data the content digest proves, not replicated; a teleporter's armed state is the one runtime exception (§Current contract).
 
@@ -687,25 +687,24 @@ stamped too far ahead and is refused as malformed.
 
 **A diverged active slot re-converges on the client's.** Nothing else replicates the
 host's active slot to its owner. The tuning payload's spawn active slot keeps
-composition in step, including a late payload adopted while the selection is untouched
-and nothing was ever declared (§What gates, and what replicates instead), so adoption
-never undoes a re-sync; a divergence that parity misses would
-otherwise persist, because pressing the key of the weapon the client already holds
-sends no switch. A connected client watches the owner-private projection: when every
-held sample names one host slot that differs from its own active slot for a continuous
-second (`ACTIVE_SLOT_RESYNC_WINDOW_SECS`, past any round trip plus snapshot lag) while
-no declaration is pending and no switch is in flight (a switch target, or the active
-weapon lowering or raising; the origin a settled switch retains does not count), it
-re-declares its current slot once through the ordinary switch lane, with that slot as
-its own rollback, and logs both slots. The client owns selection, so the host converges
-to it, never the reverse. The declaration starts no local lower or raise. An accept
-switches the host when it had diverged, is a no-op when the projection merely lagged,
-and keeps the client's last-weapon memory. A refusal (a reload that blocks switching)
-rolls back to the same slot. Answering a settled weapon, it changes nothing the player
-holds and leaves an in-progress selection alone. Landing while a lower or raise runs,
-it cancels that switch and resets the selection to the restored slot, as any refusal
-does. Each declaration restarts the window, so a refusal retries after
-another full second.
+composition in step whichever of baseline and payload lands first (§What gates, and
+what replicates instead). A divergence that parity misses, such as a spawn slot naming
+a weapon the client cannot compose, would otherwise persist, because pressing the key
+of the weapon the client already holds sends no switch. A connected client watches the
+owner-private projection: when every held sample names one host slot that differs from
+its own active slot for a continuous second (`ACTIVE_SLOT_RESYNC_WINDOW_SECS`, past any
+round trip plus snapshot lag) while no declaration is pending and no switch is in
+flight (a switch target, or the active weapon lowering or raising; the origin a settled
+switch retains does not count), it re-declares its current slot once through the
+ordinary switch lane, with that slot as its own rollback, and logs both slots. The
+client owns selection, so the host converges to it, never the reverse. The declaration
+starts no local lower or raise. An accept switches the host when it had diverged, is a
+no-op when the projection merely lagged, and keeps the client's last-weapon memory. A
+refusal (a reload that blocks switching) rolls back to the same slot. Answering a
+settled weapon, it changes nothing the player holds and leaves an in-progress selection
+alone. Landing while a lower or raise runs, it cancels that switch and resets the
+selection to the restored slot, as any refusal does. Each declaration restarts the
+window, so a refusal retries after another full second.
 
 **A late start fires along its own aim, once.** A retained start keeps the aim of the
 command that carried it at intake. That captured aim applies only to an uncharged

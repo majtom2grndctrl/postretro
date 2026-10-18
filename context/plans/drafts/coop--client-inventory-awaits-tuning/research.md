@@ -35,19 +35,26 @@ The local pawn gets a `PlayerMovementComponent` only from the payload's movement
 - I: the crates hold several dozen other `Inventory` readers, and only the consumers above were traced. The executor confirms that none reaches the local pawn through `local_player_pawn()` before movement materializes.
 - V: Input is still sent every tick before the baseline arms (`client_predict_tick_with_sender` step 1). Its `firing_slot` reads the local movement pawn and so defaults to 0 in the window. This brief does not change that.
 - V (re-traced at fd8982c): the host fires slot 0 on a fresh press in the window. `ActivationInputCapture::command` emits an initiation for any `Pressed` edge with no pawn check. `predict_client_weapon_command` bails without a local pawn, so nothing clears the initiation or overwrites `firing_slot`. The host takes the slot through `observe_activation` → `deliver_due_start` → `prepare_remote_pawn_command`, and no step compares it to the active slot. `guard_initiation` and `run_remote_weapon_commands` check only that the weapon exists, the ledger, cadence, the fire gate and liveness. A level that was already held does not fire: `run_remote_weapon_commands` passes `controller_starts: false`. No test covers the pre-arm window.
-- Not verified: that the host pawn is in `MovementOwners` before the client's baseline arms; that a weapon holstered after a carried selection is `Idle`. I: a held reload in the window ticks slot 0's weapon the same way. Out of scope here; it needs its own ticket, `coop--pre-arm-fire-resolves-slot-zero`.
+- Not verified: that the host pawn is in `MovementOwners` before the client's baseline arms; that a weapon holstered after a carried selection is `Idle`. I: a held reload in the window ticks slot 0's weapon the same way. Out of scope here; on the roadmap as `coop--pre-arm-fire-resolves-slot-zero`.
 
-Consequence: composing from the client's own descriptor only produces state that the late payload then has to correct. The correction is adoption, with the re-sync as its fallback.
+Consequence: composing from the client's own descriptor only produces state that the late payload then has to correct. The correction is adoption. The reserve seeded from the client's own loadout is never corrected.
 
-## Why adoption could be skipped (today)
+## Why adoption never skips on the join path (today)
 
-V: `spawn_slot_adoption_open` closes on any of these: a pending declaration, a declaration ever made for the pawn, a non-idle selection latch, an active slot off the composed slot, a switch target or origin, or an active weapon that is not idle. The latch input (`is_idle_on`) is read from `local_wieldable_occupancy`, which is empty in the window. When adoption is skipped, the re-sync declares the client's own-descriptor slot to the host after `ACTIVE_SLOT_RESYNC_WINDOW_SECS`. The host converges to a slot the host never composed.
+V (review, fd8982c): `spawn_slot_adoption_open` closes on a pending declaration, a declaration ever made for the pawn, a non-idle selection latch, an active slot off the composed slot, a switch target or origin, or an active weapon that is not idle. In the join window none of these can hold:
+- With no movement pawn, `local_wieldable_occupancy` names no active slot, and `WieldableSelection::advance_frame` clears the whole latch every frame. So `is_idle_on` reads idle when the payload lands.
+- `client_declare_switch` returns without a movement pawn, so nothing is declared.
+- The client wieldable tick gets no pawn, so the own-descriptor weapon stays `Idle`.
+- Selection advances before the frame's snapshot apply and Control drain, so a slot key on the install frame is dropped too.
+
+Adoption therefore always applies on a join, and today's late-payload join already ends on the host's slot with no re-sync. The re-sync's remaining trigger is a parity miss, such as P15. Adoption is still judged on every later install for the pawn's life, until a declaration closes it. `release_wieldable` repoints the active slot at the first populated one on any release, and adoption restores the spawn slot after such a repoint. On the host the only mid-life release is dropping the active weapon (`sim/touch.rs`).
 
 ## Carried state
 
 - V: `restore_carried_reserve` and the carried-magazine loop run only when a carried record is passed, and only the host passes one.
 - V: the client weapon prediction body (`advance_predicted_weapon_tick`) does not read `magazine` or `AmmoReserve` directly. The host weapon stage's reload gate does (`weapon_stage::machine`).
-- I (carried from the #601 research, not fully re-traced): no client reader of the composed magazine or reserve exists. The owner-private projection (`state_slots`, magazine sample) and `client_reload` sound read the replicated values instead.
+- V (review, fd8982c): no client reader of the composed magazine or reserve exists. The client HUD publishes no ammo. Predicted fire skips the resource check and the debit (`weapon_stage` execution). The client's equip pass never reaches the reload gate in `weapon_stage::machine`, and only that gate begins a reload. Reload sounds read the replicated values, and the projection reader of `AmmoReserve` (`state_slots`) is host-side.
+- V (review): the late path leaves the client's own reserve behind. Own-descriptor composition seeds reserve from the client's loadout (`compose_wieldable_inventory` → `seed_weapon_reserve`). The payload merge adds host weapons through `acquire_wieldable_at`, which seeds none, and nothing removes the old reserve.
 
 ## Prior commitments
 
@@ -61,4 +68,34 @@ V: `spawn_slot_adoption_open` closes on any of these: a pending declaration, a d
 | Compose only from the payload; the armed pawn has no inventory until it installs | **Chosen**. Presentation is unchanged, and adoption is removed |
 | Keep composing from own descriptor plus adoption plus re-sync (#601) | Status quo. It corrects a fallback the contract forbids |
 | Defer the arm until the payload | Rejected for this brief. It moves reconcile seeding and the camera hand-off |
+| Host holds the pawn's first baseline until the client acknowledges the payload | Rejected. It adds a round trip to every join, ties snapshot sending to Control acknowledgements, and fixes a client defect on the host |
 | Compose a placeholder (empty slots) then fill from payload | Rejected. Same as chosen, plus an extra empty `Inventory` that every consumer has to tolerate |
+
+## Test harnesses
+
+- V (review): `switch_order.rs`'s `Fixture::new` builds the local pawn directly and never arms it through replication.
+- V (review): `host_activations/conditioned_tests/receive_alternate.rs` arms through replication, but it stores the payload in place of `NetEndpoint::install_tuning_payload`, unwraps an inventory on every arm, and gives host and client one descriptor table with no carried state. A late-payload test with differing loadouts needs it extended.
+- V (review): the merge tests in `net_descriptor.rs` (for example `tuning_merge_grows_an_existing_inventory_at_the_host_named_slot`, `tuning_merge_same_named_slot_preserves_the_existing_instance`) seed their pre-state through the no-payload branch this brief removes.
+- V (review): the client applies Control before draining Snapshot in one frame (`client_drain_control` runs ahead of the snapshot drain in main.rs), so a same-frame arrival is the payload-first path.
+- V (review): every applied `local_player` record re-arms (`maybe_arm_local_pawn` → `materialize_armed_local_pawn`). Only the `has_inventory` early-out in `materialize_net_local_wieldable_inventory_from_tuning` stops a second composition.
+- V (review): demotion despawns the mapped local pawn, and level unload clears the registry, so a re-armed pawn after either is a fresh entity and takes the compose branch.
+
+## Ordering pins
+
+| id | scenario | ordering | expected outcome | source |
+|---|---|---|---|---|
+| P1 | Baseline and payload in one frame | Control drains before Snapshot | The payload is stored with no armed pawn. The arm composes once from it, active on the spawn slot | `client_drain_control`; `install_tuning_payload` |
+| P2 | Late payload | Arm, then the payload frames later | No inventory while waiting. The install composes from the payload's slots, with reserve and magazines seeded as on the payload-first path | `materialize_net_local_wieldable_inventory_from_tuning`; `compose_wieldable_inventory_from_slots` |
+| P3 | Re-arm after composition | Every applied local record re-arms; the player switched first | No recompose, merge only. The active slot stays where the player put it | `maybe_arm_local_pawn`; `has_inventory` early-out |
+| P4 | Second payload, same pawn | Composed, then a payload with new weapon tuning and another spawn slot | Instances, magazines and timers kept. Active slot unmoved | `install_tuning_payload`; `same_pawn_tuning` ignores the spawn slot |
+| P5 | Repeat payload | The same pawn tuning arrives twice | Generation unchanged, nothing rematerializes | `apply_installed_movement_tuning_to_armed_pawn` |
+| P6 | Decode failure before composition | Arm, then a bad payload | No inventory. Movement removed. Error logged | `install_tuning_payload`; `materialize_armed_local_pawn` |
+| P7 | Decode failure after composition | Composed, then a bad payload | Inventory kept (E16 O42) | `has_inventory` early-out |
+| P8 | Failure, then a good payload | Bad, then good, with no inventory | The good payload composes: its previous is `None`, so the generation bumps | `apply_installed_movement_tuning_to_armed_pawn` |
+| P9 | Payload with no weapons | Arm, then an all-empty payload, later a fill | Empty inventory, active 0. The fill acquires the slot and makes it active | `compose_wieldable_inventory_slots`; `acquire_wieldable_at` |
+| P10 | Slot key in the window | Press before or on the install frame | Dropped: the latch clears with no movement pawn, and selection runs before snapshot apply | `WieldableSelection::advance_frame`; `local_wieldable_occupancy` |
+| P11 | Re-sync timer across the window | Window open longer than `ACTIVE_SLOT_RESYNC_WINDOW_SECS` | The timer resets each tick with no pawn, and does not fire once the host's projection names the composed slot | `client_observe_active_slot_resync`; `slot_resync` |
+| P12 | Demotion between arm and payload | Arm, a holding divergence, re-entry | Pawn despawned, tuning dropped. The host resends after the slot closes. The new pawn composes only from the new payload | `install_tuning_payload`'s demotion clear; host admission |
+| P13 | Level unload between arm and payload | Arm, relevel, new level | Tuning dropped. No old-level payload can follow: Control is reliable-ordered, and the next payload needs re-entry | endpoint unload; `networking.md` §Channel model |
+| P14 | Local pawn re-identity (stale-mapping repair) | Composed, then the client respawns the entity for the same id | The new entity composes from the installed payload, active on the spawn slot. Unchanged by this brief | client stale-mapping repair; `materialize_net_local_wieldable_inventory_from_tuning` |
+| P15 | Spawn slot names a weapon the client cannot compose | Late or early payload | Warns and falls back to the first populated slot. The host stays on its slot until the re-sync converges it. This is the parity miss the re-sync stays for | `compose_wieldable_inventory_slots`; `slot_resync` |

@@ -42,3 +42,24 @@ Ranked by likelihood of the observed vault embed:
 - No test asserts that a tick never ends overlapping static geometry.
 - `the_eye_and_capsule_stay_clear_of_the_lip_and_the_headroom_along_the_path` (vault_tests.rs) is an analytic distance check on the nominal path only.
 - The "…without_persistent_overlap" tests in the movement module cover movers only.
+
+## Ordering pins (`/review-brief`)
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | pawn displaced out of a mover toward a static wall | carry → mover displacement → start sample → own move → end sample | displacement unchecked; own move checked |
+| P2 | rider walks into a convex lip on the tick its platform moves | carry → start sample → swept move → end sample | ends clear |
+| P3 | teleport arrival within one skin of a wall | substrate end sample → teleport relocation → next tick's start sample | arrival not checked as movement; next tick checked from it (pending owner: teleport exemption) |
+| P4 | step-up under an overhang, then a TOI-0 walkable contact | step-up rise → floor push → slide → ground-stick → end sample | ends clear |
+| P5 | convex lip, floor push spent, second TOI-0 walkable contact | floor push → free advance → ground-stick → end sample | ends clear |
+| P6 | idle agent and steering agent at a ledge edge | start sample → agent move → end sample, at both call sites | both checked, both clear |
+| P7 | zero velocity; zero dt; step height zero | no slide iterations; ground-stick runs at zero velocity; step height zero skips step-up and ground-stick | ends clear; step height zero keeps today's behaviour |
+| P8 | mover-caused embed, then walked clear | tick starts embedded: unchecked → first tick that starts clear: checked | check resumes |
+| P10 | forced overlap in a test build | detect → assert → no warn | test builds panic; only non-test debug builds warn |
+
+Reach notes:
+- Ground-stick undoes the floor push whenever step height is positive.
+- The unswept step-up lift embeds at tick end only when the step top has less headroom than the standing capsule.
+- The centre-ray drop is refused past ground-stick reach (step height + 0.1 m).
+- The stuck-stop rollback sinks the body only after a downhill slide, by less than 1 mm × sin(slope).
+- Agent ground-stick runs every tick with vertical velocity ≤ 1e-3, idle agents included (two call sites, idle and steering, in agent_steering.rs).

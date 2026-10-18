@@ -34,22 +34,40 @@ Owner co-op playtest under the dev lag proxy: after a vault, the player's pawn s
 ## Acceptance
 ### Automated
 **The invariant holds** (the test-build assertion is armed in every movement and agent test)
-- [ ] Reproduces first: at b0a5c0f, a fixture pressing a pawn along a convex lip edge with a tilted walkable contact ends a tick overlapping the lip. The test is committed failing, before the fix.
-- [ ] Vault fixtures never end a tick overlapping static geometry: on the path, aborted mid-path, oblique entry, held forward input after exit, and a lip at each walkable-normal extreme.
-- [ ] A grounded pawn with its head within one skin width of a ceiling ends clear after the floor push.
-- [ ] Walking into a low overhang with step-up available ends clear, for a pawn and for an agent.
-- [ ] Ground-stick beside a wall above a ledge between one and two step heights high ends clear, for a pawn and for an agent.
-- [ ] A stuck-stop corner wedge on a ramp ends clear.
-- [ ] Two bypass conditions on one tick (free advance, then ground-stick) end clear.
+- [ ] Reproduces first: at b0a5c0f, a fixture pressing a pawn along a convex lip edge with a tilted walkable contact ends a tick overlapping the lip. It is committed as an expected failure naming the bug, and the fix makes it a plain passing test.
+- [ ] Every per-bypass fixture below ends a tick overlapping static geometry at b0a5c0f. A bypass that no fixture can drive into overlap is named in its test with the reason, and the swept-move grep gate covers it.
+- [ ] Vault fixtures never end a tick overlapping static geometry: on the path, aborted mid-path, oblique entry, held then neutral forward input after exit, and a lip whose top is flat and one tilted to exactly the walkable limit.
+- [ ] A grounded pawn with step height zero and its head within one skin width of a ceiling ends clear after the floor push. With a positive step height it ends clear after ground-stick. Pin P7.
+- [ ] Walking into a step whose top has less headroom than the standing capsule needs leaves the pawn, or agent, below the step and clear.
+- [ ] Ground-stick beside a wall, over a drop taller than one step height but within ground-stick reach, ends clear, for a pawn and for an agent. At b0a5c0f the same fixture sinks into the ledge.
+- [ ] A corner wedge on the steepest walkable ramp, whose blocked tick slid downhill, ends clear after the stuck-stop rollback.
+- [ ] Two bypass conditions on one tick (free advance, then ground-stick) end clear. Pin P5.
+- [ ] A step-up followed by a floor push on one tick, under an overhang, ends clear. Pin P4.
+- [ ] A pawn standing still with its capsule over a ledge edge ends clear after ground-stick. Pin P7.
+- [ ] An idle agent with no destination, settling with its capsule over a ledge edge, ends clear. Pin P6.
+- [ ] A pawn riding a moving platform that walks into a convex lip on the same tick ends clear. The carry is exempt; the movement after it is not. Pin P2.
+- [ ] A pawn pushed out of a mover toward a static wall does not trip the assertion: the push happens before the tick's checked start. Pin P1.
+- [ ] After a mover-caused embed, the first tick that starts clear is checked again: a forced overlap on that tick is caught. Pin P8.
 - [ ] In a debug-assertion build, a forced overlap logs exactly one warning per session and moves nothing.
 
 **Legitimate motion still moves** (not over-tight)
 - [ ] Ramps, stairs at step height, step-up onto a ledge, sliding along a wall, and running across a coplanar seam keep their current displacement within tolerance.
+- [ ] A step whose top has headroom for the standing capsule, but not for the step-up lift margin, still steps up, for a pawn and for an agent.
+- [ ] With step height zero, neither a pawn nor an agent steps up or snaps to the floor, as today. Pin P7.
+- [ ] A teleport arrival over walkable floor, with a wall pressed against the capsule, still lands grounded, as today.
+- [ ] A pawn steps up onto, and snaps to, a mover's top. An agent beside the same mover still ignores it, as today.
+- [ ] Each controller keeps its own call rules. A falling agent beside a step still steps up, and an airborne pawn still does not. A pawn tuned to a non-default walkable slope still classifies floors by its own slope.
 - [ ] A pawn carried by a mover into a static ceiling behaves as before. The assertion does not fire on mover-caused overlap.
 - [ ] Existing movement, vault, slide, teleport and agent-navigation suites pass with the assertion armed.
 
 **Determinism**
-- [ ] Replaying a recorded command sequence through the client predictor reproduces the host's poses exactly.
+- [ ] Replaying a recorded command sequence through the client predictor reproduces the host's poses exactly. The sequence includes a vault across a convex lip with held then neutral input, a step-up, and a ground-stick beside a wall.
+
+**Gates**
+- [ ] Grep gate: outside the swept move helper, the movement substrate and the agent controller write no body position, except the exemptions Decisions names.
+- [ ] Grep gate: the agent controller holds no step-up or snap-to-floor logic of its own. It reaches them only through the shared primitives.
+- [ ] Grep gate: the tick-end overlap check, its start sample and its warning all sit behind the debug-assertions gate.
+- [ ] Diff gate: the change adds no wire field and no movement-descriptor field.
 
 ### Manual
 - [ ] Single player: vault the campaign-test ledges 20× at varied angles and speeds, and walk ramps and stairs. No embed and no felt hitch. Enemies chasing over the same ledges and stairs don't clip in.

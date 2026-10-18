@@ -14,7 +14,7 @@ use super::{COLLINEAR_DISTANCE, face_normal, has_collinear_vertex};
 /// Planes per probe cell along each axis at the finest spacing.
 pub const FLUID_GRID_DIVISIONS: f64 = 2.0;
 /// Most mesh vertices one level's fluid surfaces may pack into. Sized for an
-/// authored ocean: about 500 m square at half-metre spacing.
+/// authored ocean: about 256 m square at half-metre spacing.
 pub const FLUID_GRID_VERTEX_CAP: u64 = 1 << 18;
 /// Doublings of the finest spacing a level past the cap may take before it
 /// packs ungridded: 2^20 cells, past any authorable level.

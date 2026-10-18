@@ -1,6 +1,6 @@
 # Fluid base-pass cost: Metal ablation kit (5300M)
 
-Attributes the reflection-free Fluid Surface Pass's cost on the Radeon Pro 5300M by timing ablated copies of its shader. Findings: `context/plans/in-progress/fluid-base-pass-cost/research.md`.
+Attributes the reflection-free Fluid Surface Pass's cost on the Radeon Pro 5300M by timing ablated copies of its shader. Findings: `context/plans/done/fluid-base-pass-cost/research.md`.
 
 ## How it works
 

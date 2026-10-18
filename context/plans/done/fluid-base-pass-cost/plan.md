@@ -1,7 +1,7 @@
 # fluid-base-pass-cost — plan of record
 
 mode: compact
-status: active
+status: landed
 read at: 96ab6c9f4
 
 No crate source changed between the brief's `read at` (2f1f96297) and this plan's base; the Decision reads stand.
@@ -12,7 +12,7 @@ No crate source changed between the brief's `read at` (2f1f96297) and this plan'
 - Path "Large files: `fluid_surface.wgsl` is past 800 lines; split before extending" → split by responsibility into `fluid_surface.wgsl` (interface, shading, entries), `fluid_motion.wgsl` (warp, drift, wave) and `fluid_reflection.wgsl` (reflection term), concatenated by `SHADER_SOURCE`; source-pinning tests read the fluid texts through one helper.
 
 ## Delegated answers
-- Grid spacing and per-level vertex cap — half a probe cell per axis (`FLUID_GRID_DIVISIONS = 2`), coarsening by doubling (planes nest), cap 2^18 vertices per level (`FLUID_GRID_VERTEX_CAP`, about a 500 m square ocean at 0.5 m). Kept from measurement: e24's 12 pools pack to 3,154 vertices on the 0.5 m grid, and the gridded pass costs 2.16 ms at near 4K against the no-SH floor's 2.05 and the coarse-mesh `vertexsh` probe's 2.11, so grid vertex work is about 0.05 ms; parity is already within 1/255 at that spacing, so no finer spacing is warranted.
+- Grid spacing and per-level vertex cap — half a probe cell per axis (`FLUID_GRID_DIVISIONS = 2`), coarsening by doubling (planes nest), cap 2^18 vertices per level (`FLUID_GRID_VERTEX_CAP`, about a 256 m square ocean at 0.5 m). Kept from measurement: e24's 12 pools pack to 3,154 vertices on the 0.5 m grid, and the gridded pass costs 2.16 ms at near 4K against the no-SH floor's 2.05 and the coarse-mesh `vertexsh` probe's 2.11, so grid vertex work is about 0.05 ms; parity is already within 1/255 at that spacing, so no finer spacing is warranted.
 - Parity bound — reported from measurement, no threshold set (brief): max 1/255 per channel at every view (Results).
 
 ## Measurement (5300M, Metal System Trace)
@@ -43,7 +43,7 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 |---|---|---|---|
 | A1 fragment entries sample no SH atlas / probe depth / SH grid; `vs_main` samples each; runtime lights in both fragment entries; reflecting entry keeps the shared sampler; per-fragment pins inverted | `only_the_vertex_entry_samples_the_sh_volume` (naga `global_uses`), `fluid_baked_light_is_per_vertex_and_runtime_lights_per_fragment`, `the_reflection_free_variant_compiles_no_reflection_into_its_executable_path` | achievable as stated | **pass** |
 | A2 layout keeps groups, entries, visibilities and vertex stride | existing layout/stride/binding tests unedited; no BGL builder in the diff | achievable as stated | **pass** |
-| A3 grid packing (areas, planes, UV, shared edges P9–P12, T-junctions P13, originals P10, contiguity + streams P15, uncut face, cap P5–P7 P17 P18) | `fluid_surface::grid` (24 tests), `probe_indices_cover_every_grid_vertex_of_a_bound_face` | achievable as stated | **pass, one case open:** P13 on an edge at a shallow angle to a plane whose T-vertex lies within tolerance of that plane: the long side gains a crossing up to (tolerance + T offset)/sin θ along the edge from the T-vertex, on the open edge's own line (crack no wider than the compiler's T-junction). Owner decision below. Area sums hold to f32 packing (~1e-4 relative at 1 km on oblique edges). |
+| A3 grid packing (areas, planes, UV, shared edges P9–P12, T-junctions P13, originals P10, contiguity + streams P15, uncut face, cap P5–P7 P17 P18) | `fluid_surface::grid` (24 tests), `probe_indices_cover_every_grid_vertex_of_a_bound_face` | achievable as stated | **pass, one accepted limit:** P13 on an edge at a shallow angle to a plane whose T-vertex lies within tolerance of that plane: the long side gains a crossing up to (tolerance + T offset)/sin θ along the edge from the T-vertex, on the open edge's own line (crack no wider than the compiler's T-junction). Owner-accepted at landing (Review loop). Area sums hold to f32 packing (~1e-4 relative at 1 km on oblique edges). |
 | A4 lattice the SH sampler uses (section's or manifest base, never placeholder, P3) | `the_fluid_grid_takes_the_lattice_the_sh_sampler_reads`; adapter: `the_fluid_grid_takes_each_levels_sh_lattice_and_a_level_without_one_draws_ambient_only`, `a_streamed_level_cuts_its_fluid_on_the_manifest_base_lattice` | achievable as stated | **pass** |
 | A5 no usable SH volume → packs as today, ambient only, no error (P4, P20); no fluid → no grid, no log (P14) | `no_fluid_or_no_lattice_builds_no_grid_and_logs_nothing`, `an_unusable_lattice_is_refused`; adapter: zero-dimension, zero-cell and NaN-origin levels draw the ambient floor alone (renderer now refuses a degenerate lattice) | achievable as stated | **pass** |
 | A6 fluid install after geometry install on level and capture paths; level change repacks on its own lattice / cap warning (P1, P2, P19) | `fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths`, `a_second_level_takes_its_own_spacing_and_warning`, adapter level-change test | achievable as stated | **pass** |
@@ -55,7 +55,7 @@ Parity at 960×540, |today − new| in 8-bit sRGB over water pixels (water mask 
 | M3 Windows DX12 FXC compile, both variants | owner, Windows | manual | **pass** (GTX 1660 Super, Windows 11, at 25d738377: `dx12_fxc_compiles_every_full_init_pipeline -- --ignored` 1 passed on DX12/FXC, both fluid pipelines built, no FXC errors) |
 | M4 GTX 1660 Vulkan no regression; reflecting-minus-free at e24 near 4K before/after | owner, Windows | manual | **pass** (GTX 1660 Super, Vulkan, 96ab6c9f4 → e00a42fc5, 64/64 runs valid): every view and mask faster, forward unchanged; reflecting − reflection-free at e24 near 4K 9.99 → 2.48 ms (GTX 1660 table below) |
 | M5 parity at near, probes, mid, under; near-wall subset | Metal kit, `parity.py` | manual | **measured:** max 1/255 per channel at every view, near-wall included (mid: 41 075 px) |
-| M6 owner look | owner, in engine | manual | **outstanding** |
+| M6 owner look | owner, in engine | manual | **pass** (owner, Windows Vulkan + DX12 and Mac; approved landing). A sudden dimming of reflecting water while strafing beside a partly shadowed probe volume reproduces on `main` too, so it is pre-existing and not this brief's; it goes to the reflection term's owner (`reflection-probe-fluid-pass-performance`) |
 
 ## 5300M two-binary before/after
 `results-landing2.{md,json}`: BEFORE 96ab6c9f4 and AFTER e00a42fc5, each its own release binary (`capture,dev-tools`, no hook), interleaved, 2 rounds, 24/24 runs valid, 4K.
@@ -91,7 +91,7 @@ Reflecting − reflection-free fluid: near 4K 9.99 → 2.48 ms, probes 4K 4.49 �
 - Preflight: green (fmt, clippy, 11 691 tests, release check, crate graph; dev-tools clippy + 3 346 tests). `capture,observability,dev-tools` fails to compile on `main` already (missing `swim`/`vault` in observability initializers), unrelated.
 - Panel 1 (2 tracers + adversarial, opus; hygiene, sonnet): 0 🔴; fixed: sliver parts dropped beyond ~105 m from the origin, i64 overflow on a huge origin with a tiny cell, overlapping halves on an on-plane vertex run, mismatched range/side predicates, unsaturated count, degenerate SH lattice still sampled (P20), tests not exercising the tolerance, comment drift and the measurement kit after the shader split.
 - Panel 2 (adversarial on the fix round): 0 🔴; closed two test gaps (run rule at ring vertex 0, tolerance-boundary predicate), mutation-checked.
-- Owner decision open: the P13 shallow-angle case in A3 (above). No edge-local rule exists: the long face cannot see the neighbour's T-vertex.
+- Owner decision (2026-10-18): land with the P13 shallow-angle case in A3 as a known limit (the crack stays no wider than the compiler's open T-junction); closing every fluid T-junction at bake is drafted as `plans/drafts/fluid-surface-t-junction-closure`, which supersedes this brief's carve-out.
 
 ## Tasks
 

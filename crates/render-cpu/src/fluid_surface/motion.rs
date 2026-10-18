@@ -1,4 +1,4 @@
-// Fluid surface motion: the pure, GPU-free CPU reference for `fluid_surface.wgsl`'s warp.
+// Fluid surface motion: the pure, GPU-free CPU reference for `fluid_motion.wgsl`'s warp.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use glam::{IVec2, Vec2};

@@ -347,8 +347,8 @@ fn billboard_pipeline_vertex_sampled_texture_budget_includes_scatter_only_in_ver
     assert_eq!(forward_pipeline_sampled_texture_count(true), 16);
 }
 
-// The fluid surface pipeline lights per fragment on the billboard's shared
-// camera, lighting and SH groups, which already hold the whole FRAGMENT
+// The fluid surface pipeline shades runtime lights per fragment (baked SH is
+// read in `vs_main`) on the billboard's shared camera, lighting and SH groups, which already hold the whole FRAGMENT
 // storage budget. Its world-material, per-volume parameter and scene-input
 // groups must therefore add no storage buffer; derived from the same GPU-free
 // builders the layout is created from, so a widened entry fails here before a

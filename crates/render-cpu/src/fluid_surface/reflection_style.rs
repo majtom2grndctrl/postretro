@@ -2,7 +2,7 @@
 // reflection from. Smooth reflects the flat face per fragment; pixel reflects
 // once per water texel cell, from the cell's world-space centre (held to the
 // probe's box at a wall rim), about a normal tilted by the cell's displayed
-// offset. GPU-free CPU reference for `fluid_surface.wgsl`'s style functions,
+// offset. GPU-free CPU reference for `fluid_reflection.wgsl`'s style functions,
 // which mirror it and a test pins.
 // See: context/lib/rendering_pipeline.md §7.3a (Reflection → Style)
 

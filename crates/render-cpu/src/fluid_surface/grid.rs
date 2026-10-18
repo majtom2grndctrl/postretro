@@ -26,6 +26,16 @@ const FLUID_GRID_MAX_COARSENING: u32 = 20;
 const PLANE_TOLERANCE: f64 = COLLINEAR_DISTANCE;
 /// Plane counts past this saturate: the bound only has to exceed the cap.
 const PLANE_COUNT_LIMIT: f64 = 1.0e9;
+/// Plane indices at or past this magnitude are not counted: `k as f64`
+/// stops holding every integer.
+const PLANE_INDEX_LIMIT: f64 = (1u64 << 53) as f64;
+/// Steps the plane range search may take from its estimate. More means the
+/// spacing is below the precision of the planes' formula.
+const PLANE_SEARCH_STEPS: u32 = 4;
+/// A ring turns at a vertex when the turn's sine exceeds this. f64 rounding
+/// of the turn stays far below it, and an f32 position off a line by one ulp
+/// lies far above it.
+const CORNER_SINE: f64 = 1.0e-12;
 
 /// The SH probe lattice the fluid grid aligns to: the one the sampler reads.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -74,41 +84,86 @@ impl FluidGridPlanes {
         self.origin[axis] + k as f64 * self.spacing[axis]
     }
 
-    /// The planes on `axis` strictly inside `min..max` by more than the plane
-    /// tolerance, which are exactly the planes splitting a polygon of that
-    /// extent; `None` when there are none or too many to count.
-    fn splitting(&self, axis: usize, min: f64, max: f64) -> Option<(i64, i64)> {
-        let (low, high) = (min + PLANE_TOLERANCE, max - PLANE_TOLERANCE);
-        let spacing = self.spacing[axis];
-        let first = ((low - self.origin[axis]) / spacing).floor();
-        let last = ((high - self.origin[axis]) / spacing).ceil();
-        // Non-finite bounds (NaN included) fail the finiteness checks.
-        if low >= high
-            || !first.is_finite()
-            || !last.is_finite()
+    /// The planes on `axis` splitting a polygon whose extent on it is
+    /// `min..max`: those with a vertex below and one above, by [`side`], as
+    /// [`split`] judges them.
+    fn splitting(&self, axis: usize, min: f64, max: f64) -> Splitting {
+        let (origin, spacing) = (self.origin[axis], self.spacing[axis]);
+        let first = ((min + PLANE_TOLERANCE - origin) / spacing).floor() + 1.0;
+        let last = ((max - PLANE_TOLERANCE - origin) / spacing).ceil() - 1.0;
+        // NaN fails the comparisons too.
+        if !(first.abs() < PLANE_INDEX_LIMIT && last.abs() < PLANE_INDEX_LIMIT)
             || last - first > PLANE_COUNT_LIMIT
         {
-            return None;
+            return Splitting::Uncountable;
         }
-        let (mut first, mut last) = (first as i64, last as i64);
-        // The plane's own formula decides, so every face agrees on it.
-        while self.plane(axis, first) <= low {
-            first += 1;
+        // The plane's own formula settles each estimate, so every face agrees.
+        let first = first_where(first as i64, |k| {
+            side(min, self.plane(axis, k)) == Side::Below
+        });
+        let last = first_where(last as i64 + 1, |k| {
+            side(max, self.plane(axis, k)) != Side::Above
+        });
+        match (first, last) {
+            (Some(first), Some(end)) if first < end => Splitting::Planes(first, end - 1),
+            (Some(_), Some(_)) => Splitting::Nothing,
+            _ => Splitting::Uncountable,
         }
-        while self.plane(axis, last) >= high {
-            last -= 1;
-        }
-        (first <= last).then_some((first, last))
     }
 
     /// Planes splitting `min..max` on `axis`, saturating far past any cap.
     fn splitting_count(&self, axis: usize, min: f64, max: f64) -> u64 {
-        let span = (max - min) / self.spacing[axis];
-        if span.is_nan() || span > PLANE_COUNT_LIMIT {
-            return PLANE_COUNT_LIMIT as u64;
+        match self.splitting(axis, min, max) {
+            Splitting::Nothing => 0,
+            Splitting::Planes(first, last) => (last - first + 1) as u64,
+            Splitting::Uncountable => PLANE_COUNT_LIMIT as u64,
         }
-        self.splitting(axis, min, max)
-            .map_or(0, |(first, last)| (last - first + 1) as u64)
+    }
+}
+
+/// The planes on one axis that split an extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Splitting {
+    Nothing,
+    /// Planes `first..=last`.
+    Planes(i64, i64),
+    /// Too many to count, or a spacing below the planes' precision: the
+    /// bound saturates, and a cut takes none of them.
+    Uncountable,
+}
+
+/// The least `k` near `estimate` where `holds`, false below some index and
+/// true from it on, turns true; `None` when it is not within a few steps.
+fn first_where(estimate: i64, holds: impl Fn(i64) -> bool) -> Option<i64> {
+    let mut k = estimate;
+    for _ in 0..PLANE_SEARCH_STEPS {
+        match (holds(k - 1), holds(k)) {
+            (false, true) => return Some(k),
+            (true, _) => k -= 1,
+            (false, false) => k += 1,
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Side {
+    Below,
+    On,
+    Above,
+}
+
+/// Which side of `plane` a vertex at `position` on the plane's axis lies:
+/// on it within the plane tolerance. The one side test, for the planes a
+/// polygon's extent spans and for the cut alike, so the two never disagree.
+fn side(position: f64, plane: f64) -> Side {
+    let offset = position - plane;
+    if offset < -PLANE_TOLERANCE {
+        Side::Below
+    } else if offset > PLANE_TOLERANCE {
+        Side::Above
+    } else {
+        Side::On
     }
 }
 
@@ -122,7 +177,8 @@ fn face_extent(face: &EnvironmentSurfaceFace) -> (DVec3, DVec3) {
     })
 }
 
-/// Mesh vertices a drawable face packs into, today's triangulation.
+/// Mesh vertices a drawable face packs into under the ungridded
+/// triangulation (`triangulate_convex_face`).
 fn ungridded_vertex_count(face: &EnvironmentSurfaceFace) -> u64 {
     face.vertices.len() as u64 + u64::from(has_collinear_vertex(&face.vertices))
 }
@@ -215,13 +271,6 @@ pub(super) struct GridCut {
     pub triangles: Vec<[u32; 3]>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Side {
-    Below,
-    On,
-    Above,
-}
-
 /// Cut `face` (outward unit normal `normal`, normalized vertex UVs `uvs`)
 /// along every plane splitting it; `None` when none does, so it packs as
 /// without a grid.
@@ -239,7 +288,12 @@ pub(super) fn cut_face(
     planes: &FluidGridPlanes,
 ) -> Option<GridCut> {
     let (min, max) = face_extent(face);
-    if (0..3).all(|axis| planes.splitting(axis, min[axis], max[axis]).is_none()) {
+    if (0..3).all(|axis| {
+        !matches!(
+            planes.splitting(axis, min[axis], max[axis]),
+            Splitting::Planes(..)
+        )
+    }) {
         return None;
     }
     let count = face.vertices.len();
@@ -261,7 +315,7 @@ pub(super) fn cut_face(
                         let p = cut.positions[i as usize][axis];
                         (l.min(p), h.max(p))
                     });
-            let Some((first, last)) = planes.splitting(axis, low, high) else {
+            let Splitting::Planes(first, last) = planes.splitting(axis, low, high) else {
                 next.push(polygon);
                 continue;
             };
@@ -284,21 +338,19 @@ pub(super) fn cut_face(
         polygons = next;
     }
     let normal = normal.as_dvec3();
-    let magnitude = cut
-        .positions
-        .iter()
-        .fold(1.0f64, |m, p| m.max(p.abs().max_element()));
-    // Heights below the f32 rounding of the packed positions draw no area.
-    let epsilon = 16.0 * f64::from(f32::EPSILON) * magnitude;
     for polygon in &polygons {
-        triangulate_convex(polygon, &cut.positions, normal, epsilon, &mut cut.triangles);
+        triangulate_convex(polygon, &cut.positions, normal, &mut cut.triangles);
     }
     Some(cut)
 }
 
 /// Split a convex polygon at plane `k` (`axis` = `plane`) into the parts
 /// below and above it; `None` unless vertices lie on both sides beyond the
-/// plane tolerance. A vertex on the plane joins both parts.
+/// plane tolerance. An edge from one side to the other gains a crossing. A
+/// run of vertices on the plane joins the side before it, except where the
+/// ring passes on to the other side: there the run's last vertex is the cut
+/// and joins both. So the parts partition the polygon, and no vertex is added
+/// within the tolerance of one on the plane.
 fn split(
     polygon: &[u32],
     axis: usize,
@@ -307,36 +359,39 @@ fn split(
     cut: &mut GridCut,
     crossings: &mut HashMap<(i64, u32, u32), u32>,
 ) -> Option<(Vec<u32>, Vec<u32>)> {
-    let side = |cut: &GridCut, i: u32| {
-        let d = cut.positions[i as usize][axis] - plane;
-        if d < -PLANE_TOLERANCE {
-            Side::Below
-        } else if d > PLANE_TOLERANCE {
-            Side::Above
-        } else {
-            Side::On
-        }
-    };
-    let sides: Vec<Side> = polygon.iter().map(|&i| side(cut, i)).collect();
+    let sides: Vec<Side> = polygon
+        .iter()
+        .map(|&i| side(cut.positions[i as usize][axis], plane))
+        .collect();
     if !sides.contains(&Side::Below) || !sides.contains(&Side::Above) {
         return None;
     }
+    let count = polygon.len();
+    // The side the ring is on at vertex 0: its own, or the side before the
+    // run on the plane that holds it.
+    let mut current = (0..count)
+        .map(|n| sides[(count - n) % count])
+        .find(|&side| side != Side::On)
+        .expect("a vertex lies below the plane");
     let (mut below, mut above) = (Vec::new(), Vec::new());
     for (n, &vertex) in polygon.iter().enumerate() {
-        let following = (n + 1) % polygon.len();
-        if sides[n] != Side::Above {
+        let following = (n + 1) % count;
+        let onward = sides[following] != Side::On && sides[following] != current;
+        if onward && sides[n] == Side::On {
             below.push(vertex);
-        }
-        if sides[n] != Side::Below {
+            above.push(vertex);
+        } else if current == Side::Below {
+            below.push(vertex);
+        } else {
             above.push(vertex);
         }
-        if matches!(
-            (sides[n], sides[following]),
-            (Side::Below, Side::Above) | (Side::Above, Side::Below)
-        ) {
+        if onward && sides[n] != Side::On {
             let crossing = crossing(vertex, polygon[following], axis, k, plane, cut, crossings);
             below.push(crossing);
             above.push(crossing);
+        }
+        if onward {
+            current = sides[following];
         }
     }
     Some((below, above))
@@ -375,26 +430,19 @@ fn crossing(
 /// and planes passing near a corner); each stays a triangle corner. Each step
 /// clips a corner beside a collinear vertex, which turns that vertex into a
 /// corner, so three corners always remain; with none left, any corner.
-/// Heights at or below `epsilon` count as collinear. A part with no corner
+/// Corners are judged on the positions as packed, in f32, so a part with any
+/// drawn area keeps it, however far from the origin. A part with no corner
 /// left has no area and draws nothing.
 fn triangulate_convex(
     polygon: &[u32],
     positions: &[DVec3],
     normal: DVec3,
-    epsilon: f64,
     triangles: &mut Vec<[u32; 3]>,
 ) {
-    let height = |prev: u32, at: u32, next: u32| {
-        let (p, v, n) = (
-            positions[prev as usize],
-            positions[at as usize],
-            positions[next as usize],
-        );
-        let chord = (n - p).length();
-        if chord == 0.0 {
-            return 0.0;
-        }
-        (v - p).cross(n - v).dot(normal) / chord
+    let packed = |i: u32| positions[i as usize].as_vec3().as_dvec3();
+    let turns = |prev: u32, at: u32, next: u32| {
+        let (into, out) = (packed(at) - packed(prev), packed(next) - packed(at));
+        into.cross(out).dot(normal) > CORNER_SINE * into.length() * out.length()
     };
     let mut ring = polygon.to_vec();
     let mut corner = Vec::with_capacity(ring.len());
@@ -402,11 +450,11 @@ fn triangulate_convex(
         let count = ring.len();
         corner.clear();
         corner.extend((0..count).map(|i| {
-            height(
+            turns(
                 ring[(i + count - 1) % count],
                 ring[i],
                 ring[(i + 1) % count],
-            ) > epsilon
+            )
         }));
         let beside_collinear =
             |i: usize| corner[i] && (!corner[(i + count - 1) % count] || !corner[(i + 1) % count]);
@@ -423,7 +471,7 @@ fn triangulate_convex(
         ]);
         ring.remove(tip);
     }
-    if ring.len() == 3 && height(ring[0], ring[1], ring[2]) > epsilon {
+    if ring.len() == 3 && turns(ring[0], ring[1], ring[2]) {
         triangles.push([ring[0], ring[1], ring[2]]);
     }
 }

@@ -492,6 +492,20 @@ fn the_fluid_grid_takes_each_levels_sh_lattice_and_a_level_without_one_draws_amb
         "level 2b (zero-dimension SH)",
     );
 
+    // Degenerate lattices (zero cell size on one axis, NaN origin) are refused
+    // renderer-wide: no SH volume, no grid, ambient floor alone.
+    let bad_cell = sh_section([0.0; 3], [0.75, 0.0, 1.25], DIMENSIONS, |_| colour_1);
+    let bad_origin = sh_section([f32::NAN, 0.0, 0.0], [1.0; 3], DIMENSIONS, |_| colour_1);
+    for (section, name) in [(&bad_cell, "zero cell size"), (&bad_origin, "NaN origin")] {
+        install(&mut renderer, Some(section));
+        assert_eq!(installed_grid(&renderer), None, "{name}: no grid");
+        assert!(
+            !renderer.full().sh_volume_resources.present,
+            "{name}: SH volume refused"
+        );
+        check_water(&mut renderer, Vec3::splat(0.5), name);
+    }
+
     // Level 3: probes at x −1..2, y −1.25..1.15, z −0.75..3.75.
     let (origin_3, cell_3) = ([-1.0, -1.25, -0.75], [1.0, 0.8, 1.5]);
     let colour_3 = Vec3::new(0.25, 0.5, 0.5);

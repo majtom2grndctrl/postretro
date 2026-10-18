@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use glam::{DVec2, DVec3, Vec2, Vec3};
+use glam::{DVec3, Vec2, Vec3};
 use postretro_level_format::environment_volumes::{
     EnvironmentSurfaceFace, EnvironmentSurfaceVertex, EnvironmentVolumeRecord,
 };
@@ -99,7 +99,9 @@ fn on_some_plane(p: DVec3, spacing: f64) -> bool {
 /// lies on a lattice plane at `spacing`; every triangle winds with the face,
 /// has area and spans at most one spacing (plus the plane tolerance) on each
 /// axis; the triangles' areas sum to the face's; every vertex is a corner;
-/// and no triangle edge passes through another of the face's vertices.
+/// and no triangle edge passes through another of the face's vertices. A
+/// vertex the face itself repeats is exempt from uniqueness, and one copy
+/// being a corner suffices: the repeat draws no edge.
 fn assert_gridded_face(
     mesh: &FluidSurfaceMesh,
     index: usize,
@@ -109,6 +111,7 @@ fn assert_gridded_face(
     let range = face_range(mesh, index);
     let ring = face.vertices.len();
     let position = |i: usize| dvec(mesh.vertices[i].position);
+    let original = |i: usize| i < range.start + ring;
     for (offset, source) in face.vertices.iter().enumerate() {
         assert_eq!(
             mesh.vertices[range.start + offset].position,
@@ -117,7 +120,7 @@ fn assert_gridded_face(
     }
     let normal = face_normal(face).unwrap().as_dvec3();
     let corners: Vec<DVec3> = face.vertices.iter().map(|v| dvec(v.position)).collect();
-    let (a, b, c) = (corners[0], corners[1], corners[2]);
+    let a = corners[0];
     let uv_at = |p: DVec3| {
         // The fixture UVs are affine in position, so the face's map is the
         // fixture's own.
@@ -129,23 +132,26 @@ fn assert_gridded_face(
             (p - a).dot(normal).abs() <= 1.0e-5,
             "vertex {i} off the plane"
         );
+        // f32 positions and UVs round in proportion to their magnitude.
+        let outside = -1.0e-5 * (1.0 + p.abs().max_element() / 100.0);
         for edge in 0..ring {
             let (e0, e1) = (corners[edge], corners[(edge + 1) % ring]);
             assert!(
-                (e1 - e0).cross(p - e0).dot(normal) >= -1.0e-5,
+                (e1 - e0).cross(p - e0).dot(normal) >= outside,
                 "vertex {i} outside the face"
             );
         }
         let uv = Vec2::from(mesh.vertices[i].uv).as_dvec2();
+        let tolerance = 1.0e-3 + 1.0e-6 * uv.abs().max_element();
         assert!(
-            (uv - uv_at(p)).abs().max_element() <= 1.0e-3,
+            (uv - uv_at(p)).abs().max_element() <= tolerance,
             "vertex {i} uv {uv} vs {}",
             uv_at(p)
         );
         if i >= range.start + ring {
             assert!(on_some_plane(p, spacing), "added vertex {p} on no plane");
         }
-        for j in range.start..i {
+        for j in (range.start..i).filter(|&j| !(original(i) && original(j))) {
             assert_ne!(
                 mesh.vertices[j].position, mesh.vertices[i].position,
                 "vertices {j} and {i} repeat a position"
@@ -183,14 +189,26 @@ fn assert_gridded_face(
     let face_twice: f64 = (1..ring - 1)
         .map(|i| (corners[i] - a).cross(corners[i + 1] - a).dot(normal))
         .sum();
+    // Packing rounds crossings off an oblique edge by up to half an f32 ulp.
+    let perimeter: f64 = (0..ring)
+        .map(|i| corners[i].distance(corners[(i + 1) % ring]))
+        .sum();
+    let magnitude = corners
+        .iter()
+        .fold(0.0f64, |m, p| m.max(p.abs().max_element()));
+    let rounding = f64::from(f32::EPSILON) / 2.0 * magnitude * perimeter;
     assert!(
-        (face_twice - tiled).abs() <= 1.0e-6 * face_twice,
+        (face_twice - tiled).abs() <= 1.0e-6 * face_twice + rounding,
         "face {face_twice}, triangles {tiled}"
     );
-    let _ = (b, c);
+    let is_corner = |i: usize| triangles.iter().any(|t| t.contains(&(i as u32)));
     for i in range.clone() {
+        let copy_is_corner = original(i)
+            && (range.start..range.start + ring).any(|j| {
+                j != i && mesh.vertices[j].position == mesh.vertices[i].position && is_corner(j)
+            });
         assert!(
-            triangles.iter().any(|t| t.contains(&(i as u32))),
+            is_corner(i) || copy_is_corner,
             "vertex {i} is no triangle corner"
         );
     }
@@ -320,29 +338,37 @@ fn faces_sharing_an_edge_carry_identical_vertices_along_it() {
     shared(3, 4, [2.9, 1.1, 0.0], [4.2, -0.3, 0.6]);
 }
 
-// P11: an edge lying in a lattice plane gains nothing from that plane, and
-// no sliver strip runs beside it.
+// P11: an edge lying in a lattice plane, or within the plane tolerance of
+// it so that the plane falls strictly inside one face's extent, gains
+// nothing from that plane, and no sliver strip runs beside it.
 #[test]
 fn an_edge_in_a_lattice_plane_gains_no_vertex_from_it() {
-    let on_plane = top(1.25, 2.6, 0.0, 1.0, 1.1);
-    let neighbour = top(0.4, 1.25, 0.0, 1.0, 1.1);
-    let mesh = pack(&[volume(vec![on_plane.clone(), neighbour.clone()])]);
-    let ranges = [
-        assert_gridded_face(&mesh, 0, &on_plane, SPACING),
-        assert_gridded_face(&mesh, 1, &neighbour, SPACING),
-    ];
-    let edge = |range| edge_vertices(&mesh, range, [1.25, 1.1, 0.0], [1.25, 1.1, 1.0]);
-    // Its own two corners and the z planes at 0.125 and 0.625 only.
-    let expected = vec![
-        [1.25, 1.1, 0.0],
-        [1.25, 1.1, 0.125],
-        [1.25, 1.1, 0.625],
-        [1.25, 1.1, 1.0],
-    ];
-    assert_eq!(edge(&ranges[0]), expected);
-    assert_eq!(edge(&ranges[1]), expected);
-    for range in &ranges {
-        for t in face_triangles(&mesh, range) {
+    // On x = 1.25; 0.1 mm into the right face's extent; 0.1 mm into the left's.
+    for x in [1.25, 1.25 - 1.0e-4, 1.25 + 1.0e-4] {
+        let right = top(x, 2.6, 0.0, 1.0, 1.1);
+        let left = top(0.4, x, 0.0, 1.0, 1.1);
+        let mesh = pack(&[volume(vec![right.clone(), left.clone()])]);
+        let ranges = [
+            assert_gridded_face(&mesh, 0, &right, SPACING),
+            assert_gridded_face(&mesh, 1, &left, SPACING),
+        ];
+        let edge = |range| edge_vertices(&mesh, range, [x, 1.1, 0.0], [x, 1.1, 1.0]);
+        // Its own two corners and the z planes at 0.125 and 0.625 only.
+        let expected = vec![
+            [x, 1.1, 0.0],
+            [x, 1.1, 0.125],
+            [x, 1.1, 0.625],
+            [x, 1.1, 1.0],
+        ];
+        assert_eq!(edge(&ranges[0]), expected, "edge at x = {x}");
+        assert_eq!(edge(&ranges[1]), expected, "edge at x = {x}");
+        assert_no_sliver(&mesh, &ranges);
+    }
+}
+
+fn assert_no_sliver(mesh: &FluidSurfaceMesh, ranges: &[Range<usize>]) {
+    for range in ranges {
+        for t in face_triangles(mesh, range) {
             let xs = t.map(|i| mesh.vertices[i as usize].position[0]);
             let width = xs.iter().copied().fold(f32::MIN, f32::max)
                 - xs.iter().copied().fold(f32::MAX, f32::min);
@@ -351,36 +377,42 @@ fn an_edge_in_a_lattice_plane_gains_no_vertex_from_it() {
     }
 }
 
-// P10 and P12: a vertex within the plane tolerance of a plane takes the
-// plane through itself on both faces (no crossing beside it, no duplicate);
-// one just outside keeps the crossing, on both faces.
+// P10 and P12: a vertex mid-edge within the plane tolerance of a plane
+// strictly inside both faces takes the plane through itself on both (no
+// crossing beside it, no duplicate); one just outside keeps the crossing, on
+// both faces; one exactly on a plane gains no duplicate.
 #[test]
 fn crossings_near_a_shared_vertex_snap_the_same_way_from_both_faces() {
     let inside = 0.625 + 1.0e-4; // within the 2e-4 m tolerance of z = 0.625
     let outside = 1.625 + 3.0e-4; // just past it
     let exact = 1.125; // exactly on a plane
+    // The compiler's collinear inserts on the shared x = 1.3 edge.
     let left = face(&[
-        [0.0, 1.1, inside],
-        [0.0, 1.1, outside],
+        [0.0, 1.1, 0.0],
+        [0.0, 1.1, 2.0],
+        [1.3, 1.1, 2.0],
         [1.3, 1.1, outside],
         [1.3, 1.1, exact],
         [1.3, 1.1, inside],
+        [1.3, 1.1, 0.0],
     ]);
     let right = face(&[
+        [1.3, 1.1, 0.0],
         [1.3, 1.1, inside],
         [1.3, 1.1, exact],
         [1.3, 1.1, outside],
-        [2.6, 1.1, outside],
-        [2.6, 1.1, inside],
+        [1.3, 1.1, 2.0],
+        [2.6, 1.1, 2.0],
+        [2.6, 1.1, 0.0],
     ]);
     let mesh = pack(&[volume(vec![left.clone()]), volume(vec![right.clone()])]);
     let ranges = [
         assert_gridded_face(&mesh, 0, &left, SPACING),
         assert_gridded_face(&mesh, 1, &right, SPACING),
     ];
-    let edge = |range| edge_vertices(&mesh, range, [1.3, 1.1, inside], [1.3, 1.1, outside]);
+    let edge = |range| edge_vertices(&mesh, range, [1.3, 1.1, 0.0], [1.3, 1.1, 2.0]);
     let along: Vec<f32> = edge(&ranges[0]).iter().map(|p| p[2]).collect();
-    assert_eq!(along, vec![inside, exact, 1.625, outside]);
+    assert_eq!(along, vec![0.0, 0.125, inside, exact, 1.625, outside, 2.0]);
     assert_eq!(edge(&ranges[0]), edge(&ranges[1]));
 }
 
@@ -442,15 +474,17 @@ fn each_faces_grid_vertices_stay_contiguous_under_its_drift() {
     assert_eq!(ranges[2].end, mesh.vertices.len());
     for (i, range) in ranges.iter().enumerate() {
         assert!(range.len() > 4, "face {i} gained grid vertices");
-        for &index in &mesh.indices {
-            let inside = range.contains(&(index as usize));
-            assert!(
-                inside
-                    || face_triangles(&mesh, range)
-                        .iter()
-                        .all(|t| !t.contains(&index)),
-            );
-        }
+    }
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let holding: Vec<_> = ranges
+            .iter()
+            .filter(|range| range.contains(&(t[0] as usize)))
+            .collect();
+        assert_eq!(holding.len(), 1, "triangle {t:?} in one face's range");
+        assert!(
+            t.iter().all(|&i| holding[0].contains(&(i as usize))),
+            "triangle {t:?} spans faces"
+        );
     }
     let mut rates = vec![[9.0; 2]; mesh.vertices.len()];
     for drift in [Vec3::X, Vec3::Z] {
@@ -616,5 +650,147 @@ fn uvs_interpolate_affinely_on_crossings() {
         let error = (Vec2::from(v.uv).as_dvec2() - expected.as_dvec2()).abs();
         assert!(error.max_element() <= 1.0e-5, "{v:?}");
     }
-    let _ = DVec2::ZERO;
+}
+
+// Regression: corners were judged against an epsilon that grew with distance
+// from the origin past the plane tolerance, so a strip under 2 mm wide
+// 300 m or 1 km out lost every triangle: a hole in the water.
+#[test]
+fn a_sliver_part_far_from_the_origin_keeps_its_triangles() {
+    // The x = 300.25 and 1000.25 planes leave strips 0.4 to 1.2 mm wide.
+    let faces = [
+        top(300.0, 300.2504, 0.0, 1.0, 1.1),
+        top(1000.0, 1000.2512, 0.0, 1.0, 1.1),
+        face(&[
+            [1000.0, 1.1, 0.0],
+            [1000.0, 1.1, 1.0],
+            [1000.2512, 1.1, 1.0],
+            [1000.2505, 1.1, 0.0],
+        ]),
+    ];
+    for pool in faces {
+        let mesh = pack(&[volume(vec![pool.clone()])]);
+        let range = assert_gridded_face(&mesh, 0, &pool, SPACING);
+        let plane = f64::from(pool.vertices[0].position[0]) + 0.25;
+        assert!(
+            face_triangles(&mesh, &range).iter().any(|t| t
+                .iter()
+                .all(|&i| f64::from(mesh.vertices[i as usize].position[0]) >= plane)),
+            "the strip past x = {plane} draws"
+        );
+    }
+}
+
+// Regression: a part a kilometre out with a millimetre side dropped its last
+// triangle, and the vertex only it held.
+#[test]
+fn a_part_with_a_millimetre_side_far_from_the_origin_keeps_every_triangle() {
+    let ring = [
+        [1000.0, 1.1, 0.0],
+        [1000.0, 1.1, 0.5],
+        [1000.0012, 1.1, 0.5],
+        [1000.5, 1.1, 0.0],
+    ]
+    .map(dvec);
+    let mut triangles = Vec::new();
+    triangulate_convex(&[0, 1, 2, 3], &ring, DVec3::Y, &mut triangles);
+    let twice = |[p, q, r]: [DVec3; 3]| (q - p).cross(r - p).dot(DVec3::Y);
+    let tiled: f64 = triangles
+        .iter()
+        .map(|t| twice(t.map(|i| ring[i as usize])))
+        .sum();
+    let whole = twice([ring[0], ring[1], ring[2]]) + twice([ring[0], ring[2], ring[3]]);
+    assert!(
+        (tiled - whole).abs() <= 1.0e-9 * whole,
+        "{tiled} vs {whole}"
+    );
+    for i in 0..4 {
+        assert!(triangles.iter().any(|t| t.contains(&i)), "vertex {i}");
+    }
+}
+
+// Regression: a lattice far from a small face with a tiny cell put plane
+// indices past i64, and the range search overflowed.
+#[test]
+fn a_lattice_too_fine_for_its_distance_packs_within_the_cap() {
+    let far = FluidGridLattice::new([-1.0e10; 3], [2.0e-10; 3]).expect("a usable lattice");
+    let pool = top(0.0, 0.002, 0.0, 0.002, 1.1);
+    let volumes = [volume(vec![pool])];
+    for cap in [16, 1000] {
+        let mesh = pack_fluid_surfaces_within(&volumes, &[], 1, Some(&far), cap);
+        assert!(mesh.vertices.len() as u64 <= cap, "cap {cap}");
+    }
+}
+
+// Regression: two vertices of one shallow edge within the tolerance on
+// either side of a plane each joined both parts, which then overlapped.
+#[test]
+fn a_run_of_vertices_on_a_plane_splits_the_face_without_overlap() {
+    // In x, z: E below x = 1.25, O1 and O2 within the tolerance either side
+    // of it, F above, on a shallow edge bowed outward so the face is convex.
+    let shallow = face(&[
+        [1.2497, 1.1, 0.0],
+        [1.24985, 1.1, 3.0],
+        [1.25012, 1.1, 7.0],
+        [1.2504, 1.1, 10.0],
+        [5.0, 1.1, 10.0],
+        [5.0, 1.1, 0.0],
+    ]);
+    let mesh = pack(&[volume(vec![shallow.clone()])]);
+    let range = assert_gridded_face(&mesh, 0, &shallow, SPACING);
+    let planes = mesh.grid.expect("a grid");
+    assert!(range.len() as u64 <= face_vertex_bound(&shallow, &planes));
+}
+
+// The compiler emits repeated vertices. Cut, the face still tiles its area,
+// and a neighbour sharing the edge that holds a repeat carries the same
+// vertices along it.
+#[test]
+fn a_face_repeating_a_vertex_cuts_without_a_crack() {
+    let left = face(&[
+        [0.0, 1.1, 0.0],
+        [0.0, 1.1, 0.0],
+        [0.0, 1.1, 1.125], // exactly on a z plane, twice
+        [0.0, 1.1, 1.125],
+        [0.0, 1.1, 2.0],
+        [1.3, 1.1, 2.0],
+        [1.3, 1.1, 0.9],
+        [1.3, 1.1, 0.9],
+        [1.3, 1.1, 0.0],
+    ]);
+    let right = face(&[
+        [1.3, 1.1, 0.0],
+        [1.3, 1.1, 0.9],
+        [1.3, 1.1, 2.0],
+        [2.9, 1.1, 2.0],
+        [2.9, 1.1, 0.0],
+    ]);
+    let mesh = pack(&[volume(vec![left.clone()]), volume(vec![right.clone()])]);
+    let ranges = [
+        assert_gridded_face(&mesh, 0, &left, SPACING),
+        assert_gridded_face(&mesh, 1, &right, SPACING),
+    ];
+    let edge = |range| {
+        let mut on = edge_vertices(&mesh, range, [1.3, 1.1, 0.0], [1.3, 1.1, 2.0]);
+        on.dedup();
+        on
+    };
+    assert!(edge(&ranges[0]).contains(&[1.3, 1.1, 0.9]));
+    assert_eq!(edge(&ranges[0]), edge(&ranges[1]));
+}
+
+// Regression: a range the search gave up counting counted as no planes, so
+// the bound fell under the true count (P18).
+#[test]
+fn a_range_too_wide_or_too_fine_to_count_saturates_the_bound() {
+    let unit = FluidGridLattice::new([0.0; 3], [2.0; 3]).unwrap().planes(0);
+    assert!(unit.splitting_count(0, 0.5, 1.0e9 + 0.5) >= 1_000_000_000);
+    assert_eq!(
+        unit.splitting_count(0, 0.0, 4.0e9),
+        PLANE_COUNT_LIMIT as u64
+    );
+    let far = FluidGridLattice::new([-1.0e10; 3], [2.0e-10; 3])
+        .unwrap()
+        .planes(0);
+    assert_eq!(far.splitting_count(0, 0.0, 0.002), PLANE_COUNT_LIMIT as u64);
 }

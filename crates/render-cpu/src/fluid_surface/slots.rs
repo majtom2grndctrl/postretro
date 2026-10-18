@@ -197,7 +197,7 @@ pub enum FluidShaderVariant {
     /// No reflection code: a draw with no probe-bound face, reflectivity 0,
     /// or an isolating lighting mask.
     ReflectionFree,
-    /// The probe term, gated per fragment as before.
+    /// The probe term, gated per fragment.
     Reflecting,
 }
 

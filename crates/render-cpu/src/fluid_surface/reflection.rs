@@ -1,5 +1,5 @@
 // Fluid reflection probes: probe table GPU layout, per-vertex probe index, and
-// the CPU reference for `fluid_surface.wgsl`'s probe term (search: `reflection_search`).
+// the CPU reference for `fluid_reflection.wgsl`'s probe term (search: `reflection_search`).
 // See: context/lib/rendering_pipeline.md §7.3a · context/lib/resource_management.md §5
 
 use bytemuck::{Pod, Zeroable};
@@ -247,7 +247,7 @@ pub fn pack_probe_table(section: Option<&ReflectionProbesSection>) -> Vec<u8> {
 /// Per-vertex probe indices for the mesh `face_maps` describe (one map per
 /// surface face of every volume, in record order, as
 /// [`super::FluidSurfaceMesh::face_drift_maps`]). Every vertex a bound face
-/// owns, any added centroid included, takes its binding's probe; every other
+/// owns, grid crossings and any added centroid included, takes its binding's probe; every other
 /// vertex takes [`FLUID_REFLECTION_NO_PROBE`]. A binding naming a face or
 /// probe that does not exist binds nothing.
 pub fn fill_probe_indices(

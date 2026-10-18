@@ -406,6 +406,20 @@ impl ShVolumeResources {
                 s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
             })
             .filter(|s| {
+                // A degenerate lattice would sample through `max(cell, 1e-6)` or NaN;
+                // refuse it so every SH consumer takes the no-volume path.
+                let sane = s.grid_origin.iter().all(|v| v.is_finite())
+                    && s.cell_size.iter().all(|v| v.is_finite() && *v > 0.0);
+                if !sane {
+                    log::error!(
+                        "[Renderer] SH volume lattice is degenerate (grid origin {:?}, cell size {:?}); disabling SH volume for this level",
+                        s.grid_origin,
+                        s.cell_size,
+                    );
+                }
+                sane
+            })
+            .filter(|s| {
                 let fits = atlas_fits(s.atlas_dimensions, s.layer_count, &limits);
                 if !fits {
                     log::error!(
@@ -963,7 +977,8 @@ pub(super) fn sh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> 
     // Shared with the forward pass (fragment), fog raymarch (compute), and the
     // billboard pass (vertex + fragment), so visibility covers all three stages on
     // every entry. VERTEX is required because billboard hoists SH indirect + direct
-    // sampling into `vs_main` (per-vertex lighting); the SH reads use non-derivative
+    // sampling into `vs_main` (per-vertex lighting) and the fluid pass's `vs_main`
+    // (`fluid_baked_light`) reads them too; the SH reads use non-derivative
     // texture ops (`textureSampleLevel`/`textureLoad`), which are vertex-stage valid.
     // Widening is additive — forward/fog/mesh sharers do not read in the vertex stage,
     // and carrying extra visibility on a shared layout is valid at pipeline creation.

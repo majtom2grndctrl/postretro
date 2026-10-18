@@ -245,7 +245,8 @@ pub(super) struct UniformLight {
     pub dynamic: Vec3,
 }
 
-/// Today's per-fragment fluid lighting for a uniform field: `ambient_floor ·
+/// The fluid lighting formula for a uniform field, the oracle the per-vertex
+/// term must match: `ambient_floor ·
 /// [ambient] + sh_indirect · indirect_scale · [any indirect] + sh_direct ·
 /// direct_scale + dynamic · [dynamic direct]`. The compose passes leave
 /// `sh_indirect` holding the static base only under its own bit (this level
